@@ -336,12 +336,19 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let streaming = app.is_streaming();
     let [strip, _] = live_layout(area, streaming);
 
-    // Streaming preview: the in-progress line on the strip's top row (the rest of
-    // the strip is the blank gap). Nothing is drawn here when idle.
-    if let Some(text) = app.streaming_text() {
-        let preview = message_lines(Role::Assistant, text, strip.width)
-            .pop()
-            .unwrap_or_default();
+    // Strip preview (top row; the rest of the strip is the blank gap). A running
+    // tool takes precedence — its coloured header (blue) shows what's executing;
+    // otherwise the in-progress reply's last line previews. Nothing when idle.
+    let preview = if let Some(tool) = app.current_tool() {
+        tool_lines(tool, strip.width).into_iter().next()
+    } else {
+        app.streaming_text().map(|text| {
+            message_lines(Role::Assistant, text, strip.width)
+                .pop()
+                .unwrap_or_default()
+        })
+    };
+    if let Some(preview) = preview {
         let preview_area = Rect {
             height: PREVIEW_ROWS.min(strip.height),
             ..strip
@@ -1182,5 +1189,27 @@ mod tests {
         let preview = row(&buf, 0, 40);
         assert!(preview.contains("●"), "preview shows assistant bullet");
         assert!(preview.contains("Hi there"), "preview shows streamed text");
+    }
+
+    #[test]
+    fn render_live_previews_a_running_tool_in_blue() {
+        // While a tool runs, the strip's preview row shows its coloured header
+        // (blue) instead of the assistant text, so the user sees what's executing.
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Read", "src/main.rs");
+        let mut buf = buffer(40, 5);
+        render_live(buf.area, &mut buf, &app);
+
+        let preview = row(&buf, 0, 40);
+        assert!(
+            preview.contains("Read(src/main.rs)"),
+            "preview shows the running tool header: {preview:?}"
+        );
+        assert_eq!(
+            buf[(0, 0)].fg,
+            TOOL_RUNNING_COLOR,
+            "the running tool's bullet is blue"
+        );
     }
 }

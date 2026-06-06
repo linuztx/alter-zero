@@ -116,6 +116,25 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
                         committed = new_committed;
                     }
                 }
+                StreamEvent::ToolStart { name, args } => {
+                    // Finalise the current run of assistant text so the tool slots
+                    // after it in scrollback, then show the tool running (blue) in
+                    // the live region until its ToolEnd arrives.
+                    if let Some(segment) = app.flush_streaming_segment() {
+                        term.insert_before(ui::final_commit(&segment, width, committed))?;
+                        term.insert_before(vec![Line::default()])?;
+                    }
+                    committed = 0;
+                    app.start_tool(&name, &args);
+                }
+                StreamEvent::ToolEnd { output, ok } => {
+                    // Commit the finished tool *collapsed* (green/red) to
+                    // scrollback; its full output lives in the Ctrl+O view.
+                    if let Some(tool) = app.end_tool(&output, ok) {
+                        term.insert_before(ui::tool_lines(&tool, width))?;
+                        term.insert_before(vec![Line::default()])?;
+                    }
+                }
                 StreamEvent::StreamDone => {
                     if let Some(text) = app.finish_stream() {
                         term.insert_before(ui::final_commit(&text, width, committed))?;
