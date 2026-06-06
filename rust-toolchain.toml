@@ -1,0 +1,6 @@
+[toolchain]
+# Pin the toolchain so everyone builds the edition-2024 crate the same way and
+# the documented gate (fmt + clippy + test) is reproducible. `stable` tracks the
+# latest stable Rust, which supports edition 2024.
+channel = "stable"
+components = ["rustfmt", "clippy"]

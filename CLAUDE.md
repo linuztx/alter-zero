@@ -17,8 +17,11 @@ cargo build && bash scripts/smoke.sh        # drive the real binary in tmux
 The standard pre-commit gate used throughout this project is: `cargo fmt --check`
 + `cargo clippy --all-targets -- -D warnings` + `cargo test` all clean.
 
-Toolchain: Rust **edition 2024**, `ratatui = 0.30.1`. crossterm is re-exported as
-`ratatui::crossterm` — import it from there, not as a separate crate.
+Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
+`ratatui::crossterm` — import it from there, not as a separate crate), plus
+`unicode-width` for display-width math. `rust-toolchain.toml` pins the toolchain;
+a `[lints]` table in `Cargo.toml` bakes the gate into every build
+(`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 
 ## Architecture
 
@@ -33,16 +36,17 @@ The design rationale lives in `docs/design.md`.
 ### The runtime model and its invariants
 
 This is an **inline-viewport** TUI (`Viewport::Inline`, no alternate screen):
-finished messages flow into the terminal's real scrollback; a fixed 4-row live
-region (preview row + rounded input box) stays pinned at the bottom. Three
-non-obvious invariants hold the whole thing together — breaking any one
-reintroduces a class of bug:
+finished messages flow into the terminal's real scrollback; a fixed live region
+(`ui::LIVE_HEIGHT` rows: a preview row + a rule-framed input box) stays pinned at
+the bottom. Three non-obvious invariants hold the whole thing together — breaking
+any one reintroduces a class of bug:
 
 1. **Only the main thread reads stdin.** The event loop reads keys with
-   `event::poll`; the dummy AI streams on a background thread that *only sends*
-   `StreamEvent`s on an mpsc channel. Terminal init and `insert_before` query the
-   cursor position over stdin, so a second stdin reader would steal that reply and
-   cause "cursor position could not be read". Never add a thread that reads stdin.
+   `event::poll`; the reply backend (a `stream::ReplySource`, e.g. `DummyAi`)
+   streams on a background thread that *only sends* `StreamEvent`s on an mpsc
+   channel. Terminal init and `insert_before` query the cursor position over
+   stdin, so a second stdin reader would steal that reply and cause "cursor
+   position could not be read". Never add a thread that reads stdin.
 
 2. **Greedy word-wrap is prefix-stable** (`ui::wrap_text`): appending text only
    ever changes the *last* wrapped line. This is what makes streaming-to-scrollback
@@ -69,12 +73,15 @@ reintroduces a class of bug:
 
 ```
 keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,Quit,None}
-stream thread ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / finish_stream
+reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / finish_stream / fail_stream
 ```
 
-`Submit(text)` records the user message, `insert_before`s it, then `spawn_stream`s
-a reply thread. `App` (`app.rs`) is pure state + `on_key`; `Action`, `Role`,
-`Message` types live there too.
+`Submit(text)` records the user message, `insert_before`s it, then spawns a reply
+via the selected `ReplySource` (`backend.spawn(text, tx, cancel)`), keeping the
+thread handle + `CancelToken` so a quit mid-stream cancels and reaps it. A backend
+may send `StreamEvent::Error(msg)` instead of `StreamDone`; the loop turns that
+into a red `Role::Error` notice via `App::fail_stream`. `App` (`app.rs`) is pure
+state + `on_key`; `Action`, `Role`, `Message`, `StreamError` types live there too.
 
 ## Working style
 
@@ -109,8 +116,15 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 
 ## Conventions
 
-- **All styling is centralized** as `const`s at the top of `ui.rs` (bullets,
-  prompt, colors, border). Retheme there, not inline.
-- **Swapping in a real AI** is intended to touch only `stream.rs`: replace the
-  body of `spawn_stream` to send `StreamEvent::Chunk(..)` per token then
-  `StreamEvent::StreamDone`. The loop and rendering treat chunks as opaque text.
+- **All styling is centralized** as `const`s at the top of `ui.rs` — bullets,
+  prompt, colours (including the red error bullet), border, and the live-region
+  row geometry (`PREVIEW_ROWS`/`INPUT_ROWS`/`LIVE_HEIGHT`, applied via the single
+  `live_layout` helper). Retheme or re-size there, not inline.
+- **All width math goes through `cols()`** (display columns via `unicode-width`),
+  never `chars().count()` — so CJK/emoji wrap and pad correctly.
+- **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
+  as a template) and changing the single `let backend = …;` line in
+  `main.rs::run`. Stream `StreamEvent::Chunk(..)` per token, poll the `CancelToken`
+  so a quit can stop you, then send `StreamEvent::StreamDone` — or
+  `StreamEvent::Error(msg)` on failure. The loop and rendering treat chunks as
+  opaque text; nothing else changes.

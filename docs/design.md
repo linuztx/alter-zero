@@ -28,9 +28,10 @@ Everything that can be unit-tested must be unit-tested.
   current partial line is shown live in the preview row. On completion the
   final line is committed too, with a blank spacer line after it. A blank
   spacer is also committed after every user message.
-- **Responsive:** every draw re-wraps to the current terminal width. Width
-  adapts live. The live region height is fixed (an inline-viewport constraint
-  — `set_viewport_area` is not public), clamped to the terminal height.
+- **Responsive:** every draw re-wraps to the current terminal width, measured in
+  **display columns** (`unicode-width`) so CJK/emoji wrap and pad correctly. The
+  live region height is fixed at `LIVE_HEIGHT` (an inline-viewport constraint —
+  `set_viewport_area` is not public), clamped to the terminal height.
 - **Resize reflow (both directions).** Any width change must re-wrap the visible
   chat: ratatui clears the screen on a width *shrink* but not on a *grow*, and
   either way the on-screen lines keep their old wrapping until redrawn. So `App`
@@ -41,6 +42,11 @@ Everything that can be unit-tested must be unit-tested.
   the repaint fills the screen without scrolling (the tmux-safe path). Lines that
   had already scrolled into the terminal's own scrollback keep their original
   wrapping.
+- **Backend errors & cancellation.** A reply backend (`ReplySource`) may end with
+  `Error(msg)` instead of `StreamDone`; the partial reply (if any) is kept and a
+  red error notice is shown below it. The built-in `DummyAi` never errors — this is
+  the seam for a real model. Quitting mid-stream trips a `CancelToken` so the
+  backend stops promptly and its thread is reaped before exit.
 - **Quit:** Esc or Ctrl+C. Sending is disabled while a reply is streaming.
 
 ## Architecture
@@ -50,10 +56,10 @@ logic is unit-testable without a real terminal.
 
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
-| `stream.rs` | Dummy AI: `dummy_response`, `chunks`, plus a thin `spawn_stream` background thread. | Pure parts: yes |
-| `app.rs`    | State + pure update logic: `App`, `on_key -> Action`, `push_chunk`, `finish_stream`, message `history`. `Action`/`Role`/`Message` types. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text`, `message_lines`, `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`, `input_view`, `cursor_position`, and `render_live`. | Yes |
-| `main.rs`   | Thin glue: terminal init/restore, single-threaded poll loop, `insert_before` commits, draw, resize repaint. | No (tiny I/O boundary) |
+| `stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`. | Pure parts, token & dummy: yes |
+| `app.rs`    | State + pure update logic: `App`, `on_key -> Action`, `push_chunk`, `finish_stream`, `fail_stream`, message `history`. `Action`/`Role` (incl. `Error`)/`Message`/`StreamError` types. | Yes |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, `input_view`, `cursor_position`, `live_layout`/`LIVE_HEIGHT`, and `render_live`. | Yes |
+| `main.rs`   | Thin glue: terminal init/restore, single-threaded poll loop, `insert_before` commits, draw, resize repaint, backend cancel/reap on quit. | No (tiny I/O boundary) |
 
 ### Data flow
 
@@ -64,38 +70,54 @@ avoids a stdin race with the cursor-position queries that terminal init and
 
 ```
 keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,Quit,None}
-stream thread ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / finish_stream
+reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / finish_stream / fail_stream
 ```
 
 - On `Submit(text)`: `insert_before` the user message and a blank spacer, then
-  `spawn_stream` a thread that sends `Chunk(..)*` then `StreamDone`.
+  `backend.spawn(text, tx, cancel)` — a thread that sends `Chunk(..)*` then
+  `StreamDone` (or `Error(msg)`). The loop keeps the thread's `JoinHandle` and
+  `CancelToken` so quitting mid-stream cancels and reaps it cleanly.
 - On `Chunk`: append to the streaming buffer; commit any newly-stable lines to
   scrollback; redraw (preview row shows the partial last line).
 - On `StreamDone`: commit the final line + spacer; clear streaming state.
+- On `Error(msg)`: `App::fail_stream` records any non-empty partial reply, flushes
+  it, then commits a red `Role::Error` notice (and records it in `history` so it
+  repaints on resize); clears streaming state.
 
 ### Key types
 
-- `Role { User, Assistant }` — drives bullet/colour.
+- `Role { User, Assistant, Error }` — drives bullet/colour (errors get a red
+  bullet).
 - `Action { None, Submit(String), Quit }` — returned by `App::on_key`.
 - `Message { role, text }` — one finished message, retained in `App::history`
   for repainting after a resize.
-- `StreamEvent { Chunk(String), StreamDone }` (in `stream.rs`) — what the
-  streaming thread sends to the loop.
+- `StreamError { partial: Option<String>, error: String }` — what `App::fail_stream`
+  hands the loop to flush after a backend failure.
+- `StreamEvent { Chunk(String), Error(String), StreamDone }` (in `stream.rs`) —
+  what a backend sends to the loop.
+- `ReplySource` (trait) + `DummyAi` (impl) + `CancelToken` (in `stream.rs`) — the
+  pluggable backend seam. `spawn(prompt, tx, cancel) -> JoinHandle<()>`; a real
+  model is a drop-in `ReplySource` and the loop never changes.
 
 ## Testing strategy
 
 - `stream`: `dummy_response` deterministic & non-empty; `chunks` concatenates
-  back to the original text and yields >1 chunk for multi-word input;
-  `spawn_stream` delivers all chunks then `StreamDone`.
+  back to the original text and yields >1 chunk for multi-word input; `CancelToken`
+  latches and is shared across clones; `DummyAi` delivers all chunks then
+  `StreamDone`, and sends nothing when pre-cancelled; a custom `ReplySource` can
+  report `Error`.
 - `app`: typing appends; backspace; Enter with text → `Submit` + clears input;
   Enter while empty / while streaming → `None`; Esc/Ctrl+C → `Quit`;
-  `push_chunk`/`finish_stream` transitions.
-- `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0);
-  `message_lines` (bullet on first line, indented continuation; user lines
-  carry a dark background and are padded to fill the full terminal width);
-  `input_view` horizontal scroll; `cursor_position`; `render_live` asserted
-  against a `Buffer`; and `stable_commit`/`final_commit` proven to reconstruct
-  a whole streamed reply with no gaps or duplicates.
+  `push_chunk`/`finish_stream` transitions; `fail_stream` records partial + error.
+- `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
+  & zero-width chars**); `message_lines` (bullet on first line, indented
+  continuation; user lines carry a dark background padded to the full display
+  width; error lines get a red bullet); the `BULLET_WIDTH` / `live_layout` /
+  `LIVE_HEIGHT` / `repaint_budget` single-source-of-truth invariants; `input_view`
+  horizontal scroll (by columns); `cursor_position`; `render_live` asserted against
+  a `Buffer`; and `stable_commit`/`final_commit` proven to reconstruct a whole
+  streamed reply with no gaps or duplicates, and to clamp safely under a mid-stream
+  resize.
 
 ## Known limitations (v1 — iterate later)
 

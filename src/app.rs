@@ -11,6 +11,9 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub enum Role {
     User,
     Assistant,
+    /// A backend error notice (e.g. a real model failed mid-reply). Rendered like
+    /// a message so it flows into scrollback and repaints on resize uniformly.
+    Error,
 }
 
 /// One finished message in the conversation.
@@ -23,6 +26,17 @@ pub enum Role {
 pub struct Message {
     pub role: Role,
     pub text: String,
+}
+
+/// What a backend error leaves behind, handed to the event loop to flush to
+/// scrollback. The partial reply (if any) and the error are also recorded in
+/// [`App::history`] so a later resize repaints them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamError {
+    /// The reply text streamed before the error, if any non-empty text arrived.
+    pub partial: Option<String>,
+    /// The error message to show the user.
+    pub error: String,
 }
 
 /// The result of handling a key press, interpreted by the event loop.
@@ -55,12 +69,14 @@ pub struct App {
 
 impl App {
     /// A fresh app: empty input, not streaming.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Is an AI reply currently being streamed?
-    pub fn is_streaming(&self) -> bool {
+    #[must_use]
+    pub const fn is_streaming(&self) -> bool {
         self.streaming.is_some()
     }
 
@@ -115,6 +131,7 @@ impl App {
     }
 
     /// The reply text accumulated so far, or `None` when idle.
+    #[must_use]
     pub fn streaming_text(&self) -> Option<&str> {
         self.streaming.as_deref()
     }
@@ -128,6 +145,33 @@ impl App {
             text: text.clone(),
         });
         Some(text)
+    }
+
+    /// End the in-progress stream because the backend reported an error.
+    ///
+    /// Records any non-empty partial reply as an assistant message, then records
+    /// the error as a [`Role::Error`] message, and clears the streaming state.
+    /// Returns the [`StreamError`] for the event loop to flush to scrollback, or
+    /// `None` if no reply was in progress.
+    pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
+        let streamed = self.streaming.take()?;
+        let partial = if streamed.is_empty() {
+            None
+        } else {
+            self.history.push(Message {
+                role: Role::Assistant,
+                text: streamed.clone(),
+            });
+            Some(streamed)
+        };
+        self.history.push(Message {
+            role: Role::Error,
+            text: error.to_string(),
+        });
+        Some(StreamError {
+            partial,
+            error: error.to_string(),
+        })
     }
 }
 
@@ -279,5 +323,36 @@ mod tests {
         app.finish_stream();
         let roles: Vec<Role> = app.history.iter().map(|m| m.role).collect();
         assert_eq!(roles, vec![Role::User, Role::Assistant]);
+    }
+
+    #[test]
+    fn fail_stream_records_partial_then_error_and_clears_state() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("half a rep");
+        let failure = app.fail_stream("network down").expect("was streaming");
+        assert_eq!(failure.partial.as_deref(), Some("half a rep"));
+        assert_eq!(failure.error, "network down");
+        assert!(!app.is_streaming());
+        let roles: Vec<Role> = app.history.iter().map(|m| m.role).collect();
+        assert_eq!(roles, vec![Role::Assistant, Role::Error]);
+        assert_eq!(app.history[1].text, "network down");
+    }
+
+    #[test]
+    fn fail_stream_with_no_partial_records_only_the_error() {
+        let mut app = App::new();
+        app.begin_stream(); // errored before any chunk arrived
+        let failure = app.fail_stream("died early").expect("was streaming");
+        assert!(failure.partial.is_none());
+        let roles: Vec<Role> = app.history.iter().map(|m| m.role).collect();
+        assert_eq!(roles, vec![Role::Error]);
+    }
+
+    #[test]
+    fn fail_stream_when_idle_returns_none_and_records_nothing() {
+        let mut app = App::new();
+        assert!(app.fail_stream("ignored").is_none());
+        assert!(app.history.is_empty());
     }
 }

@@ -10,16 +10,13 @@ It's deliberately minimal so the whole thing is easy to read, and almost all of
 the logic is pure and unit-tested.
 
 ```
-  ● inline-tui — streaming chat demo
-    dummy AI · Claude-Code style
-
-› what is ratatui?
+❯ what is ratatui?
 ● Great question. There's no AI behind this yet — these words are streamed from
   a canned response to show off the inline TUI. Finished messages scroll up into
   your normal terminal history, just like Claude Code.
 
 ────────────────────────────────────────────────────────────────────────────────
-›
+❯
 ────────────────────────────────────────────────────────────────────────────────
 ```
 
@@ -70,23 +67,23 @@ without a real terminal.
 
 | File         | Responsibility                                                                 | Tested |
 |--------------|--------------------------------------------------------------------------------|--------|
-| `src/app.rs` | Conversation state + pure update logic (`on_key`, `push_chunk`, `finish_stream`, message `history`). | ✅ |
-| `src/ui.rs`  | Pure rendering: word-wrap, styled message lines, the live region, commit bookkeeping. | ✅ |
-| `src/stream.rs` | The dummy AI: canned responses, word chunking, and a background streaming thread. | ✅ (pure parts) |
-| `src/main.rs` | Thin glue: terminal init/restore, the single-threaded poll loop. | ⚪ I/O boundary |
+| `src/app.rs` | Conversation state + pure update logic (`on_key`, `push_chunk`, `finish_stream`, `fail_stream`, message `history`). | ✅ |
+| `src/ui.rs`  | Pure rendering: display-width word-wrap, styled message lines, the live region, commit bookkeeping. | ✅ |
+| `src/stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi`, a `CancelToken`, and the `StreamEvent` protocol. | ✅ (pure parts, token & dummy) |
+| `src/main.rs` | Thin glue: terminal init/restore, the single-threaded poll loop, backend cancel/reap on quit. | ⚪ I/O boundary |
 
-The loop reads keys directly and drains streamed chunks from a channel:
+The loop reads keys directly and drains streamed events from a channel:
 
 ```
 keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,Quit,None}
-stream thread ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / finish_stream
+reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / finish_stream / fail_stream
 ```
 
 ## Tests
 
 ```bash
-cargo test       # 37 unit tests
-cargo clippy --all-targets
+cargo test       # run the full unit-test suite
+cargo clippy --all-targets -- -D warnings
 ```
 
 The interesting one is `ui::tests::incremental_commits_reconstruct_the_whole_reply`,
@@ -113,21 +110,24 @@ colours, border) — change them in one place to retheme.
 
 ## Plugging in a real AI later
 
-The dummy lives entirely in `src/stream.rs`. To use a real model, replace the
-body of `spawn_stream` so the background thread sends `StreamEvent::Chunk(..)`
-for each token it receives and `StreamEvent::StreamDone` at the end. Nothing else
-has to change — the event loop and rendering already treat chunks as opaque text.
+The backend is a `ReplySource` trait in `src/stream.rs`; the demo uses the
+built-in `DummyAi`. To use a real model, implement `ReplySource` (with `DummyAi`
+as a template) and change the single `let backend = DummyAi;` line in `main.rs`.
+Your `spawn` runs on a background thread that sends `StreamEvent::Chunk(..)` per
+token, polls the `CancelToken` so a quit can stop it, then sends
+`StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure, which the app
+shows as a red error notice. Nothing else changes; the loop and rendering treat
+chunks as opaque text.
 
 ## Known limitations (v1)
 
 - Single-line input (it scrolls horizontally to keep the cursor visible).
 - **Resizing the width** (wider or narrower) repaints the on-screen conversation
-  re-wrapped to the new width. Two honest caveats: (1) the decorative header
-  banner isn't repainted, and (2) lines that had already scrolled into the
-  terminal's own scrollback keep their original wrapping, so after resizing a
-  *long* chat you may see the boundary messages once in the (old-width) scrollback
-  above and again in the (new-width) repaint — exactly the behaviour of any
-  program that writes to terminal scrollback.
+  re-wrapped to the new width. One honest caveat: lines that had already scrolled
+  into the terminal's own scrollback keep their original wrapping, so after
+  resizing a *long* chat you may see the boundary messages once in the (old-width)
+  scrollback above and again in the (new-width) repaint — exactly the behaviour of
+  any program that writes to terminal scrollback.
 - **Resizing mid-stream** recovers (the in-progress reply re-commits itself),
   but the moment of resize may briefly flicker the partial line.
 - The inline viewport height is fixed (ratatui doesn't expose a runtime setter),

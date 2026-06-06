@@ -5,3 +5,13 @@ edition = "2024"
 
 [dependencies]
 ratatui = "0.30.1"
+unicode-width = "0.2"
+
+# Bake the project's pre-commit gate into every build so it can't silently
+# regress (there is no CI yet). Mirrors `clippy --all-targets -- -D warnings`.
+[lints.rust]
+unsafe_code = "forbid"
+warnings = "deny"
+
+[lints.clippy]
+all = "deny"

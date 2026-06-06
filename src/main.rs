@@ -22,6 +22,7 @@
 
 use std::io;
 use std::sync::mpsc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ratatui::DefaultTerminal;
@@ -35,22 +36,18 @@ use ratatui::text::{Line, Text};
 use ratatui::widgets::{Paragraph, Widget};
 
 use inline_tui::app::{Action, App, Role};
-use inline_tui::stream::{self, StreamEvent};
+use inline_tui::stream::{CancelToken, DummyAi, ReplySource, StreamEvent};
 use inline_tui::ui;
 
-/// Height of the bottom live region: one preview row + a 3-row input box.
-const LIVE_HEIGHT: u16 = 4;
 /// How long to wait for a keypress before checking for streamed chunks.
 /// Short while a reply streams (so it's snappy), longer when idle (less spin).
 const POLL_STREAMING: Duration = Duration::from_millis(20);
 const POLL_IDLE: Duration = Duration::from_millis(200);
 
 fn main() -> io::Result<()> {
-    // print_header();
-
     // Size the inline viewport up front, clamped to the current terminal.
     let rows = terminal::size().map(|(_, h)| h).unwrap_or(24).max(1);
-    let height = LIVE_HEIGHT.min(rows);
+    let height = ui::LIVE_HEIGHT.min(rows);
     let mut term = ratatui::init_with_options(TerminalOptions {
         viewport: Viewport::Inline(height),
     });
@@ -66,6 +63,12 @@ fn main() -> io::Result<()> {
 fn run(term: &mut DefaultTerminal) -> io::Result<()> {
     let (tx, rx) = mpsc::channel::<StreamEvent>();
     let mut app = App::new();
+    // The reply backend. Swap this single line for a real model (any
+    // `ReplySource`) and nothing else in the loop has to change.
+    let backend = DummyAi;
+    // The in-flight reply's cancel token + thread handle, so a quit mid-stream
+    // can stop and reap it cleanly. `None` whenever no reply is streaming.
+    let mut inflight: Option<(CancelToken, JoinHandle<()>)> = None;
     // How many lines of the in-progress reply have been flushed to scrollback.
     let mut committed = 0usize;
     // Last terminal width, so we only repaint when the width actually changes
@@ -94,14 +97,16 @@ fn run(term: &mut DefaultTerminal) -> io::Result<()> {
                         Action::None => {}
                         Action::Submit(text) => {
                             app.record_user_message(&text);
-                            commit(
+                            flush_to_scrollback(
                                 term,
                                 ui::message_lines(Role::User, &text, term_width(term)?),
                             )?;
-                            commit(term, vec![Line::default()])?;
+                            flush_to_scrollback(term, vec![Line::default()])?;
                             app.begin_stream();
                             committed = 0;
-                            stream::spawn_stream(text, tx.clone());
+                            let cancel = CancelToken::new();
+                            let handle = backend.spawn(text, tx.clone(), cancel.clone());
+                            inflight = Some((cancel, handle));
                         }
                     }
                     dirty = true;
@@ -126,20 +131,52 @@ fn run(term: &mut DefaultTerminal) -> io::Result<()> {
                     if let Some(text) = app.streaming_text() {
                         let (lines, new_committed) =
                             ui::stable_commit(text, term_width(term)?, committed);
-                        commit(term, lines)?;
+                        flush_to_scrollback(term, lines)?;
                         committed = new_committed;
                     }
                 }
                 StreamEvent::StreamDone => {
                     if let Some(text) = app.finish_stream() {
-                        commit(term, ui::final_commit(&text, term_width(term)?, committed))?;
-                        commit(term, vec![Line::default()])?; // blank spacer
+                        flush_to_scrollback(
+                            term,
+                            ui::final_commit(&text, term_width(term)?, committed),
+                        )?;
+                        flush_to_scrollback(term, vec![Line::default()])?; // blank spacer
                     }
                     committed = 0;
+                    inflight = None;
+                }
+                StreamEvent::Error(message) => {
+                    if let Some(failure) = app.fail_stream(&message) {
+                        let width = term_width(term)?;
+                        // Flush whatever streamed before the failure, then the
+                        // red error notice — each with a trailing blank spacer,
+                        // mirroring how a resize repaints them from history.
+                        if let Some(partial) = failure.partial {
+                            flush_to_scrollback(
+                                term,
+                                ui::final_commit(&partial, width, committed),
+                            )?;
+                            flush_to_scrollback(term, vec![Line::default()])?;
+                        }
+                        flush_to_scrollback(
+                            term,
+                            ui::message_lines(Role::Error, &failure.error, width),
+                        )?;
+                        flush_to_scrollback(term, vec![Line::default()])?;
+                    }
+                    committed = 0;
+                    inflight = None;
                 }
             }
             dirty = true;
         }
+    }
+
+    // Stop any in-flight reply promptly and reap its thread on the way out.
+    if let Some((cancel, handle)) = inflight.take() {
+        cancel.cancel();
+        let _ = handle.join();
     }
     Ok(())
 }
@@ -168,8 +205,8 @@ fn repaint_after_resize(
     let size = term.size()?;
     term.set_cursor_position(Position::new(0, 0))?;
     term.resize(Rect::new(0, 0, size.width, size.height))?;
-    let max_rows = size.height.saturating_sub(LIVE_HEIGHT) as usize;
-    commit(term, ui::repaint_lines(&app.history, size.width, max_rows))?;
+    let max_rows = ui::repaint_budget(size.height);
+    flush_to_scrollback(term, ui::repaint_lines(&app.history, size.width, max_rows))?;
     *committed = 0;
     Ok(())
 }
@@ -188,7 +225,7 @@ fn draw(term: &mut DefaultTerminal, app: &App) -> io::Result<()> {
 }
 
 /// Push pre-wrapped lines into the terminal's scrollback above the viewport.
-fn commit(term: &mut DefaultTerminal, lines: Vec<Line<'static>>) -> io::Result<()> {
+fn flush_to_scrollback(term: &mut DefaultTerminal, lines: Vec<Line<'static>>) -> io::Result<()> {
     let height = lines.len() as u16;
     if height == 0 {
         return Ok(());
@@ -202,10 +239,3 @@ fn commit(term: &mut DefaultTerminal, lines: Vec<Line<'static>>) -> io::Result<(
 fn term_width(term: &DefaultTerminal) -> io::Result<u16> {
     Ok(term.size()?.width)
 }
-
-// fn print_header() {
-//     println!();
-//     println!("  ● inline-tui — streaming chat demo");
-//     println!("    dummy AI · Claude-Code style");
-//     println!();
-// }
