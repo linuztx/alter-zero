@@ -35,8 +35,11 @@ Everything that can be unit-tested must be unit-tested.
   so a long message is never lost off the right edge. The live region height is
   therefore dynamic: `LIVE_MIN_HEIGHT` (preview + a one-row box) at rest, growing
   one row per wrapped input line up to the terminal height, after which the box
-  scrolls internally to keep the cursor (always at the end) in view. Geometry is
-  pure (`ui::live_height`, `ui::input_layout`) and unit-tested.
+  scrolls internally to keep the cursor (always at the end) in view. The box is
+  **content-anchored** like Claude Code / codex — its top stays put and it grows
+  *downward*, only scrolling the chat up once it reaches the screen bottom (never
+  jumping to the bottom). Geometry is pure (`ui::live_height`, `ui::repin`) and
+  unit-tested.
 - **Resize reflow (both directions).** Any width change must re-wrap the visible
   chat: ratatui clears the screen on a width *shrink* but not on a *grow*, and
   either way the on-screen lines keep their old wrapping until redrawn. So `App`
@@ -63,8 +66,8 @@ logic is unit-testable without a real terminal.
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`. | Pure parts, token & dummy: yes |
 | `app.rs`    | State + pure update logic: `App`, `on_key -> Action`, `push_chunk`, `finish_stream`, `fail_stream`, message `history`. `Action`/`Role` (incl. `Error`)/`Message`/`StreamError` types. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`input_layout`, `live_height`, `repin_scroll`), `cursor_position`, and `render_live`. | Yes |
-| `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic bottom-pinned height, `insert_before` (scrollback), `draw` (re-pin + repaint + cursor), init/restore. | No (I/O boundary) |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`), and `render_live`. | Yes |
+| `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (scrollback), `draw` (re-pin + repaint + cursor), init/restore. | No (I/O boundary) |
 | `main.rs`   | Thin glue: single-threaded poll loop, drives `term` (commits, draw, resize repaint), backend cancel/reap on quit. | No (tiny I/O boundary) |
 
 ### Data flow
@@ -113,36 +116,41 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   `StreamDone`, and sends nothing when pre-cancelled; a custom `ReplySource` can
   report `Error`.
 - `app`: typing appends; backspace; Enter with text → `Submit` + clears input;
-  Enter while empty / while streaming → `None`; Esc/Ctrl+C → `Quit`;
+  Alt+Enter / Shift+Enter insert a newline (box grows) without submitting; Enter
+  while empty / while streaming → `None`; Esc/Ctrl+C → `Quit`;
   `push_chunk`/`finish_stream` transitions; `fail_stream` records partial + error.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display
-  width; error lines get a red bullet); the `BULLET_WIDTH` / `live_layout` /
-  `LIVE_HEIGHT` / `repaint_budget` single-source-of-truth invariants; `input_view`
-  horizontal scroll (by columns); `cursor_position`; `render_live` asserted against
-  a `Buffer`; and `stable_commit`/`final_commit` proven to reconstruct a whole
-  streamed reply with no gaps or duplicates, and to clamp safely under a mid-stream
-  resize.
+  width; error lines get a red bullet); the growing-input geometry — `live_height`
+  grows a row per wrapped line and clamps to the screen, `render_live` grows the
+  box and scrolls the input to keep the end visible, `cursor_position` follows the
+  last wrapped row, and `repin` keeps the box top-anchored (scrolling up only on
+  overflow, clearing rows on shrink); the `BULLET_WIDTH` / `repaint_budget`
+  single-source-of-truth invariants; and `stable_commit`/`final_commit` proven to
+  reconstruct a whole streamed reply with no gaps or duplicates, and to clamp
+  safely under a mid-stream resize.
 
 ## The custom inline viewport (`term.rs`)
 
 ratatui's `Viewport::Inline(h)` fixes `h` at startup — the field is private and
 `Terminal::resize` reuses the stored height, so the live region cannot grow. To
-get a **dynamic, bottom-pinned** live region we drop ratatui's `Terminal` and own
-a tiny viewport over a `CrosstermBackend` (`term::InlineViewport`), reusing the
-backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback), `clear`,
-and cursor ops:
+get a **dynamic, content-anchored** live region we drop ratatui's `Terminal` and
+own a tiny viewport over a `CrosstermBackend` (`term::InlineViewport`), reusing
+the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
+`clear`, and cursor ops:
 
 - `insert_before(lines)` — commit finished lines into real scrollback above the
-  viewport, keeping it pinned to the bottom. This is a direct port of ratatui's
-  portable (no-`scrolling-regions`) `insert_before` scroll math, including its
-  tmux-safe "don't full-clear then scroll" ordering.
-- `draw(height, render, cursor)` — re-pin the viewport to the bottom `height`
-  rows (scrolling the screen *up* via `append_lines` to **grow**, or *down* via
-  `ScrollDown` to **shrink**, by the height delta), repaint the live region, and
-  place the hardware cursor. The scroll deltas come from the pure
-  `ui::repin_scroll` helper.
+  viewport. A direct port of ratatui's portable (no-`scrolling-regions`)
+  `insert_before` scroll math: it pushes the viewport *down* while there's room
+  and scrolls only once the screen is full, including the tmux-safe "don't
+  full-clear then scroll" ordering.
+- `draw(height, render, cursor)` — repaint the live region at its new `height`,
+  keeping its **top anchored** so it grows *downward* in place. It scrolls the
+  screen up (via `append_lines`, oldest chat into scrollback) only when the box
+  would overflow the bottom, and blanks the rows a shrink vacates just below it.
+  The decision (`scroll_up` / new `top` / `clear_below`) comes from the pure
+  `ui::repin` helper; the cursor is placed from the final viewport.
 
 `term.rs` is, like `main.rs`, an I/O boundary verified via `scripts/smoke.sh`
 rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
@@ -151,9 +159,11 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
 
 - Input has no cursor navigation: text is appended/deleted at the end only
   (Alt+Enter inserts a newline there). Arrow-key editing is future work.
-- Shrinking the input box (deleting wrapped lines) scrolls the on-screen chat
-  back down, leaving blank rows at the very top where off-screen scrollback would
-  be — terminals can't pull their own scrollback back onto the screen.
+- The box is content-anchored, so when it grows past the screen bottom the chat
+  scrolls into the terminal's real scrollback; shrinking it again can't pull that
+  chat back (terminals can't reverse-scroll their own scrollback), so after a
+  grow-past-bottom-then-shrink the box stays where it scrolled to with blank rows
+  below. Normal short messages never hit this.
 - On resize the on-screen chat is repainted (wider or narrower), but lines
   already in the terminal's own scrollback keep their original wrapping (so
   after resizing a long chat, boundary messages can appear twice — once

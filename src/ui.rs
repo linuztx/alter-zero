@@ -1,7 +1,7 @@
 //! Pure rendering helpers.
 //!
 //! These functions never touch the terminal directly — they either compute
-//! plain data ([`wrap_text`], [`live_height`], [`repin_scroll`], [`cursor_position`]),
+//! plain data ([`wrap_text`], [`live_height`], [`repin`], [`cursor_position`]),
 //! build ratatui [`Line`]s ([`message_lines`]), or render into a [`Buffer`]
 //! ([`render_live`]). That keeps them unit-testable with a plain `Buffer` or
 //! ratatui's `TestBackend`, with no real terminal involved.
@@ -81,27 +81,36 @@ pub fn live_height(input: &str, width: u16, term_height: u16) -> u16 {
     (PREVIEW_ROWS + INPUT_CHROME_ROWS + rows).min(term_height.max(1))
 }
 
-/// How the live region must move to re-pin itself to the bottom of the screen
-/// when its height changes between draws — the pure decision behind
-/// `term::InlineViewport::draw`'s scroll.
+/// How to re-pin the live region when its height changes between draws, keeping
+/// it **content-anchored** — its top fixed, like Claude Code / codex. The box
+/// grows *downward* in place; the screen only scrolls up when the box would run
+/// past the bottom (i.e. it has reached the bottom), and a shrink vacates rows
+/// just below it. The pure decision behind `term::InlineViewport::draw`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Repin {
-    /// Taller now: scroll the screen up this many rows (older chat into scrollback).
-    Grow(u16),
-    /// Shorter now: scroll the screen down this many rows (chat back toward the box).
-    Shrink(u16),
-    /// Unchanged: repaint in place.
-    Same,
+pub struct Repin {
+    /// Scroll the whole screen up this many rows first (0 unless the grown box
+    /// overflows the bottom — only then does the chat scroll into scrollback).
+    pub scroll_up: u16,
+    /// The live region's new top row (unchanged unless it overflowed the bottom).
+    pub top: u16,
+    /// Rows to blank just below the new region (a shrink vacates them).
+    pub clear_below: u16,
 }
 
-/// Compare the previous and current live-region heights to decide the re-pin scroll.
+/// Decide how to re-pin a live region currently at `top` with `old_height` to
+/// `new_height` on a `screen_height`-row screen, keeping its top anchored.
 #[must_use]
-pub fn repin_scroll(old_height: u16, new_height: u16) -> Repin {
-    use std::cmp::Ordering::{Equal, Greater, Less};
-    match new_height.cmp(&old_height) {
-        Greater => Repin::Grow(new_height - old_height),
-        Less => Repin::Shrink(old_height - new_height),
-        Equal => Repin::Same,
+pub fn repin(top: u16, old_height: u16, new_height: u16, screen_height: u16) -> Repin {
+    let bottom = u32::from(top) + u32::from(new_height);
+    let scroll_up = bottom.saturating_sub(u32::from(screen_height)) as u16;
+    let new_top = top.saturating_sub(scroll_up);
+    let clear_below = top
+        .saturating_add(old_height)
+        .saturating_sub(new_top.saturating_add(new_height));
+    Repin {
+        scroll_up,
+        top: new_top,
+        clear_below,
     }
 }
 
@@ -731,10 +740,51 @@ mod tests {
     }
 
     #[test]
-    fn repin_scroll_reports_grow_shrink_and_same() {
-        assert_eq!(repin_scroll(4, 7), Repin::Grow(3));
-        assert_eq!(repin_scroll(7, 4), Repin::Shrink(3));
-        assert_eq!(repin_scroll(5, 5), Repin::Same);
+    fn repin_keeps_the_box_top_anchored_growing_downward() {
+        // Room below: grow in place, top fixed, no scroll, nothing to clear.
+        assert_eq!(
+            repin(3, 4, 6, 24),
+            Repin {
+                scroll_up: 0,
+                top: 3,
+                clear_below: 0
+            }
+        );
+        // Unchanged height that already fits is a no-op.
+        assert_eq!(
+            repin(10, 5, 5, 24),
+            Repin {
+                scroll_up: 0,
+                top: 10,
+                clear_below: 0
+            }
+        );
+    }
+
+    #[test]
+    fn repin_clears_below_on_a_shrink_and_leaves_the_top_put() {
+        // Shrinking pulls the bottom up; the two vacated rows below get blanked.
+        assert_eq!(
+            repin(3, 6, 4, 24),
+            Repin {
+                scroll_up: 0,
+                top: 3,
+                clear_below: 2
+            }
+        );
+    }
+
+    #[test]
+    fn repin_scrolls_up_only_when_the_box_overflows_the_bottom() {
+        // At the bottom (top 20 + new height 6 = 26 > 24): scroll up 2 and pin.
+        assert_eq!(
+            repin(20, 4, 6, 24),
+            Repin {
+                scroll_up: 2,
+                top: 18,
+                clear_below: 0
+            }
+        );
     }
 
     // --- live-region layout: single source of truth ---

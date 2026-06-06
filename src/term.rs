@@ -28,12 +28,12 @@ use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{ScrollDown, disable_raw_mode, enable_raw_mode};
+use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
-use crate::ui::{self, Repin};
+use crate::ui;
 
 /// A bottom-pinned inline viewport whose height can change between draws.
 pub struct InlineViewport {
@@ -81,39 +81,34 @@ impl InlineViewport {
         self.screen
     }
 
-    /// Re-pin the viewport to the bottom `height` rows, repaint the live region
-    /// via `render`, and place the hardware cursor (`Some` while editing, `None`
-    /// — hidden — while streaming).
+    /// Repaint the live region at the new `height`, keeping it **content-anchored**
+    /// (its top fixed — it grows downward, not up from the bottom), and place the
+    /// hardware cursor. `cursor` is the input text while editing (the cursor sits
+    /// at its end); `None` while streaming hides the cursor.
+    ///
+    /// The box grows in place until it reaches the screen bottom, at which point
+    /// it scrolls the chat up into scrollback; a shrink blanks the rows it vacates.
     pub fn draw(
         &mut self,
         height: u16,
         render: impl FnOnce(Rect, &mut Buffer),
-        cursor: Option<(u16, u16)>,
+        cursor: Option<&str>,
     ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
-        match ui::repin_scroll(self.view.height, height) {
-            // Grow: scroll the whole screen up, oldest chat into scrollback, and
-            // extend the viewport upward into the freed rows.
-            Repin::Grow(delta) => self.scroll_up(delta)?,
-            // Shrink: scroll the whole screen down so the chat stays adjacent
-            // above the shorter box (blank rows surface at the very top — the
-            // terminal can't pull its own scrollback back onto the screen).
-            Repin::Shrink(delta) => self.scroll_down(delta)?,
-            Repin::Same => {}
+        let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
+        self.scroll_up(repin.scroll_up)?;
+        if repin.clear_below > 0 {
+            self.clear_rows(repin.top.saturating_add(height), repin.clear_below)?;
         }
-        self.view = Rect::new(
-            0,
-            self.screen.height.saturating_sub(height),
-            self.screen.width,
-            height,
-        );
+        self.view = Rect::new(0, repin.top, self.screen.width, height);
 
         let mut buf = Buffer::empty(self.view);
         render(self.view, &mut buf);
         self.blit(&buf)?;
 
         match cursor {
-            Some((x, y)) => {
+            Some(input) => {
+                let (x, y) = ui::cursor_position(self.view, input);
                 self.backend.set_cursor_position(Position::new(x, y))?;
                 self.backend.show_cursor()?;
             }
@@ -218,10 +213,13 @@ impl InlineViewport {
         Ok(())
     }
 
-    /// Scroll the whole screen down `n` rows (blank rows appear at the top).
-    fn scroll_down(&mut self, n: u16) -> io::Result<()> {
-        if n > 0 {
-            execute!(self.backend, ScrollDown(n))?;
+    /// Blank `n` rows starting at terminal row `y` — the rows a shrinking box
+    /// vacates just below itself (the box is the bottom-most content, so the
+    /// rows beneath it are free).
+    fn clear_rows(&mut self, y: u16, n: u16) -> io::Result<()> {
+        for row in y..y.saturating_add(n) {
+            self.backend.set_cursor_position(Position::new(0, row))?;
+            self.backend.clear_region(ClearType::CurrentLine)?;
         }
         Ok(())
     }

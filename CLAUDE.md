@@ -60,15 +60,18 @@ thing together — breaking any one reintroduces a class of bug:
    property (committed lines + final flush == the fully-rendered message). Don't
    change the wrap algorithm without re-checking that invariant.
 
-3. **The viewport is always bottom-pinned, and resize reflows both directions**
-   (`main.rs::reflow_after_resize`). `term::draw` re-pins the live region to the
-   bottom every frame, scrolling the screen *up* (oldest chat into scrollback) to
-   grow the box or *down* to shrink it (`ui::repin_scroll`). On a width change
-   every wrapped line is stale, so `App` retains a `history: Vec<Message>` of
-   finished messages (the *only* reason history is kept) and `term::reflow` clears
-   the screen, seats the viewport at the top, then `insert_before`s the re-wrapped
-   tail (`ui::repaint_lines`) so it fills the screen *without scrolling* — the
-   tmux-safe path. `committed` is reset so a mid-stream resize re-commits the reply.
+3. **The viewport is content-anchored (top fixed), and resize reflows both
+   directions** (`main.rs::reflow_after_resize`). Like Claude Code / codex, the
+   box grows *downward* in place — `term::draw` keeps its top put and only scrolls
+   the screen *up* (oldest chat into scrollback) once the box would overflow the
+   bottom; a shrink blanks the rows it vacates (the decision is the pure
+   `ui::repin`). Never force it to `screen.height - height` — that reintroduces
+   the "box jumps to the bottom" bug. On a width change every wrapped line is
+   stale, so `App` retains a `history: Vec<Message>` of finished messages (the
+   *only* reason history is kept) and `term::reflow` clears the screen, seats the
+   viewport at the top, then `insert_before`s the re-wrapped tail
+   (`ui::repaint_lines`). `committed` is reset so a mid-stream resize re-commits
+   the reply.
 
 ### Data flow
 

@@ -26,7 +26,6 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
-use ratatui::layout::Rect;
 use ratatui::text::Line;
 
 use inline_tui::app::{Action, App, Role};
@@ -178,12 +177,8 @@ fn reflow_after_resize(
 fn draw(term: &mut InlineViewport, app: &App) -> io::Result<()> {
     let screen = term.screen();
     let height = ui::live_height(&app.input, screen.width, screen.height);
-    let view = Rect::new(
-        0,
-        screen.height.saturating_sub(height),
-        screen.width,
-        height,
-    );
-    let cursor = (!app.is_streaming()).then(|| ui::cursor_position(view, &app.input));
+    // The cursor sits at the end of the input; `term` places it from the final
+    // (content-anchored) viewport, so we just say whether we're editing.
+    let cursor = (!app.is_streaming()).then_some(app.input.as_str());
     term.draw(height, |area, buf| ui::render_live(area, buf, app), cursor)
 }
