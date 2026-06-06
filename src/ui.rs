@@ -13,7 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, Message, Role};
+use crate::app::{App, HistoryItem, Role, ToolCall, ToolStatus};
 
 /// Display width of `s` in terminal columns.
 ///
@@ -51,6 +51,32 @@ const AI_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 const ERROR_COLOR: Color = Color::Rgb(0xE0, 0x6C, 0x75);
 const PROMPT_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
+
+// --- Tool-call styling. A tool renders as a coloured bullet header
+// `● name(args)` plus a collapsed `⎿` peek of its output; the bullet colour is
+// the tool's lifecycle (blue running, green ok, red fail). The full output is
+// only shown in the Ctrl+O tool-output view, never inline. ---
+
+/// Bullet prefixing a tool call (same glyph as the assistant, recoloured by
+/// status — see [`tool_status_color`]).
+const TOOL_BULLET: &str = "● ";
+/// Prefix for the collapsed result peek line: indent + a turnstile glyph.
+const TOOL_RESULT_PREFIX: &str = "  ⎿ ";
+/// Prefix for the "+N lines" hint line under a collapsed peek.
+const TOOL_MORE_PREFIX: &str = "    … ";
+/// Hint telling the user how to see the full output.
+const EXPAND_HINT: &str = " (ctrl+o to expand)";
+
+/// Blue — a tool that is still executing.
+const TOOL_RUNNING_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+/// Green — a tool that finished successfully.
+const TOOL_OK_COLOR: Color = Color::Rgb(0x98, 0xC3, 0x79);
+/// Red — a tool that failed (shares the backend-error red).
+const TOOL_FAIL_COLOR: Color = ERROR_COLOR;
+/// White — the tool's name.
+const TOOL_NAME_COLOR: Color = AI_COLOR;
+/// Dim grey — a tool's argument summary and its collapsed peek/hint.
+const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
 
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
@@ -350,6 +376,91 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     Paragraph::new(lines).render(bx.text, buf);
 }
 
+/// The bullet colour for a tool's lifecycle: blue running, green ok, red fail.
+const fn tool_status_color(status: ToolStatus) -> Color {
+    match status {
+        ToolStatus::Running => TOOL_RUNNING_COLOR,
+        ToolStatus::Ok => TOOL_OK_COLOR,
+        ToolStatus::Failed => TOOL_FAIL_COLOR,
+    }
+}
+
+/// Truncate `s` to at most `max` display columns (column-aware, so wide glyphs
+/// count as two), returning the kept prefix.
+fn truncate_cols(s: &str, max: usize) -> String {
+    let mut out = String::new();
+    let mut w = 0;
+    for ch in s.chars() {
+        let cw = char_cols(ch);
+        if w + cw > max {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out
+}
+
+/// Build the styled lines for one tool call as shown **inline**: a coloured
+/// bullet header `● name(args)`, then a collapsed one-line peek of its output
+/// with a `(ctrl+o to expand)` hint when more is hidden. The full output is only
+/// rendered in the separate tool-output view, never here.
+#[must_use]
+pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+    let bullet_style = Style::new()
+        .fg(tool_status_color(tool.status))
+        .add_modifier(Modifier::BOLD);
+    let header = Line::from(vec![
+        Span::styled(TOOL_BULLET.to_string(), bullet_style),
+        Span::styled(
+            tool.name.clone(),
+            Style::new()
+                .fg(TOOL_NAME_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("({})", tool.args), Style::new().fg(TOOL_DIM_COLOR)),
+    ]);
+
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let peek_width = (width as usize)
+        .saturating_sub(cols(TOOL_RESULT_PREFIX))
+        .max(1);
+
+    // Output split into lines (ignoring a single trailing blank from a final
+    // newline), so the hidden-line count is accurate.
+    let mut out_lines: Vec<&str> = if tool.output.is_empty() {
+        Vec::new()
+    } else {
+        tool.output.split('\n').collect()
+    };
+    if out_lines.last() == Some(&"") {
+        out_lines.pop();
+    }
+
+    let peek = match tool.status {
+        ToolStatus::Running => "running…".to_string(),
+        _ if out_lines.is_empty() => "(no output)".to_string(),
+        _ => truncate_cols(out_lines[0], peek_width),
+    };
+    let mut lines = vec![
+        header,
+        Line::from(vec![
+            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
+            Span::styled(peek, dim),
+        ]),
+    ];
+
+    // A hint line whenever output beyond the first peeked line is hidden.
+    let hidden = out_lines.len().saturating_sub(1);
+    if hidden > 0 {
+        lines.push(Line::from(vec![
+            Span::styled(TOOL_MORE_PREFIX.to_string(), dim),
+            Span::styled(format!("+{hidden} lines{EXPAND_HINT}"), dim),
+        ]));
+    }
+    lines
+}
+
 /// Decide which assistant lines are now safe to flush to scrollback as a reply
 /// streams in.
 ///
@@ -375,14 +486,18 @@ pub fn final_commit(text: &str, width: u16, committed: usize) -> Vec<Line<'stati
 }
 
 /// Build the whole conversation as styled lines, mirroring how it was streamed
-/// to scrollback: each message's wrapped lines, with a blank spacer after every
-/// message. Used to repaint after a resize clears the screen.
+/// to scrollback: each message's wrapped lines (or each tool call's collapsed
+/// peek), with a blank spacer after every item. Used to repaint after a resize
+/// clears the screen, or when returning from the tool-output view.
 #[must_use]
-pub fn conversation_lines(history: &[Message], width: u16) -> Vec<Line<'static>> {
+pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for message in history {
-        lines.extend(message_lines(message.role, &message.text, width));
-        lines.push(Line::default()); // blank spacer after every message
+    for item in history {
+        match item {
+            HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
+            HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
+        }
+        lines.push(Line::default()); // blank spacer after every item
     }
     lines
 }
@@ -393,7 +508,7 @@ pub fn conversation_lines(history: &[Message], width: u16) -> Vec<Line<'static>>
 /// need to repaint what was on screen; capping at `max_rows` also avoids
 /// re-scrolling content the terminal already kept.
 #[must_use]
-pub fn repaint_lines(history: &[Message], width: u16, max_rows: usize) -> Vec<Line<'static>> {
+pub fn repaint_lines(history: &[HistoryItem], width: u16, max_rows: usize) -> Vec<Line<'static>> {
     let mut lines = conversation_lines(history, width);
     if lines.len() > max_rows {
         lines = lines.split_off(lines.len() - max_rows);
@@ -428,6 +543,7 @@ pub fn cursor_position(area: Rect, input: &str) -> (u16, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::Message;
 
     /// Concatenate a line's span contents into its plain text.
     fn plain(line: &Line) -> String {
@@ -586,6 +702,79 @@ mod tests {
         for line in &lines {
             let total: usize = line.spans.iter().map(|s| cols(s.content.as_ref())).sum();
             assert_eq!(total as u16, width, "user line fills full display width");
+        }
+    }
+
+    // --- tool_lines (collapsed, colour-by-status) ---
+
+    #[test]
+    fn tool_lines_header_shows_name_and_args() {
+        let lines = tool_lines(&tool("Bash", "cargo test", ToolStatus::Ok, "a\nb\nc"), 80);
+        assert_eq!(plain(&lines[0]), "● Bash(cargo test)");
+    }
+
+    #[test]
+    fn tool_lines_colours_the_bullet_by_status() {
+        for (status, color) in [
+            (ToolStatus::Running, TOOL_RUNNING_COLOR),
+            (ToolStatus::Ok, TOOL_OK_COLOR),
+            (ToolStatus::Failed, TOOL_FAIL_COLOR),
+        ] {
+            let lines = tool_lines(&tool("X", "y", status, "out"), 80);
+            assert_eq!(
+                lines[0].spans[0].style.fg,
+                Some(color),
+                "bullet colour tracks status {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tool_lines_collapses_multiline_output_to_a_peek_plus_expand_hint() {
+        let lines = tool_lines(&tool("Read", "f", ToolStatus::Ok, "one\ntwo\nthree"), 80);
+        assert_eq!(lines.len(), 3, "header + peek + hint");
+        let peek = plain(&lines[1]);
+        assert!(
+            peek.contains("one"),
+            "peek shows the first output line: {peek:?}"
+        );
+        assert!(!peek.contains("two"), "the rest is hidden inline: {peek:?}");
+        let hint = plain(&lines[2]);
+        assert!(
+            hint.contains("+2 lines"),
+            "hint counts hidden lines: {hint:?}"
+        );
+        assert!(
+            hint.contains("ctrl+o to expand"),
+            "hint mentions ctrl+o: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn tool_lines_single_line_output_has_no_expand_hint() {
+        let lines = tool_lines(&tool("Bash", "echo hi", ToolStatus::Ok, "hi"), 80);
+        assert_eq!(lines.len(), 2, "header + peek only, nothing hidden");
+        assert!(plain(&lines[1]).contains("hi"));
+    }
+
+    #[test]
+    fn tool_lines_running_shows_a_running_peek() {
+        let lines = tool_lines(&tool("Bash", "sleep 1", ToolStatus::Running, ""), 80);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            plain(&lines[1]).to_lowercase().contains("running"),
+            "a running tool peeks as running: {:?}",
+            plain(&lines[1])
+        );
+    }
+
+    #[test]
+    fn tool_lines_truncates_a_long_peek_to_the_width() {
+        // A peek line never overflows the terminal width (column-aware).
+        let long = "x".repeat(200);
+        let lines = tool_lines(&tool("Bash", "y", ToolStatus::Ok, &long), 30);
+        for line in &lines {
+            assert!(cols(&plain(line)) <= 30, "no line exceeds the width");
         }
     }
 
@@ -916,10 +1105,19 @@ mod tests {
 
     // --- conversation repaint (after a resize) ---
 
-    fn msg(role: Role, text: &str) -> Message {
-        Message {
+    fn msg(role: Role, text: &str) -> HistoryItem {
+        HistoryItem::Message(Message {
             role,
             text: text.to_string(),
+        })
+    }
+
+    fn tool(name: &str, args: &str, status: ToolStatus, output: &str) -> ToolCall {
+        ToolCall {
+            name: name.to_string(),
+            args: args.to_string(),
+            status,
+            output: output.to_string(),
         }
     }
 
@@ -932,6 +1130,26 @@ mod tests {
             .collect();
         // User line, blank, assistant line, blank spacer after the reply.
         assert_eq!(texts, vec!["❯ hi", "", "● hello", ""]);
+    }
+
+    #[test]
+    fn conversation_lines_renders_a_tool_call_between_messages() {
+        let history = [
+            msg(Role::User, "hi"),
+            HistoryItem::Tool(tool("Bash", "ls", ToolStatus::Ok, "a\nb")),
+            msg(Role::Assistant, "done"),
+        ];
+        let texts: Vec<String> = conversation_lines(&history, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        // user, blank, tool header, tool peek, tool hint, blank, assistant, blank
+        assert_eq!(texts.first().map(String::as_str), Some("❯ hi"));
+        assert!(
+            texts.iter().any(|t| t == "● Bash(ls)"),
+            "tool header is present in order: {texts:?}"
+        );
+        assert!(texts.iter().any(|t| t == "● done"));
     }
 
     #[test]
