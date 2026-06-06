@@ -40,15 +40,13 @@ use inline_tui::ui;
 
 /// Height of the bottom live region: one preview row + a 3-row input box.
 const LIVE_HEIGHT: u16 = 4;
-/// Hint shown in the preview row while idle.
-const HINT: &str = "Type a message · Enter to send · Esc or Ctrl+C to quit";
 /// How long to wait for a keypress before checking for streamed chunks.
 /// Short while a reply streams (so it's snappy), longer when idle (less spin).
 const POLL_STREAMING: Duration = Duration::from_millis(20);
 const POLL_IDLE: Duration = Duration::from_millis(200);
 
 fn main() -> io::Result<()> {
-    print_header();
+    // print_header();
 
     // Size the inline viewport up front, clamped to the current terminal.
     let rows = terminal::size().map(|(_, h)| h).unwrap_or(24).max(1);
@@ -100,6 +98,7 @@ fn run(term: &mut DefaultTerminal) -> io::Result<()> {
                                 term,
                                 ui::message_lines(Role::User, &text, term_width(term)?),
                             )?;
+                            commit(term, vec![Line::default()])?;
                             app.begin_stream();
                             committed = 0;
                             stream::spawn_stream(text, tx.clone());
@@ -179,7 +178,7 @@ fn repaint_after_resize(
 fn draw(term: &mut DefaultTerminal, app: &App) -> io::Result<()> {
     term.draw(|frame| {
         let area = frame.area();
-        ui::render_live(area, frame.buffer_mut(), app, HINT);
+        ui::render_live(area, frame.buffer_mut(), app);
         if !app.is_streaming() {
             let (x, y) = ui::cursor_position(area, &app.input);
             frame.set_cursor_position(Position::new(x, y));
@@ -204,11 +203,9 @@ fn term_width(term: &DefaultTerminal) -> io::Result<u16> {
     Ok(term.size()?.width)
 }
 
-/// Print a small banner into scrollback before the viewport starts.
-fn print_header() {
-    // Kept short so it doesn't get hard-wrapped by narrow terminals.
-    println!();
-    println!("  ● inline-tui — streaming chat demo");
-    println!("    dummy AI · Claude-Code style");
-    println!();
-}
+// fn print_header() {
+//     println!();
+//     println!("  ● inline-tui — streaming chat demo");
+//     println!("    dummy AI · Claude-Code style");
+//     println!();
+// }

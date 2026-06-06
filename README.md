@@ -4,7 +4,7 @@ A tiny, well-documented **inline terminal chat UI** built with
 [ratatui](https://ratatui.rs). You type a message, press Enter, and a *dummy*
 AI streams a canned reply word by word. The layout reflows responsively to the
 terminal width and the style echoes Claude Code: finished messages flow up into
-your normal terminal scrollback, with a rounded input box pinned at the bottom.
+your normal terminal scrollback, with a rule-framed input field pinned at the bottom.
 
 It's deliberately minimal so the whole thing is easy to read, and almost all of
 the logic is pure and unit-tested.
@@ -18,10 +18,9 @@ the logic is pure and unit-tested.
   a canned response to show off the inline TUI. Finished messages scroll up into
   your normal terminal history, just like Claude Code.
 
-Type a message · Enter to send · Esc or Ctrl+C to quit
-╭──────────────────────────────────────────────────────────────────────────────╮
-│>                                                                              │
-╰──────────────────────────────────────────────────────────────────────────────╯
+────────────────────────────────────────────────────────────────────────────────
+›
+────────────────────────────────────────────────────────────────────────────────
 ```
 
 ## Run it

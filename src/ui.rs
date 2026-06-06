@@ -10,16 +10,16 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph, Widget};
+use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 
 use crate::app::{App, Message, Role};
 
 // --- Claude-Code-ish styling. Centralised so it's trivial to retheme. ---
 
-/// Prompt shown at the start of the input box.
-const PROMPT: &str = "> ";
+/// Prompt shown at the start of the input field.
+const PROMPT: &str = "❯ ";
 /// Bullet prefixing a user message.
-const USER_BULLET: &str = "› ";
+const USER_BULLET: &str = "❯ ";
 /// Bullet prefixing an assistant message.
 const AI_BULLET: &str = "● ";
 /// Indent for wrapped continuation lines (matches a bullet's width).
@@ -27,11 +27,11 @@ const INDENT: &str = "  ";
 /// Columns a bullet/indent occupies, subtracted from the content width.
 const BULLET_WIDTH: u16 = 2;
 
-const USER_COLOR: Color = Color::Cyan;
-const AI_COLOR: Color = Color::Rgb(0xD7, 0x77, 0x57); // warm terracotta accent
-const PROMPT_COLOR: Color = Color::Rgb(0xD7, 0x77, 0x57);
-const HINT_COLOR: Color = Color::DarkGray;
-const BORDER_COLOR: Color = Color::DarkGray;
+const USER_COLOR: Color = Color::Rgb(0x6E, 0x6E, 0x6E);
+const USER_BG_COLOR: Color = Color::Rgb(0x2D, 0x2D, 0x2D);
+const AI_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
+const PROMPT_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
+const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
 
 /// Greedy word-wrap `text` to `width` columns.
 ///
@@ -122,17 +122,30 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
     let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
     let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
 
+    let bg = if role == Role::User {
+        Style::new().bg(USER_BG_COLOR)
+    } else {
+        Style::default()
+    };
+    let cw = content_width as usize;
     wrap_text(text, content_width)
         .into_iter()
         .enumerate()
         .map(|(i, line)| {
+            // Pad to content_width so the background fills the full terminal row.
+            let padded = if role == Role::User {
+                format!("{:<width$}", line, width = cw)
+            } else {
+                line
+            };
             if i == 0 {
                 Line::from(vec![
                     Span::styled(bullet.to_string(), bullet_style),
-                    Span::raw(line),
+                    Span::raw(padded),
                 ])
+                .style(bg)
             } else {
-                Line::from(vec![Span::raw(INDENT.to_string()), Span::raw(line)])
+                Line::from(vec![Span::raw(INDENT.to_string()), Span::raw(padded)]).style(bg)
             }
         })
         .collect()
@@ -157,28 +170,29 @@ pub fn input_cursor_x(input: &str, width: u16) -> u16 {
 }
 
 /// Render the bottom live region into `buf`: a one-row preview (the streaming
-/// line, or a dim hint when idle) above a rounded input box.
-pub fn render_live(area: Rect, buf: &mut Buffer, app: &App, hint: &str) {
+/// line, or blank when idle) above a rule-framed input field.
+pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let [preview_area, input_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(area);
 
-    // Preview row: the in-progress line while streaming, else the hint.
+    // Preview row: the in-progress line while streaming, else blank.
     let preview = match app.streaming_text() {
         Some(text) => message_lines(Role::Assistant, text, preview_area.width)
             .pop()
             .unwrap_or_default(),
-        None => Line::from(Span::styled(hint.to_string(), Style::new().fg(HINT_COLOR))),
+        None => Line::default(),
     };
     Paragraph::new(preview).render(preview_area, buf);
 
-    // Rounded input box with a coloured prompt and the (scrolled) input text.
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
+    // Input field framed by a top and bottom rule (no side borders), with a
+    // coloured prompt and the (scrolled) input text.
+    let block = Block::new()
+        .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
     let inner = block.inner(input_area);
     block.render(input_area, buf);
 
-    let field_width = inner.width.saturating_sub(PROMPT.len() as u16);
+    let field_width = inner.width.saturating_sub(PROMPT.chars().count() as u16);
     let line = Line::from(vec![
         Span::styled(PROMPT, Style::new().fg(PROMPT_COLOR)),
         Span::raw(input_view(&app.input, field_width)),
@@ -210,14 +224,12 @@ pub fn final_commit(text: &str, width: u16, committed: usize) -> Vec<Line<'stati
 
 /// Build the whole conversation as styled lines, mirroring how it was streamed
 /// to scrollback: each message's wrapped lines, with a blank spacer after every
-/// assistant reply. Used to repaint after a resize clears the screen.
+/// message. Used to repaint after a resize clears the screen.
 pub fn conversation_lines(history: &[Message], width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for message in history {
         lines.extend(message_lines(message.role, &message.text, width));
-        if message.role == Role::Assistant {
-            lines.push(Line::default()); // blank spacer after each reply
-        }
+        lines.push(Line::default()); // blank spacer after every message
     }
     lines
 }
@@ -241,9 +253,12 @@ pub fn repaint_lines(history: &[Message], width: u16, max_rows: usize) -> Vec<Li
 pub fn cursor_position(area: Rect, input: &str) -> (u16, u16) {
     let [_, input_area] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(3)]).areas(area);
-    let inner = input_area.inner(Margin::new(1, 1));
-    let field_width = inner.width.saturating_sub(PROMPT.len() as u16);
-    let x = inner.x + PROMPT.len() as u16 + input_cursor_x(input, field_width);
+    // Mirror render_live's layout: a top/bottom rule means the content sits one
+    // row down and flush-left (no side border to offset by).
+    let inner = input_area.inner(Margin::new(0, 1));
+    let prompt_width = PROMPT.chars().count() as u16;
+    let field_width = inner.width.saturating_sub(prompt_width);
+    let x = inner.x + prompt_width + input_cursor_x(input, field_width);
     (x, inner.y)
 }
 
@@ -306,7 +321,7 @@ mod tests {
     #[test]
     fn message_lines_prefixes_user_bullet() {
         let lines = message_lines(Role::User, "hello", 80);
-        assert_eq!(plain(&lines[0]), "› hello");
+        assert_eq!(plain(&lines[0]).trim_end(), "❯ hello");
     }
 
     #[test]
@@ -322,6 +337,31 @@ mod tests {
     fn message_lines_colours_the_bullet() {
         let lines = message_lines(Role::Assistant, "hi", 80);
         assert_eq!(lines[0].spans[0].style.fg, Some(AI_COLOR));
+    }
+
+    #[test]
+    fn message_lines_applies_background_to_user_lines() {
+        let lines = message_lines(Role::User, "hi there long enough to wrap", 10);
+        for line in &lines {
+            assert_eq!(
+                line.style.bg,
+                Some(USER_BG_COLOR),
+                "every user line has the background"
+            );
+        }
+    }
+
+    #[test]
+    fn message_lines_user_spans_fill_the_full_width() {
+        let width = 20u16;
+        let lines = message_lines(Role::User, "hi", width);
+        for line in &lines {
+            let span_chars: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+            assert_eq!(
+                span_chars as u16, width,
+                "spans cover full width so background extends edge-to-edge"
+            );
+        }
     }
 
     // --- input view / cursor ---
@@ -349,21 +389,22 @@ mod tests {
     }
 
     #[test]
-    fn render_live_draws_hint_and_input_when_idle() {
+    fn render_live_shows_blank_preview_when_idle() {
         let mut app = App::new();
         app.input = "hello".to_string();
         let mut buf = buffer(40, 4);
-        render_live(buf.area, &mut buf, &app, "type here");
+        render_live(buf.area, &mut buf, &app);
 
         assert!(
-            row(&buf, 0, 40).contains("type here"),
-            "preview row shows hint"
+            row(&buf, 0, 40).trim().is_empty(),
+            "preview row is blank when idle"
         );
-        assert_eq!(buf[(0, 1)].symbol(), "╭", "rounded input box");
+        assert_eq!(buf[(0, 1)].symbol(), "─", "top rule above the input");
         assert!(
-            row(&buf, 2, 40).contains("> hello"),
+            row(&buf, 2, 40).contains("❯ hello"),
             "input row shows prompt + text"
         );
+        assert_eq!(buf[(0, 3)].symbol(), "─", "bottom rule below the input");
     }
 
     // --- streaming commit bookkeeping ---
@@ -405,10 +446,11 @@ mod tests {
 
     #[test]
     fn cursor_sits_after_the_prompt_and_input() {
-        // area 40x4 → input box rows 1..4, inner content at (1,2), width 38,
-        // field width 36. Empty input → cursor right after "> ".
-        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), ""), (3, 2));
-        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), "hi"), (5, 2));
+        // area 40x4 → input rows 1..4 framed by a top/bottom rule, so content
+        // sits at row 2 flush-left (no side border). Empty input → cursor right
+        // after "› ".
+        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), ""), (2, 2));
+        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), "hi"), (4, 2));
     }
 
     // --- conversation repaint (after a resize) ---
@@ -423,9 +465,12 @@ mod tests {
     #[test]
     fn conversation_lines_lays_out_a_turn_with_a_trailing_blank() {
         let history = [msg(Role::User, "hi"), msg(Role::Assistant, "hello")];
-        let texts: Vec<String> = conversation_lines(&history, 80).iter().map(plain).collect();
-        // User line, assistant line, then a blank spacer after the reply.
-        assert_eq!(texts, vec!["› hi", "● hello", ""]);
+        let texts: Vec<String> = conversation_lines(&history, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        // User line, blank, assistant line, blank spacer after the reply.
+        assert_eq!(texts, vec!["❯ hi", "", "● hello", ""]);
     }
 
     #[test]
@@ -439,7 +484,7 @@ mod tests {
     #[test]
     fn repaint_lines_returns_everything_when_it_fits() {
         let history = [msg(Role::User, "hi")];
-        assert_eq!(repaint_lines(&history, 80, 100).len(), 1);
+        assert_eq!(repaint_lines(&history, 80, 100).len(), 2); // message + blank
     }
 
     #[test]
@@ -453,7 +498,7 @@ mod tests {
         app.begin_stream();
         app.push_chunk("Hi there");
         let mut buf = buffer(40, 4);
-        render_live(buf.area, &mut buf, &app, "unused hint");
+        render_live(buf.area, &mut buf, &app);
 
         let preview = row(&buf, 0, 40);
         assert!(preview.contains("●"), "preview shows assistant bullet");

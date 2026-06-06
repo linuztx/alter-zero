@@ -7,9 +7,9 @@ Date: 2026-06-06
 A minimal, readable, well-documented inline terminal UI (ratatui) for a
 user ↔ AI conversation. The AI side is a **dummy** that streams a canned
 response chunk-by-chunk. The layout must be responsive to terminal width,
-and the visual style should echo Claude Code (a bottom-pinned rounded input
-box, messages flowing above it in normal scrollback). Everything that can be
-unit-tested must be unit-tested.
+and the visual style should echo Claude Code (a bottom-pinned input field
+framed by a top/bottom rule, messages flowing above it in normal scrollback).
+Everything that can be unit-tested must be unit-tested.
 
 ## Behaviour
 
@@ -17,16 +17,17 @@ unit-tested must be unit-tested.
   terminal scrollback is preserved — finished messages scroll up into your
   real terminal history, exactly like Claude Code.
 - A small fixed-height **live region** stays pinned at the bottom:
-  - one **preview row** showing the in-progress AI line as it streams (or a
-    dim hint when idle),
-  - a **rounded-border input box** (`> ...`).
+  - one **preview row** showing the in-progress AI line as it streams (blank
+    when idle),
+  - an **input field framed by a top/bottom rule** (`❯ ...`).
 - Type a message, press **Enter** to send. The user message is flushed to
   scrollback, then the dummy AI streams a reply.
 - **Streaming → scrollback, line by line.** As the reply grows, each wrapped
   line that can no longer change (under greedy word-wrap only the last line
   can still change) is committed to scrollback via `insert_before`. The
   current partial line is shown live in the preview row. On completion the
-  final line is committed too, with a blank spacer line after it.
+  final line is committed too, with a blank spacer line after it. A blank
+  spacer is also committed after every user message.
 - **Responsive:** every draw re-wraps to the current terminal width. Width
   adapts live. The live region height is fixed (an inline-viewport constraint
   — `set_viewport_area` is not public), clamped to the terminal height.
@@ -66,8 +67,8 @@ keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,Q
 stream thread ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / finish_stream
 ```
 
-- On `Submit(text)`: `insert_before` the user message, then `spawn_stream` a
-  thread that sends `Chunk(..)*` then `StreamDone`.
+- On `Submit(text)`: `insert_before` the user message and a blank spacer, then
+  `spawn_stream` a thread that sends `Chunk(..)*` then `StreamDone`.
 - On `Chunk`: append to the streaming buffer; commit any newly-stable lines to
   scrollback; redraw (preview row shows the partial last line).
 - On `StreamDone`: commit the final line + spacer; clear streaming state.
@@ -90,19 +91,19 @@ stream thread ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   Enter while empty / while streaming → `None`; Esc/Ctrl+C → `Quit`;
   `push_chunk`/`finish_stream` transitions.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0);
-  `message_lines` (bullet on first line, indented continuation); `input_view`
-  horizontal scroll; `cursor_position`; `render_live` asserted against a
-  `Buffer`; and `stable_commit`/`final_commit` proven to reconstruct a whole
-  streamed reply with no gaps or duplicates.
+  `message_lines` (bullet on first line, indented continuation; user lines
+  carry a dark background and are padded to fill the full terminal width);
+  `input_view` horizontal scroll; `cursor_position`; `render_live` asserted
+  against a `Buffer`; and `stable_commit`/`final_commit` proven to reconstruct
+  a whole streamed reply with no gaps or duplicates.
 
 ## Known limitations (v1 — iterate later)
 
 - Single-line input (horizontal scroll to keep the cursor visible).
-- On resize the on-screen chat is repainted (wider or narrower), but the
-  decorative header banner is not, and lines already in the terminal's own
-  scrollback keep their original wrapping (so after resizing a long chat, boundary
-  messages can appear twice — once old-width above, once new-width below). Guarded
-  against panics.
+- On resize the on-screen chat is repainted (wider or narrower), but lines
+  already in the terminal's own scrollback keep their original wrapping (so
+  after resizing a long chat, boundary messages can appear twice — once
+  old-width above, once new-width below). Guarded against panics.
 - Resizing *mid-stream* recovers by re-committing the in-progress reply, but may
   briefly flicker the partial line.
 - No spinner, timestamps, markdown rendering, or scrollback nav keys (YAGNI).
