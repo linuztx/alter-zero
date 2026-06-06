@@ -3,7 +3,7 @@
 //!
 //! ratatui's own `Viewport::Inline(h)` fixes `h` at startup (the field is private
 //! and `Terminal::resize` reuses it), so its inline viewport can never change
-//! height. To get a dynamic, bottom-pinned live region we own a tiny viewport
+//! height. To get a dynamic, content-anchored live region we own a tiny viewport
 //! over a [`CrosstermBackend`], reusing the backend's cell→ANSI `draw`,
 //! `append_lines` (scroll the screen up, oldest rows into real scrollback),
 //! `clear`, and cursor ops — but tracking the viewport rectangle ourselves so we
@@ -11,15 +11,16 @@
 //!
 //! Like `main.rs`, this is an I/O boundary verified by `scripts/smoke.sh`, not
 //! unit tests; every geometry decision it makes is a pure, tested `ui` helper
-//! ([`ui::live_height`], [`ui::repin_scroll`]).
+//! ([`ui::live_height`], [`ui::repin`]).
 //!
 //! Two operations:
 //! - [`InlineViewport::insert_before`] commits finished lines into scrollback
-//!   above the viewport, keeping it pinned to the bottom — a direct port of
-//!   ratatui's portable (no-`scrolling-regions`) insert-before scroll math,
-//!   including its tmux-safe "draw then clear" ordering.
-//! - [`InlineViewport::draw`] re-pins the viewport to the bottom `height` rows
-//!   (scrolling the screen *up* to grow or *down* to shrink by the height delta),
+//!   above the viewport — a direct port of ratatui's portable
+//!   (no-`scrolling-regions`) insert-before scroll math, including its tmux-safe
+//!   "draw then clear" ordering.
+//! - [`InlineViewport::draw`] re-pins the viewport to its new `height` keeping its
+//!   **top anchored** (it grows downward in place, scrolling the screen up only
+//!   when it would overflow the bottom, and blanking the rows a shrink vacates),
 //!   repaints the live region, and places the hardware cursor.
 
 use std::io::{self, Stdout, Write};
@@ -35,12 +36,13 @@ use ratatui::widgets::{Paragraph, Widget};
 
 use crate::ui;
 
-/// A bottom-pinned inline viewport whose height can change between draws.
+/// A content-anchored inline viewport whose height can change between draws (its
+/// top stays put; it grows downward in place).
 pub struct InlineViewport {
     backend: CrosstermBackend<Stdout>,
     /// The full terminal area, `(0, 0, width, height)`.
     screen: Rect,
-    /// The live region: full width, `height` rows, pinned to the screen bottom.
+    /// The live region: full width, `height` rows, anchored by its top row.
     view: Rect,
 }
 
@@ -117,10 +119,11 @@ impl InlineViewport {
         Backend::flush(&mut self.backend)
     }
 
-    /// Commit `lines` into scrollback directly above the viewport, keeping it
-    /// pinned to the bottom. Port of ratatui's portable `insert_before`: draw the
-    /// lines into the rows above the viewport, scrolling the screen up only as
-    /// much as needed, then leave the viewport cleared for the next [`draw`].
+    /// Commit `lines` into scrollback directly above the viewport, pushing the
+    /// viewport down to sit just below them. Port of ratatui's portable
+    /// `insert_before`: draw the lines into the rows above the viewport, scrolling
+    /// the screen up only as much as needed, then leave the viewport cleared for
+    /// the next [`draw`].
     ///
     /// [`draw`]: InlineViewport::draw
     pub fn insert_before(&mut self, lines: Vec<Line<'static>>) -> io::Result<()> {
@@ -176,7 +179,7 @@ impl InlineViewport {
 
     /// Repaint the conversation `tail` re-wrapped to the new width after a resize:
     /// clear the screen, seat the viewport at the top, then `insert_before` the
-    /// tail so it fills the screen and bottom-pins the viewport — the next
+    /// tail so it fills the screen and pushes the viewport down below it — the next
     /// [`draw`] paints the live region. Mirrors the old `repaint_after_resize`.
     ///
     /// [`draw`]: InlineViewport::draw

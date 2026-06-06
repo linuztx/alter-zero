@@ -57,13 +57,29 @@ const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
 // derive their layout from `input_box` so the drawn text and cursor never drift;
 // `main.rs`/`term.rs` size the viewport from `live_height`/`LIVE_MIN_HEIGHT`. ---
 
-/// Rows in the streaming-preview strip above the input box.
+/// Rows in the streaming-preview line shown above the input box (the in-progress
+/// reply's last, not-yet-committed line). Shown only while a reply streams.
 const PREVIEW_ROWS: u16 = 1;
+/// A blank gap row between the streaming preview and the box, so the live reply
+/// never butts up against the box's top rule. Present only while streaming.
+const GAP_ROWS: u16 = 1;
 /// The input box's non-text rows: a top rule and a bottom rule.
 const INPUT_CHROME_ROWS: u16 = 2;
-/// The smallest the live region ever gets: a preview row + a one-text-row box
-/// framed by two rules. `main.rs` sizes the initial viewport from this.
-pub const LIVE_MIN_HEIGHT: u16 = PREVIEW_ROWS + INPUT_CHROME_ROWS + 1;
+/// The smallest the live region ever gets: a one-text-row box framed by two
+/// rules (idle has no preview strip). `main.rs` sizes the initial viewport from this.
+pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
+
+/// Rows of the streaming strip above the box — a preview line plus a blank gap —
+/// shown only while a reply streams. Idle, the box sits directly under the chat
+/// (separated by the committed blank spacer after the last message), so the strip
+/// collapses to nothing and there is exactly one blank line above the box.
+const fn strip_rows(streaming: bool) -> u16 {
+    if streaming {
+        PREVIEW_ROWS + GAP_ROWS
+    } else {
+        0
+    }
+}
 
 /// Columns the input field's text occupies: the box spans the full width (no side
 /// borders) minus the prompt/indent that prefixes every text row.
@@ -72,13 +88,14 @@ fn field_width(width: u16) -> u16 {
 }
 
 /// Height of the bottom live region for the current `input` at this terminal
-/// size: a preview row, two framing rules, and one row per wrapped input line —
-/// so the box **grows** as the message wraps — clamped to the terminal height
-/// (after which the box scrolls internally; see [`render_live`]).
+/// size: the streaming strip (only while `streaming`), two framing rules, and one
+/// row per wrapped input line — so the box **grows** as the message wraps —
+/// clamped to the terminal height (after which the box scrolls internally; see
+/// [`render_live`]).
 #[must_use]
-pub fn live_height(input: &str, width: u16, term_height: u16) -> u16 {
+pub fn live_height(input: &str, width: u16, term_height: u16, streaming: bool) -> u16 {
     let rows = wrap_text(input, field_width(width)).len().max(1) as u16;
-    (PREVIEW_ROWS + INPUT_CHROME_ROWS + rows).min(term_height.max(1))
+    (strip_rows(streaming) + INPUT_CHROME_ROWS + rows).min(term_height.max(1))
 }
 
 /// How to re-pin the live region when its height changes between draws, keeping
@@ -114,11 +131,16 @@ pub fn repin(top: u16, old_height: u16, new_height: u16, screen_height: u16) -> 
     }
 }
 
-/// Split `area` into the live region's two stacked sub-areas `[preview, input]`.
-/// The input box takes whatever rows remain below the preview, so it **grows**
-/// as `area` grows (see [`live_height`]). The only place the split is expressed.
-fn live_layout(area: Rect) -> [Rect; 2] {
-    Layout::vertical([Constraint::Length(PREVIEW_ROWS), Constraint::Min(0)]).areas(area)
+/// Split `area` into the live region's two stacked sub-areas `[strip, input]`.
+/// The strip holds the streaming preview + gap (height 0 when idle); the input
+/// box takes whatever rows remain below it, so it **grows** as `area` grows (see
+/// [`live_height`]). The only place the split is expressed.
+fn live_layout(area: Rect, streaming: bool) -> [Rect; 2] {
+    Layout::vertical([
+        Constraint::Length(strip_rows(streaming)),
+        Constraint::Min(0),
+    ])
+    .areas(area)
 }
 
 /// The geometry shared by [`render_live`] and [`cursor_position`] so the drawn
@@ -136,8 +158,8 @@ struct InputBox {
     scroll: usize,
 }
 
-fn input_box(area: Rect, input: &str) -> InputBox {
-    let [_, frame] = live_layout(area);
+fn input_box(area: Rect, input: &str, streaming: bool) -> InputBox {
+    let [_, frame] = live_layout(area, streaming);
     let text = frame.inner(Margin::new(0, 1)); // inset past the top & bottom rules
     let wrapped = wrap_text(input, field_width(area.width));
     let scroll = wrapped.len().saturating_sub(text.height as usize);
@@ -277,25 +299,32 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// Render the bottom live region into `buf`: a one-row preview (the streaming
-/// line, or blank when idle) above the rule-framed, **growing** input box. The
-/// input wraps across as many rows as `area` allows; the prompt marks its first
-/// line and continuation lines are indented to align under it. When the input is
-/// taller than the box, the tail is kept in view (the cursor is always at the end).
+/// Render the bottom live region into `buf`. While a reply streams, the strip's
+/// top row previews the in-progress line and the row below it is a blank gap, so
+/// the reply never touches the rule-framed, **growing** input box; idle, the
+/// strip collapses and the box sits at the top of the region. The input wraps
+/// across as many rows as `area` allows; the prompt marks its first line and
+/// continuation lines are indented to align under it. When the input is taller
+/// than the box, the tail is kept in view (the cursor is always at the end).
 pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
-    let [preview_area, _] = live_layout(area);
+    let streaming = app.is_streaming();
+    let [strip, _] = live_layout(area, streaming);
 
-    // Preview row: the in-progress line while streaming, else blank.
-    let preview = match app.streaming_text() {
-        Some(text) => message_lines(Role::Assistant, text, preview_area.width)
+    // Streaming preview: the in-progress line on the strip's top row (the rest of
+    // the strip is the blank gap). Nothing is drawn here when idle.
+    if let Some(text) = app.streaming_text() {
+        let preview = message_lines(Role::Assistant, text, strip.width)
             .pop()
-            .unwrap_or_default(),
-        None => Line::default(),
-    };
-    Paragraph::new(preview).render(preview_area, buf);
+            .unwrap_or_default();
+        let preview_area = Rect {
+            height: PREVIEW_ROWS.min(strip.height),
+            ..strip
+        };
+        Paragraph::new(preview).render(preview_area, buf);
+    }
 
     // The input box: a top/bottom rule framing the wrapped input rows.
-    let bx = input_box(area, &app.input);
+    let bx = input_box(area, &app.input, streaming);
     let block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
@@ -386,7 +415,9 @@ pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
 /// exactly after the visible input text — on the last wrapped row, at its end.
 #[must_use]
 pub fn cursor_position(area: Rect, input: &str) -> (u16, u16) {
-    let bx = input_box(area, input);
+    // The cursor is only ever placed while idle (it is hidden during streaming),
+    // so the box is laid out without the streaming strip.
+    let bx = input_box(area, input, false);
     // The cursor follows the end of the input: its wrapped row, less the scroll.
     let cursor_line = bx.wrapped.len().saturating_sub(1);
     let row = cursor_line.saturating_sub(bx.scroll) as u16;
@@ -565,41 +596,22 @@ mod tests {
     }
 
     #[test]
-    fn render_live_shows_blank_preview_when_idle() {
-        let mut app = App::new();
-        app.input = "hello".to_string();
-        let mut buf = buffer(40, 4);
-        render_live(buf.area, &mut buf, &app);
-
-        assert!(
-            row(&buf, 0, 40).trim().is_empty(),
-            "preview row is blank when idle"
-        );
-        assert_eq!(buf[(0, 1)].symbol(), "─", "top rule above the input");
-        assert!(
-            row(&buf, 2, 40).contains("❯ hello"),
-            "input row shows prompt + text"
-        );
-        assert_eq!(buf[(0, 3)].symbol(), "─", "bottom rule below the input");
-    }
-
-    #[test]
     fn render_live_grows_the_box_and_wraps_input_across_rows() {
         let mut app = App::new();
         app.input = "first\nsecond".to_string();
-        let h = live_height(&app.input, 20, 24);
-        assert_eq!(h, 5, "preview + two rules + two input rows");
+        let h = live_height(&app.input, 20, 24, false);
+        assert_eq!(h, 4, "two rules + two input rows (no strip when idle)");
         let mut buf = buffer(20, h);
         render_live(buf.area, &mut buf, &app);
 
-        assert_eq!(buf[(0, 1)].symbol(), "─", "top rule");
-        assert!(row(&buf, 2, 20).contains("❯ first"), "prompt on first line");
+        assert_eq!(buf[(0, 0)].symbol(), "─", "top rule");
+        assert!(row(&buf, 1, 20).contains("❯ first"), "prompt on first line");
         assert!(
-            row(&buf, 3, 20).contains("second") && !row(&buf, 3, 20).contains("❯"),
+            row(&buf, 2, 20).contains("second") && !row(&buf, 2, 20).contains("❯"),
             "continuation line is indented, no prompt"
         );
         assert_eq!(
-            buf[(0, 4)].symbol(),
+            buf[(0, 3)].symbol(),
             "─",
             "bottom rule moved down as box grew"
         );
@@ -607,29 +619,72 @@ mod tests {
 
     #[test]
     fn render_live_scrolls_input_to_keep_the_end_visible() {
-        // Six input lines but a terminal that only fits three text rows: the box
+        // Six input lines but a terminal that only fits four text rows: the box
         // shows the tail (so the cursor's line stays visible), not the head.
         let mut app = App::new();
         app.input = (0..6)
             .map(|i| format!("line{i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        let term_h = 6; // live clamps to 6 → text rows = 6 - 3 = 3
-        assert_eq!(live_height(&app.input, 20, term_h), 6);
+        let term_h = 6; // live clamps to 6 → text rows = 6 - 2 = 4
+        assert_eq!(live_height(&app.input, 20, term_h, false), 6);
         let mut buf = buffer(20, 6);
         render_live(buf.area, &mut buf, &app);
 
-        let text: String = (2..5).map(|y| row(&buf, y, 20)).collect();
+        let text: String = (1..5).map(|y| row(&buf, y, 20)).collect();
         assert!(text.contains("line5"), "last line is visible: {text:?}");
         assert!(!text.contains("line0"), "first line scrolled off: {text:?}");
     }
 
     #[test]
+    fn render_live_separates_the_streaming_preview_from_the_box_with_a_blank_gap() {
+        // While streaming, the preview line must not butt up against the box: a
+        // blank gap row sits between the previewed reply and the top rule.
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("streaming reply");
+        let mut buf = buffer(40, 5); // preview + gap + (two rules + one input row)
+        render_live(buf.area, &mut buf, &app);
+
+        assert!(
+            row(&buf, 0, 40).contains("streaming reply"),
+            "preview on row 0"
+        );
+        assert!(
+            row(&buf, 1, 40).trim().is_empty(),
+            "blank gap row below the preview"
+        );
+        assert_eq!(
+            buf[(0, 2)].symbol(),
+            "─",
+            "top rule below the gap, not touching the preview"
+        );
+    }
+
+    #[test]
+    fn render_live_has_no_strip_when_idle() {
+        // Idle, the box sits directly under the chat — no preview/gap strip — so
+        // the only separation is the committed blank after the last message.
+        let mut app = App::new();
+        app.input = "hello".to_string();
+        let mut buf = buffer(40, 3); // just the box: two rules + one input row
+        render_live(buf.area, &mut buf, &app);
+
+        assert_eq!(
+            buf[(0, 0)].symbol(),
+            "─",
+            "top rule on row 0 — no preview strip above it"
+        );
+        assert!(row(&buf, 1, 40).contains("❯ hello"), "input on row 1");
+        assert_eq!(buf[(0, 2)].symbol(), "─", "bottom rule on row 2");
+    }
+
+    #[test]
     fn cursor_sits_on_the_last_wrapped_input_row() {
         // "ab\ncd" → two rows; the cursor follows the end onto the second text
-        // row (y = 3) just after the indented "cd" (x = 2 + 2).
-        let area = Rect::new(0, 0, 20, live_height("ab\ncd", 20, 24));
-        assert_eq!(cursor_position(area, "ab\ncd"), (4, 3));
+        // row (y = 2) just after the indented "cd" (x = 2 + 2).
+        let area = Rect::new(0, 0, 20, live_height("ab\ncd", 20, 24, false));
+        assert_eq!(cursor_position(area, "ab\ncd"), (4, 2));
     }
 
     // --- streaming commit bookkeeping ---
@@ -697,43 +752,56 @@ mod tests {
 
     #[test]
     fn cursor_sits_after_the_prompt_and_input() {
-        // area 40x4 → input rows 1..4 framed by a top/bottom rule, so content
-        // sits at row 2 flush-left (no side border). Empty input → cursor right
-        // after "❯ ".
-        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), ""), (2, 2));
-        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), "hi"), (4, 2));
+        // Idle (the only time the cursor shows): the box fills the area, so on a
+        // 40x4 area the text row sits at row 1, flush-left (no side border).
+        // Empty input → cursor right after "❯ ".
+        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), ""), (2, 1));
+        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), "hi"), (4, 1));
     }
 
     // --- growing input box: height + re-pin geometry ---
 
     #[test]
     fn live_height_is_minimal_for_short_input() {
-        // Empty or one-line input → preview row + a one-row box framed by two
-        // rules = LIVE_MIN_HEIGHT (4).
-        assert_eq!(LIVE_MIN_HEIGHT, 4);
-        assert_eq!(live_height("", 40, 24), LIVE_MIN_HEIGHT);
-        assert_eq!(live_height("hi", 40, 24), LIVE_MIN_HEIGHT);
+        // Idle, empty or one-line input → a one-row box framed by two rules
+        // (no preview strip) = LIVE_MIN_HEIGHT (3).
+        assert_eq!(LIVE_MIN_HEIGHT, 3);
+        assert_eq!(live_height("", 40, 24, false), LIVE_MIN_HEIGHT);
+        assert_eq!(live_height("hi", 40, 24, false), LIVE_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn live_height_adds_the_streaming_strip_above_the_box() {
+        // While streaming, the live region gains a preview row + a blank gap row
+        // (PREVIEW_ROWS + GAP_ROWS = 2) above whatever the idle box would be.
+        for input in ["", "hi", "a\nb\nc"] {
+            assert_eq!(
+                live_height(input, 40, 24, true),
+                live_height(input, 40, 24, false) + 2,
+                "streaming adds exactly the preview + gap rows for {input:?}"
+            );
+        }
     }
 
     #[test]
     fn live_height_grows_one_row_per_wrapped_input_line() {
-        // Three explicit lines → the box has three text rows, so the live region
-        // is 3 (preview + two rules) + 3 = 6 rows tall.
-        assert_eq!(live_height("a\nb\nc", 40, 24), 6);
+        // Idle, three explicit lines → the box has three text rows, so the live
+        // region is 2 (two rules) + 3 = 5 rows tall.
+        assert_eq!(live_height("a\nb\nc", 40, 24, false), 5);
     }
 
     #[test]
     fn live_height_grows_when_a_long_line_soft_wraps() {
         // No explicit newline: a line longer than the field width wraps and the
-        // box still grows. field width = 10 - 2 = 8, so 16 columns → 2 rows → 5.
-        assert_eq!(live_height("abcdefghijklmnop", 10, 24), 5);
+        // box still grows. field width = 10 - 2 = 8, so 16 columns → 2 rows → 4.
+        assert_eq!(live_height("abcdefghijklmnop", 10, 24, false), 4);
     }
 
     #[test]
     fn live_height_is_clamped_to_the_terminal_height() {
         let many = "a\n".repeat(50);
         assert_eq!(
-            live_height(&many, 40, 10),
+            live_height(&many, 40, 10, false),
             10,
             "never taller than the screen"
         );
@@ -790,13 +858,16 @@ mod tests {
     // --- live-region layout: single source of truth ---
 
     #[test]
-    fn live_layout_splits_the_area_into_preview_plus_the_rest() {
-        // The preview takes its fixed rows; the input box takes everything left,
-        // so the two always tile the whole area — at the minimum height and beyond.
-        for h in [LIVE_MIN_HEIGHT, 9, 20] {
-            let [preview, input] = live_layout(Rect::new(0, 0, 40, h));
-            assert_eq!(preview.height + input.height, h, "sub-areas tile the area");
-            assert_eq!(preview.height, PREVIEW_ROWS);
+    fn live_layout_splits_the_area_into_the_strip_plus_the_rest() {
+        // The strip takes its rows (preview + gap while streaming, none when
+        // idle); the input box takes everything left, so the two always tile the
+        // whole area — at the minimum height and beyond, streaming or not.
+        for streaming in [false, true] {
+            for h in [LIVE_MIN_HEIGHT, 9, 20] {
+                let [strip, input] = live_layout(Rect::new(0, 0, 40, h), streaming);
+                assert_eq!(strip.height + input.height, h, "sub-areas tile the area");
+                assert_eq!(strip.height, strip_rows(streaming));
+            }
         }
     }
 

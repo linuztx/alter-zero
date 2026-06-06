@@ -37,8 +37,9 @@ The design rationale lives in `docs/design.md`.
 ### The runtime model and its invariants
 
 This is an **inline** TUI (no alternate screen): finished messages flow into the
-terminal's real scrollback; a live region (a preview row + a rule-framed input
-box) stays pinned at the bottom. ratatui's `Viewport::Inline` can't change height
+terminal's real scrollback; a live region (a rule-framed input box, plus a
+streaming preview row + a blank gap row above it *while a reply streams*) stays
+pinned at the bottom. ratatui's `Viewport::Inline` can't change height
 after startup, so `term::InlineViewport` is a *custom* inline viewport over a
 `CrosstermBackend` whose height is **dynamic** — the input box grows with the
 wrapped input (`ui::live_height`). Three non-obvious invariants hold the whole
@@ -122,9 +123,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 
 - **All styling is centralized** as `const`s at the top of `ui.rs` — bullets,
   prompt, colours (including the red error bullet), border, and the live-region
-  row geometry (`PREVIEW_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`; the box's
-  dynamic height comes from `live_height`, and `render_live`/`cursor_position`
-  share the `input_box` helper). Retheme or re-size there, not inline.
+  row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
+  the preview + gap strip shows *only while streaming* — `strip_rows` — so the
+  box's dynamic `live_height` is streaming-aware, and idle there is exactly one
+  blank above the box: the committed spacer after the last message. `render_live`
+  and `cursor_position` share the `input_box` helper). Retheme or re-size there,
+  not inline.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`

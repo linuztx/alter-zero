@@ -6,7 +6,7 @@
 //! only to:
 //!
 //! 1. open the custom inline viewport ([`term::InlineViewport`] — no alternate
-//!    screen, real scrollback preserved, **dynamic** bottom-pinned height),
+//!    screen, real scrollback preserved, **dynamic** content-anchored height),
 //! 2. read keyboard input and drain streamed chunks in one loop,
 //! 3. translate the [`App`]'s decisions into `insert_before` / `draw` calls.
 //!
@@ -164,7 +164,7 @@ fn reflow_after_resize(
     committed: &mut usize,
 ) -> io::Result<()> {
     let screen = term.screen();
-    let height = ui::live_height(&app.input, screen.width, screen.height);
+    let height = ui::live_height(&app.input, screen.width, screen.height, app.is_streaming());
     let budget = ui::repaint_budget(screen.height, height);
     let tail = ui::repaint_lines(&app.history, screen.width, budget);
     term.reflow(tail, height)?;
@@ -176,7 +176,7 @@ fn reflow_after_resize(
 /// while editing — it's hidden while a reply streams).
 fn draw(term: &mut InlineViewport, app: &App) -> io::Result<()> {
     let screen = term.screen();
-    let height = ui::live_height(&app.input, screen.width, screen.height);
+    let height = ui::live_height(&app.input, screen.width, screen.height, app.is_streaming());
     // The cursor sits at the end of the input; `term` places it from the final
     // (content-anchored) viewport, so we just say whether we're editing.
     let cursor = (!app.is_streaming()).then_some(app.input.as_str());

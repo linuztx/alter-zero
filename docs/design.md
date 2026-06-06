@@ -16,26 +16,31 @@ Everything that can be unit-tested must be unit-tested.
 - The app runs in ratatui's **inline viewport** (no alternate screen). Normal
   terminal scrollback is preserved — finished messages scroll up into your
   real terminal history, exactly like Claude Code.
-- A small fixed-height **live region** stays pinned at the bottom:
-  - one **preview row** showing the in-progress AI line as it streams (blank
-    when idle),
-  - an **input field framed by a top/bottom rule** (`❯ ...`).
+- The **live region** stays pinned at the bottom:
+  - an **input field framed by a top/bottom rule** (`❯ ...`),
+  - and, **only while a reply streams**, a **preview row** showing the
+    in-progress AI line plus a blank **gap row** below it, so the live reply
+    never butts up against the box. Idle, that strip collapses and the box sits
+    directly under the chat.
 - Type a message, press **Enter** to send. The user message is flushed to
   scrollback, then the dummy AI streams a reply.
 - **Streaming → scrollback, line by line.** As the reply grows, each wrapped
   line that can no longer change (under greedy word-wrap only the last line
   can still change) is committed to scrollback via `insert_before`. The
-  current partial line is shown live in the preview row. On completion the
-  final line is committed too, with a blank spacer line after it. A blank
-  spacer is also committed after every user message.
+  current partial line is shown live in the preview row, held off the box by the
+  blank gap row. On completion the final line is committed too, with a blank
+  spacer line after it — and as the streaming strip collapses, that committed
+  spacer becomes the single blank line between the reply and the box (no double
+  blank). A blank spacer is also committed after every user message.
 - **Responsive:** every draw re-wraps to the current terminal width, measured in
   **display columns** (`unicode-width`) so CJK/emoji wrap and pad correctly.
 - **Growing input box.** The input field is multi-line and grows downward as the
   text wraps (or as explicit newlines are added with **Alt+Enter** / Shift+Enter),
   so a long message is never lost off the right edge. The live region height is
-  therefore dynamic: `LIVE_MIN_HEIGHT` (preview + a one-row box) at rest, growing
-  one row per wrapped input line up to the terminal height, after which the box
-  scrolls internally to keep the cursor (always at the end) in view. The box is
+  therefore dynamic: `LIVE_MIN_HEIGHT` (a one-row box, no preview strip) at rest,
+  growing one row per wrapped input line up to the terminal height (plus a preview
+  + gap row while a reply streams), after which the box scrolls internally to keep
+  the cursor (always at the end) in view. The box is
   **content-anchored** like Claude Code / codex — its top stays put and it grows
   *downward*, only scrolling the chat up once it reaches the screen bottom (never
   jumping to the bottom). Geometry is pure (`ui::live_height`, `ui::repin`) and
@@ -123,10 +128,12 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display
   width; error lines get a red bullet); the growing-input geometry — `live_height`
-  grows a row per wrapped line and clamps to the screen, `render_live` grows the
-  box and scrolls the input to keep the end visible, `cursor_position` follows the
-  last wrapped row, and `repin` keeps the box top-anchored (scrolling up only on
-  overflow, clearing rows on shrink); the `BULLET_WIDTH` / `repaint_budget`
+  grows a row per wrapped line, adds the preview + gap strip only while streaming,
+  and clamps to the screen; `render_live` grows the box, scrolls the input to keep
+  the end visible, separates a streaming preview from the box with a blank gap, and
+  shows no strip when idle; `cursor_position` follows the last wrapped row; and
+  `repin` keeps the box top-anchored (scrolling up only on overflow, clearing rows
+  on shrink); the `BULLET_WIDTH` / `repaint_budget`
   single-source-of-truth invariants; and `stable_commit`/`final_commit` proven to
   reconstruct a whole streamed reply with no gaps or duplicates, and to clamp
   safely under a mid-stream resize.
