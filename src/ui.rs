@@ -1,8 +1,8 @@
 //! Pure rendering helpers.
 //!
 //! These functions never touch the terminal directly — they either compute
-//! plain data ([`wrap_text`], [`input_view`], [`input_cursor_x`]), build
-//! ratatui [`Line`]s ([`message_lines`]), or render into a [`Buffer`]
+//! plain data ([`wrap_text`], [`live_height`], [`repin_scroll`], [`cursor_position`]),
+//! build ratatui [`Line`]s ([`message_lines`]), or render into a [`Buffer`]
 //! ([`render_live`]). That keeps them unit-testable with a plain `Buffer` or
 //! ratatui's `TestBackend`, with no real terminal involved.
 
@@ -52,26 +52,92 @@ const ERROR_COLOR: Color = Color::Rgb(0xE0, 0x6C, 0x75);
 const PROMPT_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
 
-// --- Live-region geometry. The single source of truth for the bottom region's
-// row split; both `render_live` and `cursor_position` derive from `live_layout`,
-// and `main.rs` sizes its viewport and repaint budget from `LIVE_HEIGHT`. ---
+// --- Live-region geometry. The bottom region's height is dynamic: it grows with
+// the wrapped input (see `live_height`). `render_live` and `cursor_position` both
+// derive their layout from `input_box` so the drawn text and cursor never drift;
+// `main.rs`/`term.rs` size the viewport from `live_height`/`LIVE_MIN_HEIGHT`. ---
 
 /// Rows in the streaming-preview strip above the input box.
 const PREVIEW_ROWS: u16 = 1;
-/// Rows in the rule-framed input box: top rule + text row + bottom rule.
-const INPUT_ROWS: u16 = 3;
-/// Total height of the bottom live region — the one number `main.rs` shares with
-/// this module. Defined as the sum of the row constants so it can never drift.
-pub const LIVE_HEIGHT: u16 = PREVIEW_ROWS + INPUT_ROWS;
+/// The input box's non-text rows: a top rule and a bottom rule.
+const INPUT_CHROME_ROWS: u16 = 2;
+/// The smallest the live region ever gets: a preview row + a one-text-row box
+/// framed by two rules. `main.rs` sizes the initial viewport from this.
+pub const LIVE_MIN_HEIGHT: u16 = PREVIEW_ROWS + INPUT_CHROME_ROWS + 1;
+
+/// Columns the input field's text occupies: the box spans the full width (no side
+/// borders) minus the prompt/indent that prefixes every text row.
+fn field_width(width: u16) -> u16 {
+    width.saturating_sub(BULLET_WIDTH).max(1)
+}
+
+/// Height of the bottom live region for the current `input` at this terminal
+/// size: a preview row, two framing rules, and one row per wrapped input line —
+/// so the box **grows** as the message wraps — clamped to the terminal height
+/// (after which the box scrolls internally; see [`render_live`]).
+#[must_use]
+pub fn live_height(input: &str, width: u16, term_height: u16) -> u16 {
+    let rows = wrap_text(input, field_width(width)).len().max(1) as u16;
+    (PREVIEW_ROWS + INPUT_CHROME_ROWS + rows).min(term_height.max(1))
+}
+
+/// How the live region must move to re-pin itself to the bottom of the screen
+/// when its height changes between draws — the pure decision behind
+/// `term::InlineViewport::draw`'s scroll.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Repin {
+    /// Taller now: scroll the screen up this many rows (older chat into scrollback).
+    Grow(u16),
+    /// Shorter now: scroll the screen down this many rows (chat back toward the box).
+    Shrink(u16),
+    /// Unchanged: repaint in place.
+    Same,
+}
+
+/// Compare the previous and current live-region heights to decide the re-pin scroll.
+#[must_use]
+pub fn repin_scroll(old_height: u16, new_height: u16) -> Repin {
+    use std::cmp::Ordering::{Equal, Greater, Less};
+    match new_height.cmp(&old_height) {
+        Greater => Repin::Grow(new_height - old_height),
+        Less => Repin::Shrink(old_height - new_height),
+        Equal => Repin::Same,
+    }
+}
 
 /// Split `area` into the live region's two stacked sub-areas `[preview, input]`.
-/// This is the only place the preview/input row split is expressed.
+/// The input box takes whatever rows remain below the preview, so it **grows**
+/// as `area` grows (see [`live_height`]). The only place the split is expressed.
 fn live_layout(area: Rect) -> [Rect; 2] {
-    Layout::vertical([
-        Constraint::Length(PREVIEW_ROWS),
-        Constraint::Length(INPUT_ROWS),
-    ])
-    .areas(area)
+    Layout::vertical([Constraint::Length(PREVIEW_ROWS), Constraint::Min(0)]).areas(area)
+}
+
+/// The geometry shared by [`render_live`] and [`cursor_position`] so the drawn
+/// text and the hardware cursor can never drift apart: where the input text rows
+/// live, the input wrapped to the field width, and how far it's scrolled so the
+/// end (where the cursor always sits) stays visible when the box is full.
+struct InputBox {
+    /// The rule-framed box area (below the preview); borders are drawn here.
+    frame: Rect,
+    /// The inner area that holds the text rows (the box minus its two rules).
+    text: Rect,
+    /// Every wrapped input line (always at least one, possibly empty).
+    wrapped: Vec<String>,
+    /// Index of the first wrapped line shown — the tail is kept in view.
+    scroll: usize,
+}
+
+fn input_box(area: Rect, input: &str) -> InputBox {
+    let [_, frame] = live_layout(area);
+    let text = frame.inner(Margin::new(0, 1)); // inset past the top & bottom rules
+    let wrapped = wrap_text(input, field_width(area.width));
+    let scroll = wrapped.len().saturating_sub(text.height as usize);
+    InputBox {
+        frame,
+        text,
+        wrapped,
+        scroll,
+    }
 }
 
 /// Greedy word-wrap `text` to `width` columns.
@@ -202,42 +268,13 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The slice of `input` that should be visible in a field `width` columns wide,
-/// anchored to the end so the cursor (at the end of input) stays in view.
-#[must_use]
-pub fn input_view(input: &str, width: u16) -> String {
-    let width = width as usize;
-    if cols(input) <= width {
-        return input.to_string();
-    }
-    // Keep the longest whole-char suffix whose display width fits `width`, so a
-    // trailing wide char is dropped as a unit rather than sliced mid-glyph.
-    let mut used = 0;
-    let mut start = input.len();
-    for (idx, ch) in input.char_indices().rev() {
-        let ch_w = char_cols(ch);
-        if used + ch_w > width {
-            break;
-        }
-        used += ch_w;
-        start = idx;
-    }
-    input[start..].to_string()
-}
-
-/// Column (relative to the field) where the cursor sits: just after the visible
-/// text, clamped to the field width.
-#[must_use]
-pub fn input_cursor_x(input: &str, width: u16) -> u16 {
-    // The cursor sits right after the visible text, so its column is exactly the
-    // display width of the (possibly scrolled) view — never past the field edge.
-    cols(&input_view(input, width)) as u16
-}
-
 /// Render the bottom live region into `buf`: a one-row preview (the streaming
-/// line, or blank when idle) above a rule-framed input field.
+/// line, or blank when idle) above the rule-framed, **growing** input box. The
+/// input wraps across as many rows as `area` allows; the prompt marks its first
+/// line and continuation lines are indented to align under it. When the input is
+/// taller than the box, the tail is kept in view (the cursor is always at the end).
 pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
-    let [preview_area, input_area] = live_layout(area);
+    let [preview_area, _] = live_layout(area);
 
     // Preview row: the in-progress line while streaming, else blank.
     let preview = match app.streaming_text() {
@@ -248,20 +285,31 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     };
     Paragraph::new(preview).render(preview_area, buf);
 
-    // Input field framed by a top and bottom rule (no side borders), with a
-    // coloured prompt and the (scrolled) input text.
+    // The input box: a top/bottom rule framing the wrapped input rows.
+    let bx = input_box(area, &app.input);
     let block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
-    let inner = block.inner(input_area);
-    block.render(input_area, buf);
+    block.render(bx.frame, buf);
 
-    let field_width = inner.width.saturating_sub(cols(PROMPT) as u16);
-    let line = Line::from(vec![
-        Span::styled(PROMPT, Style::new().fg(PROMPT_COLOR)),
-        Span::raw(input_view(&app.input, field_width)),
-    ]);
-    Paragraph::new(line).render(inner, buf);
+    let lines: Vec<Line> = bx
+        .wrapped
+        .iter()
+        .enumerate()
+        .skip(bx.scroll)
+        .take(bx.text.height as usize)
+        .map(|(i, line)| {
+            // The prompt prefixes the real first line; wrapped/continuation lines
+            // get a matching-width indent so the text stays aligned under it.
+            let (prefix, style) = if i == 0 {
+                (PROMPT, Style::new().fg(PROMPT_COLOR))
+            } else {
+                (INDENT, Style::default())
+            };
+            Line::from(vec![Span::styled(prefix, style), Span::raw(line.clone())])
+        })
+        .collect();
+    Paragraph::new(lines).render(bx.text, buf);
 }
 
 /// Decide which assistant lines are now safe to flush to scrollback as a reply
@@ -315,28 +363,26 @@ pub fn repaint_lines(history: &[Message], width: u16, max_rows: usize) -> Vec<Li
     lines
 }
 
-/// How many history rows fit above the live region on a `term_height`-row screen
-/// — the number of lines to repaint after a resize. Saturates at 0 so a terminal
-/// shorter than the live region can never underflow. The pure counterpart of the
-/// terminal calls in `main.rs::repaint_after_resize`.
+/// How many history rows fit above a `live_height`-row live region on a
+/// `term_height`-row screen — the number of lines to repaint after a resize.
+/// Saturates at 0 so a live region taller than the screen can never underflow.
+/// The pure counterpart of the terminal calls in `main.rs::repaint_after_resize`.
 #[must_use]
-pub fn repaint_budget(term_height: u16) -> usize {
-    term_height.saturating_sub(LIVE_HEIGHT) as usize
+pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
+    term_height.saturating_sub(live_height) as usize
 }
 
 /// Absolute `(x, y)` where the terminal's hardware cursor should sit for the
-/// current input. Mirrors [`render_live`]'s layout so the cursor lands exactly
-/// after the visible input text.
+/// current input. Shares [`input_box`] with [`render_live`] so the cursor lands
+/// exactly after the visible input text — on the last wrapped row, at its end.
 #[must_use]
 pub fn cursor_position(area: Rect, input: &str) -> (u16, u16) {
-    let [_, input_area] = live_layout(area);
-    // Mirror render_live's layout: a top/bottom rule means the content sits one
-    // row down and flush-left (no side border to offset by).
-    let inner = input_area.inner(Margin::new(0, 1));
-    let prompt_width = cols(PROMPT) as u16;
-    let field_width = inner.width.saturating_sub(prompt_width);
-    let x = inner.x + prompt_width + input_cursor_x(input, field_width);
-    (x, inner.y)
+    let bx = input_box(area, input);
+    // The cursor follows the end of the input: its wrapped row, less the scroll.
+    let cursor_line = bx.wrapped.len().saturating_sub(1);
+    let row = cursor_line.saturating_sub(bx.scroll) as u16;
+    let col = cols(bx.wrapped.last().map_or("", String::as_str)) as u16;
+    (bx.text.x + BULLET_WIDTH + col, bx.text.y + row)
 }
 
 #[cfg(test)]
@@ -503,36 +549,6 @@ mod tests {
         }
     }
 
-    // --- input view / cursor ---
-
-    #[test]
-    fn input_view_shows_the_tail_when_too_long() {
-        assert_eq!(input_view("abcdef", 3), "def");
-    }
-
-    #[test]
-    fn input_view_shows_everything_when_it_fits() {
-        assert_eq!(input_view("ab", 5), "ab");
-    }
-
-    #[test]
-    fn input_cursor_stops_at_the_right_edge() {
-        assert_eq!(input_cursor_x("abcdef", 3), 3);
-        assert_eq!(input_cursor_x("ab", 5), 2);
-    }
-
-    #[test]
-    fn input_view_keeps_the_tail_by_display_columns() {
-        // Field width 4 holds two 2-column CJK chars, so only the last two show.
-        assert_eq!(input_view("你好世界", 4), "世界");
-    }
-
-    #[test]
-    fn input_cursor_x_counts_display_columns_not_chars() {
-        // Two 2-column chars put the cursor at column 4, not 2.
-        assert_eq!(input_cursor_x("你好", 10), 4);
-    }
-
     // --- render_live (against a plain Buffer) ---
 
     fn buffer(width: u16, height: u16) -> Buffer {
@@ -556,6 +572,55 @@ mod tests {
             "input row shows prompt + text"
         );
         assert_eq!(buf[(0, 3)].symbol(), "─", "bottom rule below the input");
+    }
+
+    #[test]
+    fn render_live_grows_the_box_and_wraps_input_across_rows() {
+        let mut app = App::new();
+        app.input = "first\nsecond".to_string();
+        let h = live_height(&app.input, 20, 24);
+        assert_eq!(h, 5, "preview + two rules + two input rows");
+        let mut buf = buffer(20, h);
+        render_live(buf.area, &mut buf, &app);
+
+        assert_eq!(buf[(0, 1)].symbol(), "─", "top rule");
+        assert!(row(&buf, 2, 20).contains("❯ first"), "prompt on first line");
+        assert!(
+            row(&buf, 3, 20).contains("second") && !row(&buf, 3, 20).contains("❯"),
+            "continuation line is indented, no prompt"
+        );
+        assert_eq!(
+            buf[(0, 4)].symbol(),
+            "─",
+            "bottom rule moved down as box grew"
+        );
+    }
+
+    #[test]
+    fn render_live_scrolls_input_to_keep_the_end_visible() {
+        // Six input lines but a terminal that only fits three text rows: the box
+        // shows the tail (so the cursor's line stays visible), not the head.
+        let mut app = App::new();
+        app.input = (0..6)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let term_h = 6; // live clamps to 6 → text rows = 6 - 3 = 3
+        assert_eq!(live_height(&app.input, 20, term_h), 6);
+        let mut buf = buffer(20, 6);
+        render_live(buf.area, &mut buf, &app);
+
+        let text: String = (2..5).map(|y| row(&buf, y, 20)).collect();
+        assert!(text.contains("line5"), "last line is visible: {text:?}");
+        assert!(!text.contains("line0"), "first line scrolled off: {text:?}");
+    }
+
+    #[test]
+    fn cursor_sits_on_the_last_wrapped_input_row() {
+        // "ab\ncd" → two rows; the cursor follows the end onto the second text
+        // row (y = 3) just after the indented "cd" (x = 2 + 2).
+        let area = Rect::new(0, 0, 20, live_height("ab\ncd", 20, 24));
+        assert_eq!(cursor_position(area, "ab\ncd"), (4, 3));
     }
 
     // --- streaming commit bookkeeping ---
@@ -630,24 +695,67 @@ mod tests {
         assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), "hi"), (4, 2));
     }
 
+    // --- growing input box: height + re-pin geometry ---
+
+    #[test]
+    fn live_height_is_minimal_for_short_input() {
+        // Empty or one-line input → preview row + a one-row box framed by two
+        // rules = LIVE_MIN_HEIGHT (4).
+        assert_eq!(LIVE_MIN_HEIGHT, 4);
+        assert_eq!(live_height("", 40, 24), LIVE_MIN_HEIGHT);
+        assert_eq!(live_height("hi", 40, 24), LIVE_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn live_height_grows_one_row_per_wrapped_input_line() {
+        // Three explicit lines → the box has three text rows, so the live region
+        // is 3 (preview + two rules) + 3 = 6 rows tall.
+        assert_eq!(live_height("a\nb\nc", 40, 24), 6);
+    }
+
+    #[test]
+    fn live_height_grows_when_a_long_line_soft_wraps() {
+        // No explicit newline: a line longer than the field width wraps and the
+        // box still grows. field width = 10 - 2 = 8, so 16 columns → 2 rows → 5.
+        assert_eq!(live_height("abcdefghijklmnop", 10, 24), 5);
+    }
+
+    #[test]
+    fn live_height_is_clamped_to_the_terminal_height() {
+        let many = "a\n".repeat(50);
+        assert_eq!(
+            live_height(&many, 40, 10),
+            10,
+            "never taller than the screen"
+        );
+    }
+
+    #[test]
+    fn repin_scroll_reports_grow_shrink_and_same() {
+        assert_eq!(repin_scroll(4, 7), Repin::Grow(3));
+        assert_eq!(repin_scroll(7, 4), Repin::Shrink(3));
+        assert_eq!(repin_scroll(5, 5), Repin::Same);
+    }
+
     // --- live-region layout: single source of truth ---
 
     #[test]
-    fn live_height_equals_the_sum_of_the_live_layout_rows() {
-        let [preview, input] = live_layout(Rect::new(0, 0, 40, LIVE_HEIGHT));
-        assert_eq!(
-            preview.height + input.height,
-            LIVE_HEIGHT,
-            "LIVE_HEIGHT must stay in lockstep with the row constants"
-        );
+    fn live_layout_splits_the_area_into_preview_plus_the_rest() {
+        // The preview takes its fixed rows; the input box takes everything left,
+        // so the two always tile the whole area — at the minimum height and beyond.
+        for h in [LIVE_MIN_HEIGHT, 9, 20] {
+            let [preview, input] = live_layout(Rect::new(0, 0, 40, h));
+            assert_eq!(preview.height + input.height, h, "sub-areas tile the area");
+            assert_eq!(preview.height, PREVIEW_ROWS);
+        }
     }
 
     #[test]
     fn cursor_row_sits_on_the_rendered_prompt_row() {
         // render_live and cursor_position both derive their geometry from
-        // live_layout, so the hardware cursor lands on exactly the row where the
+        // input_box, so the hardware cursor lands on exactly the row where the
         // prompt is drawn — they cannot drift apart.
-        let area = Rect::new(0, 0, 40, LIVE_HEIGHT);
+        let area = Rect::new(0, 0, 40, LIVE_MIN_HEIGHT);
         let mut app = App::new();
         app.input = "x".to_string();
         let mut buf = Buffer::empty(area);
@@ -662,9 +770,17 @@ mod tests {
 
     #[test]
     fn repaint_budget_is_the_screen_minus_the_live_region() {
-        assert_eq!(repaint_budget(10), 10 - LIVE_HEIGHT as usize);
-        assert_eq!(repaint_budget(LIVE_HEIGHT), 0);
-        assert_eq!(repaint_budget(LIVE_HEIGHT - 1), 0, "saturates, never wraps");
+        assert_eq!(
+            repaint_budget(10, LIVE_MIN_HEIGHT),
+            10 - LIVE_MIN_HEIGHT as usize
+        );
+        assert_eq!(
+            repaint_budget(10, 9),
+            1,
+            "a taller live region leaves fewer rows"
+        );
+        assert_eq!(repaint_budget(LIVE_MIN_HEIGHT, LIVE_MIN_HEIGHT), 0);
+        assert_eq!(repaint_budget(4, 9), 0, "saturates, never wraps");
     }
 
     #[test]

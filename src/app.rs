@@ -90,6 +90,16 @@ impl App {
         }
         match key.code {
             KeyCode::Esc => Action::Quit,
+            // Alt+Enter (and Shift+Enter where the terminal reports it) inserts a
+            // newline so the input box grows on demand; a plain Enter submits.
+            KeyCode::Enter
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+            {
+                self.input.push('\n');
+                Action::None
+            }
             KeyCode::Enter => {
                 if self.is_streaming() || self.input.trim().is_empty() {
                     Action::None
@@ -233,6 +243,47 @@ mod tests {
         let action = app.on_key(key(KeyCode::Enter));
         assert_eq!(action, Action::None);
         assert_eq!(app.input, "hello");
+    }
+
+    #[test]
+    fn alt_enter_inserts_a_newline_instead_of_submitting() {
+        let mut app = App::new();
+        app.input = "line one".to_string();
+        let alt_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
+        assert_eq!(app.on_key(alt_enter), Action::None);
+        assert_eq!(app.input, "line one\n", "Alt+Enter appends a newline");
+    }
+
+    #[test]
+    fn shift_enter_inserts_a_newline_too() {
+        // Terminals with enhanced keyboard support report Shift+Enter; treat it as
+        // a newline like Alt+Enter so the box grows on demand.
+        let mut app = App::new();
+        app.input = "a".to_string();
+        let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert_eq!(app.on_key(shift_enter), Action::None);
+        assert_eq!(app.input, "a\n");
+    }
+
+    #[test]
+    fn plain_enter_submits_a_multi_line_message_intact() {
+        // After Alt+Enter newlines, a plain Enter submits the whole thing.
+        let mut app = App::new();
+        app.input = "first\nsecond".to_string();
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(action, Action::Submit("first\nsecond".to_string()));
+        assert_eq!(app.input, "");
+    }
+
+    #[test]
+    fn alt_enter_grows_input_while_streaming_without_submitting() {
+        // Editing (incl. newlines) is allowed mid-stream; only sending is blocked.
+        let mut app = App::new();
+        app.input = "draft".to_string();
+        app.begin_stream();
+        let alt_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
+        assert_eq!(app.on_key(alt_enter), Action::None);
+        assert_eq!(app.input, "draft\n");
     }
 
     #[test]
