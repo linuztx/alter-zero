@@ -117,9 +117,9 @@ third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`
 and `/clear`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
-shown **by colour** — the whole highlighted row lights up (bright white name +
-cyan description) while the others are dimmed grey, no caret. A command dispatches
-an `Action`
+shown **by colour** — the whole highlighted row lights up cyan (name *and*
+description the same colour) while the others are dimmed grey, no caret. A command
+dispatches an `Action`
 (`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
 message). Adding a command later is a one-line `COMMANDS` entry plus an effect arm
 in `App::run_selected_command`; the palette/filter/scroll don't change.
@@ -162,8 +162,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   border, the tool-call styling (`TOOL_*` — blue/green/red status colours, the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
   (`TOOL_VIEW_*`), the slash-command palette (`MENU_*` — the `MENU_DESC_COL`
-  description column, the bright/dimmed name *and* cyan/dimmed description colours
-  that light up the selected row, and the `MENU_MAX_ROWS` cap), and
+  description column, the cyan/dimmed colours that light up the whole selected row
+  — name and description alike — and the `MENU_MAX_ROWS` cap), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap strip shows *only while streaming* — `strip_rows` — and the
   command palette is a third band *below* the box — `menu_rows` — so the box's

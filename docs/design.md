@@ -87,8 +87,8 @@ unit-tested must be unit-tested.
   filtered by name-prefix as you type after the `/`; `/` alone lists everything.
   ↑/↓ move the highlight (the window scrolls, capped at `MENU_MAX_ROWS`, to keep it
   visible); descriptions line up in a column (names padded to `MENU_DESC_COL`), and
-  the selection is shown **by colour** — the whole highlighted row lights up (bright
-  white name + cyan description) while the others are dimmed grey — **no
+  the selection is shown **by colour** — the whole highlighted row lights up cyan
+  (name *and* description the same colour) while the others are dimmed grey — **no
   caret/arrow**.
   **Tab/Enter run** the highlighted command; **Esc** dismisses the palette (instead
   of quitting) and stays dismissed within the same token (delete the `/` and retype
@@ -233,9 +233,9 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   status colour, scroll); the **command palette** — `menu_window` keeps the
   selection visible, `menu_rows` reserves the band (0 closed, capped, 1 for no
   matches), `command_menu_lines` lists the matches in aligned columns and
-  **highlights the whole selected row by colour** (bright name + cyan description
-  vs dimmed grey, no caret; placeholder when empty), and `render_live` draws it
-  below the box with the cursor unmoved; the
+  **highlights the whole selected row in one cyan colour** (name and description
+  alike, vs dimmed grey, no caret; placeholder when empty), and `render_live` draws
+  it below the box with the cursor unmoved; the
   growing-input geometry — `live_height` grows a row per wrapped line, adds the
   preview + gap strip only while streaming and the palette band below the box, and
   clamps to the screen; `render_live` grows the box, scrolls the input to keep the
