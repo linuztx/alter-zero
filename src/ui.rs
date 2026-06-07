@@ -151,6 +151,19 @@ pub struct Repin {
     pub clear_below: u16,
 }
 
+/// The terminal row the cursor should land on when the app exits: the row just
+/// **below** the live region, so the shell prompt resumes directly under it.
+///
+/// Returns `None` when the box already occupies the last screen row (no room
+/// below — the caller scrolls up one line and lands at the bottom instead).
+/// Landing here, rather than at the screen bottom, is what avoids the big blank
+/// gap on exit when the box is content-anchored near the top.
+#[must_use]
+pub fn restore_cursor_row(view_top: u16, view_height: u16, screen_height: u16) -> Option<u16> {
+    let below = view_top.saturating_add(view_height);
+    (below < screen_height).then_some(below)
+}
+
 /// Decide how to re-pin a live region currently at `top` with `old_height` to
 /// `new_height` on a `screen_height`-row screen, keeping its top anchored.
 #[must_use]
@@ -1301,6 +1314,27 @@ mod tests {
                 clear_below: 0
             }
         );
+    }
+
+    // --- restore_cursor_row (where the shell prompt resumes on exit) ---
+
+    #[test]
+    fn restore_cursor_row_lands_just_below_a_top_anchored_box() {
+        // Box at rows 0..3 of a 24-row screen → prompt resumes on row 3, NOT at
+        // the screen bottom (which would leave a 20-row blank gap).
+        assert_eq!(restore_cursor_row(0, 3, 24), Some(3));
+    }
+
+    #[test]
+    fn restore_cursor_row_follows_the_box_down_the_screen() {
+        // Box one row above the bottom → prompt on the last row, still no gap.
+        assert_eq!(restore_cursor_row(20, 3, 24), Some(23));
+    }
+
+    #[test]
+    fn restore_cursor_row_is_none_when_the_box_occupies_the_last_row() {
+        // No room below (top 21 + height 3 = 24): caller scrolls up one instead.
+        assert_eq!(restore_cursor_row(21, 3, 24), None);
     }
 
     // --- live-region layout: single source of truth ---

@@ -95,7 +95,7 @@ logic is unit-testable without a real terminal.
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved tool script). | Pure parts, token & dummy: yes |
 | `app.rs`    | State + pure update logic: `App`, `on_key -> Action` (per `View`), `push_chunk`/`finish_stream`/`flush_streaming_segment`, `start_tool`/`end_tool`, the message+tool `history`, the tool-view scroll. `Action`/`Role`/`Message`/`StreamError`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View` types. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`), `render_live`, and `render_tool_view`. | Yes |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`), `render_live`, and `render_tool_view`. | Yes |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (scrollback), `draw` (re-pin + repaint + cursor), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore. | No (I/O boundary) |
 | `main.rs`   | Thin glue: single-threaded poll loop, drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit. | No (tiny I/O boundary) |
 
@@ -192,7 +192,8 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   preview (or a running tool's blue header) from the box with a blank gap, and
   shows no strip when idle; `cursor_position` follows the last wrapped row; and
   `repin` keeps the box top-anchored (scrolling up only on overflow, clearing rows
-  on shrink); the `BULLET_WIDTH` / `repaint_budget`
+  on shrink); `restore_cursor_row` lands the exit cursor just below the box (no
+  blank gap on quit when the box is near the top); the `BULLET_WIDTH` / `repaint_budget`
   single-source-of-truth invariants; and `stable_commit`/`final_commit` proven to
   reconstruct a whole streamed reply with no gaps or duplicates, and to clamp
   safely under a mid-stream resize.

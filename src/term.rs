@@ -236,15 +236,31 @@ impl InlineViewport {
         Backend::flush(&mut self.backend)
     }
 
-    /// Leave raw mode and drop the cursor below the live region so the shell
-    /// prompt returns on a fresh line, with the conversation left intact above.
+    /// Leave raw mode and drop the cursor just below the live region so the shell
+    /// prompt returns directly under it (not at the screen bottom, which would
+    /// leave a blank gap when the box is anchored near the top), with the
+    /// conversation left intact above.
     pub fn restore(&mut self) -> io::Result<()> {
-        self.backend
-            .set_cursor_position(Position::new(0, self.screen.height.saturating_sub(1)))?;
-        self.backend.show_cursor()?;
-        disable_raw_mode()?;
-        // A final newline scrolls the box up one and lands the shell prompt below.
-        write!(self.backend, "\r\n")?;
+        match ui::restore_cursor_row(self.view.y, self.view.height, self.screen.height) {
+            // Room below the box: land there and wipe anything beneath it (there
+            // shouldn't be any — the box is the bottom-most content) so the prompt
+            // resumes on a clean line right under the box.
+            Some(row) => {
+                self.backend.set_cursor_position(Position::new(0, row))?;
+                self.backend.clear_region(ClearType::AfterCursor)?;
+                self.backend.show_cursor()?;
+                disable_raw_mode()?;
+            }
+            // The box occupies the last screen row: a newline scrolls it up one
+            // and lands the shell prompt at the bottom.
+            None => {
+                self.backend
+                    .set_cursor_position(Position::new(0, self.screen.height.saturating_sub(1)))?;
+                self.backend.show_cursor()?;
+                disable_raw_mode()?;
+                write!(self.backend, "\r\n")?;
+            }
+        }
         Backend::flush(&mut self.backend)
     }
 
