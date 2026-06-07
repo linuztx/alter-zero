@@ -36,14 +36,18 @@ The design rationale lives in `docs/design.md`.
 
 ### The runtime model and its invariants
 
-This is an **inline** TUI (no alternate screen): finished messages flow into the
+This is an **inline** TUI: finished messages *and tool calls* flow into the
 terminal's real scrollback; a live region (a rule-framed input box, plus a
-streaming preview row + a blank gap row above it *while a reply streams*) stays
-pinned at the bottom. ratatui's `Viewport::Inline` can't change height
-after startup, so `term::InlineViewport` is a *custom* inline viewport over a
-`CrosstermBackend` whose height is **dynamic** — the input box grows with the
-wrapped input (`ui::live_height`). Three non-obvious invariants hold the whole
-thing together — breaking any one reintroduces a class of bug:
+streaming preview row + a blank gap row above it *while a reply streams* — the
+preview shows a running tool's blue header when one is executing) stays pinned at
+the bottom. The alternate screen is used in exactly one place: the **Ctrl+O
+tool-output view**, a full-screen overlay listing every tool call's complete
+output while the conversation keeps streaming underneath (see invariant 4).
+ratatui's `Viewport::Inline` can't change height after startup, so
+`term::InlineViewport` is a *custom* inline viewport over a `CrosstermBackend`
+whose height is **dynamic** — the input box grows with the wrapped input
+(`ui::live_height`). Four non-obvious invariants hold the whole thing together —
+breaking any one reintroduces a class of bug:
 
 1. **Only the main thread reads stdin.** The event loop reads keys with
    `event::poll`; the reply backend (a `stream::ReplySource`, e.g. `DummyAi`)
@@ -62,31 +66,47 @@ thing together — breaking any one reintroduces a class of bug:
    change the wrap algorithm without re-checking that invariant.
 
 3. **The viewport is content-anchored (top fixed), and resize reflows both
-   directions** (`main.rs::reflow_after_resize`). Like Claude Code / codex, the
+   directions** (`main.rs::repaint_conversation`). Like Claude Code / codex, the
    box grows *downward* in place — `term::draw` keeps its top put and only scrolls
    the screen *up* (oldest chat into scrollback) once the box would overflow the
    bottom; a shrink blanks the rows it vacates (the decision is the pure
    `ui::repin`). Never force it to `screen.height - height` — that reintroduces
    the "box jumps to the bottom" bug. On a width change every wrapped line is
-   stale, so `App` retains a `history: Vec<Message>` of finished messages (the
-   *only* reason history is kept) and `term::reflow` clears the screen, seats the
-   viewport at the top, then `insert_before`s the re-wrapped tail
-   (`ui::repaint_lines`). `committed` is reset so a mid-stream resize re-commits
-   the reply.
+   stale, so `App` retains a `history: Vec<HistoryItem>` of finished messages *and
+   tool calls* (kept for two reasons: this repaint, and listing tools in the Ctrl+O
+   view) and `term::reflow` clears the screen, seats the viewport at the top, then
+   `insert_before`s the re-wrapped tail (`ui::repaint_lines`). `committed` is reset
+   so a mid-stream resize re-commits the reply.
+
+4. **Tool calls interleave with text, and Ctrl+O opens a separate overlay.** A
+   tool call splits the assistant text around it: `App::flush_streaming_segment`
+   finalises the run of text before a `ToolStart` as its own history message so the
+   tool slots *after* it in order (the scrollback and the resize/return repaint
+   must agree). Inline a tool is collapsed (`ui::tool_lines` — coloured bullet +
+   one-line peek); its full output lives only in the Ctrl+O view
+   (`ui::render_tool_view` on the alternate screen). **While the overlay is up the
+   loop keeps draining reply events into `App` but does *not* commit to scrollback**
+   (that would write into the alt screen); on return, `repaint_conversation` rebuilds
+   the inline view from `history`. Never commit to scrollback while
+   `app.view == View::ToolOutput`.
 
 ### Data flow
 
 ```
-keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,Quit,None}
-reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / finish_stream / fail_stream
+keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,ToggleToolView,Quit,None}
+reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / start_tool / end_tool / finish_stream / fail_stream
 ```
 
 `Submit(text)` records the user message, `insert_before`s it, then spawns a reply
 via the selected `ReplySource` (`backend.spawn(text, tx, cancel)`), keeping the
-thread handle + `CancelToken` so a quit mid-stream cancels and reaps it. A backend
-may send `StreamEvent::Error(msg)` instead of `StreamDone`; the loop turns that
-into a red `Role::Error` notice via `App::fail_stream`. `App` (`app.rs`) is pure
-state + `on_key`; `Action`, `Role`, `Message`, `StreamError` types live there too.
+thread handle + `CancelToken` so a quit mid-stream cancels and reaps it. The
+backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
+between `Chunk`s; the loop shows the tool running (blue) then commits it collapsed
+(green/red). A backend may send `StreamEvent::Error(msg)` instead of `StreamDone`;
+the loop turns that into a red `Role::Error` notice via `App::fail_stream`. `App`
+(`app.rs`) is pure state + `on_key` (dispatched per `View`); `Action`, `Role`,
+`Message`, `StreamError`, `ToolStatus`, `ToolCall`, `HistoryItem`, `View` live
+there too.
 
 ## Working style
 
@@ -122,18 +142,22 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 ## Conventions
 
 - **All styling is centralized** as `const`s at the top of `ui.rs` — bullets,
-  prompt, colours (including the red error bullet), border, and the live-region
-  row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
+  prompt, colours (including the red error bullet), border, the tool-call styling
+  (`TOOL_*` — blue/green/red status colours, the `⎿` peek prefix, the
+  `(ctrl+o to expand)` hint) and tool-view chrome (`TOOL_VIEW_*`), and the
+  live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap strip shows *only while streaming* — `strip_rows` — so the
   box's dynamic `live_height` is streaming-aware, and idle there is exactly one
   blank above the box: the committed spacer after the last message. `render_live`
-  and `cursor_position` share the `input_box` helper). Retheme or re-size there,
-  not inline.
+  and `cursor_position` share the `input_box` helper; `tool_lines` and
+  `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
   as a template) and changing the single `let backend = …;` line in
   `main.rs::run`. Stream `StreamEvent::Chunk(..)` per token, poll the `CancelToken`
   so a quit can stop you, then send `StreamEvent::StreamDone` — or
-  `StreamEvent::Error(msg)` on failure. The loop and rendering treat chunks as
-  opaque text; nothing else changes.
+  `StreamEvent::Error(msg)` on failure. For tool calls, send a
+  `StreamEvent::ToolStart{name,args}` then a `ToolEnd{output,ok}` (see
+  `stream::turn_events` for the dummy's interleaved script). The loop and rendering
+  treat chunks and tool output as opaque text; nothing else changes.
