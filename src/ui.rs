@@ -13,7 +13,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, HistoryItem, Role, ToolCall, ToolStatus};
+use crate::app::{
+    App, HistoryItem, Role, SlashCommand, ToolCall, ToolStatus, command_query, matching_commands,
+};
 
 /// Display width of `s` in terminal columns.
 ///
@@ -40,6 +42,9 @@ const AI_BULLET: &str = "● ";
 /// Bullet prefixing a backend-error notice — same glyph as the assistant, but
 /// coloured red (see [`ERROR_COLOR`]) so a failure reads as a red bullet point.
 const ERROR_BULLET: &str = "● ";
+/// Bullet prefixing a system notice (slash-command output) — same glyph, coloured
+/// cyan (see [`SYSTEM_COLOR`]) so it reads as meta rather than an AI reply.
+const SYSTEM_BULLET: &str = "● ";
 /// Indent for wrapped continuation lines (matches a bullet's width).
 const INDENT: &str = "  ";
 /// Columns a bullet/indent occupies, subtracted from the content width.
@@ -49,6 +54,8 @@ const USER_COLOR: Color = Color::Rgb(0x6E, 0x6E, 0x6E);
 const USER_BG_COLOR: Color = Color::Rgb(0x2D, 0x2D, 0x2D);
 const AI_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 const ERROR_COLOR: Color = Color::Rgb(0xE0, 0x6C, 0x75);
+/// Cyan — a system notice's bullet (slash-command output).
+const SYSTEM_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
 const PROMPT_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
 const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
 
@@ -89,6 +96,25 @@ const TOOL_VIEW_HINT: &str = "  ↑/↓ PgUp/PgDn scroll · ctrl+o / esc return"
 /// Rows of chrome above the scrolling body (just the title row).
 const TOOL_VIEW_TITLE_ROWS: u16 = 1;
 
+// --- Slash-command palette. A scrolling, single-line-per-command list pinned
+// **below the input box** (a third live-region band) whenever the input is a bare
+// command token. Each row is `prefix /name  description`; the highlighted row
+// carries a background bar and a caret. Capped at `MENU_MAX_ROWS`; longer lists
+// scroll to keep the selection visible (`menu_window`). ---
+
+/// The most command rows shown at once; longer match lists scroll within this.
+const MENU_MAX_ROWS: u16 = 5;
+/// Prefix for an unselected palette row (aligns names under the caret column).
+const MENU_PREFIX: &str = "  ";
+/// Prefix marking the highlighted palette row (a caret, same width as the indent).
+const MENU_SELECTED_PREFIX: &str = "❯ ";
+/// White — a command's `/name`.
+const MENU_NAME_COLOR: Color = AI_COLOR;
+/// Dim grey — a command's description (and the no-match placeholder).
+const MENU_DESC_COLOR: Color = TOOL_DIM_COLOR;
+/// Background bar filling the highlighted palette row (shares the user-message bg).
+const MENU_SELECTED_BG: Color = USER_BG_COLOR;
+
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
 // derive their layout from `input_box` so the drawn text and cursor never drift;
@@ -125,14 +151,20 @@ fn field_width(width: u16) -> u16 {
 }
 
 /// Height of the bottom live region for the current `input` at this terminal
-/// size: the streaming strip (only while `streaming`), two framing rules, and one
-/// row per wrapped input line — so the box **grows** as the message wraps —
-/// clamped to the terminal height (after which the box scrolls internally; see
-/// [`render_live`]).
+/// size: the streaming strip (only while `streaming`), two framing rules, one
+/// row per wrapped input line — so the box **grows** as the message wraps — and
+/// the command-palette band below it (`menu_rows`, 0 when closed) — clamped to the
+/// terminal height (after which the box scrolls internally; see [`render_live`]).
 #[must_use]
-pub fn live_height(input: &str, width: u16, term_height: u16, streaming: bool) -> u16 {
+pub fn live_height(
+    input: &str,
+    width: u16,
+    term_height: u16,
+    streaming: bool,
+    menu_rows: u16,
+) -> u16 {
     let rows = wrap_text(input, field_width(width)).len().max(1) as u16;
-    (strip_rows(streaming) + INPUT_CHROME_ROWS + rows).min(term_height.max(1))
+    (strip_rows(streaming) + INPUT_CHROME_ROWS + rows + menu_rows).min(term_height.max(1))
 }
 
 /// How to re-pin the live region when its height changes between draws, keeping
@@ -181,14 +213,18 @@ pub fn repin(top: u16, old_height: u16, new_height: u16, screen_height: u16) -> 
     }
 }
 
-/// Split `area` into the live region's two stacked sub-areas `[strip, input]`.
-/// The strip holds the streaming preview + gap (height 0 when idle); the input
-/// box takes whatever rows remain below it, so it **grows** as `area` grows (see
-/// [`live_height`]). The only place the split is expressed.
-fn live_layout(area: Rect, streaming: bool) -> [Rect; 2] {
+/// Split `area` into the live region's three stacked sub-areas
+/// `[strip, input, menu]`. The strip holds the streaming preview + gap (height 0
+/// when idle); the command palette takes its fixed `menu_rows` at the **bottom**
+/// (0 when closed); the input box takes whatever rows remain in between, so it
+/// **grows** as `area` grows (see [`live_height`]). Reserving the menu below
+/// rather than between keeps the box's top — and the cursor — put when the
+/// palette opens. The only place the split is expressed.
+fn live_layout(area: Rect, streaming: bool, menu_rows: u16) -> [Rect; 3] {
     Layout::vertical([
         Constraint::Length(strip_rows(streaming)),
         Constraint::Min(0),
+        Constraint::Length(menu_rows),
     ])
     .areas(area)
 }
@@ -208,8 +244,8 @@ struct InputBox {
     scroll: usize,
 }
 
-fn input_box(area: Rect, input: &str, streaming: bool) -> InputBox {
-    let [_, frame] = live_layout(area, streaming);
+fn input_box(area: Rect, input: &str, streaming: bool, menu_rows: u16) -> InputBox {
+    let [_, frame, _] = live_layout(area, streaming, menu_rows);
     let text = frame.inner(Margin::new(0, 1)); // inset past the top & bottom rules
     let wrapped = wrap_text(input, field_width(area.width));
     let scroll = wrapped.len().saturating_sub(text.height as usize);
@@ -314,6 +350,7 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         Role::User => (USER_BULLET, USER_COLOR),
         Role::Assistant => (AI_BULLET, AI_COLOR),
         Role::Error => (ERROR_BULLET, ERROR_COLOR),
+        Role::System => (SYSTEM_BULLET, SYSTEM_COLOR),
     };
     let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
     let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
@@ -358,7 +395,8 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 /// than the box, the tail is kept in view (the cursor is always at the end).
 pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let streaming = app.is_streaming();
-    let [strip, _] = live_layout(area, streaming);
+    let menu = menu_rows(app);
+    let [strip, _, menu_area] = live_layout(area, streaming, menu);
 
     // Strip preview (top row; the rest of the strip is the blank gap). A running
     // tool takes precedence — its coloured header (blue) shows what's executing;
@@ -381,7 +419,7 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     }
 
     // The input box: a top/bottom rule framing the wrapped input rows.
-    let bx = input_box(area, &app.input, streaming);
+    let bx = input_box(area, &app.input, streaming, menu);
     let block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
@@ -405,6 +443,112 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         })
         .collect();
     Paragraph::new(lines).render(bx.text, buf);
+
+    // The command palette, pinned in its reserved band below the box.
+    if menu > 0 {
+        Paragraph::new(command_menu_lines(app, menu_area.width)).render(menu_area, buf);
+    }
+}
+
+/// How many rows the command palette occupies for `app`: 0 when closed, otherwise
+/// the match count capped at [`MENU_MAX_ROWS`] (or a single placeholder row when
+/// the query matches nothing). [`live_height`] adds this; [`render_live`] paints
+/// exactly this many rows — the two must agree.
+#[must_use]
+pub fn menu_rows(app: &App) -> u16 {
+    if app.command_menu.is_none() {
+        return 0;
+    }
+    match command_query(&app.input) {
+        None => 0,
+        Some(query) => {
+            let matches = matching_commands(query).len();
+            if matches == 0 {
+                1
+            } else {
+                (matches as u16).min(MENU_MAX_ROWS)
+            }
+        }
+    }
+}
+
+/// The scroll offset (first visible match index) so a window of `max` rows keeps
+/// `selected` visible: 0 while the selection fits the first window, then it
+/// follows the selection toward the end, clamped so the last window sits flush
+/// with the end.
+#[must_use]
+pub fn menu_window(len: usize, selected: usize, max: usize) -> usize {
+    if max == 0 || len <= max || selected < max {
+        0
+    } else {
+        (selected + 1 - max).min(len - max)
+    }
+}
+
+/// One palette row: `prefix /name  description`, padded to `width` so the
+/// highlighted row's background bar fills the line. The selected row gets a caret
+/// prefix and a background; others get a plain indent.
+fn menu_row(cmd: &SlashCommand, selected: bool, width: u16) -> Line<'static> {
+    let prefix = if selected {
+        MENU_SELECTED_PREFIX
+    } else {
+        MENU_PREFIX
+    };
+    let name = format!("/{}", cmd.name);
+    let gap = "  ";
+    let cw = width as usize;
+    // Columns left for the description after the prefix, name, and gap; truncate
+    // it to fit, then pad the row out to the full width.
+    let used = cols(prefix) + cols(&name) + cols(gap);
+    let desc = truncate_cols(cmd.description, cw.saturating_sub(used));
+    let pad = " ".repeat(cw.saturating_sub(used + cols(&desc)));
+    let line = Line::from(vec![
+        Span::raw(prefix.to_string()),
+        Span::styled(
+            name,
+            Style::new()
+                .fg(MENU_NAME_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(gap.to_string()),
+        Span::styled(desc, Style::new().fg(MENU_DESC_COLOR)),
+        Span::raw(pad),
+    ]);
+    if selected {
+        line.style(Style::new().bg(MENU_SELECTED_BG))
+    } else {
+        line
+    }
+}
+
+/// The styled lines for the open command palette: the filtered commands, windowed
+/// to keep the selection visible and capped at [`MENU_MAX_ROWS`], with the
+/// highlighted row marked; or a single dim placeholder when nothing matches.
+/// Empty when the palette is closed.
+#[must_use]
+pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(menu) = &app.command_menu else {
+        return Vec::new();
+    };
+    let Some(query) = command_query(&app.input) else {
+        return Vec::new();
+    };
+    let matches = matching_commands(query);
+    if matches.is_empty() {
+        return vec![Line::from(Span::styled(
+            format!("{MENU_PREFIX}No matching commands"),
+            Style::new().fg(MENU_DESC_COLOR),
+        ))];
+    }
+    let max = MENU_MAX_ROWS as usize;
+    let offset = menu_window(matches.len(), menu.selected, max);
+    matches
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(max)
+        .map(|(i, cmd)| menu_row(cmd, i == menu.selected, width))
+        .collect()
 }
 
 /// The bullet colour for a tool's lifecycle: blue running, green ok, red fail.
@@ -664,10 +808,11 @@ pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
 /// current input. Shares [`input_box`] with [`render_live`] so the cursor lands
 /// exactly after the visible input text — on the last wrapped row, at its end.
 #[must_use]
-pub fn cursor_position(area: Rect, input: &str) -> (u16, u16) {
+pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The cursor is only ever placed while idle (it is hidden during streaming),
-    // so the box is laid out without the streaming strip.
-    let bx = input_box(area, input, false);
+    // so the box is laid out without the streaming strip — but *with* the command
+    // palette's reserved band below it, so the box (and the cursor) sit correctly.
+    let bx = input_box(area, &app.input, false, menu_rows(app));
     // The cursor follows the end of the input: its wrapped row, less the scroll.
     let cursor_line = bx.wrapped.len().saturating_sub(1);
     let row = cursor_line.saturating_sub(bx.scroll) as u16;
@@ -1060,7 +1205,7 @@ mod tests {
     fn render_live_grows_the_box_and_wraps_input_across_rows() {
         let mut app = App::new();
         app.input = "first\nsecond".to_string();
-        let h = live_height(&app.input, 20, 24, false);
+        let h = live_height(&app.input, 20, 24, false, 0);
         assert_eq!(h, 4, "two rules + two input rows (no strip when idle)");
         let mut buf = buffer(20, h);
         render_live(buf.area, &mut buf, &app);
@@ -1088,7 +1233,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let term_h = 6; // live clamps to 6 → text rows = 6 - 2 = 4
-        assert_eq!(live_height(&app.input, 20, term_h, false), 6);
+        assert_eq!(live_height(&app.input, 20, term_h, false, 0), 6);
         let mut buf = buffer(20, 6);
         render_live(buf.area, &mut buf, &app);
 
@@ -1144,8 +1289,10 @@ mod tests {
     fn cursor_sits_on_the_last_wrapped_input_row() {
         // "ab\ncd" → two rows; the cursor follows the end onto the second text
         // row (y = 2) just after the indented "cd" (x = 2 + 2).
-        let area = Rect::new(0, 0, 20, live_height("ab\ncd", 20, 24, false));
-        assert_eq!(cursor_position(area, "ab\ncd"), (4, 2));
+        let mut app = App::new();
+        app.input = "ab\ncd".to_string();
+        let area = Rect::new(0, 0, 20, live_height(&app.input, 20, 24, false, 0));
+        assert_eq!(cursor_position(area, &app), (4, 2));
     }
 
     // --- streaming commit bookkeeping ---
@@ -1216,8 +1363,10 @@ mod tests {
         // Idle (the only time the cursor shows): the box fills the area, so on a
         // 40x4 area the text row sits at row 1, flush-left (no side border).
         // Empty input → cursor right after "❯ ".
-        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), ""), (2, 1));
-        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), "hi"), (4, 1));
+        let mut app = App::new();
+        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), &app), (2, 1));
+        app.input = "hi".to_string();
+        assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), &app), (4, 1));
     }
 
     // --- growing input box: height + re-pin geometry ---
@@ -1227,8 +1376,8 @@ mod tests {
         // Idle, empty or one-line input → a one-row box framed by two rules
         // (no preview strip) = LIVE_MIN_HEIGHT (3).
         assert_eq!(LIVE_MIN_HEIGHT, 3);
-        assert_eq!(live_height("", 40, 24, false), LIVE_MIN_HEIGHT);
-        assert_eq!(live_height("hi", 40, 24, false), LIVE_MIN_HEIGHT);
+        assert_eq!(live_height("", 40, 24, false, 0), LIVE_MIN_HEIGHT);
+        assert_eq!(live_height("hi", 40, 24, false, 0), LIVE_MIN_HEIGHT);
     }
 
     #[test]
@@ -1237,8 +1386,8 @@ mod tests {
         // (PREVIEW_ROWS + GAP_ROWS = 2) above whatever the idle box would be.
         for input in ["", "hi", "a\nb\nc"] {
             assert_eq!(
-                live_height(input, 40, 24, true),
-                live_height(input, 40, 24, false) + 2,
+                live_height(input, 40, 24, true, 0),
+                live_height(input, 40, 24, false, 0) + 2,
                 "streaming adds exactly the preview + gap rows for {input:?}"
             );
         }
@@ -1248,21 +1397,21 @@ mod tests {
     fn live_height_grows_one_row_per_wrapped_input_line() {
         // Idle, three explicit lines → the box has three text rows, so the live
         // region is 2 (two rules) + 3 = 5 rows tall.
-        assert_eq!(live_height("a\nb\nc", 40, 24, false), 5);
+        assert_eq!(live_height("a\nb\nc", 40, 24, false, 0), 5);
     }
 
     #[test]
     fn live_height_grows_when_a_long_line_soft_wraps() {
         // No explicit newline: a line longer than the field width wraps and the
         // box still grows. field width = 10 - 2 = 8, so 16 columns → 2 rows → 4.
-        assert_eq!(live_height("abcdefghijklmnop", 10, 24, false), 4);
+        assert_eq!(live_height("abcdefghijklmnop", 10, 24, false, 0), 4);
     }
 
     #[test]
     fn live_height_is_clamped_to_the_terminal_height() {
         let many = "a\n".repeat(50);
         assert_eq!(
-            live_height(&many, 40, 10, false),
+            live_height(&many, 40, 10, false, 0),
             10,
             "never taller than the screen"
         );
@@ -1340,15 +1489,24 @@ mod tests {
     // --- live-region layout: single source of truth ---
 
     #[test]
-    fn live_layout_splits_the_area_into_the_strip_plus_the_rest() {
+    fn live_layout_splits_the_area_into_the_strip_box_and_menu() {
         // The strip takes its rows (preview + gap while streaming, none when
-        // idle); the input box takes everything left, so the two always tile the
-        // whole area — at the minimum height and beyond, streaming or not.
+        // idle); the menu takes its fixed rows at the bottom; the input box takes
+        // everything left — the three always tile the whole area, at the minimum
+        // height and beyond, streaming or not, palette open or closed.
         for streaming in [false, true] {
-            for h in [LIVE_MIN_HEIGHT, 9, 20] {
-                let [strip, input] = live_layout(Rect::new(0, 0, 40, h), streaming);
-                assert_eq!(strip.height + input.height, h, "sub-areas tile the area");
-                assert_eq!(strip.height, strip_rows(streaming));
+            for menu_rows in [0, 3] {
+                for h in [LIVE_MIN_HEIGHT + 3, 9, 20] {
+                    let [strip, input, menu] =
+                        live_layout(Rect::new(0, 0, 40, h), streaming, menu_rows);
+                    assert_eq!(
+                        strip.height + input.height + menu.height,
+                        h,
+                        "sub-areas tile the area"
+                    );
+                    assert_eq!(strip.height, strip_rows(streaming));
+                    assert_eq!(menu.height, menu_rows);
+                }
             }
         }
     }
@@ -1363,7 +1521,7 @@ mod tests {
         app.input = "x".to_string();
         let mut buf = Buffer::empty(area);
         render_live(area, &mut buf, &app);
-        let (_, cy) = cursor_position(area, &app.input);
+        let (_, cy) = cursor_position(area, &app);
         let rendered: String = (0..area.width).map(|x| buf[(x, cy)].symbol()).collect();
         assert!(
             rendered.contains('❯'),
@@ -1497,5 +1655,143 @@ mod tests {
             TOOL_RUNNING_COLOR,
             "the running tool's bullet is blue"
         );
+    }
+
+    // --- slash-command palette rendering + geometry ---
+
+    /// An app whose input is `input` with the palette open at `selected`.
+    fn palette(input: &str, selected: usize) -> App {
+        let mut app = App::new();
+        app.input = input.to_string();
+        app.command_menu = Some(crate::app::CommandMenu { selected });
+        app
+    }
+
+    #[test]
+    fn menu_window_keeps_the_selection_visible() {
+        assert_eq!(menu_window(8, 0, 5), 0);
+        assert_eq!(menu_window(8, 4, 5), 0, "within the first window");
+        assert_eq!(menu_window(8, 5, 5), 1, "scrolls so the selection shows");
+        assert_eq!(menu_window(8, 7, 5), 3, "clamped to the last window");
+        assert_eq!(menu_window(3, 2, 5), 0, "no scroll when everything fits");
+    }
+
+    #[test]
+    fn menu_rows_is_zero_when_the_palette_is_closed() {
+        assert_eq!(menu_rows(&App::new()), 0);
+    }
+
+    #[test]
+    fn menu_rows_caps_at_the_max_and_reserves_a_row_for_no_matches() {
+        assert_eq!(menu_rows(&palette("/", 0)), MENU_MAX_ROWS, "capped");
+        assert_eq!(menu_rows(&palette("/zzz", 0)), 1, "placeholder row");
+    }
+
+    #[test]
+    fn command_menu_lines_lists_commands_with_descriptions() {
+        let texts: Vec<String> = command_menu_lines(&palette("/", 0), 60)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("/help")), "{texts:?}");
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.contains("List the available commands")),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn command_menu_marks_the_selected_row() {
+        let lines = command_menu_lines(&palette("/", 1), 60);
+        assert_eq!(
+            lines[1].style.bg,
+            Some(MENU_SELECTED_BG),
+            "the selected row is highlighted"
+        );
+        assert_ne!(
+            lines[0].style.bg,
+            Some(MENU_SELECTED_BG),
+            "others are not highlighted"
+        );
+    }
+
+    #[test]
+    fn command_menu_windows_to_keep_the_selection_visible() {
+        let n = crate::app::COMMANDS.len();
+        let texts: Vec<String> = command_menu_lines(&palette("/", n - 1), 60)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(texts.len(), MENU_MAX_ROWS as usize);
+        assert!(
+            texts.iter().any(|t| t.contains("/quit")),
+            "last command visible: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("/help")),
+            "first scrolled off: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn command_menu_shows_a_placeholder_when_nothing_matches() {
+        let texts: Vec<String> = command_menu_lines(&palette("/zzz", 0), 60)
+            .iter()
+            .map(|l| plain(l).to_string())
+            .collect();
+        assert_eq!(texts.len(), 1);
+        assert!(texts[0].to_lowercase().contains("no matching"), "{texts:?}");
+    }
+
+    #[test]
+    fn message_lines_renders_a_system_notice_with_a_cyan_bullet() {
+        let lines = message_lines(Role::System, "a notice", 80);
+        assert_eq!(lines[0].spans[0].style.fg, Some(SYSTEM_COLOR));
+        assert_ne!(SYSTEM_COLOR, AI_COLOR, "distinct from an AI reply");
+    }
+
+    #[test]
+    fn live_height_adds_the_command_menu_band() {
+        let closed = live_height("hi", 40, 24, false, 0);
+        let open = live_height("/", 40, 24, false, MENU_MAX_ROWS);
+        assert_eq!(open, closed + MENU_MAX_ROWS, "the menu band adds its rows");
+    }
+
+    #[test]
+    fn render_live_draws_the_command_menu_below_the_box() {
+        let app = palette("/", 0);
+        let menu = menu_rows(&app);
+        let h = live_height(&app.input, 40, 24, false, menu);
+        let mut buf = buffer(40, h);
+        render_live(buf.area, &mut buf, &app);
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("/help"),
+            "menu rendered below the box: {all:?}"
+        );
+        assert!(
+            row(&buf, h - 1, 40).contains('/'),
+            "a command sits on the last row"
+        );
+    }
+
+    #[test]
+    fn cursor_stays_in_the_box_when_the_palette_opens() {
+        // The menu is reserved *below* the box, so opening the palette must not
+        // move the cursor (the end of the input).
+        let mut app = App::new();
+        app.input = "/".to_string();
+        let closed_area = Rect::new(0, 0, 40, live_height("/", 40, 24, false, 0));
+        let closed = cursor_position(closed_area, &app);
+        app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
+        let menu = menu_rows(&app);
+        let open_area = Rect::new(0, 0, 40, live_height("/", 40, 24, false, menu));
+        let open = cursor_position(open_area, &app);
+        assert_eq!(open, closed, "cursor unchanged when the menu opens");
     }
 }

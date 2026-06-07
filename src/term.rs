@@ -36,6 +36,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
+use crate::app::App;
 use crate::ui;
 
 /// A content-anchored inline viewport whose height can change between draws (its
@@ -87,8 +88,9 @@ impl InlineViewport {
 
     /// Repaint the live region at the new `height`, keeping it **content-anchored**
     /// (its top fixed — it grows downward, not up from the bottom), and place the
-    /// hardware cursor. `cursor` is the input text while editing (the cursor sits
-    /// at its end); `None` while streaming hides the cursor.
+    /// hardware cursor. `cursor` is `Some(app)` while editing (the cursor sits at
+    /// the end of the input, derived via [`ui::cursor_position`] which accounts for
+    /// the command palette's band); `None` while streaming hides the cursor.
     ///
     /// The box grows in place until it reaches the screen bottom, at which point
     /// it scrolls the chat up into scrollback; a shrink blanks the rows it vacates.
@@ -96,7 +98,7 @@ impl InlineViewport {
         &mut self,
         height: u16,
         render: impl FnOnce(Rect, &mut Buffer),
-        cursor: Option<&str>,
+        cursor: Option<&App>,
     ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
         let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
@@ -111,8 +113,8 @@ impl InlineViewport {
         self.blit(&buf)?;
 
         match cursor {
-            Some(input) => {
-                let (x, y) = ui::cursor_position(self.view, input);
+            Some(app) => {
+                let (x, y) = ui::cursor_position(self.view, app);
                 self.backend.set_cursor_position(Position::new(x, y))?;
                 self.backend.show_cursor()?;
             }

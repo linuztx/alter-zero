@@ -39,15 +39,17 @@ The design rationale lives in `docs/design.md`.
 This is an **inline** TUI: finished messages *and tool calls* flow into the
 terminal's real scrollback; a live region (a rule-framed input box, plus a
 streaming preview row + a blank gap row above it *while a reply streams* — the
-preview shows a running tool's blue header when one is executing) stays pinned at
-the bottom. The alternate screen is used in exactly one place: the **Ctrl+O
-tool-output view**, a full-screen overlay listing every tool call's complete
-output while the conversation keeps streaming underneath (see invariant 4).
-ratatui's `Viewport::Inline` can't change height after startup, so
+preview shows a running tool's blue header when one is executing — plus a
+scrollable **slash-command palette** band *below* the box when the input is a bare
+`/token`) stays pinned at the bottom. The alternate screen is used in exactly one
+place: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
+call's complete output while the conversation keeps streaming underneath (see
+invariant 4). ratatui's `Viewport::Inline` can't change height after startup, so
 `term::InlineViewport` is a *custom* inline viewport over a `CrosstermBackend`
-whose height is **dynamic** — the input box grows with the wrapped input
-(`ui::live_height`). Four non-obvious invariants hold the whole thing together —
-breaking any one reintroduces a class of bug:
+whose height is **dynamic** — the input box grows with the wrapped input, the
+streaming strip, and the palette band (`ui::live_height`). Four non-obvious
+invariants hold the whole thing together — breaking any one reintroduces a class
+of bug:
 
 1. **Only the main thread reads stdin.** The event loop reads keys with
    `event::poll`; the reply backend (a `stream::ReplySource`, e.g. `DummyAi`)
@@ -95,7 +97,7 @@ breaking any one reintroduces a class of bug:
 ### Data flow
 
 ```
-keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,ToggleToolView,Quit,None}
+keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,ToggleToolView,Notice,Clear,Quit,None}
 reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / start_tool / end_tool / finish_stream / fail_stream
 ```
 
@@ -109,6 +111,16 @@ the loop turns that into a red `Role::Error` notice via `App::fail_stream`. `App
 (`app.rs`) is pure state + `on_key` (dispatched per `View`); `Action`, `Role`,
 `Message`, `StreamError`, `ToolStatus`, `ToolCall`, `HistoryItem`, `View` live
 there too.
+
+Typing a bare `/token` opens a **slash-command palette** below the input box (a
+third live-region band): `App::command_menu` holds the highlight, the registry
+`app::COMMANDS` (`SlashCommand { name, description, effect }`) is filtered by
+`matching_commands`, and ↑/↓ scroll / Tab+Enter run the highlighted command. A
+command dispatches an `Action` (`/quit`→`Quit`, `/tools`→`ToggleToolView`,
+`/clear`→`Clear`, `/help` + stubs→`Notice(String)` committed as a `Role::System`
+message). Wiring a stub up later is a one-line registry edit (its `CommandEffect`)
+plus an effect arm in `App::run_selected_command`; the palette/filter/scroll don't
+change.
 
 ## Working style
 
@@ -144,15 +156,19 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 ## Conventions
 
 - **All styling is centralized** as `const`s at the top of `ui.rs` — bullets,
-  prompt, colours (including the red error bullet), border, the tool-call styling
-  (`TOOL_*` — blue/green/red status colours, the `⎿` peek prefix, the
-  `(ctrl+o to expand)` hint) and tool-view chrome (`TOOL_VIEW_*`), and the
-  live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
-  the preview + gap strip shows *only while streaming* — `strip_rows` — so the
-  box's dynamic `live_height` is streaming-aware, and idle there is exactly one
-  blank above the box: the committed spacer after the last message. `render_live`
-  and `cursor_position` share the `input_box` helper; `tool_lines` and
-  `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
+  prompt, colours (including the red error bullet and the cyan system bullet),
+  border, the tool-call styling (`TOOL_*` — blue/green/red status colours, the
+  `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
+  (`TOOL_VIEW_*`), the slash-command palette (`MENU_*` — the row prefixes, name/
+  description colours, the selected-row background, and `MENU_MAX_ROWS` cap), and
+  the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
+  the preview + gap strip shows *only while streaming* — `strip_rows` — and the
+  command palette is a third band *below* the box — `menu_rows` — so the box's
+  dynamic `live_height` is streaming- and palette-aware, and idle with no palette
+  there is exactly one blank above the box: the committed spacer after the last
+  message. `render_live` and `cursor_position` share the `input_box` helper, which
+  reserves the menu band so the cursor stays put when the palette opens; `tool_lines`
+  and `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`

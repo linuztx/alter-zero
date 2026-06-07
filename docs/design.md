@@ -79,6 +79,23 @@ unit-tested must be unit-tested.
   but holds off committing to scrollback; Ctrl+O (or Esc) returns, and the inline
   view is repainted from `history` to catch up. The overlay is read-only (typing is
   ignored).
+- **Slash-command palette (Claude-Code style).** When the input is a **bare
+  command token** — `/`, `/he`, `/help`, but *not* `ask /help` or anything past a
+  space/newline — a scrollable command **palette opens below the input box** (a
+  third band in the live region). It lists a registry of `SlashCommand`s
+  (`app::COMMANDS`: name + description + effect), filtered by name-prefix as you
+  type after the `/`; `/` alone lists everything. ↑/↓ move the highlight (the
+  window scrolls, capped at `MENU_MAX_ROWS`, to keep it visible); **Tab/Enter run**
+  the highlighted command; **Esc** dismisses the palette (instead of quitting) and
+  stays dismissed within the same token (delete the `/` and retype to reopen). The
+  box's top is unchanged when the palette opens — it's reserved *below* the box —
+  so the cursor never jumps. Running a command **consumes the input** and dispatches
+  an `Action`: `/quit` → `Quit`, `/tools` → `ToggleToolView`, `/clear` → `Clear`
+  (empties `history`, repaints), `/help` → `Notice` (lists the commands), and the
+  remaining stubs → `Notice` (a "not wired up yet" placeholder). A `Notice` is
+  recorded as a `Role::System` message and committed to scrollback like any other.
+  Adding a real command later is a one-line registry edit + an effect arm — the
+  palette, filtering, scrolling, and dispatch don't change.
 - **Backend errors & cancellation.** A reply backend (`ReplySource`) may end with
   `Error(msg)` instead of `StreamDone`; the partial reply (if any) is kept and a
   red error notice is shown below it. The built-in `DummyAi` never errors — this is
@@ -96,8 +113,8 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App`, `on_key -> Action` (per `View`), `push_chunk`/`finish_stream`/`flush_streaming_segment`, `start_tool`/`end_tool`, the message+tool `history`, the tool-view scroll. `Action`/`Role`/`Message`/`StreamError`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View` types. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`), `render_live`, and `render_tool_view`. | Yes |
+| `app.rs`    | State + pure update logic: `App`, `on_key -> Action` (per `View`), `push_chunk`/`finish_stream`/`flush_streaming_segment`, `start_tool`/`end_tool`, the message+tool `history`, the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu` types. | Yes |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), `render_live`, and `render_tool_view`. | Yes |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (scrollback), `draw` (re-pin + repaint + cursor), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore. | No (I/O boundary) |
 | `main.rs`   | Thin glue: single-threaded poll loop, drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit. | No (tiny I/O boundary) |
 
@@ -109,7 +126,7 @@ avoids a stdin race with the cursor-position queries that terminal init and
 `insert_before` make — the cause of the "cursor position could not be read" error.
 
 ```
-keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,ToggleToolView,Quit,None}
+keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,ToggleToolView,Notice,Clear,Quit,None}
 reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / start_tool / end_tool / finish_stream / fail_stream
 ```
 
@@ -130,8 +147,15 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
 - On `Error(msg)`: `App::fail_stream` records any non-empty partial reply, flushes
   it, then commits a red `Role::Error` notice (and records it in `history` so it
   repaints on resize); clears streaming state.
-- On `ToggleToolView` (Ctrl+O / Esc): enter or leave the alternate-screen
-  overlay; on leaving, `repaint_conversation` reflows the inline view to catch up.
+- On `ToggleToolView` (Ctrl+O / Esc, **or `/tools`**): enter or leave the
+  alternate-screen overlay; on leaving, `repaint_conversation` reflows the inline
+  view to catch up.
+- On `Notice(text)` (a slash command's output — `/help` or a stub): if a reply is
+  mid-flight, `flush_streaming_segment` finalises its current segment first (the
+  same ordering trick a tool call uses), then `record_system_message` + an
+  `insert_before` commit a `Role::System` notice to scrollback.
+- On `Clear` (`/clear`): `App::history` is already empty; `repaint_conversation`
+  reflows the now-blank inline view (clears the visible conversation).
 - **In the tool-output view** every reply event still updates `App` (so the view
   shows tools live), but the commit-to-scrollback steps above are **skipped** —
   they would write into the alternate screen. The inline view is rebuilt from
@@ -139,11 +163,16 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
 
 ### Key types
 
-- `Role { User, Assistant, Error }` — drives bullet/colour (errors get a red
-  bullet).
-- `Action { None, Submit(String), ToggleToolView, Quit }` — returned by
-  `App::on_key`.
+- `Role { User, Assistant, Error, System }` — drives bullet/colour (errors red,
+  system notices cyan).
+- `Action { None, Submit(String), ToggleToolView, Notice(String), Clear, Quit }` —
+  returned by `App::on_key`.
 - `View { Conversation, ToolOutput }` — which screen is showing (Ctrl+O toggles).
+- `SlashCommand { name, description, effect }` + `CommandEffect { Quit,
+  ToggleTools, Clear, Help, Stub }` + the `COMMANDS` registry — the slash-command
+  palette's data; adding a command is one registry entry (+ an effect arm).
+- `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
+  `None` when closed); the matches are derived from the input on demand.
 - `Message { role, text }` — one finished message.
 - `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (blue/green/red).
 - `ToolCall { name, args, status, output }` — one tool invocation; `current_tool`
@@ -182,18 +211,33 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   in the chat); the viewer scrolls and ignores typing; it opens pinned to the
   bottom and `settle_tool_scroll` tail-follows (scrolling up disengages, reaching
   the bottom re-engages).
+- `app` (slash palette): `command_query` recognises a bare `/token` (rejecting
+  past-a-space/newline and mid-line slashes); `matching_commands` prefix-filters
+  case-insensitively; the registry has unique lowercase names. Typing `/` opens
+  the palette and filters/clamps the selection; ↑/↓ move within bounds; Backspace
+  past the slash closes it; Esc dismisses (not quits) and is **sticky** within the
+  same token (re-entering command mode reopens it); Enter/Tab run the highlighted
+  command, returning the right `Action` (`/quit`→`Quit`, `/tools`→`ToggleToolView`
+  + view flipped, `/clear`→`Clear` + history emptied, `/help`→`Notice` listing
+  commands, a stub→`Notice` placeholder) and consuming the input; an empty-match
+  Enter doesn't submit; with no palette open Enter still submits normally.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display
-  width; error lines get a red bullet); `tool_lines` (status-coloured bullet
-  header, collapsed peek + `(ctrl+o to expand)` hint, width-truncated);
-  `transcript_lines`/`render_tool_view` (full conversation — messages interleaved
-  with each tool's complete output, plus the live tail — status colour, scroll); the
+  width; error lines get a red bullet; system notices a cyan one); `tool_lines`
+  (status-coloured bullet header, collapsed peek + `(ctrl+o to expand)` hint,
+  width-truncated); `transcript_lines`/`render_tool_view` (full conversation —
+  messages interleaved with each tool's complete output, plus the live tail —
+  status colour, scroll); the **command palette** — `menu_window` keeps the
+  selection visible, `menu_rows` reserves the band (0 closed, capped, 1 for no
+  matches), `command_menu_lines` lists/marks/windows the matches (placeholder when
+  empty), and `render_live` draws it below the box with the cursor unmoved; the
   growing-input geometry — `live_height` grows a row per wrapped line, adds the
-  preview + gap strip only while streaming, and clamps to the screen; `render_live`
-  grows the box, scrolls the input to keep the end visible, separates a streaming
-  preview (or a running tool's blue header) from the box with a blank gap, and
-  shows no strip when idle; `cursor_position` follows the last wrapped row; and
+  preview + gap strip only while streaming and the palette band below the box, and
+  clamps to the screen; `render_live` grows the box, scrolls the input to keep the
+  end visible, separates a streaming preview (or a running tool's blue header) from
+  the box with a blank gap, and shows no strip when idle; `cursor_position` follows
+  the last wrapped row (and stays put when the palette opens); and
   `repin` keeps the box top-anchored (scrolling up only on overflow, clearing rows
   on shrink); `restore_cursor_row` lands the exit cursor just below the box (no
   blank gap on quit when the box is near the top); the `BULLET_WIDTH` / `repaint_budget`
@@ -255,5 +299,14 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
 - Tool output shown inline is always collapsed to a one-line peek; the only way to
   read it in full is the Ctrl+O conversation view, which shows the whole transcript
   with every tool expanded (by design — keeps the inline chat compact).
+- The slash-command palette only matches a **bare** `/token` (a leading slash, no
+  whitespace); there's no argument parsing yet, so commands that would take
+  arguments are stubs. Most seed commands (`/model`, `/retry`, `/copy`, `/theme`)
+  are placeholders that post a "not wired up yet" notice — promoting one is a
+  one-line registry edit (change its `CommandEffect`) plus an effect arm. Esc's
+  dismissal reopens on the next keystroke only if you leave and re-enter command
+  mode; and running a *content* command (`/help`/stub) mid-stream finalises the
+  reply's current segment first (so the notice never splits the reply), the same
+  ordering rule tool calls use.
 - No spinner, timestamps, markdown rendering, or scrollback nav keys (YAGNI).
 ```

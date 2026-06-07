@@ -75,6 +75,42 @@ returned="$(tmux capture-pane -t "$S" -p)"
 echo "==== captured pane (returned to conversation) ===="
 printf '%s\n' "$returned"
 
+# --- Phase 4: the slash-command palette. Typing "/" opens a scrollable command
+# list below the box; arrowing down scrolls later commands into view; running
+# /help posts a system notice that lists every command. ---
+# Clear the leftover "AAA\nBBB" draft from Phase 2 first — the palette only opens
+# when the input *starts* with "/".
+for _ in $(seq 1 12); do
+	tmux send-keys -t "$S" BSpace
+done
+sleep 0.2
+tmux send-keys -t "$S" -l "/"
+sleep 0.3
+palette_open="$(tmux capture-pane -t "$S" -p)"
+echo "==== captured pane (slash palette open) ===="
+printf '%s\n' "$palette_open"
+
+# Scroll past the 5-row window so a later command (/quit) comes into view.
+for _ in 1 2 3 4 5 6 7; do
+	tmux send-keys -t "$S" Down
+	sleep 0.05
+done
+sleep 0.2
+palette_scrolled="$(tmux capture-pane -t "$S" -p)"
+echo "==== captured pane (palette scrolled to the bottom) ===="
+printf '%s\n' "$palette_scrolled"
+
+# Dismiss, clear the stray "/", then run /help and confirm its notice lands.
+tmux send-keys -t "$S" Escape
+tmux send-keys -t "$S" BSpace
+tmux send-keys -t "$S" -l "/help"
+sleep 0.2
+tmux send-keys -t "$S" Enter
+sleep 0.3
+help_ran="$(tmux capture-pane -t "$S" -p -S -20)"
+echo "==== captured pane (after running /help) ===="
+printf '%s\n' "$help_ran"
+
 tmux send-keys -t "$S" Escape # quit
 sleep 0.2
 
@@ -113,7 +149,25 @@ if printf '%s' "$returned" | grep -qF "PgUp/PgDn"; then
 	echo "FAIL: Ctrl+O did not return to the conversation" >&2
 	status=1
 fi
+# "List the available commands" is /help's palette description (unique to the
+# open palette); "Exit inline-tui" is /quit's, only visible once scrolled to.
+if ! printf '%s' "$palette_open" | grep -qF "List the available commands"; then
+	echo "FAIL: typing '/' did not open the command palette" >&2
+	status=1
+fi
+if printf '%s' "$palette_open" | grep -qF "Exit inline-tui"; then
+	echo "FAIL: the palette showed an off-window command (it should scroll, not list all)" >&2
+	status=1
+fi
+if ! printf '%s' "$palette_scrolled" | grep -qF "Exit inline-tui"; then
+	echo "FAIL: scrolling the palette did not bring later commands into view" >&2
+	status=1
+fi
+if ! printf '%s' "$help_ran" | grep -qF "Available commands:"; then
+	echo "FAIL: running /help did not post its system notice" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows, and Ctrl+O opens the full conversation + tool-output view"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows, Ctrl+O opens the tool-output view, and the slash-command palette opens, scrolls, and runs commands"
 fi
 exit "$status"

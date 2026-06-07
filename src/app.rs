@@ -14,6 +14,10 @@ pub enum Role {
     /// A backend error notice (e.g. a real model failed mid-reply). Rendered like
     /// a message so it flows into scrollback and repaints on resize uniformly.
     Error,
+    /// A system notice produced by a slash command (e.g. `/help`'s command list,
+    /// or a stub's "not wired up yet" placeholder). Rendered like a message — a
+    /// distinct bullet colour — so it flows into scrollback and repaints uniformly.
+    System,
 }
 
 /// One finished message in the conversation.
@@ -87,6 +91,13 @@ pub enum Action {
     /// The user toggled the tool-output view (Ctrl+O, or Esc to leave it). The
     /// loop syncs the full-screen overlay to the now-updated [`App::view`].
     ToggleToolView,
+    /// A slash command produced a one-off system notice (e.g. `/help`'s command
+    /// list, or a stub's placeholder). The loop records it as a [`Role::System`]
+    /// message and commits it to scrollback, like a normal message.
+    Notice(String),
+    /// A slash command cleared the conversation (`/clear`). [`App::history`] is
+    /// already empty; the loop repaints the now-blank inline view.
+    Clear,
     /// The user asked to quit.
     Quit,
 }
@@ -106,6 +117,122 @@ pub enum View {
 
 /// How many lines PageUp/PageDown move the tool-output view.
 const TOOL_VIEW_PAGE: usize = 10;
+
+/// What running a slash command does. The palette dispatches one of these on
+/// select; `App::run_selected_command` turns it into an [`Action`] for the loop.
+/// Wiring a stub up later is just swapping its effect here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandEffect {
+    /// Quit the app (`/quit`).
+    Quit,
+    /// Toggle the Ctrl+O tool-output view (`/tools`).
+    ToggleTools,
+    /// Clear the conversation history (`/clear`).
+    Clear,
+    /// Post the list of available commands as a system notice (`/help`).
+    Help,
+    /// Not wired up yet — post a placeholder system notice naming the command.
+    Stub,
+}
+
+/// One entry in the slash-command palette: how it shows (`name`/`description`)
+/// and what it does (`effect`). Adding a command is a one-line addition to
+/// [`COMMANDS`]; the palette, filtering, and scrolling don't change.
+#[derive(Debug, Clone, Copy)]
+pub struct SlashCommand {
+    /// The command name **without** the leading slash (e.g. `"help"`), lowercase.
+    pub name: &'static str,
+    /// A one-line description shown dimmed beside the name in the palette.
+    pub description: &'static str,
+    /// What selecting it does.
+    pub effect: CommandEffect,
+}
+
+/// The available slash commands, in the order they list in the palette. Seeded
+/// with a few wired commands plus stubs so the palette has enough entries to
+/// scroll; a real command is a one-line edit (a new entry + an effect arm).
+pub const COMMANDS: &[SlashCommand] = &[
+    SlashCommand {
+        name: "help",
+        description: "List the available commands",
+        effect: CommandEffect::Help,
+    },
+    SlashCommand {
+        name: "clear",
+        description: "Clear the conversation",
+        effect: CommandEffect::Clear,
+    },
+    SlashCommand {
+        name: "tools",
+        description: "Open the tool-output view",
+        effect: CommandEffect::ToggleTools,
+    },
+    SlashCommand {
+        name: "model",
+        description: "Switch the model (coming soon)",
+        effect: CommandEffect::Stub,
+    },
+    SlashCommand {
+        name: "retry",
+        description: "Regenerate the last reply (coming soon)",
+        effect: CommandEffect::Stub,
+    },
+    SlashCommand {
+        name: "copy",
+        description: "Copy the last reply (coming soon)",
+        effect: CommandEffect::Stub,
+    },
+    SlashCommand {
+        name: "theme",
+        description: "Change the colour theme (coming soon)",
+        effect: CommandEffect::Stub,
+    },
+    SlashCommand {
+        name: "quit",
+        description: "Exit inline-tui",
+        effect: CommandEffect::Quit,
+    },
+];
+
+/// The open slash-command palette: which match row is highlighted. The matches
+/// themselves are derived from the input on demand ([`matching_commands`]); only
+/// the highlight is stored. `None` on [`App`] means the palette is closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandMenu {
+    /// Index of the highlighted command within the current filtered matches.
+    pub selected: usize,
+}
+
+/// The slash-command query in `input`, if it is a **bare command token**: a
+/// leading `/` followed by no whitespace (so `/`, `/he`, `/help` qualify, but
+/// `ask /help`, `/help me`, and `/a\nb` do not — a space or newline ends it).
+/// `Some("")` for a lone `/` (lists everything).
+#[must_use]
+pub fn command_query(input: &str) -> Option<&str> {
+    let rest = input.strip_prefix('/')?;
+    if rest.chars().any(char::is_whitespace) {
+        None
+    } else {
+        Some(rest)
+    }
+}
+
+/// The commands whose name starts with `query` (case-insensitive), in registry
+/// order. An empty query matches everything.
+#[must_use]
+pub fn matching_commands(query: &str) -> Vec<&'static SlashCommand> {
+    let q = query.to_lowercase();
+    COMMANDS.iter().filter(|c| c.name.starts_with(&q)).collect()
+}
+
+/// The `/help` notice: a header followed by every command's `/name — description`.
+fn help_text() -> String {
+    let mut text = String::from("Available commands:");
+    for cmd in COMMANDS {
+        text.push_str(&format!("\n/{} — {}", cmd.name, cmd.description));
+    }
+    text
+}
 
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished
@@ -136,6 +263,10 @@ pub struct App {
     /// opens this way and re-streams keep the latest content in view, until you
     /// scroll up to read back (and re-engages when you scroll to the bottom).
     pub tool_follow: bool,
+    /// The open slash-command palette (when the input is a bare command token);
+    /// `None` when closed. Esc dismisses it (and it stays dismissed within the
+    /// same token); see [`App::refresh_command_menu`].
+    pub command_menu: Option<CommandMenu>,
 }
 
 impl App {
@@ -174,9 +305,40 @@ impl App {
     }
 
     /// Keys while the inline conversation is showing.
+    ///
+    /// When the slash-command palette is open it intercepts the navigation/select
+    /// keys (↑/↓ move, Tab/Enter run, Esc dismisses); typing still edits the input
+    /// (which filters the palette). With no palette open every key behaves as it
+    /// always has.
     fn on_key_conversation(&mut self, key: KeyEvent) -> Action {
+        let menu_open = self.command_menu.is_some();
         match key.code {
+            // Esc dismisses the palette (and does *not* quit) when it's open;
+            // otherwise it quits as before.
+            KeyCode::Esc if menu_open => {
+                self.command_menu = None;
+                Action::None
+            }
             KeyCode::Esc => Action::Quit,
+            // Palette navigation / selection (only while it's open).
+            KeyCode::Up if menu_open => {
+                self.move_command_selection(-1);
+                Action::None
+            }
+            KeyCode::Down if menu_open => {
+                self.move_command_selection(1);
+                Action::None
+            }
+            KeyCode::Tab if menu_open => self.run_selected_command(),
+            KeyCode::Enter if menu_open => {
+                if self.highlighted_command().is_some() {
+                    self.run_selected_command()
+                } else {
+                    // A query that matches nothing isn't a message — swallow Enter
+                    // rather than submitting the literal "/typo".
+                    Action::None
+                }
+            }
             // Alt+Enter (and Shift+Enter where the terminal reports it) inserts a
             // newline so the input box grows on demand; a plain Enter submits.
             KeyCode::Enter
@@ -195,14 +357,88 @@ impl App {
                 }
             }
             KeyCode::Backspace => {
+                let had_query = command_query(&self.input).is_some();
                 self.input.pop();
+                self.refresh_command_menu(had_query);
                 Action::None
             }
             KeyCode::Char(c) => {
+                let had_query = command_query(&self.input).is_some();
                 self.input.push(c);
+                self.refresh_command_menu(had_query);
                 Action::None
             }
             _ => Action::None,
+        }
+    }
+
+    /// Re-derive the palette after an edit. Opens it when the input *becomes* a
+    /// command token, clamps the highlight when the filter narrows, and closes it
+    /// when the input stops being a command token. The `had_query` flag (the state
+    /// *before* the edit) makes Esc sticky: once dismissed, editing within the same
+    /// token won't reopen the palette — only leaving and re-entering command mode
+    /// (a None→Some transition) does.
+    fn refresh_command_menu(&mut self, had_query: bool) {
+        match command_query(&self.input) {
+            None => self.command_menu = None,
+            Some(query) => {
+                let matches = matching_commands(query).len();
+                match &mut self.command_menu {
+                    Some(menu) => menu.selected = menu.selected.min(matches.saturating_sub(1)),
+                    // Just entered command mode → open at the top.
+                    None if !had_query => self.command_menu = Some(CommandMenu { selected: 0 }),
+                    // Dismissed earlier and still in the same token → stay closed.
+                    None => {}
+                }
+            }
+        }
+    }
+
+    /// Move the palette highlight by `delta`, clamped to the current matches.
+    fn move_command_selection(&mut self, delta: isize) {
+        let Some(query) = command_query(&self.input) else {
+            return;
+        };
+        let matches = matching_commands(query).len();
+        if let Some(menu) = &mut self.command_menu {
+            let last = matches.saturating_sub(1) as isize;
+            menu.selected = (menu.selected as isize + delta).clamp(0, last) as usize;
+        }
+    }
+
+    /// The command currently highlighted in the palette, if one is (the palette is
+    /// open and the query matches at least one command).
+    #[must_use]
+    pub fn highlighted_command(&self) -> Option<&'static SlashCommand> {
+        let menu = self.command_menu.as_ref()?;
+        let query = command_query(&self.input)?;
+        matching_commands(query).get(menu.selected).copied()
+    }
+
+    /// Run the highlighted command: consume the input, close the palette, and
+    /// dispatch its effect as an [`Action`] for the loop. `Action::None` if no
+    /// command is highlighted (an empty query).
+    fn run_selected_command(&mut self) -> Action {
+        let Some(cmd) = self.highlighted_command() else {
+            return Action::None;
+        };
+        let (name, effect) = (cmd.name, cmd.effect);
+        self.input.clear();
+        self.command_menu = None;
+        match effect {
+            CommandEffect::Quit => Action::Quit,
+            CommandEffect::ToggleTools => {
+                self.toggle_tool_view();
+                Action::ToggleToolView
+            }
+            CommandEffect::Clear => {
+                self.history.clear();
+                Action::Clear
+            }
+            CommandEffect::Help => Action::Notice(help_text()),
+            CommandEffect::Stub => {
+                Action::Notice(format!("/{name} isn't wired up yet — it's a scaffold."))
+            }
         }
     }
 
@@ -268,6 +504,16 @@ impl App {
     pub fn record_user_message(&mut self, text: &str) {
         self.history.push(HistoryItem::Message(Message {
             role: Role::User,
+            text: text.to_string(),
+        }));
+    }
+
+    /// Record a system notice (from a slash command) in the history, so it
+    /// repaints on resize like any other message. The loop also commits it to
+    /// scrollback. Mirrors [`record_user_message`] for [`Action::Notice`].
+    pub fn record_system_message(&mut self, text: &str) {
+        self.history.push(HistoryItem::Message(Message {
+            role: Role::System,
             text: text.to_string(),
         }));
     }
@@ -870,5 +1116,251 @@ mod tests {
             }
             other => panic!("unexpected interleaving: {other:?}"),
         }
+    }
+
+    // --- slash-command palette ---
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn command_query_detects_a_bare_slash_token() {
+        assert_eq!(command_query("/"), Some(""));
+        assert_eq!(command_query("/he"), Some("he"));
+        assert_eq!(command_query("/help"), Some("help"));
+    }
+
+    #[test]
+    fn command_query_is_none_for_non_command_input() {
+        assert_eq!(command_query(""), None);
+        assert_eq!(command_query("hello"), None);
+        assert_eq!(command_query("ask /help"), None); // not at the start
+        assert_eq!(command_query("/help me"), None); // past a space → args, not a token
+        assert_eq!(command_query("/a\nb"), None); // a newline ends the token too
+    }
+
+    #[test]
+    fn the_command_registry_is_non_empty_with_unique_lowercase_names() {
+        assert!(!COMMANDS.is_empty());
+        let mut seen = std::collections::HashSet::new();
+        for c in COMMANDS {
+            assert!(!c.name.is_empty());
+            assert!(
+                !c.name.starts_with('/'),
+                "names are stored without the slash"
+            );
+            assert_eq!(c.name, c.name.to_lowercase(), "names are lowercase");
+            assert!(seen.insert(c.name), "duplicate command /{}", c.name);
+        }
+    }
+
+    #[test]
+    fn matching_commands_filters_by_name_prefix_case_insensitively() {
+        assert_eq!(
+            matching_commands("").len(),
+            COMMANDS.len(),
+            "an empty query lists everything"
+        );
+        let hits = matching_commands("HE");
+        assert!(hits.iter().any(|c| c.name == "help"));
+        assert!(
+            hits.iter().all(|c| c.name.starts_with("he")),
+            "every match shares the prefix"
+        );
+    }
+
+    #[test]
+    fn typing_a_slash_opens_the_command_palette_at_the_top() {
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('/')));
+        let menu = app.command_menu.as_ref().expect("the palette is open");
+        assert_eq!(menu.selected, 0);
+    }
+
+    #[test]
+    fn typing_filters_and_clamps_the_selection() {
+        let mut app = App::new();
+        type_str(&mut app, "/quit");
+        assert!(app.command_menu.is_some(), "still a command token");
+        assert_eq!(matching_commands("quit").len(), 1);
+        assert_eq!(app.command_menu.as_ref().unwrap().selected, 0, "clamped");
+    }
+
+    #[test]
+    fn backspacing_the_slash_closes_the_palette() {
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('/')));
+        assert!(app.command_menu.is_some());
+        app.on_key(key(KeyCode::Backspace));
+        assert!(app.command_menu.is_none(), "removing the slash closes it");
+    }
+
+    #[test]
+    fn arrow_keys_move_the_palette_selection_within_bounds() {
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('/'))); // all commands listed
+        let n = COMMANDS.len();
+        for _ in 0..(n + 3) {
+            app.on_key(key(KeyCode::Down));
+        }
+        assert_eq!(
+            app.command_menu.as_ref().unwrap().selected,
+            n - 1,
+            "Down clamps at the last command"
+        );
+        for _ in 0..(n + 3) {
+            app.on_key(key(KeyCode::Up));
+        }
+        assert_eq!(
+            app.command_menu.as_ref().unwrap().selected,
+            0,
+            "Up clamps at the first"
+        );
+    }
+
+    #[test]
+    fn esc_closes_the_palette_instead_of_quitting() {
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('/')));
+        assert_eq!(
+            app.on_key(key(KeyCode::Esc)),
+            Action::None,
+            "esc dismisses the palette, it does not quit"
+        );
+        assert!(app.command_menu.is_none());
+    }
+
+    #[test]
+    fn esc_is_sticky_typing_within_the_same_token_does_not_reopen() {
+        let mut app = App::new();
+        type_str(&mut app, "/he");
+        app.on_key(key(KeyCode::Esc)); // dismiss
+        assert!(app.command_menu.is_none());
+        app.on_key(key(KeyCode::Char('l'))); // still within "/hel"
+        assert!(
+            app.command_menu.is_none(),
+            "stays dismissed while editing the same token"
+        );
+    }
+
+    #[test]
+    fn leaving_and_re_entering_command_mode_reopens_the_palette() {
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('/')));
+        app.on_key(key(KeyCode::Esc)); // dismissed
+        app.on_key(key(KeyCode::Backspace)); // delete '/', input now empty
+        assert!(app.command_menu.is_none());
+        app.on_key(key(KeyCode::Char('/'))); // re-enter command mode
+        assert!(
+            app.command_menu.is_some(),
+            "re-entering reopens the palette"
+        );
+    }
+
+    #[test]
+    fn enter_runs_the_quit_command() {
+        let mut app = App::new();
+        type_str(&mut app, "/quit");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Quit);
+    }
+
+    #[test]
+    fn enter_runs_the_tools_command_and_flips_the_view() {
+        let mut app = App::new();
+        type_str(&mut app, "/tools");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::ToggleToolView);
+        assert_eq!(app.view, View::ToolOutput, "the command opened the view");
+        assert!(app.input.is_empty(), "the command consumed the input");
+        assert!(app.command_menu.is_none(), "and closed the palette");
+    }
+
+    #[test]
+    fn enter_runs_the_clear_command_emptying_history() {
+        let mut app = App::new();
+        app.record_user_message("old message");
+        type_str(&mut app, "/clear");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
+        assert!(app.history.is_empty(), "clear emptied the conversation");
+    }
+
+    #[test]
+    fn enter_runs_help_posting_a_notice_that_lists_commands() {
+        let mut app = App::new();
+        type_str(&mut app, "/help");
+        match app.on_key(key(KeyCode::Enter)) {
+            Action::Notice(text) => {
+                assert!(text.contains("Available commands"), "{text:?}");
+                assert!(
+                    text.contains("/quit"),
+                    "the notice lists commands: {text:?}"
+                );
+            }
+            other => panic!("expected a Notice, got {other:?}"),
+        }
+        assert!(app.input.is_empty());
+        assert!(app.command_menu.is_none());
+    }
+
+    #[test]
+    fn enter_runs_a_stub_command_with_a_placeholder_notice() {
+        let mut app = App::new();
+        type_str(&mut app, "/model");
+        match app.on_key(key(KeyCode::Enter)) {
+            Action::Notice(text) => {
+                assert!(text.contains("model"), "names the command: {text:?}");
+                assert!(
+                    text.to_lowercase().contains("isn't"),
+                    "reads as not-yet-available: {text:?}"
+                );
+            }
+            other => panic!("expected a Notice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tab_runs_the_highlighted_command_like_enter() {
+        let mut app = App::new();
+        type_str(&mut app, "/quit");
+        assert_eq!(app.on_key(key(KeyCode::Tab)), Action::Quit);
+    }
+
+    #[test]
+    fn enter_with_no_matching_command_does_not_submit() {
+        let mut app = App::new();
+        type_str(&mut app, "/zzz");
+        assert!(app.command_menu.is_some(), "palette is open but empty");
+        assert!(matching_commands("zzz").is_empty());
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::None,
+            "a no-match query is not submitted as a message"
+        );
+        assert_eq!(app.input, "/zzz", "the input is left intact");
+    }
+
+    #[test]
+    fn enter_still_submits_a_normal_message_when_no_palette_is_open() {
+        let mut app = App::new();
+        app.input = "hello".to_string();
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Submit("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn record_system_message_appends_a_system_role_message() {
+        let mut app = App::new();
+        app.record_system_message("a notice");
+        assert_eq!(
+            app.history.last(),
+            Some(&HistoryItem::Message(Message {
+                role: Role::System,
+                text: "a notice".to_string(),
+            }))
+        );
     }
 }

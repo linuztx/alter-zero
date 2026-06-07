@@ -113,6 +113,27 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 repaint_conversation(term, &app, &mut committed)?;
                             }
                         }
+                        Action::Notice(text) => {
+                            // A slash command's one-off system notice. If a reply is
+                            // mid-flight, finalise its current segment first (same
+                            // ordering trick as a tool call) so the notice slots
+                            // after it in scrollback and history alike.
+                            let width = term.screen().width;
+                            if let Some(segment) = app.flush_streaming_segment() {
+                                term.insert_before(ui::final_commit(&segment, width, committed))?;
+                                term.insert_before(vec![Line::default()])?;
+                                committed = 0;
+                            }
+                            app.record_system_message(&text);
+                            term.insert_before(ui::message_lines(Role::System, &text, width))?;
+                            term.insert_before(vec![Line::default()])?;
+                        }
+                        Action::Clear => {
+                            // `/clear` already emptied app.history; repaint the now
+                            // blank inline view (clears the visible conversation).
+                            committed = 0;
+                            repaint_conversation(term, &app, &mut committed)?;
+                        }
                     }
                     dirty = true;
                 }
@@ -226,7 +247,13 @@ fn repaint_conversation(
     committed: &mut usize,
 ) -> io::Result<()> {
     let screen = term.screen();
-    let height = ui::live_height(&app.input, screen.width, screen.height, app.is_streaming());
+    let height = ui::live_height(
+        &app.input,
+        screen.width,
+        screen.height,
+        app.is_streaming(),
+        ui::menu_rows(app),
+    );
     let budget = ui::repaint_budget(screen.height, height);
     let tail = ui::repaint_lines(&app.history, screen.width, budget);
     term.reflow(tail, height)?;
@@ -238,10 +265,17 @@ fn repaint_conversation(
 /// while editing — it's hidden while a reply streams).
 fn draw(term: &mut InlineViewport, app: &App) -> io::Result<()> {
     let screen = term.screen();
-    let height = ui::live_height(&app.input, screen.width, screen.height, app.is_streaming());
+    let height = ui::live_height(
+        &app.input,
+        screen.width,
+        screen.height,
+        app.is_streaming(),
+        ui::menu_rows(app),
+    );
     // The cursor sits at the end of the input; `term` places it from the final
-    // (content-anchored) viewport, so we just say whether we're editing.
-    let cursor = (!app.is_streaming()).then_some(app.input.as_str());
+    // (content-anchored) viewport via `ui::cursor_position`, so we just hand it the
+    // app while editing (and `None` while streaming hides the cursor).
+    let cursor = (!app.is_streaming()).then_some(app);
     term.draw(height, |area, buf| ui::render_live(area, buf, app), cursor)
 }
 
