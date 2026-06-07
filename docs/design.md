@@ -83,19 +83,21 @@ unit-tested must be unit-tested.
   command token** — `/`, `/he`, `/help`, but *not* `ask /help` or anything past a
   space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
-  (`app::COMMANDS`: name + description + effect), filtered by name-prefix as you
-  type after the `/`; `/` alone lists everything. ↑/↓ move the highlight (the
-  window scrolls, capped at `MENU_MAX_ROWS`, to keep it visible); **Tab/Enter run**
-  the highlighted command; **Esc** dismisses the palette (instead of quitting) and
-  stays dismissed within the same token (delete the `/` and retype to reopen). The
-  box's top is unchanged when the palette opens — it's reserved *below* the box —
-  so the cursor never jumps. Running a command **consumes the input** and dispatches
-  an `Action`: `/quit` → `Quit`, `/tools` → `ToggleToolView`, `/clear` → `Clear`
-  (empties `history`, repaints), `/help` → `Notice` (lists the commands), and the
-  remaining stubs → `Notice` (a "not wired up yet" placeholder). A `Notice` is
-  recorded as a `Role::System` message and committed to scrollback like any other.
-  Adding a real command later is a one-line registry edit + an effect arm — the
-  palette, filtering, scrolling, and dispatch don't change.
+  (`app::COMMANDS`: name + description + effect — currently `/help` and `/clear`),
+  filtered by name-prefix as you type after the `/`; `/` alone lists everything.
+  ↑/↓ move the highlight (the window scrolls, capped at `MENU_MAX_ROWS`, to keep it
+  visible); the selection is shown **by colour** — the highlighted command's name
+  is bright (others dimmed), every description in a warm tan — **no caret/arrow**.
+  **Tab/Enter run** the highlighted command; **Esc** dismisses the palette (instead
+  of quitting) and stays dismissed within the same token (delete the `/` and retype
+  to reopen). The box's top is unchanged when the palette opens — it's reserved
+  *below* the box — so the cursor never jumps. Running a command **consumes the
+  input** and dispatches an `Action`: `/clear` → `Clear` (empties `history`,
+  repaints) and `/help` → `Notice` (lists the commands). A `Notice` is recorded as
+  a `Role::System` message and committed to scrollback like any other. Adding a
+  command later is a one-line registry edit + an effect arm in
+  `run_selected_command` — the palette, filtering, scrolling, and dispatch don't
+  change.
 - **Backend errors & cancellation.** A reply backend (`ReplySource`) may end with
   `Error(msg)` instead of `StreamDone`; the partial reply (if any) is kept and a
   red error notice is shown below it. The built-in `DummyAi` never errors — this is
@@ -147,13 +149,12 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
 - On `Error(msg)`: `App::fail_stream` records any non-empty partial reply, flushes
   it, then commits a red `Role::Error` notice (and records it in `history` so it
   repaints on resize); clears streaming state.
-- On `ToggleToolView` (Ctrl+O / Esc, **or `/tools`**): enter or leave the
-  alternate-screen overlay; on leaving, `repaint_conversation` reflows the inline
-  view to catch up.
-- On `Notice(text)` (a slash command's output — `/help` or a stub): if a reply is
-  mid-flight, `flush_streaming_segment` finalises its current segment first (the
-  same ordering trick a tool call uses), then `record_system_message` + an
-  `insert_before` commit a `Role::System` notice to scrollback.
+- On `ToggleToolView` (Ctrl+O / Esc): enter or leave the alternate-screen overlay;
+  on leaving, `repaint_conversation` reflows the inline view to catch up.
+- On `Notice(text)` (a slash command's output — `/help`): if a reply is mid-flight,
+  `flush_streaming_segment` finalises its current segment first (the same ordering
+  trick a tool call uses), then `record_system_message` + an `insert_before` commit
+  a `Role::System` notice to scrollback.
 - On `Clear` (`/clear`): `App::history` is already empty; `repaint_conversation`
   reflows the now-blank inline view (clears the visible conversation).
 - **In the tool-output view** every reply event still updates `App` (so the view
@@ -168,9 +169,9 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
 - `Action { None, Submit(String), ToggleToolView, Notice(String), Clear, Quit }` —
   returned by `App::on_key`.
 - `View { Conversation, ToolOutput }` — which screen is showing (Ctrl+O toggles).
-- `SlashCommand { name, description, effect }` + `CommandEffect { Quit,
-  ToggleTools, Clear, Help, Stub }` + the `COMMANDS` registry — the slash-command
-  palette's data; adding a command is one registry entry (+ an effect arm).
+- `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Help }` +
+  the `COMMANDS` registry (`/help`, `/clear`) — the slash-command palette's data;
+  adding a command is one registry entry (+ an effect arm).
 - `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
   `None` when closed); the matches are derived from the input on demand.
 - `Message { role, text }` — one finished message.
@@ -217,10 +218,9 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   the palette and filters/clamps the selection; ↑/↓ move within bounds; Backspace
   past the slash closes it; Esc dismisses (not quits) and is **sticky** within the
   same token (re-entering command mode reopens it); Enter/Tab run the highlighted
-  command, returning the right `Action` (`/quit`→`Quit`, `/tools`→`ToggleToolView`
-  + view flipped, `/clear`→`Clear` + history emptied, `/help`→`Notice` listing
-  commands, a stub→`Notice` placeholder) and consuming the input; an empty-match
-  Enter doesn't submit; with no palette open Enter still submits normally.
+  command, returning the right `Action` (`/clear`→`Clear` + history emptied,
+  `/help`→`Notice` listing commands) and consuming the input; an empty-match Enter
+  doesn't submit; with no palette open Enter still submits normally.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display
@@ -230,7 +230,8 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   messages interleaved with each tool's complete output, plus the live tail —
   status colour, scroll); the **command palette** — `menu_window` keeps the
   selection visible, `menu_rows` reserves the band (0 closed, capped, 1 for no
-  matches), `command_menu_lines` lists/marks/windows the matches (placeholder when
+  matches), `command_menu_lines` lists the matches and **highlights the selection
+  by colour** (bright name vs dimmed, tan descriptions, no caret; placeholder when
   empty), and `render_live` draws it below the box with the cursor unmoved; the
   growing-input geometry — `live_height` grows a row per wrapped line, adds the
   preview + gap strip only while streaming and the palette band below the box, and
@@ -300,13 +301,11 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   read it in full is the Ctrl+O conversation view, which shows the whole transcript
   with every tool expanded (by design — keeps the inline chat compact).
 - The slash-command palette only matches a **bare** `/token` (a leading slash, no
-  whitespace); there's no argument parsing yet, so commands that would take
-  arguments are stubs. Most seed commands (`/model`, `/retry`, `/copy`, `/theme`)
-  are placeholders that post a "not wired up yet" notice — promoting one is a
-  one-line registry edit (change its `CommandEffect`) plus an effect arm. Esc's
-  dismissal reopens on the next keystroke only if you leave and re-enter command
-  mode; and running a *content* command (`/help`/stub) mid-stream finalises the
-  reply's current segment first (so the notice never splits the reply), the same
-  ordering rule tool calls use.
+  whitespace); there's no argument parsing yet. The registry is intentionally small
+  for now (`/help`, `/clear`) — adding a command is a one-line `COMMANDS` entry plus
+  an effect arm in `run_selected_command`. Esc's dismissal reopens on the next
+  keystroke only if you leave and re-enter command mode; and running `/help`
+  mid-stream finalises the reply's current segment first (so the notice never
+  splits the reply), the same ordering rule tool calls use.
 - No spinner, timestamps, markdown rendering, or scrollback nav keys (YAGNI).
 ```

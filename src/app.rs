@@ -123,16 +123,10 @@ const TOOL_VIEW_PAGE: usize = 10;
 /// Wiring a stub up later is just swapping its effect here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommandEffect {
-    /// Quit the app (`/quit`).
-    Quit,
-    /// Toggle the Ctrl+O tool-output view (`/tools`).
-    ToggleTools,
     /// Clear the conversation history (`/clear`).
     Clear,
     /// Post the list of available commands as a system notice (`/help`).
     Help,
-    /// Not wired up yet — post a placeholder system notice naming the command.
-    Stub,
 }
 
 /// One entry in the slash-command palette: how it shows (`name`/`description`)
@@ -148,9 +142,9 @@ pub struct SlashCommand {
     pub effect: CommandEffect,
 }
 
-/// The available slash commands, in the order they list in the palette. Seeded
-/// with a few wired commands plus stubs so the palette has enough entries to
-/// scroll; a real command is a one-line edit (a new entry + an effect arm).
+/// The available slash commands, in the order they list in the palette. Adding a
+/// command is a one-line entry here plus an effect arm in `run_selected_command`;
+/// the palette, filtering, and scrolling don't change.
 pub const COMMANDS: &[SlashCommand] = &[
     SlashCommand {
         name: "help",
@@ -161,36 +155,6 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "clear",
         description: "Clear the conversation",
         effect: CommandEffect::Clear,
-    },
-    SlashCommand {
-        name: "tools",
-        description: "Open the tool-output view",
-        effect: CommandEffect::ToggleTools,
-    },
-    SlashCommand {
-        name: "model",
-        description: "Switch the model (coming soon)",
-        effect: CommandEffect::Stub,
-    },
-    SlashCommand {
-        name: "retry",
-        description: "Regenerate the last reply (coming soon)",
-        effect: CommandEffect::Stub,
-    },
-    SlashCommand {
-        name: "copy",
-        description: "Copy the last reply (coming soon)",
-        effect: CommandEffect::Stub,
-    },
-    SlashCommand {
-        name: "theme",
-        description: "Change the colour theme (coming soon)",
-        effect: CommandEffect::Stub,
-    },
-    SlashCommand {
-        name: "quit",
-        description: "Exit inline-tui",
-        effect: CommandEffect::Quit,
     },
 ];
 
@@ -422,23 +386,15 @@ impl App {
         let Some(cmd) = self.highlighted_command() else {
             return Action::None;
         };
-        let (name, effect) = (cmd.name, cmd.effect);
+        let effect = cmd.effect;
         self.input.clear();
         self.command_menu = None;
         match effect {
-            CommandEffect::Quit => Action::Quit,
-            CommandEffect::ToggleTools => {
-                self.toggle_tool_view();
-                Action::ToggleToolView
-            }
             CommandEffect::Clear => {
                 self.history.clear();
                 Action::Clear
             }
             CommandEffect::Help => Action::Notice(help_text()),
-            CommandEffect::Stub => {
-                Action::Notice(format!("/{name} isn't wired up yet — it's a scaffold."))
-            }
         }
     }
 
@@ -1183,9 +1139,9 @@ mod tests {
     #[test]
     fn typing_filters_and_clamps_the_selection() {
         let mut app = App::new();
-        type_str(&mut app, "/quit");
+        type_str(&mut app, "/cl");
         assert!(app.command_menu.is_some(), "still a command token");
-        assert_eq!(matching_commands("quit").len(), 1);
+        assert_eq!(matching_commands("cl").len(), 1, "only /clear matches");
         assert_eq!(app.command_menu.as_ref().unwrap().selected, 0, "clamped");
     }
 
@@ -1261,23 +1217,6 @@ mod tests {
     }
 
     #[test]
-    fn enter_runs_the_quit_command() {
-        let mut app = App::new();
-        type_str(&mut app, "/quit");
-        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Quit);
-    }
-
-    #[test]
-    fn enter_runs_the_tools_command_and_flips_the_view() {
-        let mut app = App::new();
-        type_str(&mut app, "/tools");
-        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::ToggleToolView);
-        assert_eq!(app.view, View::ToolOutput, "the command opened the view");
-        assert!(app.input.is_empty(), "the command consumed the input");
-        assert!(app.command_menu.is_none(), "and closed the palette");
-    }
-
-    #[test]
     fn enter_runs_the_clear_command_emptying_history() {
         let mut app = App::new();
         app.record_user_message("old message");
@@ -1294,7 +1233,7 @@ mod tests {
             Action::Notice(text) => {
                 assert!(text.contains("Available commands"), "{text:?}");
                 assert!(
-                    text.contains("/quit"),
+                    text.contains("/clear"),
                     "the notice lists commands: {text:?}"
                 );
             }
@@ -1305,26 +1244,12 @@ mod tests {
     }
 
     #[test]
-    fn enter_runs_a_stub_command_with_a_placeholder_notice() {
-        let mut app = App::new();
-        type_str(&mut app, "/model");
-        match app.on_key(key(KeyCode::Enter)) {
-            Action::Notice(text) => {
-                assert!(text.contains("model"), "names the command: {text:?}");
-                assert!(
-                    text.to_lowercase().contains("isn't"),
-                    "reads as not-yet-available: {text:?}"
-                );
-            }
-            other => panic!("expected a Notice, got {other:?}"),
-        }
-    }
-
-    #[test]
     fn tab_runs_the_highlighted_command_like_enter() {
         let mut app = App::new();
-        type_str(&mut app, "/quit");
-        assert_eq!(app.on_key(key(KeyCode::Tab)), Action::Quit);
+        app.record_user_message("old message");
+        type_str(&mut app, "/clear");
+        assert_eq!(app.on_key(key(KeyCode::Tab)), Action::Clear);
+        assert!(app.history.is_empty(), "Tab ran the command, like Enter");
     }
 
     #[test]

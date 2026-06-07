@@ -114,13 +114,13 @@ there too.
 
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
-`app::COMMANDS` (`SlashCommand { name, description, effect }`) is filtered by
-`matching_commands`, and ↑/↓ scroll / Tab+Enter run the highlighted command. A
-command dispatches an `Action` (`/quit`→`Quit`, `/tools`→`ToggleToolView`,
-`/clear`→`Clear`, `/help` + stubs→`Notice(String)` committed as a `Role::System`
-message). Wiring a stub up later is a one-line registry edit (its `CommandEffect`)
-plus an effect arm in `App::run_selected_command`; the palette/filter/scroll don't
-change.
+`app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`
+and `/clear`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+the highlighted command. The selection is shown **by colour** (a bright name vs
+dimmed names, tan descriptions — no caret). A command dispatches an `Action`
+(`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
+message). Adding a command later is a one-line `COMMANDS` entry plus an effect arm
+in `App::run_selected_command`; the palette/filter/scroll don't change.
 
 ## Working style
 
@@ -159,8 +159,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   prompt, colours (including the red error bullet and the cyan system bullet),
   border, the tool-call styling (`TOOL_*` — blue/green/red status colours, the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
-  (`TOOL_VIEW_*`), the slash-command palette (`MENU_*` — the row prefixes, name/
-  description colours, the selected-row background, and `MENU_MAX_ROWS` cap), and
+  (`TOOL_VIEW_*`), the slash-command palette (`MENU_*` — the row indent, the
+  bright/dimmed name colours that mark the selection, the tan description colour,
+  and the `MENU_MAX_ROWS` cap), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap strip shows *only while streaming* — `strip_rows` — and the
   command palette is a third band *below* the box — `menu_rows` — so the box's

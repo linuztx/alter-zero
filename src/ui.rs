@@ -98,22 +98,21 @@ const TOOL_VIEW_TITLE_ROWS: u16 = 1;
 
 // --- Slash-command palette. A scrolling, single-line-per-command list pinned
 // **below the input box** (a third live-region band) whenever the input is a bare
-// command token. Each row is `prefix /name  description`; the highlighted row
-// carries a background bar and a caret. Capped at `MENU_MAX_ROWS`; longer lists
-// scroll to keep the selection visible (`menu_window`). ---
+// command token. Each row is `  /name  description`; the selection is shown by
+// **colour** (a bright name vs dimmed names — no caret/arrow), Claude-Code style.
+// Capped at `MENU_MAX_ROWS`; longer lists scroll to keep the selection visible
+// (`menu_window`). ---
 
 /// The most command rows shown at once; longer match lists scroll within this.
 const MENU_MAX_ROWS: u16 = 5;
-/// Prefix for an unselected palette row (aligns names under the caret column).
+/// Indent before every command name (selection is by colour, not a caret).
 const MENU_PREFIX: &str = "  ";
-/// Prefix marking the highlighted palette row (a caret, same width as the indent).
-const MENU_SELECTED_PREFIX: &str = "❯ ";
-/// White — a command's `/name`.
+/// White (bold) — the **highlighted** command's `/name`.
 const MENU_NAME_COLOR: Color = AI_COLOR;
-/// Dim grey — a command's description (and the no-match placeholder).
-const MENU_DESC_COLOR: Color = TOOL_DIM_COLOR;
-/// Background bar filling the highlighted palette row (shares the user-message bg).
-const MENU_SELECTED_BG: Color = USER_BG_COLOR;
+/// Dim grey — an unselected command's `/name`.
+const MENU_NAME_DIM_COLOR: Color = TOOL_DIM_COLOR;
+/// Warm tan — every command's description (the visible "highlight with colour").
+const MENU_DESC_COLOR: Color = Color::Rgb(0xD7, 0xAF, 0x87);
 
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
@@ -485,40 +484,30 @@ pub fn menu_window(len: usize, selected: usize, max: usize) -> usize {
     }
 }
 
-/// One palette row: `prefix /name  description`, padded to `width` so the
-/// highlighted row's background bar fills the line. The selected row gets a caret
-/// prefix and a background; others get a plain indent.
+/// One palette row: `  /name  description`. The selection is shown by **colour**
+/// — the highlighted row's name is bright (and bold), unselected names are dimmed;
+/// every description is the warm accent. No caret, no background bar.
 fn menu_row(cmd: &SlashCommand, selected: bool, width: u16) -> Line<'static> {
-    let prefix = if selected {
-        MENU_SELECTED_PREFIX
-    } else {
-        MENU_PREFIX
-    };
     let name = format!("/{}", cmd.name);
     let gap = "  ";
     let cw = width as usize;
-    // Columns left for the description after the prefix, name, and gap; truncate
-    // it to fit, then pad the row out to the full width.
-    let used = cols(prefix) + cols(&name) + cols(gap);
+    // Columns left for the description after the indent, name, and gap; truncate
+    // it to fit the row.
+    let used = cols(MENU_PREFIX) + cols(&name) + cols(gap);
     let desc = truncate_cols(cmd.description, cw.saturating_sub(used));
-    let pad = " ".repeat(cw.saturating_sub(used + cols(&desc)));
-    let line = Line::from(vec![
-        Span::raw(prefix.to_string()),
-        Span::styled(
-            name,
-            Style::new()
-                .fg(MENU_NAME_COLOR)
-                .add_modifier(Modifier::BOLD),
-        ),
+    let name_style = if selected {
+        Style::new()
+            .fg(MENU_NAME_COLOR)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(MENU_NAME_DIM_COLOR)
+    };
+    Line::from(vec![
+        Span::raw(MENU_PREFIX.to_string()),
+        Span::styled(name, name_style),
         Span::raw(gap.to_string()),
         Span::styled(desc, Style::new().fg(MENU_DESC_COLOR)),
-        Span::raw(pad),
-    ]);
-    if selected {
-        line.style(Style::new().bg(MENU_SELECTED_BG))
-    } else {
-        line
-    }
+    ])
 }
 
 /// The styled lines for the open command palette: the filtered commands, windowed
@@ -1682,8 +1671,12 @@ mod tests {
     }
 
     #[test]
-    fn menu_rows_caps_at_the_max_and_reserves_a_row_for_no_matches() {
-        assert_eq!(menu_rows(&palette("/", 0)), MENU_MAX_ROWS, "capped");
+    fn menu_rows_counts_matches_capped_with_a_placeholder_for_none() {
+        assert_eq!(
+            menu_rows(&palette("/", 0)),
+            (crate::app::COMMANDS.len() as u16).min(MENU_MAX_ROWS),
+            "match count, capped at the max"
+        );
         assert_eq!(menu_rows(&palette("/zzz", 0)), 1, "placeholder row");
     }
 
@@ -1703,36 +1696,37 @@ mod tests {
     }
 
     #[test]
-    fn command_menu_marks_the_selected_row() {
+    fn command_menu_highlights_the_selected_row_by_colour_not_a_caret() {
+        // Two commands, the second highlighted. The selection is shown by colour:
+        // the highlighted name is bright, the others dimmed — no arrow/caret.
         let lines = command_menu_lines(&palette("/", 1), 60);
+        let name_fg = |l: &Line| l.spans[1].style.fg; // spans = [indent, name, …]
         assert_eq!(
-            lines[1].style.bg,
-            Some(MENU_SELECTED_BG),
-            "the selected row is highlighted"
+            name_fg(&lines[1]),
+            Some(MENU_NAME_COLOR),
+            "the selected name is the bright colour"
         );
-        assert_ne!(
-            lines[0].style.bg,
-            Some(MENU_SELECTED_BG),
-            "others are not highlighted"
+        assert_eq!(
+            name_fg(&lines[0]),
+            Some(MENU_NAME_DIM_COLOR),
+            "unselected names are dimmed"
         );
+        for line in &lines {
+            assert!(
+                !plain(line).contains('❯'),
+                "no caret marks a row: {:?}",
+                plain(line)
+            );
+        }
     }
 
     #[test]
-    fn command_menu_windows_to_keep_the_selection_visible() {
-        let n = crate::app::COMMANDS.len();
-        let texts: Vec<String> = command_menu_lines(&palette("/", n - 1), 60)
-            .iter()
-            .map(|l| plain(l).trim_end().to_string())
-            .collect();
-        assert_eq!(texts.len(), MENU_MAX_ROWS as usize);
-        assert!(
-            texts.iter().any(|t| t.contains("/quit")),
-            "last command visible: {texts:?}"
-        );
-        assert!(
-            !texts.iter().any(|t| t.contains("/help")),
-            "first scrolled off: {texts:?}"
-        );
+    fn command_menu_descriptions_use_the_warm_accent_colour() {
+        // Every row's description is rendered in the warm accent (the visible
+        // "highlight the text with colour"); the name span precedes it.
+        let lines = command_menu_lines(&palette("/", 0), 60);
+        let desc_fg = lines[0].spans[3].style.fg; // [indent, name, gap, desc]
+        assert_eq!(desc_fg, Some(MENU_DESC_COLOR));
     }
 
     #[test]
