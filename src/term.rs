@@ -29,7 +29,9 @@ use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use ratatui::crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
@@ -189,6 +191,49 @@ impl InlineViewport {
         self.backend.set_cursor_position(Position::new(0, 0))?;
         self.view = Rect::new(0, 0, self.screen.width, height);
         self.insert_before(tail)
+    }
+
+    /// Switch to the alternate screen for the full-screen tool-output overlay,
+    /// preserving the inline conversation (the main screen + its scrollback) so
+    /// [`exit_overlay`] restores it untouched. The caller paints with
+    /// [`draw_overlay`] and must call [`exit_overlay`] to come back.
+    ///
+    /// [`exit_overlay`]: InlineViewport::exit_overlay
+    /// [`draw_overlay`]: InlineViewport::draw_overlay
+    pub fn enter_overlay(&mut self) -> io::Result<()> {
+        execute!(self.backend, EnterAlternateScreen)?;
+        self.backend.hide_cursor()?;
+        self.backend.clear_region(ClearType::All)?;
+        Backend::flush(&mut self.backend)
+    }
+
+    /// Leave the alternate screen, restoring the inline conversation exactly as it
+    /// was. The caller then repaints it (via [`reflow`]) to catch up on anything
+    /// that streamed while the overlay was showing.
+    ///
+    /// [`reflow`]: InlineViewport::reflow
+    pub fn exit_overlay(&mut self) -> io::Result<()> {
+        execute!(self.backend, LeaveAlternateScreen)?;
+        Backend::flush(&mut self.backend)
+    }
+
+    /// Paint a full-screen `render` onto the alternate screen (used for the
+    /// tool-output overlay). Draws every cell of the screen, so empty rows are
+    /// blanked — no separate clear needed between frames.
+    pub fn draw_overlay(&mut self, render: impl FnOnce(Rect, &mut Buffer)) -> io::Result<()> {
+        if self.screen.width == 0 || self.screen.height == 0 {
+            return Ok(());
+        }
+        let mut buf = Buffer::empty(self.screen);
+        render(self.screen, &mut buf);
+        let width = self.screen.width as usize;
+        let iter = buf
+            .content
+            .iter()
+            .enumerate()
+            .map(|(i, c)| ((i % width) as u16, (i / width) as u16, c));
+        self.backend.draw(iter)?;
+        Backend::flush(&mut self.backend)
     }
 
     /// Leave raw mode and drop the cursor below the live region so the shell

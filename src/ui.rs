@@ -78,6 +78,16 @@ const TOOL_NAME_COLOR: Color = AI_COLOR;
 /// Dim grey — a tool's argument summary and its collapsed peek/hint.
 const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
 
+// --- Tool-output view (the Ctrl+O full-screen overlay). A one-row title above a
+// scrolling body that lists every tool call's *full* output. ---
+
+/// Title shown at the top of the tool-output view.
+const TOOL_VIEW_TITLE: &str = "Tool output";
+/// Key hint shown beside the title.
+const TOOL_VIEW_HINT: &str = "  ↑/↓ PgUp/PgDn scroll · ctrl+o / esc return";
+/// Rows of chrome above the scrolling body (just the title row).
+const TOOL_VIEW_TITLE_ROWS: u16 = 1;
+
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
 // derive their layout from `input_box` so the drawn text and cursor never drift;
@@ -408,16 +418,14 @@ fn truncate_cols(s: &str, max: usize) -> String {
     out
 }
 
-/// Build the styled lines for one tool call as shown **inline**: a coloured
-/// bullet header `● name(args)`, then a collapsed one-line peek of its output
-/// with a `(ctrl+o to expand)` hint when more is hidden. The full output is only
-/// rendered in the separate tool-output view, never here.
-#[must_use]
-pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+/// The coloured bullet header line for a tool: `● name(args)`, the bullet
+/// recoloured by lifecycle (blue/green/red). Shared by the inline collapsed view
+/// ([`tool_lines`]) and the full-screen view ([`tool_view_lines`]).
+fn tool_header(tool: &ToolCall) -> Line<'static> {
     let bullet_style = Style::new()
         .fg(tool_status_color(tool.status))
         .add_modifier(Modifier::BOLD);
-    let header = Line::from(vec![
+    Line::from(vec![
         Span::styled(TOOL_BULLET.to_string(), bullet_style),
         Span::styled(
             tool.name.clone(),
@@ -426,7 +434,16 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("({})", tool.args), Style::new().fg(TOOL_DIM_COLOR)),
-    ]);
+    ])
+}
+
+/// Build the styled lines for one tool call as shown **inline**: a coloured
+/// bullet header `● name(args)`, then a collapsed one-line peek of its output
+/// with a `(ctrl+o to expand)` hint when more is hidden. The full output is only
+/// rendered in the separate tool-output view, never here.
+#[must_use]
+pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+    let header = tool_header(tool);
 
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let peek_width = (width as usize)
@@ -466,6 +483,78 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         ]));
     }
     lines
+}
+
+/// Build the full content of the tool-output view: every tool call's coloured
+/// header followed by its **complete** output (wrapped and indented), with a
+/// blank line between tools. This is the expanded counterpart of [`tool_lines`]
+/// — nothing is collapsed here. An empty list yields a single placeholder line.
+#[must_use]
+pub fn tool_view_lines(tools: &[&ToolCall], width: u16) -> Vec<Line<'static>> {
+    if tools.is_empty() {
+        return vec![Line::from(Span::styled(
+            "No tool calls yet.".to_string(),
+            Style::new().fg(TOOL_DIM_COLOR),
+        ))];
+    }
+    let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let mut lines = Vec::new();
+    for tool in tools {
+        lines.push(tool_header(tool));
+        let body = match (tool.status, tool.output.is_empty()) {
+            (ToolStatus::Running, true) => vec!["running…".to_string()],
+            (_, true) => vec!["(no output)".to_string()],
+            _ => wrap_text(&tool.output, content_width),
+        };
+        for out in body {
+            lines.push(Line::from(vec![
+                Span::raw(INDENT.to_string()),
+                Span::styled(out, dim),
+            ]));
+        }
+        lines.push(Line::default()); // blank line between tools
+    }
+    lines
+}
+
+/// The largest the tool-output scroll offset can be on a `screen_height`-row
+/// screen — the total content height minus the scrolling body — so the last
+/// line can reach the bottom but not scroll past it. The loop clamps
+/// `App::tool_scroll` to this each draw.
+#[must_use]
+pub fn tool_view_max_scroll(tools: &[&ToolCall], width: u16, screen_height: u16) -> usize {
+    let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS) as usize;
+    tool_view_lines(tools, width).len().saturating_sub(body)
+}
+
+/// Render the full-screen tool-output view: a title row, then the scrolling body
+/// of every tool call's full output, windowed by `App::tool_scroll` (clamped so
+/// it can't run past the end). Pure — `term.rs` paints this onto the overlay.
+pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
+    let [title_area, body_area] =
+        Layout::vertical([Constraint::Length(TOOL_VIEW_TITLE_ROWS), Constraint::Min(0)])
+            .areas(area);
+
+    let tools = app.tool_calls();
+    let title = Line::from(vec![
+        Span::styled(
+            format!("{TOOL_VIEW_TITLE} ({})", tools.len()),
+            Style::new().fg(AI_COLOR).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(TOOL_VIEW_HINT.to_string(), Style::new().fg(TOOL_DIM_COLOR)),
+    ]);
+    Paragraph::new(title).render(title_area, buf);
+
+    let lines = tool_view_lines(&tools, body_area.width);
+    let max = lines.len().saturating_sub(body_area.height as usize);
+    let scroll = app.tool_scroll.min(max);
+    let visible: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(body_area.height as usize)
+        .collect();
+    Paragraph::new(visible).render(body_area, buf);
 }
 
 /// Decide which assistant lines are now safe to flush to scrollback as a reply
@@ -783,6 +872,102 @@ mod tests {
         for line in &lines {
             assert!(cols(&plain(line)) <= 30, "no line exceeds the width");
         }
+    }
+
+    // --- tool-output view (the Ctrl+O full-screen overlay) ---
+
+    #[test]
+    fn tool_view_lines_shows_each_tools_full_output() {
+        let t1 = tool("Read", "f", ToolStatus::Ok, "l1\nl2\nl3");
+        let t2 = tool("Bash", "b", ToolStatus::Failed, "err");
+        let texts: Vec<String> = tool_view_lines(&[&t1, &t2], 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(texts.iter().any(|t| t == "● Read(f)"), "{texts:?}");
+        // The *full* output is present — every line, not collapsed.
+        for needle in ["l1", "l2", "l3"] {
+            assert!(
+                texts.iter().any(|t| t.contains(needle)),
+                "missing {needle:?} in {texts:?}"
+            );
+        }
+        assert!(texts.iter().any(|t| t == "● Bash(b)"));
+        assert!(texts.iter().any(|t| t.contains("err")));
+    }
+
+    #[test]
+    fn tool_view_lines_colours_the_header_by_status() {
+        let t = tool("Read", "f", ToolStatus::Ok, "x");
+        let lines = tool_view_lines(&[&t], 80);
+        assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_OK_COLOR));
+    }
+
+    #[test]
+    fn tool_view_lines_of_no_tools_is_a_placeholder() {
+        let lines = tool_view_lines(&[], 80);
+        assert!(
+            plain(&lines[0]).to_lowercase().contains("no tool"),
+            "{:?}",
+            plain(&lines[0])
+        );
+    }
+
+    #[test]
+    fn render_tool_view_shows_a_title_and_the_full_output() {
+        let mut app = App::new();
+        app.start_tool("Read", "src/main.rs");
+        app.end_tool("alpha\nbeta", true);
+        app.view = crate::app::View::ToolOutput;
+        let mut buf = buffer(40, 10);
+        render_tool_view(buf.area, &mut buf, &app);
+        let all: String = (0..10)
+            .map(|y| row(&buf, y, 40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("Tool output"), "title present: {all:?}");
+        assert!(all.contains("Read(src/main.rs)"), "{all:?}");
+        assert!(all.contains("alpha") && all.contains("beta"), "{all:?}");
+    }
+
+    #[test]
+    fn render_tool_view_scrolls_past_the_top() {
+        let mut app = App::new();
+        app.start_tool("Read", "f");
+        let output = (0..20)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.end_tool(&output, true);
+        app.view = crate::app::View::ToolOutput;
+        app.tool_scroll = 8;
+        let mut buf = buffer(40, 8);
+        render_tool_view(buf.area, &mut buf, &app);
+        let all: String = (0..8)
+            .map(|y| row(&buf, y, 40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !all.contains("line0"),
+            "scrolled past the first line: {all:?}"
+        );
+        assert!(all.contains("line"), "still shows some output: {all:?}");
+    }
+
+    #[test]
+    fn tool_view_max_scroll_is_total_lines_minus_the_body() {
+        let output = (0..20)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let t = tool("Read", "f", ToolStatus::Ok, &output);
+        let total = tool_view_lines(&[&t], 40).len();
+        let screen_h = 10u16;
+        let body = (screen_h - TOOL_VIEW_TITLE_ROWS) as usize;
+        assert_eq!(
+            tool_view_max_scroll(&[&t], 40, screen_h),
+            total.saturating_sub(body)
+        );
     }
 
     // --- render_live (against a plain Buffer) ---

@@ -84,9 +84,28 @@ pub enum Action {
     None,
     /// The user submitted a (non-empty) message; start a reply for it.
     Submit(String),
+    /// The user toggled the tool-output view (Ctrl+O, or Esc to leave it). The
+    /// loop syncs the full-screen overlay to the now-updated [`App::view`].
+    ToggleToolView,
     /// The user asked to quit.
     Quit,
 }
+
+/// Which screen is showing. The conversation is the inline TUI; the tool-output
+/// view is a separate full-screen overlay listing every tool call's full output
+/// (Ctrl+O toggles between them). The conversation keeps streaming underneath
+/// either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum View {
+    /// The inline conversation (default).
+    #[default]
+    Conversation,
+    /// The full-screen tool-output viewer.
+    ToolOutput,
+}
+
+/// How many lines PageUp/PageDown move the tool-output view.
+const TOOL_VIEW_PAGE: usize = 10;
 
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished
@@ -109,6 +128,10 @@ pub struct App {
     /// Every finished message and tool call, oldest first — used to repaint after
     /// a resize or on returning from the tool-output view.
     pub history: Vec<HistoryItem>,
+    /// Which screen is showing (Ctrl+O toggles to the tool-output view).
+    pub view: View,
+    /// The tool-output view's vertical scroll offset, in lines from the top.
+    pub tool_scroll: usize,
 }
 
 impl App {
@@ -126,12 +149,28 @@ impl App {
 
     /// Handle one key press and report what the event loop should do.
     ///
-    /// Sending is disabled while a reply streams; quitting always works.
+    /// Sending is disabled while a reply streams; quitting (Ctrl+C) and the
+    /// tool-view toggle (Ctrl+O) always work, from either screen. Other keys are
+    /// dispatched to the active [`View`].
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         // Ctrl+C quits regardless of which key character it is paired with.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Action::Quit;
         }
+        // Ctrl+O toggles the full-screen tool-output view from either screen —
+        // even mid-stream, so the conversation keeps updating underneath it.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+            self.toggle_tool_view();
+            return Action::ToggleToolView;
+        }
+        match self.view {
+            View::Conversation => self.on_key_conversation(key),
+            View::ToolOutput => self.on_key_tool_view(key),
+        }
+    }
+
+    /// Keys while the inline conversation is showing.
+    fn on_key_conversation(&mut self, key: KeyEvent) -> Action {
         match key.code {
             KeyCode::Esc => Action::Quit,
             // Alt+Enter (and Shift+Enter where the terminal reports it) inserts a
@@ -161,6 +200,68 @@ impl App {
             }
             _ => Action::None,
         }
+    }
+
+    /// Keys while the full-screen tool-output view is showing: it is a read-only
+    /// scroller, so typing is ignored; Esc (like Ctrl+O) returns to the chat.
+    fn on_key_tool_view(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc => {
+                self.toggle_tool_view(); // Esc closes the overlay, back to chat
+                Action::ToggleToolView
+            }
+            KeyCode::Up => {
+                self.tool_scroll = self.tool_scroll.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                self.tool_scroll = self.tool_scroll.saturating_add(1);
+                Action::None
+            }
+            KeyCode::PageUp => {
+                self.tool_scroll = self.tool_scroll.saturating_sub(TOOL_VIEW_PAGE);
+                Action::None
+            }
+            KeyCode::PageDown => {
+                self.tool_scroll = self.tool_scroll.saturating_add(TOOL_VIEW_PAGE);
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// Flip between the conversation and the tool-output view, resetting the
+    /// view's scroll so it opens at the top.
+    fn toggle_tool_view(&mut self) {
+        self.view = match self.view {
+            View::Conversation => View::ToolOutput,
+            View::ToolOutput => View::Conversation,
+        };
+        self.tool_scroll = 0;
+    }
+
+    /// Every tool call to list in the tool-output view, in order: the finished
+    /// ones from history, then the one currently running (if any).
+    #[must_use]
+    pub fn tool_calls(&self) -> Vec<&ToolCall> {
+        let mut calls: Vec<&ToolCall> = self
+            .history
+            .iter()
+            .filter_map(|item| match item {
+                HistoryItem::Tool(tool) => Some(tool),
+                HistoryItem::Message(_) => None,
+            })
+            .collect();
+        if let Some(running) = &self.current_tool {
+            calls.push(running);
+        }
+        calls
+    }
+
+    /// Clamp the tool-view scroll so it can't run past the last line (the loop
+    /// calls this each draw with the max the current screen allows).
+    pub fn clamp_tool_scroll(&mut self, max: usize) {
+        self.tool_scroll = self.tool_scroll.min(max);
     }
 
     /// Record a finished user message in the history.
@@ -616,6 +717,118 @@ mod tests {
         assert!(app.finish_stream().is_none());
         assert!(app.history.is_empty());
         assert!(!app.is_streaming());
+    }
+
+    // --- tool-output view (Ctrl+O) ---
+
+    fn ctrl(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_o_toggles_into_and_out_of_the_tool_view() {
+        let mut app = App::new();
+        assert_eq!(app.view, View::Conversation);
+        assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+        assert_eq!(app.view, View::ToolOutput);
+        assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+        assert_eq!(app.view, View::Conversation);
+    }
+
+    #[test]
+    fn ctrl_o_opens_the_tool_view_even_while_streaming() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.on_key(ctrl('o'));
+        assert_eq!(app.view, View::ToolOutput, "the overlay opens mid-stream");
+        assert!(
+            app.is_streaming(),
+            "and the stream keeps running underneath"
+        );
+    }
+
+    #[test]
+    fn esc_in_the_tool_view_returns_to_the_conversation_not_quit() {
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        assert_eq!(app.view, View::ToolOutput);
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::ToggleToolView);
+        assert_eq!(app.view, View::Conversation, "esc closes the overlay");
+    }
+
+    #[test]
+    fn esc_in_the_conversation_still_quits() {
+        let mut app = App::new();
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
+    }
+
+    #[test]
+    fn ctrl_c_quits_from_the_tool_view_too() {
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        assert_eq!(app.on_key(ctrl('c')), Action::Quit);
+    }
+
+    #[test]
+    fn scroll_keys_move_the_tool_view_offset() {
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        app.tool_scroll = 5;
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.tool_scroll, 4, "up scrolls toward the top");
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.tool_scroll, 5, "down scrolls toward the bottom");
+        app.on_key(key(KeyCode::PageDown));
+        assert_eq!(app.tool_scroll, 5 + TOOL_VIEW_PAGE);
+        app.on_key(key(KeyCode::Up)); // saturating, never underflows below 0
+        app.on_key(key(KeyCode::PageUp));
+        assert_eq!(app.tool_scroll, 5 + TOOL_VIEW_PAGE - 1 - TOOL_VIEW_PAGE);
+    }
+
+    #[test]
+    fn typing_is_ignored_in_the_tool_view() {
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(app.input, "", "the read-only viewer swallows typing");
+    }
+
+    #[test]
+    fn toggling_the_view_resets_the_scroll() {
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        app.tool_scroll = 7;
+        app.on_key(ctrl('o')); // leave
+        app.on_key(ctrl('o')); // re-enter
+        assert_eq!(app.tool_scroll, 0, "re-opening starts at the top");
+    }
+
+    #[test]
+    fn clamp_tool_scroll_caps_the_offset() {
+        let mut app = App::new();
+        app.tool_scroll = 100;
+        app.clamp_tool_scroll(12);
+        assert_eq!(app.tool_scroll, 12);
+        app.clamp_tool_scroll(50);
+        assert_eq!(app.tool_scroll, 12, "clamp only lowers, never raises");
+    }
+
+    #[test]
+    fn tool_calls_lists_finished_then_running() {
+        let mut app = App::new();
+        app.start_tool("Read", "a");
+        app.end_tool("done", true);
+        app.start_tool("Bash", "b"); // still running
+        let calls = app.tool_calls();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].name, "Read");
+        assert_eq!(calls[0].status, ToolStatus::Ok);
+        assert_eq!(calls[1].name, "Bash");
+        assert_eq!(
+            calls[1].status,
+            ToolStatus::Running,
+            "the running one is last"
+        );
     }
 
     #[test]

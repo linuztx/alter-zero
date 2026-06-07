@@ -5,9 +5,10 @@
 //! in `app`, `ui`, `stream`, and the geometry helpers `term` consumes. Its job is
 //! only to:
 //!
-//! 1. open the custom inline viewport ([`term::InlineViewport`] — no alternate
-//!    screen, real scrollback preserved, **dynamic** content-anchored height),
-//! 2. read keyboard input and drain streamed chunks in one loop,
+//! 1. open the custom inline viewport ([`term::InlineViewport`] — inline, real
+//!    scrollback preserved, **dynamic** content-anchored height; an
+//!    alternate-screen overlay is used *only* for the Ctrl+O tool-output view),
+//! 2. read keyboard input and drain streamed events in one loop,
 //! 3. translate the [`App`]'s decisions into `insert_before` / `draw` calls.
 //!
 //! Input is read on the **main thread** with `event::poll`; only the streaming
@@ -16,9 +17,9 @@
 //! position over stdin, and a second thread reading stdin would steal the reply
 //! to that query — the source of the "cursor position could not be read" error.
 //!
-//! On **any width change** the visible conversation needs re-wrapping, so `App`
-//! retains a `history` of finished messages and we repaint from it — see
-//! [`reflow_after_resize`].
+//! On **any width change** (and on returning from the tool-output overlay) the
+//! visible conversation needs re-wrapping, so `App` retains a `history` and we
+//! repaint from it — see [`repaint_conversation`].
 
 use std::io;
 use std::sync::mpsc;
@@ -28,7 +29,7 @@ use std::time::Duration;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
 use ratatui::text::Line;
 
-use inline_tui::app::{Action, App, Role};
+use inline_tui::app::{Action, App, Role, View};
 use inline_tui::stream::{CancelToken, DummyAi, ReplySource, StreamEvent};
 use inline_tui::term::InlineViewport;
 use inline_tui::ui;
@@ -63,7 +64,10 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
 
     loop {
         if dirty {
-            draw(term, &app)?;
+            match app.view {
+                View::Conversation => draw(term, &app)?,
+                View::ToolOutput => draw_tool_view(term, &mut app)?,
+            }
             dirty = false;
         }
 
@@ -78,7 +82,14 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match app.on_key(key) {
-                        Action::Quit => break,
+                        Action::Quit => {
+                            // Drop back to the main screen before the loop exits if
+                            // the overlay is up, so restore() lands on the chat.
+                            if app.view == View::ToolOutput {
+                                term.exit_overlay()?;
+                            }
+                            break;
+                        }
                         Action::None => {}
                         Action::Submit(text) => {
                             let width = term.screen().width;
@@ -91,12 +102,26 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
                             let handle = backend.spawn(text, tx.clone(), cancel.clone());
                             inflight = Some((cancel, handle));
                         }
+                        Action::ToggleToolView => {
+                            // on_key already flipped app.view; sync the overlay to it.
+                            if app.view == View::ToolOutput {
+                                term.enter_overlay()?;
+                            } else {
+                                term.exit_overlay()?;
+                                // Catch the inline view up on whatever streamed while
+                                // the overlay was showing.
+                                repaint_conversation(term, &app, &mut committed)?;
+                            }
+                        }
                     }
                     dirty = true;
                 }
                 Event::Resize(width, height) => {
-                    if term.resized(width, height) {
-                        reflow_after_resize(term, &app, &mut committed)?;
+                    let width_changed = term.resized(width, height);
+                    // Only the inline view reflows; the overlay just redraws at the
+                    // new size (reflowing would write into the alternate screen).
+                    if width_changed && app.view == View::Conversation {
+                        repaint_conversation(term, &app, &mut committed)?;
                     }
                     dirty = true;
                 }
@@ -104,13 +129,17 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
             }
         }
 
-        // 2. Drain any reply chunks that have arrived, committing stable lines.
+        // 2. Drain any reply events. The App state is always updated; lines are
+        //    only committed to scrollback in the conversation view — in the
+        //    overlay we hold off and repaint the inline view on return, so the
+        //    background stream keeps advancing without touching the alt screen.
         while let Ok(stream_event) = rx.try_recv() {
             let width = term.screen().width;
+            let committing = app.view == View::Conversation;
             match stream_event {
                 StreamEvent::Chunk(chunk) => {
                     app.push_chunk(&chunk);
-                    if let Some(text) = app.streaming_text() {
+                    if committing && let Some(text) = app.streaming_text() {
                         let (lines, new_committed) = ui::stable_commit(text, width, committed);
                         term.insert_before(lines)?;
                         committed = new_committed;
@@ -119,8 +148,11 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
                 StreamEvent::ToolStart { name, args } => {
                     // Finalise the current run of assistant text so the tool slots
                     // after it in scrollback, then show the tool running (blue) in
-                    // the live region until its ToolEnd arrives.
-                    if let Some(segment) = app.flush_streaming_segment() {
+                    // the live region until its ToolEnd arrives. The flush always
+                    // runs (it records history); only the commit is view-gated.
+                    if let Some(segment) = app.flush_streaming_segment()
+                        && committing
+                    {
                         term.insert_before(ui::final_commit(&segment, width, committed))?;
                         term.insert_before(vec![Line::default()])?;
                     }
@@ -130,13 +162,17 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
                 StreamEvent::ToolEnd { output, ok } => {
                     // Commit the finished tool *collapsed* (green/red) to
                     // scrollback; its full output lives in the Ctrl+O view.
-                    if let Some(tool) = app.end_tool(&output, ok) {
+                    if let Some(tool) = app.end_tool(&output, ok)
+                        && committing
+                    {
                         term.insert_before(ui::tool_lines(&tool, width))?;
                         term.insert_before(vec![Line::default()])?;
                     }
                 }
                 StreamEvent::StreamDone => {
-                    if let Some(text) = app.finish_stream() {
+                    if let Some(text) = app.finish_stream()
+                        && committing
+                    {
                         term.insert_before(ui::final_commit(&text, width, committed))?;
                         term.insert_before(vec![Line::default()])?; // blank spacer
                     }
@@ -148,12 +184,18 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
                         // Flush whatever streamed before the failure, then the red
                         // error notice — each with a trailing blank spacer,
                         // mirroring how a resize repaints them from history.
-                        if let Some(partial) = failure.partial {
-                            term.insert_before(ui::final_commit(&partial, width, committed))?;
+                        if committing {
+                            if let Some(partial) = failure.partial {
+                                term.insert_before(ui::final_commit(&partial, width, committed))?;
+                                term.insert_before(vec![Line::default()])?;
+                            }
+                            term.insert_before(ui::message_lines(
+                                Role::Error,
+                                &failure.error,
+                                width,
+                            ))?;
                             term.insert_before(vec![Line::default()])?;
                         }
-                        term.insert_before(ui::message_lines(Role::Error, &failure.error, width))?;
-                        term.insert_before(vec![Line::default()])?;
                     }
                     committed = 0;
                     inflight = None;
@@ -171,13 +213,14 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
     Ok(())
 }
 
-/// Repaint the conversation, re-wrapped to the new width, after a resize.
+/// Repaint the inline conversation from `App`'s retained history, re-wrapped to
+/// the current width. Used both after a resize *and* when returning from the
+/// tool-output overlay (which kept the stream advancing without committing).
 ///
-/// The width change makes every wrapped line stale, so we repaint the tail that
-/// fits above the live region from `App`'s retained history. Resetting
-/// `committed` lets any in-progress reply re-commit itself from scratch on its
-/// next chunk, so a mid-stream resize recovers too.
-fn reflow_after_resize(
+/// We repaint the tail that fits above the live region; resetting `committed`
+/// lets any in-progress reply re-commit itself from scratch on its next chunk,
+/// so a mid-stream resize or overlay round-trip recovers too.
+fn repaint_conversation(
     term: &mut InlineViewport,
     app: &App,
     committed: &mut usize,
@@ -200,4 +243,17 @@ fn draw(term: &mut InlineViewport, app: &App) -> io::Result<()> {
     // (content-anchored) viewport, so we just say whether we're editing.
     let cursor = (!app.is_streaming()).then_some(app.input.as_str());
     term.draw(height, |area, buf| ui::render_live(area, buf, app), cursor)
+}
+
+/// Render the full-screen tool-output overlay. Clamps the scroll to the current
+/// screen first (so the last line can reach the bottom but not scroll past it),
+/// then paints the view onto the alternate screen.
+fn draw_tool_view(term: &mut InlineViewport, app: &mut App) -> io::Result<()> {
+    let screen = term.screen();
+    let max = {
+        let tools = app.tool_calls();
+        ui::tool_view_max_scroll(&tools, screen.width, screen.height)
+    };
+    app.clamp_tool_scroll(max);
+    term.draw_overlay(|area, buf| ui::render_tool_view(area, buf, app))
 }

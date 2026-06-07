@@ -53,6 +53,28 @@ grown="$(tmux capture-pane -t "$S" -p)"
 echo "==== captured pane (grown input box) ===="
 printf '%s\n' "$grown"
 
+# --- Phase 3: Ctrl+O opens the full-screen tool-output view, Ctrl+O returns. ---
+# The dummy interleaves tool calls in its reply; wait until the second (Bash) has
+# run, then open the view: it must show each tool's FULL output (the Read tool's
+# second line is hidden in the collapsed inline view but shown here).
+for _ in $(seq 1 60); do
+	full="$(tmux capture-pane -t "$S" -p -S -80)"
+	if printf '%s' "$full" | grep -qF "Bash(grep"; then
+		break
+	fi
+	sleep 0.15
+done
+tmux send-keys -t "$S" C-o
+sleep 0.4
+overlay="$(tmux capture-pane -t "$S" -p)"
+echo "==== captured pane (Ctrl+O tool-output view) ===="
+printf '%s\n' "$overlay"
+tmux send-keys -t "$S" C-o # back to the conversation
+sleep 0.4
+returned="$(tmux capture-pane -t "$S" -p)"
+echo "==== captured pane (returned to conversation) ===="
+printf '%s\n' "$returned"
+
 tmux send-keys -t "$S" Escape # quit
 sleep 0.2
 
@@ -73,7 +95,19 @@ if ! printf '%s' "$grown" | grep -qF "  BBB"; then
 	echo "FAIL: input box did not grow — indented continuation '  BBB' missing" >&2
 	status=1
 fi
+if ! printf '%s' "$overlay" | grep -qF "Tool output"; then
+	echo "FAIL: Ctrl+O did not open the tool-output view" >&2
+	status=1
+fi
+if ! printf '%s' "$overlay" | grep -qF "InlineViewport::init"; then
+	echo "FAIL: tool-output view did not show the full (expanded) Read output" >&2
+	status=1
+fi
+if printf '%s' "$returned" | grep -qF "Tool output"; then
+	echo "FAIL: Ctrl+O did not return to the conversation" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: message streamed to scrollback and the input box grows for multi-line input"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows, and Ctrl+O opens/closes the full tool-output view"
 fi
 exit "$status"
