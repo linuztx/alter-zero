@@ -27,6 +27,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::layout::Rect;
 use ratatui::text::Line;
 
 use inline_tui::app::{Action, App, Role, View};
@@ -194,6 +195,13 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
                     if let Some(text) = app.finish_stream()
                         && committing
                     {
+                        // The reply just ended, so the streaming strip (preview +
+                        // gap, drawn *above* the box) is gone. Reseat the viewport
+                        // to its idle height *before* the final commit so those
+                        // lines replace the strip's rows in place and the box stays
+                        // flush at the bottom instead of rising (which would leave
+                        // blank rows beneath it).
+                        term.set_view_height(live_region_height(&app, term.screen()));
                         term.insert_before(ui::final_commit(&text, width, committed))?;
                         term.insert_before(vec![Line::default()])?; // blank spacer
                     }
@@ -206,6 +214,10 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
                         // error notice — each with a trailing blank spacer,
                         // mirroring how a resize repaints them from history.
                         if committing {
+                            // The stream ended, so collapse the streaming strip into
+                            // the idle box height before committing (same reason as
+                            // StreamDone) so the box does not rise off the bottom.
+                            term.set_view_height(live_region_height(&app, term.screen()));
                             if let Some(partial) = failure.partial {
                                 term.insert_before(ui::final_commit(&partial, width, committed))?;
                                 term.insert_before(vec![Line::default()])?;
@@ -234,6 +246,19 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
     Ok(())
 }
 
+/// The live region's height for `app` at the current screen size — exactly what
+/// the next [`draw`] will use. Shared so a post-stream commit can reserve that same
+/// idle height before flushing the final lines (see [`InlineViewport::set_view_height`]).
+fn live_region_height(app: &App, screen: Rect) -> u16 {
+    ui::live_height(
+        &app.input,
+        screen.width,
+        screen.height,
+        app.is_streaming(),
+        ui::menu_rows(app),
+    )
+}
+
 /// Repaint the inline conversation from `App`'s retained history, re-wrapped to
 /// the current width. Used both after a resize *and* when returning from the
 /// tool-output overlay (which kept the stream advancing without committing).
@@ -247,13 +272,7 @@ fn repaint_conversation(
     committed: &mut usize,
 ) -> io::Result<()> {
     let screen = term.screen();
-    let height = ui::live_height(
-        &app.input,
-        screen.width,
-        screen.height,
-        app.is_streaming(),
-        ui::menu_rows(app),
-    );
+    let height = live_region_height(app, screen);
     let budget = ui::repaint_budget(screen.height, height);
     let tail = ui::repaint_lines(&app.history, screen.width, budget);
     term.reflow(tail, height)?;
@@ -264,14 +283,7 @@ fn repaint_conversation(
 /// Render the live region at its current grown height and place the cursor (only
 /// while editing — it's hidden while a reply streams).
 fn draw(term: &mut InlineViewport, app: &App) -> io::Result<()> {
-    let screen = term.screen();
-    let height = ui::live_height(
-        &app.input,
-        screen.width,
-        screen.height,
-        app.is_streaming(),
-        ui::menu_rows(app),
-    );
+    let height = live_region_height(app, term.screen());
     // The cursor sits at the end of the input; `term` places it from the final
     // (content-anchored) viewport via `ui::cursor_position`, so we just hand it the
     // app while editing (and `None` while streaming hides the cursor).

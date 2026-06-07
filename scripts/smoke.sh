@@ -15,7 +15,10 @@ USER_MSG="hello there"
 # "hello there" is 11 chars → responses[2], which opens with this phrase.
 EXPECT_REPLY="Happy to help"
 
-cleanup() { tmux kill-session -t "$S" 2>/dev/null; }
+cleanup() {
+	tmux kill-session -t "$S" 2>/dev/null
+	tmux kill-session -t "${S}_bottom" 2>/dev/null
+}
 trap cleanup EXIT
 
 if [ ! -x "$BIN" ]; then
@@ -99,6 +102,40 @@ printf '%s\n' "$help_ran"
 tmux send-keys -t "$S" Escape # quit
 sleep 0.2
 
+# --- Phase 5: after a reply finishes, the input box stays flush at the BOTTOM —
+# no blank rows creep in below it when the streaming strip (preview + gap, drawn
+# *above* the box) clears. A short 40x12 terminal makes one exchange overflow the
+# screen so the box is pushed to the bottom while streaming; the bug let the box
+# rise by the strip's height once the reply finished, leaving blank rows beneath. ---
+S2="${S}_bottom"
+TMP5="$(mktemp)"
+tmux new-session -d -s "$S2" -x 40 -y 12 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S2" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S2" Enter
+# Wait until the reply has fully finished (its last text "changes size" is
+# committed) AND the screen has stopped changing — so we measure the *settled*
+# layout, not a mid-stream frame (where the box legitimately sits at the bottom).
+settled_prev=""
+for _ in $(seq 1 60); do # up to ~12s
+	tmux capture-pane -t "$S2" -p >"$TMP5"
+	settled_cur="$(cat "$TMP5")"
+	if printf '%s' "$settled_cur" | grep -qF "changes size" &&
+		[ "$settled_cur" = "$settled_prev" ]; then
+		break
+	fi
+	settled_prev="$settled_cur"
+	sleep 0.2
+done
+echo "==== captured pane (box settled at the bottom after the reply) ===="
+cat "$TMP5"
+# Count blank rows below the box: walk up from the last pane row while it is blank
+# (strip only ASCII space/tab so the multibyte box rule still counts as content).
+trailing_blanks=$(awk '{a[NR]=$0} END{c=0; for(i=NR;i>=1;i--){t=a[i]; gsub(/[ \t]/,"",t); if(t==""){c++}else break} print c}' "$TMP5")
+tmux kill-session -t "$S2" 2>/dev/null
+rm -f "$TMP5"
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -148,7 +185,14 @@ if ! printf '%s' "$help_ran" | grep -qF "Available commands:"; then
 	echo "FAIL: running /help did not post its system notice" >&2
 	status=1
 fi
+if ! printf '%s' "$settled_cur" | grep -qF "changes size"; then
+	echo "FAIL: the reply never finished on the short terminal (Phase 5 could not settle)" >&2
+	status=1
+elif [ "${trailing_blanks:-99}" -ne 0 ]; then
+	echo "FAIL: $trailing_blanks blank row(s) left below the input box after the reply settled — the box should stay flush at the bottom" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows, Ctrl+O opens the tool-output view, and the slash-command palette opens and runs commands"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, Ctrl+O opens the tool-output view, and the slash-command palette opens and runs commands"
 fi
 exit "$status"

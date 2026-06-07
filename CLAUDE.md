@@ -73,7 +73,13 @@ of bug:
    the screen *up* (oldest chat into scrollback) once the box would overflow the
    bottom; a shrink blanks the rows it vacates (the decision is the pure
    `ui::repin`). Never force it to `screen.height - height` — that reintroduces
-   the "box jumps to the bottom" bug. On a width change every wrapped line is
+   the "box jumps to the bottom" bug. The streaming strip (preview + gap) sits
+   *above* the box, so it grows the region upward; when a reply ends the strip's
+   rows become the committed final line + spacer and the box must **stay put**, so
+   `StreamDone`/`Error` call `term::set_view_height` to reseat the viewport to its
+   idle height *before* the final `insert_before` — skip it and `insert_before`
+   over-scrolls, the box rises off the bottom, and blank rows appear beneath it
+   (guarded by `smoke.sh` Phase 5). On a width change every wrapped line is
    stale, so `App` retains a `history: Vec<HistoryItem>` of finished messages *and
    tool calls* (kept for two reasons: this repaint, and listing tools in the Ctrl+O
    view) and `term::reflow` clears the screen, seats the viewport at the top, then

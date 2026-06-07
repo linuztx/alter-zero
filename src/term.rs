@@ -171,6 +171,23 @@ impl InlineViewport {
         Ok(())
     }
 
+    /// Sync the tracked live-region `height` *without* redrawing, just before the
+    /// final [`insert_before`]s when a reply ends.
+    ///
+    /// The streaming strip (preview + gap) is drawn *above* the box, so it inflates
+    /// the viewport height while a reply streams. When the reply finishes that strip
+    /// clears, but [`insert_before`] reserves `self.view.height` rows *below* the
+    /// committed lines to keep the viewport on screen — so if it still counted the
+    /// strip it would over-scroll, and the box would rise as the strip cleared,
+    /// leaving blank rows beneath it. Reseating the height to the idle box first lets
+    /// the committed final line + spacer replace the strip's rows in place and the
+    /// box stay put.
+    ///
+    /// [`insert_before`]: InlineViewport::insert_before
+    pub fn set_view_height(&mut self, height: u16) {
+        self.view.height = height.clamp(1, self.screen.height.max(1));
+    }
+
     /// Note a new terminal size. Returns whether the *width* changed (the only
     /// change that forces the conversation to re-wrap; see [`reflow`]).
     ///

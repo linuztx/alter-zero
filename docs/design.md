@@ -147,10 +147,16 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
 - On `ToolEnd{output,ok}`: `end_tool` records the finished tool; commit it
   *collapsed* (green/red) to scrollback. The full output is kept for the Ctrl+O
   view.
-- On `StreamDone`: commit the final text segment + spacer; clear streaming state.
+- On `StreamDone`: clear streaming state, then commit the final text segment +
+  spacer. Because the streaming strip (preview + gap) is drawn *above* the box, the
+  loop first calls `term.set_view_height` to reseat the viewport to its idle height,
+  so the final commit replaces the strip's rows in place and the box stays flush at
+  the bottom rather than rising and leaving blank rows beneath it (see the
+  streaming-strip note under *Known limitations*).
 - On `Error(msg)`: `App::fail_stream` records any non-empty partial reply, flushes
   it, then commits a red `Role::Error` notice (and records it in `history` so it
-  repaints on resize); clears streaming state.
+  repaints on resize); clears streaming state. Like `StreamDone` it reseats the
+  viewport height first so the box doesn't rise as the strip clears.
 - On `ToggleToolView` (Ctrl+O / Esc): enter or leave the alternate-screen overlay;
   on leaving, `repaint_conversation` reflows the inline view to catch up.
 - On `Notice(text)` (a slash command's output — `/help`): if a reply is mid-flight,
@@ -269,6 +275,13 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
   would overflow the bottom, and blanks the rows a shrink vacates just below it.
   The decision (`scroll_up` / new `top` / `clear_below`) comes from the pure
   `ui::repin` helper; the cursor is placed from the final viewport.
+- `set_view_height(height)` — reseat the tracked viewport height *without*
+  redrawing. `insert_before` reserves `view.height` rows *below* the lines it
+  commits (to keep the box on screen), and the streaming strip (preview + gap)
+  inflates that height while a reply streams. So at `StreamDone`/`Error` `main`
+  calls this first to drop the strip's rows, letting the final commit replace them
+  in place — otherwise `insert_before` over-scrolls and the box rises off the
+  bottom (see *Known limitations*).
 - `enter_overlay` / `draw_overlay` / `exit_overlay` — the Ctrl+O tool-output view.
   `enter_overlay` switches to the terminal's **alternate screen** (so the inline
   conversation — main screen + its real scrollback — is preserved untouched);
@@ -289,6 +302,15 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   chat back (terminals can't reverse-scroll their own scrollback), so after a
   grow-past-bottom-then-shrink the box stays where it scrolled to with blank rows
   below. Normal short messages never hit this.
+- **Streaming strip collapse.** The streaming strip (preview + gap) is drawn *above*
+  the box, so it grows the live region *upward*. When a reply finishes, that strip's
+  rows are handed back to scrollback as the committed final line + spacer, and the
+  box must stay put. The fix is to reseat the viewport to its idle height
+  (`term.set_view_height`) *before* the final `insert_before`, so the commit reserves
+  only the idle box below it; without it the strip-still-counted height makes
+  `insert_before` over-scroll and the box rises off the bottom, leaving blank rows
+  beneath. Covered by `scripts/smoke.sh` Phase 5 (a short terminal where one
+  exchange overflows the screen, asserting no blank rows below the settled box).
 - On resize the on-screen chat is repainted (wider or narrower), but lines
   already in the terminal's own scrollback keep their original wrapping (so
   after resizing a long chat, boundary messages can appear twice — once
