@@ -28,10 +28,11 @@ use std::io::{self, Stdout, Write};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::cursor::Show;
-use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
-    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+    BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode,
 };
+use ratatui::crossterm::{execute, queue};
 use ratatui::layout::{Position, Rect};
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
@@ -111,31 +112,57 @@ impl InlineViewport {
     ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
         let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
-        self.scroll_up(repin.scroll_up)?;
-        if repin.clear_below > 0 {
-            self.clear_rows(repin.top.saturating_add(height), repin.clear_below)?;
-        }
         self.view = Rect::new(0, repin.top, self.screen.width, height);
 
         let mut buf = Buffer::empty(self.view);
         render(self.view, &mut buf);
-        // When the region sat still this frame (no scroll, no vacated rows, same
-        // rect as last time), send only the cells that changed since the previous
-        // draw — so a keystroke ships a couple of cells instead of the whole region.
-        // Otherwise the geometry moved and we repaint it all.
+
+        // Emit the whole frame inside a synchronized update (BSU/ESU, DEC mode 2026):
+        // the terminal buffers everything between the markers and swaps it in one
+        // atomic step, so a fast burst of keystrokes never shows a half-painted frame
+        // or the cursor mid-flight. This is what makes typing look "in sync" — the
+        // same trick codex wraps its draws in. Terminals lacking 2026 ignore the
+        // markers. `EndSynchronizedUpdate` always runs (even if a write failed
+        // mid-frame) so the terminal is never left buffering.
+        queue!(self.backend, BeginSynchronizedUpdate)?;
+        let painted = self.paint_frame(&buf, &repin, height, cursor);
+        let ended = queue!(self.backend, EndSynchronizedUpdate);
+        painted?;
+        ended?;
+        self.prev = Some(buf);
+        Backend::flush(&mut self.backend)
+    }
+
+    /// Paint one already-rendered frame `buf` to the backend: prepare the screen
+    /// (`scroll_up` / vacated-row clear from `repin`), emit the cells, and place the
+    /// cursor. Split out so [`draw`] can bracket exactly this work in a synchronized
+    /// update. When the region sat still (no scroll, no vacated rows, same rect as
+    /// last frame) only the cells that **changed** since `prev` are sent — a keystroke
+    /// ships a couple of cells, not the whole region; otherwise it repaints in full.
+    ///
+    /// [`draw`]: InlineViewport::draw
+    fn paint_frame(
+        &mut self,
+        buf: &Buffer,
+        repin: &ui::Repin,
+        height: u16,
+        cursor: Option<&App>,
+    ) -> io::Result<()> {
+        self.scroll_up(repin.scroll_up)?;
+        if repin.clear_below > 0 {
+            self.clear_rows(repin.top.saturating_add(height), repin.clear_below)?;
+        }
         match &self.prev {
             Some(prev)
                 if repin.scroll_up == 0 && repin.clear_below == 0 && prev.area == buf.area =>
             {
-                let updates = prev.diff(&buf);
+                let updates = prev.diff(buf);
                 if !updates.is_empty() {
                     self.backend.draw(updates.into_iter())?;
                 }
             }
-            _ => self.blit(&buf)?,
+            _ => self.blit(buf)?,
         }
-        self.prev = Some(buf);
-
         match cursor {
             Some(app) => {
                 let (x, y) = ui::cursor_position(self.view, app);
@@ -144,7 +171,7 @@ impl InlineViewport {
             }
             None => self.backend.hide_cursor()?,
         }
-        Backend::flush(&mut self.backend)
+        Ok(())
     }
 
     /// Commit `lines` into scrollback directly above the viewport, pushing the
@@ -280,7 +307,13 @@ impl InlineViewport {
             .iter()
             .enumerate()
             .map(|(i, c)| ((i % width) as u16, (i / width) as u16, c));
-        self.backend.draw(iter)?;
+        // Atomic frame (see `draw`): the overlay swaps in one shot, so scrolling it
+        // never tears.
+        queue!(self.backend, BeginSynchronizedUpdate)?;
+        let drawn = self.backend.draw(iter);
+        let ended = queue!(self.backend, EndSynchronizedUpdate);
+        drawn?;
+        ended?;
         Backend::flush(&mut self.backend)
     }
 

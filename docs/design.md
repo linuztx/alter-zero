@@ -289,7 +289,13 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
   emitted (`Buffer::diff`) — so a keystroke ships a couple of cells (~35 bytes),
   not the whole region (~700 bytes). `prev` is invalidated (full repaint next) by
   anything that moves the screen under it: `insert_before`, `reflow`, the overlay,
-  a resize. This is what keeps typing crisp on latency-bound terminals.
+  a resize. This is what keeps typing crisp on latency-bound terminals. The whole
+  frame (prepare + cells + cursor, factored into `paint_frame`) is bracketed in a
+  **synchronized update** (`BeginSynchronizedUpdate`/`EndSynchronizedUpdate`, DEC
+  mode 2026), so the terminal swaps it in atomically and a fast keystroke burst
+  never shows a half-painted frame or the cursor mid-flight — the same trick codex
+  wraps its draws in (terminals without 2026 ignore the markers). `draw_overlay`
+  brackets its full-screen paint the same way.
 - `set_view_height(height)` — reseat the tracked viewport height *without*
   redrawing. `insert_before` reserves `view.height` rows *below* the lines it
   commits (to keep the box on screen), and the streaming strip (preview + gap)
