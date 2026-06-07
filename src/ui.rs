@@ -79,10 +79,11 @@ const TOOL_NAME_COLOR: Color = AI_COLOR;
 const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
 
 // --- Tool-output view (the Ctrl+O full-screen overlay). A one-row title above a
-// scrolling body that lists every tool call's *full* output. ---
+// scrolling body: the full conversation transcript — every message plus every
+// tool call's *complete* (expanded) output. ---
 
 /// Title shown at the top of the tool-output view.
-const TOOL_VIEW_TITLE: &str = "Tool output";
+const TOOL_VIEW_TITLE: &str = "Conversation";
 /// Key hint shown beside the title.
 const TOOL_VIEW_HINT: &str = "  ↑/↓ PgUp/PgDn scroll · ctrl+o / esc return";
 /// Rows of chrome above the scrolling body (just the title row).
@@ -420,7 +421,7 @@ fn truncate_cols(s: &str, max: usize) -> String {
 
 /// The coloured bullet header line for a tool: `● name(args)`, the bullet
 /// recoloured by lifecycle (blue/green/red). Shared by the inline collapsed view
-/// ([`tool_lines`]) and the full-screen view ([`tool_view_lines`]).
+/// ([`tool_lines`]) and the full-screen transcript ([`tool_full_lines`]).
 fn tool_header(tool: &ToolCall) -> Line<'static> {
     let bullet_style = Style::new()
         .fg(tool_status_color(tool.status))
@@ -485,68 +486,93 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Build the full content of the tool-output view: every tool call's coloured
-/// header followed by its **complete** output (wrapped and indented), with a
-/// blank line between tools. This is the expanded counterpart of [`tool_lines`]
-/// — nothing is collapsed here. An empty list yields a single placeholder line.
-#[must_use]
-pub fn tool_view_lines(tools: &[&ToolCall], width: u16) -> Vec<Line<'static>> {
-    if tools.is_empty() {
-        return vec![Line::from(Span::styled(
-            "No tool calls yet.".to_string(),
-            Style::new().fg(TOOL_DIM_COLOR),
-        ))];
-    }
+/// One tool call's full lines for the transcript view: its coloured header plus
+/// its **complete** output (wrapped and indented), or `running…` / `(no output)`
+/// when there is none yet. The expanded counterpart of [`tool_lines`].
+fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
     let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let mut lines = Vec::new();
-    for tool in tools {
-        lines.push(tool_header(tool));
-        let body = match (tool.status, tool.output.is_empty()) {
-            (ToolStatus::Running, true) => vec!["running…".to_string()],
-            (_, true) => vec!["(no output)".to_string()],
-            _ => wrap_text(&tool.output, content_width),
-        };
-        for out in body {
-            lines.push(Line::from(vec![
-                Span::raw(INDENT.to_string()),
-                Span::styled(out, dim),
-            ]));
-        }
-        lines.push(Line::default()); // blank line between tools
+    let mut lines = vec![tool_header(tool)];
+    let body = match (tool.status, tool.output.is_empty()) {
+        (ToolStatus::Running, true) => vec!["running…".to_string()],
+        (_, true) => vec!["(no output)".to_string()],
+        _ => wrap_text(&tool.output, content_width),
+    };
+    for out in body {
+        lines.push(Line::from(vec![
+            Span::raw(INDENT.to_string()),
+            Span::styled(out, dim),
+        ]));
     }
     lines
 }
 
-/// The largest the tool-output scroll offset can be on a `screen_height`-row
+/// Build the full conversation transcript shown in the tool-output view: every
+/// user/assistant/error message **and** every tool call's complete output,
+/// interleaved in the exact order they happened (straight from `App::history`),
+/// followed by the live tail — the in-progress reply and/or the running tool.
+/// A blank line separates items. Tools are shown *expanded* here (the inline
+/// view collapses them). Empty → a single placeholder line.
+#[must_use]
+pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for item in &app.history {
+        match item {
+            HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
+            HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
+        }
+        lines.push(Line::default());
+    }
+    // Live tail: the in-progress assistant text, then the running tool (only one
+    // is ever active given how a turn streams, but both are handled in order).
+    if let Some(text) = app.streaming_text()
+        && !text.is_empty()
+    {
+        lines.extend(message_lines(Role::Assistant, text, width));
+        lines.push(Line::default());
+    }
+    if let Some(tool) = app.current_tool() {
+        lines.extend(tool_full_lines(tool, width));
+        lines.push(Line::default());
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "Nothing here yet.".to_string(),
+            Style::new().fg(TOOL_DIM_COLOR),
+        )));
+    }
+    lines
+}
+
+/// The largest the transcript scroll offset can be on a `screen_height`-row
 /// screen — the total content height minus the scrolling body — so the last
 /// line can reach the bottom but not scroll past it. The loop clamps
 /// `App::tool_scroll` to this each draw.
 #[must_use]
-pub fn tool_view_max_scroll(tools: &[&ToolCall], width: u16, screen_height: u16) -> usize {
+pub fn tool_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize {
     let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS) as usize;
-    tool_view_lines(tools, width).len().saturating_sub(body)
+    transcript_lines(app, width).len().saturating_sub(body)
 }
 
-/// Render the full-screen tool-output view: a title row, then the scrolling body
-/// of every tool call's full output, windowed by `App::tool_scroll` (clamped so
-/// it can't run past the end). Pure — `term.rs` paints this onto the overlay.
+/// Render the full-screen tool-output view: a title row, then the scrolling
+/// conversation transcript (messages + every tool call's full output), windowed
+/// by `App::tool_scroll` (clamped so it can't run past the end). Pure — `term.rs`
+/// paints this onto the overlay.
 pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
     let [title_area, body_area] =
         Layout::vertical([Constraint::Length(TOOL_VIEW_TITLE_ROWS), Constraint::Min(0)])
             .areas(area);
 
-    let tools = app.tool_calls();
     let title = Line::from(vec![
         Span::styled(
-            format!("{TOOL_VIEW_TITLE} ({})", tools.len()),
+            TOOL_VIEW_TITLE.to_string(),
             Style::new().fg(AI_COLOR).add_modifier(Modifier::BOLD),
         ),
         Span::styled(TOOL_VIEW_HINT.to_string(), Style::new().fg(TOOL_DIM_COLOR)),
     ]);
     Paragraph::new(title).render(title_area, buf);
 
-    let lines = tool_view_lines(&tools, body_area.width);
+    let lines = transcript_lines(app, body_area.width);
     let max = lines.len().saturating_sub(body_area.height as usize);
     let scroll = app.tool_scroll.min(max);
     let visible: Vec<Line> = lines
@@ -874,60 +900,105 @@ mod tests {
         }
     }
 
-    // --- tool-output view (the Ctrl+O full-screen overlay) ---
+    // --- tool-output view: the full conversation transcript (Ctrl+O overlay) ---
 
-    #[test]
-    fn tool_view_lines_shows_each_tools_full_output() {
-        let t1 = tool("Read", "f", ToolStatus::Ok, "l1\nl2\nl3");
-        let t2 = tool("Bash", "b", ToolStatus::Failed, "err");
-        let texts: Vec<String> = tool_view_lines(&[&t1, &t2], 80)
-            .iter()
-            .map(|l| plain(l).trim_end().to_string())
-            .collect();
-        assert!(texts.iter().any(|t| t == "● Read(f)"), "{texts:?}");
-        // The *full* output is present — every line, not collapsed.
-        for needle in ["l1", "l2", "l3"] {
-            assert!(
-                texts.iter().any(|t| t.contains(needle)),
-                "missing {needle:?} in {texts:?}"
-            );
-        }
-        assert!(texts.iter().any(|t| t == "● Bash(b)"));
-        assert!(texts.iter().any(|t| t.contains("err")));
+    /// Drive an app through `user → "let me check" → Read(ok) → "all done"`.
+    fn transcript_fixture() -> App {
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.begin_stream();
+        app.push_chunk("let me check");
+        app.flush_streaming_segment();
+        app.start_tool("Read", "f");
+        app.end_tool("L1\nL2\nL3", true);
+        app.push_chunk("all done");
+        app.finish_stream();
+        app
     }
 
     #[test]
-    fn tool_view_lines_colours_the_header_by_status() {
-        let t = tool("Read", "f", ToolStatus::Ok, "x");
-        let lines = tool_view_lines(&[&t], 80);
+    fn transcript_lines_interleaves_messages_and_full_tool_output_in_order() {
+        let app = transcript_fixture();
+        let texts: Vec<String> = transcript_lines(&app, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        // User + both assistant segments are present (the new behaviour).
+        assert!(texts.iter().any(|t| t == "❯ hello"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "● let me check"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "● all done"), "{texts:?}");
+        // The tool's FULL output is present — every line, not collapsed.
+        assert!(texts.iter().any(|t| t == "● Read(f)"));
+        for needle in ["L1", "L2", "L3"] {
+            assert!(texts.iter().any(|t| t.contains(needle)), "missing {needle}");
+        }
+        // …in the exact order they happened: user, text, tool+output, text.
+        let pos = |needle: &str| texts.iter().position(|t| t.contains(needle)).unwrap();
+        assert!(pos("hello") < pos("let me check"));
+        assert!(pos("let me check") < pos("Read(f)"));
+        assert!(pos("L3") < pos("all done"));
+    }
+
+    #[test]
+    fn transcript_lines_shows_the_in_progress_reply_and_running_tool() {
+        // The live tail (not yet in history) is included so the view updates live.
+        let mut app = App::new();
+        app.record_user_message("q");
+        app.begin_stream();
+        app.push_chunk("partial answer");
+        let texts: Vec<String> = transcript_lines(&app, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("partial answer")));
+
+        // Now a tool starts running (text flushed); it shows as running.
+        app.flush_streaming_segment();
+        app.start_tool("Bash", "ls");
+        let texts: Vec<String> = transcript_lines(&app, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(texts.iter().any(|t| t == "● Bash(ls)"));
+        assert!(texts.iter().any(|t| t.to_lowercase().contains("running")));
+    }
+
+    #[test]
+    fn tool_full_lines_colours_the_header_by_status() {
+        let lines = tool_full_lines(&tool("Read", "f", ToolStatus::Ok, "x"), 80);
         assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_OK_COLOR));
     }
 
     #[test]
-    fn tool_view_lines_of_no_tools_is_a_placeholder() {
-        let lines = tool_view_lines(&[], 80);
+    fn transcript_lines_when_empty_is_a_placeholder() {
+        let lines = transcript_lines(&App::new(), 80);
         assert!(
-            plain(&lines[0]).to_lowercase().contains("no tool"),
+            plain(&lines[0]).to_lowercase().contains("nothing"),
             "{:?}",
             plain(&lines[0])
         );
     }
 
     #[test]
-    fn render_tool_view_shows_a_title_and_the_full_output() {
-        let mut app = App::new();
-        app.start_tool("Read", "src/main.rs");
-        app.end_tool("alpha\nbeta", true);
-        app.view = crate::app::View::ToolOutput;
-        let mut buf = buffer(40, 10);
+    fn render_tool_view_shows_the_title_messages_and_full_output() {
+        let app = transcript_fixture();
+        let mut buf = buffer(40, 14);
         render_tool_view(buf.area, &mut buf, &app);
-        let all: String = (0..10)
+        let all: String = (0..14)
             .map(|y| row(&buf, y, 40))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(all.contains("Tool output"), "title present: {all:?}");
-        assert!(all.contains("Read(src/main.rs)"), "{all:?}");
-        assert!(all.contains("alpha") && all.contains("beta"), "{all:?}");
+        assert!(all.contains("Conversation"), "title present: {all:?}");
+        assert!(all.contains("hello"), "user message shown: {all:?}");
+        assert!(
+            all.contains("let me check") && all.contains("all done"),
+            "{all:?}"
+        );
+        assert!(all.contains("Read(f)"), "{all:?}");
+        assert!(
+            all.contains("L1") && all.contains("L2"),
+            "full output: {all:?}"
+        );
     }
 
     #[test]
@@ -940,7 +1011,7 @@ mod tests {
             .join("\n");
         app.end_tool(&output, true);
         app.view = crate::app::View::ToolOutput;
-        app.tool_scroll = 8;
+        app.tool_scroll = 9;
         let mut buf = buffer(40, 8);
         render_tool_view(buf.area, &mut buf, &app);
         let all: String = (0..8)
@@ -956,16 +1027,12 @@ mod tests {
 
     #[test]
     fn tool_view_max_scroll_is_total_lines_minus_the_body() {
-        let output = (0..20)
-            .map(|i| format!("l{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let t = tool("Read", "f", ToolStatus::Ok, &output);
-        let total = tool_view_lines(&[&t], 40).len();
+        let app = transcript_fixture();
+        let total = transcript_lines(&app, 40).len();
         let screen_h = 10u16;
         let body = (screen_h - TOOL_VIEW_TITLE_ROWS) as usize;
         assert_eq!(
-            tool_view_max_scroll(&[&t], 40, screen_h),
+            tool_view_max_scroll(&app, 40, screen_h),
             total.saturating_sub(body)
         );
     }

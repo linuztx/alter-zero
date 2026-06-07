@@ -83,11 +83,13 @@ breaking any one reintroduces a class of bug:
    finalises the run of text before a `ToolStart` as its own history message so the
    tool slots *after* it in order (the scrollback and the resize/return repaint
    must agree). Inline a tool is collapsed (`ui::tool_lines` — coloured bullet +
-   one-line peek); its full output lives only in the Ctrl+O view
-   (`ui::render_tool_view` on the alternate screen). **While the overlay is up the
-   loop keeps draining reply events into `App` but does *not* commit to scrollback**
-   (that would write into the alt screen); on return, `repaint_conversation` rebuilds
-   the inline view from `history`. Never commit to scrollback while
+   one-line peek). The Ctrl+O overlay (`ui::render_tool_view` on the alternate
+   screen) shows the **full conversation transcript** — `ui::transcript_lines`
+   walks `history` (messages + each tool's *expanded* output) plus the live tail
+   (in-progress reply / running tool). **While the overlay is up the loop keeps
+   draining reply events into `App` but does *not* commit to scrollback** (that
+   would write into the alt screen); on return, `repaint_conversation` rebuilds the
+   inline view from `history`. Never commit to scrollback while
    `app.view == View::ToolOutput`.
 
 ### Data flow

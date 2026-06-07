@@ -240,24 +240,6 @@ impl App {
         self.tool_scroll = 0;
     }
 
-    /// Every tool call to list in the tool-output view, in order: the finished
-    /// ones from history, then the one currently running (if any).
-    #[must_use]
-    pub fn tool_calls(&self) -> Vec<&ToolCall> {
-        let mut calls: Vec<&ToolCall> = self
-            .history
-            .iter()
-            .filter_map(|item| match item {
-                HistoryItem::Tool(tool) => Some(tool),
-                HistoryItem::Message(_) => None,
-            })
-            .collect();
-        if let Some(running) = &self.current_tool {
-            calls.push(running);
-        }
-        calls
-    }
-
     /// Clamp the tool-view scroll so it can't run past the last line (the loop
     /// calls this each draw with the max the current screen allows).
     pub fn clamp_tool_scroll(&mut self, max: usize) {
@@ -811,24 +793,6 @@ mod tests {
         assert_eq!(app.tool_scroll, 12);
         app.clamp_tool_scroll(50);
         assert_eq!(app.tool_scroll, 12, "clamp only lowers, never raises");
-    }
-
-    #[test]
-    fn tool_calls_lists_finished_then_running() {
-        let mut app = App::new();
-        app.start_tool("Read", "a");
-        app.end_tool("done", true);
-        app.start_tool("Bash", "b"); // still running
-        let calls = app.tool_calls();
-        assert_eq!(calls.len(), 2);
-        assert_eq!(calls[0].name, "Read");
-        assert_eq!(calls[0].status, ToolStatus::Ok);
-        assert_eq!(calls[1].name, "Bash");
-        assert_eq!(
-            calls[1].status,
-            ToolStatus::Running,
-            "the running one is last"
-        );
     }
 
     #[test]

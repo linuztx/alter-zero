@@ -95,19 +95,25 @@ if ! printf '%s' "$grown" | grep -qF "  BBB"; then
 	echo "FAIL: input box did not grow — indented continuation '  BBB' missing" >&2
 	status=1
 fi
-if ! printf '%s' "$overlay" | grep -qF "Tool output"; then
+# "PgUp/PgDn" is unique to the overlay's title bar (it never appears in the
+# conversation), so it's a clean marker for "the view is open / closed".
+if ! printf '%s' "$overlay" | grep -qF "PgUp/PgDn"; then
 	echo "FAIL: Ctrl+O did not open the tool-output view" >&2
+	status=1
+fi
+if ! printf '%s' "$overlay" | grep -qF "$USER_MSG"; then
+	echo "FAIL: tool-output view did not include the user/AI conversation" >&2
 	status=1
 fi
 if ! printf '%s' "$overlay" | grep -qF "InlineViewport::init"; then
 	echo "FAIL: tool-output view did not show the full (expanded) Read output" >&2
 	status=1
 fi
-if printf '%s' "$returned" | grep -qF "Tool output"; then
+if printf '%s' "$returned" | grep -qF "PgUp/PgDn"; then
 	echo "FAIL: Ctrl+O did not return to the conversation" >&2
 	status=1
 fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows, and Ctrl+O opens/closes the full tool-output view"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows, and Ctrl+O opens the full conversation + tool-output view"
 fi
 exit "$status"

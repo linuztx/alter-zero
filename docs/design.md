@@ -67,13 +67,16 @@ unit-tested must be unit-tested.
   runs a `Read` (green) then a `Bash` (red) per turn so all three colours show.
 - **The Ctrl+O tool-output view.** Ctrl+O (from either screen, even mid-stream)
   opens a **separate full-screen overlay** — on the terminal's *alternate screen*,
-  so the inline conversation is preserved — listing **every** tool call's
-  **complete** output, scrollable (↑/↓ PgUp/PgDn). The conversation **keeps
-  streaming and updating underneath**: while the overlay is up the event loop
-  still drains reply events into `App` (so the view shows tools appear, run, and
-  resolve live) but holds off committing to scrollback; Ctrl+O (or Esc) returns,
-  and the inline view is repainted from `history` to catch up on everything that
-  streamed while away. The overlay is read-only (typing is ignored).
+  so the inline conversation is preserved — showing the **full conversation
+  transcript**: every user/AI message **and** every tool call's **complete**
+  (expanded) output, interleaved in the exact order they happened, plus the live
+  tail (in-progress reply / running tool), scrollable (↑/↓ PgUp/PgDn). It is the
+  expanded counterpart of the inline view (where tools are collapsed). The
+  conversation **keeps streaming and updating underneath**: while the overlay is up
+  the event loop still drains reply events into `App` (so the view updates live)
+  but holds off committing to scrollback; Ctrl+O (or Esc) returns, and the inline
+  view is repainted from `history` to catch up. The overlay is read-only (typing is
+  ignored).
 - **Backend errors & cancellation.** A reply backend (`ReplySource`) may end with
   `Error(msg)` instead of `StreamDone`; the partial reply (if any) is kept and a
   red error notice is shown below it. The built-in `DummyAi` never errors — this is
@@ -92,7 +95,7 @@ logic is unit-testable without a real terminal.
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved tool script). | Pure parts, token & dummy: yes |
 | `app.rs`    | State + pure update logic: `App`, `on_key -> Action` (per `View`), `push_chunk`/`finish_stream`/`flush_streaming_segment`, `start_tool`/`end_tool`, the message+tool `history`, the tool-view scroll. `Action`/`Role`/`Message`/`StreamError`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View` types. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `tool_lines` (collapsed) / `tool_view_lines` (full), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`), `render_live`, and `render_tool_view`. | Yes |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`), `render_live`, and `render_tool_view`. | Yes |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (scrollback), `draw` (re-pin + repaint + cursor), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore. | No (I/O boundary) |
 | `main.rs`   | Thin glue: single-threaded poll loop, drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit. | No (tiny I/O boundary) |
 
@@ -181,7 +184,8 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   continuation; user lines carry a dark background padded to the full display
   width; error lines get a red bullet); `tool_lines` (status-coloured bullet
   header, collapsed peek + `(ctrl+o to expand)` hint, width-truncated);
-  `tool_view_lines`/`render_tool_view` (full output, status colour, scroll); the
+  `transcript_lines`/`render_tool_view` (full conversation — messages interleaved
+  with each tool's complete output, plus the live tail — status colour, scroll); the
   growing-input geometry — `live_height` grows a row per wrapped line, adds the
   preview + gap strip only while streaming, and clamps to the screen; `render_live`
   grows the box, scrolls the input to keep the end visible, separates a streaming
@@ -245,6 +249,7 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   opened keeps its old position, and a reply segment that was *partially* committed
   when the overlay opened is re-committed on return (a brief flicker, no data loss).
 - Tool output shown inline is always collapsed to a one-line peek; the only way to
-  read it in full is the Ctrl+O view (by design — keeps the chat compact).
+  read it in full is the Ctrl+O conversation view, which shows the whole transcript
+  with every tool expanded (by design — keeps the inline chat compact).
 - No spinner, timestamps, markdown rendering, or scrollback nav keys (YAGNI).
 ```
