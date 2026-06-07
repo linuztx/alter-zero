@@ -47,6 +47,14 @@ pub struct InlineViewport {
     screen: Rect,
     /// The live region: full width, `height` rows, anchored by its top row.
     view: Rect,
+    /// The live-region buffer last painted, kept so a follow-up [`draw`] at the
+    /// same geometry can send only the cells that changed (a one-char edit ships a
+    /// couple of cells, not the whole region). Invalidated (`None`) by anything
+    /// that moves what's on screen out from under it — `insert_before`, `reflow`,
+    /// the overlay, a resize — after which the next draw repaints in full.
+    ///
+    /// [`draw`]: InlineViewport::draw
+    prev: Option<Buffer>,
 }
 
 impl InlineViewport {
@@ -77,6 +85,7 @@ impl InlineViewport {
             backend,
             screen,
             view,
+            prev: None,
         })
     }
 
@@ -110,7 +119,22 @@ impl InlineViewport {
 
         let mut buf = Buffer::empty(self.view);
         render(self.view, &mut buf);
-        self.blit(&buf)?;
+        // When the region sat still this frame (no scroll, no vacated rows, same
+        // rect as last time), send only the cells that changed since the previous
+        // draw — so a keystroke ships a couple of cells instead of the whole region.
+        // Otherwise the geometry moved and we repaint it all.
+        match &self.prev {
+            Some(prev)
+                if repin.scroll_up == 0 && repin.clear_below == 0 && prev.area == buf.area =>
+            {
+                let updates = prev.diff(&buf);
+                if !updates.is_empty() {
+                    self.backend.draw(updates.into_iter())?;
+                }
+            }
+            _ => self.blit(&buf)?,
+        }
+        self.prev = Some(buf);
 
         match cursor {
             Some(app) => {
@@ -168,6 +192,7 @@ impl InlineViewport {
         self.backend
             .set_cursor_position(Position::new(0, self.view.y))?;
         self.backend.clear_region(ClearType::AfterCursor)?;
+        self.prev = None; // the viewport area on screen is now cleared, not last-drawn
         Ok(())
     }
 
@@ -195,6 +220,7 @@ impl InlineViewport {
     pub fn resized(&mut self, width: u16, height: u16) -> bool {
         let changed = width != self.screen.width;
         self.screen = Rect::new(0, 0, width, height);
+        self.prev = None; // geometry moved under us; repaint in full next draw
         changed
     }
 
@@ -208,6 +234,7 @@ impl InlineViewport {
         let height = height.clamp(1, self.screen.height.max(1));
         self.backend.clear_region(ClearType::All)?;
         self.backend.set_cursor_position(Position::new(0, 0))?;
+        self.prev = None; // whole screen cleared (an empty tail won't reach insert_before)
         self.view = Rect::new(0, 0, self.screen.width, height);
         self.insert_before(tail)
     }
@@ -223,6 +250,7 @@ impl InlineViewport {
         execute!(self.backend, EnterAlternateScreen)?;
         self.backend.hide_cursor()?;
         self.backend.clear_region(ClearType::All)?;
+        self.prev = None; // the inline view isn't on screen now
         Backend::flush(&mut self.backend)
     }
 
@@ -233,6 +261,7 @@ impl InlineViewport {
     /// [`reflow`]: InlineViewport::reflow
     pub fn exit_overlay(&mut self) -> io::Result<()> {
         execute!(self.backend, LeaveAlternateScreen)?;
+        self.prev = None; // returning to a screen the inline view will repaint
         Backend::flush(&mut self.backend)
     }
 

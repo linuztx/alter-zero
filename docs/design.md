@@ -283,7 +283,13 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
   screen up (via `append_lines`, oldest chat into scrollback) only when the box
   would overflow the bottom, and blanks the rows a shrink vacates just below it.
   The decision (`scroll_up` / new `top` / `clear_below`) comes from the pure
-  `ui::repin` helper; the cursor is placed from the final viewport.
+  `ui::repin` helper; the cursor is placed from the final viewport. The region
+  buffer is kept in `prev` and, when the geometry didn't move (no scroll, no
+  vacated rows, same rect), only the cells that **changed** since the last draw are
+  emitted (`Buffer::diff`) — so a keystroke ships a couple of cells (~35 bytes),
+  not the whole region (~700 bytes). `prev` is invalidated (full repaint next) by
+  anything that moves the screen under it: `insert_before`, `reflow`, the overlay,
+  a resize. This is what keeps typing crisp on latency-bound terminals.
 - `set_view_height(height)` — reseat the tracked viewport height *without*
   redrawing. `insert_before` reserves `view.height` rows *below* the lines it
   commits (to keep the box on screen), and the streaming strip (preview + gap)
