@@ -86,8 +86,10 @@ unit-tested must be unit-tested.
   (`app::COMMANDS`: name + description + effect — currently `/help` and `/clear`),
   filtered by name-prefix as you type after the `/`; `/` alone lists everything.
   ↑/↓ move the highlight (the window scrolls, capped at `MENU_MAX_ROWS`, to keep it
-  visible); the selection is shown **by colour** — the highlighted command's name
-  is bright (others dimmed), every description in a warm tan — **no caret/arrow**.
+  visible); descriptions line up in a column (names padded to `MENU_DESC_COL`), and
+  the selection is shown **by colour** — the whole highlighted row lights up (bright
+  white name + cyan description) while the others are dimmed grey — **no
+  caret/arrow**.
   **Tab/Enter run** the highlighted command; **Esc** dismisses the palette (instead
   of quitting) and stays dismissed within the same token (delete the `/` and retype
   to reopen). The box's top is unchanged when the palette opens — it's reserved
@@ -230,9 +232,10 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   messages interleaved with each tool's complete output, plus the live tail —
   status colour, scroll); the **command palette** — `menu_window` keeps the
   selection visible, `menu_rows` reserves the band (0 closed, capped, 1 for no
-  matches), `command_menu_lines` lists the matches and **highlights the selection
-  by colour** (bright name vs dimmed, tan descriptions, no caret; placeholder when
-  empty), and `render_live` draws it below the box with the cursor unmoved; the
+  matches), `command_menu_lines` lists the matches in aligned columns and
+  **highlights the whole selected row by colour** (bright name + cyan description
+  vs dimmed grey, no caret; placeholder when empty), and `render_live` draws it
+  below the box with the cursor unmoved; the
   growing-input geometry — `live_height` grows a row per wrapped line, adds the
   preview + gap strip only while streaming and the palette band below the box, and
   clamps to the screen; `render_live` grows the box, scrolls the input to keep the
