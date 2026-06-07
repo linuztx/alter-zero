@@ -18,6 +18,7 @@ EXPECT_REPLY="Happy to help"
 cleanup() {
 	tmux kill-session -t "$S" 2>/dev/null
 	tmux kill-session -t "${S}_bottom" 2>/dev/null
+	tmux kill-session -t "${S}_burst" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -136,6 +137,31 @@ trailing_blanks=$(awk '{a[NR]=$0} END{c=0; for(i=NR;i>=1;i--){t=a[i]; gsub(/[ \t
 tmux kill-session -t "$S2" 2>/dev/null
 rm -f "$TMP5"
 
+# --- Phase 6: typing stays responsive. The event loop drains every buffered key
+# before redrawing, so a burst of input renders in ONE repaint, not one per key.
+# A 1000-char burst (ending in a unique marker) must therefore show up almost at
+# once: before the coalescing fix it took ~0.9s (O(n²) — a full redraw per key),
+# after it is a single redraw (~10ms). Assert the marker lands well inside that
+# gap. (Kept under tmux's 1024-char single-burst cap so it's delivered at once.) ---
+S3="${S}_burst"
+tmux new-session -d -s "$S3" -x 80 -y 24 "$BIN"
+sleep 0.4
+BURST="$(printf 'x%.0s' $(seq 1 997))END"
+burst_ms=0
+burst_ok=0
+burst_start=$(date +%s%3N)
+tmux send-keys -t "$S3" -l "$BURST"
+while [ "$burst_ms" -lt 600 ]; do
+	if tmux capture-pane -t "$S3" -p | grep -qF "END"; then
+		burst_ok=1
+		break
+	fi
+	burst_ms=$(($(date +%s%3N) - burst_start))
+done
+burst_ms=$(($(date +%s%3N) - burst_start))
+echo "==== Phase 6: 1000-char burst fully rendered in ${burst_ms}ms (ok=$burst_ok) ===="
+tmux kill-session -t "$S3" 2>/dev/null
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -192,7 +218,11 @@ elif [ "${trailing_blanks:-99}" -ne 0 ]; then
 	echo "FAIL: $trailing_blanks blank row(s) left below the input box after the reply settled — the box should stay flush at the bottom" >&2
 	status=1
 fi
+if [ "$burst_ok" -ne 1 ]; then
+	echo "FAIL: a 1000-char input burst was not fully rendered within 600ms (took ${burst_ms}ms) — input is not coalesced into one repaint, typing lag regressed" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, Ctrl+O opens the tool-output view, and the slash-command palette opens and runs commands"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, and the slash-command palette opens and runs commands"
 fi
 exit "$status"

@@ -63,7 +63,7 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
     let mut committed = 0usize;
     let mut dirty = true; // redraw only when something changed
 
-    loop {
+    'main: loop {
         if dirty {
             match app.view {
                 View::Conversation => draw(term, &app)?,
@@ -72,14 +72,19 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
             dirty = false;
         }
 
-        // 1. Keyboard / resize. The wait is short while streaming so chunks stay
-        //    snappy, longer when idle so we don't spin.
-        let timeout = if app.is_streaming() {
+        // 1. Keyboard / resize. The first wait is short while streaming so chunks
+        //    stay snappy, longer when idle so we don't spin. After it lands, drain
+        //    every other event already buffered with a zero wait before redrawing —
+        //    so a burst of input (a paste, fast typing, an autorepeating key)
+        //    collapses into a single repaint instead of one redraw per keystroke,
+        //    which is what made typing feel laggy.
+        let mut wait = if app.is_streaming() {
             POLL_STREAMING
         } else {
             POLL_IDLE
         };
-        if event::poll(timeout)? {
+        while event::poll(wait)? {
+            wait = Duration::ZERO;
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
                     match app.on_key(key) {
@@ -89,7 +94,7 @@ fn run(term: &mut InlineViewport) -> io::Result<()> {
                             if app.view == View::ToolOutput {
                                 term.exit_overlay()?;
                             }
-                            break;
+                            break 'main;
                         }
                         Action::None => {}
                         Action::Submit(text) => {

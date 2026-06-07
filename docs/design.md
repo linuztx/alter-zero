@@ -129,6 +129,15 @@ background thread, which merely *sends* on a channel (it never reads stdin). Thi
 avoids a stdin race with the cursor-position queries that terminal init and
 `insert_before` make — the cause of the "cursor position could not be read" error.
 
+Each loop turn **blocks for the first event** (a short wait while streaming so
+chunks stay snappy, a longer one when idle so it doesn't spin), then **greedily
+drains every other event already buffered** (`event::poll(Duration::ZERO)`) before
+redrawing. So a burst of input — a paste, fast typing, an autorepeating key —
+collapses into a *single* repaint instead of one redraw per keystroke. Without this
+the redraw-per-key cost (each redraw re-wraps the whole input) made typing into a
+growing draft lag super-linearly; the coalescing keeps it responsive. Guarded by
+`scripts/smoke.sh` Phase 6 (a 1000-char burst must finish rendering near-instantly).
+
 ```
 keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,ToggleToolView,Notice,Clear,Quit,None}
 reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / start_tool / end_tool / finish_stream / fail_stream
