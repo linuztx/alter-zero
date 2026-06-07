@@ -132,6 +132,10 @@ pub struct App {
     pub view: View,
     /// The tool-output view's vertical scroll offset, in lines from the top.
     pub tool_scroll: usize,
+    /// Whether the tool-output view is pinned to the bottom (tail-follow): it
+    /// opens this way and re-streams keep the latest content in view, until you
+    /// scroll up to read back (and re-engages when you scroll to the bottom).
+    pub tool_follow: bool,
 }
 
 impl App {
@@ -211,14 +215,18 @@ impl App {
                 Action::ToggleToolView
             }
             KeyCode::Up => {
+                self.tool_follow = false; // reading back — stop tailing the bottom
                 self.tool_scroll = self.tool_scroll.saturating_sub(1);
                 Action::None
             }
             KeyCode::Down => {
+                // Don't touch `tool_follow`: reaching the bottom re-engages it in
+                // `settle_tool_scroll`.
                 self.tool_scroll = self.tool_scroll.saturating_add(1);
                 Action::None
             }
             KeyCode::PageUp => {
+                self.tool_follow = false;
                 self.tool_scroll = self.tool_scroll.saturating_sub(TOOL_VIEW_PAGE);
                 Action::None
             }
@@ -230,20 +238,30 @@ impl App {
         }
     }
 
-    /// Flip between the conversation and the tool-output view, resetting the
-    /// view's scroll so it opens at the top.
+    /// Flip between the conversation and the tool-output view. Entering the view
+    /// pins it to the bottom (tail-follow) so it opens on the latest content.
     fn toggle_tool_view(&mut self) {
         self.view = match self.view {
             View::Conversation => View::ToolOutput,
             View::ToolOutput => View::Conversation,
         };
         self.tool_scroll = 0;
+        self.tool_follow = self.view == View::ToolOutput;
     }
 
-    /// Clamp the tool-view scroll so it can't run past the last line (the loop
-    /// calls this each draw with the max the current screen allows).
-    pub fn clamp_tool_scroll(&mut self, max: usize) {
-        self.tool_scroll = self.tool_scroll.min(max);
+    /// Settle the tool-view scroll for a draw given the largest offset the current
+    /// screen allows. While following, it stays pinned to the bottom (`max`);
+    /// otherwise it's capped to `max`, and reaching the bottom re-engages
+    /// following so new content keeps scrolling into view.
+    pub fn settle_tool_scroll(&mut self, max: usize) {
+        if self.tool_scroll >= max {
+            self.tool_follow = true; // at (or past) the bottom — stick to it
+        }
+        self.tool_scroll = if self.tool_follow {
+            max
+        } else {
+            self.tool_scroll.min(max)
+        };
     }
 
     /// Record a finished user message in the history.
@@ -776,23 +794,53 @@ mod tests {
     }
 
     #[test]
-    fn toggling_the_view_resets_the_scroll() {
+    fn opening_the_tool_view_follows_the_bottom() {
         let mut app = App::new();
         app.on_key(ctrl('o'));
-        app.tool_scroll = 7;
-        app.on_key(ctrl('o')); // leave
-        app.on_key(ctrl('o')); // re-enter
-        assert_eq!(app.tool_scroll, 0, "re-opening starts at the top");
+        assert!(app.tool_follow, "the view opens pinned to the bottom");
+        // Settling against any screen pins the offset to the last line.
+        app.settle_tool_scroll(12);
+        assert_eq!(app.tool_scroll, 12, "opens on the latest content");
     }
 
     #[test]
-    fn clamp_tool_scroll_caps_the_offset() {
+    fn re_opening_the_tool_view_follows_the_bottom_again() {
         let mut app = App::new();
+        app.on_key(ctrl('o'));
+        app.tool_scroll = 7;
+        app.tool_follow = false; // pretend the user scrolled up
+        app.on_key(ctrl('o')); // leave
+        app.on_key(ctrl('o')); // re-enter
+        assert!(app.tool_follow, "re-opening tails the bottom again");
+        assert_eq!(app.tool_scroll, 0);
+    }
+
+    #[test]
+    fn scrolling_up_leaves_the_bottom_then_reaching_it_re_engages() {
+        let mut app = App::new();
+        app.on_key(ctrl('o')); // follow
+        app.settle_tool_scroll(20); // pinned to the bottom (20)
+        assert_eq!(app.tool_scroll, 20);
+
+        app.on_key(key(KeyCode::Up)); // read back
+        assert!(!app.tool_follow, "scrolling up stops tailing");
+        app.settle_tool_scroll(20);
+        assert_eq!(app.tool_scroll, 19, "moved one off the bottom, stays put");
+
+        app.on_key(key(KeyCode::Down)); // back down to the bottom
+        app.settle_tool_scroll(20);
+        assert!(app.tool_follow, "reaching the bottom re-engages tailing");
+        assert_eq!(app.tool_scroll, 20);
+    }
+
+    #[test]
+    fn settle_tool_scroll_caps_a_stale_offset() {
+        let mut app = App::new();
+        // Not following, but the stored offset is past the end → snaps to the
+        // bottom (and resumes tailing, since it was at/past the last line).
         app.tool_scroll = 100;
-        app.clamp_tool_scroll(12);
+        app.settle_tool_scroll(12);
         assert_eq!(app.tool_scroll, 12);
-        app.clamp_tool_scroll(50);
-        assert_eq!(app.tool_scroll, 12, "clamp only lowers, never raises");
     }
 
     #[test]

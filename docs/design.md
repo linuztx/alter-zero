@@ -70,7 +70,9 @@ unit-tested must be unit-tested.
   so the inline conversation is preserved — showing the **full conversation
   transcript**: every user/AI message **and** every tool call's **complete**
   (expanded) output, interleaved in the exact order they happened, plus the live
-  tail (in-progress reply / running tool), scrollable (↑/↓ PgUp/PgDn). It is the
+  tail (in-progress reply / running tool), scrollable (↑/↓ PgUp/PgDn). It **opens
+  pinned to the bottom** and tail-follows new content as it streams in (scroll up
+  to read back; scrolling to the bottom re-engages following). It is the
   expanded counterpart of the inline view (where tools are collapsed). The
   conversation **keeps streaming and updating underneath**: while the overlay is up
   the event loop still drains reply events into `App` (so the view updates live)
@@ -177,8 +179,9 @@ reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_c
   tool and reopens an empty buffer; `finish_stream` records nothing for an empty
   final segment; a turn interleaves text/tool/text in order. Ctrl+O toggles the
   view (even mid-stream, stream keeps running); Esc closes the overlay (vs quits
-  in the chat); the viewer scrolls and ignores typing; `tool_calls` lists finished
-  then running.
+  in the chat); the viewer scrolls and ignores typing; it opens pinned to the
+  bottom and `settle_tool_scroll` tail-follows (scrolling up disengages, reaching
+  the bottom re-engages).
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display

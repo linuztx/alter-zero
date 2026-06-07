@@ -251,6 +251,6 @@ fn draw(term: &mut InlineViewport, app: &App) -> io::Result<()> {
 fn draw_tool_view(term: &mut InlineViewport, app: &mut App) -> io::Result<()> {
     let screen = term.screen();
     let max = ui::tool_view_max_scroll(app, screen.width, screen.height);
-    app.clamp_tool_scroll(max);
+    app.settle_tool_scroll(max);
     term.draw_overlay(|area, buf| ui::render_tool_view(area, buf, app))
 }
