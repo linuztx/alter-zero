@@ -8,12 +8,15 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
+use tokio::sync::mpsc::UnboundedSender;
+
 /// What a backend sends to the event loop. Only the *reply* travels this channel
-/// — keyboard input is read on the main thread (see `main.rs`).
+/// — keyboard input arrives separately via the terminal event stream (see
+/// `main.rs`). It is a tokio unbounded channel so the async loop can `select!` on
+/// it; the backend thread sends without ever touching the runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
     /// A piece of the reply (typically one word).
@@ -157,8 +160,12 @@ impl CancelToken {
 /// early when cancellation is requested, and may send [`StreamEvent::Error`] to
 /// report a failure in place of [`StreamEvent::StreamDone`].
 pub trait ReplySource {
-    fn spawn(&self, prompt: String, tx: Sender<StreamEvent>, cancel: CancelToken)
-    -> JoinHandle<()>;
+    fn spawn(
+        &self,
+        prompt: String,
+        tx: UnboundedSender<StreamEvent>,
+        cancel: CancelToken,
+    ) -> JoinHandle<()>;
 }
 
 /// The built-in canned-reply backend used by the demo.
@@ -175,7 +182,7 @@ impl ReplySource for DummyAi {
     fn spawn(
         &self,
         prompt: String,
-        tx: Sender<StreamEvent>,
+        tx: UnboundedSender<StreamEvent>,
         cancel: CancelToken,
     ) -> JoinHandle<()> {
         thread::spawn(move || {
@@ -219,7 +226,7 @@ fn nap(dur: Duration, cancel: &CancelToken) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc;
+    use tokio::sync::mpsc::unbounded_channel;
 
     #[test]
     fn dummy_response_is_non_empty() {
@@ -340,7 +347,7 @@ mod tests {
 
     #[test]
     fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = unbounded_channel();
         let prompt = "hi".to_string();
         let expected = dummy_response(&prompt);
         let handle = DummyAi.spawn(prompt, tx, CancelToken::new());
@@ -349,7 +356,9 @@ mod tests {
         let mut saw_done = false;
         let mut tool_starts = 0;
         let mut tool_ends = 0;
-        for event in rx {
+        // `blocking_recv` waits for each delayed event (no runtime here, so it's
+        // allowed); `None` means the backend dropped its sender.
+        while let Some(event) = rx.blocking_recv() {
             match event {
                 StreamEvent::Chunk(c) => streamed.push_str(&c),
                 StreamEvent::ToolStart { .. } => tool_starts += 1,
@@ -371,7 +380,7 @@ mod tests {
 
     #[test]
     fn dummy_ai_sends_nothing_when_cancelled_before_it_starts() {
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         cancel.cancel();
         DummyAi
@@ -394,7 +403,7 @@ mod tests {
             fn spawn(
                 &self,
                 _prompt: String,
-                tx: Sender<StreamEvent>,
+                tx: UnboundedSender<StreamEvent>,
                 _cancel: CancelToken,
             ) -> JoinHandle<()> {
                 thread::spawn(move || {
@@ -402,13 +411,13 @@ mod tests {
                 })
             }
         }
-        let (tx, rx) = mpsc::channel();
+        let (tx, mut rx) = unbounded_channel();
         Failing
             .spawn("x".to_string(), tx, CancelToken::new())
             .join()
             .unwrap();
         assert_eq!(
-            rx.recv().unwrap(),
+            rx.blocking_recv().unwrap(),
             StreamEvent::Error("backend exploded".to_string())
         );
     }

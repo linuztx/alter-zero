@@ -19,20 +19,27 @@ The standard pre-commit gate used throughout this project is: `cargo fmt --check
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus
-`unicode-width` for display-width math. `rust-toolchain.toml` pins the toolchain;
-a `[lints]` table in `Cargo.toml` bakes the gate into every build
-(`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
+`unicode-width` for display-width math and **`tokio`** (current-thread runtime) +
+`tokio-stream` for the async event loop. The `Cargo.toml` `crossterm` entry exists
+*only* to enable its `event-stream` feature (for `EventStream`); code still imports
+crossterm through `ratatui::crossterm`, never as `crossterm::…`. `rust-toolchain.toml`
+pins the toolchain; a `[lints]` table in `Cargo.toml` bakes the gate into every
+build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 
 ## Architecture
 
-A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`) holds the logic;
-**`src/main.rs`** is a thin terminal shell. The pure, unit-tested logic lives in
-`app`/`stream`/`ui` so behavior is testable with a plain `Buffer`/`TestBackend`
-and no real terminal. `main.rs` **and `term.rs`** are the I/O boundary — the only
-files not unit-tested — verified via `scripts/smoke.sh`. Keep logic out of them;
-every geometry decision `term.rs` makes is a pure `ui` helper it calls.
+A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`)
+holds the logic; **`src/main.rs`** is a thin terminal shell driving a codex-style
+**async (tokio) `select!`** loop. The pure, unit-tested logic lives in
+`app`/`stream`/`ui` (plus the pure cores of `frame`/`paste`) so behavior is
+testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs` **and
+`term.rs`** are the I/O boundary — not unit-tested — verified via
+`scripts/smoke.sh`; `frame`'s async scheduler **task** is smoke-covered too (its
+rate-limit/coalesce math is unit-tested). Keep logic out of the boundary; every
+geometry decision `term.rs` makes is a pure `ui` helper it calls.
 
-The design rationale lives in `docs/design.md`.
+The design rationale lives in `docs/design.md`; the async-loop design in
+`docs/async-rewrite.md`.
 
 ### The runtime model and its invariants
 
@@ -51,12 +58,15 @@ streaming strip, and the palette band (`ui::live_height`). Four non-obvious
 invariants hold the whole thing together — breaking any one reintroduces a class
 of bug:
 
-1. **Only the main thread reads stdin.** The event loop reads keys with
-   `event::poll`; the reply backend (a `stream::ReplySource`, e.g. `DummyAi`)
-   streams on a background thread that *only sends* `StreamEvent`s on an mpsc
-   channel. Viewport init and `insert_before` query the cursor position over
-   stdin, so a second stdin reader would steal that reply and cause "cursor
-   position could not be read". Never add a thread that reads stdin.
+1. **One stdin reader, created after the init cursor query.** The async loop reads
+   keys from a single crossterm `EventStream`; the reply backend (a
+   `stream::ReplySource`, e.g. `DummyAi`) streams on a background thread that *only
+   sends* `StreamEvent`s on a tokio channel. `InlineViewport::init` queries the
+   cursor position (DSR) over stdin *once, synchronously, before the `EventStream`
+   exists*; a second stdin reader would steal that reply and cause "cursor position
+   could not be read". So: create the `EventStream` only after init, and never add
+   another thread or task that reads stdin (`insert_before` tracks the viewport row
+   itself and never queries the cursor).
 
 2. **Greedy word-wrap is prefix-stable** (`ui::wrap_text`): appending text only
    ever changes the *last* wrapped line. This is what makes streaming-to-scrollback
@@ -102,9 +112,18 @@ of bug:
 
 ### Data flow
 
+The loop is an async (`tokio`, current-thread) `select!` over three sources;
+`select!`'s randomized branch order gives input/draw fairness for free. Every state
+change calls `frame.schedule_frame()`; the `frame` scheduler coalesces those into a
+single draw tick, rate-limited to 120 fps (`MIN_FRAME_INTERVAL`). A paste/fast-type
+run is caught by `paste::PasteBurst` so its redraw defers to the burst tail
+(`schedule_frame_in`). `insert_before` stays inline (immediate scrollback); only the
+live-region paint is tick-driven. (See `docs/async-rewrite.md`.)
+
 ```
-keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,ToggleToolView,Notice,Clear,Quit,None}
-reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / start_tool / end_tool / finish_stream / fail_stream
+keyboard / resize ─► EventStream ─┐
+reply backend ────► tokio mpsc ───┼─► select! ─► App::on_key / push_chunk / start_tool / … ─► schedule_frame
+frame scheduler ──► draw-tick ────┘                                        coalesce + 120fps ─► draw / draw_overlay
 ```
 
 `Submit(text)` records the user message, `insert_before`s it, then spawns a reply
@@ -182,9 +201,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   never `chars().count()` — so CJK/emoji wrap and pad correctly.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
   as a template) and changing the single `let backend = …;` line in
-  `main.rs::run`. Stream `StreamEvent::Chunk(..)` per token, poll the `CancelToken`
-  so a quit can stop you, then send `StreamEvent::StreamDone` — or
-  `StreamEvent::Error(msg)` on failure. For tool calls, send a
+  `main.rs::run`. Stream `StreamEvent::Chunk(..)` per token on the `tokio`
+  `UnboundedSender` (its `send` is sync — callable straight from your background
+  thread, no runtime needed), poll the `CancelToken` so a quit can stop you, then
+  send `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure. For tool calls, send a
   `StreamEvent::ToolStart{name,args}` then a `ToolEnd{output,ok}` (see
   `stream::turn_events` for the dummy's interleaved script). The loop and rendering
   treat chunks and tool output as opaque text; nothing else changes.

@@ -6,6 +6,16 @@ edition = "2024"
 [dependencies]
 ratatui = "0.30.1"
 unicode-width = "0.2"
+# Async runtime for the codex-style event loop (current-thread, minimal feature
+# set — no tokio I/O; crossterm's EventStream owns stdin via its own reactor).
+tokio = { version = "1", features = ["rt", "macros", "sync", "time"] }
+# `StreamExt::next` for crossterm's async `EventStream`.
+tokio-stream = "0.1"
+# Turns on crossterm's async `EventStream`. We still import crossterm ONLY via
+# `ratatui::crossterm` — this entry just enables the feature on the same
+# crossterm crate ratatui already uses (cargo feature unification); ratatui does
+# not forward `event-stream` itself.
+crossterm = { version = "0.29.0", features = ["event-stream"] }
 
 # Bake the project's pre-commit gate into every build so it can't silently
 # regress (there is no CI yet). Mirrors `clippy --all-targets -- -D warnings`.

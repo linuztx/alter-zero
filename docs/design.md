@@ -116,31 +116,45 @@ logic is unit-testable without a real terminal.
 
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
-| `stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved tool script). | Pure parts, token & dummy: yes |
+| `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved tool script). | Pure parts, token & dummy: yes |
 | `app.rs`    | State + pure update logic: `App`, `on_key -> Action` (per `View`), `push_chunk`/`finish_stream`/`flush_streaming_segment`, `start_tool`/`end_tool`, the message+tool `history`, the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu` types. | Yes |
 | `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), `render_live`, and `render_tool_view`. | Yes |
-| `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (scrollback), `draw` (re-pin + repaint + cursor), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore. | No (I/O boundary) |
-| `main.rs`   | Thin glue: single-threaded poll loop, drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit. | No (tiny I/O boundary) |
+| `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
+| `paste.rs`  | Paste-burst detection: `PasteBurst`, a pure state machine — a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop coalesces the run's redraw. | Yes |
+| `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (scrollback), `draw` (re-pin + diff + synchronized-update + cursor), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore. | No (I/O boundary) |
+| `main.rs`   | Thin glue: single-threaded **async (tokio) `select!`** loop over input (`EventStream`), reply events (tokio channel), and draw ticks; drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit. | No (tiny I/O boundary) |
 
 ### Data flow
 
-Input is read on the **main thread** (`event::poll`); only the reply streams on a
-background thread, which merely *sends* on a channel (it never reads stdin). This
-avoids a stdin race with the cursor-position queries that terminal init and
-`insert_before` make — the cause of the "cursor position could not be read" error.
+The loop is **async** (tokio, single-threaded `current_thread` runtime), built as a
+`select!` over three sources — exactly how openai/codex drives its TUI. Terminal
+input arrives on a crossterm **`EventStream`**, the reply streams in on a tokio
+channel, and **draw ticks** come from the frame scheduler. `select!` polls its
+branches in randomized order, so input and draws can't starve each other (codex's
+explicit round-robin fairness, for free). The async-rewrite design lives in
+`docs/async-rewrite.md`.
 
-Each loop turn **blocks for the first event** (a short wait while streaming so
-chunks stay snappy, a longer one when idle so it doesn't spin), then **greedily
-drains every other event already buffered** (`event::poll(Duration::ZERO)`) before
-redrawing. So a burst of input — a paste, fast typing, an autorepeating key —
-collapses into a *single* repaint instead of one redraw per keystroke. Without this
-the redraw-per-key cost (each redraw re-wraps the whole input) made typing into a
-growing draft lag super-linearly; the coalescing keeps it responsive. Guarded by
-`scripts/smoke.sh` Phase 6 (a 1000-char burst must finish rendering near-instantly).
+The `EventStream` is the **sole** stdin reader, created *after* `InlineViewport::init`
+has queried the cursor position over stdin once, synchronously. The reply backend
+runs on a background thread that only *sends* on its channel — it never reads stdin.
+A second stdin reader would steal the cursor-position (DSR) reply — the cause of the
+"cursor position could not be read" error. (`insert_before` tracks the viewport row
+itself and never queries the cursor.)
+
+Rendering is **tick-driven**: every state change calls `frame.schedule_frame()`,
+and the scheduler coalesces a burst of those into a single draw, rate-limited to
+120 fps (`MIN_FRAME_INTERVAL` = 8.33 ms). A paste / fast-type run is recognised by
+`PasteBurst`, so its redraw is *deferred to the burst's tail* (`schedule_frame_in`)
+— one repaint for the run instead of one per keystroke. `insert_before` stays inline
+(it mutates scrollback immediately); only the live-region paint waits for a tick.
+Guarded by `scripts/smoke.sh` Phase 6 (a 1000-char burst must finish rendering
+near-instantly).
 
 ```
-keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,ToggleToolView,Notice,Clear,Quit,None}
-reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / start_tool / end_tool / finish_stream / fail_stream
+keyboard / resize ─► EventStream ─┐
+reply backend ───► tokio mpsc ────┤─► select! ─► App::on_key / push_chunk / start_tool / … ─► schedule_frame
+frame scheduler ─► draw-tick ─────┘                                                          │
+                                                              draw tick ◄── coalesce + 120fps ┘ ─► draw / draw_overlay
 ```
 
 - On `Submit(text)`: `insert_before` the user message and a blank spacer, then
