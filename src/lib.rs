@@ -13,4 +13,5 @@ pub mod frame;
 pub mod paste;
 pub mod stream;
 pub mod term;
+pub mod textarea;
 pub mod ui;

@@ -535,6 +535,7 @@ dependencies = [
  "ratatui",
  "tokio",
  "tokio-stream",
+ "unicode-segmentation",
  "unicode-width",
 ]
 

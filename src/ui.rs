@@ -16,6 +16,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{
     App, HistoryItem, Role, SlashCommand, ToolCall, ToolStatus, command_query, matching_commands,
 };
+use crate::textarea::TextArea;
 
 /// Display width of `s` in terminal columns.
 ///
@@ -157,13 +158,13 @@ fn field_width(width: u16) -> u16 {
 /// terminal height (after which the box scrolls internally; see [`render_live`]).
 #[must_use]
 pub fn live_height(
-    input: &str,
+    input: &TextArea,
     width: u16,
     term_height: u16,
     streaming: bool,
     menu_rows: u16,
 ) -> u16 {
-    let rows = wrap_text(input, field_width(width)).len().max(1) as u16;
+    let rows = input.row_count(field_width(width)) as u16;
     (strip_rows(streaming) + INPUT_CHROME_ROWS + rows + menu_rows).min(term_height.max(1))
 }
 
@@ -231,30 +232,49 @@ fn live_layout(area: Rect, streaming: bool, menu_rows: u16) -> [Rect; 3] {
 
 /// The geometry shared by [`render_live`] and [`cursor_position`] so the drawn
 /// text and the hardware cursor can never drift apart: where the input text rows
-/// live, the input wrapped to the field width, and how far it's scrolled so the
-/// end (where the cursor always sits) stays visible when the box is full.
+/// live, the input wrapped to the field width, the cursor's wrapped row/column,
+/// and how far it's scrolled so the **cursor** stays visible when the box is full.
 struct InputBox {
     /// The rule-framed box area (below the preview); borders are drawn here.
     frame: Rect,
     /// The inner area that holds the text rows (the box minus its two rules).
     text: Rect,
-    /// Every wrapped input line (always at least one, possibly empty).
-    wrapped: Vec<String>,
-    /// Index of the first wrapped line shown — the tail is kept in view.
+    /// Every wrapped input row's displayed text (always at least one, possibly empty).
+    rows: Vec<String>,
+    /// The cursor's wrapped-row index and display column (from the [`TextArea`]).
+    cursor_row: usize,
+    cursor_col: usize,
+    /// Index of the first wrapped row shown — the window follows the cursor.
     scroll: usize,
 }
 
-fn input_box(area: Rect, input: &str, streaming: bool, menu_rows: u16) -> InputBox {
+fn input_box(area: Rect, input: &TextArea, streaming: bool, menu_rows: u16) -> InputBox {
     let [_, frame, _] = live_layout(area, streaming, menu_rows);
     let text = frame.inner(Margin::new(0, 1)); // inset past the top & bottom rules
-    let wrapped = wrap_text(input, field_width(area.width));
-    let scroll = wrapped.len().saturating_sub(text.height as usize);
+    let field = field_width(area.width);
+    let rows = input.display_rows(field);
+    let (cursor_row, cursor_col) = input.cursor_row_col(field);
+    let scroll = input_scroll(rows.len(), cursor_row, text.height as usize);
     InputBox {
         frame,
         text,
-        wrapped,
+        rows,
+        cursor_row,
+        cursor_col,
         scroll,
     }
+}
+
+/// First visible input row so the cursor stays on screen: 0 while the rows fit,
+/// otherwise the window shifts down just enough to keep `cursor_row` visible
+/// (codex's `effective_scroll`, recomputed from the cursor each draw rather than
+/// persisted). Clamped so the last window sits flush with the end.
+fn input_scroll(total: usize, cursor_row: usize, height: usize) -> usize {
+    if height == 0 || total <= height {
+        return 0;
+    }
+    let max = total - height;
+    (cursor_row + 1).saturating_sub(height).min(max)
 }
 
 /// Greedy word-wrap `text` to `width` columns.
@@ -426,7 +446,7 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     block.render(bx.frame, buf);
 
     let lines: Vec<Line> = bx
-        .wrapped
+        .rows
         .iter()
         .enumerate()
         .skip(bx.scroll)
@@ -459,7 +479,7 @@ pub fn menu_rows(app: &App) -> u16 {
     if app.command_menu.is_none() {
         return 0;
     }
-    match command_query(&app.input) {
+    match command_query(app.input.text()) {
         None => 0,
         Some(query) => {
             let matches = matching_commands(query).len();
@@ -523,7 +543,7 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(menu) = &app.command_menu else {
         return Vec::new();
     };
-    let Some(query) = command_query(&app.input) else {
+    let Some(query) = command_query(app.input.text()) else {
         return Vec::new();
     };
     let matches = matching_commands(query);
@@ -799,17 +819,16 @@ pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
 
 /// Absolute `(x, y)` where the terminal's hardware cursor should sit for the
 /// current input. Shares [`input_box`] with [`render_live`] so the cursor lands
-/// exactly after the visible input text — on the last wrapped row, at its end.
+/// exactly where the editor's cursor is — on its wrapped row, at its column —
+/// wherever the user has moved it, not just at the end.
 #[must_use]
 pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The cursor is only ever placed while idle (it is hidden during streaming),
     // so the box is laid out without the streaming strip — but *with* the command
     // palette's reserved band below it, so the box (and the cursor) sit correctly.
     let bx = input_box(area, &app.input, false, menu_rows(app));
-    // The cursor follows the end of the input: its wrapped row, less the scroll.
-    let cursor_line = bx.wrapped.len().saturating_sub(1);
-    let row = cursor_line.saturating_sub(bx.scroll) as u16;
-    let col = cols(bx.wrapped.last().map_or("", String::as_str)) as u16;
+    let row = bx.cursor_row.saturating_sub(bx.scroll) as u16;
+    let col = bx.cursor_col as u16;
     (bx.text.x + BULLET_WIDTH + col, bx.text.y + row)
 }
 
@@ -1197,7 +1216,7 @@ mod tests {
     #[test]
     fn render_live_grows_the_box_and_wraps_input_across_rows() {
         let mut app = App::new();
-        app.input = "first\nsecond".to_string();
+        app.input = TextArea::from_text("first\nsecond");
         let h = live_height(&app.input, 20, 24, false, 0);
         assert_eq!(h, 4, "two rules + two input rows (no strip when idle)");
         let mut buf = buffer(20, h);
@@ -1221,10 +1240,12 @@ mod tests {
         // Six input lines but a terminal that only fits four text rows: the box
         // shows the tail (so the cursor's line stays visible), not the head.
         let mut app = App::new();
-        app.input = (0..6)
-            .map(|i| format!("line{i}"))
-            .collect::<Vec<_>>()
-            .join("\n");
+        app.input = TextArea::from_text(
+            &(0..6)
+                .map(|i| format!("line{i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
         let term_h = 6; // live clamps to 6 → text rows = 6 - 2 = 4
         assert_eq!(live_height(&app.input, 20, term_h, false, 0), 6);
         let mut buf = buffer(20, 6);
@@ -1265,7 +1286,7 @@ mod tests {
         // Idle, the box sits directly under the chat — no preview/gap strip — so
         // the only separation is the committed blank after the last message.
         let mut app = App::new();
-        app.input = "hello".to_string();
+        app.input = TextArea::from_text("hello");
         let mut buf = buffer(40, 3); // just the box: two rules + one input row
         render_live(buf.area, &mut buf, &app);
 
@@ -1283,7 +1304,7 @@ mod tests {
         // "ab\ncd" → two rows; the cursor follows the end onto the second text
         // row (y = 2) just after the indented "cd" (x = 2 + 2).
         let mut app = App::new();
-        app.input = "ab\ncd".to_string();
+        app.input = TextArea::from_text("ab\ncd");
         let area = Rect::new(0, 0, 20, live_height(&app.input, 20, 24, false, 0));
         assert_eq!(cursor_position(area, &app), (4, 2));
     }
@@ -1358,7 +1379,7 @@ mod tests {
         // Empty input → cursor right after "❯ ".
         let mut app = App::new();
         assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), &app), (2, 1));
-        app.input = "hi".to_string();
+        app.input = TextArea::from_text("hi");
         assert_eq!(cursor_position(Rect::new(0, 0, 40, 4), &app), (4, 1));
     }
 
@@ -1369,8 +1390,14 @@ mod tests {
         // Idle, empty or one-line input → a one-row box framed by two rules
         // (no preview strip) = LIVE_MIN_HEIGHT (3).
         assert_eq!(LIVE_MIN_HEIGHT, 3);
-        assert_eq!(live_height("", 40, 24, false, 0), LIVE_MIN_HEIGHT);
-        assert_eq!(live_height("hi", 40, 24, false, 0), LIVE_MIN_HEIGHT);
+        assert_eq!(
+            live_height(&TextArea::from_text(""), 40, 24, false, 0),
+            LIVE_MIN_HEIGHT
+        );
+        assert_eq!(
+            live_height(&TextArea::from_text("hi"), 40, 24, false, 0),
+            LIVE_MIN_HEIGHT
+        );
     }
 
     #[test]
@@ -1378,9 +1405,10 @@ mod tests {
         // While streaming, the live region gains a preview row + a blank gap row
         // (PREVIEW_ROWS + GAP_ROWS = 2) above whatever the idle box would be.
         for input in ["", "hi", "a\nb\nc"] {
+            let ta = TextArea::from_text(input);
             assert_eq!(
-                live_height(input, 40, 24, true, 0),
-                live_height(input, 40, 24, false, 0) + 2,
+                live_height(&ta, 40, 24, true, 0),
+                live_height(&ta, 40, 24, false, 0) + 2,
                 "streaming adds exactly the preview + gap rows for {input:?}"
             );
         }
@@ -1390,19 +1418,25 @@ mod tests {
     fn live_height_grows_one_row_per_wrapped_input_line() {
         // Idle, three explicit lines → the box has three text rows, so the live
         // region is 2 (two rules) + 3 = 5 rows tall.
-        assert_eq!(live_height("a\nb\nc", 40, 24, false, 0), 5);
+        assert_eq!(
+            live_height(&TextArea::from_text("a\nb\nc"), 40, 24, false, 0),
+            5
+        );
     }
 
     #[test]
     fn live_height_grows_when_a_long_line_soft_wraps() {
         // No explicit newline: a line longer than the field width wraps and the
         // box still grows. field width = 10 - 2 = 8, so 16 columns → 2 rows → 4.
-        assert_eq!(live_height("abcdefghijklmnop", 10, 24, false, 0), 4);
+        assert_eq!(
+            live_height(&TextArea::from_text("abcdefghijklmnop"), 10, 24, false, 0),
+            4
+        );
     }
 
     #[test]
     fn live_height_is_clamped_to_the_terminal_height() {
-        let many = "a\n".repeat(50);
+        let many = TextArea::from_text(&"a\n".repeat(50));
         assert_eq!(
             live_height(&many, 40, 10, false, 0),
             10,
@@ -1511,7 +1545,7 @@ mod tests {
         // prompt is drawn — they cannot drift apart.
         let area = Rect::new(0, 0, 40, LIVE_MIN_HEIGHT);
         let mut app = App::new();
-        app.input = "x".to_string();
+        app.input = TextArea::from_text("x");
         let mut buf = Buffer::empty(area);
         render_live(area, &mut buf, &app);
         let (_, cy) = cursor_position(area, &app);
@@ -1655,7 +1689,7 @@ mod tests {
     /// An app whose input is `input` with the palette open at `selected`.
     fn palette(input: &str, selected: usize) -> App {
         let mut app = App::new();
-        app.input = input.to_string();
+        app.input = TextArea::from_text(input);
         app.command_menu = Some(crate::app::CommandMenu { selected });
         app
     }
@@ -1770,8 +1804,8 @@ mod tests {
 
     #[test]
     fn live_height_adds_the_command_menu_band() {
-        let closed = live_height("hi", 40, 24, false, 0);
-        let open = live_height("/", 40, 24, false, MENU_MAX_ROWS);
+        let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, 0);
+        let open = live_height(&TextArea::from_text("/"), 40, 24, false, MENU_MAX_ROWS);
         assert_eq!(open, closed + MENU_MAX_ROWS, "the menu band adds its rows");
     }
 
@@ -1801,12 +1835,22 @@ mod tests {
         // The menu is reserved *below* the box, so opening the palette must not
         // move the cursor (the end of the input).
         let mut app = App::new();
-        app.input = "/".to_string();
-        let closed_area = Rect::new(0, 0, 40, live_height("/", 40, 24, false, 0));
+        app.input = TextArea::from_text("/");
+        let closed_area = Rect::new(
+            0,
+            0,
+            40,
+            live_height(&TextArea::from_text("/"), 40, 24, false, 0),
+        );
         let closed = cursor_position(closed_area, &app);
         app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
         let menu = menu_rows(&app);
-        let open_area = Rect::new(0, 0, 40, live_height("/", 40, 24, false, menu));
+        let open_area = Rect::new(
+            0,
+            0,
+            40,
+            live_height(&TextArea::from_text("/"), 40, 24, false, menu),
+        );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the menu opens");
     }

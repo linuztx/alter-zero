@@ -19,7 +19,8 @@ The standard pre-commit gate used throughout this project is: `cargo fmt --check
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus
-`unicode-width` for display-width math and **`tokio`** (current-thread runtime) +
+`unicode-width` for display-width math, `unicode-segmentation` for the textarea's
+grapheme-aware cursor/wrapping, and **`tokio`** (current-thread runtime) +
 `tokio-stream` for the async event loop. The `Cargo.toml` `crossterm` entry exists
 *only* to enable its `event-stream` feature (for `EventStream`); code still imports
 crossterm through `ratatui::crossterm`, never as `crossterm::…`. `rust-toolchain.toml`
@@ -28,24 +29,27 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 
 ## Architecture
 
-A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`)
-holds the logic; **`src/main.rs`** is a thin terminal shell driving a codex-style
-**async (tokio) `select!`** loop. The pure, unit-tested logic lives in
-`app`/`stream`/`ui` (plus the pure cores of `frame`/`paste`) so behavior is
-testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs` **and
-`term.rs`** are the I/O boundary — not unit-tested — verified via
+A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
+`textarea`) holds the logic; **`src/main.rs`** is a thin terminal shell driving a
+codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
+`app`/`stream`/`ui`/`textarea` (plus the pure cores of `frame`/`paste`) so behavior
+is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
+**and `term.rs`** are the I/O boundary — not unit-tested — verified via
 `scripts/smoke.sh`; `frame`'s async scheduler **task** is smoke-covered too (its
 rate-limit/coalesce math is unit-tested). Keep logic out of the boundary; every
 geometry decision `term.rs` makes is a pure `ui` helper it calls.
 
 The design rationale lives in `docs/design.md`; the async-loop design in
-`docs/async-rewrite.md`.
+`docs/async-rewrite.md`; the editable input (textarea) design in
+`docs/textarea.md`.
 
 ### The runtime model and its invariants
 
 This is an **inline** TUI: finished messages *and tool calls* flow into the
-terminal's real scrollback; a live region (a rule-framed input box, plus a
-streaming preview row + a blank gap row above it *while a reply streams* — the
+terminal's real scrollback; a live region (a rule-framed input box — a codex-style
+**`textarea`** whose cursor moves anywhere (←/→ by grapheme, ↑/↓ across *wrapped*
+rows, Home/End) with insert/delete at the cursor, growing as the input wraps —
+plus a streaming preview row + a blank gap row above it *while a reply streams* — the
 preview shows a running tool's blue header when one is executing — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
 `/token`) stays pinned at the bottom. The alternate screen is used in exactly one
@@ -199,6 +203,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   and `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly.
+- **The input line is a `textarea::TextArea`, not a `String`.** Route all editing
+  through it (`insert_char`/`delete_backward`/`move_*`/`take`/…), never raw string
+  `push`/`pop`; read it with `.text()`. Its cursor is a byte offset on a grapheme
+  boundary and the wrap cache is filled by the render path (`wrapped_rows`), which
+  is why `App::on_key` (and so `move_up`/`move_down`) stays width-agnostic. The
+  textarea wraps faithfully (preserving spaces) into byte ranges — distinct from
+  `ui::wrap_text`, which is for **messages** and collapses whitespace. See
+  `docs/textarea.md`.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
   as a template) and changing the single `let backend = …;` line in
   `main.rs::run`. Stream `StreamEvent::Chunk(..)` per token on the `tokio`

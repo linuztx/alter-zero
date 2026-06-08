@@ -6,6 +6,8 @@
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::textarea::TextArea;
+
 /// Who authored a message — selects its bullet and colour when rendered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
@@ -209,8 +211,10 @@ fn help_text() -> String {
 /// [`history`]: App::history
 #[derive(Debug, Default)]
 pub struct App {
-    /// The text the user is currently typing.
-    pub input: String,
+    /// The editable input line — a codex-style cursor you can move anywhere, with
+    /// insert/delete at the cursor and movement across wrapped rows. See
+    /// [`crate::textarea`].
+    pub input: TextArea,
     /// `Some(buffer)` while the AI reply is streaming, accumulating chunks.
     pub streaming: Option<String>,
     /// The tool currently executing (status [`ToolStatus::Running`]), shown live
@@ -304,31 +308,72 @@ impl App {
                 }
             }
             // Alt+Enter (and Shift+Enter where the terminal reports it) inserts a
-            // newline so the input box grows on demand; a plain Enter submits.
+            // newline at the cursor so the input box grows on demand; a plain Enter
+            // submits.
             KeyCode::Enter
                 if key
                     .modifiers
                     .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
             {
-                self.input.push('\n');
+                self.input.insert_newline();
                 Action::None
             }
             KeyCode::Enter => {
-                if self.is_streaming() || self.input.trim().is_empty() {
+                if self.is_streaming() || self.input.text().trim().is_empty() {
                     Action::None
                 } else {
-                    Action::Submit(std::mem::take(&mut self.input))
+                    Action::Submit(self.input.take())
                 }
             }
+            // Editing and cursor movement, dispatched to the textarea. Backspace /
+            // Delete / typing also re-derive the slash-command palette.
             KeyCode::Backspace => {
-                let had_query = command_query(&self.input).is_some();
-                self.input.pop();
+                let had_query = command_query(self.input.text()).is_some();
+                self.input.delete_backward();
                 self.refresh_command_menu(had_query);
                 Action::None
             }
-            KeyCode::Char(c) => {
-                let had_query = command_query(&self.input).is_some();
-                self.input.push(c);
+            KeyCode::Delete => {
+                let had_query = command_query(self.input.text()).is_some();
+                self.input.delete_forward();
+                self.refresh_command_menu(had_query);
+                Action::None
+            }
+            KeyCode::Left => {
+                self.input.move_left();
+                Action::None
+            }
+            KeyCode::Right => {
+                self.input.move_right();
+                Action::None
+            }
+            // ↑/↓ drive the cursor only when the palette isn't intercepting them
+            // (the menu-open arms above take precedence).
+            KeyCode::Up => {
+                self.input.move_up();
+                Action::None
+            }
+            KeyCode::Down => {
+                self.input.move_down();
+                Action::None
+            }
+            KeyCode::Home => {
+                self.input.move_home();
+                Action::None
+            }
+            KeyCode::End => {
+                self.input.move_end();
+                Action::None
+            }
+            // Plain (and Shift-modified) characters insert at the cursor; ALT/CONTROL
+            // combos are not text, so they are ignored here.
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let had_query = command_query(self.input.text()).is_some();
+                self.input.insert_char(c);
                 self.refresh_command_menu(had_query);
                 Action::None
             }
@@ -343,7 +388,7 @@ impl App {
     /// token won't reopen the palette — only leaving and re-entering command mode
     /// (a None→Some transition) does.
     fn refresh_command_menu(&mut self, had_query: bool) {
-        match command_query(&self.input) {
+        match command_query(self.input.text()) {
             None => self.command_menu = None,
             Some(query) => {
                 let matches = matching_commands(query).len();
@@ -360,7 +405,7 @@ impl App {
 
     /// Move the palette highlight by `delta`, clamped to the current matches.
     fn move_command_selection(&mut self, delta: isize) {
-        let Some(query) = command_query(&self.input) else {
+        let Some(query) = command_query(self.input.text()) else {
             return;
         };
         let matches = matching_commands(query).len();
@@ -375,7 +420,7 @@ impl App {
     #[must_use]
     pub fn highlighted_command(&self) -> Option<&'static SlashCommand> {
         let menu = self.command_menu.as_ref()?;
-        let query = command_query(&self.input)?;
+        let query = command_query(self.input.text())?;
         matching_commands(query).get(menu.selected).copied()
     }
 
@@ -622,60 +667,64 @@ mod tests {
         let mut app = App::new();
         app.on_key(key(KeyCode::Char('h')));
         app.on_key(key(KeyCode::Char('i')));
-        assert_eq!(app.input, "hi");
+        assert_eq!(app.input.text(), "hi");
     }
 
     #[test]
     fn backspace_removes_last_character() {
         let mut app = App::new();
-        app.input = "hi".to_string();
+        app.input = TextArea::from_text("hi");
         app.on_key(key(KeyCode::Backspace));
-        assert_eq!(app.input, "h");
+        assert_eq!(app.input.text(), "h");
     }
 
     #[test]
     fn backspace_on_empty_input_is_harmless() {
         let mut app = App::new();
         app.on_key(key(KeyCode::Backspace));
-        assert_eq!(app.input, "");
+        assert_eq!(app.input.text(), "");
     }
 
     #[test]
     fn enter_with_text_submits_and_clears_input() {
         let mut app = App::new();
-        app.input = "hello".to_string();
+        app.input = TextArea::from_text("hello");
         let action = app.on_key(key(KeyCode::Enter));
         assert_eq!(action, Action::Submit("hello".to_string()));
-        assert_eq!(app.input, "");
+        assert_eq!(app.input.text(), "");
     }
 
     #[test]
     fn enter_with_blank_input_does_nothing() {
         let mut app = App::new();
-        app.input = "   ".to_string();
+        app.input = TextArea::from_text("   ");
         let action = app.on_key(key(KeyCode::Enter));
         assert_eq!(action, Action::None);
         // whitespace-only input is left untouched
-        assert_eq!(app.input, "   ");
+        assert_eq!(app.input.text(), "   ");
     }
 
     #[test]
     fn enter_while_streaming_does_not_submit() {
         let mut app = App::new();
-        app.input = "hello".to_string();
+        app.input = TextArea::from_text("hello");
         app.begin_stream();
         let action = app.on_key(key(KeyCode::Enter));
         assert_eq!(action, Action::None);
-        assert_eq!(app.input, "hello");
+        assert_eq!(app.input.text(), "hello");
     }
 
     #[test]
     fn alt_enter_inserts_a_newline_instead_of_submitting() {
         let mut app = App::new();
-        app.input = "line one".to_string();
+        app.input = TextArea::from_text("line one");
         let alt_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
         assert_eq!(app.on_key(alt_enter), Action::None);
-        assert_eq!(app.input, "line one\n", "Alt+Enter appends a newline");
+        assert_eq!(
+            app.input.text(),
+            "line one\n",
+            "Alt+Enter appends a newline"
+        );
     }
 
     #[test]
@@ -683,31 +732,31 @@ mod tests {
         // Terminals with enhanced keyboard support report Shift+Enter; treat it as
         // a newline like Alt+Enter so the box grows on demand.
         let mut app = App::new();
-        app.input = "a".to_string();
+        app.input = TextArea::from_text("a");
         let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
         assert_eq!(app.on_key(shift_enter), Action::None);
-        assert_eq!(app.input, "a\n");
+        assert_eq!(app.input.text(), "a\n");
     }
 
     #[test]
     fn plain_enter_submits_a_multi_line_message_intact() {
         // After Alt+Enter newlines, a plain Enter submits the whole thing.
         let mut app = App::new();
-        app.input = "first\nsecond".to_string();
+        app.input = TextArea::from_text("first\nsecond");
         let action = app.on_key(key(KeyCode::Enter));
         assert_eq!(action, Action::Submit("first\nsecond".to_string()));
-        assert_eq!(app.input, "");
+        assert_eq!(app.input.text(), "");
     }
 
     #[test]
     fn alt_enter_grows_input_while_streaming_without_submitting() {
         // Editing (incl. newlines) is allowed mid-stream; only sending is blocked.
         let mut app = App::new();
-        app.input = "draft".to_string();
+        app.input = TextArea::from_text("draft");
         app.begin_stream();
         let alt_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
         assert_eq!(app.on_key(alt_enter), Action::None);
-        assert_eq!(app.input, "draft\n");
+        assert_eq!(app.input.text(), "draft\n");
     }
 
     #[test]
@@ -826,6 +875,106 @@ mod tests {
         let mut app = App::new();
         assert!(app.fail_stream("ignored").is_none());
         assert!(app.history.is_empty());
+    }
+
+    // --- cursor editing (the codex-style textarea, dispatched from on_key) ---
+
+    #[test]
+    fn left_and_right_arrows_move_the_input_cursor() {
+        let mut app = App::new();
+        type_str(&mut app, "hi");
+        assert_eq!(app.input.cursor(), 2, "typing leaves the cursor at the end");
+        app.on_key(key(KeyCode::Left));
+        assert_eq!(app.input.cursor(), 1);
+        app.on_key(key(KeyCode::Right));
+        assert_eq!(app.input.cursor(), 2);
+    }
+
+    #[test]
+    fn typing_inserts_at_the_cursor_not_just_the_end() {
+        let mut app = App::new();
+        type_str(&mut app, "ac");
+        app.on_key(key(KeyCode::Left)); // cursor between a and c
+        app.on_key(key(KeyCode::Char('b')));
+        assert_eq!(app.input.text(), "abc", "the char lands at the cursor");
+    }
+
+    #[test]
+    fn backspace_deletes_before_the_cursor_mid_text() {
+        let mut app = App::new();
+        type_str(&mut app, "axbc");
+        app.on_key(key(KeyCode::Home));
+        app.on_key(key(KeyCode::Right));
+        app.on_key(key(KeyCode::Right)); // cursor just after the 'x'
+        app.on_key(key(KeyCode::Backspace));
+        assert_eq!(
+            app.input.text(),
+            "abc",
+            "backspace removes the char before it"
+        );
+    }
+
+    #[test]
+    fn delete_key_removes_the_character_at_the_cursor() {
+        let mut app = App::new();
+        type_str(&mut app, "abc");
+        app.on_key(key(KeyCode::Home)); // cursor at the start
+        app.on_key(key(KeyCode::Delete));
+        assert_eq!(
+            app.input.text(),
+            "bc",
+            "delete removes the char at the cursor"
+        );
+    }
+
+    #[test]
+    fn home_and_end_move_to_the_input_line_bounds() {
+        let mut app = App::new();
+        type_str(&mut app, "hello");
+        app.on_key(key(KeyCode::Home));
+        assert_eq!(app.input.cursor(), 0);
+        app.on_key(key(KeyCode::End));
+        assert_eq!(app.input.cursor(), 5);
+    }
+
+    #[test]
+    fn up_and_down_move_the_cursor_when_no_palette_is_open() {
+        // Two logical lines; the cursor starts at the end (on the 2nd line). With
+        // no palette open and a cold wrap cache, ↑/↓ navigate logical lines.
+        let mut app = App::new();
+        app.input = TextArea::from_text("abc\nde");
+        assert!(app.command_menu.is_none());
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.cursor(), 2, "up to column 2 of the first line");
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.input.cursor(), 6, "down to column 2 of the second line");
+    }
+
+    #[test]
+    fn down_drives_the_palette_not_the_cursor_when_it_is_open() {
+        // With the palette open, ↓ moves the highlight (not the text cursor).
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('/'))); // opens the palette, lists all commands
+        let before = app.input.cursor();
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(
+            app.command_menu.as_ref().unwrap().selected,
+            1,
+            "palette moved"
+        );
+        assert_eq!(app.input.cursor(), before, "the text cursor stayed put");
+    }
+
+    #[test]
+    fn ctrl_modified_characters_are_not_typed_into_the_input() {
+        // Ctrl+<char> (other than the global Ctrl+C/Ctrl+O) is not text.
+        let mut app = App::new();
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        assert_eq!(
+            app.input.text(),
+            "",
+            "control combos don't insert a character"
+        );
     }
 
     // --- tool calls ---
@@ -992,7 +1141,7 @@ mod tests {
         let mut app = App::new();
         app.on_key(ctrl('o'));
         app.on_key(key(KeyCode::Char('x')));
-        assert_eq!(app.input, "", "the read-only viewer swallows typing");
+        assert_eq!(app.input.text(), "", "the read-only viewer swallows typing");
     }
 
     #[test]
@@ -1263,13 +1412,13 @@ mod tests {
             Action::None,
             "a no-match query is not submitted as a message"
         );
-        assert_eq!(app.input, "/zzz", "the input is left intact");
+        assert_eq!(app.input.text(), "/zzz", "the input is left intact");
     }
 
     #[test]
     fn enter_still_submits_a_normal_message_when_no_palette_is_open() {
         let mut app = App::new();
-        app.input = "hello".to_string();
+        app.input = TextArea::from_text("hello");
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
             Action::Submit("hello".to_string())
