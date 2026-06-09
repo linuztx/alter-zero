@@ -97,6 +97,15 @@ const TOOL_VIEW_HINT: &str = "  ↑/↓ PgUp/PgDn scroll · ctrl+o / esc return"
 /// Rows of chrome above the scrolling body (just the title row).
 const TOOL_VIEW_TITLE_ROWS: u16 = 1;
 
+// --- Transcript timestamps (Ctrl+O view only). Each finished item carries a
+// wall-clock stamp, right-aligned on its header line in a dim colour; the inline
+// view never shows it. See docs/timestamps.md. ---
+
+/// Dim grey — the right-aligned timestamp in the Ctrl+O transcript.
+const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
+/// Minimum blank columns between an item's text and its right-aligned timestamp.
+const STAMP_GAP: usize = 2;
+
 // --- Slash-command palette. A scrolling, single-line-per-command list pinned
 // **below the input box** (a third live-region band) whenever the input is a bare
 // command token. Each row is `/name` padded to a column, then its description. The
@@ -677,32 +686,85 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+/// The display width of a history item's timestamp (empty → 0).
+fn item_stamp(item: &HistoryItem) -> &str {
+    match item {
+        HistoryItem::Message(m) => &m.timestamp,
+        HistoryItem::Tool(t) => &t.timestamp,
+    }
+}
+
+/// Right-align `timestamp` (dim) onto the first line, padding so it ends flush
+/// with `width`. The item's content is wrapped into the reserved-narrower width
+/// first (see [`transcript_lines`]), so the stamp never collides with the text.
+/// A no-op for an empty timestamp (the live tail, or when no clock is injected).
+/// Called **only** from the transcript builder — the inline view stays stamp-free.
+fn stamp_first_line(lines: &mut [Line<'static>], timestamp: &str, width: u16) {
+    if timestamp.is_empty() {
+        return;
+    }
+    let Some(first) = lines.first_mut() else {
+        return;
+    };
+    let used: usize = first.spans.iter().map(|s| cols(s.content.as_ref())).sum();
+    let target = (width as usize).saturating_sub(cols(timestamp));
+    let pad = target.saturating_sub(used);
+    first.spans.push(Span::raw(" ".repeat(pad)));
+    first.spans.push(Span::styled(
+        timestamp.to_string(),
+        Style::new().fg(TIMESTAMP_COLOR),
+    ));
+}
+
 /// Build the full conversation transcript shown in the tool-output view: every
 /// user/assistant/error message **and** every tool call's complete output,
 /// interleaved in the exact order they happened (straight from `App::history`),
 /// followed by the live tail — the in-progress reply and/or the running tool.
 /// A blank line separates items. Tools are shown *expanded* here (the inline
 /// view collapses them). Empty → a single placeholder line.
+///
+/// Each item's wall-clock `timestamp` is right-aligned on its header line (dim)
+/// — the **only** place timestamps appear (the inline view never shows them; see
+/// `docs/timestamps.md`). A right column the width of the widest stamp (plus a
+/// gap) is reserved across the whole transcript so the content wraps before it
+/// and every stamp lines up; the live tail reserves the same column but has no
+/// stamp yet, so finalising an item doesn't shift the layout.
 #[must_use]
 pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    let stamp_width = app
+        .history
+        .iter()
+        .map(|item| cols(item_stamp(item)))
+        .max()
+        .unwrap_or(0);
+    let reserved = if stamp_width == 0 {
+        0
+    } else {
+        stamp_width + STAMP_GAP
+    };
+    let text_width = width.saturating_sub(reserved as u16).max(1);
+
     for item in &app.history {
-        match item {
-            HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
-            HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
-        }
+        let mut item_lines = match item {
+            HistoryItem::Message(m) => message_lines(m.role, &m.text, text_width),
+            HistoryItem::Tool(t) => tool_full_lines(t, text_width),
+        };
+        stamp_first_line(&mut item_lines, item_stamp(item), width);
+        lines.extend(item_lines);
         lines.push(Line::default());
     }
     // Live tail: the in-progress assistant text, then the running tool (only one
     // is ever active given how a turn streams, but both are handled in order).
+    // It wraps into the same reserved width but carries no stamp yet.
     if let Some(text) = app.streaming_text()
         && !text.is_empty()
     {
-        lines.extend(message_lines(Role::Assistant, text, width));
+        lines.extend(message_lines(Role::Assistant, text, text_width));
         lines.push(Line::default());
     }
     if let Some(tool) = app.current_tool() {
-        lines.extend(tool_full_lines(tool, width));
+        lines.extend(tool_full_lines(tool, text_width));
         lines.push(Line::default());
     }
     if lines.is_empty() {
@@ -1207,6 +1269,86 @@ mod tests {
         );
     }
 
+    // --- timestamps: shown right-aligned in the transcript, never inline ---
+
+    const STAMP: &str = "2026-06-09 02:32:05 PM";
+
+    /// A user message and a tool call, both carrying the same stamp.
+    fn stamped_history() -> Vec<HistoryItem> {
+        vec![
+            HistoryItem::Message(Message {
+                role: Role::User,
+                text: "hi".to_string(),
+                timestamp: STAMP.to_string(),
+            }),
+            HistoryItem::Tool(ToolCall {
+                name: "Read".to_string(),
+                args: "f".to_string(),
+                status: ToolStatus::Ok,
+                output: "out".to_string(),
+                timestamp: STAMP.to_string(),
+            }),
+        ]
+    }
+
+    #[test]
+    fn transcript_right_aligns_the_timestamp_on_each_items_header_line() {
+        let mut app = App::new();
+        app.history = stamped_history();
+        let width = 60u16;
+        let lines = transcript_lines(&app, width);
+
+        let headers: Vec<String> = lines
+            .iter()
+            .map(plain)
+            .filter(|t| t.contains("❯ hi") || t.contains("● Read(f)"))
+            .collect();
+        assert_eq!(headers.len(), 2, "a header line per item: {headers:?}");
+        for header in &headers {
+            assert!(
+                header.trim_end().ends_with(STAMP),
+                "stamp sits at the right end: {header:?}"
+            );
+            assert_eq!(
+                cols(header),
+                width as usize,
+                "the stamp is flush to the right edge: {header:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn transcript_styles_the_timestamp_dim() {
+        let mut app = App::new();
+        app.history = stamped_history();
+        let header = transcript_lines(&app, 60)
+            .into_iter()
+            .find(|l| plain(l).contains("❯ hi"))
+            .expect("a user header line");
+        let stamp_span = header
+            .spans
+            .iter()
+            .find(|s| s.content.contains(STAMP))
+            .expect("the stamp span");
+        assert_eq!(stamp_span.style.fg, Some(TIMESTAMP_COLOR));
+    }
+
+    #[test]
+    fn inline_conversation_never_shows_the_timestamp() {
+        // The "only in Ctrl+O" invariant: the inline repaint path must never
+        // carry a stamp, even though its history items hold one.
+        let history = stamped_history();
+        let inline: String = conversation_lines(&history, 80)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !inline.contains(STAMP),
+            "timestamps never leak into the inline view: {inline:?}"
+        );
+    }
+
     // --- render_live (against a plain Buffer) ---
 
     fn buffer(width: u16, height: u16) -> Buffer {
@@ -1587,6 +1729,7 @@ mod tests {
         HistoryItem::Message(Message {
             role,
             text: text.to_string(),
+            timestamp: String::new(),
         })
     }
 
@@ -1596,6 +1739,7 @@ mod tests {
             args: args.to_string(),
             status,
             output: output.to_string(),
+            timestamp: String::new(),
         }
     }
 

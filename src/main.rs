@@ -74,6 +74,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     tokio::spawn(frame::run_scheduler(frame_rx, draw_tx));
 
     let mut app = App::new();
+    // Inject the wall-clock here at the I/O boundary so the pure library never
+    // sees a clock. Recorded items are stamped with the local time; the stamp is
+    // shown only in the Ctrl+O transcript (see docs/timestamps.md).
+    app.set_clock(local_timestamp);
     // The reply backend. Swap this single line for a real model (any
     // `ReplySource`) and nothing else in the loop has to change.
     let backend = DummyAi;
@@ -304,6 +308,15 @@ fn schedule_for_key(frame: &FrameRequester, burst: &mut PasteBurst, key: &KeyEve
     } else {
         frame.schedule_frame();
     }
+}
+
+/// Local wall-clock stamp for recorded items: local date + 12-hour time, e.g.
+/// `2026-06-09 02:32:05 PM`. Injected via [`App::set_clock`] and shown **only**
+/// in the Ctrl+O transcript — the one impurity kept out of the pure library.
+fn local_timestamp() -> String {
+    chrono::Local::now()
+        .format("%Y-%m-%d %I:%M:%S %p")
+        .to_string()
 }
 
 /// The live region's height for `app` at the current screen size — exactly what

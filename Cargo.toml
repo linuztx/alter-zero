@@ -20,6 +20,11 @@ tokio-stream = "0.1"
 # crossterm crate ratatui already uses (cargo feature unification); ratatui does
 # not forward `event-stream` itself.
 crossterm = { version = "0.29.0", features = ["event-stream"] }
+# Local wall-clock timestamps for the Ctrl+O transcript. Used ONLY in main.rs —
+# the I/O boundary — so the clock impurity never reaches the pure library; the
+# `clock` feature pulls in local-timezone support, default features off to stay
+# lean. See docs/timestamps.md.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # Bake the project's pre-commit gate into every build so it can't silently
 # regress (there is no CI yet). Mirrors `clippy --all-targets -- -D warnings`.

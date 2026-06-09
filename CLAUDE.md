@@ -108,7 +108,10 @@ of bug:
    one-line peek). The Ctrl+O overlay (`ui::render_tool_view` on the alternate
    screen) shows the **full conversation transcript** — `ui::transcript_lines`
    walks `history` (messages + each tool's *expanded* output) plus the live tail
-   (in-progress reply / running tool). **While the overlay is up the loop keeps
+   (in-progress reply / running tool), each item's wall-clock `timestamp`
+   **right-aligned** on its header (the *only* place stamps show — never inline;
+   the clock is injected via `App::set_clock`, see `docs/timestamps.md`). **While
+   the overlay is up the loop keeps
    draining reply events into `App` but does *not* commit to scrollback** (that
    would write into the alt screen); on return, `repaint_conversation` rebuilds the
    inline view from `history`. Never commit to scrollback while
@@ -190,7 +193,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   prompt, colours (including the red error bullet and the cyan system bullet),
   border, the tool-call styling (`TOOL_*` — blue/green/red status colours, the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
-  (`TOOL_VIEW_*`), the slash-command palette (`MENU_*` — the `MENU_DESC_COL`
+  (`TOOL_VIEW_*`), the transcript timestamp (`TIMESTAMP_COLOR`/`STAMP_GAP` — the
+  dim, right-aligned per-item stamp shown only in the Ctrl+O view), the
+  slash-command palette (`MENU_*` — the `MENU_DESC_COL`
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;

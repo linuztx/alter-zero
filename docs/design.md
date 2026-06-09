@@ -78,7 +78,13 @@ unit-tested must be unit-tested.
   the event loop still drains reply events into `App` (so the view updates live)
   but holds off committing to scrollback; Ctrl+O (or Esc) returns, and the inline
   view is repainted from `history` to catch up. The overlay is read-only (typing is
-  ignored).
+  ignored). Each item also shows a **wall-clock timestamp** (local date + 12-hour
+  time, e.g. `2026-06-09 02:32:05 PM`) **right-aligned** on its header line — the
+  **only** place timestamps appear; the inline conversation never shows them. The
+  clock is injected at the I/O boundary (`App::set_clock`, a real `chrono::Local`
+  clock in `main.rs`; `None` in unit tests → empty stamp) and each item stores the
+  pre-formatted string, so the pure library stays clock-free. See
+  `docs/timestamps.md`.
 - **Slash-command palette (Claude-Code style).** When the input is a **bare
   command token** — `/`, `/he`, `/help`, but *not* `ask /help` or anything past a
   space/newline — a scrollable command **palette opens below the input box** (a
@@ -206,10 +212,11 @@ frame scheduler ─► draw-tick ─────┘                             
   adding a command is one registry entry (+ an effect arm).
 - `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
   `None` when closed); the matches are derived from the input on demand.
-- `Message { role, text }` — one finished message.
+- `Message { role, text, timestamp }` — one finished message (the `timestamp` is
+  shown only in the Ctrl+O transcript).
 - `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (blue/green/red).
-- `ToolCall { name, args, status, output }` — one tool invocation; `current_tool`
-  while running, then recorded in history.
+- `ToolCall { name, args, status, output, timestamp }` — one tool invocation;
+  `current_tool` while running, then recorded in history (stamped when it finishes).
 - `HistoryItem { Message(Message), Tool(ToolCall) }` — one ordered history entry;
   messages and tools share `App::history` so they repaint interleaved in order.
 - `StreamError { partial: Option<String>, error: String }` — what `App::fail_stream`
@@ -243,7 +250,8 @@ frame scheduler ─► draw-tick ─────┘                             
   view (even mid-stream, stream keeps running); Esc closes the overlay (vs quits
   in the chat); the viewer scrolls and ignores typing; it opens pinned to the
   bottom and `settle_tool_scroll` tail-follows (scrolling up disengages, reaching
-  the bottom re-engages).
+  the bottom re-engages). With an injected stub clock (`set_clock`), every recorded
+  message/tool is stamped with the clock's value; with no clock the stamp is empty.
 - `app` (slash palette): `command_query` recognises a bare `/token` (rejecting
   past-a-space/newline and mid-line slashes); `matching_commands` prefix-filters
   case-insensitively; the registry has unique lowercase names. Typing `/` opens
@@ -260,7 +268,9 @@ frame scheduler ─► draw-tick ─────┘                             
   (status-coloured bullet header, collapsed peek + `(ctrl+o to expand)` hint,
   width-truncated); `transcript_lines`/`render_tool_view` (full conversation —
   messages interleaved with each tool's complete output, plus the live tail —
-  status colour, scroll); the **command palette** — `menu_window` keeps the
+  status colour, scroll; each item's **timestamp right-aligned** on its header in
+  a dim colour, and **never** present in the inline `conversation_lines`); the
+  **command palette** — `menu_window` keeps the
   selection visible, `menu_rows` reserves the band (0 closed, capped, 1 for no
   matches), `command_menu_lines` lists the matches in aligned columns and
   **highlights the whole selected row in one cyan colour** (name and description
@@ -368,5 +378,8 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   keystroke only if you leave and re-enter command mode; and running `/help`
   mid-stream finalises the reply's current segment first (so the notice never
   splits the reply), the same ordering rule tool calls use.
-- No spinner, timestamps, markdown rendering, or scrollback nav keys (YAGNI).
+- Timestamps are shown **only** in the Ctrl+O transcript (local date + 12-hour
+  time, right-aligned per item); the inline conversation has none, and there is no
+  per-token/relative time. See `docs/timestamps.md`.
+- No spinner, markdown rendering, or scrollback nav keys (YAGNI).
 ```

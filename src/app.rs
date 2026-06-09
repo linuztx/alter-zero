@@ -32,6 +32,11 @@ pub enum Role {
 pub struct Message {
     pub role: Role,
     pub text: String,
+    /// Wall-clock stamp of when this message was recorded, shown **only** in the
+    /// Ctrl+O transcript (never inline). Empty when no clock is injected (the
+    /// unit-test default); set from `App`'s clock at the I/O boundary. See
+    /// `docs/timestamps.md`.
+    pub timestamp: String,
 }
 
 /// The lifecycle of a tool call — selects its bullet colour when rendered:
@@ -60,6 +65,10 @@ pub struct ToolCall {
     pub args: String,
     pub status: ToolStatus,
     pub output: String,
+    /// Wall-clock stamp of when the call finished (set in [`App::end_tool`]),
+    /// shown **only** in the Ctrl+O transcript. Empty while running and when no
+    /// clock is injected. See `docs/timestamps.md`.
+    pub timestamp: String,
 }
 
 /// One ordered entry of finished conversation history: a [`Message`] or a
@@ -235,6 +244,12 @@ pub struct App {
     /// `None` when closed. Esc dismisses it (and it stays dismissed within the
     /// same token); see [`App::refresh_command_menu`].
     pub command_menu: Option<CommandMenu>,
+    /// Wall-clock used to stamp recorded items, injected at the I/O boundary
+    /// ([`App::set_clock`]). `None` in unit tests (→ empty stamp, keeping the
+    /// pure logic deterministic); `main.rs` sets a real local-time clock. The
+    /// stamp is only ever shown in the Ctrl+O transcript (see
+    /// `docs/timestamps.md`).
+    clock: Option<fn() -> String>,
 }
 
 impl App {
@@ -248,6 +263,19 @@ impl App {
     #[must_use]
     pub const fn is_streaming(&self) -> bool {
         self.streaming.is_some()
+    }
+
+    /// Inject the wall-clock used to stamp recorded items (called once at the I/O
+    /// boundary in `main.rs`). Each recorded message/tool then stores `clock()`'s
+    /// value, which is shown **only** in the Ctrl+O transcript.
+    pub fn set_clock(&mut self, clock: fn() -> String) {
+        self.clock = Some(clock);
+    }
+
+    /// The current timestamp from the injected clock, or empty when none is set
+    /// (the unit-test default — so equality tests on recorded items still hold).
+    fn now_stamp(&self) -> String {
+        self.clock.map_or_else(String::new, |clock| clock())
     }
 
     /// Handle one key press and report what the event loop should do.
@@ -503,9 +531,11 @@ impl App {
 
     /// Record a finished user message in the history.
     pub fn record_user_message(&mut self, text: &str) {
+        let timestamp = self.now_stamp();
         self.history.push(HistoryItem::Message(Message {
             role: Role::User,
             text: text.to_string(),
+            timestamp,
         }));
     }
 
@@ -513,9 +543,11 @@ impl App {
     /// repaints on resize like any other message. The loop also commits it to
     /// scrollback. Mirrors [`record_user_message`] for [`Action::Notice`].
     pub fn record_system_message(&mut self, text: &str) {
+        let timestamp = self.now_stamp();
         self.history.push(HistoryItem::Message(Message {
             role: Role::System,
             text: text.to_string(),
+            timestamp,
         }));
     }
 
@@ -527,6 +559,7 @@ impl App {
             args: args.to_string(),
             status: ToolStatus::Running,
             output: String::new(),
+            timestamp: String::new(), // stamped when it finishes (see end_tool)
         });
     }
 
@@ -548,6 +581,7 @@ impl App {
         } else {
             ToolStatus::Failed
         };
+        tool.timestamp = self.now_stamp();
         self.history.push(HistoryItem::Tool(tool.clone()));
         Some(tool)
     }
@@ -563,9 +597,11 @@ impl App {
             return None;
         }
         let text = std::mem::take(buf); // leaves Some("") — the stream stays open
+        let timestamp = self.now_stamp();
         self.history.push(HistoryItem::Message(Message {
             role: Role::Assistant,
             text: text.clone(),
+            timestamp,
         }));
         Some(text)
     }
@@ -600,9 +636,11 @@ impl App {
         if text.is_empty() {
             return None;
         }
+        let timestamp = self.now_stamp();
         self.history.push(HistoryItem::Message(Message {
             role: Role::Assistant,
             text: text.clone(),
+            timestamp,
         }));
         Some(text)
     }
@@ -615,18 +653,21 @@ impl App {
     /// `None` if no reply was in progress.
     pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
         let streamed = self.streaming.take()?;
+        let timestamp = self.now_stamp();
         let partial = if streamed.is_empty() {
             None
         } else {
             self.history.push(HistoryItem::Message(Message {
                 role: Role::Assistant,
                 text: streamed.clone(),
+                timestamp: timestamp.clone(),
             }));
             Some(streamed)
         };
         self.history.push(HistoryItem::Message(Message {
             role: Role::Error,
             text: error.to_string(),
+            timestamp,
         }));
         Some(StreamError {
             partial,
@@ -827,6 +868,7 @@ mod tests {
             Some(&HistoryItem::Message(Message {
                 role: Role::Assistant,
                 text: "hi there".to_string(),
+                timestamp: String::new(),
             }))
         );
     }
@@ -1006,6 +1048,7 @@ mod tests {
                 args: "src/main.rs".to_string(),
                 status: ToolStatus::Ok,
                 output: "line1\nline2".to_string(),
+                timestamp: String::new(),
             }))
         );
     }
@@ -1040,6 +1083,7 @@ mod tests {
             Some(&HistoryItem::Message(Message {
                 role: Role::Assistant,
                 text: "before the tool".to_string(),
+                timestamp: String::new(),
             }))
         );
     }
@@ -1434,7 +1478,44 @@ mod tests {
             Some(&HistoryItem::Message(Message {
                 role: Role::System,
                 text: "a notice".to_string(),
+                timestamp: String::new(),
             }))
         );
+    }
+
+    // --- timestamps (shown only in the Ctrl+O transcript; see docs/timestamps.md) ---
+
+    /// A fixed stub clock so timestamp behaviour is deterministic in tests.
+    const STAMP: &str = "2026-06-09 02:32:05 PM";
+
+    #[test]
+    fn set_clock_stamps_every_recorded_message_and_tool() {
+        let mut app = App::new();
+        app.set_clock(|| STAMP.to_string());
+
+        app.record_user_message("hi");
+        app.begin_stream();
+        app.push_chunk("answer");
+        app.finish_stream();
+        app.start_tool("Read", "f");
+        app.end_tool("out", true);
+
+        assert_eq!(app.history.len(), 3, "user, assistant, tool");
+        for item in &app.history {
+            let ts = match item {
+                HistoryItem::Message(m) => &m.timestamp,
+                HistoryItem::Tool(t) => &t.timestamp,
+            };
+            assert_eq!(ts, STAMP, "every recorded item carries the clock's stamp");
+        }
+    }
+
+    #[test]
+    fn without_a_clock_recorded_timestamps_are_empty() {
+        // The pure default used by unit tests: no clock injected → empty stamp,
+        // so existing equality assertions on Message/ToolCall still hold.
+        let mut app = App::new();
+        app.record_user_message("hi");
+        assert_eq!(message_at(&app, 0).timestamp, "");
     }
 }
