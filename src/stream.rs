@@ -28,6 +28,14 @@ pub enum StreamEvent {
     /// The in-flight tool call finished with this `output` and outcome (`ok` →
     /// green, else red). Always follows a [`StreamEvent::ToolStart`].
     ToolEnd { output: String, ok: bool },
+    /// The model began a "thinking" (reasoning) phase. The loop shows
+    /// `· Thinking for Ns` in the live status line until the matching
+    /// [`StreamEvent::ThinkingEnd`] arrives. Opaque — no reasoning text travels
+    /// the channel, only the phase boundary (so the timer can run).
+    ThinkingStart,
+    /// The model's thinking phase ended. Always follows a
+    /// [`StreamEvent::ThinkingStart`]; drops the `Thinking for Ns` suffix.
+    ThinkingEnd,
     /// The backend failed; carries a human-readable message to show the user.
     Error(String),
     /// The reply is complete.
@@ -41,6 +49,11 @@ pub const CHUNK_DELAY: Duration = Duration::from_millis(45);
 /// How long a dummy tool "runs" — the pause between its `ToolStart` and
 /// `ToolEnd` — so the blue running state is visible before it resolves.
 pub const TOOL_DELAY: Duration = Duration::from_millis(450);
+
+/// How long the dummy "thinks" — the pause between `ThinkingStart` and
+/// `ThinkingEnd` — long enough that the live `Thinking for Ns` timer visibly
+/// ticks from 0s before it resolves.
+pub const THINK_DELAY: Duration = Duration::from_millis(1200);
 
 /// Canned multi-line output for the dummy `Read` tool (resolves green).
 const DUMMY_READ_OUTPUT: &str = "fn main() -> io::Result<()> {\n    \
@@ -86,10 +99,14 @@ pub fn chunks(text: &str) -> Vec<String> {
     text.split_inclusive(' ').map(str::to_string).collect()
 }
 
-/// The full ordered sequence of events for one dummy turn, with tool calls
-/// **interleaved** in the reply: stream the first half of the text, run a
-/// `Read` tool (resolves green) and a `Bash` tool (resolves red, for colour
-/// variety), then stream the rest and finish.
+/// The full ordered sequence of events for one dummy turn, with a thinking phase
+/// and tool calls **interleaved** in the reply: stream the first half of the
+/// text, *think* for a moment, run a `Read` tool (resolves green) and a `Bash`
+/// tool (resolves red, for colour variety), then stream the rest and finish.
+///
+/// The thinking pair sits after the first text segment (so the demo shows
+/// `↓ tokens · Thinking for Ns`) and before the tools, so every `ToolStart` is
+/// still immediately followed by its `ToolEnd`.
 ///
 /// Pure and deterministic so it is unit-testable; [`DummyAi`] just plays it back
 /// on a thread with delays. The `Chunk` events still concatenate to exactly
@@ -104,6 +121,8 @@ pub fn turn_events(prompt: &str) -> Vec<StreamEvent> {
 
     let mut events = Vec::new();
     events.extend(chunks(&first).into_iter().map(StreamEvent::Chunk));
+    events.push(StreamEvent::ThinkingStart);
+    events.push(StreamEvent::ThinkingEnd);
     events.push(StreamEvent::ToolStart {
         name: "Read".to_string(),
         args: "src/main.rs".to_string(),
@@ -190,11 +209,13 @@ impl ReplySource for DummyAi {
                 if cancel.is_cancelled() {
                     return; // asked to stop — drop the rest quietly
                 }
-                // Pause *after* a word or a tool start: a tool "runs" for
-                // TOOL_DELAY (blue) before its ToolEnd resolves it.
+                // Pause *after* a word, a tool start, or a thinking start: a tool
+                // "runs" for TOOL_DELAY (blue) before its ToolEnd resolves it, and
+                // the model "thinks" for THINK_DELAY before its ThinkingEnd.
                 let pause = match &event {
                     StreamEvent::Chunk(_) => Some(CHUNK_DELAY),
                     StreamEvent::ToolStart { .. } => Some(TOOL_DELAY),
+                    StreamEvent::ThinkingStart => Some(THINK_DELAY),
                     _ => None,
                 };
                 if tx.send(event).is_err() {
@@ -285,6 +306,39 @@ mod tests {
     }
 
     #[test]
+    fn turn_events_includes_one_paired_thinking_phase_before_the_tools() {
+        let events = turn_events("hi");
+        let starts = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ThinkingStart))
+            .count();
+        let ends = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ThinkingEnd))
+            .count();
+        assert_eq!(starts, 1, "the turn thinks exactly once");
+        assert_eq!(ends, 1, "every ThinkingStart has a matching ThinkingEnd");
+
+        let start = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ThinkingStart))
+            .unwrap();
+        let end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ThinkingEnd))
+            .unwrap();
+        let first_tool = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolStart { .. }))
+            .unwrap();
+        assert!(start < end, "thinking starts before it ends");
+        assert!(
+            end < first_tool,
+            "thinking resolves before the first tool, so tool start/end stay adjacent"
+        );
+    }
+
+    #[test]
     fn turn_events_each_tool_start_is_immediately_resolved() {
         // Tools don't nest: every ToolStart is followed straight away by a
         // ToolEnd, so the loop only ever tracks one running tool at a time.
@@ -356,6 +410,8 @@ mod tests {
         let mut saw_done = false;
         let mut tool_starts = 0;
         let mut tool_ends = 0;
+        let mut think_starts = 0;
+        let mut think_ends = 0;
         // `blocking_recv` waits for each delayed event (no runtime here, so it's
         // allowed); `None` means the backend dropped its sender.
         while let Some(event) = rx.blocking_recv() {
@@ -363,6 +419,8 @@ mod tests {
                 StreamEvent::Chunk(c) => streamed.push_str(&c),
                 StreamEvent::ToolStart { .. } => tool_starts += 1,
                 StreamEvent::ToolEnd { .. } => tool_ends += 1,
+                StreamEvent::ThinkingStart => think_starts += 1,
+                StreamEvent::ThinkingEnd => think_ends += 1,
                 StreamEvent::StreamDone => {
                     saw_done = true;
                     break;
@@ -376,6 +434,11 @@ mod tests {
         assert_eq!(streamed, expected, "chunks still reconstruct the reply");
         assert!(tool_starts >= 1, "the dummy streams at least one tool call");
         assert_eq!(tool_starts, tool_ends, "every tool that starts also ends");
+        assert_eq!(think_starts, 1, "the dummy thinks once");
+        assert_eq!(
+            think_starts, think_ends,
+            "every think that starts also ends"
+        );
     }
 
     #[test]

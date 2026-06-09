@@ -19,10 +19,12 @@ unit-tested must be unit-tested.
   real terminal history, exactly like Claude Code.
 - The **live region** stays pinned at the bottom:
   - an **input field framed by a top/bottom rule** (`❯ ...`),
-  - and, **only while a reply streams**, a **preview row** showing the
-    in-progress AI line plus a blank **gap row** below it, so the live reply
-    never butts up against the box. Idle, that strip collapses and the box sits
-    directly under the chat.
+  - and, **only while a turn is in flight**, a strip above the box: a **preview
+    row** showing the in-progress AI line (or a running tool's blue header), a
+    blank **gap row**, then a **status line** pinned just above the box —
+    `● {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`, a
+    codex/Claude-Code-style indicator (see *Status indicator* below). Idle, that
+    strip collapses and the box sits directly under the chat.
 - Type a message, press **Enter** to send. The user message is flushed to
   scrollback, then the dummy AI streams a reply.
 - **Streaming → scrollback, line by line.** As the reply grows, each wrapped
@@ -33,6 +35,17 @@ unit-tested must be unit-tested.
   spacer line after it — and as the streaming strip collapses, that committed
   spacer becomes the single blank line between the reply and the box (no double
   blank). A blank spacer is also committed after every user message.
+- **Status indicator.** While a turn is in flight, the strip's status line shows a
+  per-turn whimsical **verb** (`Working`, `Cooking`, …, picked deterministically by
+  a turn counter), a **timer** in whole seconds (advanced by a 1 s tick in the loop
+  so it moves even with no events), a cumulative **token** estimate (`↓` while the
+  reply streams, flipping to `↑` right after a tool result — never reset mid-turn),
+  and `Thinking for Ns` *only* while the model is in a thinking phase. On finish it
+  is replaced by a dim, committed **`{done verb} for Ns`** summary that flows into
+  scrollback (a `HistoryItem::Summary`, so it survives a resize and lists in the
+  Ctrl+O transcript with a timestamp). Time is impure, so — like the timestamp
+  clock — the loop owns the `Instant`s and feeds the pure status only computed
+  seconds (`App::set_status_times`). See `docs/status-indicator.md`.
 - **Responsive:** every draw re-wraps to the current terminal width, measured in
   **display columns** (`unicode-width`) so CJK/emoji wrap and pad correctly.
 - **Growing input box.** The input field is multi-line and grows downward as the
@@ -122,7 +135,7 @@ logic is unit-testable without a real terminal.
 
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
-| `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved tool script). | Pure parts, token & dummy: yes |
+| `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
 | `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`, `start_tool`/`end_tool`, the message+tool `history`, the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
 | `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), `render_live`, and `render_tool_view`. | Yes |
@@ -177,11 +190,15 @@ frame scheduler ─► draw-tick ─────┘                             
 - On `ToolEnd{output,ok}`: `end_tool` records the finished tool; commit it
   *collapsed* (green/red) to scrollback. The full output is kept for the Ctrl+O
   view.
-- On `StreamDone`: clear streaming state, then commit the final text segment +
-  spacer. Because the streaming strip (preview + gap) is drawn *above* the box, the
-  loop first calls `term.set_view_height` to reseat the viewport to its idle height,
-  so the final commit replaces the strip's rows in place and the box stays flush at
-  the bottom rather than rising and leaving blank rows beneath it (see the
+- On `ThinkingStart`/`ThinkingEnd`: the loop flips its `thinking_start` `Instant`
+  so the status line shows/drops `Thinking for Ns`; nothing is committed (thinking
+  is live-only).
+- On `StreamDone`: clear streaming state and end the turn (record the `Done for Ns`
+  summary), then commit the final text segment + spacer + the summary. Because the
+  streaming strip (preview + gap + status) is drawn *above* the box, the loop first
+  calls `term.set_view_height` to reseat the viewport to its idle height, so the
+  final commit replaces the strip's rows in place and the box stays flush at the
+  bottom rather than rising and leaving blank rows beneath it (see the
   streaming-strip note under *Known limitations*).
 - On `Error(msg)`: `App::fail_stream` records any non-empty partial reply, flushes
   it, then commits a red `Role::Error` notice (and records it in `history` so it
@@ -217,12 +234,21 @@ frame scheduler ─► draw-tick ─────┘                             
 - `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (blue/green/red).
 - `ToolCall { name, args, status, output, timestamp }` — one tool invocation;
   `current_tool` while running, then recorded in history (stamped when it finishes).
-- `HistoryItem { Message(Message), Tool(ToolCall) }` — one ordered history entry;
-  messages and tools share `App::history` so they repaint interleaved in order.
+- `TokenArrow { Down, Up }` + `TurnStatus { verb, done_verb, tokens, arrow,
+  elapsed_secs, thinking_secs }` — the live status of the turn in flight
+  (`App::status`); the seconds are written by the boundary each frame. See
+  `docs/status-indicator.md`.
+- `TurnSummary { verb, secs, timestamp }` — the committed `"{verb} for Ns"` turn
+  summary recorded at turn end.
+- `HistoryItem { Message(Message), Tool(ToolCall), Summary(TurnSummary) }` — one
+  ordered history entry; messages, tools, and per-turn summaries share
+  `App::history` so they repaint interleaved in order.
 - `StreamError { partial: Option<String>, error: String }` — what `App::fail_stream`
   hands the loop to flush after a backend failure.
 - `StreamEvent { Chunk(String), ToolStart{name,args}, ToolEnd{output,ok},
-  Error(String), StreamDone }` (in `stream.rs`) — what a backend sends to the loop.
+  ThinkingStart, ThinkingEnd, Error(String), StreamDone }` (in `stream.rs`) — what a
+  backend sends to the loop (`ThinkingStart`/`ThinkingEnd` drive the live `Thinking
+  for Ns`).
 - `ReplySource` (trait) + `DummyAi` (impl) + `CancelToken` (in `stream.rs`) — the
   pluggable backend seam. `spawn(prompt, tx, cancel) -> JoinHandle<()>`; a real
   model is a drop-in `ReplySource` (emit `ToolStart`/`ToolEnd` for tool calls) and
@@ -239,6 +265,8 @@ frame scheduler ─► draw-tick ─────┘                             
   concatenate to the reply, each `ToolStart` immediately resolved by a `ToolEnd`,
   with both a success and a failure; ends with `StreamDone`; `DummyAi` emits the
   tool calls.
+- `stream` (thinking): `turn_events` emits exactly one `ThinkingStart`/`ThinkingEnd`
+  pair, before the first tool (so tool start/end stay adjacent); `DummyAi` emits it.
 - `app`: typing appends; backspace; Enter with text → `Submit` + clears input;
   Alt+Enter / Shift+Enter insert a newline (box grows) without submitting; Enter
   while empty / while streaming → `None`; Esc/Ctrl+C → `Quit`;
@@ -252,6 +280,12 @@ frame scheduler ─► draw-tick ─────┘                             
   bottom and `settle_tool_scroll` tail-follows (scrolling up disengages, reaching
   the bottom re-engages). With an injected stub clock (`set_clock`), every recorded
   message/tool is stamped with the clock's value; with no clock the stamp is empty.
+- `app` (status): `begin_stream` opens a `TurnStatus` (a per-turn verb, 0 tokens,
+  `↓`); the verb differs turn-to-turn; `push_chunk` grows the tally (`↓`); a tool
+  *adds* its output to the tally and flips the arrow `↑` without resetting, and
+  resuming text flips it back `↓`; `set_status_times` writes the boundary seconds
+  (no-op when idle); `end_turn` records a `Summary` and clears the status;
+  `fail_stream` clears it with no summary; `estimate_tokens` grows with length.
 - `app` (slash palette): `command_query` recognises a bare `/token` (rejecting
   past-a-space/newline and mid-line slashes); `matching_commands` prefix-filters
   case-insensitively; the registry has unique lowercase names. Typing `/` opens
@@ -270,6 +304,12 @@ frame scheduler ─► draw-tick ─────┘                             
   messages interleaved with each tool's complete output, plus the live tail —
   status colour, scroll; each item's **timestamp right-aligned** on its header in
   a dim colour, and **never** present in the inline `conversation_lines`); the
+  **status indicator** — `status_line` formats each phase (`(0s)` with the token
+  clause dropped at 0; `↓`/`↑` arrows; `Thinking for Ns` only when set; amber
+  bullet/verb, dim metrics), `summary_lines` is one dim bullet-less `"{verb} for
+  Ns"` line, `render_live` draws the status row at the bottom of the streaming
+  strip, and a committed `Summary` flows through `conversation_lines`/`transcript`
+  (stamped) like any item; the
   **command palette** — `menu_window` keeps the
   selection visible, `menu_rows` reserves the band (0 closed, capped, 1 for no
   matches), `command_menu_lines` lists the matches in aligned columns and
@@ -277,10 +317,11 @@ frame scheduler ─► draw-tick ─────┘                             
   alike, vs dimmed grey, no caret; placeholder when empty), and `render_live` draws
   it below the box with the cursor unmoved; the
   growing-input geometry — `live_height` grows a row per wrapped line, adds the
-  preview + gap strip only while streaming and the palette band below the box, and
-  clamps to the screen; `render_live` grows the box, scrolls the input to keep the
-  end visible, separates a streaming preview (or a running tool's blue header) from
-  the box with a blank gap, and shows no strip when idle; `cursor_position` follows
+  preview + gap + status strip only while streaming and the palette band below the
+  box, and clamps to the screen; `render_live` grows the box, scrolls the input to
+  keep the end visible, stacks the streaming preview (or a running tool's blue
+  header), a blank gap, then the status line above the box, and shows no strip when
+  idle; `cursor_position` follows
   the last wrapped row (and stays put when the palette opens); and
   `repin` keeps the box top-anchored (scrolling up only on overflow, clearing rows
   on shrink); `restore_cursor_row` lands the exit cursor just below the box (no
@@ -323,11 +364,12 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
   brackets its full-screen paint the same way.
 - `set_view_height(height)` — reseat the tracked viewport height *without*
   redrawing. `insert_before` reserves `view.height` rows *below* the lines it
-  commits (to keep the box on screen), and the streaming strip (preview + gap)
-  inflates that height while a reply streams. So at `StreamDone`/`Error` `main`
-  calls this first to drop the strip's rows, letting the final commit replace them
-  in place — otherwise `insert_before` over-scrolls and the box rises off the
-  bottom (see *Known limitations*).
+  commits (to keep the box on screen), and the streaming strip (preview + gap +
+  status) inflates that height while a reply streams. So at `StreamDone`/`Error`
+  `main` calls this first to drop the strip's rows, letting the final commit (the
+  reply's last line, then the `Done for Ns` summary) replace them in place —
+  otherwise `insert_before` over-scrolls and the box rises off the bottom (see
+  *Known limitations*).
 - `enter_overlay` / `draw_overlay` / `exit_overlay` — the Ctrl+O tool-output view.
   `enter_overlay` switches to the terminal's **alternate screen** (so the inline
   conversation — main screen + its real scrollback — is preserved untouched);
@@ -348,10 +390,10 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   chat back (terminals can't reverse-scroll their own scrollback), so after a
   grow-past-bottom-then-shrink the box stays where it scrolled to with blank rows
   below. Normal short messages never hit this.
-- **Streaming strip collapse.** The streaming strip (preview + gap) is drawn *above*
-  the box, so it grows the live region *upward*. When a reply finishes, that strip's
-  rows are handed back to scrollback as the committed final line + spacer, and the
-  box must stay put. The fix is to reseat the viewport to its idle height
+- **Streaming strip collapse.** The streaming strip (preview + gap + status line) is
+  drawn *above* the box, so it grows the live region *upward*. When a reply finishes,
+  that strip's rows are handed back to scrollback as the committed final line +
+  spacer + the `Done for Ns` summary, and the box must stay put. The fix is to reseat the viewport to its idle height
   (`term.set_view_height`) *before* the final `insert_before`, so the commit reserves
   only the idle box below it; without it the strip-still-counted height makes
   `insert_before` over-scroll and the box rises off the bottom, leaving blank rows
@@ -381,5 +423,9 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
 - Timestamps are shown **only** in the Ctrl+O transcript (local date + 12-hour
   time, right-aligned per item); the inline conversation has none, and there is no
   per-token/relative time. See `docs/timestamps.md`.
-- No spinner, markdown rendering, or scrollback nav keys (YAGNI).
+- The status indicator's token counts are an app-side **estimate** (≈ chars/4), not
+  real model usage — the dummy has no tokenizer; a real `ReplySource` could report
+  exact counts later. The working/done verbs cycle deterministically (a turn
+  counter), not at random. See `docs/status-indicator.md`.
+- No markdown rendering or scrollback nav keys (YAGNI).
 ```

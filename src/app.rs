@@ -71,14 +71,100 @@ pub struct ToolCall {
     pub timestamp: String,
 }
 
-/// One ordered entry of finished conversation history: a [`Message`] or a
-/// [`ToolCall`]. They share a single ordered list so the inline conversation
-/// repaints (after a resize, or when returning from the tool-output view) in the
-/// exact order things streamed — assistant text and tool calls interleaved.
+/// Which way the live token tally is moving, selecting the arrow glyph in the
+/// status line: [`Down`] (`↓`) while the reply streams (output tokens), flipping
+/// to [`Up`] (`↑`) right after a tool result (its output "uploaded" back). The
+/// tally itself is cumulative and never resets when the arrow flips.
+///
+/// [`Down`]: TokenArrow::Down
+/// [`Up`]: TokenArrow::Up
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenArrow {
+    /// `↓` — output tokens, while the reply text streams.
+    Down,
+    /// `↑` — after a tool result is folded back in.
+    Up,
+}
+
+/// The live status of the turn in flight, shown as a codex-style status line in
+/// the strip above the input box (`● {verb}… ({elapsed}s · {arrow} {n} tokens ·
+/// Thinking for {m}s)`). `Some` on [`App`] from [`App::begin_stream`] until the
+/// turn ends; see `docs/status-indicator.md`.
+///
+/// `verb`/`done_verb`, `tokens`, and `arrow` are pure turn state. `elapsed_secs`
+/// and `thinking_secs` are **written by the I/O boundary each frame**
+/// ([`App::set_status_times`]) — time is impure, so it never reaches the pure
+/// core except as these already-computed values (mirrors the timestamp clock).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnStatus {
+    /// The whimsical working verb shown live (e.g. `Working`), fixed for the turn.
+    pub verb: &'static str,
+    /// The matching done verb for the committed summary (e.g. `Done`).
+    pub done_verb: &'static str,
+    /// Cumulative token estimate for the whole turn (text **and** tool output);
+    /// never reset mid-turn. Shown only when > 0.
+    pub tokens: usize,
+    /// Which arrow the tally shows (`↓` streaming / `↑` after a tool).
+    pub arrow: TokenArrow,
+    /// Whole seconds since the turn was submitted — set by the boundary each frame.
+    pub elapsed_secs: u64,
+    /// Whole seconds of the *current* thinking phase, or `None` when not thinking
+    /// — set by the boundary each frame. `Some` renders the `Thinking for Ns`
+    /// suffix; cleared the moment thinking ends.
+    pub thinking_secs: Option<u64>,
+}
+
+/// A finished turn's summary, committed to scrollback as a dim `"{verb} for
+/// {secs}s"` line and kept in [`App::history`] so it survives a resize and lists
+/// in the Ctrl+O transcript (with a timestamp, like every other item).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnSummary {
+    /// The done verb chosen for the turn (e.g. `Done`, `Finished`).
+    pub verb: &'static str,
+    /// The turn's total wall-clock duration in whole seconds.
+    pub secs: u64,
+    /// Wall-clock stamp of when the turn finished, shown **only** in the Ctrl+O
+    /// transcript (never inline). See `docs/timestamps.md`.
+    pub timestamp: String,
+}
+
+/// One ordered entry of finished conversation history: a [`Message`], a
+/// [`ToolCall`], or a turn [`TurnSummary`]. They share a single ordered list so
+/// the inline conversation repaints (after a resize, or when returning from the
+/// tool-output view) in the exact order things streamed — assistant text, tool
+/// calls, and the per-turn "Done" summary interleaved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryItem {
     Message(Message),
     Tool(ToolCall),
+    Summary(TurnSummary),
+}
+
+/// The whimsical working verbs, one chosen per turn (by [`App::turn_count`]) for
+/// the live status line. Cycled deterministically so the demo varies yet stays
+/// testable — no RNG (mirrors how [`dummy_response`] picks a reply).
+pub const WORKING_VERBS: &[&str] = &[
+    "Working",
+    "Generating",
+    "Pondering",
+    "Cooking",
+    "Brewing",
+    "Crunching",
+    "Conjuring",
+    "Churning",
+    "Computing",
+    "Synthesizing",
+];
+
+/// The done verbs, one chosen per turn for the committed `"{verb} for Ns"` summary.
+pub const DONE_VERBS: &[&str] = &["Done", "Finished", "Completed", "Wrapped up", "Ready"];
+
+/// A rough token estimate for `text` (≈ 4 characters per token, the usual
+/// heuristic). The dummy has no real tokenizer, so the status line's counts are
+/// approximate — but accumulate faithfully as text and tool output arrive.
+#[must_use]
+fn estimate_tokens(text: &str) -> usize {
+    text.chars().count().div_ceil(4)
 }
 
 /// What a backend error leaves behind, handed to the event loop to flush to
@@ -244,6 +330,18 @@ pub struct App {
     /// `None` when closed. Esc dismisses it (and it stays dismissed within the
     /// same token); see [`App::refresh_command_menu`].
     pub command_menu: Option<CommandMenu>,
+    /// The live status of the turn in flight (verb, token tally, arrow, and the
+    /// boundary-supplied seconds), shown in the strip above the box. `Some` from
+    /// [`begin_stream`] until the turn ends; `None` when idle. See
+    /// `docs/status-indicator.md`.
+    ///
+    /// [`begin_stream`]: App::begin_stream
+    pub status: Option<TurnStatus>,
+    /// How many turns have started — drives the deterministic per-turn verb pick
+    /// ([`WORKING_VERBS`]/[`DONE_VERBS`]). Incremented by [`begin_stream`].
+    ///
+    /// [`begin_stream`]: App::begin_stream
+    turn_count: usize,
     /// Wall-clock used to stamp recorded items, injected at the I/O boundary
     /// ([`App::set_clock`]). `None` in unit tests (→ empty stamp, keeping the
     /// pure logic deterministic); `main.rs` sets a real local-time clock. The
@@ -582,6 +680,12 @@ impl App {
             ToolStatus::Failed
         };
         tool.timestamp = self.now_stamp();
+        // Fold the tool's output into the cumulative tally (arrow up — uploaded
+        // back); the count is *added to*, never reset (see docs/status-indicator.md).
+        if let Some(status) = self.status.as_mut() {
+            status.tokens += estimate_tokens(output);
+            status.arrow = TokenArrow::Up;
+        }
         self.history.push(HistoryItem::Tool(tool.clone()));
         Some(tool)
     }
@@ -607,15 +711,58 @@ impl App {
     }
 
     /// Begin a reply: open an empty streaming buffer so the live region can
-    /// show the assistant is responding even before the first chunk arrives.
+    /// show the assistant is responding even before the first chunk arrives, and
+    /// start the live turn status (pick this turn's verbs, reset the tally).
     pub fn begin_stream(&mut self) {
         self.streaming = Some(String::new());
+        let verb = WORKING_VERBS[self.turn_count % WORKING_VERBS.len()];
+        let done_verb = DONE_VERBS[self.turn_count % DONE_VERBS.len()];
+        self.turn_count = self.turn_count.wrapping_add(1);
+        self.status = Some(TurnStatus {
+            verb,
+            done_verb,
+            tokens: 0,
+            arrow: TokenArrow::Down,
+            elapsed_secs: 0,
+            thinking_secs: None,
+        });
     }
 
-    /// Append a streamed chunk to the in-progress reply. No-op if not streaming.
+    /// Append a streamed chunk to the in-progress reply (and grow the live token
+    /// tally, arrow pointing down — output streaming). No-op if not streaming.
     pub fn push_chunk(&mut self, chunk: &str) {
         if let Some(buf) = self.streaming.as_mut() {
             buf.push_str(chunk);
+        }
+        if let Some(status) = self.status.as_mut() {
+            status.tokens += estimate_tokens(chunk);
+            status.arrow = TokenArrow::Down;
+        }
+    }
+
+    /// The live turn status, if a turn is in flight.
+    #[must_use]
+    pub const fn status(&self) -> Option<&TurnStatus> {
+        self.status.as_ref()
+    }
+
+    /// Is a turn in flight (its status line should show)? True from
+    /// [`begin_stream`] until the turn ends — drives the loop's per-second tick.
+    ///
+    /// [`begin_stream`]: App::begin_stream
+    #[must_use]
+    pub const fn turn_active(&self) -> bool {
+        self.status.is_some()
+    }
+
+    /// Write the boundary-computed seconds onto the live status before a draw:
+    /// the whole-second turn `elapsed`, and the current thinking-phase `thinking`
+    /// (`Some` while thinking, `None` otherwise). No-op when no turn is in flight.
+    /// Time is impure, so it only ever reaches the status this way.
+    pub fn set_status_times(&mut self, elapsed: u64, thinking: Option<u64>) {
+        if let Some(status) = self.status.as_mut() {
+            status.elapsed_secs = elapsed;
+            status.thinking_secs = thinking;
         }
     }
 
@@ -645,6 +792,24 @@ impl App {
         Some(text)
     }
 
+    /// End the turn: record its `"{done verb} for {elapsed_secs}s"` summary in the
+    /// history (so it persists across a resize and lists in the transcript) and
+    /// clear the live status. Returns the recorded [`TurnSummary`] for the loop to
+    /// commit to scrollback, or `None` if no turn was active. The boundary calls
+    /// this on `StreamDone`, just after [`finish_stream`] flushes any final text.
+    ///
+    /// [`finish_stream`]: App::finish_stream
+    pub fn end_turn(&mut self, elapsed_secs: u64) -> Option<TurnSummary> {
+        let status = self.status.take()?;
+        let summary = TurnSummary {
+            verb: status.done_verb,
+            secs: elapsed_secs,
+            timestamp: self.now_stamp(),
+        };
+        self.history.push(HistoryItem::Summary(summary.clone()));
+        Some(summary)
+    }
+
     /// End the in-progress stream because the backend reported an error.
     ///
     /// Records any non-empty partial reply as an assistant message, then records
@@ -653,6 +818,9 @@ impl App {
     /// `None` if no reply was in progress.
     pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
         let streamed = self.streaming.take()?;
+        // An error is the turn's terminal state — clear the live status without a
+        // "Done" summary; the red error notice is the summary.
+        self.status = None;
         let timestamp = self.now_stamp();
         let partial = if streamed.is_empty() {
             None
@@ -684,22 +852,25 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    /// The roles of the `Message` items in history, in order (tool calls skipped).
+    /// The roles of the `Message` items in history, in order (tools/summaries
+    /// skipped).
     fn roles(app: &App) -> Vec<Role> {
         app.history
             .iter()
             .filter_map(|item| match item {
                 HistoryItem::Message(m) => Some(m.role),
-                HistoryItem::Tool(_) => None,
+                HistoryItem::Tool(_) | HistoryItem::Summary(_) => None,
             })
             .collect()
     }
 
-    /// The `Message` at history index `i` (panics if it is a tool call).
+    /// The `Message` at history index `i` (panics if it is not a message).
     fn message_at(app: &App, i: usize) -> &Message {
         match &app.history[i] {
             HistoryItem::Message(m) => m,
-            HistoryItem::Tool(_) => panic!("expected a message at history[{i}]"),
+            HistoryItem::Tool(_) | HistoryItem::Summary(_) => {
+                panic!("expected a message at history[{i}]")
+            }
         }
     }
 
@@ -1505,6 +1676,7 @@ mod tests {
             let ts = match item {
                 HistoryItem::Message(m) => &m.timestamp,
                 HistoryItem::Tool(t) => &t.timestamp,
+                HistoryItem::Summary(s) => &s.timestamp,
             };
             assert_eq!(ts, STAMP, "every recorded item carries the clock's stamp");
         }
@@ -1517,5 +1689,189 @@ mod tests {
         let mut app = App::new();
         app.record_user_message("hi");
         assert_eq!(message_at(&app, 0).timestamp, "");
+    }
+
+    // --- live status indicator (see docs/status-indicator.md) ---
+
+    #[test]
+    fn idle_has_no_status_and_begin_stream_starts_one() {
+        let mut app = App::new();
+        assert!(!app.turn_active(), "no turn in flight when idle");
+        assert!(app.status().is_none());
+        app.begin_stream();
+        assert!(app.turn_active(), "a turn is in flight while streaming");
+        let status = app.status().expect("a status once streaming");
+        assert!(
+            WORKING_VERBS.contains(&status.verb),
+            "a working verb is chosen: {:?}",
+            status.verb
+        );
+        assert_eq!(status.tokens, 0, "no tokens counted yet (the '0s' state)");
+        assert_eq!(status.arrow, TokenArrow::Down);
+        assert_eq!(status.thinking_secs, None, "not thinking yet");
+    }
+
+    #[test]
+    fn the_per_turn_verb_changes_from_one_turn_to_the_next() {
+        // Deterministic but varied: consecutive turns pick the next verb in the
+        // registry, so the demo isn't monotonous.
+        let mut app = App::new();
+        app.begin_stream();
+        let first = app.status().unwrap().verb;
+        app.finish_stream();
+        app.end_turn(1);
+        app.begin_stream();
+        let second = app.status().unwrap().verb;
+        assert_ne!(first, second, "the next turn picks a different verb");
+        assert_eq!(first, WORKING_VERBS[0]);
+        assert_eq!(second, WORKING_VERBS[1]);
+    }
+
+    #[test]
+    fn push_chunk_grows_the_token_tally_pointing_down() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("some words here");
+        let before = app.status().unwrap().tokens;
+        assert!(before > 0, "streamed text counts tokens");
+        assert_eq!(app.status().unwrap().arrow, TokenArrow::Down);
+        app.push_chunk(" and more");
+        assert!(
+            app.status().unwrap().tokens > before,
+            "the tally only grows"
+        );
+    }
+
+    #[test]
+    fn a_tool_adds_to_the_tally_and_flips_the_arrow_up_without_resetting() {
+        // "dont reset the existing token count from response count just add and
+        // use up arrow" — the tool's output is *added* to the running total.
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("the streamed reply so far");
+        let after_text = app.status().unwrap().tokens;
+        app.start_tool("Read", "f");
+        app.end_tool("a multi line\ntool output blob", true);
+        let status = app.status().unwrap();
+        assert!(
+            status.tokens > after_text,
+            "the tool's output is added on top: {} !> {after_text}",
+            status.tokens
+        );
+        assert_eq!(status.arrow, TokenArrow::Up, "arrow flips up after a tool");
+    }
+
+    #[test]
+    fn streaming_again_after_a_tool_points_the_arrow_back_down() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Read", "f");
+        app.end_tool("out", true);
+        assert_eq!(app.status().unwrap().arrow, TokenArrow::Up);
+        app.push_chunk("more reply text");
+        assert_eq!(
+            app.status().unwrap().arrow,
+            TokenArrow::Down,
+            "resuming the reply points the arrow back down"
+        );
+    }
+
+    #[test]
+    fn set_status_times_writes_the_boundary_seconds_onto_the_status() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.set_status_times(7, Some(2));
+        let status = app.status().unwrap();
+        assert_eq!(status.elapsed_secs, 7);
+        assert_eq!(status.thinking_secs, Some(2));
+        // Thinking ends → the suffix is dropped.
+        app.set_status_times(8, None);
+        assert_eq!(app.status().unwrap().thinking_secs, None);
+    }
+
+    #[test]
+    fn set_status_times_is_a_no_op_when_idle() {
+        let mut app = App::new();
+        app.set_status_times(5, Some(1)); // no turn → nothing to write
+        assert!(app.status().is_none());
+    }
+
+    #[test]
+    fn end_turn_records_a_summary_and_clears_the_status() {
+        let mut app = App::new();
+        app.begin_stream();
+        let done_verb = app.status().unwrap().done_verb;
+        app.push_chunk("a reply");
+        app.finish_stream();
+        let summary = app.end_turn(20).expect("a turn was active");
+        assert_eq!(summary.verb, done_verb, "the summary uses the done verb");
+        assert_eq!(summary.secs, 20, "the boundary-supplied duration");
+        assert_eq!(
+            app.history.last(),
+            Some(&HistoryItem::Summary(summary.clone())),
+            "the summary is recorded in history so it survives a resize"
+        );
+        assert!(!app.turn_active(), "the status clears when the turn ends");
+    }
+
+    #[test]
+    fn end_turn_when_idle_returns_none_and_records_nothing() {
+        let mut app = App::new();
+        assert!(app.end_turn(3).is_none());
+        assert!(app.history.is_empty());
+    }
+
+    #[test]
+    fn end_turn_uses_the_clock_for_the_summary_timestamp() {
+        let mut app = App::new();
+        app.set_clock(|| STAMP.to_string());
+        app.begin_stream();
+        app.finish_stream();
+        let summary = app.end_turn(5).unwrap();
+        assert_eq!(summary.timestamp, STAMP, "stamped like every recorded item");
+    }
+
+    #[test]
+    fn fail_stream_clears_the_status_without_a_summary() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("half a reply");
+        app.fail_stream("network down").expect("was streaming");
+        assert!(!app.turn_active(), "an error clears the live status");
+        assert!(
+            !app.history
+                .iter()
+                .any(|i| matches!(i, HistoryItem::Summary(_))),
+            "no Done summary is recorded for a failed turn"
+        );
+    }
+
+    #[test]
+    fn a_full_turn_records_user_assistant_then_a_summary_in_order() {
+        let mut app = App::new();
+        app.record_user_message("q");
+        app.begin_stream();
+        app.push_chunk("a");
+        app.finish_stream();
+        app.end_turn(3);
+        match app.history.as_slice() {
+            [
+                HistoryItem::Message(u),
+                HistoryItem::Message(a),
+                HistoryItem::Summary(s),
+            ] => {
+                assert_eq!(u.role, Role::User);
+                assert_eq!(a.role, Role::Assistant);
+                assert!(DONE_VERBS.contains(&s.verb));
+            }
+            other => panic!("unexpected history: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn estimate_tokens_is_zero_for_empty_and_grows_with_length() {
+        assert_eq!(estimate_tokens(""), 0);
+        assert!(estimate_tokens("a") >= 1);
+        assert!(estimate_tokens("a much longer string") > estimate_tokens("a"));
     }
 }

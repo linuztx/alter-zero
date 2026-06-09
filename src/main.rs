@@ -33,7 +33,7 @@
 
 use std::io;
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
     Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -88,6 +88,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let mut committed = 0usize;
     // Detects a paste / fast-type burst so its redraw can be coalesced.
     let mut burst = PasteBurst::new();
+    // The live status indicator's clocks (impurity kept here, at the boundary):
+    // when the turn was submitted, and when the current thinking phase began
+    // (`None` when not in one). The pure `App` only ever sees the *computed*
+    // seconds, via `set_status_times`. See docs/status-indicator.md.
+    let mut turn_start: Option<Instant> = None;
+    let mut thinking_start: Option<Instant> = None;
+    // Ticks once a second so the status timer advances even when no reply event
+    // arrives (e.g. during a tool run or a thinking pause). Only schedules a draw
+    // while a turn is active; idle, the frame scheduler stays quiet.
+    let mut ticker = tokio::time::interval(Duration::from_secs(1));
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // Init already queried the cursor over stdin; the EventStream is now the sole
     // stdin reader (see the module-level invariant note).
@@ -120,6 +131,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 term.insert_before(vec![Line::default()])?;
                                 app.begin_stream();
                                 committed = 0;
+                                // Start the turn clock and align the 1s tick to it
+                                // so the displayed seconds advance cleanly from 0.
+                                turn_start = Some(Instant::now());
+                                thinking_start = None;
+                                ticker.reset();
                                 let cancel = CancelToken::new();
                                 let handle = backend.spawn(text, tx.clone(), cancel.clone());
                                 inflight = Some((cancel, handle));
@@ -177,17 +193,29 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             //    only committed to scrollback in the conversation view (in the
             //    overlay we hold off and repaint on return).
             Some(stream_event) = reply_rx.recv() => {
-                if on_stream_event(term, &mut app, &mut committed, stream_event)? {
+                if on_stream_event(
+                    term, &mut app, &mut committed,
+                    &mut turn_start, &mut thinking_start, stream_event,
+                )? {
                     inflight = None; // the stream ended
                 }
                 frame.schedule_frame();
             }
 
-            // 3. A coalesced draw tick: paint the current view.
+            // 3. A coalesced draw tick: refresh the status timer, then paint.
             Some(()) = draw_rx.recv() => {
+                update_status_times(&mut app, turn_start, thinking_start);
                 match app.view {
                     View::Conversation => draw(term, &app)?,
                     View::ToolOutput => draw_tool_view(term, &mut app)?,
+                }
+            }
+
+            // 4. A once-a-second tick: advance the live status timer while a turn
+            //    is in flight (no-op otherwise — the seconds only move during a turn).
+            _ = ticker.tick() => {
+                if app.turn_active() {
+                    frame.schedule_frame();
                 }
             }
         }
@@ -205,10 +233,16 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
 /// scrollback in the conversation view. Returns whether the stream just **ended**
 /// (`StreamDone`/`Error`), so the caller can clear its in-flight handle. The
 /// commit work mirrors how a resize repaints the same items from history.
+///
+/// `turn_start`/`thinking_start` are the live-status clocks: thinking events flip
+/// `thinking_start`, and the turn-ending events read `turn_start` for the
+/// `"Done for Ns"` summary, then clear both.
 fn on_stream_event(
     term: &mut InlineViewport,
     app: &mut App,
     committed: &mut usize,
+    turn_start: &mut Option<Instant>,
+    thinking_start: &mut Option<Instant>,
     event: StreamEvent,
 ) -> io::Result<bool> {
     let width = term.screen().width;
@@ -252,20 +286,40 @@ fn on_stream_event(
             }
             Ok(false)
         }
+        StreamEvent::ThinkingStart => {
+            // Opaque phase boundary: start the thinking clock so the status line
+            // shows `Thinking for Ns`. No scrollback commit (thinking is live-only).
+            *thinking_start = Some(Instant::now());
+            Ok(false)
+        }
+        StreamEvent::ThinkingEnd => {
+            *thinking_start = None;
+            Ok(false)
+        }
         StreamEvent::StreamDone => {
-            if let Some(text) = app.finish_stream()
-                && committing
-            {
-                // The reply just ended, so the streaming strip (preview + gap,
-                // drawn *above* the box) is gone. Reseat the viewport to its idle
-                // height *before* the final commit so those lines replace the
-                // strip's rows in place and the box stays flush at the bottom
-                // instead of rising (which would leave blank rows beneath it).
+            let final_text = app.finish_stream();
+            let elapsed = turn_start.map_or(0, |start| start.elapsed().as_secs());
+            let summary = app.end_turn(elapsed);
+            if committing {
+                // The reply just ended, so the streaming strip (preview + gap +
+                // status, drawn *above* the box) is gone. Reseat the viewport to
+                // its idle height *before* committing so the final reply line and
+                // the "Done for Ns" summary replace the strip's rows in place and
+                // the box stays flush at the bottom (instead of rising and leaving
+                // blank rows beneath it).
                 term.set_view_height(live_region_height(app, term.screen()));
-                term.insert_before(ui::final_commit(&text, width, *committed))?;
-                term.insert_before(vec![Line::default()])?; // blank spacer
+                if let Some(text) = final_text {
+                    term.insert_before(ui::final_commit(&text, width, *committed))?;
+                    term.insert_before(vec![Line::default()])?; // blank spacer
+                }
+                if let Some(summary) = summary {
+                    term.insert_before(ui::summary_lines(&summary, width))?;
+                    term.insert_before(vec![Line::default()])?; // blank spacer
+                }
             }
             *committed = 0;
+            *turn_start = None;
+            *thinking_start = None;
             Ok(true)
         }
         StreamEvent::Error(message) => {
@@ -287,6 +341,8 @@ fn on_stream_event(
                 }
             }
             *committed = 0;
+            *turn_start = None;
+            *thinking_start = None;
             Ok(true)
         }
     }
@@ -308,6 +364,20 @@ fn schedule_for_key(frame: &FrameRequester, burst: &mut PasteBurst, key: &KeyEve
     } else {
         frame.schedule_frame();
     }
+}
+
+/// Write the live status's seconds onto `app` before a draw: the whole-second
+/// turn `elapsed` and the current thinking-phase duration (`Some` while thinking).
+/// Time is impure, so this is the boundary's job — the pure `App`/`ui` only ever
+/// see the already-computed values. No-op when no turn is in flight.
+fn update_status_times(
+    app: &mut App,
+    turn_start: Option<Instant>,
+    thinking_start: Option<Instant>,
+) {
+    let elapsed = turn_start.map_or(0, |start| start.elapsed().as_secs());
+    let thinking = thinking_start.map(|start| start.elapsed().as_secs());
+    app.set_status_times(elapsed, thinking);
 }
 
 /// Local wall-clock stamp for recorded items: local date + 12-hour time, e.g.

@@ -14,7 +14,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, HistoryItem, Role, SlashCommand, ToolCall, ToolStatus, command_query, matching_commands,
+    App, HistoryItem, Role, SlashCommand, TokenArrow, ToolCall, ToolStatus, TurnStatus,
+    TurnSummary, command_query, matching_commands,
 };
 use crate::textarea::TextArea;
 
@@ -106,6 +107,31 @@ const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
 /// Minimum blank columns between an item's text and its right-aligned timestamp.
 const STAMP_GAP: usize = 2;
 
+// --- Live status indicator (codex / Claude-Code style). While a turn is in
+// flight a status line sits in the strip just above the box:
+// `● {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`. The working
+// verb is picked per-turn (in `App`); the timer/tokens/thinking are live state.
+// On finish a dim, bullet-less `{done verb} for {n}s` summary commits to
+// scrollback (a `HistoryItem::Summary`). See docs/status-indicator.md. ---
+
+/// Bullet prefixing the live status line (recoloured from the message bullets).
+const STATUS_BULLET: &str = "● ";
+/// Amber — the status bullet and its working verb (a touch of life, distinct
+/// from the white assistant / blue tool bullets).
+const STATUS_COLOR: Color = Color::Rgb(0xD1, 0x9A, 0x66);
+/// Dim grey — the parenthesised metrics (`elapsed · tokens · thinking`).
+const STATUS_DETAIL_COLOR: Color = TOOL_DIM_COLOR;
+/// Trailing ellipsis after the working verb (`Working…`).
+const STATUS_ELLIPSIS: &str = "…";
+/// Arrow for output tokens while the reply streams.
+const STATUS_ARROW_DOWN: &str = "↓";
+/// Arrow once a tool result is folded back in.
+const STATUS_ARROW_UP: &str = "↑";
+/// Dim grey — the committed `"{done verb} for {n}s"` turn summary.
+const STATUS_DONE_COLOR: Color = TOOL_DIM_COLOR;
+/// The status line's row in the streaming strip (one, pinned at its bottom).
+const STATUS_ROWS: u16 = 1;
+
 // --- Slash-command palette. A scrolling, single-line-per-command list pinned
 // **below the input box** (a third live-region band) whenever the input is a bare
 // command token. Each row is `/name` padded to a column, then its description. The
@@ -142,13 +168,14 @@ const INPUT_CHROME_ROWS: u16 = 2;
 /// rules (idle has no preview strip). `main.rs` sizes the initial viewport from this.
 pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
 
-/// Rows of the streaming strip above the box — a preview line plus a blank gap —
-/// shown only while a reply streams. Idle, the box sits directly under the chat
-/// (separated by the committed blank spacer after the last message), so the strip
-/// collapses to nothing and there is exactly one blank line above the box.
+/// Rows of the streaming strip above the box, shown only while a reply streams: a
+/// preview line, a blank gap, then the live status line pinned at the bottom (just
+/// above the box). Idle, the box sits directly under the chat (separated by the
+/// committed blank spacer after the last message), so the strip collapses to
+/// nothing and there is exactly one blank line above the box.
 const fn strip_rows(streaming: bool) -> u16 {
     if streaming {
-        PREVIEW_ROWS + GAP_ROWS
+        PREVIEW_ROWS + GAP_ROWS + STATUS_ROWS
     } else {
         0
     }
@@ -447,6 +474,21 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         Paragraph::new(preview).render(preview_area, buf);
     }
 
+    // The live status line, pinned at the bottom of the strip (below the gap, just
+    // above the box) while a turn is in flight.
+    if let Some(status) = app.status() {
+        let status_y = strip.y + PREVIEW_ROWS + GAP_ROWS;
+        if status_y < strip.y + strip.height {
+            let status_area = Rect {
+                x: strip.x,
+                y: status_y,
+                width: strip.width,
+                height: STATUS_ROWS,
+            };
+            Paragraph::new(status_line(status)).render(status_area, buf);
+        }
+    }
+
     // The input box: a top/bottom rule framing the wrapped input rows.
     let bx = input_box(area, &app.input, streaming, menu);
     let block = Block::new()
@@ -686,11 +728,57 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+/// The live status line shown in the strip above the box while a turn is in
+/// flight: `● {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s])`.
+///
+/// The bullet + verb are amber; the parenthesised metrics dim. The token clause is
+/// omitted while the tally is 0 (the "just submitted" state), and the thinking
+/// clause only while `thinking_secs` is `Some`. Pure — it formats the (already
+/// boundary-stamped) [`TurnStatus`], so it is unit-tested with explicit values.
+#[must_use]
+pub fn status_line(status: &TurnStatus) -> Line<'static> {
+    let mut detail = format!("{}s", status.elapsed_secs);
+    if status.tokens > 0 {
+        let arrow = match status.arrow {
+            TokenArrow::Down => STATUS_ARROW_DOWN,
+            TokenArrow::Up => STATUS_ARROW_UP,
+        };
+        detail.push_str(&format!(" · {arrow} {} tokens", status.tokens));
+    }
+    if let Some(secs) = status.thinking_secs {
+        detail.push_str(&format!(" · Thinking for {secs}s"));
+    }
+    Line::from(vec![
+        Span::styled(
+            STATUS_BULLET.to_string(),
+            Style::new().fg(STATUS_COLOR).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{}{STATUS_ELLIPSIS}", status.verb),
+            Style::new().fg(STATUS_COLOR),
+        ),
+        Span::styled(format!(" ({detail})"), Style::new().fg(STATUS_DETAIL_COLOR)),
+    ])
+}
+
+/// The committed turn summary: a single dim, bullet-less `"{verb} for {secs}s"`
+/// line. Shown inline (it flows into scrollback) and in the transcript like any
+/// other [`HistoryItem`]; `width` is unused (the line never wraps) but kept for a
+/// uniform `*_lines` signature.
+#[must_use]
+pub fn summary_lines(summary: &TurnSummary, _width: u16) -> Vec<Line<'static>> {
+    vec![Line::from(Span::styled(
+        format!("{} for {}s", summary.verb, summary.secs),
+        Style::new().fg(STATUS_DONE_COLOR),
+    ))]
+}
+
 /// The display width of a history item's timestamp (empty → 0).
 fn item_stamp(item: &HistoryItem) -> &str {
     match item {
         HistoryItem::Message(m) => &m.timestamp,
         HistoryItem::Tool(t) => &t.timestamp,
+        HistoryItem::Summary(s) => &s.timestamp,
     }
 }
 
@@ -749,6 +837,7 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         let mut item_lines = match item {
             HistoryItem::Message(m) => message_lines(m.role, &m.text, text_width),
             HistoryItem::Tool(t) => tool_full_lines(t, text_width),
+            HistoryItem::Summary(s) => summary_lines(s, text_width),
         };
         stamp_first_line(&mut item_lines, item_stamp(item), width);
         lines.extend(item_lines);
@@ -850,6 +939,7 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
         match item {
             HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
+            HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
         }
         lines.push(Line::default()); // blank spacer after every item
     }
@@ -1349,6 +1439,144 @@ mod tests {
         );
     }
 
+    // --- live status line + committed "Done" summary (docs/status-indicator.md) ---
+
+    /// A live status with the given metrics (verb fixed to "Working").
+    fn status(tokens: usize, arrow: TokenArrow, elapsed: u64, thinking: Option<u64>) -> TurnStatus {
+        TurnStatus {
+            verb: "Working",
+            done_verb: "Done",
+            tokens,
+            arrow,
+            elapsed_secs: elapsed,
+            thinking_secs: thinking,
+        }
+    }
+
+    #[test]
+    fn status_line_just_submitted_shows_only_the_verb_and_seconds() {
+        let line = status_line(&status(0, TokenArrow::Down, 0, None));
+        let text = plain(&line);
+        assert_eq!(text, "● Working… (0s)", "the bare just-submitted state");
+        assert!(
+            !text.contains("tokens"),
+            "no token clause while the tally is 0"
+        );
+        assert!(!text.contains("Thinking"), "no thinking clause");
+    }
+
+    #[test]
+    fn status_line_shows_the_token_tally_with_a_down_arrow() {
+        let text = plain(&status_line(&status(100, TokenArrow::Down, 1, None)));
+        assert_eq!(text, "● Working… (1s · ↓ 100 tokens)");
+    }
+
+    #[test]
+    fn status_line_flips_to_an_up_arrow_after_a_tool() {
+        let text = plain(&status_line(&status(200, TokenArrow::Up, 1, None)));
+        assert!(
+            text.contains("↑ 200 tokens"),
+            "up arrow after a tool: {text:?}"
+        );
+        assert!(!text.contains('↓'), "not the down arrow: {text:?}");
+    }
+
+    #[test]
+    fn status_line_shows_thinking_only_while_thinking() {
+        let thinking = plain(&status_line(&status(150, TokenArrow::Down, 1, Some(0))));
+        assert_eq!(thinking, "● Working… (1s · ↓ 150 tokens · Thinking for 0s)");
+        let not = plain(&status_line(&status(150, TokenArrow::Down, 1, None)));
+        assert!(
+            !not.contains("Thinking"),
+            "dropped once thinking ends: {not:?}"
+        );
+    }
+
+    #[test]
+    fn status_line_colours_the_bullet_and_verb() {
+        let line = status_line(&status(0, TokenArrow::Down, 0, None));
+        assert_eq!(line.spans[0].style.fg, Some(STATUS_COLOR), "amber bullet");
+        assert_eq!(line.spans[1].style.fg, Some(STATUS_COLOR), "amber verb");
+        assert_eq!(
+            line.spans[2].style.fg,
+            Some(STATUS_DETAIL_COLOR),
+            "dim metrics"
+        );
+    }
+
+    #[test]
+    fn summary_lines_is_a_single_dim_bulletless_line() {
+        let summary = TurnSummary {
+            verb: "Done",
+            secs: 20,
+            timestamp: String::new(),
+        };
+        let lines = summary_lines(&summary, 80);
+        assert_eq!(lines.len(), 1, "one line");
+        assert_eq!(plain(&lines[0]), "Done for 20s");
+        assert!(!plain(&lines[0]).contains('●'), "no bullet");
+        assert_eq!(lines[0].spans[0].style.fg, Some(STATUS_DONE_COLOR), "dim");
+    }
+
+    #[test]
+    fn conversation_lines_renders_a_committed_turn_summary() {
+        let history = [
+            msg(Role::Assistant, "all done"),
+            HistoryItem::Summary(TurnSummary {
+                verb: "Done",
+                secs: 7,
+                timestamp: String::new(),
+            }),
+        ];
+        let texts: Vec<String> = conversation_lines(&history, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(texts.iter().any(|t| t == "● all done"));
+        assert!(
+            texts.iter().any(|t| t == "Done for 7s"),
+            "the summary flows inline: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn transcript_stamps_a_summary_like_any_other_item() {
+        let mut app = App::new();
+        app.history = vec![HistoryItem::Summary(TurnSummary {
+            verb: "Done",
+            secs: 12,
+            timestamp: STAMP.to_string(),
+        })];
+        let header = transcript_lines(&app, 60)
+            .into_iter()
+            .find(|l| plain(l).contains("Done for 12s"))
+            .expect("the summary line");
+        assert!(
+            plain(&header).trim_end().ends_with(STAMP),
+            "the summary's stamp sits at the right edge: {:?}",
+            plain(&header)
+        );
+    }
+
+    #[test]
+    fn render_live_draws_the_status_row_while_streaming() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("hi");
+        app.set_status_times(3, None);
+        let h = live_height(&app.input, 40, 24, true, 0);
+        let mut buf = buffer(40, h);
+        render_live(buf.area, &mut buf, &app);
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("Working…") && all.contains("3s"),
+            "the live status line is drawn in the strip: {all:?}"
+        );
+    }
+
     // --- render_live (against a plain Buffer) ---
 
     fn buffer(width: u16, height: u16) -> Buffer {
@@ -1399,13 +1627,14 @@ mod tests {
     }
 
     #[test]
-    fn render_live_separates_the_streaming_preview_from_the_box_with_a_blank_gap() {
-        // While streaming, the preview line must not butt up against the box: a
-        // blank gap row sits between the previewed reply and the top rule.
+    fn render_live_strip_stacks_preview_gap_then_status_above_the_box() {
+        // While streaming the strip is three rows: the reply preview, a blank gap,
+        // then the live status line — and only below them the box's top rule. The
+        // gap still keeps the previewed reply off the status/box.
         let mut app = App::new();
         app.begin_stream();
         app.push_chunk("streaming reply");
-        let mut buf = buffer(40, 5); // preview + gap + (two rules + one input row)
+        let mut buf = buffer(40, 6); // preview + gap + status + (two rules + one input)
         render_live(buf.area, &mut buf, &app);
 
         assert!(
@@ -1416,10 +1645,15 @@ mod tests {
             row(&buf, 1, 40).trim().is_empty(),
             "blank gap row below the preview"
         );
+        assert!(
+            row(&buf, 2, 40).contains("Working"),
+            "status line on row 2: {:?}",
+            row(&buf, 2, 40)
+        );
         assert_eq!(
-            buf[(0, 2)].symbol(),
+            buf[(0, 3)].symbol(),
             "─",
-            "top rule below the gap, not touching the preview"
+            "top rule below the status line, not touching it"
         );
     }
 
@@ -1544,14 +1778,15 @@ mod tests {
 
     #[test]
     fn live_height_adds_the_streaming_strip_above_the_box() {
-        // While streaming, the live region gains a preview row + a blank gap row
-        // (PREVIEW_ROWS + GAP_ROWS = 2) above whatever the idle box would be.
+        // While streaming, the live region gains a preview row, a blank gap row,
+        // and the live status row (PREVIEW_ROWS + GAP_ROWS + STATUS_ROWS = 3)
+        // above whatever the idle box would be.
         for input in ["", "hi", "a\nb\nc"] {
             let ta = TextArea::from_text(input);
             assert_eq!(
                 live_height(&ta, 40, 24, true, 0),
-                live_height(&ta, 40, 24, false, 0) + 2,
-                "streaming adds exactly the preview + gap rows for {input:?}"
+                live_height(&ta, 40, 24, false, 0) + 3,
+                "streaming adds the preview + gap + status rows for {input:?}"
             );
         }
     }

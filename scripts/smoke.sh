@@ -171,6 +171,12 @@ if ! printf '%s' "$pane" | grep -qF "$EXPECT_REPLY"; then
 	echo "FAIL: streamed reply '$EXPECT_REPLY' not found" >&2
 	status=1
 fi
+# While the reply streams, the live status line shows a running token count (the
+# pane was captured mid-stream above, so text — and so tokens — is flowing).
+if ! printf '%s' "$pane" | grep -qF "tokens"; then
+	echo "FAIL: the live status line (token count) was not shown while streaming" >&2
+	status=1
+fi
 if ! printf '%s' "$grown" | grep -qF "❯ AAA"; then
 	echo "FAIL: first draft line '❯ AAA' not shown in the input box" >&2
 	status=1
@@ -214,9 +220,17 @@ fi
 if ! printf '%s' "$settled_cur" | grep -qF "changes size"; then
 	echo "FAIL: the reply never finished on the short terminal (Phase 5 could not settle)" >&2
 	status=1
-elif [ "${trailing_blanks:-99}" -ne 0 ]; then
-	echo "FAIL: $trailing_blanks blank row(s) left below the input box after the reply settled — the box should stay flush at the bottom" >&2
-	status=1
+else
+	# When the turn ends the live status line is replaced by a committed
+	# "{done verb} for Ns" summary (a fresh session → turn 0 → the verb "Done").
+	if ! printf '%s' "$settled_cur" | grep -qF "Done for"; then
+		echo "FAIL: the committed 'Done for Ns' turn summary was not shown after the reply finished" >&2
+		status=1
+	fi
+	if [ "${trailing_blanks:-99}" -ne 0 ]; then
+		echo "FAIL: $trailing_blanks blank row(s) left below the input box after the reply settled — the box should stay flush at the bottom" >&2
+		status=1
+	fi
 fi
 if [ "$burst_ok" -ne 1 ]; then
 	echo "FAIL: a 1000-char input burst was not fully rendered within 600ms (took ${burst_ms}ms) — input is not coalesced into one repaint, typing lag regressed" >&2
