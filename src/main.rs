@@ -390,13 +390,12 @@ fn update_status_times(
     app.set_status_times(elapsed, thinking);
 }
 
-/// Local wall-clock stamp for recorded items: local date + 12-hour time, e.g.
-/// `2026-06-09 02:32:05 PM`. Injected via [`App::set_clock`] and shown **only**
-/// in the Ctrl+O transcript — the one impurity kept out of the pure library.
+/// Local wall-clock stamp for recorded items: 12-hour time, no seconds, e.g.
+/// `03:20 AM`. Injected via [`App::set_clock`] and shown **only** under the
+/// user's message in the Ctrl+O transcript — the one impurity kept out of the
+/// pure library.
 fn local_timestamp() -> String {
-    chrono::Local::now()
-        .format("%Y-%m-%d %I:%M:%S %p")
-        .to_string()
+    chrono::Local::now().format("%I:%M %p").to_string()
 }
 
 /// The live region's height for `app` at the current screen size — exactly what

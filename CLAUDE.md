@@ -121,9 +121,11 @@ of bug:
    one-line peek). The Ctrl+O overlay (`ui::render_tool_view` on the alternate
    screen) shows the **full conversation transcript** — `ui::transcript_lines`
    walks `history` (messages + each tool's *expanded* output) plus the live tail
-   (in-progress reply / running tool), each item's wall-clock `timestamp`
-   **right-aligned** on its header (the *only* place stamps show — never inline;
-   the clock is injected via `App::set_clock`, see `docs/timestamps.md`). **While
+   (in-progress reply / running tool). Only the **user** message shows its
+   wall-clock `timestamp` (`hh:mm AM/PM`, no seconds): dim, **right-aligned on
+   its own line below the message** — the *only* stamp displayed anywhere
+   (AI/tool/summary stamps are recorded but never shown; never inline; the
+   clock is injected via `App::set_clock`, see `docs/timestamps.md`). **While
    the overlay is up the loop keeps
    draining reply events into `App` but does *not* commit to scrollback** (that
    would write into the alt screen); on return, `repaint_conversation` rebuilds the
@@ -221,8 +223,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   prompt, colours (including the red error bullet and the cyan system bullet),
   border, the tool-call styling (`TOOL_*` — blue/green/red status colours, the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
-  (`TOOL_VIEW_*`), the transcript timestamp (`TIMESTAMP_COLOR`/`STAMP_GAP` — the
-  dim, right-aligned per-item stamp shown only in the Ctrl+O view), the status
+  (`TOOL_VIEW_*`), the transcript timestamp (`TIMESTAMP_COLOR` — the dim
+  `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,
+  the only stamp shown, only in the Ctrl+O view), the status
   indicator (`STATUS_*` — the bouncing-ball spinner's white ball + dim walls and
   the `SPINNER_FRAMES`/`SPINNER_INTERVAL` animation, dim metrics, the `↓`/`↑` arrows
   and `…` ellipsis, the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;

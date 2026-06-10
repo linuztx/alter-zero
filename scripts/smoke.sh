@@ -263,6 +263,16 @@ if ! printf '%s' "$overlay" | grep -qF "InlineViewport::init"; then
 	echo "FAIL: tool-output view did not show the full (expanded) Read output" >&2
 	status=1
 fi
+# Stamps in the tool view: only the USER message shows one — alone on its own
+# right-aligned line, 12-hour hh:mm AM/PM, no seconds, no date.
+if ! printf '%s' "$overlay" | grep -qE '^ +(0[1-9]|1[0-2]):[0-5][0-9] (AM|PM)$'; then
+	echo "FAIL: the user message's right-aligned hh:mm AM/PM stamp line is missing from the tool view" >&2
+	status=1
+fi
+if printf '%s' "$overlay" | grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{2}:[0-9]{2}:[0-9]{2}'; then
+	echo "FAIL: a dated/seconds timestamp is still shown in the tool view (stamps are hh:mm AM/PM, user messages only)" >&2
+	status=1
+fi
 if printf '%s' "$returned" | grep -qF "PgUp/PgDn"; then
 	echo "FAIL: Ctrl+O did not return to the conversation" >&2
 	status=1

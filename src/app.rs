@@ -34,10 +34,11 @@ pub enum Role {
 pub struct Message {
     pub role: Role,
     pub text: String,
-    /// Wall-clock stamp of when this message was recorded, shown **only** in the
-    /// Ctrl+O transcript (never inline). Empty when no clock is injected (the
-    /// unit-test default); set from `App`'s clock at the I/O boundary. See
-    /// `docs/timestamps.md`.
+    /// Wall-clock stamp of when this message was recorded. Displayed **only**
+    /// for user messages — right-aligned below the message in the Ctrl+O
+    /// transcript, never inline; other roles record it but don't show it. Empty
+    /// when no clock is injected (the unit-test default); set from `App`'s
+    /// clock at the I/O boundary. See `docs/timestamps.md`.
     pub timestamp: String,
 }
 
@@ -67,9 +68,10 @@ pub struct ToolCall {
     pub args: String,
     pub status: ToolStatus,
     pub output: String,
-    /// Wall-clock stamp of when the call finished (set in [`App::end_tool`]),
-    /// shown **only** in the Ctrl+O transcript. Empty while running and when no
-    /// clock is injected. See `docs/timestamps.md`.
+    /// Wall-clock stamp of when the call finished (set in [`App::end_tool`]).
+    /// Recorded but not currently displayed — only user-message stamps show.
+    /// Empty while running and when no clock is injected. See
+    /// `docs/timestamps.md`.
     pub timestamp: String,
 }
 
@@ -127,8 +129,8 @@ pub struct TurnSummary {
     pub verb: &'static str,
     /// The turn's total wall-clock duration in whole seconds.
     pub secs: u64,
-    /// Wall-clock stamp of when the turn finished, shown **only** in the Ctrl+O
-    /// transcript (never inline). See `docs/timestamps.md`.
+    /// Wall-clock stamp of when the turn finished. Recorded but not currently
+    /// displayed — only user-message stamps show. See `docs/timestamps.md`.
     pub timestamp: String,
 }
 

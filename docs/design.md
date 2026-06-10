@@ -51,7 +51,8 @@ unit-tested must be unit-tested.
   with no events. On
   finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
   that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
-  and lists in the Ctrl+O transcript with a timestamp). Time is impure, so — like
+  and lists in the Ctrl+O transcript — stamp-free, like every non-user item).
+  Time is impure, so — like
   the timestamp clock — the loop owns the `Instant`s and feeds the pure status
   only computed `Duration`s (`App::set_status_times`; the same value drives the
   displayed seconds and both animation phases). See `docs/status-indicator.md`.
@@ -103,13 +104,14 @@ unit-tested must be unit-tested.
   from the overlay, which repaints before exiting so a turn that finished while the
   overlay was up restores its `Done for Ns` summary rather than the stale streaming
   strip it left frozen on the main screen. The overlay is read-only (typing is
-  ignored). Each item also shows a **wall-clock timestamp** (local date + 12-hour
-  time, e.g. `2026-06-09 02:32:05 PM`) **right-aligned** on its header line — the
-  **only** place timestamps appear; the inline conversation never shows them. The
-  clock is injected at the I/O boundary (`App::set_clock`, a real `chrono::Local`
-  clock in `main.rs`; `None` in unit tests → empty stamp) and each item stores the
-  pre-formatted string, so the pure library stays clock-free. See
-  `docs/timestamps.md`.
+  ignored). Only the **user** message shows a **wall-clock timestamp** (12-hour,
+  no seconds, e.g. `03:20 AM`): dim, **right-aligned on its own line below the
+  message** (after a blank row) — the **only** stamp displayed anywhere (AI
+  replies, tools, and turn summaries record one but never show it); the inline
+  conversation never shows any. The clock is injected at the I/O boundary
+  (`App::set_clock`, a real `chrono::Local` clock in `main.rs`; `None` in unit
+  tests → empty stamp) and each item stores the pre-formatted string, so the
+  pure library stays clock-free. See `docs/timestamps.md`.
 - **Slash-command palette (Claude-Code style).** When the input is a **bare
   command token** — `/`, `/he`, `/help`, but *not* `ask /help` or anything past a
   space/newline — a scrollable command **palette opens below the input box** (a
@@ -242,7 +244,7 @@ frame scheduler ─► draw-tick ─────┘                             
 - `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
   `None` when closed); the matches are derived from the input on demand.
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
-  shown only in the Ctrl+O transcript).
+  displayed only for **user** messages, in the Ctrl+O transcript).
 - `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (blue/green/red).
 - `ToolCall { name, args, status, output, timestamp }` — one tool invocation;
   `current_tool` while running, then recorded in history (stamped when it finishes).
@@ -315,8 +317,9 @@ frame scheduler ─► draw-tick ─────┘                             
   (status-coloured bullet header, collapsed peek + `(ctrl+o to expand)` hint,
   width-truncated); `transcript_lines`/`render_tool_view` (full conversation —
   messages interleaved with each tool's complete output, plus the live tail —
-  status colour, scroll; each item's **timestamp right-aligned** on its header in
-  a dim colour, and **never** present in the inline `conversation_lines`); the
+  status colour, scroll; the **user** message's **timestamp right-aligned on its
+  own line below it** in a dim colour — no stamp on assistant/tool/summary items,
+  and **never** any in the inline `conversation_lines`); the
   **status indicator** — `status_line` formats each phase (`(0s)` with the token
   clause dropped at 0; `↓`/`↑` arrows; `Thinking for Ns` only when set; a
   bouncing-ball spinner — white bold ball between dim walls — that steps a frame
@@ -326,7 +329,7 @@ frame scheduler ─► draw-tick ─────┘                             
   is one dim bullet-less `"{verb} for
   Ns"` line, `render_live` stacks preview / gap / status / gap in the streaming
   strip, and a committed `Summary` flows through `conversation_lines`/`transcript`
-  (stamped) like any item; the
+  (stamp-free) like any non-user item; the
   **command palette** — `menu_window` keeps the
   selection visible, `menu_rows` reserves the band (0 closed, capped, 1 for no
   matches), `command_menu_lines` lists the matches in aligned columns and
@@ -447,9 +450,11 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   keystroke only if you leave and re-enter command mode; and running `/help`
   mid-stream finalises the reply's current segment first (so the notice never
   splits the reply), the same ordering rule tool calls use.
-- Timestamps are shown **only** in the Ctrl+O transcript (local date + 12-hour
-  time, right-aligned per item); the inline conversation has none, and there is no
-  per-token/relative time. See `docs/timestamps.md`.
+- Timestamps are shown **only** in the Ctrl+O transcript, and only for the
+  **user's** messages (12-hour `hh:mm AM/PM`, no seconds, right-aligned below the
+  message); assistant/tool/summary items record a stamp but never display it. The
+  inline conversation has none, and there is no per-token/relative time. See
+  `docs/timestamps.md`.
 - The status indicator's token counts are an app-side **estimate** (≈ chars/4), not
   real model usage — the dummy has no tokenizer; a real `ReplySource` could report
   exact counts later. The working/done verbs cycle deterministically (a turn

@@ -95,7 +95,7 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
 ## The "Done for Ns" summary
 
 A new ordered history entry so it survives a resize and lists in the Ctrl+O
-transcript (with a timestamp, like every other item):
+transcript (stamp-free there — only user messages display a timestamp):
 
 - `TurnSummary { verb, secs, timestamp }`, `HistoryItem::Summary(TurnSummary)`.
 - `ui::summary_lines` renders a single dim, bullet-less `"{verb} for {secs}s"`.
