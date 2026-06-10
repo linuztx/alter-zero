@@ -51,9 +51,11 @@ terminal's real scrollback; a live region (a rule-framed input box — a codex-s
 rows, Home/End) with insert/delete at the cursor, growing as the input wraps —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's blue header when one is executing), a blank gap row,
-then a codex-style **status line** pinned just above the box (`● {verb}… ({elapsed}s
-· {↓|↑} {n} tokens · Thinking for {m}s)`; on finish a dim `{done verb} for {n}s`
-summary commits to scrollback — see `docs/status-indicator.md`) — plus a
+a codex-style **status line** (`● {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking
+for {m}s)` — white bullet, the verb text shimmering with a white sweep ported from
+codex's `shimmer_spans`; on finish a dim `{done verb} for {n}s` summary commits to
+scrollback — see `docs/status-indicator.md`), then another blank gap row so the
+status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
 `/token`) stays pinned at the bottom. The alternate screen is used in exactly one
 place: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
@@ -91,7 +93,7 @@ of bug:
    bottom; a shrink blanks the rows it vacates (the decision is the pure
    `ui::repin`). Never force it to `screen.height - height` — that reintroduces
    the "box jumps to the bottom" bug. The streaming strip (preview + gap + status
-   line) sits *above* the box, so it grows the region upward; when a reply ends the
+   + gap) sits *above* the box, so it grows the region upward; when a reply ends the
    strip's rows become the committed final line + spacer + the `Done for Ns` summary
    and the box must **stay put**, so `StreamDone`/`Error` call `term::set_view_height`
    to reseat the viewport to its idle height *before* the final `insert_before` —
@@ -122,24 +124,24 @@ of bug:
 
 ### Data flow
 
-The loop is an async (`tokio`, current-thread) `select!` over four sources;
+The loop is an async (`tokio`, current-thread) `select!` over three sources;
 `select!`'s randomized branch order gives input/draw fairness for free. Every state
 change calls `frame.schedule_frame()`; the `frame` scheduler coalesces those into a
 single draw tick, rate-limited to 120 fps (`MIN_FRAME_INTERVAL`). A paste/fast-type
 run is caught by `paste::PasteBurst` so its redraw defers to the burst tail
-(`schedule_frame_in`). A fourth source — a `tokio::time::interval(1s)` ticker —
-schedules a frame each second *while a turn is active* so the status line's timer
-advances with no events; before each draw the loop writes the computed
-`elapsed`/`thinking` seconds onto the status (`App::set_status_times`), keeping time
-out of the pure core (the timestamp-clock pattern). `insert_before` stays inline
-(immediate scrollback); only the live-region paint is tick-driven. (See
-`docs/async-rewrite.md`, `docs/status-indicator.md`.)
+(`schedule_frame_in`). *While a turn is active* the draw branch **re-arms** the next
+animation frame (`schedule_frame_in(32ms)`, codex's status-widget cadence) so the
+status line's shimmer sweeps and its timer advances with no events; before each
+draw the loop writes the computed `elapsed`/`thinking` `Duration`s onto the status
+(`App::set_status_times`), keeping time out of the pure core (the timestamp-clock
+pattern). `insert_before` stays inline (immediate scrollback); only the live-region
+paint is tick-driven. (See `docs/async-rewrite.md`, `docs/status-indicator.md`.)
 
 ```
 keyboard / resize ─► EventStream ─┐
 reply backend ────► tokio mpsc ───┼─► select! ─► App::on_key / push_chunk / start_tool / set_status_times / … ─► schedule_frame
-frame scheduler ──► draw-tick ────┤                                        coalesce + 120fps ─► draw / draw_overlay
-1s status ticker ─► interval ─────┘
+frame scheduler ──► draw-tick ────┘                                        coalesce + 120fps ─► draw / draw_overlay
+                                       └─ turn active? re-arm a frame in 32ms (status shimmer + timer)
 ```
 
 `Submit(text)` records the user message, `insert_before`s it, then spawns a reply
@@ -209,15 +211,19 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
   (`TOOL_VIEW_*`), the transcript timestamp (`TIMESTAMP_COLOR`/`STAMP_GAP` — the
   dim, right-aligned per-item stamp shown only in the Ctrl+O view), the status
-  indicator (`STATUS_*` — the amber bullet/verb, dim metrics, the `↓`/`↑` arrows
-  and `…` ellipsis, the dim committed-summary colour, and `STATUS_ROWS`; the verbs
-  themselves are `WORKING_VERBS`/`DONE_VERBS` in `app.rs`, picked per-turn), the
+  indicator (`STATUS_*` — the white bullet, dim metrics, the `↓`/`↑` arrows
+  and `…` ellipsis, the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;
+  the verb's white shimmer wave is the `SHIMMER_*` consts — base/highlight
+  colours, sweep period, padding, band half-width, max blend — a port of codex's
+  `shimmer_spans`; the verbs themselves are `WORKING_VERBS`/`DONE_VERBS` in
+  `app.rs`, picked per-turn), the
   slash-command palette (`MENU_*` — the `MENU_DESC_COL`
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), and
-  the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
-  the preview + gap + status strip shows *only while a turn streams* — `strip_rows`
-  (`render_live` draws the status line at its bottom row) — and the
+  the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
+  the preview + gap + status + gap strip shows *only while a turn streams* — `strip_rows`
+  (`render_live` draws the status line under the preview's gap, a blank row above
+  the box) — and the
   command palette is a third band *below* the box — `menu_rows` — so the box's
   dynamic `live_height` is streaming- and palette-aware, and idle with no palette
   there is exactly one blank above the box: the committed spacer after the last

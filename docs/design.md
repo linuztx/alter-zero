@@ -21,9 +21,10 @@ unit-tested must be unit-tested.
   - an **input field framed by a top/bottom rule** (`❯ ...`),
   - and, **only while a turn is in flight**, a strip above the box: a **preview
     row** showing the in-progress AI line (or a running tool's blue header), a
-    blank **gap row**, then a **status line** pinned just above the box —
+    blank **gap row**, a **status line** —
     `● {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`, a
-    codex/Claude-Code-style indicator (see *Status indicator* below). Idle, that
+    codex/Claude-Code-style indicator (see *Status indicator* below) — then
+    another blank gap row so the status clears the box's top rule. Idle, that
     strip collapses and the box sits directly under the chat.
 - Type a message, press **Enter** to send. The user message is flushed to
   scrollback, then the dummy AI streams a reply.
@@ -37,15 +38,20 @@ unit-tested must be unit-tested.
   blank). A blank spacer is also committed after every user message.
 - **Status indicator.** While a turn is in flight, the strip's status line shows a
   per-turn whimsical **verb** (`Working`, `Cooking`, …, picked deterministically by
-  a turn counter), a **timer** in whole seconds (advanced by a 1 s tick in the loop
-  so it moves even with no events), a cumulative **token** estimate (`↓` while the
+  a turn counter) whose white text carries a codex-style **shimmer** — a
+  bright-white raised-cosine band sweeping the chars every 2 s
+  (`ui::shimmer_spans`, ported from openai/codex; the white bullet matches) — a
+  **timer** in whole seconds, a cumulative **token** estimate (`↓` while the
   reply streams, flipping to `↑` right after a tool result — never reset mid-turn),
-  and `Thinking for Ns` *only* while the model is in a thinking phase. On finish it
-  is replaced by a dim, committed **`{done verb} for Ns`** summary that flows into
-  scrollback (a `HistoryItem::Summary`, so it survives a resize and lists in the
-  Ctrl+O transcript with a timestamp). Time is impure, so — like the timestamp
-  clock — the loop owns the `Instant`s and feeds the pure status only computed
-  seconds (`App::set_status_times`). See `docs/status-indicator.md`.
+  and `Thinking for Ns` *only* while the model is in a thinking phase. While a
+  turn is active the draw branch re-arms an animation frame every 32 ms (codex's
+  cadence), so the shimmer sweeps and the timer moves even with no events. On
+  finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
+  that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
+  and lists in the Ctrl+O transcript with a timestamp). Time is impure, so — like
+  the timestamp clock — the loop owns the `Instant`s and feeds the pure status
+  only computed `Duration`s (`App::set_status_times`; the same value drives the
+  displayed seconds and the shimmer phase). See `docs/status-indicator.md`.
 - **Responsive:** every draw re-wraps to the current terminal width, measured in
   **display columns** (`unicode-width`) so CJK/emoji wrap and pad correctly.
 - **Growing input box.** The input field is multi-line and grows downward as the
@@ -195,7 +201,7 @@ frame scheduler ─► draw-tick ─────┘                             
   is live-only).
 - On `StreamDone`: clear streaming state and end the turn (record the `Done for Ns`
   summary), then commit the final text segment + spacer + the summary. Because the
-  streaming strip (preview + gap + status) is drawn *above* the box, the loop first
+  streaming strip (preview + gap + status + gap) is drawn *above* the box, the loop first
   calls `term.set_view_height` to reseat the viewport to its idle height, so the
   final commit replaces the strip's rows in place and the box stays flush at the
   bottom rather than rising and leaving blank rows beneath it (see the
@@ -235,8 +241,9 @@ frame scheduler ─► draw-tick ─────┘                             
 - `ToolCall { name, args, status, output, timestamp }` — one tool invocation;
   `current_tool` while running, then recorded in history (stamped when it finishes).
 - `TokenArrow { Down, Up }` + `TurnStatus { verb, done_verb, tokens, arrow,
-  elapsed_secs, thinking_secs }` — the live status of the turn in flight
-  (`App::status`); the seconds are written by the boundary each frame. See
+  elapsed, thinking }` — the live status of the turn in flight (`App::status`);
+  the `Duration`s are written by the boundary each frame (one value drives the
+  displayed seconds *and* the verb's shimmer phase). See
   `docs/status-indicator.md`.
 - `TurnSummary { verb, secs, timestamp }` — the committed `"{verb} for Ns"` turn
   summary recorded at turn end.
@@ -283,8 +290,8 @@ frame scheduler ─► draw-tick ─────┘                             
 - `app` (status): `begin_stream` opens a `TurnStatus` (a per-turn verb, 0 tokens,
   `↓`); the verb differs turn-to-turn; `push_chunk` grows the tally (`↓`); a tool
   *adds* its output to the tally and flips the arrow `↑` without resetting, and
-  resuming text flips it back `↓`; `set_status_times` writes the boundary seconds
-  (no-op when idle); `end_turn` records a `Summary` and clears the status;
+  resuming text flips it back `↓`; `set_status_times` writes the boundary
+  durations (no-op when idle); `end_turn` records a `Summary` and clears the status;
   `fail_stream` clears it with no summary; `estimate_tokens` grows with length.
 - `app` (slash palette): `command_query` recognises a bare `/token` (rejecting
   past-a-space/newline and mid-line slashes); `matching_commands` prefix-filters
@@ -305,9 +312,11 @@ frame scheduler ─► draw-tick ─────┘                             
   status colour, scroll; each item's **timestamp right-aligned** on its header in
   a dim colour, and **never** present in the inline `conversation_lines`); the
   **status indicator** — `status_line` formats each phase (`(0s)` with the token
-  clause dropped at 0; `↓`/`↑` arrows; `Thinking for Ns` only when set; amber
-  bullet/verb, dim metrics), `summary_lines` is one dim bullet-less `"{verb} for
-  Ns"` line, `render_live` draws the status row at the bottom of the streaming
+  clause dropped at 0; `↓`/`↑` arrows; `Thinking for Ns` only when set; a white
+  bullet, dim metrics, and a per-char bold greyscale-white shimmering verb whose
+  crest outshines off-band chars and moves as `elapsed` advances), `summary_lines`
+  is one dim bullet-less `"{verb} for
+  Ns"` line, `render_live` stacks preview / gap / status / gap in the streaming
   strip, and a committed `Summary` flows through `conversation_lines`/`transcript`
   (stamped) like any item; the
   **command palette** — `menu_window` keeps the
@@ -317,10 +326,12 @@ frame scheduler ─► draw-tick ─────┘                             
   alike, vs dimmed grey, no caret; placeholder when empty), and `render_live` draws
   it below the box with the cursor unmoved; the
   growing-input geometry — `live_height` grows a row per wrapped line, adds the
-  preview + gap + status strip only while streaming and the palette band below the
+  preview + gap + status + gap strip only while streaming and the palette band
+  below the
   box, and clamps to the screen; `render_live` grows the box, scrolls the input to
   keep the end visible, stacks the streaming preview (or a running tool's blue
-  header), a blank gap, then the status line above the box, and shows no strip when
+  header), a blank gap, the status line, then another blank gap above the box, and
+  shows no strip when
   idle; `cursor_position` follows
   the last wrapped row (and stays put when the palette opens); and
   `repin` keeps the box top-anchored (scrolling up only on overflow, clearing rows
@@ -365,7 +376,7 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
 - `set_view_height(height)` — reseat the tracked viewport height *without*
   redrawing. `insert_before` reserves `view.height` rows *below* the lines it
   commits (to keep the box on screen), and the streaming strip (preview + gap +
-  status) inflates that height while a reply streams. So at `StreamDone`/`Error`
+  status + gap) inflates that height while a reply streams. So at `StreamDone`/`Error`
   `main` calls this first to drop the strip's rows, letting the final commit (the
   reply's last line, then the `Done for Ns` summary) replace them in place —
   otherwise `insert_before` over-scrolls and the box rises off the bottom (see
@@ -390,8 +401,8 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   chat back (terminals can't reverse-scroll their own scrollback), so after a
   grow-past-bottom-then-shrink the box stays where it scrolled to with blank rows
   below. Normal short messages never hit this.
-- **Streaming strip collapse.** The streaming strip (preview + gap + status line) is
-  drawn *above* the box, so it grows the live region *upward*. When a reply finishes,
+- **Streaming strip collapse.** The streaming strip (preview + gap + status + gap)
+  is drawn *above* the box, so it grows the live region *upward*. When a reply finishes,
   that strip's rows are handed back to scrollback as the committed final line +
   spacer + the `Done for Ns` summary, and the box must stay put. The fix is to reseat the viewport to its idle height
   (`term.set_view_height`) *before* the final `insert_before`, so the commit reserves

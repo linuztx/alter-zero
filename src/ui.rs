@@ -6,6 +6,8 @@
 //! ([`render_live`]). That keeps them unit-testable with a plain `Buffer` or
 //! ratatui's `TestBackend`, with no real terminal involved.
 
+use std::time::Duration;
+
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -108,17 +110,20 @@ const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
 const STAMP_GAP: usize = 2;
 
 // --- Live status indicator (codex / Claude-Code style). While a turn is in
-// flight a status line sits in the strip just above the box:
+// flight a status line sits in the strip above the box (with a blank gap row
+// between it and the box's top rule):
 // `● {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`. The working
 // verb is picked per-turn (in `App`); the timer/tokens/thinking are live state.
-// On finish a dim, bullet-less `{done verb} for {n}s` summary commits to
-// scrollback (a `HistoryItem::Summary`). See docs/status-indicator.md. ---
+// The bullet is white and the verb text carries a codex-style **shimmer**: a
+// bright-white band sweeps across the white-grey text (see [`shimmer_spans`],
+// ported from openai/codex `tui/src/shimmer.rs`). On finish a dim, bullet-less
+// `{done verb} for {n}s` summary commits to scrollback (a
+// `HistoryItem::Summary`). See docs/status-indicator.md. ---
 
 /// Bullet prefixing the live status line (recoloured from the message bullets).
 const STATUS_BULLET: &str = "● ";
-/// Amber — the status bullet and its working verb (a touch of life, distinct
-/// from the white assistant / blue tool bullets).
-const STATUS_COLOR: Color = Color::Rgb(0xD1, 0x9A, 0x66);
+/// White — the status bullet (matches the codex/Claude-Code white status text).
+const STATUS_COLOR: Color = AI_COLOR;
 /// Dim grey — the parenthesised metrics (`elapsed · tokens · thinking`).
 const STATUS_DETAIL_COLOR: Color = TOOL_DIM_COLOR;
 /// Trailing ellipsis after the working verb (`Working…`).
@@ -129,8 +134,32 @@ const STATUS_ARROW_DOWN: &str = "↓";
 const STATUS_ARROW_UP: &str = "↑";
 /// Dim grey — the committed `"{done verb} for {n}s"` turn summary.
 const STATUS_DONE_COLOR: Color = TOOL_DIM_COLOR;
-/// The status line's row in the streaming strip (one, pinned at its bottom).
+/// The status line's row in the streaming strip.
 const STATUS_ROWS: u16 = 1;
+/// A blank row between the status line and the box's top rule, so the status
+/// never butts up against the box (mirrors the gap above, under the preview).
+const STATUS_GAP_ROWS: u16 = 1;
+
+// --- The verb's shimmer wave (ported from openai/codex `shimmer_spans`): each
+// char's colour blends from the white-grey base toward bright white by a
+// raised-cosine band that sweeps the text once per `SHIMMER_SWEEP`. The wave's
+// phase derives from the boundary-supplied `TurnStatus::elapsed`, keeping the
+// renderer pure (codex reads a process clock instead). ---
+
+/// The white-grey base of the shimmering verb text (codex's truecolor fallback
+/// foreground) — dim enough that the bright band reads clearly.
+const SHIMMER_BASE: (u8, u8, u8) = (0x88, 0x88, 0x88);
+/// The bright white the band's crest blends toward.
+const SHIMMER_HIGHLIGHT: (u8, u8, u8) = (0xFF, 0xFF, 0xFF);
+/// One full sweep of the band across the text (codex's `sweep_seconds`).
+const SHIMMER_SWEEP: Duration = Duration::from_secs(2);
+/// Off-text run-in/out, in chars, so the band slides on and off the ends
+/// instead of wrapping abruptly (codex's `padding`).
+const SHIMMER_PADDING: usize = 10;
+/// The band's half-width in chars (codex's `band_half_width`).
+const SHIMMER_BAND_HALF_WIDTH: f32 = 5.0;
+/// The crest's blend toward the highlight (codex blends `t * 0.9`).
+const SHIMMER_MAX_BLEND: f32 = 0.9;
 
 // --- Slash-command palette. A scrolling, single-line-per-command list pinned
 // **below the input box** (a third live-region band) whenever the input is a bare
@@ -169,13 +198,14 @@ const INPUT_CHROME_ROWS: u16 = 2;
 pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
 
 /// Rows of the streaming strip above the box, shown only while a reply streams: a
-/// preview line, a blank gap, then the live status line pinned at the bottom (just
-/// above the box). Idle, the box sits directly under the chat (separated by the
-/// committed blank spacer after the last message), so the strip collapses to
-/// nothing and there is exactly one blank line above the box.
+/// preview line, a blank gap, the live status line, then another blank gap so the
+/// status doesn't butt up against the box's top rule. Idle, the box sits directly
+/// under the chat (separated by the committed blank spacer after the last
+/// message), so the strip collapses to nothing and there is exactly one blank
+/// line above the box.
 const fn strip_rows(streaming: bool) -> u16 {
     if streaming {
-        PREVIEW_ROWS + GAP_ROWS + STATUS_ROWS
+        PREVIEW_ROWS + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS
     } else {
         0
     }
@@ -728,16 +758,65 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+/// Linearly blend `fg` toward `bg` by `1 - alpha` (codex's `blend`): `alpha` 1
+/// is pure `fg`, 0 pure `bg`.
+fn blend(fg: (u8, u8, u8), bg: (u8, u8, u8), alpha: f32) -> (u8, u8, u8) {
+    let mix = |f: u8, b: u8| (f32::from(f) * alpha + f32::from(b) * (1.0 - alpha)) as u8;
+    (mix(fg.0, bg.0), mix(fg.1, bg.1), mix(fg.2, bg.2))
+}
+
+/// One bold span per char of `text`, shimmered codex-style: a raised-cosine
+/// brightness band (half-width [`SHIMMER_BAND_HALF_WIDTH`], plus
+/// [`SHIMMER_PADDING`] chars of off-text run-in/out) sweeps the text once per
+/// [`SHIMMER_SWEEP`], each char blending from the white-grey [`SHIMMER_BASE`]
+/// toward the bright [`SHIMMER_HIGHLIGHT`] by its distance from the band's
+/// crest. A faithful port of openai/codex `tui/src/shimmer.rs::shimmer_spans`,
+/// made pure: the phase comes from the boundary-supplied `elapsed` (sub-second
+/// resolution), not a process-wide clock — so it's deterministic in tests.
+fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() {
+        return Vec::new();
+    }
+    let period = chars.len() + SHIMMER_PADDING * 2;
+    let sweep = SHIMMER_SWEEP.as_secs_f32();
+    let pos = ((elapsed.as_secs_f32() % sweep) / sweep * period as f32) as usize;
+
+    chars
+        .iter()
+        .enumerate()
+        .map(|(i, ch)| {
+            let dist = (i as isize + SHIMMER_PADDING as isize - pos as isize).abs() as f32;
+            let t = if dist <= SHIMMER_BAND_HALF_WIDTH {
+                let x = std::f32::consts::PI * (dist / SHIMMER_BAND_HALF_WIDTH);
+                0.5 * (1.0 + x.cos())
+            } else {
+                0.0
+            };
+            let (r, g, b) = blend(SHIMMER_HIGHLIGHT, SHIMMER_BASE, t * SHIMMER_MAX_BLEND);
+            Span::styled(
+                ch.to_string(),
+                Style::new()
+                    .fg(Color::Rgb(r, g, b))
+                    .add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect()
+}
+
 /// The live status line shown in the strip above the box while a turn is in
 /// flight: `● {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s])`.
 ///
-/// The bullet + verb are amber; the parenthesised metrics dim. The token clause is
-/// omitted while the tally is 0 (the "just submitted" state), and the thinking
-/// clause only while `thinking_secs` is `Some`. Pure — it formats the (already
-/// boundary-stamped) [`TurnStatus`], so it is unit-tested with explicit values.
+/// The bullet is white and the verb text **shimmers** — a bright-white band
+/// sweeping its white-grey chars ([`shimmer_spans`]), phase driven by the
+/// boundary-supplied `elapsed`; the parenthesised metrics are dim. The token
+/// clause is omitted while the tally is 0 (the "just submitted" state), and the
+/// thinking clause only while `thinking` is `Some`. Pure — it formats the
+/// (already boundary-stamped) [`TurnStatus`], so it is unit-tested with
+/// explicit values.
 #[must_use]
 pub fn status_line(status: &TurnStatus) -> Line<'static> {
-    let mut detail = format!("{}s", status.elapsed_secs);
+    let mut detail = format!("{}s", status.elapsed.as_secs());
     if status.tokens > 0 {
         let arrow = match status.arrow {
             TokenArrow::Down => STATUS_ARROW_DOWN,
@@ -745,20 +824,22 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
         };
         detail.push_str(&format!(" · {arrow} {} tokens", status.tokens));
     }
-    if let Some(secs) = status.thinking_secs {
-        detail.push_str(&format!(" · Thinking for {secs}s"));
+    if let Some(thinking) = status.thinking {
+        detail.push_str(&format!(" · Thinking for {}s", thinking.as_secs()));
     }
-    Line::from(vec![
-        Span::styled(
-            STATUS_BULLET.to_string(),
-            Style::new().fg(STATUS_COLOR).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            format!("{}{STATUS_ELLIPSIS}", status.verb),
-            Style::new().fg(STATUS_COLOR),
-        ),
-        Span::styled(format!(" ({detail})"), Style::new().fg(STATUS_DETAIL_COLOR)),
-    ])
+    let mut spans = vec![Span::styled(
+        STATUS_BULLET.to_string(),
+        Style::new().fg(STATUS_COLOR).add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(shimmer_spans(
+        &format!("{}{STATUS_ELLIPSIS}", status.verb),
+        status.elapsed,
+    ));
+    spans.push(Span::styled(
+        format!(" ({detail})"),
+        Style::new().fg(STATUS_DETAIL_COLOR),
+    ));
+    Line::from(spans)
 }
 
 /// The committed turn summary: a single dim, bullet-less `"{verb} for {secs}s"`
@@ -1448,8 +1529,16 @@ mod tests {
             done_verb: "Done",
             tokens,
             arrow,
-            elapsed_secs: elapsed,
-            thinking_secs: thinking,
+            elapsed: Duration::from_secs(elapsed),
+            thinking: thinking.map(Duration::from_secs),
+        }
+    }
+
+    /// The RGB triple of a span's foreground (panics on a non-RGB colour).
+    fn span_rgb(span: &Span) -> (u8, u8, u8) {
+        match span.style.fg {
+            Some(Color::Rgb(r, g, b)) => (r, g, b),
+            other => panic!("expected an RGB fg, got {other:?}"),
         }
     }
 
@@ -1493,14 +1582,66 @@ mod tests {
     }
 
     #[test]
-    fn status_line_colours_the_bullet_and_verb() {
+    fn status_line_has_a_white_bullet_shimmering_verb_and_dim_metrics() {
         let line = status_line(&status(0, TokenArrow::Down, 0, None));
-        assert_eq!(line.spans[0].style.fg, Some(STATUS_COLOR), "amber bullet");
-        assert_eq!(line.spans[1].style.fg, Some(STATUS_COLOR), "amber verb");
         assert_eq!(
-            line.spans[2].style.fg,
+            line.spans[0].style.fg,
+            Some(STATUS_COLOR),
+            "white bullet (the line is white, not amber)"
+        );
+        assert_eq!(STATUS_COLOR, AI_COLOR, "the status white is the text white");
+        // The verb renders one bold span per char (the shimmer), every char a
+        // greyscale white between the base and the bright highlight.
+        let verb = "Working…";
+        let verb_spans = &line.spans[1..=verb.chars().count()];
+        assert_eq!(
+            verb_spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>(),
+            verb,
+            "per-char verb spans"
+        );
+        for span in verb_spans {
+            let (r, g, b) = span_rgb(span);
+            assert!(r == g && g == b, "greyscale white, got ({r},{g},{b})");
+            assert!(r >= SHIMMER_BASE.0, "never dimmer than the base");
+            assert!(
+                span.style.add_modifier.contains(Modifier::BOLD),
+                "verb chars are bold"
+            );
+        }
+        assert_eq!(
+            line.spans.last().unwrap().style.fg,
             Some(STATUS_DETAIL_COLOR),
             "dim metrics"
+        );
+    }
+
+    #[test]
+    fn status_verb_wave_peaks_where_the_band_is_and_moves_with_time() {
+        // "Working…" is 8 chars → period = 8 + 2·10 = 28. The crest sits on
+        // char 0 when pos = padding (10), i.e. elapsed = 10/28 · 2 s ≈ 715 ms:
+        // char 0 must then be brighter than char 7 (7 chars away — outside the
+        // band, so at the base colour).
+        let mut at_crest = status(0, TokenArrow::Down, 0, None);
+        at_crest.elapsed = Duration::from_millis(715);
+        let crest_on_first = status_line(&at_crest);
+        let first = span_rgb(&crest_on_first.spans[1]);
+        let last = span_rgb(&crest_on_first.spans[8]);
+        assert!(
+            first.0 > last.0,
+            "the band's crest is brighter than off-band chars: {first:?} vs {last:?}"
+        );
+        assert_eq!(last.0, SHIMMER_BASE.0, "off-band chars sit at the base");
+
+        // Half a sweep later the band has moved on: char 0 is no longer the peak.
+        let mut moved_on = status(0, TokenArrow::Down, 0, None);
+        moved_on.elapsed = Duration::from_millis(715 + 1000);
+        let first_later = span_rgb(&status_line(&moved_on).spans[1]);
+        assert!(
+            first_later.0 < first.0,
+            "the wave moved off char 0 as time advanced: {first_later:?} vs {first:?}"
         );
     }
 
@@ -1563,7 +1704,7 @@ mod tests {
         let mut app = App::new();
         app.begin_stream();
         app.push_chunk("hi");
-        app.set_status_times(3, None);
+        app.set_status_times(Duration::from_secs(3), None);
         let h = live_height(&app.input, 40, 24, true, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
@@ -1627,14 +1768,14 @@ mod tests {
     }
 
     #[test]
-    fn render_live_strip_stacks_preview_gap_then_status_above_the_box() {
-        // While streaming the strip is three rows: the reply preview, a blank gap,
-        // then the live status line — and only below them the box's top rule. The
-        // gap still keeps the previewed reply off the status/box.
+    fn render_live_strip_stacks_preview_gap_status_then_gap_above_the_box() {
+        // While streaming the strip is four rows: the reply preview, a blank gap,
+        // the live status line, then another blank gap — and only below them the
+        // box's top rule, so the status never butts up against the box.
         let mut app = App::new();
         app.begin_stream();
         app.push_chunk("streaming reply");
-        let mut buf = buffer(40, 6); // preview + gap + status + (two rules + one input)
+        let mut buf = buffer(40, 7); // preview + gap + status + gap + (two rules + one input)
         render_live(buf.area, &mut buf, &app);
 
         assert!(
@@ -1650,10 +1791,14 @@ mod tests {
             "status line on row 2: {:?}",
             row(&buf, 2, 40)
         );
+        assert!(
+            row(&buf, 3, 40).trim().is_empty(),
+            "blank gap row below the status line"
+        );
         assert_eq!(
-            buf[(0, 3)].symbol(),
+            buf[(0, 4)].symbol(),
             "─",
-            "top rule below the status line, not touching it"
+            "top rule below the status gap, not touching the status"
         );
     }
 
@@ -1779,14 +1924,14 @@ mod tests {
     #[test]
     fn live_height_adds_the_streaming_strip_above_the_box() {
         // While streaming, the live region gains a preview row, a blank gap row,
-        // and the live status row (PREVIEW_ROWS + GAP_ROWS + STATUS_ROWS = 3)
-        // above whatever the idle box would be.
+        // the live status row, and a blank gap below it (PREVIEW_ROWS + GAP_ROWS
+        // + STATUS_ROWS + STATUS_GAP_ROWS = 4) above whatever the idle box would be.
         for input in ["", "hi", "a\nb\nc"] {
             let ta = TextArea::from_text(input);
             assert_eq!(
                 live_height(&ta, 40, 24, true, 0),
-                live_height(&ta, 40, 24, false, 0) + 3,
-                "streaming adds the preview + gap + status rows for {input:?}"
+                live_height(&ta, 40, 24, false, 0) + 4,
+                "streaming adds the preview + gap + status + gap rows for {input:?}"
             );
         }
     }
@@ -1900,7 +2045,8 @@ mod tests {
         // height and beyond, streaming or not, palette open or closed.
         for streaming in [false, true] {
             for menu_rows in [0, 3] {
-                for h in [LIVE_MIN_HEIGHT + 3, 9, 20] {
+                // The smallest height still fits the streaming strip (4) + menu (3).
+                for h in [LIVE_MIN_HEIGHT + 4, 9, 20] {
                     let [strip, input, menu] =
                         live_layout(Rect::new(0, 0, 40, h), streaming, menu_rows);
                     assert_eq!(

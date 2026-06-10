@@ -4,6 +4,8 @@
 //! loop in `main.rs` feeds key presses in and reacts to the returned
 //! [`Action`]s, and pushes streamed chunks in via [`App::push_chunk`].
 
+use std::time::Duration;
+
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::textarea::TextArea;
@@ -91,8 +93,8 @@ pub enum TokenArrow {
 /// Thinking for {m}s)`). `Some` on [`App`] from [`App::begin_stream`] until the
 /// turn ends; see `docs/status-indicator.md`.
 ///
-/// `verb`/`done_verb`, `tokens`, and `arrow` are pure turn state. `elapsed_secs`
-/// and `thinking_secs` are **written by the I/O boundary each frame**
+/// `verb`/`done_verb`, `tokens`, and `arrow` are pure turn state. `elapsed` and
+/// `thinking` are **written by the I/O boundary each frame**
 /// ([`App::set_status_times`]) — time is impure, so it never reaches the pure
 /// core except as these already-computed values (mirrors the timestamp clock).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,12 +108,14 @@ pub struct TurnStatus {
     pub tokens: usize,
     /// Which arrow the tally shows (`↓` streaming / `↑` after a tool).
     pub arrow: TokenArrow,
-    /// Whole seconds since the turn was submitted — set by the boundary each frame.
-    pub elapsed_secs: u64,
-    /// Whole seconds of the *current* thinking phase, or `None` when not thinking
+    /// Time since the turn was submitted — set by the boundary each frame. The
+    /// renderer derives both the displayed whole seconds and the verb's shimmer
+    /// phase from it (sub-second resolution drives the wave).
+    pub elapsed: Duration,
+    /// How long the *current* thinking phase has run, or `None` when not thinking
     /// — set by the boundary each frame. `Some` renders the `Thinking for Ns`
     /// suffix; cleared the moment thinking ends.
-    pub thinking_secs: Option<u64>,
+    pub thinking: Option<Duration>,
 }
 
 /// A finished turn's summary, committed to scrollback as a dim `"{verb} for
@@ -723,8 +727,8 @@ impl App {
             done_verb,
             tokens: 0,
             arrow: TokenArrow::Down,
-            elapsed_secs: 0,
-            thinking_secs: None,
+            elapsed: Duration::ZERO,
+            thinking: None,
         });
     }
 
@@ -755,14 +759,15 @@ impl App {
         self.status.is_some()
     }
 
-    /// Write the boundary-computed seconds onto the live status before a draw:
-    /// the whole-second turn `elapsed`, and the current thinking-phase `thinking`
-    /// (`Some` while thinking, `None` otherwise). No-op when no turn is in flight.
-    /// Time is impure, so it only ever reaches the status this way.
-    pub fn set_status_times(&mut self, elapsed: u64, thinking: Option<u64>) {
+    /// Write the boundary-computed times onto the live status before a draw: how
+    /// long the turn has run (`elapsed` — it also drives the verb's shimmer
+    /// phase), and the current thinking-phase duration (`Some` while thinking,
+    /// `None` otherwise). No-op when no turn is in flight. Time is impure, so it
+    /// only ever reaches the status this way.
+    pub fn set_status_times(&mut self, elapsed: Duration, thinking: Option<Duration>) {
         if let Some(status) = self.status.as_mut() {
-            status.elapsed_secs = elapsed;
-            status.thinking_secs = thinking;
+            status.elapsed = elapsed;
+            status.thinking = thinking;
         }
     }
 
@@ -1708,7 +1713,7 @@ mod tests {
         );
         assert_eq!(status.tokens, 0, "no tokens counted yet (the '0s' state)");
         assert_eq!(status.arrow, TokenArrow::Down);
-        assert_eq!(status.thinking_secs, None, "not thinking yet");
+        assert_eq!(status.thinking, None, "not thinking yet");
     }
 
     #[test]
@@ -1777,22 +1782,23 @@ mod tests {
     }
 
     #[test]
-    fn set_status_times_writes_the_boundary_seconds_onto_the_status() {
+    fn set_status_times_writes_the_boundary_times_onto_the_status() {
         let mut app = App::new();
         app.begin_stream();
-        app.set_status_times(7, Some(2));
+        app.set_status_times(Duration::from_secs(7), Some(Duration::from_secs(2)));
         let status = app.status().unwrap();
-        assert_eq!(status.elapsed_secs, 7);
-        assert_eq!(status.thinking_secs, Some(2));
+        assert_eq!(status.elapsed, Duration::from_secs(7));
+        assert_eq!(status.thinking, Some(Duration::from_secs(2)));
         // Thinking ends → the suffix is dropped.
-        app.set_status_times(8, None);
-        assert_eq!(app.status().unwrap().thinking_secs, None);
+        app.set_status_times(Duration::from_secs(8), None);
+        assert_eq!(app.status().unwrap().thinking, None);
     }
 
     #[test]
     fn set_status_times_is_a_no_op_when_idle() {
         let mut app = App::new();
-        app.set_status_times(5, Some(1)); // no turn → nothing to write
+        // No turn → nothing to write.
+        app.set_status_times(Duration::from_secs(5), Some(Duration::from_secs(1)));
         assert!(app.status().is_none());
     }
 

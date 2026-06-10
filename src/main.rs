@@ -91,14 +91,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // The live status indicator's clocks (impurity kept here, at the boundary):
     // when the turn was submitted, and when the current thinking phase began
     // (`None` when not in one). The pure `App` only ever sees the *computed*
-    // seconds, via `set_status_times`. See docs/status-indicator.md.
+    // durations, via `set_status_times`. See docs/status-indicator.md.
     let mut turn_start: Option<Instant> = None;
     let mut thinking_start: Option<Instant> = None;
-    // Ticks once a second so the status timer advances even when no reply event
-    // arrives (e.g. during a tool run or a thinking pause). Only schedules a draw
-    // while a turn is active; idle, the frame scheduler stays quiet.
-    let mut ticker = tokio::time::interval(Duration::from_secs(1));
-    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     // Init already queried the cursor over stdin; the EventStream is now the sole
     // stdin reader (see the module-level invariant note).
@@ -131,11 +126,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 term.insert_before(vec![Line::default()])?;
                                 app.begin_stream();
                                 committed = 0;
-                                // Start the turn clock and align the 1s tick to it
-                                // so the displayed seconds advance cleanly from 0.
+                                // Start the turn clock; the draw branch keeps the
+                                // status animated from here (see its re-arm note).
                                 turn_start = Some(Instant::now());
                                 thinking_start = None;
-                                ticker.reset();
                                 let cancel = CancelToken::new();
                                 let handle = backend.spawn(text, tx.clone(), cancel.clone());
                                 inflight = Some((cancel, handle));
@@ -202,20 +196,21 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 frame.schedule_frame();
             }
 
-            // 3. A coalesced draw tick: refresh the status timer, then paint.
+            // 3. A coalesced draw tick: refresh the status times, then paint.
+            //    While a turn is in flight, re-arm the next animation frame
+            //    (codex's status-widget pattern): each draw schedules another
+            //    ~30 fps tick, so the verb's shimmer sweeps and the timer
+            //    advances even when no reply event arrives (a tool run, a
+            //    thinking pause). The chain seeds from the Submit keypress and
+            //    stops by itself on the first draw after the turn ends.
             Some(()) = draw_rx.recv() => {
                 update_status_times(&mut app, turn_start, thinking_start);
                 match app.view {
                     View::Conversation => draw(term, &app)?,
                     View::ToolOutput => draw_tool_view(term, &mut app)?,
                 }
-            }
-
-            // 4. A once-a-second tick: advance the live status timer while a turn
-            //    is in flight (no-op otherwise — the seconds only move during a turn).
-            _ = ticker.tick() => {
                 if app.turn_active() {
-                    frame.schedule_frame();
+                    frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
                 }
             }
         }
@@ -366,17 +361,23 @@ fn schedule_for_key(frame: &FrameRequester, burst: &mut PasteBurst, key: &KeyEve
     }
 }
 
-/// Write the live status's seconds onto `app` before a draw: the whole-second
-/// turn `elapsed` and the current thinking-phase duration (`Some` while thinking).
-/// Time is impure, so this is the boundary's job — the pure `App`/`ui` only ever
-/// see the already-computed values. No-op when no turn is in flight.
+/// How often the live status re-arms its next animation frame while a turn is in
+/// flight (~30 fps — codex's status-widget cadence): drives the verb's shimmer
+/// sweep and keeps the timer advancing through event-less pauses.
+const STATUS_FRAME_INTERVAL: Duration = Duration::from_millis(32);
+
+/// Write the live status's times onto `app` before a draw: how long the turn has
+/// run (whole seconds for display; sub-second for the shimmer phase) and the
+/// current thinking-phase duration (`Some` while thinking). Time is impure, so
+/// this is the boundary's job — the pure `App`/`ui` only ever see the
+/// already-computed values. No-op when no turn is in flight.
 fn update_status_times(
     app: &mut App,
     turn_start: Option<Instant>,
     thinking_start: Option<Instant>,
 ) {
-    let elapsed = turn_start.map_or(0, |start| start.elapsed().as_secs());
-    let thinking = thinking_start.map(|start| start.elapsed().as_secs());
+    let elapsed = turn_start.map_or(Duration::ZERO, |start| start.elapsed());
+    let thinking = thinking_start.map(|start| start.elapsed());
     app.set_status_times(elapsed, thinking);
 }
 

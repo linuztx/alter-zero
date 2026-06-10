@@ -8,7 +8,8 @@ modelled on the spinner line in openai/codex and Claude Code.
 
 ● Happy to help! …                 (streaming preview — existing)
 
-● Working… (1s · ↓ 100 tokens)     (NEW: live status line)
+● Working… (1s · ↓ 100 tokens)     (live status line — the verb shimmers)
+                                   (blank gap so the status clears the box)
 ────────────────────────────────   (input box)
 ❯ ▏
 ────────────────────────────────
@@ -39,9 +40,11 @@ The live line is `● {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking
 - **verb** — a whimsical word (`Working`, `Cooking`, …) chosen *once per turn*, and
   a matching **done verb** (`Done`, `Finished`, …) for the summary. Picked by a
   per-turn counter (`App::turn_count`) so it varies across turns yet stays
-  deterministic — no RNG, testable like `dummy_response`.
-- **elapsed** — whole seconds since the turn was submitted. Ticks even when no
-  events arrive (a 1 s timer in the loop).
+  deterministic — no RNG, testable like `dummy_response`. The bullet is white and
+  the verb text carries a white **shimmer wave** (below).
+- **elapsed** — whole seconds since the turn was submitted. Advances even when no
+  events arrive (the draw branch re-arms an animation frame while a turn is
+  active — see the shimmer section).
 - **tokens** — a single cumulative tally for the whole turn (text **and** tool
   output), estimated app-side (≈ `chars / 4`). It is **never reset** mid-turn.
   Omitted while it is 0 (the "just submitted" state).
@@ -55,21 +58,26 @@ The live line is `● {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking
 Time is impure, so — exactly like `docs/timestamps.md` — it stays in `main.rs`:
 
 - the loop owns `turn_start` / `thinking_start` `Instant`s;
-- a `tokio::time::interval(1s)` branch schedules a frame each second while a turn
-  is active (`App::turn_active`), so the seconds tick with no events;
-- before each draw the loop writes the computed `elapsed_secs` / `thinking_secs`
-  onto the live status via `App::set_status_times`.
+- while a turn is active the draw branch **re-arms** the next animation frame
+  (`schedule_frame_in(32ms)` — codex's status-widget cadence), so the timer
+  advances and the shimmer sweeps even through event-less pauses (a tool run, a
+  thinking pause); the chain seeds from the Submit keypress's frame and stops by
+  itself on the first draw after the turn ends;
+- before each draw the loop writes the computed `elapsed` / `thinking`
+  `Duration`s onto the live status via `App::set_status_times`.
 
 The pure `App` owns only what *isn't* time: the chosen verbs, the token tally, and
 the `↓`/`↑` arrow. `ui::status_line(&TurnStatus)` is a pure formatter that reads the
-struct (with the boundary-supplied seconds) — unit-tested with explicit values.
+struct (with the boundary-supplied durations) — unit-tested with explicit values.
 
 ## State (App)
 
 - `TokenArrow { Down, Up }`.
-- `TurnStatus { verb, done_verb, tokens, arrow, elapsed_secs, thinking_secs }`
-  (`elapsed_secs`/`thinking_secs` are written by the boundary each frame;
-  `thinking_secs: Option<u64>` is `Some` only while thinking).
+- `TurnStatus { verb, done_verb, tokens, arrow, elapsed, thinking }`
+  (`elapsed: Duration` / `thinking: Option<Duration>` are written by the boundary
+  each frame; `thinking` is `Some` only while thinking. A `Duration` rather than
+  whole seconds so one value drives both the displayed seconds and the shimmer's
+  sub-second phase).
 - `App.status: Option<TurnStatus>` — `Some` from `begin_stream` to turn end
   (`turn_active()` == `status.is_some()`).
 - `App.turn_count: usize` — drives verb selection.
@@ -93,15 +101,37 @@ transcript (with a timestamp, like every other item):
 ## Strip geometry
 
 The strip above the box already shows the streaming/tool **preview + gap**; the
-status line is a third strip row pinned at its bottom (just above the box):
+status line is a third strip row, followed by a blank gap so it never butts up
+against the box's top rule (mirroring the gap under the preview):
 
 ```
-strip = preview (1) + gap (1) + status (1) = 3 rows while a turn streams, else 0
+strip = preview (1) + gap (1) + status (1) + gap (1) = 4 rows while a turn streams, else 0
 ```
 
-`strip_rows(streaming)` grows from 2 → 3; `render_live` draws `status_line` in the
-bottom strip row. No `live_height`/`live_layout` signature changes — the existing
-`streaming` flag still drives the whole strip.
+`render_live` draws `status_line` at `PREVIEW_ROWS + GAP_ROWS`; the
+`STATUS_GAP_ROWS` row below it stays blank. No `live_height`/`live_layout`
+signature changes — the existing `streaming` flag still drives the whole strip.
+
+## The shimmer wave (ported from openai/codex)
+
+The verb (`Working…`) renders one **bold span per char**, colours from
+`ui::shimmer_spans` — a faithful port of codex `tui/src/shimmer.rs`:
+
+- a raised-cosine brightness band (`t = ½(1 + cos(π·dist/5))`, half-width 5
+  chars) sweeps the text once per **2 s**, with 10 chars of off-text padding on
+  each side so it slides on and off the ends;
+- each char blends from the white-grey base `(0x88,0x88,0x88)` toward bright
+  white `(0xFF,0xFF,0xFF)` by `t · 0.9` — white text, noticeably brighter at the
+  crest;
+- codex reads a process-start clock inside the renderer; our port stays **pure**
+  by deriving the phase from the boundary-supplied `TurnStatus::elapsed`
+  (sub-second resolution), so tests pin the wave at exact phases;
+- codex animates by re-arming a frame from its widget every 32 ms; our loop does
+  the same from the draw branch while `App::turn_active()` (replacing the earlier
+  1 s ticker — the seconds now also advance from these frames).
+
+The `SHIMMER_*` constants (base/highlight colours, sweep, padding, band width,
+max blend) live with the other styling consts at the top of `ui.rs`.
 
 ## Thinking in the dummy backend
 
@@ -115,11 +145,14 @@ thinking — its seconds reach the status only through `set_status_times`.
 
 - `app`: verbs cycle per turn; tokens accumulate (`↓`) and survive a tool (`↑`,
   not reset); `end_turn` records the summary and clears status; `fail_stream`
-  clears status; `set_status_times` writes the seconds.
+  clears status; `set_status_times` writes the boundary durations.
 - `ui`: `status_line` for each phase (no tokens at 0; `↓`/`↑`; `Thinking for`);
-  `summary_lines` is one dim line; the strip gains the status row; `conversation`
-  / `transcript` render a `Summary`.
+  the bullet is white, the verb per-char greyscale-white bold spans, the metrics
+  dim; the wave's crest is brighter than off-band chars and moves as `elapsed`
+  advances; `summary_lines` is one dim line; the strip stacks preview / gap /
+  status / gap above the box; `conversation` / `transcript` render a `Summary`.
 - `stream`: `turn_events` emits a paired `ThinkingStart`/`ThinkingEnd`; chunks
   still reconstruct the reply.
-- `main.rs` (smoke): the live line shows `tokens` while streaming and a committed
-  `Done for Ns` after the turn settles.
+- `main.rs` (smoke): the live line shows `tokens` while streaming with a blank
+  gap row between it and the box, and a committed `Done for Ns` after the turn
+  settles.

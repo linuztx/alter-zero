@@ -177,6 +177,22 @@ if ! printf '%s' "$pane" | grep -qF "tokens"; then
 	echo "FAIL: the live status line (token count) was not shown while streaming" >&2
 	status=1
 fi
+# …and a blank gap row separates the status line from the box's top rule ("… ("
+# is unique to the status line: verb + ellipsis + the opening metrics paren).
+status_gap=$(printf '%s\n' "$pane" | awk '
+	/… \(/ {
+		ok = "bad"
+		if ((getline gap) > 0 && (getline rule) > 0) {
+			gsub(/[ \t]/, "", gap)
+			if (gap == "" && rule ~ /─/) ok = "ok"
+		}
+		print ok
+		exit
+	}')
+if [ "${status_gap:-missing}" != "ok" ]; then
+	echo "FAIL: no blank gap row between the live status line and the input box (${status_gap:-status line missing})" >&2
+	status=1
+fi
 if ! printf '%s' "$grown" | grep -qF "❯ AAA"; then
 	echo "FAIL: first draft line '❯ AAA' not shown in the input box" >&2
 	status=1
