@@ -22,7 +22,8 @@ unit-tested must be unit-tested.
   - and, **only while a turn is in flight**, a strip above the box: a **preview
     row** showing the in-progress AI line (or a running tool's blue header), a
     blank **gap row**, a **status line** —
-    `( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`, a
+    `( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s · esc
+    to interrupt)`, a
     codex/Claude-Code-style indicator (see *Status indicator* below) — then
     another blank gap row so the status clears the box's top rule. Idle, that
     strip collapses and the box sits directly under the chat.
@@ -45,7 +46,8 @@ unit-tested must be unit-tested.
   (`ui::shimmer_spans`, ported from openai/codex) — a
   **timer** in whole seconds, a cumulative **token** estimate (`↓` while the
   reply streams, flipping to `↑` right after a tool result — never reset mid-turn),
-  and `Thinking for Ns` *only* while the model is in a thinking phase. While a
+  `Thinking for Ns` *only* while the model is in a thinking phase, and a closing
+  dim **`esc to interrupt`** hint (codex's discoverability hint). While a
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
   cadence), so the ball bounces, the shimmer sweeps, and the timer moves even
   with no events. On
@@ -138,7 +140,16 @@ unit-tested must be unit-tested.
   red error notice is shown below it. The built-in `DummyAi` never errors — this is
   the seam for a real model. Quitting mid-stream trips a `CancelToken` so the
   backend stops promptly and its thread is reaped before exit.
-- **Quit:** Esc (in the conversation) or Ctrl+C (anywhere). In the tool-output
+- **Esc interrupts a streaming turn** (ported from openai/codex — see
+  `docs/interrupt.md`): a single Esc while a turn is in flight cancels + reaps
+  the backend, keeps the partial reply, resolves a still-running tool as failed
+  (`Interrupted by user`), and commits a red
+  `Conversation interrupted - tell the model what to do differently.` notice —
+  with **no** `Done for Ns` summary (the notice is the turn's terminal state).
+  The palette still wins: Esc with the palette open only dismisses it, even
+  mid-turn. The status line's `esc to interrupt` hint advertises this.
+- **Quit:** Esc (in the conversation, while **idle** — mid-turn it interrupts
+  instead) or Ctrl+C (anywhere, even mid-stream). In the tool-output
   view Esc returns to the chat instead of quitting. Sending is disabled while a
   reply is streaming.
 
@@ -150,7 +161,7 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`, `start_tool`/`end_tool`, the message+tool `history`, the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu` types. | Yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
 | `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
@@ -226,6 +237,13 @@ frame scheduler ─► draw-tick ─────┘                             
   a `Role::System` notice to scrollback.
 - On `Clear` (`/clear`): `App::history` is already empty; `repaint_conversation`
   reflows the now-blank inline view (clears the visible conversation).
+- On `Interrupt` (Esc while a turn is in flight — `docs/interrupt.md`): cancel +
+  `join` the backend thread, **drain** the reply channel (events sent before the
+  cancel was observed would otherwise arrive after the turn ended — a stale
+  `ToolStart` would wedge a phantom running tool), then `App::interrupt_turn`
+  and commit like `StreamDone` does: reseat the viewport to its idle height,
+  flush the kept partial, the cancelled tool (collapsed, red), and the red
+  `Conversation interrupted` notice. No `Done for Ns` summary.
 - **In the tool-output view** every reply event still updates `App` (so the view
   shows tools live), but the commit-to-scrollback steps above are **skipped** —
   they would write into the alternate screen. The inline view is rebuilt from
@@ -235,8 +253,8 @@ frame scheduler ─► draw-tick ─────┘                             
 
 - `Role { User, Assistant, Error, System }` — drives bullet/colour (errors red,
   system notices cyan).
-- `Action { None, Submit(String), ToggleToolView, Notice(String), Clear, Quit }` —
-  returned by `App::on_key`.
+- `Action { None, Submit(String), ToggleToolView, Notice(String), Clear,
+  Interrupt, Quit }` — returned by `App::on_key`.
 - `View { Conversation, ToolOutput }` — which screen is showing (Ctrl+O toggles).
 - `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Help }` +
   the `COMMANDS` registry (`/help`, `/clear`) — the slash-command palette's data;
@@ -260,6 +278,9 @@ frame scheduler ─► draw-tick ─────┘                             
   `App::history` so they repaint interleaved in order.
 - `StreamError { partial: Option<String>, error: String }` — what `App::fail_stream`
   hands the loop to flush after a backend failure.
+- `InterruptedTurn { partial: Option<String>, tool: Option<ToolCall> }` — what
+  `App::interrupt_turn` hands the loop to flush after an Esc interrupt (the
+  `INTERRUPT_NOTICE` const is the committed notice text).
 - `StreamEvent { Chunk(String), ToolStart{name,args}, ToolEnd{output,ok},
   ThinkingStart, ThinkingEnd, Error(String), StreamDone }` (in `stream.rs`) — what a
   backend sends to the loop (`ThinkingStart`/`ThinkingEnd` drive the live `Thinking
@@ -284,8 +305,11 @@ frame scheduler ─► draw-tick ─────┘                             
   pair, before the first tool (so tool start/end stay adjacent); `DummyAi` emits it.
 - `app`: typing appends; backspace; Enter with text → `Submit` + clears input;
   Alt+Enter / Shift+Enter insert a newline (box grows) without submitting; Enter
-  while empty / while streaming → `None`; Esc/Ctrl+C → `Quit`;
-  `push_chunk`/`finish_stream` transitions; `fail_stream` records partial + error.
+  while empty / while streaming → `None`; Esc/Ctrl+C → `Quit` when idle, while
+  Esc mid-turn → `Interrupt` (palette-dismiss still wins);
+  `push_chunk`/`finish_stream` transitions; `fail_stream` records partial + error;
+  `interrupt_turn` keeps the partial, resolves a running tool as failed, records
+  the notice with no summary, and is a no-op when idle.
 - `app` (tools & view): `start_tool`/`end_tool` move a tool through running →
   ok/failed and into history; `flush_streaming_segment` records the text before a
   tool and reopens an empty buffer; `finish_stream` records nothing for an empty

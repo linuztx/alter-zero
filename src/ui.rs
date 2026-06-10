@@ -150,6 +150,10 @@ const STATUS_ELLIPSIS: &str = "…";
 const STATUS_ARROW_DOWN: &str = "↓";
 /// Arrow once a tool result is folded back in.
 const STATUS_ARROW_UP: &str = "↑";
+/// The interrupt hint, the detail's final clause while a turn is in flight —
+/// codex's `Esc to interrupt` discoverability hint, lowercased to match this
+/// codebase's hint convention (`(ctrl+o to expand)`, `esc return`).
+const STATUS_INTERRUPT_HINT: &str = "esc to interrupt";
 /// Dim grey — the committed `"{done verb} for {n}s"` turn summary.
 const STATUS_DONE_COLOR: Color = TOOL_DIM_COLOR;
 /// The status line's row in the streaming strip.
@@ -849,7 +853,7 @@ fn spinner_spans(elapsed: Duration) -> Vec<Span<'static>> {
 
 /// The live status line shown in the strip above the box while a turn is in
 /// flight:
-/// `( ●    ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s])`.
+/// `( ●    ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s] · esc to interrupt)`.
 ///
 /// It opens with the bouncing-ball spinner ([`spinner_spans`]) and the verb
 /// text **shimmers** — a bright-white band sweeping its white-grey chars
@@ -871,6 +875,7 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
     if let Some(thinking) = status.thinking {
         detail.push_str(&format!(" · Thinking for {}s", thinking.as_secs()));
     }
+    detail.push_str(&format!(" · {STATUS_INTERRUPT_HINT}"));
     let mut spans = spinner_spans(status.elapsed);
     spans.extend(shimmer_spans(
         &format!("{}{STATUS_ELLIPSIS}", status.verb),
@@ -1619,7 +1624,7 @@ mod tests {
         let line = status_line(&status(0, TokenArrow::Down, 0, None));
         let text = plain(&line);
         assert_eq!(
-            text, "( ●    ) Working… (0s)",
+            text, "( ●    ) Working… (0s · esc to interrupt)",
             "the bare just-submitted state, ball on the first frame"
         );
         assert!(
@@ -1632,7 +1637,10 @@ mod tests {
     #[test]
     fn status_line_shows_the_token_tally_with_a_down_arrow() {
         let text = plain(&status_line(&status(100, TokenArrow::Down, 1, None)));
-        assert!(text.ends_with("Working… (1s · ↓ 100 tokens)"), "{text:?}");
+        assert!(
+            text.ends_with("Working… (1s · ↓ 100 tokens · esc to interrupt)"),
+            "{text:?}"
+        );
     }
 
     #[test]
@@ -1649,7 +1657,7 @@ mod tests {
     fn status_line_shows_thinking_only_while_thinking() {
         let thinking = plain(&status_line(&status(150, TokenArrow::Down, 1, Some(0))));
         assert!(
-            thinking.ends_with("Working… (1s · ↓ 150 tokens · Thinking for 0s)"),
+            thinking.ends_with("Working… (1s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)"),
             "{thinking:?}"
         );
         let not = plain(&status_line(&status(150, TokenArrow::Down, 1, None)));
@@ -1657,6 +1665,20 @@ mod tests {
             !not.contains("Thinking"),
             "dropped once thinking ends: {not:?}"
         );
+    }
+
+    #[test]
+    fn status_line_always_ends_with_the_interrupt_hint() {
+        // Codex's discoverability hint, the detail's final dim clause in
+        // every phase (docs/interrupt.md).
+        for status in [
+            status(0, TokenArrow::Down, 0, None),
+            status(100, TokenArrow::Down, 1, None),
+            status(150, TokenArrow::Down, 1, Some(0)),
+        ] {
+            let text = plain(&status_line(&status));
+            assert!(text.ends_with(" · esc to interrupt)"), "{text:?}");
+        }
     }
 
     #[test]

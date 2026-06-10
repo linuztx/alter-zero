@@ -4,13 +4,13 @@ A live status line while a turn is in flight, plus a persistent "done" summary �
 modelled on the spinner line in openai/codex and Claude Code.
 
 ```
-> Hi                                    (committed)
+> Hi                                                        (committed)
 
-● Happy to help! …                      (streaming preview — existing)
+● Happy to help! …                                          (streaming preview — existing)
 
-( ●    ) Working… (1s · ↓ 100 tokens)   (live status — ball bounces, verb shimmers)
-                                        (blank gap so the status clears the box)
-─────────────────────────────────────   (input box)
+( ●    ) Working… (1s · ↓ 100 tokens · esc to interrupt)    (live status — ball bounces, verb shimmers)
+                                                            (blank gap so the status clears the box)
+─────────────────────────────────────                       (input box)
 ❯ ▏
 ─────────────────────────────────────
 ```
@@ -28,15 +28,16 @@ Done for 20s                       (NEW: committed turn summary)
 ## What shows, and when
 
 The live line is
-`( ●    ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s])`:
+`( ●    ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s] · esc to interrupt)`:
 
-| phase                | line                                                      |
-|----------------------|-----------------------------------------------------------|
-| just submitted       | `( ●    ) Working… (0s)`                                   |
-| streaming text       | `(  ●   ) Working… (1s · ↓ 100 tokens)`                    |
-| streaming + thinking | `(   ●  ) Working… (1s · ↓ 150 tokens · Thinking for 0s)`  |
-| after a tool result  | `(    ● ) Working… (1s · ↑ 200 tokens)`                    |
-| finished (committed) | `Done for 20s`                                             |
+| phase                | line                                                                          |
+|----------------------|-------------------------------------------------------------------------------|
+| just submitted       | `( ●    ) Working… (0s · esc to interrupt)`                                    |
+| streaming text       | `(  ●   ) Working… (1s · ↓ 100 tokens · esc to interrupt)`                     |
+| streaming + thinking | `(   ●  ) Working… (1s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)`   |
+| after a tool result  | `(    ● ) Working… (1s · ↑ 200 tokens · esc to interrupt)`                     |
+| finished (committed) | `Done for 20s`                                                                 |
+| interrupted (Esc)    | *no summary* — the red `Conversation interrupted` notice (see `docs/interrupt.md`) |
 
 - **spinner** — the line opens with the classic cli-spinners **`bouncingBall`**:
   a white bold ball ping-ponging between dim parenthesis walls, one frame per
@@ -58,6 +59,11 @@ The live line is
   tool result (its output is "uploaded" back); the count keeps growing either way.
 - **Thinking for {m}s** — shown *only while actively thinking*; dropped once
   thinking ends.
+- **esc to interrupt** — the closing clause, always present while the line
+  shows: codex's discoverability hint for the Esc interrupt
+  (`docs/interrupt.md`). An interrupted turn gets **no** `Done for Ns` summary —
+  the committed `Conversation interrupted` notice is its terminal state, like a
+  backend error.
 
 ## Where the impurity lives (boundary, not the pure core)
 
@@ -89,8 +95,9 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
 - `App.turn_count: usize` — drives verb selection.
 - `begin_stream` creates the status (picks verbs, increments the counter);
   `push_chunk` adds tokens (`↓`); `end_tool` adds tokens (`↑`); `fail_stream`
-  clears the status (an error is the summary — no "Done" line); `end_turn(secs)`
-  records the summary and clears the status.
+  clears the status (an error is the summary — no "Done" line); `interrupt_turn`
+  clears it the same way (the `Conversation interrupted` notice is the summary);
+  `end_turn(secs)` records the summary and clears the status.
 
 ## The "Done for Ns" summary
 

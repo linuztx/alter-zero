@@ -184,6 +184,32 @@ pub struct StreamError {
     pub error: String,
 }
 
+/// The notice committed when the user interrupts a turn (Esc mid-generation) —
+/// codex's wording, minus its `/feedback` plug. Recorded as a [`Role::Error`]
+/// message: like a backend failure, the notice is the turn's terminal state
+/// (no `Done for Ns` summary). See `docs/interrupt.md`.
+pub const INTERRUPT_NOTICE: &str =
+    "Conversation interrupted - tell the model what to do differently.";
+
+/// The output recorded on a tool that was still running when the user
+/// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
+/// (codex: an aborted tool "may have partially executed").
+pub const INTERRUPT_TOOL_OUTPUT: &str = "Interrupted by user";
+
+/// What interrupting a turn leaves behind ([`App::interrupt_turn`]), handed to
+/// the event loop to flush to scrollback — the kept partial reply and the
+/// cancelled tool, both also recorded in [`App::history`] (followed by the
+/// [`INTERRUPT_NOTICE`]) so a later resize repaints them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptedTurn {
+    /// The reply text streamed before the interrupt, if any non-empty text
+    /// arrived since the last flush. Kept, codex-style — never retracted.
+    pub partial: Option<String>,
+    /// The tool that was mid-run, now resolved as failed with
+    /// [`INTERRUPT_TOOL_OUTPUT`], if one was running.
+    pub tool: Option<ToolCall>,
+}
+
 /// The result of handling a key press, interpreted by the event loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -201,6 +227,9 @@ pub enum Action {
     /// A slash command cleared the conversation (`/clear`). [`App::history`] is
     /// already empty; the loop repaints the now-blank inline view.
     Clear,
+    /// The user pressed Esc while a turn was in flight: stop the generation
+    /// (cancel + reap the backend, then [`App::interrupt_turn`]) — codex-style.
+    Interrupt,
     /// The user asked to quit.
     Quit,
 }
@@ -413,12 +442,14 @@ impl App {
     fn on_key_conversation(&mut self, key: KeyEvent) -> Action {
         let menu_open = self.command_menu.is_some();
         match key.code {
-            // Esc dismisses the palette (and does *not* quit) when it's open;
-            // otherwise it quits as before.
+            // Esc dismisses the palette when it's open (codex's "popup wins"
+            // rule — even mid-turn); else it interrupts an in-flight turn
+            // (codex-style, see docs/interrupt.md); else it quits as before.
             KeyCode::Esc if menu_open => {
                 self.command_menu = None;
                 Action::None
             }
+            KeyCode::Esc if self.turn_active() => Action::Interrupt,
             KeyCode::Esc => Action::Quit,
             // Palette navigation / selection (only while it's open).
             KeyCode::Up if menu_open => {
@@ -849,6 +880,43 @@ impl App {
             error: error.to_string(),
         })
     }
+
+    /// End the in-progress turn because the user interrupted it (Esc).
+    ///
+    /// Keeps any non-empty partial reply as an assistant message (codex keeps
+    /// what already streamed), resolves a still-running tool as
+    /// [`ToolStatus::Failed`] with [`INTERRUPT_TOOL_OUTPUT`], records the
+    /// [`INTERRUPT_NOTICE`] as a [`Role::Error`] message, and clears the live
+    /// status **without** a `Done for Ns` summary (like [`App::fail_stream`],
+    /// the notice is the turn's terminal state). Returns the
+    /// [`InterruptedTurn`] for the event loop to flush to scrollback, or
+    /// `None` if no turn was in flight. See `docs/interrupt.md`.
+    pub fn interrupt_turn(&mut self) -> Option<InterruptedTurn> {
+        if !self.is_streaming() && !self.turn_active() {
+            return None;
+        }
+        // Keep the partial in stream order: the buffer's text streamed before
+        // the running tool started (in practice a ToolStart flushed it, so the
+        // two are never both non-empty — but the order holds regardless).
+        let partial = self.streaming.take().filter(|text| !text.is_empty());
+        if let Some(text) = &partial {
+            let timestamp = self.now_stamp();
+            self.history.push(HistoryItem::Message(Message {
+                role: Role::Assistant,
+                text: text.clone(),
+                timestamp,
+            }));
+        }
+        let tool = self.end_tool(INTERRUPT_TOOL_OUTPUT, false);
+        let timestamp = self.now_stamp();
+        self.history.push(HistoryItem::Message(Message {
+            role: Role::Error,
+            text: INTERRUPT_NOTICE.to_string(),
+            timestamp,
+        }));
+        self.status = None;
+        Some(InterruptedTurn { partial, tool })
+    }
 }
 
 #[cfg(test)]
@@ -1095,6 +1163,105 @@ mod tests {
         let mut app = App::new();
         assert!(app.fail_stream("ignored").is_none());
         assert!(app.history.is_empty());
+    }
+
+    // --- Esc interrupts the in-flight turn, codex-style (docs/interrupt.md) ---
+
+    #[test]
+    fn esc_interrupts_while_a_turn_is_active() {
+        let mut app = App::new();
+        app.begin_stream();
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Interrupt);
+    }
+
+    #[test]
+    fn esc_with_the_palette_open_only_dismisses_it_even_mid_turn() {
+        // Codex's "popup wins" rule: dismissing the palette takes precedence
+        // over interrupting; the turn keeps running.
+        let mut app = App::new();
+        app.begin_stream();
+        app.on_key(key(KeyCode::Char('/')));
+        assert!(app.command_menu.is_some(), "the palette opened");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(app.command_menu.is_none(), "Esc closed the palette");
+        assert!(app.turn_active(), "the turn was not interrupted");
+    }
+
+    #[test]
+    fn interrupt_turn_keeps_the_partial_and_records_the_notice() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("half a rep");
+        let interrupted = app.interrupt_turn().expect("a turn was active");
+        assert_eq!(interrupted.partial.as_deref(), Some("half a rep"));
+        assert!(interrupted.tool.is_none(), "no tool was running");
+        assert!(!app.is_streaming());
+        assert!(!app.turn_active(), "the live status cleared");
+        assert_eq!(roles(&app), vec![Role::Assistant, Role::Error]);
+        assert_eq!(message_at(&app, 0).text, "half a rep");
+        assert_eq!(message_at(&app, 1).text, INTERRUPT_NOTICE);
+    }
+
+    #[test]
+    fn interrupt_turn_with_no_partial_records_only_the_notice() {
+        let mut app = App::new();
+        app.begin_stream(); // interrupted before any chunk arrived
+        let interrupted = app.interrupt_turn().expect("a turn was active");
+        assert!(interrupted.partial.is_none());
+        assert_eq!(roles(&app), vec![Role::Error]);
+    }
+
+    #[test]
+    fn interrupt_turn_resolves_a_running_tool_as_failed() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("before the tool ");
+        app.start_tool("Bash", "sleep 100"); // flush happens loop-side; buffer keeps streaming
+        let interrupted = app.interrupt_turn().expect("a turn was active");
+        let tool = interrupted.tool.expect("the running tool was resolved");
+        assert_eq!(tool.status, ToolStatus::Failed);
+        assert_eq!(tool.output, INTERRUPT_TOOL_OUTPUT);
+        assert!(app.current_tool().is_none(), "no tool left running");
+        assert!(
+            app.history
+                .iter()
+                .any(|item| matches!(item, HistoryItem::Tool(t) if t.status == ToolStatus::Failed)),
+            "the cancelled tool is recorded in history"
+        );
+    }
+
+    #[test]
+    fn interrupt_turn_records_no_done_summary() {
+        // An interrupt has no "Done for Ns" line — the notice is the
+        // turn's terminal state, exactly like fail_stream.
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("text");
+        app.interrupt_turn().expect("a turn was active");
+        assert!(
+            !app.history
+                .iter()
+                .any(|item| matches!(item, HistoryItem::Summary(_))),
+            "no summary for an interrupted turn"
+        );
+    }
+
+    #[test]
+    fn interrupt_turn_when_idle_returns_none_and_records_nothing() {
+        let mut app = App::new();
+        assert!(app.interrupt_turn().is_none());
+        assert!(app.history.is_empty());
+    }
+
+    #[test]
+    fn interrupt_turn_stamps_the_records_with_the_clock() {
+        let mut app = App::new();
+        app.set_clock(|| "03:20 AM".to_string());
+        app.begin_stream();
+        app.push_chunk("partial");
+        app.interrupt_turn().expect("a turn was active");
+        assert_eq!(message_at(&app, 0).timestamp, "03:20 AM");
+        assert_eq!(message_at(&app, 1).timestamp, "03:20 AM");
     }
 
     // --- cursor editing (the codex-style textarea, dispatched from on_key) ---

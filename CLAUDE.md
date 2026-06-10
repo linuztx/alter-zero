@@ -41,7 +41,7 @@ geometry decision `term.rs` makes is a pure `ui` helper it calls.
 
 The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
-`docs/textarea.md`.
+`docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`.
 
 ### The runtime model and its invariants
 
@@ -52,11 +52,15 @@ rows, Home/End) with insert/delete at the cursor, growing as the input wraps —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's blue header when one is executing), a blank gap row,
 a codex-style **status line** (`( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
-Thinking for {m}s)` — opened by a bouncing-ball spinner (cli-spinners'
+Thinking for {m}s · esc to interrupt)` — opened by a bouncing-ball spinner (cli-spinners'
 `bouncingBall`: a white ball ping-ponging between dim walls), the verb text
 shimmering with a white sweep ported from
 codex's `shimmer_spans`; on finish a dim `{done verb} for {n}s` summary commits to
-scrollback — see `docs/status-indicator.md`), then another blank gap row so the
+scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
+the backend, drain the channel, keep the partial, resolve a running tool as
+failed, commit the red `Conversation interrupted` notice, **no** summary; see
+`docs/interrupt.md`; Esc only quits when idle) — see `docs/status-indicator.md`),
+then another blank gap row so the
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
 `/token`) stays pinned at the bottom. The alternate screen is used in exactly one
@@ -169,10 +173,16 @@ output grow the cumulative token tally on `App::status` (`↓` while replying, `
 right after a tool — never reset); on `StreamDone` `App::end_turn` records the
 `Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` instead of
 `StreamDone`; the loop turns that into a red `Role::Error` notice via
-`App::fail_stream` (which also clears the status). `App` (`app.rs`) is pure state +
+`App::fail_stream` (which also clears the status). **Esc while the turn is in
+flight returns `Action::Interrupt`** (palette-dismiss still wins; Esc only quits
+when idle): the loop cancels + joins the backend, **drains the channel** (a stale
+`ToolStart` would wedge a phantom running tool), and `App::interrupt_turn` keeps
+the partial, resolves a running tool as failed (`Interrupted by user`), records
+the red `INTERRUPT_NOTICE`, and clears the status with no summary
+(`docs/interrupt.md`). `App` (`app.rs`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
-`ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`, `TurnSummary`, `HistoryItem`,
-`View` live there too.
+`InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,
+`TurnSummary`, `HistoryItem`, `View` live there too.
 
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
@@ -228,7 +238,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   the only stamp shown, only in the Ctrl+O view), the status
   indicator (`STATUS_*` — the bouncing-ball spinner's white ball + dim walls and
   the `SPINNER_FRAMES`/`SPINNER_INTERVAL` animation, dim metrics, the `↓`/`↑` arrows
-  and `…` ellipsis, the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;
+  and `…` ellipsis, the `STATUS_INTERRUPT_HINT` (`esc to interrupt`, the detail's
+  closing clause), the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;
   the verb's white shimmer wave is the `SHIMMER_*` consts — base/highlight
   colours, sweep period, padding, band half-width, max blend — a port of codex's
   `shimmer_spans`; the verbs themselves are `WORKING_VERBS`/`DONE_VERBS` in

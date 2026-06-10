@@ -42,7 +42,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
-use inline_tui::app::{Action, App, Role, View};
+use inline_tui::app::{Action, App, INTERRUPT_NOTICE, Role, View};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::paste::{self, PasteBurst};
 use inline_tui::stream::{CancelToken, DummyAi, ReplySource, StreamEvent};
@@ -174,6 +174,47 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // now-blank inline view.
                                 committed = 0;
                                 repaint_conversation(term, &app, &mut committed)?;
+                            }
+                            Action::Interrupt => {
+                                // Esc mid-generation (codex-style): stop the backend
+                                // promptly and reap it, then drop anything it sent
+                                // before observing the cancel — a stale ToolStart
+                                // processed after the interrupt would wedge a phantom
+                                // "running" tool whose ToolEnd never comes. The thread
+                                // is joined, so after the drain the channel stays empty.
+                                if let Some((cancel, handle)) = inflight.take() {
+                                    cancel.cancel();
+                                    let _ = handle.join();
+                                }
+                                while reply_rx.try_recv().is_ok() {}
+                                if let Some(interrupted) = app.interrupt_turn() {
+                                    // The turn is over, so the streaming strip is gone:
+                                    // reseat the viewport to its idle height before
+                                    // committing (same dance as StreamDone) so the box
+                                    // stays flush at the bottom. Interrupt only arises
+                                    // in the conversation view (overlay Esc returns
+                                    // instead), so committing here never touches the
+                                    // alternate screen.
+                                    let width = term.screen().width;
+                                    term.set_view_height(live_region_height(&app, term.screen()));
+                                    if let Some(partial) = interrupted.partial {
+                                        term.insert_before(ui::final_commit(&partial, width, committed))?;
+                                        term.insert_before(vec![Line::default()])?;
+                                    }
+                                    if let Some(tool) = interrupted.tool {
+                                        term.insert_before(ui::tool_lines(&tool, width))?;
+                                        term.insert_before(vec![Line::default()])?;
+                                    }
+                                    term.insert_before(ui::message_lines(
+                                        Role::Error,
+                                        INTERRUPT_NOTICE,
+                                        width,
+                                    ))?;
+                                    term.insert_before(vec![Line::default()])?;
+                                }
+                                committed = 0;
+                                turn_start = None;
+                                thinking_start = None;
                             }
                         }
                         schedule_for_key(&frame, &mut burst, &key);

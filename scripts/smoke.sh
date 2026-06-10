@@ -20,6 +20,7 @@ cleanup() {
 	tmux kill-session -t "${S}_bottom" 2>/dev/null
 	tmux kill-session -t "${S}_burst" 2>/dev/null
 	tmux kill-session -t "${S}_overlayquit" 2>/dev/null
+	tmux kill-session -t "${S}_interrupt" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -210,6 +211,46 @@ echo "==== captured pane (restored terminal after quitting from the overlay) ===
 printf '%s\n' "$post_quit"
 tmux kill-session -t "$S4" 2>/dev/null
 
+# --- Phase 8: Esc INTERRUPTS a streaming turn (codex-style) instead of quitting.
+# Mid-stream Esc must stop the generation promptly: the partial reply stays on
+# screen, the red "Conversation interrupted" notice commits, the live status
+# strip clears (no "tokens" line), and NO "Done for Ns" summary appears. The app
+# keeps running — a follow-up message must stream and finish normally
+# ("Finished for", turn 2's done verb). Esc when *idle* still quits — Phase 4's
+# Escape (sent long after the turn ended) relies on exactly that. ---
+S5="${S}_interrupt"
+tmux new-session -d -s "$S5" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S5" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S5" Enter
+for _ in $(seq 1 40); do # up to ~4s: wait until the reply is visibly streaming
+	if tmux capture-pane -t "$S5" -p | grep -qF "Happy"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S5" Escape
+sleep 0.6
+interrupted="$(tmux capture-pane -t "$S5" -p)"
+echo "==== captured pane (turn interrupted with Esc) ===="
+printf '%s\n' "$interrupted"
+# The loop must survive the interrupt: a follow-up turn streams and finishes.
+tmux send-keys -t "$S5" -l "again please"
+sleep 0.2
+tmux send-keys -t "$S5" Enter
+after_interrupt=""
+for _ in $(seq 1 60); do # up to ~9s: wait for the follow-up turn's summary
+	after_interrupt="$(tmux capture-pane -t "$S5" -p -S -30)"
+	if printf '%s' "$after_interrupt" | grep -qF "Finished for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (follow-up turn after the interrupt) ===="
+printf '%s\n' "$after_interrupt"
+tmux kill-session -t "$S5" 2>/dev/null
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -326,7 +367,33 @@ else
 		status=1
 	fi
 fi
+# Phase 8: Esc mid-stream interrupts the turn, codex-style (docs/interrupt.md).
+# The hint rides the live status line — Phase 1's pane was captured mid-stream.
+if ! printf '%s' "$pane" | grep -qF "esc to interrupt"; then
+	echo "FAIL: the live status line does not show the 'esc to interrupt' hint while streaming" >&2
+	status=1
+fi
+if ! printf '%s' "$interrupted" | grep -qF "Conversation interrupted"; then
+	echo "FAIL: Esc mid-stream did not commit the 'Conversation interrupted' notice (did the app quit instead?)" >&2
+	status=1
+fi
+if ! printf '%s' "$interrupted" | grep -qF "Happy"; then
+	echo "FAIL: the partial reply was not kept on screen after the interrupt" >&2
+	status=1
+fi
+if printf '%s' "$interrupted" | grep -qF "tokens"; then
+	echo "FAIL: the live status line ('… tokens') is still showing after the interrupt" >&2
+	status=1
+fi
+if printf '%s' "$interrupted" | grep -qF "Done for"; then
+	echo "FAIL: an interrupted turn must not commit a 'Done for Ns' summary (the notice is its terminal state)" >&2
+	status=1
+fi
+if ! printf '%s' "$after_interrupt" | grep -qF "Finished for"; then
+	echo "FAIL: the app did not complete a follow-up turn after the interrupt — the loop or backend channel is wedged" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, and the slash-command palette opens and runs commands"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, and Esc interrupts a streaming turn"
 fi
 exit "$status"
