@@ -4,15 +4,15 @@ A live status line while a turn is in flight, plus a persistent "done" summary �
 modelled on the spinner line in openai/codex and Claude Code.
 
 ```
-> Hi                               (committed)
+> Hi                                    (committed)
 
-● Happy to help! …                 (streaming preview — existing)
+● Happy to help! …                      (streaming preview — existing)
 
-● Working… (1s · ↓ 100 tokens)     (live status line — the verb shimmers)
-                                   (blank gap so the status clears the box)
-────────────────────────────────   (input box)
+( ●    ) Working… (1s · ↓ 100 tokens)   (live status — ball bounces, verb shimmers)
+                                        (blank gap so the status clears the box)
+─────────────────────────────────────   (input box)
 ❯ ▏
-────────────────────────────────
+─────────────────────────────────────
 ```
 
 On finish the status line is replaced by a dim summary committed to scrollback:
@@ -27,21 +27,27 @@ Done for 20s                       (NEW: committed turn summary)
 
 ## What shows, and when
 
-The live line is `● {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s])`:
+The live line is
+`( ●    ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s])`:
 
-| phase                | line                                              |
-|----------------------|---------------------------------------------------|
-| just submitted       | `● Working… (0s)`                                  |
-| streaming text       | `● Working… (1s · ↓ 100 tokens)`                   |
-| streaming + thinking | `● Working… (1s · ↓ 150 tokens · Thinking for 0s)` |
-| after a tool result  | `● Working… (1s · ↑ 200 tokens)`                   |
-| finished (committed) | `Done for 20s`                                     |
+| phase                | line                                                      |
+|----------------------|-----------------------------------------------------------|
+| just submitted       | `( ●    ) Working… (0s)`                                   |
+| streaming text       | `(  ●   ) Working… (1s · ↓ 100 tokens)`                    |
+| streaming + thinking | `(   ●  ) Working… (1s · ↓ 150 tokens · Thinking for 0s)`  |
+| after a tool result  | `(    ● ) Working… (1s · ↑ 200 tokens)`                    |
+| finished (committed) | `Done for 20s`                                             |
 
+- **spinner** — the line opens with the classic cli-spinners **`bouncingBall`**:
+  a white bold ball ping-ponging between dim parenthesis walls, one frame per
+  80 ms (`( ●    )` → `(  ●   )` → … → `(     ●)` → back; 8 fixed-width frames,
+  so nothing after it jitters). Like the shimmer, `ui::spinner_spans` is pure —
+  the frame index derives from the boundary-supplied `elapsed`.
 - **verb** — a whimsical word (`Working`, `Cooking`, …) chosen *once per turn*, and
   a matching **done verb** (`Done`, `Finished`, …) for the summary. Picked by a
   per-turn counter (`App::turn_count`) so it varies across turns yet stays
-  deterministic — no RNG, testable like `dummy_response`. The bullet is white and
-  the verb text carries a white **shimmer wave** (below).
+  deterministic — no RNG, testable like `dummy_response`. The white verb text
+  carries a white **shimmer wave** (below).
 - **elapsed** — whole seconds since the turn was submitted. Advances even when no
   events arrive (the draw branch re-arms an animation frame while a turn is
   active — see the shimmer section).
@@ -133,6 +139,17 @@ The verb (`Working…`) renders one **bold span per char**, colours from
 The `SHIMMER_*` constants (base/highlight colours, sweep, padding, band width,
 max blend) live with the other styling consts at the top of `ui.rs`.
 
+## The bouncing-ball spinner
+
+The line's opening `( ●    )` is cli-spinners' **`bouncingBall`** (codex has no
+equivalent — it shimmers a static `•`): eight fixed-width frames
+(`SPINNER_FRAMES`), the ball stepping one cell per `SPINNER_INTERVAL` (80 ms) to
+the right wall and back, looping every 640 ms. `ui::spinner_spans` styles each
+frame as three spans — dim left wall, white **bold** ball, dim right wall — and,
+like the shimmer, derives the frame index purely from `TurnStatus::elapsed`; the
+same 32 ms draw re-arm animates it. Fixed-width frames mean the verb after the
+spinner never shifts as the ball moves.
+
 ## Thinking in the dummy backend
 
 Two new opaque events, `StreamEvent::ThinkingStart` / `ThinkingEnd`, are emitted by
@@ -147,7 +164,9 @@ thinking — its seconds reach the status only through `set_status_times`.
   not reset); `end_turn` records the summary and clears status; `fail_stream`
   clears status; `set_status_times` writes the boundary durations.
 - `ui`: `status_line` for each phase (no tokens at 0; `↓`/`↑`; `Thinking for`);
-  the bullet is white, the verb per-char greyscale-white bold spans, the metrics
+  the spinner's ball is white bold between dim walls, steps a frame per
+  interval, reverses at the right wall, and loops after a full cycle; the verb
+  per-char greyscale-white bold spans, the metrics
   dim; the wave's crest is brighter than off-band chars and moves as `elapsed`
   advances; `summary_lines` is one dim line; the strip stacks preview / gap /
   status / gap above the box; `conversation` / `transcript` render a `Summary`.

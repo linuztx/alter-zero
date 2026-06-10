@@ -112,18 +112,37 @@ const STAMP_GAP: usize = 2;
 // --- Live status indicator (codex / Claude-Code style). While a turn is in
 // flight a status line sits in the strip above the box (with a blank gap row
 // between it and the box's top rule):
-// `● {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`. The working
-// verb is picked per-turn (in `App`); the timer/tokens/thinking are live state.
-// The bullet is white and the verb text carries a codex-style **shimmer**: a
+// `( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`. The
+// line opens with a **bouncing-ball spinner** (the classic cli-spinners
+// `bouncingBall`: a white ball ping-ponging between dim walls, one frame per
+// `SPINNER_INTERVAL` — see [`spinner_spans`]); the working verb is picked
+// per-turn (in `App`) and its white text carries a codex-style **shimmer**: a
 // bright-white band sweeps across the white-grey text (see [`shimmer_spans`],
 // ported from openai/codex `tui/src/shimmer.rs`). On finish a dim, bullet-less
 // `{done verb} for {n}s` summary commits to scrollback (a
 // `HistoryItem::Summary`). See docs/status-indicator.md. ---
 
-/// Bullet prefixing the live status line (recoloured from the message bullets).
-const STATUS_BULLET: &str = "● ";
-/// White — the status bullet (matches the codex/Claude-Code white status text).
+/// White — the spinner's ball (matches the codex/Claude-Code white status text).
 const STATUS_COLOR: Color = AI_COLOR;
+/// The bouncing-ball animation frames (cli-spinners' `bouncingBall`): the ball
+/// travels to the right wall and back, then the cycle repeats. Every frame is
+/// the same width, so the verb after it never jitters.
+const SPINNER_FRAMES: &[&str] = &[
+    "( ●    )",
+    "(  ●   )",
+    "(   ●  )",
+    "(    ● )",
+    "(     ●)",
+    "(    ● )",
+    "(   ●  )",
+    "(  ●   )",
+];
+/// How long each spinner frame shows (cli-spinners' `bouncingBall` interval —
+/// well under the loop's ~30 fps animation re-arm, so no frame is skipped).
+const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
+/// How many spans [`spinner_spans`] emits (left wall, ball, right wall) — the
+/// verb's per-char spans start at this index in the status line.
+const SPINNER_SPAN_COUNT: usize = 3;
 /// Dim grey — the parenthesised metrics (`elapsed · tokens · thinking`).
 const STATUS_DETAIL_COLOR: Color = TOOL_DIM_COLOR;
 /// Trailing ellipsis after the working verb (`Working…`).
@@ -804,16 +823,42 @@ fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
         .collect()
 }
 
+/// The bouncing-ball spinner opening the status line: the [`SPINNER_FRAMES`]
+/// frame for `elapsed` (one frame per [`SPINNER_INTERVAL`], looping), split into
+/// exactly [`SPINNER_SPAN_COUNT`] spans — the dim left wall, the white bold
+/// ball, and the dim right wall (plus the trailing separator space). Pure, like
+/// [`shimmer_spans`]: the frame index derives from the boundary-supplied
+/// `elapsed`, and the loop's animation re-arm keeps it advancing.
+fn spinner_spans(elapsed: Duration) -> Vec<Span<'static>> {
+    let frame_index =
+        (elapsed.as_millis() / SPINNER_INTERVAL.as_millis()) as usize % SPINNER_FRAMES.len();
+    let frame = SPINNER_FRAMES[frame_index];
+    // Every frame is `(walls)` around one ball char, so the split can't fail.
+    let (left, right) = frame.split_once('●').expect("a frame contains the ball");
+    let dim = Style::new().fg(STATUS_DETAIL_COLOR);
+    let spans = vec![
+        Span::styled(left.to_string(), dim),
+        Span::styled(
+            "●".to_string(),
+            Style::new().fg(STATUS_COLOR).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("{right} "), dim),
+    ];
+    debug_assert_eq!(spans.len(), SPINNER_SPAN_COUNT);
+    spans
+}
+
 /// The live status line shown in the strip above the box while a turn is in
-/// flight: `● {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s])`.
+/// flight:
+/// `( ●    ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s])`.
 ///
-/// The bullet is white and the verb text **shimmers** — a bright-white band
-/// sweeping its white-grey chars ([`shimmer_spans`]), phase driven by the
-/// boundary-supplied `elapsed`; the parenthesised metrics are dim. The token
-/// clause is omitted while the tally is 0 (the "just submitted" state), and the
-/// thinking clause only while `thinking` is `Some`. Pure — it formats the
-/// (already boundary-stamped) [`TurnStatus`], so it is unit-tested with
-/// explicit values.
+/// It opens with the bouncing-ball spinner ([`spinner_spans`]) and the verb
+/// text **shimmers** — a bright-white band sweeping its white-grey chars
+/// ([`shimmer_spans`]) — both animations phase-driven by the boundary-supplied
+/// `elapsed`; the parenthesised metrics are dim. The token clause is omitted
+/// while the tally is 0 (the "just submitted" state), and the thinking clause
+/// only while `thinking` is `Some`. Pure — it formats the (already
+/// boundary-stamped) [`TurnStatus`], so it is unit-tested with explicit values.
 #[must_use]
 pub fn status_line(status: &TurnStatus) -> Line<'static> {
     let mut detail = format!("{}s", status.elapsed.as_secs());
@@ -827,10 +872,7 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
     if let Some(thinking) = status.thinking {
         detail.push_str(&format!(" · Thinking for {}s", thinking.as_secs()));
     }
-    let mut spans = vec![Span::styled(
-        STATUS_BULLET.to_string(),
-        Style::new().fg(STATUS_COLOR).add_modifier(Modifier::BOLD),
-    )];
+    let mut spans = spinner_spans(status.elapsed);
     spans.extend(shimmer_spans(
         &format!("{}{STATUS_ELLIPSIS}", status.verb),
         status.elapsed,
@@ -1542,11 +1584,18 @@ mod tests {
         }
     }
 
+    /// The spinner contributes the first [`SPINNER_SPAN_COUNT`] spans of the
+    /// status line; the shimmering verb's per-char spans start right after.
+    const VERB_START: usize = SPINNER_SPAN_COUNT;
+
     #[test]
     fn status_line_just_submitted_shows_only_the_verb_and_seconds() {
         let line = status_line(&status(0, TokenArrow::Down, 0, None));
         let text = plain(&line);
-        assert_eq!(text, "● Working… (0s)", "the bare just-submitted state");
+        assert_eq!(
+            text, "( ●    ) Working… (0s)",
+            "the bare just-submitted state, ball on the first frame"
+        );
         assert!(
             !text.contains("tokens"),
             "no token clause while the tally is 0"
@@ -1557,7 +1606,7 @@ mod tests {
     #[test]
     fn status_line_shows_the_token_tally_with_a_down_arrow() {
         let text = plain(&status_line(&status(100, TokenArrow::Down, 1, None)));
-        assert_eq!(text, "● Working… (1s · ↓ 100 tokens)");
+        assert!(text.ends_with("Working… (1s · ↓ 100 tokens)"), "{text:?}");
     }
 
     #[test]
@@ -1573,7 +1622,10 @@ mod tests {
     #[test]
     fn status_line_shows_thinking_only_while_thinking() {
         let thinking = plain(&status_line(&status(150, TokenArrow::Down, 1, Some(0))));
-        assert_eq!(thinking, "● Working… (1s · ↓ 150 tokens · Thinking for 0s)");
+        assert!(
+            thinking.ends_with("Working… (1s · ↓ 150 tokens · Thinking for 0s)"),
+            "{thinking:?}"
+        );
         let not = plain(&status_line(&status(150, TokenArrow::Down, 1, None)));
         assert!(
             !not.contains("Thinking"),
@@ -1582,18 +1634,55 @@ mod tests {
     }
 
     #[test]
-    fn status_line_has_a_white_bullet_shimmering_verb_and_dim_metrics() {
-        let line = status_line(&status(0, TokenArrow::Down, 0, None));
+    fn status_spinner_ball_bounces_between_the_walls_and_loops() {
+        // The bouncing-ball spinner advances one frame per SPINNER_INTERVAL
+        // (80 ms): out to the right wall, back again, and the cycle loops.
+        let frame_at = |ms: u64| {
+            let mut s = status(0, TokenArrow::Down, 0, None);
+            s.elapsed = Duration::from_millis(ms);
+            let text = plain(&status_line(&s));
+            text.chars().take_while(|&c| c != 'W').collect::<String>()
+        };
+        assert_eq!(frame_at(0).trim_end(), "( ●    )");
+        assert_eq!(frame_at(80).trim_end(), "(  ●   )", "one frame later");
+        assert_eq!(frame_at(320).trim_end(), "(     ●)", "at the right wall");
+        assert_eq!(frame_at(400).trim_end(), "(    ● )", "bouncing back");
         assert_eq!(
-            line.spans[0].style.fg,
-            Some(STATUS_COLOR),
-            "white bullet (the line is white, not amber)"
+            frame_at(640),
+            frame_at(0),
+            "the bounce loops after a full cycle"
+        );
+    }
+
+    #[test]
+    fn status_line_has_a_white_ball_dim_walls_shimmering_verb_and_dim_metrics() {
+        let line = status_line(&status(0, TokenArrow::Down, 0, None));
+        // The spinner: a white bold ball between dim walls.
+        let ball = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "●")
+            .expect("the spinner's ball span");
+        assert_eq!(ball.style.fg, Some(STATUS_COLOR), "white ball");
+        assert!(
+            ball.style.add_modifier.contains(Modifier::BOLD),
+            "the ball is bold"
         );
         assert_eq!(STATUS_COLOR, AI_COLOR, "the status white is the text white");
+        assert_eq!(
+            line.spans[0].style.fg,
+            Some(STATUS_DETAIL_COLOR),
+            "dim left wall"
+        );
+        assert_eq!(
+            line.spans[2].style.fg,
+            Some(STATUS_DETAIL_COLOR),
+            "dim right wall"
+        );
         // The verb renders one bold span per char (the shimmer), every char a
         // greyscale white between the base and the bright highlight.
         let verb = "Working…";
-        let verb_spans = &line.spans[1..=verb.chars().count()];
+        let verb_spans = &line.spans[VERB_START..VERB_START + verb.chars().count()];
         assert_eq!(
             verb_spans
                 .iter()
@@ -1627,8 +1716,8 @@ mod tests {
         let mut at_crest = status(0, TokenArrow::Down, 0, None);
         at_crest.elapsed = Duration::from_millis(715);
         let crest_on_first = status_line(&at_crest);
-        let first = span_rgb(&crest_on_first.spans[1]);
-        let last = span_rgb(&crest_on_first.spans[8]);
+        let first = span_rgb(&crest_on_first.spans[VERB_START]);
+        let last = span_rgb(&crest_on_first.spans[VERB_START + 7]);
         assert!(
             first.0 > last.0,
             "the band's crest is brighter than off-band chars: {first:?} vs {last:?}"
@@ -1638,7 +1727,7 @@ mod tests {
         // Half a sweep later the band has moved on: char 0 is no longer the peak.
         let mut moved_on = status(0, TokenArrow::Down, 0, None);
         moved_on.elapsed = Duration::from_millis(715 + 1000);
-        let first_later = span_rgb(&status_line(&moved_on).spans[1]);
+        let first_later = span_rgb(&status_line(&moved_on).spans[VERB_START]);
         assert!(
             first_later.0 < first.0,
             "the wave moved off char 0 as time advanced: {first_later:?} vs {first:?}"

@@ -22,7 +22,7 @@ unit-tested must be unit-tested.
   - and, **only while a turn is in flight**, a strip above the box: a **preview
     row** showing the in-progress AI line (or a running tool's blue header), a
     blank **gap row**, a **status line** —
-    `● {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`, a
+    `( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`, a
     codex/Claude-Code-style indicator (see *Status indicator* below) — then
     another blank gap row so the status clears the box's top rule. Idle, that
     strip collapses and the box sits directly under the chat.
@@ -36,22 +36,25 @@ unit-tested must be unit-tested.
   spacer line after it — and as the streaming strip collapses, that committed
   spacer becomes the single blank line between the reply and the box (no double
   blank). A blank spacer is also committed after every user message.
-- **Status indicator.** While a turn is in flight, the strip's status line shows a
-  per-turn whimsical **verb** (`Working`, `Cooking`, …, picked deterministically by
-  a turn counter) whose white text carries a codex-style **shimmer** — a
-  bright-white raised-cosine band sweeping the chars every 2 s
-  (`ui::shimmer_spans`, ported from openai/codex; the white bullet matches) — a
+- **Status indicator.** While a turn is in flight, the strip's status line opens
+  with a **bouncing-ball spinner** (cli-spinners' `bouncingBall`: a white ball
+  ping-ponging between dim walls, one frame per 80 ms — `ui::spinner_spans`),
+  then a per-turn whimsical **verb** (`Working`, `Cooking`, …, picked
+  deterministically by a turn counter) whose white text carries a codex-style
+  **shimmer** — a bright-white raised-cosine band sweeping the chars every 2 s
+  (`ui::shimmer_spans`, ported from openai/codex) — a
   **timer** in whole seconds, a cumulative **token** estimate (`↓` while the
   reply streams, flipping to `↑` right after a tool result — never reset mid-turn),
   and `Thinking for Ns` *only* while the model is in a thinking phase. While a
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
-  cadence), so the shimmer sweeps and the timer moves even with no events. On
+  cadence), so the ball bounces, the shimmer sweeps, and the timer moves even
+  with no events. On
   finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
   that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
   and lists in the Ctrl+O transcript with a timestamp). Time is impure, so — like
   the timestamp clock — the loop owns the `Instant`s and feeds the pure status
   only computed `Duration`s (`App::set_status_times`; the same value drives the
-  displayed seconds and the shimmer phase). See `docs/status-indicator.md`.
+  displayed seconds and both animation phases). See `docs/status-indicator.md`.
 - **Responsive:** every draw re-wraps to the current terminal width, measured in
   **display columns** (`unicode-width`) so CJK/emoji wrap and pad correctly.
 - **Growing input box.** The input field is multi-line and grows downward as the
@@ -312,8 +315,10 @@ frame scheduler ─► draw-tick ─────┘                             
   status colour, scroll; each item's **timestamp right-aligned** on its header in
   a dim colour, and **never** present in the inline `conversation_lines`); the
   **status indicator** — `status_line` formats each phase (`(0s)` with the token
-  clause dropped at 0; `↓`/`↑` arrows; `Thinking for Ns` only when set; a white
-  bullet, dim metrics, and a per-char bold greyscale-white shimmering verb whose
+  clause dropped at 0; `↓`/`↑` arrows; `Thinking for Ns` only when set; a
+  bouncing-ball spinner — white bold ball between dim walls — that steps a frame
+  per interval, reverses at the right wall, and loops; dim metrics; and a
+  per-char bold greyscale-white shimmering verb whose
   crest outshines off-band chars and moves as `elapsed` advances), `summary_lines`
   is one dim bullet-less `"{verb} for
   Ns"` line, `render_live` stacks preview / gap / status / gap in the streaming

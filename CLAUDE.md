@@ -51,8 +51,10 @@ terminal's real scrollback; a live region (a rule-framed input box — a codex-s
 rows, Home/End) with insert/delete at the cursor, growing as the input wraps —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's blue header when one is executing), a blank gap row,
-a codex-style **status line** (`● {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking
-for {m}s)` — white bullet, the verb text shimmering with a white sweep ported from
+a codex-style **status line** (`( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
+Thinking for {m}s)` — opened by a bouncing-ball spinner (cli-spinners'
+`bouncingBall`: a white ball ping-ponging between dim walls), the verb text
+shimmering with a white sweep ported from
 codex's `shimmer_spans`; on finish a dim `{done verb} for {n}s` summary commits to
 scrollback — see `docs/status-indicator.md`), then another blank gap row so the
 status clears the box's top rule — plus a
@@ -211,7 +213,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
   (`TOOL_VIEW_*`), the transcript timestamp (`TIMESTAMP_COLOR`/`STAMP_GAP` — the
   dim, right-aligned per-item stamp shown only in the Ctrl+O view), the status
-  indicator (`STATUS_*` — the white bullet, dim metrics, the `↓`/`↑` arrows
+  indicator (`STATUS_*` — the bouncing-ball spinner's white ball + dim walls and
+  the `SPINNER_FRAMES`/`SPINNER_INTERVAL` animation, dim metrics, the `↓`/`↑` arrows
   and `…` ellipsis, the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;
   the verb's white shimmer wave is the `SHIMMER_*` consts — base/highlight
   colours, sweep period, padding, band half-width, max blend — a port of codex's
