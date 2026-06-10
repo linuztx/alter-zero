@@ -39,8 +39,10 @@ Priority order, mirroring codex's "popup wins" rule:
 3. `Esc` otherwise → `Action::Quit` (unchanged).
 
 Esc inside the Ctrl+O overlay still just returns to the chat (the overlay is
-a read-only viewer; interrupt from the conversation). Ctrl+C still always
-quits — a quit mid-stream already cancels and reaps the backend.
+a read-only viewer; interrupt from the conversation). Ctrl+C still quits with
+an empty input (after codex's composer-clear step — a first Ctrl+C with text
+in the input only clears the draft, see `docs/design.md`); a quit mid-stream
+already cancels and reaps the backend.
 
 ### Pure state (`App::interrupt_turn`)
 

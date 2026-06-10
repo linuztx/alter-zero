@@ -259,6 +259,8 @@ pub enum CommandEffect {
     Clear,
     /// Post the list of available commands as a system notice (`/help`).
     Help,
+    /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
+    Quit,
 }
 
 /// One entry in the slash-command palette: how it shows (`name`/`description`)
@@ -287,6 +289,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "clear",
         description: "Clear the conversation",
         effect: CommandEffect::Clear,
+    },
+    SlashCommand {
+        name: "quit",
+        description: "Exit inline-tui",
+        effect: CommandEffect::Quit,
     },
 ];
 
@@ -417,8 +424,16 @@ impl App {
     /// tool-view toggle (Ctrl+O) always work, from either screen. Other keys are
     /// dispatched to the active [`View`].
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
-        // Ctrl+C quits regardless of which key character it is paired with.
+        // Ctrl+C: in the conversation, a first press with text in the input
+        // clears the draft instead of quitting (codex's composer-clear step —
+        // see docs/design.md); otherwise it quits, from either screen. The
+        // overlay never shows the input box, so there is nothing to clear there.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            if self.view == View::Conversation && !self.input.is_empty() {
+                self.input.clear();
+                self.command_menu = None; // an emptied input can't be a /token
+                return Action::None;
+            }
             return Action::Quit;
         }
         // Ctrl+O toggles the full-screen tool-output view from either screen —
@@ -603,6 +618,7 @@ impl App {
                 Action::Clear
             }
             CommandEffect::Help => Action::Notice(help_text()),
+            CommandEffect::Quit => Action::Quit,
         }
     }
 
@@ -1055,6 +1071,62 @@ mod tests {
     #[test]
     fn ctrl_c_quits() {
         let mut app = App::new();
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_c), Action::Quit);
+    }
+
+    // --- Ctrl+C clears a non-empty input before it quits (codex-style) ---
+
+    #[test]
+    fn ctrl_c_with_text_in_the_input_clears_it_instead_of_quitting() {
+        let mut app = App::new();
+        app.input = TextArea::from_text("a long draft the user no longer wants");
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_c), Action::None, "first Ctrl+C only clears");
+        assert!(app.input.is_empty(), "the draft is gone");
+        assert_eq!(
+            app.on_key(ctrl_c),
+            Action::Quit,
+            "the next Ctrl+C (empty input) quits as before"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_clearing_a_command_token_also_closes_the_palette() {
+        let mut app = App::new();
+        type_str(&mut app, "/qu");
+        assert!(app.command_menu.is_some(), "the palette opened");
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_c), Action::None);
+        assert!(app.input.is_empty());
+        assert!(
+            app.command_menu.is_none(),
+            "an emptied input is no longer a /token — the palette closes"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_clears_the_draft_even_mid_stream() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("draft");
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_c), Action::None);
+        assert!(app.input.is_empty());
+        assert!(
+            app.turn_active(),
+            "clearing the draft never touches the turn"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_still_quits_from_the_tool_view_even_with_a_draft() {
+        // The overlay never shows the input box, so there is nothing to clear
+        // there — Ctrl+C keeps meaning quit (smoke Phase 7 relies on it).
+        let mut app = App::new();
+        app.input = TextArea::from_text("draft");
+        app.on_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL));
+        assert_eq!(app.view, View::ToolOutput);
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(app.on_key(ctrl_c), Action::Quit);
     }
@@ -1778,6 +1850,16 @@ mod tests {
             other => panic!("expected a Notice, got {other:?}"),
         }
         assert!(app.input.is_empty());
+        assert!(app.command_menu.is_none());
+    }
+
+    #[test]
+    fn enter_runs_the_quit_command() {
+        // `/quit` exits the app, like codex's `/quit` ("exit Codex").
+        let mut app = App::new();
+        type_str(&mut app, "/quit");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Quit);
+        assert!(app.input.is_empty(), "the command was consumed");
         assert!(app.command_menu.is_none());
     }
 

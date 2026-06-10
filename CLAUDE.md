@@ -186,15 +186,19 @@ the red `INTERRUPT_NOTICE`, and clears the status with no summary
 
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
-`app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`
-and `/clear`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
+`/clear`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
 dispatches an `Action`
 (`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
-message). Adding a command later is a one-line `COMMANDS` entry plus an effect arm
-in `App::run_selected_command`; the palette/filter/scroll don't change.
+message, `/quit`→`Quit`). Adding a command later is a one-line `COMMANDS` entry plus an effect arm
+in `App::run_selected_command`; the palette/filter/scroll don't change. **Ctrl+C
+first clears a non-empty input** (codex's composer-clear: one press empties the
+draft — closing the palette, never touching a streaming turn — and only an
+empty-input Ctrl+C quits; the Ctrl+O overlay has no input box, so Ctrl+C there
+always quits).
 
 ## Working style
 

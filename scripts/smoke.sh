@@ -21,6 +21,7 @@ cleanup() {
 	tmux kill-session -t "${S}_burst" 2>/dev/null
 	tmux kill-session -t "${S}_overlayquit" 2>/dev/null
 	tmux kill-session -t "${S}_interrupt" 2>/dev/null
+	tmux kill-session -t "${S}_quit" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -251,6 +252,37 @@ echo "==== captured pane (follow-up turn after the interrupt) ===="
 printf '%s\n' "$after_interrupt"
 tmux kill-session -t "$S5" 2>/dev/null
 
+# --- Phase 9: Ctrl+C clears a typed draft (codex's composer-clear step) and
+# the /quit command exits the app. A first Ctrl+C with text in the box must
+# only empty it — the app keeps running — and typing "/quit" + Enter (the
+# palette runs the highlighted command) must terminate the process, which ends
+# the tmux session. ---
+S6="${S}_quit"
+tmux new-session -d -s "$S6" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S6" -l "a draft the user wants gone"
+sleep 0.3
+tmux send-keys -t "$S6" C-c
+sleep 0.4
+after_clear="$(tmux capture-pane -t "$S6" -p)"
+echo "==== captured pane (draft cleared by Ctrl+C) ===="
+printf '%s\n' "$after_clear"
+quit_alive=0
+tmux has-session -t "$S6" 2>/dev/null && quit_alive=1
+tmux send-keys -t "$S6" -l "/quit"
+sleep 0.3
+tmux send-keys -t "$S6" Enter
+quit_exited=0
+for _ in $(seq 1 20); do # up to ~2s for the process to exit
+	if ! tmux has-session -t "$S6" 2>/dev/null; then
+		quit_exited=1
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 9: alive after Ctrl+C clear=$quit_alive, exited after /quit=$quit_exited ===="
+tmux kill-session -t "$S6" 2>/dev/null
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -328,6 +360,10 @@ if ! printf '%s' "$palette_open" | grep -qF "Clear the conversation"; then
 	echo "FAIL: the command palette did not list /clear" >&2
 	status=1
 fi
+if ! printf '%s' "$palette_open" | grep -qF "Exit inline-tui"; then
+	echo "FAIL: the command palette did not list /quit" >&2
+	status=1
+fi
 if ! printf '%s' "$help_ran" | grep -qF "Available commands:"; then
 	echo "FAIL: running /help did not post its system notice" >&2
 	status=1
@@ -393,7 +429,20 @@ if ! printf '%s' "$after_interrupt" | grep -qF "Finished for"; then
 	echo "FAIL: the app did not complete a follow-up turn after the interrupt — the loop or backend channel is wedged" >&2
 	status=1
 fi
+# Phase 9: Ctrl+C clears a non-empty draft (the app keeps running); /quit exits.
+if printf '%s' "$after_clear" | grep -qF "a draft the user"; then
+	echo "FAIL: Ctrl+C did not clear the typed draft from the input box" >&2
+	status=1
+fi
+if [ "$quit_alive" -ne 1 ]; then
+	echo "FAIL: the app quit on the first Ctrl+C instead of clearing the non-empty input" >&2
+	status=1
+fi
+if [ "$quit_exited" -ne 1 ]; then
+	echo "FAIL: running /quit did not exit the app" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, and Esc interrupts a streaming turn"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, and Ctrl+C clears a draft before /quit exits"
 fi
 exit "$status"

@@ -118,7 +118,8 @@ unit-tested must be unit-tested.
   command token** — `/`, `/he`, `/help`, but *not* `ask /help` or anything past a
   space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
-  (`app::COMMANDS`: name + description + effect — currently `/help` and `/clear`),
+  (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
+  and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone lists everything.
   ↑/↓ move the highlight (the window scrolls, capped at `MENU_MAX_ROWS`, to keep it
   visible); descriptions line up in a column (names padded to `MENU_DESC_COL`), and
@@ -130,7 +131,8 @@ unit-tested must be unit-tested.
   to reopen). The box's top is unchanged when the palette opens — it's reserved
   *below* the box — so the cursor never jumps. Running a command **consumes the
   input** and dispatches an `Action`: `/clear` → `Clear` (empties `history`,
-  repaints) and `/help` → `Notice` (lists the commands). A `Notice` is recorded as
+  repaints), `/help` → `Notice` (lists the commands), and `/quit` → `Quit`
+  (exits — codex's `/quit`/`/exit`, "exit Codex"). A `Notice` is recorded as
   a `Role::System` message and committed to scrollback like any other. Adding a
   command later is a one-line registry edit + an effect arm in
   `run_selected_command` — the palette, filtering, scrolling, and dispatch don't
@@ -149,9 +151,13 @@ unit-tested must be unit-tested.
   The palette still wins: Esc with the palette open only dismisses it, even
   mid-turn. The status line's `esc to interrupt` hint advertises this.
 - **Quit:** Esc (in the conversation, while **idle** — mid-turn it interrupts
-  instead) or Ctrl+C (anywhere, even mid-stream). In the tool-output
-  view Esc returns to the chat instead of quitting. Sending is disabled while a
-  reply is streaming.
+  instead), Ctrl+C, or the `/quit` command. **Ctrl+C first clears a non-empty
+  input** (codex's composer-clear step: a first press with a typed draft only
+  empties the box — and closes the palette, since the emptied input is no
+  longer a `/token`; the overlay has no input box, so Ctrl+C there always
+  quits); with an empty input it quits from anywhere, even mid-stream. In the
+  tool-output view Esc returns to the chat instead of quitting. Sending is
+  disabled while a reply is streaming.
 
 ## Architecture
 
@@ -256,9 +262,10 @@ frame scheduler ─► draw-tick ─────┘                             
 - `Action { None, Submit(String), ToggleToolView, Notice(String), Clear,
   Interrupt, Quit }` — returned by `App::on_key`.
 - `View { Conversation, ToolOutput }` — which screen is showing (Ctrl+O toggles).
-- `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Help }` +
-  the `COMMANDS` registry (`/help`, `/clear`) — the slash-command palette's data;
-  adding a command is one registry entry (+ an effect arm).
+- `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Help,
+  Quit }` + the `COMMANDS` registry (`/help`, `/clear`, `/quit`) — the
+  slash-command palette's data; adding a command is one registry entry (+ an
+  effect arm).
 - `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
   `None` when closed); the matches are derived from the input on demand.
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
@@ -306,7 +313,10 @@ frame scheduler ─► draw-tick ─────┘                             
 - `app`: typing appends; backspace; Enter with text → `Submit` + clears input;
   Alt+Enter / Shift+Enter insert a newline (box grows) without submitting; Enter
   while empty / while streaming → `None`; Esc/Ctrl+C → `Quit` when idle, while
-  Esc mid-turn → `Interrupt` (palette-dismiss still wins);
+  Esc mid-turn → `Interrupt` (palette-dismiss still wins); Ctrl+C with a
+  non-empty input clears the draft instead (closing the palette, leaving a
+  streaming turn untouched; from the tool view it still quits), and the next
+  Ctrl+C quits;
   `push_chunk`/`finish_stream` transitions; `fail_stream` records partial + error;
   `interrupt_turn` keeps the partial, resolves a running tool as failed, records
   the notice with no summary, and is a no-op when idle.
@@ -332,8 +342,9 @@ frame scheduler ─► draw-tick ─────┘                             
   past the slash closes it; Esc dismisses (not quits) and is **sticky** within the
   same token (re-entering command mode reopens it); Enter/Tab run the highlighted
   command, returning the right `Action` (`/clear`→`Clear` + history emptied,
-  `/help`→`Notice` listing commands) and consuming the input; an empty-match Enter
-  doesn't submit; with no palette open Enter still submits normally.
+  `/help`→`Notice` listing commands, `/quit`→`Quit`) and consuming the input; an
+  empty-match Enter doesn't submit; with no palette open Enter still submits
+  normally.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display
@@ -469,11 +480,11 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   with every tool expanded (by design — keeps the inline chat compact).
 - The slash-command palette only matches a **bare** `/token` (a leading slash, no
   whitespace); there's no argument parsing yet. The registry is intentionally small
-  for now (`/help`, `/clear`) — adding a command is a one-line `COMMANDS` entry plus
-  an effect arm in `run_selected_command`. Esc's dismissal reopens on the next
-  keystroke only if you leave and re-enter command mode; and running `/help`
-  mid-stream finalises the reply's current segment first (so the notice never
-  splits the reply), the same ordering rule tool calls use.
+  for now (`/help`, `/clear`, `/quit`) — adding a command is a one-line `COMMANDS`
+  entry plus an effect arm in `run_selected_command`. Esc's dismissal reopens on
+  the next keystroke only if you leave and re-enter command mode; and running
+  `/help` mid-stream finalises the reply's current segment first (so the notice
+  never splits the reply), the same ordering rule tool calls use.
 - Timestamps are shown **only** in the Ctrl+O transcript, and only for the
   **user's** messages (12-hour `hh:mm AM/PM`, no seconds, right-aligned below the
   message); assistant/tool/summary items record a stamp but never display it. The
