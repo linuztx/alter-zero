@@ -19,6 +19,7 @@ cleanup() {
 	tmux kill-session -t "$S" 2>/dev/null
 	tmux kill-session -t "${S}_bottom" 2>/dev/null
 	tmux kill-session -t "${S}_burst" 2>/dev/null
+	tmux kill-session -t "${S}_overlayquit" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -162,6 +163,53 @@ burst_ms=$(($(date +%s%3N) - burst_start))
 echo "==== Phase 6: 1000-char burst fully rendered in ${burst_ms}ms (ok=$burst_ok) ===="
 tmux kill-session -t "$S3" 2>/dev/null
 
+# --- Phase 7: finishing a turn *while the Ctrl+O overlay is open*, then quitting
+# with Ctrl+C, must leave the RESTORED screen showing the committed "Done for Ns"
+# summary — not the stale live "( ● ) {verb}… (… tokens)" status strip. The
+# overlay defers scrollback commits (invariant 4); a normal Ctrl+O return repaints
+# the inline view from history, but the quit path used to skip that and exit_overlay
+# straight onto the stale strip. Run the binary *inside a shell* so the pane
+# survives the app exiting and we can capture the restored terminal afterward. ---
+S4="${S}_overlayquit"
+BIN_ABS="$(realpath "$BIN" 2>/dev/null || echo "$BIN")"
+tmux new-session -d -s "$S4" -x 80 -y 24
+sleep 0.3
+tmux send-keys -t "$S4" -l "$BIN_ABS"
+tmux send-keys -t "$S4" Enter
+sleep 0.6
+tmux send-keys -t "$S4" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S4" Enter
+# Open the overlay *mid-stream*: wait until the reply is visibly streaming (the
+# turn is active) before pressing Ctrl+O.
+for _ in $(seq 1 40); do # up to ~4s
+	if tmux capture-pane -t "$S4" -p | grep -qF "Happy"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S4" C-o
+# Wait until the turn FINISHES while the overlay is up — the transcript gains the
+# "Done for Ns" summary. This is the precondition for the bug (the turn ended with
+# scrollback commits deferred).
+overlay_done=""
+for _ in $(seq 1 80); do # up to ~12s
+	overlay_done="$(tmux capture-pane -t "$S4" -p)"
+	if printf '%s' "$overlay_done" | grep -qF "Done for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (turn finished inside the Ctrl+O overlay) ===="
+printf '%s\n' "$overlay_done"
+# Now quit with Ctrl+C from inside the overlay and capture the restored terminal.
+tmux send-keys -t "$S4" C-c
+sleep 0.5
+post_quit="$(tmux capture-pane -t "$S4" -p -S -40)"
+echo "==== captured pane (restored terminal after quitting from the overlay) ===="
+printf '%s\n' "$post_quit"
+tmux kill-session -t "$S4" 2>/dev/null
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -251,6 +299,22 @@ fi
 if [ "$burst_ok" -ne 1 ]; then
 	echo "FAIL: a 1000-char input burst was not fully rendered within 600ms (took ${burst_ms}ms) — input is not coalesced into one repaint, typing lag regressed" >&2
 	status=1
+fi
+# Phase 7: a turn that finished while the Ctrl+O overlay was open must, on quit,
+# leave the restored screen showing the committed summary — not the stale live
+# status line whose commits were deferred while the overlay was up.
+if ! printf '%s' "$overlay_done" | grep -qF "Done for"; then
+	echo "FAIL: the turn never finished inside the Ctrl+O overlay (Phase 7 precondition not met — retune the timing)" >&2
+	status=1
+else
+	if ! printf '%s' "$post_quit" | grep -qF "Done for"; then
+		echo "FAIL: after quitting (Ctrl+C) from the overlay, the committed 'Done for Ns' summary was not restored to the screen — the quit path left the stale live status strip behind" >&2
+		status=1
+	fi
+	if printf '%s' "$post_quit" | grep -qF "tokens"; then
+		echo "FAIL: after quitting (Ctrl+C) from the overlay, the stale live status line ('… tokens') was still on screen instead of the 'Done for Ns' summary" >&2
+		status=1
+	fi
 fi
 if [ "$status" -eq 0 ]; then
 	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, and the slash-command palette opens and runs commands"

@@ -113,8 +113,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             Action::Quit => {
                                 // Drop back to the main screen before the loop exits
                                 // if the overlay is up, so restore() lands on the chat.
+                                // A turn may have finished while the overlay was
+                                // showing — its scrollback commits were deferred
+                                // (invariant 4) — so repaint the inline view from
+                                // history (and draw the box) the same way a normal
+                                // Ctrl+O return does; otherwise restore() lands on the
+                                // stale live status strip ("Working… (… tokens)")
+                                // instead of the committed "Done for Ns" summary.
                                 if app.view == View::ToolOutput {
                                     term.exit_overlay()?;
+                                    repaint_conversation(term, &app, &mut committed)?;
+                                    draw(term, &app)?;
                                 }
                                 break;
                             }

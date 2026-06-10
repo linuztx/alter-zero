@@ -251,17 +251,32 @@ impl InlineViewport {
         changed
     }
 
-    /// Repaint the conversation `tail` re-wrapped to the new width after a resize:
-    /// clear the screen, seat the viewport at the top, then `insert_before` the
-    /// tail so it fills the screen and pushes the viewport down below it — the next
-    /// [`draw`] paints the live region. Mirrors the old `repaint_after_resize`.
+    /// Repaint the conversation `tail` re-wrapped to the new width after a resize
+    /// (or a Ctrl+O return / `/clear`): seat the viewport at the top, then
+    /// `insert_before` the tail so it fills the screen and pushes the viewport down
+    /// below it — the next [`draw`] paints the live region. `insert_before`
+    /// overwrites the screen in place (drawing top-down, then clearing the rows
+    /// below the tail), so a full `clear_region(All)` is needed only for an *empty*
+    /// tail (see the body for the tmux-spill reason). Mirrors the old
+    /// `repaint_after_resize`.
     ///
     /// [`draw`]: InlineViewport::draw
     pub fn reflow(&mut self, tail: Vec<Line<'static>>, height: u16) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
-        self.backend.clear_region(ClearType::All)?;
+        // An empty tail (e.g. `/clear`) never reaches `insert_before`'s draw, so
+        // blank the screen outright for it. For a NON-empty tail we must *not*
+        // `clear_region(All)` first: `insert_before` already overwrites the screen
+        // top-down and clears the rows below the tail (a spill-safe draw-then-clear).
+        // A leading full clear, when the screen still holds the frame restored by
+        // *leaving the Ctrl+O alt-screen*, makes tmux push that stale frame into
+        // scrollback — the leak that left the old `Working… (… tokens)` status strip
+        // sitting above the rebuilt conversation. Overwriting in place avoids the
+        // clear-then-scroll sequence entirely.
+        if tail.is_empty() {
+            self.backend.clear_region(ClearType::All)?;
+        }
         self.backend.set_cursor_position(Position::new(0, 0))?;
-        self.prev = None; // whole screen cleared (an empty tail won't reach insert_before)
+        self.prev = None; // screen is being rebuilt; repaint in full next draw
         self.view = Rect::new(0, 0, self.screen.width, height);
         self.insert_before(tail)
     }

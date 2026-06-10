@@ -103,9 +103,15 @@ of bug:
    rows appear beneath it (guarded by `smoke.sh` Phase 5). On a width change every wrapped line is
    stale, so `App` retains a `history: Vec<HistoryItem>` of finished messages *and
    tool calls* (kept for two reasons: this repaint, and listing tools in the Ctrl+O
-   view) and `term::reflow` clears the screen, seats the viewport at the top, then
-   `insert_before`s the re-wrapped tail (`ui::repaint_lines`). `committed` is reset
-   so a mid-stream resize re-commits the reply.
+   view) and `term::reflow` seats the viewport at the top and `insert_before`s the
+   re-wrapped tail (`ui::repaint_lines`), letting `insert_before` **overwrite the
+   screen in place** (it draws top-down then clears the rows below the tail).
+   `reflow` only `clear_region(All)`s for an *empty* tail (`/clear`): a leading full
+   clear before `insert_before`'s scroll makes tmux spill the on-screen frame into
+   scrollback — harmless on a resize, but after a Ctrl+O return (invariant 4) it
+   pushes the **stale streaming strip** (`Working… (… tokens)`) into scrollback above
+   the rebuilt conversation (guarded by `smoke.sh` Phase 7). `committed` is reset so
+   a mid-stream resize re-commits the reply.
 
 4. **Tool calls interleave with text, and Ctrl+O opens a separate overlay.** A
    tool call splits the assistant text around it: `App::flush_streaming_segment`
@@ -122,7 +128,11 @@ of bug:
    draining reply events into `App` but does *not* commit to scrollback** (that
    would write into the alt screen); on return, `repaint_conversation` rebuilds the
    inline view from `history`. Never commit to scrollback while
-   `app.view == View::ToolOutput`.
+   `app.view == View::ToolOutput`. **Quitting from the overlay is also a return**:
+   the `Action::Quit` arm must `exit_overlay` *then* `repaint_conversation` + `draw`
+   before breaking — otherwise `restore` lands on the stale streaming strip a turn
+   that finished in the overlay left behind, instead of the committed `Done for Ns`
+   summary (`smoke.sh` Phase 7).
 
 ### Data flow
 

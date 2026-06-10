@@ -99,7 +99,10 @@ unit-tested must be unit-tested.
   conversation **keeps streaming and updating underneath**: while the overlay is up
   the event loop still drains reply events into `App` (so the view updates live)
   but holds off committing to scrollback; Ctrl+O (or Esc) returns, and the inline
-  view is repainted from `history` to catch up. The overlay is read-only (typing is
+  view is repainted from `history` to catch up — and **so does quitting** (Ctrl+C)
+  from the overlay, which repaints before exiting so a turn that finished while the
+  overlay was up restores its `Done for Ns` summary rather than the stale streaming
+  strip it left frozen on the main screen. The overlay is read-only (typing is
   ignored). Each item also shows a **wall-clock timestamp** (local date + 12-hour
   time, e.g. `2026-06-09 02:32:05 PM`) **right-aligned** on its header line — the
   **only** place timestamps appear; the inline conversation never shows them. The
@@ -391,8 +394,16 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
   conversation — main screen + its real scrollback — is preserved untouched);
   `draw_overlay` paints a full-screen buffer (`ui::render_tool_view`) every frame;
   `exit_overlay` switches back, after which `main` reflows the inline view to catch
-  up. This is the *only* use of the alternate screen — the conversation itself
-  stays inline.
+  up (on a normal return *and* on a quit-from-overlay, so the restored screen is
+  rebuilt either way). This is the *only* use of the alternate screen — the
+  conversation itself stays inline.
+- `reflow` rebuilds the inline view from a re-wrapped `tail` (after a resize, a
+  Ctrl+O return, or `/clear`). It lets `insert_before` **overwrite the screen in
+  place** (draw top-down, then clear the rows below the tail) and `clear_region(All)`s
+  *only* for an empty tail. A leading full clear before `insert_before`'s scroll
+  makes tmux spill the on-screen frame into scrollback; after a Ctrl+O return that
+  frame is the **stale streaming strip**, so the clear would push `Working… (…
+  tokens)` into scrollback above the rebuilt conversation (`smoke.sh` Phase 7).
 
 `term.rs` is, like `main.rs`, an I/O boundary verified via `scripts/smoke.sh`
 rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
