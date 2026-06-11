@@ -228,19 +228,15 @@ const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;
 /// Dim grey — an entry's label (codex dims the whole overlay).
 const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
 
-// --- The queued-message band. While a turn streams, messages submitted with
-// Enter join `App::queued` and are listed dim below the box (sharing the
-// palette/shortcuts slot, stacked beneath them) — a port of codex's pending
-// input preview: one `↳ {peek}` row each, the rest collapsed into a final
-// `… (+N more)` line. The loop sends them one per turn. See docs/queue.md. ---
+// --- Queued messages. While a turn streams, messages submitted with Enter join
+// `App::queued` and are shown **above the box** (in the strip, just under the
+// status line's gap) styled exactly like a sent user message — the `❯ ` bullet,
+// the dark background, wrapped — so a queued follow-up reads like it is already
+// on its way. The loop sends them one per turn. See docs/queue.md. ---
 
-/// The most queued rows shown at once; a longer queue collapses the remainder
-/// into a final `… (+N more)` line.
-const QUEUED_MAX_ROWS: u16 = 3;
-/// Prefix for a queued follow-up message (codex's `↳`).
-const QUEUED_PREFIX: &str = "↳ ";
-/// Dim grey — queued messages (codex dims them).
-const QUEUED_COLOR: Color = TOOL_DIM_COLOR;
+/// The most queued rows shown at once (totalled across the queued messages, each
+/// wrapped like a user message); a longer queue is truncated to this many rows.
+const QUEUED_MAX_ROWS: u16 = 6;
 
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
@@ -264,7 +260,9 @@ pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
 /// status doesn't butt up against the box's top rule. Idle, the box sits directly
 /// under the chat (separated by the committed blank spacer after the last
 /// message), so the strip collapses to nothing and there is exactly one blank
-/// line above the box.
+/// line above the box. The **queued messages** (`queued_rows`) stack below this,
+/// between the status gap and the box's top rule — added separately by
+/// [`live_height`]/[`live_layout`] since their height depends on the queue.
 const fn strip_rows(streaming: bool) -> u16 {
     if streaming {
         PREVIEW_ROWS + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS
@@ -280,21 +278,25 @@ fn field_width(width: u16) -> u16 {
 }
 
 /// Height of the bottom live region for the current `input` at this terminal
-/// size: the streaming strip (only while `streaming`), two framing rules, one
-/// row per wrapped input line — so the box **grows** as the message wraps — and
-/// the band below it (`band_rows`: the command palette's [`menu_rows`] plus the
-/// shortcuts band's [`shortcuts_rows`], 0 when both are closed) — clamped to the
-/// terminal height (after which the box scrolls internally; see [`render_live`]).
+/// size: the streaming strip (only while `streaming`) plus the `queued_rows`
+/// queued-message lines stacked under its status (the strip's
+/// [`queued_rows`]), two framing rules, one row per wrapped input line — so the
+/// box **grows** as the message wraps — and the band below it (`band_rows`: the
+/// command palette's [`menu_rows`] plus the shortcuts band's [`shortcuts_rows`],
+/// 0 when both are closed) — clamped to the terminal height (after which the box
+/// scrolls internally; see [`render_live`]).
 #[must_use]
 pub fn live_height(
     input: &TextArea,
     width: u16,
     term_height: u16,
     streaming: bool,
+    queued_rows: u16,
     band_rows: u16,
 ) -> u16 {
     let rows = input.row_count(field_width(width)) as u16;
-    (strip_rows(streaming) + INPUT_CHROME_ROWS + rows + band_rows).min(term_height.max(1))
+    (strip_rows(streaming) + queued_rows + INPUT_CHROME_ROWS + rows + band_rows)
+        .min(term_height.max(1))
 }
 
 /// How to re-pin the live region when its height changes between draws, keeping
@@ -344,16 +346,17 @@ pub fn repin(top: u16, old_height: u16, new_height: u16, screen_height: u16) -> 
 }
 
 /// Split `area` into the live region's three stacked sub-areas
-/// `[strip, input, band]`. The strip holds the streaming preview + gap (height 0
-/// when idle); the band — the command palette *or* the `?` shortcuts overview —
-/// takes its fixed `band_rows` at the **bottom** (0 when closed); the input box
-/// takes whatever rows remain in between, so it **grows** as `area` grows (see
+/// `[strip, input, band]`. The strip holds the streaming preview, gap, status,
+/// gap, **and the `queued_rows` queued-message lines below them** (height 0 when
+/// idle); the band — the command palette *or* the `?` shortcuts overview — takes
+/// its fixed `band_rows` at the **bottom** (0 when closed); the input box takes
+/// whatever rows remain in between, so it **grows** as `area` grows (see
 /// [`live_height`]). Reserving the band below rather than between keeps the
 /// box's top — and the cursor — put when it opens. The only place the split is
 /// expressed.
-fn live_layout(area: Rect, streaming: bool, band_rows: u16) -> [Rect; 3] {
+fn live_layout(area: Rect, streaming: bool, queued_rows: u16, band_rows: u16) -> [Rect; 3] {
     Layout::vertical([
-        Constraint::Length(strip_rows(streaming)),
+        Constraint::Length(strip_rows(streaming) + queued_rows),
         Constraint::Min(0),
         Constraint::Length(band_rows),
     ])
@@ -378,8 +381,14 @@ struct InputBox {
     scroll: usize,
 }
 
-fn input_box(area: Rect, input: &TextArea, streaming: bool, band_rows: u16) -> InputBox {
-    let [_, frame, _] = live_layout(area, streaming, band_rows);
+fn input_box(
+    area: Rect,
+    input: &TextArea,
+    streaming: bool,
+    queued_rows: u16,
+    band_rows: u16,
+) -> InputBox {
+    let [_, frame, _] = live_layout(area, streaming, queued_rows, band_rows);
     let text = frame.inner(Margin::new(0, 1)); // inset past the top & bottom rules
     let field = field_width(area.width);
     let rows = input.display_rows(field);
@@ -547,14 +556,12 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let streaming = app.is_streaming();
     let menu = menu_rows(app);
     let shortcuts = shortcuts_rows(app);
-    let queued = queued_rows(app);
-    // The band below the box stacks the palette *or* shortcuts overview
-    // (mutually exclusive — the palette needs a `/token`, the overview an empty
-    // composer — and sit adjacent to the box) above the queued follow-ups, which
-    // can accompany either.
-    let interactive = menu + shortcuts;
-    let band = interactive + queued;
-    let [strip, _, band_area] = live_layout(area, streaming, band);
+    // The band below the box holds the palette *or* the shortcuts overview
+    // (mutually exclusive: the palette needs a `/token`, the band an empty
+    // composer). Queued messages render in the strip *above* the box instead.
+    let band = menu + shortcuts;
+    let queued = queued_rows(app, area.width);
+    let [strip, _, band_area] = live_layout(area, streaming, queued, band);
 
     // Strip preview (top row; the rest of the strip is the blank gap). A running
     // tool takes precedence — its coloured header (blue) shows what's executing;
@@ -591,8 +598,26 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         }
     }
 
+    // The queued messages, styled like sent user messages (❯ bullet, dark
+    // background, wrapped), stacked below the status's gap and just above the
+    // box's top rule — only while a turn streams (the only time the queue is
+    // non-empty). codex's pending-input preview, in our user-message style.
+    if queued > 0 {
+        let q_y = strip.y + PREVIEW_ROWS + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
+        let strip_bottom = strip.y + strip.height;
+        if q_y < strip_bottom {
+            let q_area = Rect {
+                x: strip.x,
+                y: q_y,
+                width: strip.width,
+                height: queued.min(strip_bottom - q_y),
+            };
+            Paragraph::new(queued_lines(app, q_area.width)).render(q_area, buf);
+        }
+    }
+
     // The input box: a top/bottom rule framing the wrapped input rows.
-    let bx = input_box(area, &app.input, streaming, band);
+    let bx = input_box(area, &app.input, streaming, queued, band);
     let block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
@@ -617,24 +642,11 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         .collect();
     Paragraph::new(lines).render(bx.text, buf);
 
-    // The band below the box: the palette or shortcuts overview adjacent to the
-    // box (the top `interactive` rows), then the queued follow-ups beneath them.
-    let top = Rect {
-        height: interactive.min(band_area.height),
-        ..band_area
-    };
+    // The palette or the shortcuts overview, pinned in the band below the box.
     if menu > 0 {
-        Paragraph::new(command_menu_lines(app, top.width)).render(top, buf);
+        Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
     } else if shortcuts > 0 {
-        Paragraph::new(shortcuts_lines(app.turn_active())).render(top, buf);
-    }
-    if queued > 0 {
-        let q_area = Rect {
-            y: band_area.y + interactive,
-            height: queued.min(band_area.height.saturating_sub(interactive)),
-            ..band_area
-        };
-        Paragraph::new(queued_lines(app, q_area.width)).render(q_area, buf);
+        Paragraph::new(shortcuts_lines(app.turn_active())).render(band_area, buf);
     }
 }
 
@@ -780,56 +792,32 @@ pub fn shortcuts_lines(turn_active: bool) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// How many rows the queued-message band occupies for `app`: 0 when the queue
-/// is empty, else `min(len, QUEUED_MAX_ROWS)`. Folded into [`render_live`]'s band
-/// total so [`live_height`] reserves it; `render_live` paints exactly this many —
-/// the two must agree, like [`menu_rows`]/[`shortcuts_rows`].
+/// How many rows the queued messages occupy in the strip at `width`: the total
+/// wrapped height of every queued message (each styled like a user message),
+/// capped at [`QUEUED_MAX_ROWS`]; 0 when the queue is empty. [`live_height`]
+/// reserves this and [`render_live`] paints exactly this many — the two must
+/// agree (both go through [`queued_lines`], so they can't drift).
 #[must_use]
-pub fn queued_rows(app: &App) -> u16 {
-    (app.queued.len() as u16).min(QUEUED_MAX_ROWS)
+pub fn queued_rows(app: &App, width: u16) -> u16 {
+    queued_lines(app, width).len() as u16
 }
 
-/// The dim lines for the queued follow-up messages: one `↳ {peek}` row each
-/// (newlines flattened, truncated to `width`), capped at [`QUEUED_MAX_ROWS`] — a
-/// longer queue shows `QUEUED_MAX_ROWS - 1` of them then a `… (+N more)` line.
-/// Empty when the queue is empty.
+/// The styled lines for the queued follow-up messages: each rendered like a sent
+/// user message ([`message_lines`] — the `❯ ` bullet, dark background, wrapped to
+/// `width`), concatenated and truncated to [`QUEUED_MAX_ROWS`] rows so a long
+/// queue can't crowd out the box. Empty when the queue is empty.
 #[must_use]
 pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let n = app.queued.len();
-    if n == 0 {
-        return Vec::new();
-    }
     let cap = QUEUED_MAX_ROWS as usize;
-    // When the queue overflows the cap, reserve the last row for the count.
-    let shown = if n > cap { cap - 1 } else { n };
-    let avail = (width as usize).saturating_sub(cols(QUEUED_PREFIX));
-    let mut lines: Vec<Line<'static>> = app
-        .queued
-        .iter()
-        .take(shown)
-        .map(|msg| {
-            let peek = truncate_cols(&flatten(msg), avail);
-            Line::from(vec![
-                Span::styled(QUEUED_PREFIX, Style::new().fg(QUEUED_COLOR)),
-                Span::styled(peek, Style::new().fg(QUEUED_COLOR)),
-            ])
-        })
-        .collect();
-    if n > cap {
-        let more = n - shown;
-        lines.push(Line::from(Span::styled(
-            format!("  … (+{more} more)"),
-            Style::new().fg(QUEUED_COLOR),
-        )));
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for msg in &app.queued {
+        if lines.len() >= cap {
+            break;
+        }
+        lines.extend(message_lines(Role::User, msg, width));
     }
+    lines.truncate(cap);
     lines
-}
-
-/// Collapse a message to a single display row: every run of whitespace (newlines
-/// included) becomes one space, so a multi-line queued message previews on one
-/// line.
-fn flatten(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The bullet colour for a tool's lifecycle: blue running, green ok, red fail.
@@ -1250,7 +1238,8 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         area,
         &app.input,
         false,
-        menu_rows(app) + shortcuts_rows(app) + queued_rows(app),
+        queued_rows(app, area.width),
+        menu_rows(app) + shortcuts_rows(app),
     );
     let row = bx.cursor_row.saturating_sub(bx.scroll) as u16;
     let col = bx.cursor_col as u16;
@@ -1993,7 +1982,7 @@ mod tests {
         app.begin_stream();
         app.push_chunk("hi");
         app.set_status_times(Duration::from_secs(3), None);
-        let h = live_height(&app.input, 40, 24, true, 0);
+        let h = live_height(&app.input, 40, 24, true, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -2016,7 +2005,7 @@ mod tests {
     fn render_live_grows_the_box_and_wraps_input_across_rows() {
         let mut app = App::new();
         app.input = TextArea::from_text("first\nsecond");
-        let h = live_height(&app.input, 20, 24, false, 0);
+        let h = live_height(&app.input, 20, 24, false, 0, 0);
         assert_eq!(h, 4, "two rules + two input rows (no strip when idle)");
         let mut buf = buffer(20, h);
         render_live(buf.area, &mut buf, &app);
@@ -2046,7 +2035,7 @@ mod tests {
                 .join("\n"),
         );
         let term_h = 6; // live clamps to 6 → text rows = 6 - 2 = 4
-        assert_eq!(live_height(&app.input, 20, term_h, false, 0), 6);
+        assert_eq!(live_height(&app.input, 20, term_h, false, 0, 0), 6);
         let mut buf = buffer(20, 6);
         render_live(buf.area, &mut buf, &app);
 
@@ -2114,7 +2103,7 @@ mod tests {
         // row (y = 2) just after the indented "cd" (x = 2 + 2).
         let mut app = App::new();
         app.input = TextArea::from_text("ab\ncd");
-        let area = Rect::new(0, 0, 20, live_height(&app.input, 20, 24, false, 0));
+        let area = Rect::new(0, 0, 20, live_height(&app.input, 20, 24, false, 0, 0));
         assert_eq!(cursor_position(area, &app), (4, 2));
     }
 
@@ -2200,11 +2189,11 @@ mod tests {
         // (no preview strip) = LIVE_MIN_HEIGHT (3).
         assert_eq!(LIVE_MIN_HEIGHT, 3);
         assert_eq!(
-            live_height(&TextArea::from_text(""), 40, 24, false, 0),
+            live_height(&TextArea::from_text(""), 40, 24, false, 0, 0),
             LIVE_MIN_HEIGHT
         );
         assert_eq!(
-            live_height(&TextArea::from_text("hi"), 40, 24, false, 0),
+            live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0),
             LIVE_MIN_HEIGHT
         );
     }
@@ -2217,8 +2206,8 @@ mod tests {
         for input in ["", "hi", "a\nb\nc"] {
             let ta = TextArea::from_text(input);
             assert_eq!(
-                live_height(&ta, 40, 24, true, 0),
-                live_height(&ta, 40, 24, false, 0) + 4,
+                live_height(&ta, 40, 24, true, 0, 0),
+                live_height(&ta, 40, 24, false, 0, 0) + 4,
                 "streaming adds the preview + gap + status + gap rows for {input:?}"
             );
         }
@@ -2229,7 +2218,7 @@ mod tests {
         // Idle, three explicit lines → the box has three text rows, so the live
         // region is 2 (two rules) + 3 = 5 rows tall.
         assert_eq!(
-            live_height(&TextArea::from_text("a\nb\nc"), 40, 24, false, 0),
+            live_height(&TextArea::from_text("a\nb\nc"), 40, 24, false, 0, 0),
             5
         );
     }
@@ -2239,7 +2228,14 @@ mod tests {
         // No explicit newline: a line longer than the field width wraps and the
         // box still grows. field width = 10 - 2 = 8, so 16 columns → 2 rows → 4.
         assert_eq!(
-            live_height(&TextArea::from_text("abcdefghijklmnop"), 10, 24, false, 0),
+            live_height(
+                &TextArea::from_text("abcdefghijklmnop"),
+                10,
+                24,
+                false,
+                0,
+                0
+            ),
             4
         );
     }
@@ -2248,7 +2244,7 @@ mod tests {
     fn live_height_is_clamped_to_the_terminal_height() {
         let many = TextArea::from_text(&"a\n".repeat(50));
         assert_eq!(
-            live_height(&many, 40, 10, false, 0),
+            live_height(&many, 40, 10, false, 0, 0),
             10,
             "never taller than the screen"
         );
@@ -2336,7 +2332,7 @@ mod tests {
                 // The smallest height still fits the streaming strip (4) + menu (3).
                 for h in [LIVE_MIN_HEIGHT + 4, 9, 20] {
                     let [strip, input, menu] =
-                        live_layout(Rect::new(0, 0, 40, h), streaming, menu_rows);
+                        live_layout(Rect::new(0, 0, 40, h), streaming, 0, menu_rows);
                     assert_eq!(
                         strip.height + input.height + menu.height,
                         h,
@@ -2617,8 +2613,8 @@ mod tests {
 
     #[test]
     fn live_height_adds_the_command_menu_band() {
-        let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, 0);
-        let open = live_height(&TextArea::from_text("/"), 40, 24, false, MENU_MAX_ROWS);
+        let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0);
+        let open = live_height(&TextArea::from_text("/"), 40, 24, false, 0, MENU_MAX_ROWS);
         assert_eq!(open, closed + MENU_MAX_ROWS, "the menu band adds its rows");
     }
 
@@ -2626,7 +2622,7 @@ mod tests {
     fn render_live_draws_the_command_menu_below_the_box() {
         let app = palette("/", 0);
         let menu = menu_rows(&app);
-        let h = live_height(&app.input, 40, 24, false, menu);
+        let h = live_height(&app.input, 40, 24, false, 0, menu);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -2653,7 +2649,7 @@ mod tests {
             0,
             0,
             40,
-            live_height(&TextArea::from_text("/"), 40, 24, false, 0),
+            live_height(&TextArea::from_text("/"), 40, 24, false, 0, 0),
         );
         let closed = cursor_position(closed_area, &app);
         app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
@@ -2662,7 +2658,7 @@ mod tests {
             0,
             0,
             40,
-            live_height(&TextArea::from_text("/"), 40, 24, false, menu),
+            live_height(&TextArea::from_text("/"), 40, 24, false, 0, menu),
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the menu opens");
@@ -2739,8 +2735,8 @@ mod tests {
     fn live_height_adds_the_shortcuts_band() {
         let mut app = App::new();
         app.shortcuts_open = true;
-        let closed = live_height(&app.input, 40, 24, false, 0);
-        let open = live_height(&app.input, 40, 24, false, shortcuts_rows(&app));
+        let closed = live_height(&app.input, 40, 24, false, 0, 0);
+        let open = live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app));
         assert_eq!(open, closed + shortcuts_rows(&app));
     }
 
@@ -2748,7 +2744,7 @@ mod tests {
     fn render_live_draws_the_shortcuts_band_below_the_box() {
         let mut app = App::new();
         app.shortcuts_open = true;
-        let h = live_height(&app.input, 40, 24, false, shortcuts_rows(&app));
+        let h = live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app));
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -2765,14 +2761,14 @@ mod tests {
     #[test]
     fn cursor_stays_in_the_box_when_the_shortcuts_band_opens() {
         let mut app = App::new();
-        let closed_area = Rect::new(0, 0, 40, live_height(&app.input, 40, 24, false, 0));
+        let closed_area = Rect::new(0, 0, 40, live_height(&app.input, 40, 24, false, 0, 0));
         let closed = cursor_position(closed_area, &app);
         app.shortcuts_open = true;
         let open_area = Rect::new(
             0,
             0,
             40,
-            live_height(&app.input, 40, 24, false, shortcuts_rows(&app)),
+            live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app)),
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the band opens");
@@ -2783,10 +2779,19 @@ mod tests {
     #[test]
     fn queued_rows_is_zero_empty_and_counts_the_queue() {
         let mut app = App::new();
-        assert_eq!(queued_rows(&app), 0);
+        assert_eq!(queued_rows(&app, 40), 0);
         app.queued.push_back("a".into());
         app.queued.push_back("b".into());
-        assert_eq!(queued_rows(&app), 2);
+        assert_eq!(queued_rows(&app, 40), 2, "one short message per row");
+    }
+
+    #[test]
+    fn queued_rows_count_wrapped_lines() {
+        // A queued message wraps like a user message, so a long one is >1 row.
+        let mut app = App::new();
+        app.queued
+            .push_back("one two three four five six seven eight".into());
+        assert!(queued_rows(&app, 16) >= 2, "a long queued message wraps");
     }
 
     #[test]
@@ -2795,120 +2800,116 @@ mod tests {
         for i in 0..(QUEUED_MAX_ROWS as usize + 3) {
             app.queued.push_back(format!("m{i}"));
         }
-        assert_eq!(queued_rows(&app), QUEUED_MAX_ROWS);
+        assert_eq!(queued_rows(&app, 40), QUEUED_MAX_ROWS);
     }
 
     #[test]
-    fn queued_lines_list_messages_with_the_prefix() {
+    fn queued_lines_style_each_message_like_a_user_message() {
+        // Same bullet + dark background as a sent user message (not a dim peek).
+        let mut app = App::new();
+        app.queued.push_back("world".into());
+        assert_eq!(
+            queued_lines(&app, 40),
+            message_lines(Role::User, "world", 40),
+            "a queued message renders exactly like a user message"
+        );
+    }
+
+    #[test]
+    fn queued_lines_list_every_message_with_the_user_bullet() {
         let mut app = App::new();
         app.queued.push_back("world".into());
         app.queued.push_back("again".into());
-        let lines = queued_lines(&app, 40);
-        assert_eq!(lines.len(), 2);
-        assert!(
-            plain(&lines[0]).contains("↳ world"),
-            "{:?}",
-            plain(&lines[0])
-        );
-        assert!(
-            plain(&lines[1]).contains("↳ again"),
-            "{:?}",
-            plain(&lines[1])
-        );
+        let all: String = queued_lines(&app, 40)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("❯ world"), "{all:?}");
+        assert!(all.contains("❯ again"), "{all:?}");
     }
 
     #[test]
-    fn queued_lines_render_dim() {
+    fn queued_lines_wrap_a_long_message_across_rows() {
         let mut app = App::new();
-        app.queued.push_back("world".into());
-        let lines = queued_lines(&app, 40);
-        assert!(
-            lines[0]
-                .spans
-                .iter()
-                .all(|s| s.style.fg == Some(QUEUED_COLOR)),
-            "queued messages render dim"
-        );
+        app.queued
+            .push_back("alpha beta gamma delta epsilon".into());
+        let lines = queued_lines(&app, 18);
+        assert!(lines.len() >= 2, "a long queued message wraps: {lines:?}");
     }
 
     #[test]
-    fn queued_lines_flatten_newlines_to_one_row() {
+    fn queued_lines_cap_at_the_max() {
         let mut app = App::new();
-        app.queued.push_back("line one\nline two".into());
-        let lines = queued_lines(&app, 40);
-        assert_eq!(lines.len(), 1, "one row per queued message");
-        let text = plain(&lines[0]);
-        assert!(
-            text.contains("line one") && text.contains("line two"),
-            "{text:?}"
-        );
-        assert!(!text.contains('\n'), "newlines flattened: {text:?}");
-    }
-
-    #[test]
-    fn queued_lines_show_an_overflow_count() {
-        let mut app = App::new();
-        for i in 0..(QUEUED_MAX_ROWS as usize + 2) {
+        for i in 0..(QUEUED_MAX_ROWS as usize + 3) {
             app.queued.push_back(format!("m{i}"));
         }
-        let lines = queued_lines(&app, 40);
-        assert_eq!(lines.len(), QUEUED_MAX_ROWS as usize);
-        let last = plain(&lines[QUEUED_MAX_ROWS as usize - 1]);
-        assert!(last.contains("more"), "overflow line: {last:?}");
+        assert_eq!(queued_lines(&app, 40).len(), QUEUED_MAX_ROWS as usize);
     }
 
     #[test]
     fn live_height_grows_with_the_queue() {
         let mut app = App::new();
         app.begin_stream();
-        let without = live_height(&app.input, 40, 24, true, 0);
+        let without = live_height(&app.input, 40, 24, true, 0, 0);
         app.queued.push_back("world".into());
-        let with = live_height(&app.input, 40, 24, true, queued_rows(&app));
-        assert_eq!(with, without + 1, "one queued row grows the region by one");
+        let q = queued_rows(&app, 40);
+        let with = live_height(&app.input, 40, 24, true, q, 0);
+        assert_eq!(with, without + q, "the queue grows the region by its rows");
+        assert_eq!(q, 1, "one short queued message is one row");
     }
 
     #[test]
-    fn render_live_draws_the_queue_below_the_box() {
+    fn render_live_draws_the_queue_above_the_box_as_a_user_message() {
         let mut app = App::new();
         app.begin_stream();
         app.queued.push_back("world".into());
-        let h = live_height(&app.input, 40, 24, true, queued_rows(&app));
+        let q = queued_rows(&app, 40);
+        let h = live_height(&app.input, 40, 24, true, q, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
+        let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 40)).collect();
+        // The queued "❯ world" sits *above* the box's (first) top rule, not below.
+        let rule = rows
+            .iter()
+            .position(|r| r.contains('─'))
+            .expect("a box rule");
+        let world = rows
+            .iter()
+            .position(|r| r.contains("❯ world"))
+            .expect("the queued message");
         assert!(
-            row(&buf, h - 1, 40).contains("↳ world"),
-            "the queue sits on the last region row"
+            world < rule,
+            "the queued message is above the box: {rows:?}"
         );
-        let all: String = (0..h)
-            .map(|y| row(&buf, y, 40))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(all.contains('❯'), "the input box is still drawn");
     }
 
     #[test]
-    fn the_queue_renders_below_the_shortcuts_band() {
-        // Both can show at once (palette/shortcuts adjacent to the box, queue
-        // below): they share the band, stacked.
+    fn the_queue_and_the_shortcuts_band_show_in_their_own_slots() {
+        // The queue is in the strip (above the box); the shortcuts band is below
+        // it — independent slots, both visible at once.
         let mut app = App::new();
         app.begin_stream();
         app.shortcuts_open = true;
         app.queued.push_back("world".into());
-        let band = shortcuts_rows(&app) + queued_rows(&app);
-        let h = live_height(&app.input, 40, 24, true, band);
+        let q = queued_rows(&app, 40);
+        let h = live_height(&app.input, 40, 24, true, q, shortcuts_rows(&app));
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
-        assert!(
-            row(&buf, h - 1, 40).contains("↳ world"),
-            "the queue is the last row"
-        );
-        let all: String = (0..h)
-            .map(|y| row(&buf, y, 40))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert!(
-            all.contains("for commands"),
-            "shortcuts still shown: {all:?}"
-        );
+        let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 40)).collect();
+        let rule = rows
+            .iter()
+            .position(|r| r.contains('─'))
+            .expect("a box rule");
+        let world = rows
+            .iter()
+            .position(|r| r.contains("❯ world"))
+            .expect("the queued message");
+        let cmds = rows
+            .iter()
+            .position(|r| r.contains("for commands"))
+            .expect("the shortcuts band");
+        assert!(world < rule, "queue above the box: {rows:?}");
+        assert!(cmds > rule, "shortcuts below the box: {rows:?}");
     }
 }

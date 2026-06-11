@@ -82,17 +82,35 @@ before the next frame).
 
 ### Display (`ui.rs`)
 
-Queued messages render in the **band below the box** — the slot the palette /
-shortcuts already use — reusing the existing `band_rows` plumbing (no
-`live_height` signature change). `render_live` splits the band into the
-palette-or-shortcuts rows (adjacent to the box, as before) and the queue rows
-below them:
+Queued messages render **above the box, in the streaming strip** — stacked just
+under the status line's gap, between it and the box's top rule — each styled
+**exactly like a sent user message** (the `❯ ` bullet, the dark background,
+wrapped), so a queued follow-up reads like it is already on its way:
 
-- `queued_rows(app)` — `min(len, QUEUED_MAX_ROWS)`, 0 when empty. `live_height`
-  adds it (folded into `band_rows`); `render_live` paints exactly that many.
-- `queued_lines(app, width)` — one dim `↳ {peek}` line per message (newlines
-  flattened, truncated to width); a longer queue shows `QUEUED_MAX_ROWS - 1`
-  messages then a dim `… (+N more)`.
+```
+● Happy to help!…            ← streaming preview
+( ●    ) Working… (…)         ← status line
+
+❯ Hello                       ← queued, user-message style, wrapped
+❯ World
+────────────────────────────
+❯                             ← the input box
+────────────────────────────
+```
+
+The strip's height already collapses to 0 when idle, and the queue is only ever
+non-empty while streaming, so the queued rows live naturally in the strip. This
+needs a `queued_rows` parameter threaded through `live_height` / `live_layout` /
+`input_box` (the strip's height now depends on the wrapped queue), separate from
+the palette/shortcuts `band_rows` below the box:
+
+- `queued_rows(app, width)` — the total wrapped height of every queued message
+  (each via `message_lines(Role::User, …)`), capped at `QUEUED_MAX_ROWS`; 0 when
+  empty. `live_height`/`live_layout` add it to the strip; `render_live` paints
+  exactly that many — both go through `queued_lines`, so they can't drift.
+- `queued_lines(app, width)` — each queued message rendered by `message_lines`
+  (`❯` bullet, dark background, wrapped to `width`), concatenated and truncated
+  to `QUEUED_MAX_ROWS` rows so a long queue can't crowd out the box.
 
 ## Known divergences from codex
 
@@ -119,12 +137,15 @@ below them:
   a queued message is recorded in `input_history` (↑ recalls it); Alt+Up pops the
   last into the composer; Alt+Up with a draft is a no-op (no clobber); Alt+Up on an
   empty queue is harmless.
-- `ui` (queue): `queued_rows` is 0 empty / counts the queue / caps at
-  `QUEUED_MAX_ROWS`; `queued_lines` prefix + dim + truncation + overflow;
-  `live_height` grows with the queue; `render_live` draws the queue below the box.
-- `scripts/smoke.sh` Phase 12 (auto-send): submit `hello`, queue `world` mid-stream
-  (the `↳ world` band shows), then both turns complete — `❯ hello` and `❯ world`
-  both land, `Finished for` (turn 2) confirms `world` was auto-sent.
+- `ui` (queue): `queued_rows` is 0 empty / counts the queue / counts wrapped
+  lines / caps at `QUEUED_MAX_ROWS`; `queued_lines` styles each message exactly
+  like a user message (`❯` bullet, dark background) and wraps long ones;
+  `live_height` grows with the queue; `render_live` draws the queue *above* the
+  box (and the shortcuts band still shows below it, in its own slot).
+- `scripts/smoke.sh` Phase 12 (auto-send): submit `hello`, queue `world`
+  mid-stream (`❯ world` shows above the box while turn 1 streams), then both turns
+  complete — `❯ hello` and `❯ world` both land, `Finished for` (turn 2) confirms
+  `world` was auto-sent.
 - `scripts/smoke.sh` Phase 13 (interrupt-send): submit `hello`, queue `world`,
   press Esc — `Conversation interrupted` commits and `world` is sent right away
   (`❯ world` + `Finished for`).

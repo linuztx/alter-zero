@@ -354,8 +354,9 @@ printf '%s\n' "$band_typed"
 tmux kill-session -t "$S8" 2>/dev/null
 
 # --- Phase 12: a message submitted WHILE a turn streams is QUEUED (codex's
-# queued_user_messages, docs/queue.md): shown dim "↳ world" below the box, then
-# auto-sent as its OWN turn when the first finishes. Both "❯ hello there" and
+# queued_user_messages, docs/queue.md): shown like a user message "❯ world"
+# *above* the box while turn 1 streams, then auto-sent as its OWN turn when the
+# first finishes. Both "❯ hello there" and
 # "❯ world" must land, and turn 2's "Finished for" summary confirms the queued
 # message was sent on its own. ---
 S9="${S}_queue"
@@ -374,14 +375,17 @@ tmux send-keys -t "$S9" -l "world"
 sleep 0.2
 tmux send-keys -t "$S9" Enter # streaming → queued, not submitted
 queued_band=""
-for _ in $(seq 1 20); do # up to ~3s: the queued message shows dim below the box
+for _ in $(seq 1 20); do # up to ~3s: the queued message shows above the box
 	queued_band="$(tmux capture-pane -t "$S9" -p)"
-	if printf '%s' "$queued_band" | grep -qF "↳ world"; then
+	# While turn 1 still streams, "❯ world" can only be the queued display
+	# (it has not been sent yet); the status line confirms the turn is active.
+	if printf '%s' "$queued_band" | grep -qF "❯ world" &&
+		printf '%s' "$queued_band" | grep -qF "tokens"; then
 		break
 	fi
 	sleep 0.15
 done
-echo "==== captured pane (world queued below the box) ===="
+echo "==== captured pane (world queued above the box) ===="
 printf '%s\n' "$queued_band"
 queue_done=""
 for _ in $(seq 1 100); do # up to ~15s: both turns finish
@@ -629,10 +633,11 @@ if printf '%s' "$band_typed" | grep -qF "for commands"; then
 	echo "FAIL: typing a draft ending in '?' re-opened the shortcuts band" >&2
 	status=1
 fi
-# Phase 12: a message submitted mid-stream is queued (shown "↳ world") and
-# auto-sent as its own turn when the first finishes (docs/queue.md).
-if ! printf '%s' "$queued_band" | grep -qF "↳ world"; then
-	echo "FAIL: a message submitted while streaming was not queued below the box ('↳ world' missing)" >&2
+# Phase 12: a message submitted mid-stream is queued (shown like a user message
+# "❯ world" above the box, while turn 1 still streams) and auto-sent as its own
+# turn when the first finishes (docs/queue.md).
+if ! printf '%s' "$queued_band" | grep -qF "❯ world"; then
+	echo "FAIL: a message submitted while streaming was not shown queued above the box ('❯ world' missing while turn 1 streamed)" >&2
 	status=1
 fi
 if ! printf '%s' "$queue_done" | grep -qF "❯ world"; then

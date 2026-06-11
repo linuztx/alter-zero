@@ -513,7 +513,8 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
         screen.width,
         screen.height,
         app.is_streaming(),
-        ui::menu_rows(app) + ui::shortcuts_rows(app) + ui::queued_rows(app),
+        ui::queued_rows(app, screen.width),
+        ui::menu_rows(app) + ui::shortcuts_rows(app),
     )
 }
 
