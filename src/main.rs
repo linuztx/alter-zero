@@ -32,6 +32,7 @@
 //! repaint from it — see [`repaint_conversation`].
 
 use std::io;
+use std::path::PathBuf;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -81,6 +82,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // The reply backend. Swap this single line for a real model (any
     // `ReplySource`) and nothing else in the loop has to change.
     let backend = DummyAi;
+    // Session context for the footer under the box — the backend's model name
+    // and the cwd — formatted here at the boundary (the set_clock pattern: the
+    // pure core never reads the environment). See docs/footer.md.
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    app.set_session_info(backend.model_name(), ui::display_cwd(&cwd, home.as_deref()));
     // The in-flight reply's cancel token + thread handle, so a quit mid-stream
     // can stop and reap it cleanly. `None` whenever no reply is streaming.
     let mut inflight: Option<(CancelToken, JoinHandle<()>)> = None;
@@ -516,13 +523,15 @@ fn local_timestamp() -> String {
 /// the next [`draw`] will use. Shared so a post-stream commit can reserve that same
 /// idle height before flushing the final lines (see [`InlineViewport::set_view_height`]).
 fn live_region_height(app: &App, screen: Rect) -> u16 {
+    let band = ui::menu_rows(app) + ui::shortcuts_rows(app);
     ui::live_height(
         &app.input,
         screen.width,
         screen.height,
         app.is_streaming(),
         ui::queued_rows(app, screen.width),
-        ui::menu_rows(app) + ui::shortcuts_rows(app),
+        band,
+        ui::footer_rows(app, band),
     )
 }
 

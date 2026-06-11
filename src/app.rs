@@ -419,6 +419,19 @@ impl InputHistory {
     }
 }
 
+/// The session context shown in the footer under the input box: the backend's
+/// model name and the (display-ready, home-relativized) working directory.
+/// Plain strings — `main.rs` formats them at the I/O boundary
+/// ([`App::set_session_info`]) so the pure core never reads the environment.
+/// See `docs/footer.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionInfo {
+    /// The model id the active [`crate::stream::ReplySource`] answers as.
+    pub model: String,
+    /// The working directory, already formatted for display (`~`-relative).
+    pub cwd: String,
+}
+
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished
 /// history of messages and tool calls.
@@ -489,6 +502,11 @@ pub struct App {
     /// stamp is only ever shown in the Ctrl+O transcript (see
     /// `docs/timestamps.md`).
     clock: Option<fn() -> String>,
+    /// The session context shown in the footer under the input box (codex's
+    /// footer status line), injected at the I/O boundary
+    /// ([`App::set_session_info`]). `None` — the unit-test default — means no
+    /// footer row. See `docs/footer.md`.
+    pub session: Option<SessionInfo>,
 }
 
 impl App {
@@ -509,6 +527,18 @@ impl App {
     /// value, which is shown **only** in the Ctrl+O transcript.
     pub fn set_clock(&mut self, clock: fn() -> String) {
         self.clock = Some(clock);
+    }
+
+    /// Inject the session context shown in the footer under the input box
+    /// (called once at the I/O boundary in `main.rs`, like [`set_clock`]):
+    /// the backend's model name and the display-ready working directory.
+    ///
+    /// [`set_clock`]: App::set_clock
+    pub fn set_session_info(&mut self, model: impl Into<String>, cwd: impl Into<String>) {
+        self.session = Some(SessionInfo {
+            model: model.into(),
+            cwd: cwd.into(),
+        });
     }
 
     /// The current timestamp from the injected clock, or empty when none is set
@@ -2551,6 +2581,24 @@ mod tests {
         let mut app = App::new();
         app.record_user_message("hi");
         assert_eq!(message_at(&app, 0).timestamp, "");
+    }
+
+    // --- session info (the footer under the box; see docs/footer.md) ---
+
+    #[test]
+    fn session_info_is_unset_by_default() {
+        // The unit-test default: no footer until the I/O boundary injects the
+        // display strings (the set_clock pattern).
+        assert!(App::new().session.is_none());
+    }
+
+    #[test]
+    fn set_session_info_stores_the_display_strings() {
+        let mut app = App::new();
+        app.set_session_info("dummy_model_name", "~/inline-tui");
+        let session = app.session.as_ref().expect("session info stored");
+        assert_eq!(session.model, "dummy_model_name");
+        assert_eq!(session.cwd, "~/inline-tui");
     }
 
     // --- live status indicator (see docs/status-indicator.md) ---

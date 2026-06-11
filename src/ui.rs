@@ -6,6 +6,7 @@
 //! ([`render_live`]). That keeps them unit-testable with a plain `Buffer` or
 //! ratatui's `TestBackend`, with no real terminal involved.
 
+use std::path::Path;
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
@@ -238,6 +239,17 @@ const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
 /// left edge; the dark user-message block starts after it.
 const QUEUED_INDENT: &str = "  ";
 
+// --- The session-context footer: the dim `{model} · {cwd}` row pinned under
+// the input box (codex's footer status line). See docs/footer.md. ---
+
+/// Indent prefixed to the footer row (codex's `FOOTER_INDENT_COLS`).
+const FOOTER_INDENT: &str = "  ";
+/// Separator between the footer's segments (codex's dim ` · `).
+const FOOTER_SEPARATOR: &str = " · ";
+/// The footer's text colour — every segment dim, codex's no-theme-colours
+/// status-line style.
+const FOOTER_COLOR: Color = TOOL_DIM_COLOR;
+
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
 // derive their layout from `input_box` so the drawn text and cursor never drift;
@@ -281,10 +293,12 @@ fn field_width(width: u16) -> u16 {
 /// size: the streaming strip (only while `streaming`) plus the `queued_rows`
 /// queued-message lines stacked under its status (the strip's
 /// [`queued_rows`]), two framing rules, one row per wrapped input line — so the
-/// box **grows** as the message wraps — and the band below it (`band_rows`: the
+/// box **grows** as the message wraps — the band below it (`band_rows`: the
 /// command palette's [`menu_rows`] plus the shortcuts band's [`shortcuts_rows`],
-/// 0 when both are closed) — clamped to the terminal height (after which the box
-/// scrolls internally; see [`render_live`]).
+/// 0 when both are closed), and the session-context footer under that
+/// (`footer_rows`: [`footer_rows`], 0 when a band displaces it) — clamped to
+/// the terminal height (after which the box scrolls internally; see
+/// [`render_live`]).
 #[must_use]
 pub fn live_height(
     input: &TextArea,
@@ -293,9 +307,10 @@ pub fn live_height(
     streaming: bool,
     queued_rows: u16,
     band_rows: u16,
+    footer_rows: u16,
 ) -> u16 {
     let rows = input.row_count(field_width(width)) as u16;
-    (strip_rows(streaming) + queued_rows + INPUT_CHROME_ROWS + rows + band_rows)
+    (strip_rows(streaming) + queued_rows + INPUT_CHROME_ROWS + rows + band_rows + footer_rows)
         .min(term_height.max(1))
 }
 
@@ -345,20 +360,28 @@ pub fn repin(top: u16, old_height: u16, new_height: u16, screen_height: u16) -> 
     }
 }
 
-/// Split `area` into the live region's three stacked sub-areas
-/// `[strip, input, band]`. The strip holds the streaming preview, gap, status,
-/// gap, **and the `queued_rows` queued-message lines below them** (height 0 when
-/// idle); the band — the command palette *or* the `?` shortcuts overview — takes
-/// its fixed `band_rows` at the **bottom** (0 when closed); the input box takes
-/// whatever rows remain in between, so it **grows** as `area` grows (see
-/// [`live_height`]). Reserving the band below rather than between keeps the
-/// box's top — and the cursor — put when it opens. The only place the split is
-/// expressed.
-fn live_layout(area: Rect, streaming: bool, queued_rows: u16, band_rows: u16) -> [Rect; 3] {
+/// Split `area` into the live region's four stacked sub-areas
+/// `[strip, input, band, footer]`. The strip holds the streaming preview, gap,
+/// status, gap, **and the `queued_rows` queued-message lines below them**
+/// (height 0 when idle); the band — the command palette *or* the `?` shortcuts
+/// overview — takes its fixed `band_rows` below the box (0 when closed); the
+/// session-context footer sits on the very last `footer_rows` (0 when unset or
+/// displaced by the band); the input box takes whatever rows remain in
+/// between, so it **grows** as `area` grows (see [`live_height`]). Reserving
+/// the band and footer below rather than between keeps the box's top — and the
+/// cursor — put when they appear. The only place the split is expressed.
+fn live_layout(
+    area: Rect,
+    streaming: bool,
+    queued_rows: u16,
+    band_rows: u16,
+    footer_rows: u16,
+) -> [Rect; 4] {
     Layout::vertical([
         Constraint::Length(strip_rows(streaming) + queued_rows),
         Constraint::Min(0),
         Constraint::Length(band_rows),
+        Constraint::Length(footer_rows),
     ])
     .areas(area)
 }
@@ -387,8 +410,9 @@ fn input_box(
     streaming: bool,
     queued_rows: u16,
     band_rows: u16,
+    footer_rows: u16,
 ) -> InputBox {
-    let [_, frame, _] = live_layout(area, streaming, queued_rows, band_rows);
+    let [_, frame, _, _] = live_layout(area, streaming, queued_rows, band_rows, footer_rows);
     let text = frame.inner(Margin::new(0, 1)); // inset past the top & bottom rules
     let field = field_width(area.width);
     let rows = input.display_rows(field);
@@ -558,10 +582,13 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let shortcuts = shortcuts_rows(app);
     // The band below the box holds the palette *or* the shortcuts overview
     // (mutually exclusive: the palette needs a `/token`, the band an empty
-    // composer). Queued messages render in the strip *above* the box instead.
+    // composer). Queued messages render in the strip *above* the box instead;
+    // the session-context footer takes the very last row unless a band
+    // displaces it.
     let band = menu + shortcuts;
     let queued = queued_rows(app, area.width);
-    let [strip, _, band_area] = live_layout(area, streaming, queued, band);
+    let footer = footer_rows(app, band);
+    let [strip, _, band_area, footer_area] = live_layout(area, streaming, queued, band, footer);
 
     // Strip preview (top row; the rest of the strip is the blank gap). A running
     // tool takes precedence — its coloured header (blue) shows what's executing;
@@ -617,7 +644,7 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     }
 
     // The input box: a top/bottom rule framing the wrapped input rows.
-    let bx = input_box(area, &app.input, streaming, queued, band);
+    let bx = input_box(area, &app.input, streaming, queued, band, footer);
     let block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
@@ -647,6 +674,12 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
     } else if shortcuts > 0 {
         Paragraph::new(shortcuts_lines(app.turn_active())).render(band_area, buf);
+    }
+
+    // The session-context footer on the region's last row — only when no band
+    // is open (the band takes its place; see docs/footer.md).
+    if footer > 0 {
+        Paragraph::new(footer_line(app, footer_area.width)).render(footer_area, buf);
     }
 }
 
@@ -834,6 +867,75 @@ fn indent_queued_line(line: Line<'static>) -> Line<'static> {
             .map(|span| Span::styled(span.content, base.patch(span.style))),
     );
     Line::from(spans)
+}
+
+/// Rows the session-context footer occupies under the box: one once `main.rs`
+/// has injected the session info ([`crate::app::App::set_session_info`]) and
+/// no band is open — the palette / `?` shortcuts band **displaces** the footer
+/// (codex's popups and shortcut overlay take its row the same way) — else
+/// zero. [`live_height`] adds this; [`render_live`] paints exactly this many —
+/// the two must agree, like [`menu_rows`].
+#[must_use]
+pub fn footer_rows(app: &App, band_rows: u16) -> u16 {
+    u16::from(app.session.is_some() && band_rows == 0)
+}
+
+/// The footer's single line: the [`FOOTER_INDENT`], then `{model} · {cwd}` —
+/// every segment dim (codex's no-theme-colours status line, the separator dim
+/// like its ` · `) — cut with a trailing `…` when it overflows `width`
+/// (codex's `truncate_line_with_ellipsis_if_overflow`). Empty when no session
+/// info has been injected.
+#[must_use]
+pub fn footer_line(app: &App, width: u16) -> Line<'static> {
+    let Some(session) = &app.session else {
+        return Line::default();
+    };
+    let dim = Style::new().fg(FOOTER_COLOR);
+    let segments = [
+        Span::styled(session.model.clone(), dim),
+        Span::styled(FOOTER_SEPARATOR.to_string(), dim),
+        Span::styled(session.cwd.clone(), dim),
+    ];
+    let mut budget = (width as usize).saturating_sub(cols(FOOTER_INDENT));
+    let mut spans = vec![Span::raw(FOOTER_INDENT)];
+    if segments.iter().map(|s| cols(&s.content)).sum::<usize>() <= budget {
+        spans.extend(segments);
+        return Line::from(spans);
+    }
+    // Overflow: keep whole leading segments while they fit, cut the first that
+    // doesn't, and close with the ellipsis.
+    budget = budget.saturating_sub(cols(STATUS_ELLIPSIS));
+    for segment in segments {
+        let w = cols(&segment.content);
+        if w <= budget {
+            budget -= w;
+            spans.push(segment);
+        } else {
+            let cut = truncate_cols(&segment.content, budget);
+            if !cut.is_empty() {
+                spans.push(Span::styled(cut, segment.style));
+            }
+            break;
+        }
+    }
+    spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
+    Line::from(spans)
+}
+
+/// Format a working directory for the footer, codex-style
+/// (`format_directory_display`): `~` for the home directory itself, `~/rel`
+/// for paths under it (component-wise, so `/home/userx` is *not* under
+/// `/home/user`), and the absolute path as-is otherwise — or when no home is
+/// known. Pure: `main.rs` reads the environment and passes both paths in.
+#[must_use]
+pub fn display_cwd(cwd: &Path, home: Option<&Path>) -> String {
+    if let Some(rel) = home.and_then(|home| cwd.strip_prefix(home).ok()) {
+        if rel.as_os_str().is_empty() {
+            return "~".to_string();
+        }
+        return format!("~{}{}", std::path::MAIN_SEPARATOR, rel.display());
+    }
+    cwd.display().to_string()
 }
 
 /// The bullet colour for a tool's lifecycle: blue running, green ok, red fail.
@@ -1249,13 +1351,15 @@ pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
 pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The cursor is only ever placed while idle (it is hidden during streaming),
     // so the box is laid out without the streaming strip — but *with* the band
-    // below it (palette or shortcuts), so the box (and the cursor) sit correctly.
+    // and footer below it, so the box (and the cursor) sit correctly.
+    let band = menu_rows(app) + shortcuts_rows(app);
     let bx = input_box(
         area,
         &app.input,
         false,
         queued_rows(app, area.width),
-        menu_rows(app) + shortcuts_rows(app),
+        band,
+        footer_rows(app, band),
     );
     let row = bx.cursor_row.saturating_sub(bx.scroll) as u16;
     let col = bx.cursor_col as u16;
@@ -1998,7 +2102,7 @@ mod tests {
         app.begin_stream();
         app.push_chunk("hi");
         app.set_status_times(Duration::from_secs(3), None);
-        let h = live_height(&app.input, 40, 24, true, 0, 0);
+        let h = live_height(&app.input, 40, 24, true, 0, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -2021,7 +2125,7 @@ mod tests {
     fn render_live_grows_the_box_and_wraps_input_across_rows() {
         let mut app = App::new();
         app.input = TextArea::from_text("first\nsecond");
-        let h = live_height(&app.input, 20, 24, false, 0, 0);
+        let h = live_height(&app.input, 20, 24, false, 0, 0, 0);
         assert_eq!(h, 4, "two rules + two input rows (no strip when idle)");
         let mut buf = buffer(20, h);
         render_live(buf.area, &mut buf, &app);
@@ -2051,7 +2155,7 @@ mod tests {
                 .join("\n"),
         );
         let term_h = 6; // live clamps to 6 → text rows = 6 - 2 = 4
-        assert_eq!(live_height(&app.input, 20, term_h, false, 0, 0), 6);
+        assert_eq!(live_height(&app.input, 20, term_h, false, 0, 0, 0), 6);
         let mut buf = buffer(20, 6);
         render_live(buf.area, &mut buf, &app);
 
@@ -2119,7 +2223,7 @@ mod tests {
         // row (y = 2) just after the indented "cd" (x = 2 + 2).
         let mut app = App::new();
         app.input = TextArea::from_text("ab\ncd");
-        let area = Rect::new(0, 0, 20, live_height(&app.input, 20, 24, false, 0, 0));
+        let area = Rect::new(0, 0, 20, live_height(&app.input, 20, 24, false, 0, 0, 0));
         assert_eq!(cursor_position(area, &app), (4, 2));
     }
 
@@ -2205,11 +2309,11 @@ mod tests {
         // (no preview strip) = LIVE_MIN_HEIGHT (3).
         assert_eq!(LIVE_MIN_HEIGHT, 3);
         assert_eq!(
-            live_height(&TextArea::from_text(""), 40, 24, false, 0, 0),
+            live_height(&TextArea::from_text(""), 40, 24, false, 0, 0, 0),
             LIVE_MIN_HEIGHT
         );
         assert_eq!(
-            live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0),
+            live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0, 0),
             LIVE_MIN_HEIGHT
         );
     }
@@ -2222,8 +2326,8 @@ mod tests {
         for input in ["", "hi", "a\nb\nc"] {
             let ta = TextArea::from_text(input);
             assert_eq!(
-                live_height(&ta, 40, 24, true, 0, 0),
-                live_height(&ta, 40, 24, false, 0, 0) + 4,
+                live_height(&ta, 40, 24, true, 0, 0, 0),
+                live_height(&ta, 40, 24, false, 0, 0, 0) + 4,
                 "streaming adds the preview + gap + status + gap rows for {input:?}"
             );
         }
@@ -2234,7 +2338,7 @@ mod tests {
         // Idle, three explicit lines → the box has three text rows, so the live
         // region is 2 (two rules) + 3 = 5 rows tall.
         assert_eq!(
-            live_height(&TextArea::from_text("a\nb\nc"), 40, 24, false, 0, 0),
+            live_height(&TextArea::from_text("a\nb\nc"), 40, 24, false, 0, 0, 0),
             5
         );
     }
@@ -2250,6 +2354,7 @@ mod tests {
                 24,
                 false,
                 0,
+                0,
                 0
             ),
             4
@@ -2260,7 +2365,7 @@ mod tests {
     fn live_height_is_clamped_to_the_terminal_height() {
         let many = TextArea::from_text(&"a\n".repeat(50));
         assert_eq!(
-            live_height(&many, 40, 10, false, 0, 0),
+            live_height(&many, 40, 10, false, 0, 0, 0),
             10,
             "never taller than the screen"
         );
@@ -2338,24 +2443,34 @@ mod tests {
     // --- live-region layout: single source of truth ---
 
     #[test]
-    fn live_layout_splits_the_area_into_the_strip_box_and_menu() {
+    fn live_layout_splits_the_area_into_the_strip_box_band_and_footer() {
         // The strip takes its rows (preview + gap while streaming, none when
-        // idle); the menu takes its fixed rows at the bottom; the input box takes
-        // everything left — the three always tile the whole area, at the minimum
-        // height and beyond, streaming or not, palette open or closed.
+        // idle); the band takes its fixed rows below the box; the footer the
+        // very last row; the input box takes everything left — the four always
+        // tile the whole area, at the minimum height and beyond, streaming or
+        // not, band open or closed, footer shown or not.
         for streaming in [false, true] {
-            for menu_rows in [0, 3] {
-                // The smallest height still fits the streaming strip (4) + menu (3).
-                for h in [LIVE_MIN_HEIGHT + 4, 9, 20] {
-                    let [strip, input, menu] =
-                        live_layout(Rect::new(0, 0, 40, h), streaming, 0, menu_rows);
-                    assert_eq!(
-                        strip.height + input.height + menu.height,
-                        h,
-                        "sub-areas tile the area"
-                    );
-                    assert_eq!(strip.height, strip_rows(streaming));
-                    assert_eq!(menu.height, menu_rows);
+            for band_rows in [0, 3] {
+                for footer_rows in [0, 1] {
+                    // The smallest height still fits the streaming strip (4) +
+                    // band (3) + footer (1).
+                    for h in [LIVE_MIN_HEIGHT + 5, 9, 20] {
+                        let [strip, input, band, footer] = live_layout(
+                            Rect::new(0, 0, 40, h),
+                            streaming,
+                            0,
+                            band_rows,
+                            footer_rows,
+                        );
+                        assert_eq!(
+                            strip.height + input.height + band.height + footer.height,
+                            h,
+                            "sub-areas tile the area"
+                        );
+                        assert_eq!(strip.height, strip_rows(streaming));
+                        assert_eq!(band.height, band_rows);
+                        assert_eq!(footer.height, footer_rows);
+                    }
                 }
             }
         }
@@ -2629,8 +2744,16 @@ mod tests {
 
     #[test]
     fn live_height_adds_the_command_menu_band() {
-        let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0);
-        let open = live_height(&TextArea::from_text("/"), 40, 24, false, 0, MENU_MAX_ROWS);
+        let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0, 0);
+        let open = live_height(
+            &TextArea::from_text("/"),
+            40,
+            24,
+            false,
+            0,
+            MENU_MAX_ROWS,
+            0,
+        );
         assert_eq!(open, closed + MENU_MAX_ROWS, "the menu band adds its rows");
     }
 
@@ -2638,7 +2761,7 @@ mod tests {
     fn render_live_draws_the_command_menu_below_the_box() {
         let app = palette("/", 0);
         let menu = menu_rows(&app);
-        let h = live_height(&app.input, 40, 24, false, 0, menu);
+        let h = live_height(&app.input, 40, 24, false, 0, menu, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -2665,7 +2788,7 @@ mod tests {
             0,
             0,
             40,
-            live_height(&TextArea::from_text("/"), 40, 24, false, 0, 0),
+            live_height(&TextArea::from_text("/"), 40, 24, false, 0, 0, 0),
         );
         let closed = cursor_position(closed_area, &app);
         app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
@@ -2674,7 +2797,7 @@ mod tests {
             0,
             0,
             40,
-            live_height(&TextArea::from_text("/"), 40, 24, false, 0, menu),
+            live_height(&TextArea::from_text("/"), 40, 24, false, 0, menu, 0),
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the menu opens");
@@ -2751,8 +2874,8 @@ mod tests {
     fn live_height_adds_the_shortcuts_band() {
         let mut app = App::new();
         app.shortcuts_open = true;
-        let closed = live_height(&app.input, 40, 24, false, 0, 0);
-        let open = live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app));
+        let closed = live_height(&app.input, 40, 24, false, 0, 0, 0);
+        let open = live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app), 0);
         assert_eq!(open, closed + shortcuts_rows(&app));
     }
 
@@ -2760,7 +2883,7 @@ mod tests {
     fn render_live_draws_the_shortcuts_band_below_the_box() {
         let mut app = App::new();
         app.shortcuts_open = true;
-        let h = live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app));
+        let h = live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app), 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -2777,14 +2900,14 @@ mod tests {
     #[test]
     fn cursor_stays_in_the_box_when_the_shortcuts_band_opens() {
         let mut app = App::new();
-        let closed_area = Rect::new(0, 0, 40, live_height(&app.input, 40, 24, false, 0, 0));
+        let closed_area = Rect::new(0, 0, 40, live_height(&app.input, 40, 24, false, 0, 0, 0));
         let closed = cursor_position(closed_area, &app);
         app.shortcuts_open = true;
         let open_area = Rect::new(
             0,
             0,
             40,
-            live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app)),
+            live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app), 0),
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the band opens");
@@ -2887,10 +3010,10 @@ mod tests {
     fn live_height_grows_with_the_queue() {
         let mut app = App::new();
         app.begin_stream();
-        let without = live_height(&app.input, 40, 24, true, 0, 0);
+        let without = live_height(&app.input, 40, 24, true, 0, 0, 0);
         app.queued.push_back("world".into());
         let q = queued_rows(&app, 40);
-        let with = live_height(&app.input, 40, 24, true, q, 0);
+        let with = live_height(&app.input, 40, 24, true, q, 0, 0);
         assert_eq!(with, without + q, "the queue grows the region by its rows");
         assert_eq!(q, 1, "one short queued message is one row");
     }
@@ -2901,7 +3024,7 @@ mod tests {
         app.begin_stream();
         app.queued.push_back("world".into());
         let q = queued_rows(&app, 40);
-        let h = live_height(&app.input, 40, 24, true, q, 0);
+        let h = live_height(&app.input, 40, 24, true, q, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 40)).collect();
@@ -2934,7 +3057,7 @@ mod tests {
         app.shortcuts_open = true;
         app.queued.push_back("world".into());
         let q = queued_rows(&app, 40);
-        let h = live_height(&app.input, 40, 24, true, q, shortcuts_rows(&app));
+        let h = live_height(&app.input, 40, 24, true, q, shortcuts_rows(&app), 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 40)).collect();
@@ -2952,5 +3075,145 @@ mod tests {
             .expect("the shortcuts band");
         assert!(world < rule, "queue above the box: {rows:?}");
         assert!(cmds > rule, "shortcuts below the box: {rows:?}");
+    }
+
+    // --- the session-context footer under the box (docs/footer.md) ---
+
+    /// An app with session info injected, as `main.rs` does at startup.
+    fn with_session() -> App {
+        let mut app = App::new();
+        app.set_session_info("dummy_model_name", "~/inline-tui");
+        app
+    }
+
+    #[test]
+    fn footer_rows_is_zero_without_session_info_and_one_with_it() {
+        assert_eq!(footer_rows(&App::new(), 0), 0, "no session info → no row");
+        assert_eq!(footer_rows(&with_session(), 0), 1);
+    }
+
+    #[test]
+    fn footer_rows_yields_to_an_open_band() {
+        // codex's popups / shortcut overlay take the footer's place; our
+        // palette and `?` shortcuts band displace it the same way.
+        assert_eq!(footer_rows(&with_session(), 3), 0);
+    }
+
+    #[test]
+    fn footer_line_shows_model_and_cwd_dim_behind_the_indent() {
+        let line = footer_line(&with_session(), 60);
+        assert_eq!(plain(&line), "  dummy_model_name · ~/inline-tui");
+        // spans = [indent, model, separator, cwd] — every segment dim (codex's
+        // no-theme-colours status line), the indent unstyled.
+        assert_eq!(line.spans[0].style.fg, None);
+        for span in &line.spans[1..] {
+            assert_eq!(span.style.fg, Some(FOOTER_COLOR), "dim: {:?}", span.content);
+        }
+    }
+
+    #[test]
+    fn footer_line_truncates_with_an_ellipsis_when_narrow() {
+        let line = footer_line(&with_session(), 20);
+        let text = plain(&line);
+        assert!(cols(&text) <= 20, "fits the width: {text:?}");
+        assert!(text.ends_with('…'), "cut is visible: {text:?}");
+        assert!(text.starts_with("  dummy_model"), "head kept: {text:?}");
+    }
+
+    #[test]
+    fn display_cwd_relativizes_home_to_a_tilde() {
+        let home = Path::new("/home/user");
+        assert_eq!(display_cwd(home, Some(home)), "~");
+        assert_eq!(
+            display_cwd(Path::new("/home/user/code/tui"), Some(home)),
+            "~/code/tui"
+        );
+    }
+
+    #[test]
+    fn display_cwd_outside_home_or_without_one_stays_absolute() {
+        let home = Path::new("/home/user");
+        assert_eq!(
+            display_cwd(Path::new("/etc/nginx"), Some(home)),
+            "/etc/nginx"
+        );
+        assert_eq!(display_cwd(Path::new("/srv/app"), None), "/srv/app");
+        assert_eq!(
+            display_cwd(Path::new("/home/username"), Some(home)),
+            "/home/username",
+            "component-wise, not a string prefix"
+        );
+    }
+
+    #[test]
+    fn live_height_adds_the_footer_row() {
+        let ta = TextArea::from_text("hi");
+        assert_eq!(
+            live_height(&ta, 40, 24, false, 0, 0, 1),
+            live_height(&ta, 40, 24, false, 0, 0, 0) + 1,
+            "the footer adds its row at the very bottom"
+        );
+    }
+
+    #[test]
+    fn render_live_paints_the_footer_on_the_last_row() {
+        let app = with_session();
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 1);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        let last = row(&buf, h - 1, 60);
+        assert!(
+            last.contains("dummy_model_name · ~/inline-tui"),
+            "footer under the box: {last:?}"
+        );
+        assert!(last.starts_with("  dummy"), "two-column inset: {last:?}");
+        assert_eq!(buf[(0, h - 2)].symbol(), "─", "bottom rule right above it");
+    }
+
+    #[test]
+    fn the_footer_stays_while_a_turn_streams() {
+        let mut app = with_session();
+        app.begin_stream();
+        app.push_chunk("hello");
+        let h = live_height(&app.input, 60, 24, true, 0, 0, 1);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        assert!(
+            row(&buf, h - 1, 60).contains("dummy_model_name"),
+            "the footer is ambient — present mid-turn too"
+        );
+    }
+
+    #[test]
+    fn the_palette_replaces_the_footer() {
+        let mut app = palette("/", 0);
+        app.set_session_info("dummy_model_name", "~/inline-tui");
+        let band = menu_rows(&app);
+        let h = live_height(&app.input, 60, 24, false, 0, band, footer_rows(&app, band));
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 60))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("/help"), "palette shown: {all:?}");
+        assert!(
+            !all.contains("dummy_model_name"),
+            "the footer yields its slot: {all:?}"
+        );
+    }
+
+    #[test]
+    fn the_cursor_stays_put_when_the_footer_shows() {
+        // The footer is reserved *below* the box, so injecting session info
+        // must not move the cursor.
+        let mut app = App::new();
+        app.input = TextArea::from_text("hi");
+        let bare_h = live_height(&app.input, 40, 24, false, 0, 0, 0);
+        let bare = cursor_position(Rect::new(0, 0, 40, bare_h), &app);
+        app.set_session_info("dummy_model_name", "~/inline-tui");
+        let footer_h = live_height(&app.input, 40, 24, false, 0, 0, 1);
+        let with_footer = cursor_position(Rect::new(0, 0, 40, footer_h), &app);
+        assert_eq!(with_footer, bare, "cursor unchanged by the footer row");
     }
 }

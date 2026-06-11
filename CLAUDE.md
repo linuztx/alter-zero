@@ -43,7 +43,8 @@ The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
 `docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
 input-history recall in `docs/input-history.md`; the `?` shortcuts band in
-`docs/shortcuts.md`; the mid-turn message queue in `docs/queue.md`.
+`docs/shortcuts.md`; the mid-turn message queue in `docs/queue.md`; the
+session-context footer in `docs/footer.md`.
 
 ### The runtime model and its invariants
 
@@ -78,13 +79,18 @@ inset two columns — `  ❯ {msg}` rows in the strip under the status line —
 `queued_user_messages`), the whole backlog auto-sent as one batched turn when
 the current one ends — **Esc interrupts and sends the backlog right away**,
 Alt+Up pulls it all back into the composer to edit; see
-`docs/queue.md`) stays pinned at the bottom. The alternate screen is used in exactly one
+`docs/queue.md`; plus a one-row **session footer** on the region's last row —
+codex's footer status line, `{model} · {cwd}` dim and two-space inset
+(`dummy_model_name · ~/repo`) — whenever no band is open (the palette/shortcuts
+band displaces it; `App::set_session_info` injects the strings at the boundary
+like the clock, the model name coming from `ReplySource::model_name`; see
+`docs/footer.md`) stays pinned at the bottom. The alternate screen is used in exactly one
 place: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
 call's complete output while the conversation keeps streaming underneath (see
 invariant 4). ratatui's `Viewport::Inline` can't change height after startup, so
 `term::InlineViewport` is a *custom* inline viewport over a `CrosstermBackend`
 whose height is **dynamic** — the input box grows with the wrapped input, the
-streaming strip, and the palette band (`ui::live_height`). Four non-obvious
+streaming strip, the palette band, and the session footer (`ui::live_height`). Four non-obvious
 invariants hold the whole thing together — breaking any one reintroduces a class
 of bug:
 
@@ -283,18 +289,24 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
   key / dim label colours), the queued messages (the `QUEUED_INDENT` two-space
   inset, `queued_rows`/`queued_lines` — uncapped, each rendered by
-  `message_lines(Role::User…)`, so they reuse the user-message style), and
+  `message_lines(Role::User…)`, so they reuse the user-message style), the
+  session footer (`FOOTER_*` — the two-space `FOOTER_INDENT`, the ` · `
+  `FOOTER_SEPARATOR`, the dim `FOOTER_COLOR`; `footer_rows`/`footer_line`,
+  ellipsis-truncated at narrow widths, with `display_cwd` formatting the
+  `~`-relative path), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap + status + gap strip shows *only while a turn streams* — `strip_rows`
   (`render_live` draws the status line under the preview's gap) — with the
   **queued messages stacked below the status, *above* the box** (`queued_rows`,
-  user-message style), and the
+  user-message style), the
   command palette *or* the shortcuts band forms the band *below* the box —
-  `menu_rows` + `shortcuts_rows` — so the box's
-  dynamic `live_height` is streaming-, queue- and band-aware, and idle with no band
+  `menu_rows` + `shortcuts_rows` — and the session footer takes the region's
+  **last** row whenever no band is open (`footer_rows` — the band displaces
+  it) — so the box's
+  dynamic `live_height` is streaming-, queue-, band- and footer-aware, and idle with no band
   there is exactly one blank above the box: the committed spacer after the last
   message. `render_live` and `cursor_position` share the `input_box` helper, which
-  reserves the band so the cursor stays put when it opens; `tool_lines`
+  reserves the band and footer so the cursor stays put when they open; `tool_lines`
   and `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly.
@@ -314,6 +326,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   send `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure. For tool calls, send a
   `StreamEvent::ToolStart{name,args}` then a `ToolEnd{output,ok}`; wrap a reasoning
   phase in a `ThinkingStart`/`ThinkingEnd` pair to drive the `Thinking for Ns`
-  status (see `stream::turn_events` for the dummy's interleaved script). The loop and
+  status (see `stream::turn_events` for the dummy's interleaved script). Return
+  your real model id from `model_name()` — the session footer under the box
+  displays it. The loop and
   rendering treat chunks and tool output as opaque text, and estimate the status
   token counts app-side (no usage reporting in the protocol); nothing else changes.

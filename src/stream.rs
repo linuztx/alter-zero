@@ -185,6 +185,11 @@ pub trait ReplySource {
         tx: UnboundedSender<StreamEvent>,
         cancel: CancelToken,
     ) -> JoinHandle<()>;
+
+    /// The model id this backend answers as, shown in the session-context
+    /// footer under the input box (see `docs/footer.md`). A real backend
+    /// returns its real model name.
+    fn model_name(&self) -> String;
 }
 
 /// The built-in canned-reply backend used by the demo.
@@ -227,6 +232,11 @@ impl ReplySource for DummyAi {
             }
         })
     }
+
+    /// The dummy's placeholder model id (a real backend reports its real one).
+    fn model_name(&self) -> String {
+        "dummy_model_name".to_string()
+    }
 }
 
 /// Sleep up to `dur`, in short slices, returning early the moment `cancel` is
@@ -252,6 +262,13 @@ mod tests {
     #[test]
     fn dummy_response_is_non_empty() {
         assert!(!dummy_response("hello").is_empty());
+    }
+
+    #[test]
+    fn dummy_ai_reports_its_model_name() {
+        // The footer under the input box names the active backend's model
+        // (see docs/footer.md); the dummy reports its placeholder id.
+        assert_eq!(DummyAi.model_name(), "dummy_model_name");
     }
 
     #[test]
@@ -472,6 +489,10 @@ mod tests {
                 thread::spawn(move || {
                     let _ = tx.send(StreamEvent::Error("backend exploded".to_string()));
                 })
+            }
+
+            fn model_name(&self) -> String {
+                "failing".to_string()
             }
         }
         let (tx, mut rx) = unbounded_channel();

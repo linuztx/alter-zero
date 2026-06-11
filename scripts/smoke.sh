@@ -490,6 +490,13 @@ if ! printf '%s' "$pane" | grep -qF "tokens"; then
 	echo "FAIL: the live status line (token count) was not shown while streaming" >&2
 	status=1
 fi
+# The session-context footer ("{model} · {cwd}", docs/footer.md) sits under the
+# box from startup — including mid-stream, when this pane was captured. The cwd
+# half varies by environment, so assert on the model name + separator.
+if ! printf '%s' "$pane" | grep -qF "dummy_model_name ·"; then
+	echo "FAIL: the session footer ('dummy_model_name · …') is not shown under the input box" >&2
+	status=1
+fi
 # …and a blank gap row separates the status line from the box's top rule ("… ("
 # is unique to the status line: verb + ellipsis + the opening metrics paren).
 status_gap=$(printf '%s\n' "$pane" | awk '
@@ -554,6 +561,11 @@ if ! printf '%s' "$palette_open" | grep -qF "Clear the conversation"; then
 fi
 if ! printf '%s' "$palette_open" | grep -qF "Exit inline-tui"; then
 	echo "FAIL: the command palette did not list /quit" >&2
+	status=1
+fi
+# The open palette DISPLACES the session footer (codex's popups take its row).
+if printf '%s' "$palette_open" | grep -qF "dummy_model_name"; then
+	echo "FAIL: the session footer is still shown while the palette is open (the band must displace it)" >&2
 	status=1
 fi
 if ! printf '%s' "$help_ran" | grep -qF "Available commands:"; then
@@ -667,6 +679,16 @@ if printf '%s' "$band_closed" | grep -qF "for commands"; then
 	echo "FAIL: a second '?' did not close the shortcuts band" >&2
 	status=1
 fi
+# The shortcuts band displaces the session footer too; dismissing it brings the
+# footer back (same slot, codex's shortcut-overlay behaviour).
+if printf '%s' "$band_open" | grep -qF "dummy_model_name"; then
+	echo "FAIL: the session footer is still shown while the shortcuts band is open" >&2
+	status=1
+fi
+if ! printf '%s' "$band_closed" | grep -qF "dummy_model_name ·"; then
+	echo "FAIL: the session footer did not return after the shortcuts band closed" >&2
+	status=1
+fi
 if ! printf '%s' "$band_typed" | grep -qF "❯ really?"; then
 	echo "FAIL: '?' inside a draft was not typed as a literal character" >&2
 	status=1
@@ -729,6 +751,6 @@ if printf '%s' "$altup" | grep -qF "  ❯ world"; then
 	status=1
 fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, and messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit)"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), and the session footer ({model} · {cwd}) sits under the box except while a band is open"
 fi
 exit "$status"

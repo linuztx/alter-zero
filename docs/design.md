@@ -162,6 +162,15 @@ unit-tested must be unit-tested.
   newline-joined, multi-line draft to edit, extend, or drop (the merge codex
   applies when restoring pending messages). Slash commands aren't queued (they
   run inline via the palette).
+- **A session-context footer under the box** (codex's footer status line — see
+  `docs/footer.md`): the live region's last row shows `{model} · {cwd}` — the
+  backend's `ReplySource::model_name()` and the home-relativized working
+  directory (`display_cwd`: `~`, `~/rel`, or absolute) — dim, inset two
+  columns, ellipsis-truncated at narrow widths. Present from startup, idle and
+  mid-stream alike; the palette / `?` shortcuts band **displaces** it (codex's
+  popups take the row the same way), and it returns when the band closes. The
+  strings are injected once at the I/O boundary (`App::set_session_info`, the
+  `set_clock` pattern) so the pure core never reads the environment.
 - **Backend errors & cancellation.** A reply backend (`ReplySource`) may end with
   `Error(msg)` instead of `StreamDone`; the partial reply (if any) is kept and a
   red error notice is shown below it. The built-in `DummyAi` never errors — this is
@@ -203,10 +212,10 @@ logic is unit-testable without a real terminal.
 
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
-| `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`drain_queued`, Enter-queues + Alt+Up edit, `docs/queue.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory` types. | Yes |
+| `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`drain_queued`, Enter-queues + Alt+Up edit, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory`/`SessionInfo` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), `render_live`, and `render_tool_view`. | Yes |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
 | `paste.rs`  | Paste-burst detection: `PasteBurst`, a pure state machine — a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop coalesces the run's redraw. | Yes |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (scrollback), `draw` (re-pin + diff + synchronized-update + cursor), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore. | No (I/O boundary) |
@@ -409,6 +418,14 @@ frame scheduler ─► draw-tick ─────┘                             
   each message exactly like a user message (`❯` bullet, dark background),
   wrapping long ones; `live_height` grows with the queue; `render_live` draws it
   *above* the box, in its own strip slot independent of the shortcuts band below.
+- `stream`/`app`/`ui` (session footer): `DummyAi` reports its `model_name`;
+  `App.session` defaults unset and `set_session_info` stores the strings;
+  `footer_rows` 0 without session info / 1 with it / 0 when a band is open;
+  `footer_line` renders `  {model} · {cwd}` all-dim and truncates with `…` at
+  narrow widths; `display_cwd` maps home → `~`, under-home → `~/sub`
+  (component-wise), else absolute; `live_height` adds the row; `render_live`
+  paints it on the last row (idle and mid-stream, never with the palette);
+  the cursor stays put when it shows.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display
@@ -436,9 +453,9 @@ frame scheduler ─► draw-tick ─────┘                             
   alike, vs dimmed grey, no caret; placeholder when empty), and `render_live` draws
   it below the box with the cursor unmoved; the
   growing-input geometry — `live_height` grows a row per wrapped line, adds the
-  preview + gap + status + gap strip only while streaming and the palette band
-  below the
-  box, and clamps to the screen; `render_live` grows the box, scrolls the input to
+  preview + gap + status + gap strip only while streaming, the palette band
+  below the box, and the session footer on the last row, and clamps to the
+  screen; `render_live` grows the box, scrolls the input to
   keep the end visible, stacks the streaming preview (or a running tool's blue
   header), a blank gap, the status line, then another blank gap above the box, and
   shows no strip when
