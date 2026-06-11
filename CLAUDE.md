@@ -72,8 +72,9 @@ scrollable **slash-command palette** band *below* the box when the input is a ba
 overlay, two dim columns of `{key} for {thing}` entries — when `?` is pressed in
 an empty composer; any other key dismisses it, Esc dismiss-only; see
 `docs/shortcuts.md`); plus, *above* the box while a turn streams, **messages
-submitted with Enter queue** instead of waiting (shown like sent user messages —
-`❯ {msg}` rows in the strip under the status line — `App::queued`, codex's
+submitted with Enter queue** instead of waiting (shown like sent user messages,
+inset two columns — `  ❯ {msg}` rows in the strip under the status line —
+`App::queued`, codex's
 `queued_user_messages`), auto-sent one per turn as each ends — **Esc interrupts
 and sends the next queued one right away**, Alt+Up edits the last; see
 `docs/queue.md`) stays pinned at the bottom. The alternate screen is used in exactly one
@@ -276,7 +277,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), the `?` shortcuts
   band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
-  key / dim label colours), the queued messages (`QUEUED_MAX_ROWS` cap,
+  key / dim label colours), the queued messages (`QUEUED_MAX_ROWS` cap, the
+  `QUEUED_INDENT` two-space inset,
   `queued_rows`/`queued_lines` — each rendered by `message_lines(Role::User…)`,
   so they reuse the user-message style), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;

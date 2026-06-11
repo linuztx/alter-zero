@@ -152,8 +152,9 @@ unit-tested must be unit-tested.
   `docs/queue.md`): pressing Enter *during a turn* doesn't wait — the message
   joins `App::queued` (consuming the composer, recorded in `input_history` for ↑
   recall) and shows **above the box**, in the streaming strip under the status
-  line, styled exactly like a sent user message (`❯` bullet, dark background,
-  wrapped). When the turn ends the loop sends **one** queued message as its own turn
+  line, inset two columns and styled exactly like a sent user message (`❯`
+  bullet, dark background, wrapped). When the turn ends the loop sends **one**
+  queued message as its own turn
   (`App::dequeue`, FIFO — `main.rs::start_turn`, shared with `Submit`), and
   **Esc interrupts the current turn and sends the next queued one right away**.
   **Alt+Up** pulls the most-recent queued message back into an empty composer to
@@ -401,8 +402,9 @@ frame scheduler ─► draw-tick ─────┘                             
   `None` empty; Alt+Up pulls the last queued message into an empty composer and
   is a no-op against a draft or an empty queue.
 - `ui` (queued messages): `queued_rows` 0 empty / counts the queue / counts
-  wrapped lines / caps at `QUEUED_MAX_ROWS`; `queued_lines` styles each message
-  exactly like a user message (`❯` bullet, dark background) and wraps long ones;
+  wrapped lines / caps at `QUEUED_MAX_ROWS`; `queued_lines` insets every row two
+  columns (the indent outside the dark block) and past it styles each message
+  exactly like a user message (`❯` bullet, dark background), wrapping long ones;
   `live_height` grows with the queue; `render_live` draws it *above* the box, in
   its own strip slot independent of the shortcuts band below.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide

@@ -237,6 +237,9 @@ const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
 /// The most queued rows shown at once (totalled across the queued messages, each
 /// wrapped like a user message); a longer queue is truncated to this many rows.
 const QUEUED_MAX_ROWS: u16 = 6;
+/// Indent prefixed to every queued row, insetting the queue from the strip's
+/// left edge; the dark user-message block starts after it.
+const QUEUED_INDENT: &str = "  ";
 
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
@@ -804,20 +807,41 @@ pub fn queued_rows(app: &App, width: u16) -> u16 {
 
 /// The styled lines for the queued follow-up messages: each rendered like a sent
 /// user message ([`message_lines`] — the `❯ ` bullet, dark background, wrapped to
-/// `width`), concatenated and truncated to [`QUEUED_MAX_ROWS`] rows so a long
-/// queue can't crowd out the box. Empty when the queue is empty.
+/// `width` minus the [`QUEUED_INDENT`] every row is inset by), concatenated and
+/// truncated to [`QUEUED_MAX_ROWS`] rows so a long queue can't crowd out the box.
+/// Empty when the queue is empty.
 #[must_use]
 pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let cap = QUEUED_MAX_ROWS as usize;
+    let inner = width.saturating_sub(cols(QUEUED_INDENT) as u16);
     let mut lines: Vec<Line<'static>> = Vec::new();
     for msg in &app.queued {
         if lines.len() >= cap {
             break;
         }
-        lines.extend(message_lines(Role::User, msg, width));
+        lines.extend(
+            message_lines(Role::User, msg, inner)
+                .into_iter()
+                .map(indent_queued_line),
+        );
     }
     lines.truncate(cap);
     lines
+}
+
+/// Prefix one queued-message row with the [`QUEUED_INDENT`], keeping the indent
+/// *outside* the message's styling (the dark user-message block starts after it):
+/// the line-level style is folded into each span so the rebuilt line — and with
+/// it the indent — can stay unstyled.
+fn indent_queued_line(line: Line<'static>) -> Line<'static> {
+    let base = line.style;
+    let mut spans = vec![Span::raw(QUEUED_INDENT)];
+    spans.extend(
+        line.spans
+            .into_iter()
+            .map(|span| Span::styled(span.content, base.patch(span.style))),
+    );
+    Line::from(spans)
 }
 
 /// The bullet colour for a tool's lifecycle: blue running, green ok, red fail.
@@ -2804,14 +2828,26 @@ mod tests {
     }
 
     #[test]
-    fn queued_lines_style_each_message_like_a_user_message() {
-        // Same bullet + dark background as a sent user message (not a dim peek).
+    fn queued_lines_indent_two_columns_and_keep_the_user_style() {
+        // The queue is inset two columns from the strip's left edge; past the
+        // indent each message is exactly a user message (❯ bullet, dark
+        // background) wrapped to the remaining width — and the indent itself
+        // stays *outside* the dark block.
         let mut app = App::new();
         app.queued.push_back("world".into());
+        let lines = queued_lines(&app, 40);
+        let expected = message_lines(Role::User, "world", 38); // 40 minus the indent
+        assert_eq!(lines.len(), expected.len());
+        assert_eq!(plain(&lines[0]), format!("  {}", plain(&expected[0])));
+        let indent = &lines[0].spans[0];
+        assert_eq!(indent.content.as_ref(), "  ");
         assert_eq!(
-            queued_lines(&app, 40),
-            message_lines(Role::User, "world", 40),
-            "a queued message renders exactly like a user message"
+            indent.style.bg, None,
+            "the indent sits outside the dark block"
+        );
+        assert!(
+            lines[0].spans[1..].iter().all(|s| s.style.bg.is_some()),
+            "past the indent the user-message background holds: {lines:?}"
         );
     }
 
@@ -2825,8 +2861,8 @@ mod tests {
             .map(plain)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(all.contains("❯ world"), "{all:?}");
-        assert!(all.contains("❯ again"), "{all:?}");
+        assert!(all.contains("  ❯ world"), "{all:?}");
+        assert!(all.contains("  ❯ again"), "{all:?}");
     }
 
     #[test]
@@ -2836,6 +2872,10 @@ mod tests {
             .push_back("alpha beta gamma delta epsilon".into());
         let lines = queued_lines(&app, 18);
         assert!(lines.len() >= 2, "a long queued message wraps: {lines:?}");
+        assert!(
+            lines.iter().all(|l| plain(l).starts_with("  ")),
+            "wrapped continuation rows carry the indent too: {lines:?}"
+        );
     }
 
     #[test]
@@ -2881,6 +2921,11 @@ mod tests {
         assert!(
             world < rule,
             "the queued message is above the box: {rows:?}"
+        );
+        assert!(
+            rows[world].starts_with("  ❯"),
+            "the queued row is inset two columns: {:?}",
+            rows[world]
         );
     }
 

@@ -83,16 +83,17 @@ before the next frame).
 ### Display (`ui.rs`)
 
 Queued messages render **above the box, in the streaming strip** — stacked just
-under the status line's gap, between it and the box's top rule — each styled
-**exactly like a sent user message** (the `❯ ` bullet, the dark background,
-wrapped), so a queued follow-up reads like it is already on its way:
+under the status line's gap, between it and the box's top rule — each **inset
+two columns** (`QUEUED_INDENT`) and past the indent styled **exactly like a sent
+user message** (the `❯ ` bullet, the dark background, wrapped), so a queued
+follow-up reads like it is already on its way:
 
 ```
 ● Happy to help!…            ← streaming preview
 ( ●    ) Working… (…)         ← status line
 
-❯ Hello                       ← queued, user-message style, wrapped
-❯ World
+  ❯ Hello                     ← queued: two-space inset, user-message style
+  ❯ World
 ────────────────────────────
 ❯                             ← the input box
 ────────────────────────────
@@ -109,8 +110,10 @@ the palette/shortcuts `band_rows` below the box:
   empty. `live_height`/`live_layout` add it to the strip; `render_live` paints
   exactly that many — both go through `queued_lines`, so they can't drift.
 - `queued_lines(app, width)` — each queued message rendered by `message_lines`
-  (`❯` bullet, dark background, wrapped to `width`), concatenated and truncated
-  to `QUEUED_MAX_ROWS` rows so a long queue can't crowd out the box.
+  (`❯` bullet, dark background) wrapped to `width` minus the indent, every row
+  prefixed with `QUEUED_INDENT` (`indent_queued_line` folds the line style into
+  the spans so the indent stays *outside* the dark block), concatenated and
+  truncated to `QUEUED_MAX_ROWS` rows so a long queue can't crowd out the box.
 
 ## Known divergences from codex
 
