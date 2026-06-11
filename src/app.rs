@@ -657,18 +657,19 @@ impl App {
                 self.input.move_right();
                 Action::None
             }
-            // Alt+Up pulls the most-recent queued message back into an *empty*
-            // composer to edit, resend, or drop it (codex's edit_queued_message).
-            // Guarded on an empty composer so it never clobbers a draft (the
-            // composer is empty in the normal flow — Enter emptied it on queue).
+            // Alt+Up pulls the whole queued backlog back into an *empty*
+            // composer as one newline-joined, multi-line draft (oldest first) to
+            // edit, extend, or drop (codex merges pending messages the same way
+            // when restoring to the composer). Guarded on an empty composer so
+            // it never clobbers a draft (the composer is empty in the normal
+            // flow — Enter emptied it on queue).
             KeyCode::Up
                 if key.modifiers.contains(KeyModifiers::ALT)
                     && self.input.is_empty()
                     && !self.queued.is_empty() =>
             {
-                if let Some(text) = self.queued.pop_back() {
-                    self.recall_input(&text);
-                }
+                let text = self.drain_queued().join("\n");
+                self.recall_input(&text);
                 Action::None
             }
             // ↑/↓ first try shell-style history recall — only from an empty
@@ -2242,9 +2243,10 @@ mod tests {
     }
 
     #[test]
-    fn alt_up_pulls_the_last_queued_message_into_the_composer() {
-        // codex's edit_queued_message: Alt+Up pops the most-recent queued message
-        // back for editing/resending.
+    fn alt_up_pulls_the_whole_queue_into_the_composer_for_editing() {
+        // Alt+Up restores the entire backlog as one newline-joined draft (codex's
+        // drain_pending_messages_for_restore merges the same way), oldest first,
+        // emptying the queue — edit it, then Enter re-queues it as one message.
         let mut app = App::new();
         app.begin_stream();
         app.input = TextArea::from_text("older");
@@ -2252,9 +2254,17 @@ mod tests {
         app.input = TextArea::from_text("newer");
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
-        assert_eq!(app.input.text(), "newer", "the last queued message returns");
-        let left: Vec<&str> = app.queued.iter().map(String::as_str).collect();
-        assert_eq!(left, vec!["older"], "and it leaves the queue");
+        assert_eq!(
+            app.input.text(),
+            "older\nnewer",
+            "the whole backlog returns, newline-joined, oldest first"
+        );
+        assert_eq!(
+            app.input.cursor(),
+            "older\nnewer".len(),
+            "the cursor lands at the end, ready to edit"
+        );
+        assert!(app.queued.is_empty(), "the queue is emptied");
     }
 
     #[test]

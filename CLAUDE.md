@@ -77,7 +77,7 @@ inset two columns — `  ❯ {msg}` rows in the strip under the status line —
 `App::queued`, codex's
 `queued_user_messages`), the whole backlog auto-sent as one batched turn when
 the current one ends — **Esc interrupts and sends the backlog right away**,
-Alt+Up edits the last; see
+Alt+Up pulls it all back into the composer to edit; see
 `docs/queue.md`) stays pinned at the bottom. The alternate screen is used in exactly one
 place: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
 call's complete output while the conversation keeps streaming underneath (see
@@ -187,7 +187,8 @@ thread handle + `CancelToken` so a quit mid-stream cancels and reaps it.
 (codex's `queued_user_messages`) instead of producing `Submit` — shown like
 sent user messages (`❯` rows) in the strip above the box; `start_turn` is
 reused to flush the whole backlog as one batched turn per turn end (Alt+Up
-pulls the last back to edit; see `docs/queue.md`). The
+pulls the backlog back into the composer, newline-joined, to edit; see
+`docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
 and a `ThinkingStart`/`ThinkingEnd` pair between `Chunk`s; the loop shows the tool
 running (blue) then commits it collapsed (green/red), and flips its `thinking_start`

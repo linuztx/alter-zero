@@ -55,10 +55,13 @@ texts joined with newlines as a single prompt.
 - `App::drain_queued() -> Vec<String>` — takes the whole queue (FIFO order) for
   the loop to send as one batched next turn; empty when nothing is queued.
 - **Alt+Up** (`KeyCode::Up` with `ALT`, an **empty** composer, a non-empty queue):
-  `pop_back` the most-recent queued message into the composer via `recall_input`
-  (so it can be edited, resent, or dropped). Guarded on an empty composer so it
-  never clobbers a draft (the composer is empty in the normal flow — Enter emptied
-  it when queueing).
+  `drain_queued` the **whole backlog** into the composer as one newline-joined,
+  multi-line draft (oldest first) via `recall_input` — so the box shows
+  `❯ Hello` / `  World` / … for editing, extending, or dropping; Enter then
+  re-queues it as one message (codex merges pending messages the same way when
+  restoring to the composer). Guarded on an empty composer so it never clobbers
+  a draft (the composer is empty in the normal flow — Enter emptied it when
+  queueing).
 
 ### Flush (`main.rs`, the I/O boundary)
 
@@ -137,6 +140,10 @@ the palette/shortcuts `band_rows` below the box:
   honestly happened.
 - **Slash commands aren't queued.** A bare `/token` runs inline via the palette
   (as today); only plain text queues.
+- **Alt+Up restores everything, not just the last.** Codex's
+  `edit_queued_message` pops one message; ours drains the whole backlog into the
+  composer (the merge codex itself applies when restoring after an interrupt) —
+  one binding, the entire queue editable at once.
 - **No persistent edit hint.** Codex shows "Alt+Up edit last queued message" by
   the composer; we have no footer row, so Alt+Up is documented here and works, but
   isn't advertised in the static `?` shortcuts band.
@@ -148,8 +155,9 @@ the palette/shortcuts `band_rows` below the box:
 - `app` (queue): Enter mid-turn queues (composer cleared, `queued` grows, FIFO
   order preserved); idle Enter still submits; `drain_queued` takes everything in
   order and empties; a queued message is recorded in `input_history` (↑ recalls
-  it); Alt+Up pops the last into the composer; Alt+Up with a draft is a no-op
-  (no clobber); Alt+Up on an empty queue is harmless.
+  it); Alt+Up pulls the whole backlog into the composer newline-joined (cursor
+  at the end, queue emptied); Alt+Up with a draft is a no-op (no clobber);
+  Alt+Up on an empty queue is harmless.
 - `ui` (queue): `queued_rows` is 0 empty / counts the queue / counts wrapped
   lines / is uncapped (ten messages are ten rows); `queued_lines` styles each
   message exactly like a user message (`❯` bullet, dark background) and wraps
@@ -163,3 +171,6 @@ the palette/shortcuts `band_rows` below the box:
 - `scripts/smoke.sh` Phase 13 (interrupt-send): submit `hello`, queue `world`,
   press Esc — `Conversation interrupted` commits and the backlog is sent right
   away (`❯ world` + `Finished for`).
+- `scripts/smoke.sh` Phase 14 (Alt+Up restore): queue `world` and `again`
+  mid-stream, press Alt+Up — the inset queued rows clear and the box shows the
+  multi-line draft (`❯ world` + the `  again` continuation).

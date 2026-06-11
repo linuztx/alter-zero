@@ -158,9 +158,10 @@ unit-tested must be unit-tested.
   (`App::drain_queued`, FIFO — `main.rs::start_turn`, shared with `Submit`;
   each message commits as its own bubble, the backend gets one joined prompt),
   and **Esc interrupts the current turn and sends the backlog right away**.
-  **Alt+Up** pulls the most-recent queued message back into an empty composer to
-  edit, resend, or drop (codex's `edit_queued_message`). Slash commands aren't
-  queued (they run inline via the palette).
+  **Alt+Up** pulls the whole backlog back into an empty composer as one
+  newline-joined, multi-line draft to edit, extend, or drop (the merge codex
+  applies when restoring pending messages). Slash commands aren't queued (they
+  run inline via the palette).
 - **Backend errors & cancellation.** A reply backend (`ReplySource`) may end with
   `Error(msg)` instead of `StreamDone`; the partial reply (if any) is kept and a
   red error notice is shown below it. The built-in `DummyAi` never errors — this is
@@ -400,8 +401,8 @@ frame scheduler ─► draw-tick ─────┘                             
   `cursor_position` stays put when it opens.
 - `app` (message queue): Enter mid-turn queues (composer cleared, FIFO order,
   recorded for ↑ recall) while idle Enter still submits; `drain_queued` takes
-  everything in order and empties; Alt+Up pulls the last queued message into an
-  empty composer and is a no-op against a draft or an empty queue.
+  everything in order and empties; Alt+Up pulls the whole backlog into an empty
+  composer newline-joined and is a no-op against a draft or an empty queue.
 - `ui` (queued messages): `queued_rows` 0 empty / counts the queue / counts
   wrapped lines / uncapped (the whole backlog shows); `queued_lines` insets
   every row two columns (the indent outside the dark block) and past it styles

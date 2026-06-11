@@ -26,6 +26,7 @@ cleanup() {
 	tmux kill-session -t "${S}_shortcuts" 2>/dev/null
 	tmux kill-session -t "${S}_queue" 2>/dev/null
 	tmux kill-session -t "${S}_queueint" 2>/dev/null
+	tmux kill-session -t "${S}_altup" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -439,6 +440,41 @@ echo "==== captured pane (Esc interrupted turn 1 and sent the queued 'world') ==
 printf '%s\n' "$queueint"
 tmux kill-session -t "$S10" 2>/dev/null
 
+# --- Phase 14: Alt+Up pulls the WHOLE queued backlog back into the composer as
+# one newline-joined draft (docs/queue.md): queue "world" and "again" mid-stream,
+# press Alt+Up — the queue display clears and the input box shows the multi-line
+# draft ("❯ world" prompt line + "  again" indented continuation) for editing. ---
+S11="${S}_altup"
+tmux new-session -d -s "$S11" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S11" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S11" Enter
+for _ in $(seq 1 40); do # up to ~4s: wait until turn 1 is visibly streaming
+	if tmux capture-pane -t "$S11" -p | grep -qF "Happy"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S11" -l "world"
+sleep 0.2
+tmux send-keys -t "$S11" Enter
+tmux send-keys -t "$S11" -l "again"
+sleep 0.2
+tmux send-keys -t "$S11" Enter
+for _ in $(seq 1 20); do # both queued rows visible before the restore
+	if tmux capture-pane -t "$S11" -p | grep -qF "  ❯ again"; then
+		break
+	fi
+	sleep 0.15
+done
+tmux send-keys -t "$S11" M-Up
+sleep 0.4
+altup="$(tmux capture-pane -t "$S11" -p)"
+echo "==== captured pane (Alt+Up restored the backlog into the composer) ===="
+printf '%s\n' "$altup"
+tmux kill-session -t "$S11" 2>/dev/null
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -677,7 +713,22 @@ if ! printf '%s' "$queueint" | grep -qF "Finished for"; then
 	echo "FAIL: the queued message sent on interrupt never finished its turn" >&2
 	status=1
 fi
+# Phase 14: Alt+Up restores the whole backlog into the composer, newline-joined:
+# the box shows "❯ world" + the indented continuation "  again", and the inset
+# queued rows ("  ❯ …") are gone.
+if ! printf '%s' "$altup" | grep -qF "❯ world"; then
+	echo "FAIL: Alt+Up did not restore the queued backlog into the composer ('❯ world' draft line missing)" >&2
+	status=1
+fi
+if ! printf '%s' "$altup" | grep -qE '^  again'; then
+	echo "FAIL: the restored draft is not multi-line — the '  again' continuation row is missing" >&2
+	status=1
+fi
+if printf '%s' "$altup" | grep -qF "  ❯ world"; then
+	echo "FAIL: the queued display did not clear after Alt+Up pulled the backlog into the composer" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, and messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away)"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, and messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit)"
 fi
 exit "$status"
