@@ -23,6 +23,7 @@ cleanup() {
 	tmux kill-session -t "${S}_interrupt" 2>/dev/null
 	tmux kill-session -t "${S}_quit" 2>/dev/null
 	tmux kill-session -t "${S}_recall" 2>/dev/null
+	tmux kill-session -t "${S}_shortcuts" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -329,6 +330,27 @@ recall_resubmit_count=$(printf '%s\n' "$resubmitted" | grep -cF "❯ $RECALL_MSG
 echo "==== Phase 10: '❯ $RECALL_MSG' lines — after Up=$recall_up_count, after Down=$recall_down_count, after resubmit=$recall_resubmit_count ===="
 tmux kill-session -t "$S7" 2>/dev/null
 
+# --- Phase 11: `?` from an empty composer toggles the shortcuts band below the
+# box (codex's footer shortcut overlay — docs/shortcuts.md); a second `?` hides
+# it; and with a draft in the box `?` is just a character (no band). ---
+S8="${S}_shortcuts"
+tmux new-session -d -s "$S8" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S8" -l "?"
+sleep 0.3
+band_open="$(tmux capture-pane -t "$S8" -p)"
+echo "==== captured pane (shortcuts band open) ===="
+printf '%s\n' "$band_open"
+tmux send-keys -t "$S8" -l "?"
+sleep 0.3
+band_closed="$(tmux capture-pane -t "$S8" -p)"
+tmux send-keys -t "$S8" -l "really?"
+sleep 0.3
+band_typed="$(tmux capture-pane -t "$S8" -p)"
+echo "==== captured pane (after typing a draft containing '?') ===="
+printf '%s\n' "$band_typed"
+tmux kill-session -t "$S8" 2>/dev/null
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -507,7 +529,29 @@ if [ "${recall_resubmit_count:-0}" -lt 2 ]; then
 	echo "FAIL: the recalled message was not resubmitted — expected a second committed '❯ $RECALL_MSG' line (saw $recall_resubmit_count)" >&2
 	status=1
 fi
+# Phase 11: the `?` shortcuts band (docs/shortcuts.md). "for commands" only
+# ever appears in the band, so it's a clean open/closed marker.
+if ! printf '%s' "$band_open" | grep -qF "for commands"; then
+	echo "FAIL: '?' with an empty composer did not open the shortcuts band" >&2
+	status=1
+fi
+if ! printf '%s' "$band_open" | grep -qF "ctrl+c to quit"; then
+	echo "FAIL: the shortcuts band is missing its quit entry" >&2
+	status=1
+fi
+if printf '%s' "$band_closed" | grep -qF "for commands"; then
+	echo "FAIL: a second '?' did not close the shortcuts band" >&2
+	status=1
+fi
+if ! printf '%s' "$band_typed" | grep -qF "❯ really?"; then
+	echo "FAIL: '?' inside a draft was not typed as a literal character" >&2
+	status=1
+fi
+if printf '%s' "$band_typed" | grep -qF "for commands"; then
+	echo "FAIL: typing a draft ending in '?' re-opened the shortcuts band" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, and Up recalls the last sent message for resubmission"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, and ? toggles the shortcuts band"
 fi
 exit "$status"

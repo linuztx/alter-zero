@@ -42,7 +42,8 @@ geometry decision `term.rs` makes is a pure `ui` helper it calls.
 The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
 `docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
-input-history recall in `docs/input-history.md`.
+input-history recall in `docs/input-history.md`; the `?` shortcuts band in
+`docs/shortcuts.md`.
 
 ### The runtime model and its invariants
 
@@ -67,7 +68,10 @@ failed, commit the red `Conversation interrupted` notice, **no** summary; see
 then another blank gap row so the
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
-`/token`) stays pinned at the bottom. The alternate screen is used in exactly one
+`/token` (the same slot shows a **`?` shortcuts band** — codex's footer shortcut
+overlay, two dim columns of `{key} for {thing}` entries — when `?` is pressed in
+an empty composer; any other key dismisses it, Esc dismiss-only; see
+`docs/shortcuts.md`)) stays pinned at the bottom. The alternate screen is used in exactly one
 place: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
 call's complete output while the conversation keeps streaming underneath (see
 invariant 4). ratatui's `Viewport::Inline` can't change height after startup, so
@@ -256,16 +260,19 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `app.rs`, picked per-turn), the
   slash-command palette (`MENU_*` — the `MENU_DESC_COL`
   description column, the cyan/dimmed colours that light up the whole selected row
-  — name and description alike — and the `MENU_MAX_ROWS` cap), and
+  — name and description alike — and the `MENU_MAX_ROWS` cap), the `?` shortcuts
+  band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
+  key / dim label colours), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap + status + gap strip shows *only while a turn streams* — `strip_rows`
   (`render_live` draws the status line under the preview's gap, a blank row above
   the box) — and the
-  command palette is a third band *below* the box — `menu_rows` — so the box's
-  dynamic `live_height` is streaming- and palette-aware, and idle with no palette
+  command palette *or* the shortcuts band is a third band *below* the box —
+  `menu_rows` + `shortcuts_rows` — so the box's
+  dynamic `live_height` is streaming- and band-aware, and idle with no band
   there is exactly one blank above the box: the committed spacer after the last
   message. `render_live` and `cursor_position` share the `input_box` helper, which
-  reserves the menu band so the cursor stays put when the palette opens; `tool_lines`
+  reserves the band so the cursor stays put when it opens; `tool_lines`
   and `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly.

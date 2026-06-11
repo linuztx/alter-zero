@@ -137,6 +137,17 @@ unit-tested must be unit-tested.
   command later is a one-line registry edit + an effect arm in
   `run_selected_command` — the palette, filtering, scrolling, and dispatch don't
   change.
+- **`?` shows a shortcuts band** (codex's footer shortcut overlay — see
+  `docs/shortcuts.md`): pressing `?` (shift-modified or not) in an **empty
+  composer** toggles a keyboard-shortcuts overview in the palette's slot below
+  the box — two aligned columns of `{key} for {thing}` entries (keys cyan,
+  labels dim) listing `/`, `↑`, `alt+enter`, `ctrl+o`, `esc`, and `ctrl+c`;
+  the `esc` entry reads `to interrupt` while a turn runs and `to quit` idle.
+  With a draft in the box `?` is just a character. The band is display-only,
+  never modal: any other key closes it and still performs its action — except
+  Esc, which only dismisses (the palette's Esc rule; idle Esc would otherwise
+  quit). The band and the palette never show together, and the cursor stays
+  put when the band opens (it is reserved below the box).
 - **Backend errors & cancellation.** A reply backend (`ReplySource`) may end with
   `Error(msg)` instead of `StreamDone`; the partial reply (if any) is kept and a
   red error notice is shown below it. The built-in `DummyAi` never errors — this is
@@ -179,9 +190,9 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory` types. | Yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), `render_live`, and `render_tool_view`. | Yes |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`) and the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
 | `paste.rs`  | Paste-burst detection: `PasteBurst`, a pure state machine — a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop coalesces the run's redraw. | Yes |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (scrollback), `draw` (re-pin + diff + synchronized-update + cursor), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore. | No (I/O boundary) |
@@ -365,6 +376,15 @@ frame scheduler ─► draw-tick ─────┘                             
   adjacent duplicates collapse; blanks are never recorded; Ctrl+C's cleared
   draft is recallable; a recalled `/token` reopens the palette; `/clear`
   keeps the recall history.
+- `app` (shortcuts band): `?` toggles it from an empty composer (shift-modified
+  too) and types into a non-empty draft; any other key closes it but still
+  acts (typing, ↑ recall, `/` palette); Esc only dismisses — no quit idle, no
+  interrupt mid-turn (the turn is untouched); `?` is ignored in the tool view.
+- `ui` (shortcuts band): `shortcuts_rows` 0 closed / entries-per-2 open;
+  `shortcuts_lines` lists the bindings in two aligned columns, keys cyan and
+  labels dim, the `esc` entry flipping `to quit`/`to interrupt` with the turn;
+  `live_height` grows by the band; `render_live` paints it below the box;
+  `cursor_position` stays put when it opens.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display

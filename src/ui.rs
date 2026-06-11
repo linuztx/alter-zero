@@ -202,6 +202,32 @@ const MENU_SELECTED_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
 /// Dim grey — an unselected row (name and description alike).
 const MENU_DIM_COLOR: Color = TOOL_DIM_COLOR;
 
+// --- The `?` shortcuts band. A keyboard-shortcuts overview pinned **below the
+// input box** (the palette's slot — the two never show together), toggled by
+// `?` from an empty composer — a port of codex's footer shortcut overlay
+// (`footer.rs::shortcut_overlay_lines`): two aligned columns of
+// `{key} for {thing}` entries, keys cyan, labels dim. See docs/shortcuts.md. ---
+
+/// The bindings listed in the band, as `(key, label)` pairs laid out two per
+/// row in declaration order. The `esc` entry's label is context-sensitive —
+/// [`shortcuts_lines`] swaps it for ` to interrupt` while a turn runs (codex's
+/// quit entry does the same).
+const SHORTCUTS: &[(&str, &str)] = &[
+    ("/", " for commands"),
+    ("↑", " for input history"),
+    ("alt+enter", " for newline"),
+    ("ctrl+o", " for tool output"),
+    ("esc", " to quit"),
+    ("ctrl+c", " to quit"),
+];
+/// The display column where a row's second entry starts (the first entry is
+/// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea.
+const SHORTCUTS_COL: usize = 25;
+/// Cyan — an entry's key (the palette-selection accent).
+const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;
+/// Dim grey — an entry's label (codex dims the whole overlay).
+const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
+
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
 // derive their layout from `input_box` so the drawn text and cursor never drift;
@@ -242,7 +268,8 @@ fn field_width(width: u16) -> u16 {
 /// Height of the bottom live region for the current `input` at this terminal
 /// size: the streaming strip (only while `streaming`), two framing rules, one
 /// row per wrapped input line — so the box **grows** as the message wraps — and
-/// the command-palette band below it (`menu_rows`, 0 when closed) — clamped to the
+/// the band below it (`band_rows`: the command palette's [`menu_rows`] plus the
+/// shortcuts band's [`shortcuts_rows`], 0 when both are closed) — clamped to the
 /// terminal height (after which the box scrolls internally; see [`render_live`]).
 #[must_use]
 pub fn live_height(
@@ -250,10 +277,10 @@ pub fn live_height(
     width: u16,
     term_height: u16,
     streaming: bool,
-    menu_rows: u16,
+    band_rows: u16,
 ) -> u16 {
     let rows = input.row_count(field_width(width)) as u16;
-    (strip_rows(streaming) + INPUT_CHROME_ROWS + rows + menu_rows).min(term_height.max(1))
+    (strip_rows(streaming) + INPUT_CHROME_ROWS + rows + band_rows).min(term_height.max(1))
 }
 
 /// How to re-pin the live region when its height changes between draws, keeping
@@ -303,17 +330,18 @@ pub fn repin(top: u16, old_height: u16, new_height: u16, screen_height: u16) -> 
 }
 
 /// Split `area` into the live region's three stacked sub-areas
-/// `[strip, input, menu]`. The strip holds the streaming preview + gap (height 0
-/// when idle); the command palette takes its fixed `menu_rows` at the **bottom**
-/// (0 when closed); the input box takes whatever rows remain in between, so it
-/// **grows** as `area` grows (see [`live_height`]). Reserving the menu below
-/// rather than between keeps the box's top — and the cursor — put when the
-/// palette opens. The only place the split is expressed.
-fn live_layout(area: Rect, streaming: bool, menu_rows: u16) -> [Rect; 3] {
+/// `[strip, input, band]`. The strip holds the streaming preview + gap (height 0
+/// when idle); the band — the command palette *or* the `?` shortcuts overview —
+/// takes its fixed `band_rows` at the **bottom** (0 when closed); the input box
+/// takes whatever rows remain in between, so it **grows** as `area` grows (see
+/// [`live_height`]). Reserving the band below rather than between keeps the
+/// box's top — and the cursor — put when it opens. The only place the split is
+/// expressed.
+fn live_layout(area: Rect, streaming: bool, band_rows: u16) -> [Rect; 3] {
     Layout::vertical([
         Constraint::Length(strip_rows(streaming)),
         Constraint::Min(0),
-        Constraint::Length(menu_rows),
+        Constraint::Length(band_rows),
     ])
     .areas(area)
 }
@@ -336,8 +364,8 @@ struct InputBox {
     scroll: usize,
 }
 
-fn input_box(area: Rect, input: &TextArea, streaming: bool, menu_rows: u16) -> InputBox {
-    let [_, frame, _] = live_layout(area, streaming, menu_rows);
+fn input_box(area: Rect, input: &TextArea, streaming: bool, band_rows: u16) -> InputBox {
+    let [_, frame, _] = live_layout(area, streaming, band_rows);
     let text = frame.inner(Margin::new(0, 1)); // inset past the top & bottom rules
     let field = field_width(area.width);
     let rows = input.display_rows(field);
@@ -504,7 +532,11 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let streaming = app.is_streaming();
     let menu = menu_rows(app);
-    let [strip, _, menu_area] = live_layout(area, streaming, menu);
+    // The band below the box holds the palette *or* the shortcuts overview
+    // (mutually exclusive: the palette needs a `/token`, the band an empty
+    // composer).
+    let band = menu + shortcuts_rows(app);
+    let [strip, _, band_area] = live_layout(area, streaming, band);
 
     // Strip preview (top row; the rest of the strip is the blank gap). A running
     // tool takes precedence — its coloured header (blue) shows what's executing;
@@ -542,7 +574,7 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     }
 
     // The input box: a top/bottom rule framing the wrapped input rows.
-    let bx = input_box(area, &app.input, streaming, menu);
+    let bx = input_box(area, &app.input, streaming, band);
     let block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
@@ -567,9 +599,11 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         .collect();
     Paragraph::new(lines).render(bx.text, buf);
 
-    // The command palette, pinned in its reserved band below the box.
+    // The palette or the shortcuts overview, pinned in the band below the box.
     if menu > 0 {
-        Paragraph::new(command_menu_lines(app, menu_area.width)).render(menu_area, buf);
+        Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
+    } else if band > 0 {
+        Paragraph::new(shortcuts_lines(app.turn_active())).render(band_area, buf);
     }
 }
 
@@ -664,6 +698,54 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .skip(offset)
         .take(max)
         .map(|(i, cmd)| menu_row(cmd, i == menu.selected, width))
+        .collect()
+}
+
+/// How many rows the `?` shortcuts band occupies for `app`: 0 when closed,
+/// otherwise the entry list two-per-row. [`live_height`] adds this (via its
+/// band parameter); [`render_live`] paints exactly this many rows — the two
+/// must agree, like [`menu_rows`].
+#[must_use]
+pub fn shortcuts_rows(app: &App) -> u16 {
+    if app.shortcuts_open {
+        SHORTCUTS.len().div_ceil(2) as u16
+    } else {
+        0
+    }
+}
+
+/// The styled lines for the open shortcuts band: the [`SHORTCUTS`] entries two
+/// per row — the second column starting at [`SHORTCUTS_COL`] — with keys cyan
+/// and labels dim. While a turn is in flight the `esc` entry reads
+/// ` to interrupt` (it would quit only when idle), codex's context-sensitive
+/// quit entry.
+#[must_use]
+pub fn shortcuts_lines(turn_active: bool) -> Vec<Line<'static>> {
+    let entry = |key: &'static str, label: &'static str| {
+        let label = if key == "esc" && turn_active {
+            " to interrupt"
+        } else {
+            label
+        };
+        [
+            Span::styled(key, Style::new().fg(SHORTCUTS_KEY_COLOR)),
+            Span::styled(label, Style::new().fg(SHORTCUTS_TEXT_COLOR)),
+        ]
+    };
+    SHORTCUTS
+        .chunks(2)
+        .map(|pair| {
+            let [key, label] = entry(pair[0].0, pair[0].1);
+            let mut spans = vec![key, label];
+            if let Some(&(key2, label2)) = pair.get(1) {
+                let used = cols(pair[0].0) + cols(spans[1].content.as_ref());
+                spans.push(Span::raw(
+                    " ".repeat(SHORTCUTS_COL.saturating_sub(used).max(1)),
+                ));
+                spans.extend(entry(key2, label2));
+            }
+            Line::from(spans)
+        })
         .collect()
 }
 
@@ -1079,9 +1161,14 @@ pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
 #[must_use]
 pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The cursor is only ever placed while idle (it is hidden during streaming),
-    // so the box is laid out without the streaming strip — but *with* the command
-    // palette's reserved band below it, so the box (and the cursor) sit correctly.
-    let bx = input_box(area, &app.input, false, menu_rows(app));
+    // so the box is laid out without the streaming strip — but *with* the band
+    // below it (palette or shortcuts), so the box (and the cursor) sit correctly.
+    let bx = input_box(
+        area,
+        &app.input,
+        false,
+        menu_rows(app) + shortcuts_rows(app),
+    );
     let row = bx.cursor_row.saturating_sub(bx.scroll) as u16;
     let col = bx.cursor_col as u16;
     (bx.text.x + BULLET_WIDTH + col, bx.text.y + row)
@@ -2496,5 +2583,115 @@ mod tests {
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the menu opens");
+    }
+
+    // --- the `?` shortcuts band (docs/shortcuts.md) ---
+
+    #[test]
+    fn shortcuts_rows_is_zero_closed_and_counts_the_band_open() {
+        let mut app = App::new();
+        assert_eq!(shortcuts_rows(&app), 0);
+        app.shortcuts_open = true;
+        assert_eq!(
+            shortcuts_rows(&app),
+            SHORTCUTS.len().div_ceil(2) as u16,
+            "two entries per row"
+        );
+    }
+
+    #[test]
+    fn shortcuts_lines_list_the_bindings_in_two_columns() {
+        let texts: Vec<String> = shortcuts_lines(false)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(texts.len(), SHORTCUTS.len().div_ceil(2));
+        assert!(
+            texts[0].contains("/ for commands") && texts[0].contains("↑ for input history"),
+            "{texts:?}"
+        );
+        assert!(
+            texts[1].contains("alt+enter for newline")
+                && texts[1].contains("ctrl+o for tool output"),
+            "{texts:?}"
+        );
+        assert!(
+            texts[2].contains("esc to quit") && texts[2].contains("ctrl+c to quit"),
+            "{texts:?}"
+        );
+        // The second column is aligned: both rows' right keys start at the
+        // same display column.
+        let col = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);
+        assert_eq!(
+            col(&texts[0], "↑"),
+            col(&texts[1], "ctrl+o"),
+            "right column aligned: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn shortcuts_lines_flip_the_esc_entry_while_a_turn_runs() {
+        // codex's quit entry is context-sensitive: "to interrupt" while a task
+        // runs. Our Esc entry flips the same way.
+        let idle: Vec<String> = shortcuts_lines(false).iter().map(|l| plain(l)).collect();
+        let busy: Vec<String> = shortcuts_lines(true).iter().map(|l| plain(l)).collect();
+        assert!(idle.iter().any(|t| t.contains("esc to quit")), "{idle:?}");
+        assert!(
+            busy.iter().any(|t| t.contains("esc to interrupt")),
+            "{busy:?}"
+        );
+        assert!(!busy.iter().any(|t| t.contains("esc to quit")), "{busy:?}");
+    }
+
+    #[test]
+    fn shortcuts_lines_style_keys_cyan_and_labels_dim() {
+        for line in shortcuts_lines(false) {
+            // spans = [key, label, pad, key, label] — keys cyan, labels dim.
+            assert_eq!(line.spans[0].style.fg, Some(SHORTCUTS_KEY_COLOR));
+            assert_eq!(line.spans[1].style.fg, Some(SHORTCUTS_TEXT_COLOR));
+        }
+    }
+
+    #[test]
+    fn live_height_adds_the_shortcuts_band() {
+        let mut app = App::new();
+        app.shortcuts_open = true;
+        let closed = live_height(&app.input, 40, 24, false, 0);
+        let open = live_height(&app.input, 40, 24, false, shortcuts_rows(&app));
+        assert_eq!(open, closed + shortcuts_rows(&app));
+    }
+
+    #[test]
+    fn render_live_draws_the_shortcuts_band_below_the_box() {
+        let mut app = App::new();
+        app.shortcuts_open = true;
+        let h = live_height(&app.input, 40, 24, false, shortcuts_rows(&app));
+        let mut buf = buffer(40, h);
+        render_live(buf.area, &mut buf, &app);
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("/ for commands"), "band rendered: {all:?}");
+        assert!(
+            row(&buf, h - 1, 40).contains("ctrl+c to quit"),
+            "the last band row sits on the last region row"
+        );
+    }
+
+    #[test]
+    fn cursor_stays_in_the_box_when_the_shortcuts_band_opens() {
+        let mut app = App::new();
+        let closed_area = Rect::new(0, 0, 40, live_height(&app.input, 40, 24, false, 0));
+        let closed = cursor_position(closed_area, &app);
+        app.shortcuts_open = true;
+        let open_area = Rect::new(
+            0,
+            0,
+            40,
+            live_height(&app.input, 40, 24, false, shortcuts_rows(&app)),
+        );
+        let open = cursor_position(open_area, &app);
+        assert_eq!(open, closed, "cursor unchanged when the band opens");
     }
 }

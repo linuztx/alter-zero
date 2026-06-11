@@ -437,6 +437,11 @@ pub struct App {
     /// Survives `/clear` — like codex, whose history even spans sessions. See
     /// `docs/input-history.md`.
     pub input_history: InputHistory,
+    /// Whether the `?` shortcuts band (the keyboard-shortcuts overview below
+    /// the input box — codex's footer shortcut overlay) is showing. Toggled by
+    /// `?` from an empty composer; any other key closes it. See
+    /// `docs/shortcuts.md`.
+    pub shortcuts_open: bool,
     /// `Some(buffer)` while the AI reply is streaming, accumulating chunks.
     pub streaming: Option<String>,
     /// The tool currently executing (status [`ToolStatus::Running`]), shown live
@@ -542,6 +547,27 @@ impl App {
     /// (which filters the palette). With no palette open every key behaves as it
     /// always has.
     fn on_key_conversation(&mut self, key: KeyEvent) -> Action {
+        // The `?` shortcuts band (docs/shortcuts.md): `?` from an *empty*
+        // composer toggles it (SHIFT allowed — terminals differ in reporting
+        // Shift+/; with a draft `?` falls through and types). Any other key
+        // closes an open band first and then acts normally (codex's
+        // reset-after-activity) — except Esc, which only dismisses, since our
+        // idle Esc would otherwise quit (the palette's Esc rule).
+        let shortcuts_toggle = key.code == KeyCode::Char('?')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && self.input.is_empty();
+        if shortcuts_toggle {
+            self.shortcuts_open = !self.shortcuts_open;
+            return Action::None;
+        }
+        if self.shortcuts_open {
+            self.shortcuts_open = false;
+            if key.code == KeyCode::Esc {
+                return Action::None;
+            }
+        }
         let menu_open = self.command_menu.is_some();
         match key.code {
             // Esc dismisses the palette when it's open (codex's "popup wins"
@@ -1442,6 +1468,115 @@ mod tests {
             "kept across clear",
             "/clear wipes the conversation, not the composer's recall"
         );
+    }
+
+    // ===== `?` shortcuts band (codex's footer shortcut overlay — docs/shortcuts.md) =====
+
+    #[test]
+    fn question_mark_with_an_empty_composer_toggles_the_shortcuts_band() {
+        let mut app = App::new();
+        assert!(!app.shortcuts_open);
+        assert_eq!(app.on_key(key(KeyCode::Char('?'))), Action::None);
+        assert!(app.shortcuts_open, "first ? opens the band");
+        assert!(app.input.is_empty(), "the ? was consumed, not typed");
+        assert_eq!(app.on_key(key(KeyCode::Char('?'))), Action::None);
+        assert!(!app.shortcuts_open, "second ? closes it");
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn shift_question_mark_also_toggles_the_band() {
+        // Terminals differ in whether Shift+/ reports SHIFT — codex binds both.
+        let mut app = App::new();
+        let shift_q = KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT);
+        app.on_key(shift_q);
+        assert!(app.shortcuts_open);
+    }
+
+    #[test]
+    fn question_mark_types_into_a_non_empty_draft() {
+        let mut app = App::new();
+        type_str(&mut app, "what is this");
+        app.on_key(key(KeyCode::Char('?')));
+        assert_eq!(app.input.text(), "what is this?");
+        assert!(!app.shortcuts_open, "with a draft, ? is just a character");
+    }
+
+    #[test]
+    fn any_other_key_closes_the_band_but_still_acts() {
+        // codex's reset_mode_after_activity: the overlay is display-only, never
+        // modal — the key that dismisses it still does its normal job.
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('?')));
+        assert!(app.shortcuts_open);
+        app.on_key(key(KeyCode::Char('h')));
+        assert!(!app.shortcuts_open, "typing closes the band");
+        assert_eq!(app.input.text(), "h", "and the character still lands");
+    }
+
+    #[test]
+    fn esc_only_dismisses_the_shortcuts_band_when_idle() {
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('?')));
+        assert_eq!(
+            app.on_key(key(KeyCode::Esc)),
+            Action::None,
+            "Esc dismisses the band instead of quitting"
+        );
+        assert!(!app.shortcuts_open);
+        assert_eq!(
+            app.on_key(key(KeyCode::Esc)),
+            Action::Quit,
+            "the next Esc (band closed) quits as before"
+        );
+    }
+
+    #[test]
+    fn esc_dismissing_the_band_wins_over_interrupt_mid_turn() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.on_key(key(KeyCode::Char('?'))); // the toggle works mid-turn too
+        assert!(app.shortcuts_open);
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(!app.shortcuts_open);
+        assert!(
+            app.turn_active(),
+            "dismissing the band never touches the turn"
+        );
+        assert_eq!(
+            app.on_key(key(KeyCode::Esc)),
+            Action::Interrupt,
+            "the next Esc interrupts as usual"
+        );
+    }
+
+    #[test]
+    fn up_recall_closes_the_band_and_still_recalls() {
+        let mut app = App::new();
+        submit(&mut app, "recall me");
+        app.on_key(key(KeyCode::Char('?')));
+        app.on_key(key(KeyCode::Up));
+        assert!(!app.shortcuts_open);
+        assert_eq!(app.input.text(), "recall me");
+    }
+
+    #[test]
+    fn a_slash_closes_the_band_and_opens_the_palette() {
+        // The band and the palette never show together.
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('?')));
+        app.on_key(key(KeyCode::Char('/')));
+        assert!(!app.shortcuts_open);
+        assert!(app.command_menu.is_some());
+        assert_eq!(app.input.text(), "/");
+    }
+
+    #[test]
+    fn question_mark_is_ignored_in_the_tool_view() {
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        app.on_key(key(KeyCode::Char('?')));
+        assert!(!app.shortcuts_open, "the tool view has no composer or band");
     }
 
     #[test]
