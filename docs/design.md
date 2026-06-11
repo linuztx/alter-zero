@@ -150,14 +150,26 @@ unit-tested must be unit-tested.
   with **no** `Done for Ns` summary (the notice is the turn's terminal state).
   The palette still wins: Esc with the palette open only dismisses it, even
   mid-turn. The status line's `esc to interrupt` hint advertises this.
+- **↑/↓ recall submitted messages** (shell-style, ported from codex's
+  `ChatComposerHistory` — see `docs/input-history.md`): with an **empty
+  composer**, ↑ recalls the last submitted message (older with further
+  presses, clamping at the oldest), ↓ steps back toward the newest and **past
+  it clears the composer**. Recall replaces the draft with the cursor at the
+  end; the gate (`InputHistory::should_navigate`) keeps the arrows' day job —
+  a typed draft, an edited recall, or an interior cursor falls through to
+  normal cursor movement, and the open palette still intercepts ↑/↓ first.
+  Adjacent duplicate submissions collapse; the history survives `/clear`
+  (codex's spans whole sessions); recalling a bare `/token` re-derives the
+  palette like typing it.
 - **Quit:** Esc (in the conversation, while **idle** — mid-turn it interrupts
   instead), Ctrl+C, or the `/quit` command. **Ctrl+C first clears a non-empty
   input** (codex's composer-clear step: a first press with a typed draft only
-  empties the box — and closes the palette, since the emptied input is no
-  longer a `/token`; the overlay has no input box, so Ctrl+C there always
-  quits); with an empty input it quits from anywhere, even mid-stream. In the
-  tool-output view Esc returns to the chat instead of quitting. Sending is
-  disabled while a reply is streaming.
+  empties the box — recording the draft so ↑ can bring it back — and closes
+  the palette, since the emptied input is no longer a `/token`; the overlay
+  has no input box, so Ctrl+C there always quits); with an empty input it
+  quits from anywhere, even mid-stream. In the tool-output view Esc returns to
+  the chat instead of quitting. Sending is disabled while a reply is
+  streaming.
 
 ## Architecture
 
@@ -167,7 +179,7 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu` types. | Yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
 | `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
@@ -345,6 +357,14 @@ frame scheduler ─► draw-tick ─────┘                             
   `/help`→`Notice` listing commands, `/quit`→`Quit`) and consuming the input; an
   empty-match Enter doesn't submit; with no palette open Enter still submits
   normally.
+- `app` (input history): ↑ recalls the newest submission (cursor at the end)
+  and steps older, clamping at the oldest; ↓ steps newer and clears past the
+  newest; ↓ never *enters* history; a typed draft is never clobbered; editing
+  a recall (or an interior cursor) returns the arrows to cursor movement, the
+  text edges re-enable recall; submitting restarts browsing at the newest;
+  adjacent duplicates collapse; blanks are never recorded; Ctrl+C's cleared
+  draft is recallable; a recalled `/token` reopens the palette; `/clear`
+  keeps the recall history.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display

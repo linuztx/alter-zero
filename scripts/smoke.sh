@@ -22,6 +22,7 @@ cleanup() {
 	tmux kill-session -t "${S}_overlayquit" 2>/dev/null
 	tmux kill-session -t "${S}_interrupt" 2>/dev/null
 	tmux kill-session -t "${S}_quit" 2>/dev/null
+	tmux kill-session -t "${S}_recall" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -283,6 +284,51 @@ done
 echo "==== Phase 9: alive after Ctrl+C clear=$quit_alive, exited after /quit=$quit_exited ===="
 tmux kill-session -t "$S6" 2>/dev/null
 
+# --- Phase 10: ↑ recalls the last sent message into the input box, ↓ past the
+# newest clears it, and ↑ + Enter RESUBMITS it (docs/input-history.md). The
+# committed user line and the input prompt share the "❯ " glyph, so the
+# assertions count occurrences: recall adds one (box + scrollback), the ↓ clear
+# removes it, and the resubmit commits a second scrollback copy plus turn 2's
+# "Finished for" summary. ---
+S7="${S}_recall"
+RECALL_MSG="history one"
+tmux new-session -d -s "$S7" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S7" -l "$RECALL_MSG"
+sleep 0.2
+tmux send-keys -t "$S7" Enter
+for _ in $(seq 1 80); do # up to ~12s: wait for turn 1 to finish ("Done for")
+	if tmux capture-pane -t "$S7" -p | grep -qF "Done for"; then
+		break
+	fi
+	sleep 0.15
+done
+tmux send-keys -t "$S7" Up
+sleep 0.4
+recalled="$(tmux capture-pane -t "$S7" -p -S -40)"
+echo "==== captured pane (last message recalled with Up) ===="
+printf '%s\n' "$recalled"
+recall_up_count=$(printf '%s\n' "$recalled" | grep -cF "❯ $RECALL_MSG")
+tmux send-keys -t "$S7" Down
+sleep 0.4
+recall_down_count=$(tmux capture-pane -t "$S7" -p -S -40 | grep -cF "❯ $RECALL_MSG")
+tmux send-keys -t "$S7" Up # recall again …
+sleep 0.3
+tmux send-keys -t "$S7" Enter # … and resubmit it
+resubmitted=""
+for _ in $(seq 1 80); do # up to ~12s: wait for turn 2's summary
+	resubmitted="$(tmux capture-pane -t "$S7" -p -S -40)"
+	if printf '%s' "$resubmitted" | grep -qF "Finished for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (recalled message resubmitted) ===="
+printf '%s\n' "$resubmitted"
+recall_resubmit_count=$(printf '%s\n' "$resubmitted" | grep -cF "❯ $RECALL_MSG")
+echo "==== Phase 10: '❯ $RECALL_MSG' lines — after Up=$recall_up_count, after Down=$recall_down_count, after resubmit=$recall_resubmit_count ===="
+tmux kill-session -t "$S7" 2>/dev/null
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -442,7 +488,26 @@ if [ "$quit_exited" -ne 1 ]; then
 	echo "FAIL: running /quit did not exit the app" >&2
 	status=1
 fi
+# Phase 10: ↑/↓ input-history recall (docs/input-history.md). After turn 1 the
+# committed user line is the only "❯ $RECALL_MSG"; ↑ adds the recalled copy in
+# the input box, ↓ clears it again, and ↑ + Enter commits a second copy.
+if [ "${recall_up_count:-0}" -lt 2 ]; then
+	echo "FAIL: Up did not recall the sent message into the input box (saw $recall_up_count '❯ $RECALL_MSG' lines, expected the committed one plus the recalled draft)" >&2
+	status=1
+fi
+if [ "${recall_down_count:-99}" -ge "${recall_up_count:-0}" ]; then
+	echo "FAIL: Down past the newest entry did not clear the recalled draft (still $recall_down_count '❯ $RECALL_MSG' lines)" >&2
+	status=1
+fi
+if ! printf '%s' "$resubmitted" | grep -qF "Finished for"; then
+	echo "FAIL: resubmitting the recalled message (Up + Enter) never finished a second turn" >&2
+	status=1
+fi
+if [ "${recall_resubmit_count:-0}" -lt 2 ]; then
+	echo "FAIL: the recalled message was not resubmitted — expected a second committed '❯ $RECALL_MSG' line (saw $recall_resubmit_count)" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, and Ctrl+C clears a draft before /quit exits"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, and Up recalls the last sent message for resubmission"
 fi
 exit "$status"

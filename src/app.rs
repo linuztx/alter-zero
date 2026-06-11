@@ -337,6 +337,87 @@ fn help_text() -> String {
     text
 }
 
+/// Shell-style ↑/↓ recall of previously submitted inputs — a port of codex's
+/// `ChatComposerHistory` (its in-session `local_history`; no cross-session
+/// persistence or Ctrl+R search). See `docs/input-history.md`.
+#[derive(Debug, Default)]
+pub struct InputHistory {
+    /// The recorded texts, oldest first (newest at the end).
+    entries: Vec<String>,
+    /// The entry currently recalled; `None` when not browsing.
+    cursor: Option<usize>,
+    /// What navigation last wrote into the composer. The gate in
+    /// [`should_navigate`] compares against it so an *edited* recall counts as
+    /// a fresh draft and stops browsing.
+    ///
+    /// [`should_navigate`]: InputHistory::should_navigate
+    last_recall: Option<String>,
+}
+
+impl InputHistory {
+    /// Record a submitted (or Ctrl+C-cleared) input and exit browsing. Blank
+    /// texts are ignored and an entry identical to the newest is collapsed,
+    /// like codex's `record_local_submission`.
+    pub fn record(&mut self, text: &str) {
+        self.cursor = None;
+        self.last_recall = None;
+        if text.is_empty() || self.entries.last().is_some_and(|prev| prev == text) {
+            return;
+        }
+        self.entries.push(text.to_string());
+    }
+
+    /// Should an ↑/↓ press browse history instead of moving the cursor? Yes
+    /// for an empty composer; for a non-empty one only when the text is
+    /// exactly the last recalled entry (unedited) with the cursor at either
+    /// end — so a typed draft is never clobbered and the arrows still move
+    /// within an edited recall (codex's `should_handle_navigation`).
+    #[must_use]
+    pub fn should_navigate(&self, text: &str, cursor: usize) -> bool {
+        if self.entries.is_empty() {
+            return false;
+        }
+        if text.is_empty() {
+            return true;
+        }
+        if cursor != 0 && cursor != text.len() {
+            return false;
+        }
+        self.last_recall.as_deref() == Some(text)
+    }
+
+    /// Step to the older entry (↑), entering browsing at the newest. `None` at
+    /// the oldest — the caller falls back to cursor movement, like codex.
+    pub fn up(&mut self) -> Option<String> {
+        let next = match self.cursor {
+            None => self.entries.len().checked_sub(1)?,
+            Some(0) => return None,
+            Some(index) => index - 1,
+        };
+        self.cursor = Some(next);
+        let text = self.entries[next].clone();
+        self.last_recall = Some(text.clone());
+        Some(text)
+    }
+
+    /// Step to the newer entry (↓). Past the newest returns an empty string —
+    /// "clear the composer and stop browsing" (codex's `navigate_down`);
+    /// `None` when not browsing at all.
+    pub fn down(&mut self) -> Option<String> {
+        let index = self.cursor?;
+        if index + 1 < self.entries.len() {
+            self.cursor = Some(index + 1);
+            let text = self.entries[index + 1].clone();
+            self.last_recall = Some(text.clone());
+            Some(text)
+        } else {
+            self.cursor = None;
+            self.last_recall = None;
+            Some(String::new())
+        }
+    }
+}
+
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished
 /// history of messages and tool calls.
@@ -352,6 +433,10 @@ pub struct App {
     /// insert/delete at the cursor and movement across wrapped rows. See
     /// [`crate::textarea`].
     pub input: TextArea,
+    /// Shell-style ↑/↓ recall of submitted inputs (and Ctrl+C-cleared drafts).
+    /// Survives `/clear` — like codex, whose history even spans sessions. See
+    /// `docs/input-history.md`.
+    pub input_history: InputHistory,
     /// `Some(buffer)` while the AI reply is streaming, accumulating chunks.
     pub streaming: Option<String>,
     /// The tool currently executing (status [`ToolStatus::Running`]), shown live
@@ -430,7 +515,9 @@ impl App {
         // overlay never shows the input box, so there is nothing to clear there.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if self.view == View::Conversation && !self.input.is_empty() {
-                self.input.clear();
+                // Record the cleared draft so ↑ can bring it back (codex's
+                // clear_for_ctrl_c does the same).
+                self.input_history.record(&self.input.take());
                 self.command_menu = None; // an emptied input can't be a /token
                 return Action::None;
             }
@@ -500,7 +587,9 @@ impl App {
                 if self.is_streaming() || self.input.text().trim().is_empty() {
                     Action::None
                 } else {
-                    Action::Submit(self.input.take())
+                    let text = self.input.take();
+                    self.input_history.record(&text);
+                    Action::Submit(text)
                 }
             }
             // Editing and cursor movement, dispatched to the textarea. Backspace /
@@ -525,13 +614,27 @@ impl App {
                 self.input.move_right();
                 Action::None
             }
-            // ↑/↓ drive the cursor only when the palette isn't intercepting them
-            // (the menu-open arms above take precedence).
+            // ↑/↓ first try shell-style history recall — only from an empty
+            // composer or an unedited recall (docs/input-history.md) — then
+            // fall back to cursor movement. The menu-open arms above still
+            // take precedence (codex's "popups win").
             KeyCode::Up => {
+                if self.should_browse_history()
+                    && let Some(text) = self.input_history.up()
+                {
+                    self.recall_input(&text);
+                    return Action::None;
+                }
                 self.input.move_up();
                 Action::None
             }
             KeyCode::Down => {
+                if self.should_browse_history()
+                    && let Some(text) = self.input_history.down()
+                {
+                    self.recall_input(&text);
+                    return Action::None;
+                }
                 self.input.move_down();
                 Action::None
             }
@@ -557,6 +660,24 @@ impl App {
             }
             _ => Action::None,
         }
+    }
+
+    /// Should this ↑/↓ press browse [`input_history`] instead of moving the
+    /// cursor?
+    ///
+    /// [`input_history`]: App::input_history
+    fn should_browse_history(&self) -> bool {
+        self.input_history
+            .should_navigate(self.input.text(), self.input.cursor())
+    }
+
+    /// Replace the draft with a recalled history entry. `set_text` puts the
+    /// cursor at the end (codex's recall placement), and the palette is
+    /// re-derived so recalling a bare `/token` reopens it like typing one.
+    fn recall_input(&mut self, text: &str) {
+        let had_query = command_query(self.input.text()).is_some();
+        self.input.set_text(text);
+        self.refresh_command_menu(had_query);
     }
 
     /// Re-derive the palette after an edit. Opens it when the input *becomes* a
@@ -1129,6 +1250,198 @@ mod tests {
         assert_eq!(app.view, View::ToolOutput);
         let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
         assert_eq!(app.on_key(ctrl_c), Action::Quit);
+    }
+
+    // ===== ↑/↓ input history (shell-style recall — docs/input-history.md) =====
+
+    /// Submit `text` through the real Enter path so it gets recorded.
+    fn submit(app: &mut App, text: &str) {
+        app.input = TextArea::from_text(text);
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Submit(text.to_string())
+        );
+    }
+
+    #[test]
+    fn up_recalls_the_last_submitted_message() {
+        let mut app = App::new();
+        submit(&mut app, "first message");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "first message");
+        assert_eq!(
+            app.input.cursor(),
+            "first message".len(),
+            "recall puts the cursor at the end (codex's placement)"
+        );
+    }
+
+    #[test]
+    fn up_steps_back_through_older_messages_and_clamps_at_the_oldest() {
+        let mut app = App::new();
+        submit(&mut app, "first");
+        submit(&mut app, "second");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "second", "newest first");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "first", "then older");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "first", "the oldest entry clamps");
+    }
+
+    #[test]
+    fn down_steps_forward_and_clears_past_the_newest() {
+        let mut app = App::new();
+        submit(&mut app, "first");
+        submit(&mut app, "second");
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::Up)); // browsing at "first"
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.input.text(), "second", "down steps newer");
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(
+            app.input.text(),
+            "",
+            "past the newest the composer clears (codex's exit-browsing)"
+        );
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.input.text(), "", "a further down is a no-op");
+    }
+
+    #[test]
+    fn down_when_not_browsing_does_not_recall() {
+        let mut app = App::new();
+        submit(&mut app, "sent");
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(
+            app.input.text(),
+            "",
+            "down from an empty composer never recalls — only up enters history"
+        );
+    }
+
+    #[test]
+    fn up_does_not_clobber_a_typed_draft() {
+        let mut app = App::new();
+        submit(&mut app, "sent earlier");
+        type_str(&mut app, "a fresh draft");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(
+            app.input.text(),
+            "a fresh draft",
+            "a typed draft is never replaced — the arrow moves the cursor"
+        );
+    }
+
+    #[test]
+    fn editing_a_recalled_message_returns_arrows_to_cursor_movement() {
+        let mut app = App::new();
+        submit(&mut app, "first");
+        submit(&mut app, "second");
+        app.on_key(key(KeyCode::Up)); // recall "second"
+        app.on_key(key(KeyCode::Char('X'))); // edit it
+        assert_eq!(app.input.text(), "secondX");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(
+            app.input.text(),
+            "secondX",
+            "an edited recall is a draft — up no longer browses"
+        );
+    }
+
+    #[test]
+    fn recall_resumes_only_from_the_text_edges() {
+        let mut app = App::new();
+        submit(&mut app, "first");
+        submit(&mut app, "second");
+        app.on_key(key(KeyCode::Up)); // recall "second", cursor at the end
+        app.on_key(key(KeyCode::Left)); // cursor now inside the text
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(
+            app.input.text(),
+            "second",
+            "an interior cursor means cursor movement, not history"
+        );
+        app.on_key(key(KeyCode::End)); // back to an edge
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "first", "an edge cursor browses again");
+    }
+
+    #[test]
+    fn submitting_restarts_browsing_at_the_newest() {
+        let mut app = App::new();
+        submit(&mut app, "alpha");
+        submit(&mut app, "beta");
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::Up)); // browsing at "alpha"
+        assert_eq!(app.input.text(), "alpha");
+        app.on_key(key(KeyCode::Enter)); // resubmit it
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(
+            app.input.text(),
+            "alpha",
+            "after a submit, up starts from the newest entry again"
+        );
+    }
+
+    #[test]
+    fn adjacent_duplicate_submissions_collapse_in_history() {
+        let mut app = App::new();
+        submit(&mut app, "same");
+        submit(&mut app, "same");
+        assert_eq!(
+            app.input_history.entries,
+            ["same"],
+            "an entry identical to the newest is not re-recorded (codex)"
+        );
+    }
+
+    #[test]
+    fn blank_texts_are_never_recorded() {
+        let mut history = InputHistory::default();
+        history.record("");
+        assert_eq!(history.up(), None, "nothing to recall");
+    }
+
+    #[test]
+    fn ctrl_c_cleared_draft_is_recallable_with_up() {
+        // codex's clear_for_ctrl_c records the cleared draft so ↑ undoes it.
+        let mut app = App::new();
+        app.input = TextArea::from_text("draft the user cleared");
+        app.on_key(ctrl('c'));
+        assert!(app.input.is_empty());
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "draft the user cleared");
+    }
+
+    #[test]
+    fn recalling_a_slash_token_reopens_the_palette() {
+        let mut app = App::new();
+        type_str(&mut app, "/he");
+        assert!(app.command_menu.is_some());
+        app.on_key(ctrl('c')); // clear (and record) the token, palette closes
+        assert!(app.command_menu.is_none());
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "/he");
+        assert!(
+            app.command_menu.is_some(),
+            "a recalled /token re-derives the palette, like typing it"
+        );
+    }
+
+    #[test]
+    fn clear_command_keeps_the_recall_history() {
+        let mut app = App::new();
+        submit(&mut app, "kept across clear");
+        type_str(&mut app, "/clear");
+        app.on_key(key(KeyCode::Enter)); // run /clear (wipes the conversation)
+        assert!(app.history.is_empty());
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(
+            app.input.text(),
+            "kept across clear",
+            "/clear wipes the conversation, not the composer's recall"
+        );
     }
 
     #[test]

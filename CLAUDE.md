@@ -41,14 +41,18 @@ geometry decision `term.rs` makes is a pure `ui` helper it calls.
 
 The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
-`docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`.
+`docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
+input-history recall in `docs/input-history.md`.
 
 ### The runtime model and its invariants
 
 This is an **inline** TUI: finished messages *and tool calls* flow into the
 terminal's real scrollback; a live region (a rule-framed input box — a codex-style
 **`textarea`** whose cursor moves anywhere (←/→ by grapheme, ↑/↓ across *wrapped*
-rows, Home/End) with insert/delete at the cursor, growing as the input wraps —
+rows, Home/End) with insert/delete at the cursor, growing as the input wraps;
+from an **empty composer (or an unedited recall) ↑/↓ instead step through
+previously submitted inputs** shell-style (`App::input_history`, codex's
+`ChatComposerHistory` — ↓ past the newest clears; see `docs/input-history.md`) —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's blue header when one is executing), a blank gap row,
 a codex-style **status line** (`( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
@@ -162,7 +166,9 @@ frame scheduler ──► draw-tick ────┘                             
                                        └─ turn active? re-arm a frame in 32ms (status shimmer + timer)
 ```
 
-`Submit(text)` records the user message, `insert_before`s it, then spawns a reply
+`Submit(text)` records the user message (the Enter arm also records the text
+into `App::input_history` for the ↑/↓ shell-style recall — adjacent duplicates
+collapse, `/clear` doesn't touch it), `insert_before`s it, then spawns a reply
 via the selected `ReplySource` (`backend.spawn(text, tx, cancel)`), keeping the
 thread handle + `CancelToken` so a quit mid-stream cancels and reaps it. The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
@@ -196,9 +202,9 @@ dispatches an `Action`
 message, `/quit`→`Quit`). Adding a command later is a one-line `COMMANDS` entry plus an effect arm
 in `App::run_selected_command`; the palette/filter/scroll don't change. **Ctrl+C
 first clears a non-empty input** (codex's composer-clear: one press empties the
-draft — closing the palette, never touching a streaming turn — and only an
-empty-input Ctrl+C quits; the Ctrl+O overlay has no input box, so Ctrl+C there
-always quits).
+draft — recording it in `App::input_history` so ↑ brings it back, closing the
+palette, never touching a streaming turn — and only an empty-input Ctrl+C quits;
+the Ctrl+O overlay has no input box, so Ctrl+C there always quits).
 
 ## Working style
 
