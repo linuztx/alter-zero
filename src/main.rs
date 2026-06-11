@@ -412,9 +412,15 @@ fn on_stream_event(
             Ok(false)
         }
         StreamEvent::ThinkingStart => {
-            // Opaque phase boundary: start the thinking clock so the status line
+            // Phase boundary: start the thinking clock so the status line
             // shows `Thinking for Ns`. No scrollback commit (thinking is live-only).
             clocks.thinking_start = Some(Instant::now());
+            Ok(false)
+        }
+        StreamEvent::ThinkingChunk(chunk) => {
+            // Reasoning delta: opaque text, counted into the token tally only —
+            // never rendered, never committed.
+            app.push_thinking(&chunk);
             Ok(false)
         }
         StreamEvent::ThinkingEnd => {

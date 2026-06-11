@@ -52,11 +52,12 @@ The live line is
 - **elapsed** — whole seconds since the turn was submitted. Advances even when no
   events arrive (the draw branch re-arms an animation frame while a turn is
   active — see the shimmer section).
-- **tokens** — a single cumulative tally for the whole turn (text **and** tool
-  output), estimated app-side (≈ `chars / 4`). It is **never reset** mid-turn.
-  Omitted while it is 0 (the "just submitted" state).
-- **arrow** — `↓` while the reply streams (output), flipping to `↑` right after a
-  tool result (its output is "uploaded" back); the count keeps growing either way.
+- **tokens** — a single cumulative tally for the whole turn (text, **reasoning
+  deltas**, and tool output), estimated app-side (≈ `chars / 4`). It is **never
+  reset** mid-turn. Omitted while it is 0 (the "just submitted" state).
+- **arrow** — `↓` while the reply (or its reasoning) streams, flipping to `↑`
+  right after a tool result (its output is "uploaded" back); the count keeps
+  growing either way.
 - **Thinking for {m}s** — shown *only while actively thinking*; dropped once
   thinking ends.
 - **esc to interrupt** — the closing clause, always present while the line
@@ -94,7 +95,8 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
   (`turn_active()` == `status.is_some()`).
 - `App.turn_count: usize` — drives verb selection.
 - `begin_stream` creates the status (picks verbs, increments the counter);
-  `push_chunk` adds tokens (`↓`); `end_tool` adds tokens (`↑`); `fail_stream`
+  `push_chunk` adds tokens (`↓`); `push_thinking` adds tokens (`↓`, the reply
+  buffer untouched — reasoning text is opaque); `end_tool` adds tokens (`↑`); `fail_stream`
   clears the status (an error is the summary — no "Done" line); `interrupt_turn`
   clears it the same way (the `Conversation interrupted` notice is the summary);
   `end_turn(secs)` records the summary and clears the status.
@@ -159,16 +161,20 @@ spinner never shifts as the ball moves.
 
 ## Thinking in the dummy backend
 
-Two new opaque events, `StreamEvent::ThinkingStart` / `ThinkingEnd`, are emitted by
-`DummyAi` after the first text segment (so the demo shows `↓ tokens · Thinking
-for Ns`), with a short pause so the thinking timer is visible. The loop maps them
-to `thinking_start = Some(now)` / `None`; nothing in the pure `App` knows about
-thinking — its seconds reach the status only through `set_status_times`.
+`StreamEvent::ThinkingStart` / `ThinkingEnd` are emitted by `DummyAi` after the
+first text segment (so the demo shows `↓ tokens · Thinking for Ns`), with
+`DUMMY_THINKING` streamed word-by-word as `StreamEvent::ThinkingChunk`s in
+between — one `THINK_CHUNK_DELAY` pause per event, so the timer is visible and
+the token tally keeps ticking through the phase (a real API's reasoning
+deltas; the text is never rendered, only counted via `App::push_thinking`).
+The loop maps the pair to `thinking_start = Some(now)` / `None`; the thinking
+*seconds* reach the status only through `set_status_times`.
 
 ## Testing
 
 - `app`: verbs cycle per turn; tokens accumulate (`↓`) and survive a tool (`↑`,
-  not reset); `end_turn` records the summary and clears status; `fail_stream`
+  not reset); thinking chunks grow the tally (`↓`) without touching the reply
+  buffer; `end_turn` records the summary and clears status; `fail_stream`
   clears status; `set_status_times` writes the boundary durations.
 - `ui`: `status_line` for each phase (no tokens at 0; `↓`/`↑`; `Thinking for`);
   the spinner's ball is white bold between dim walls, steps a frame per
@@ -177,8 +183,8 @@ thinking — its seconds reach the status only through `set_status_times`.
   dim; the wave's crest is brighter than off-band chars and moves as `elapsed`
   advances; `summary_lines` is one dim line; the strip stacks preview / gap /
   status / gap above the box; `conversation` / `transcript` render a `Summary`.
-- `stream`: `turn_events` emits a paired `ThinkingStart`/`ThinkingEnd`; chunks
-  still reconstruct the reply.
+- `stream`: `turn_events` emits a paired `ThinkingStart`/`ThinkingEnd` with
+  `ThinkingChunk`s strictly inside the pair; chunks still reconstruct the reply.
 - `main.rs` (smoke): the live line shows `tokens` while streaming with a blank
   gap row between it and the box, and a committed `Done for Ns` after the turn
   settles.

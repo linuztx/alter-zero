@@ -1012,6 +1012,18 @@ impl App {
         }
     }
 
+    /// Count a streamed reasoning delta into the live token tally (arrow down —
+    /// it is model output, streaming) **without** touching the reply buffer:
+    /// the text itself is opaque and never rendered. This is what keeps the
+    /// count ticking while the status line shows `Thinking for Ns`. No-op when
+    /// no turn is in flight.
+    pub fn push_thinking(&mut self, chunk: &str) {
+        if let Some(status) = self.status.as_mut() {
+            status.tokens += estimate_tokens(chunk);
+            status.arrow = TokenArrow::Down;
+        }
+    }
+
     /// The live turn status, if a turn is in flight.
     #[must_use]
     pub const fn status(&self) -> Option<&TurnStatus> {
@@ -2684,6 +2696,37 @@ mod tests {
             TokenArrow::Down,
             "resuming the reply points the arrow back down"
         );
+    }
+
+    #[test]
+    fn thinking_chunks_grow_the_tally_pointing_down_without_touching_the_reply() {
+        // Reasoning deltas count into the live tally like reply text (they are
+        // streamed output, so ↓ — even right after a tool's ↑), but the text
+        // itself is opaque: it never reaches the reply buffer.
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("reply so far ");
+        app.start_tool("Read", "f");
+        app.end_tool("out", true);
+        let before = app.status().unwrap().tokens;
+        assert_eq!(app.status().unwrap().arrow, TokenArrow::Up);
+        app.push_thinking("weighing the options carefully");
+        let status = app.status().unwrap();
+        assert!(status.tokens > before, "reasoning text counts tokens");
+        assert_eq!(status.arrow, TokenArrow::Down, "thinking streams down");
+        assert_eq!(
+            app.streaming_text(),
+            Some("reply so far "),
+            "the reply buffer is untouched by reasoning text"
+        );
+    }
+
+    #[test]
+    fn push_thinking_is_a_no_op_when_idle() {
+        let mut app = App::new();
+        app.push_thinking("stray reasoning after the turn ended");
+        assert!(app.status().is_none(), "no status conjured up");
+        assert_eq!(app.streaming_text(), None);
     }
 
     #[test]

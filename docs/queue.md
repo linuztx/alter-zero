@@ -144,9 +144,10 @@ the palette/shortcuts `band_rows` below the box:
   `edit_queued_message` pops one message; ours drains the whole backlog into the
   composer (the merge codex itself applies when restoring after an interrupt) —
   one binding, the entire queue editable at once.
-- **No persistent edit hint.** Codex shows "Alt+Up edit last queued message" by
-  the composer; we have no footer row, so Alt+Up is documented here and works, but
-  isn't advertised in the static `?` shortcuts band.
+- **No per-queue edit hint row.** Codex shows a dim "Alt+Up edit last queued
+  message" hint line under its queued list; we spend no strip row on it —
+  instead the binding is listed in the `?` shortcuts band (`alt+↑ to edit
+  queue`, docs/shortcuts.md).
 - **Quitting drops the queue.** The queue only exists mid-turn; Ctrl+C there quits
   (the composer is empty) and the queue is discarded with the session.
 

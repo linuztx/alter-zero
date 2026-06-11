@@ -30,9 +30,14 @@ pub enum StreamEvent {
     ToolEnd { output: String, ok: bool },
     /// The model began a "thinking" (reasoning) phase. The loop shows
     /// `· Thinking for Ns` in the live status line until the matching
-    /// [`StreamEvent::ThinkingEnd`] arrives. Opaque — no reasoning text travels
-    /// the channel, only the phase boundary (so the timer can run).
+    /// [`StreamEvent::ThinkingEnd`] arrives.
     ThinkingStart,
+    /// A piece of reasoning text streamed during the thinking phase (a real
+    /// API's reasoning delta). Opaque — never rendered — but counted into the
+    /// live token tally, so the count keeps ticking while the model thinks.
+    /// Only sent between a [`StreamEvent::ThinkingStart`] and its
+    /// [`StreamEvent::ThinkingEnd`].
+    ThinkingChunk(String),
     /// The model's thinking phase ended. Always follows a
     /// [`StreamEvent::ThinkingStart`]; drops the `Thinking for Ns` suffix.
     ThinkingEnd,
@@ -50,10 +55,17 @@ pub const CHUNK_DELAY: Duration = Duration::from_millis(45);
 /// `ToolEnd` — so the blue running state is visible before it resolves.
 pub const TOOL_DELAY: Duration = Duration::from_millis(450);
 
-/// How long the dummy "thinks" — the pause between `ThinkingStart` and
-/// `ThinkingEnd` — long enough that the live `Thinking for Ns` timer visibly
-/// ticks from 0s before it resolves.
-pub const THINK_DELAY: Duration = Duration::from_millis(1200);
+/// Delay after `ThinkingStart` and after each `ThinkingChunk`, so the
+/// reasoning trickles and the token tally visibly ticks while the model
+/// "thinks". The phase's total length is one step per event —
+/// `(1 + chunks) × THINK_CHUNK_DELAY` (≈1.2s for [`DUMMY_THINKING`]'s seven
+/// words), long enough that `Thinking for Ns` ticks from 0s.
+pub const THINK_CHUNK_DELAY: Duration = Duration::from_millis(150);
+
+/// The dummy's canned reasoning, streamed word-by-word as
+/// [`StreamEvent::ThinkingChunk`]s during its thinking phase. Never shown —
+/// it only feeds the token tally (like a real API's reasoning deltas).
+const DUMMY_THINKING: &str = "Let me look at the code first.";
 
 /// Canned multi-line output for the dummy `Read` tool (resolves green).
 const DUMMY_READ_OUTPUT: &str = "fn main() -> io::Result<()> {\n    \
@@ -104,9 +116,11 @@ pub fn chunks(text: &str) -> Vec<String> {
 /// text, *think* for a moment, run a `Read` tool (resolves green) and a `Bash`
 /// tool (resolves red, for colour variety), then stream the rest and finish.
 ///
-/// The thinking pair sits after the first text segment (so the demo shows
+/// The thinking phase sits after the first text segment (so the demo shows
 /// `↓ tokens · Thinking for Ns`) and before the tools, so every `ToolStart` is
-/// still immediately followed by its `ToolEnd`.
+/// still immediately followed by its `ToolEnd`. Between the pair the dummy
+/// streams [`DUMMY_THINKING`] word-by-word as [`StreamEvent::ThinkingChunk`]s,
+/// so the token tally keeps ticking while the thinking timer runs.
 ///
 /// Pure and deterministic so it is unit-testable; [`DummyAi`] just plays it back
 /// on a thread with delays. The `Chunk` events still concatenate to exactly
@@ -122,6 +136,11 @@ pub fn turn_events(prompt: &str) -> Vec<StreamEvent> {
     let mut events = Vec::new();
     events.extend(chunks(&first).into_iter().map(StreamEvent::Chunk));
     events.push(StreamEvent::ThinkingStart);
+    events.extend(
+        chunks(DUMMY_THINKING)
+            .into_iter()
+            .map(StreamEvent::ThinkingChunk),
+    );
     events.push(StreamEvent::ThinkingEnd);
     events.push(StreamEvent::ToolStart {
         name: "Read".to_string(),
@@ -214,13 +233,16 @@ impl ReplySource for DummyAi {
                 if cancel.is_cancelled() {
                     return; // asked to stop — drop the rest quietly
                 }
-                // Pause *after* a word, a tool start, or a thinking start: a tool
+                // Pause *after* a word, a tool start, or a thinking event: a tool
                 // "runs" for TOOL_DELAY (blue) before its ToolEnd resolves it, and
-                // the model "thinks" for THINK_DELAY before its ThinkingEnd.
+                // the model "thinks" one THINK_CHUNK_DELAY step per reasoning
+                // event before its ThinkingEnd.
                 let pause = match &event {
                     StreamEvent::Chunk(_) => Some(CHUNK_DELAY),
                     StreamEvent::ToolStart { .. } => Some(TOOL_DELAY),
-                    StreamEvent::ThinkingStart => Some(THINK_DELAY),
+                    StreamEvent::ThinkingStart | StreamEvent::ThinkingChunk(_) => {
+                        Some(THINK_CHUNK_DELAY)
+                    }
                     _ => None,
                 };
                 if tx.send(event).is_err() {
@@ -356,6 +378,37 @@ mod tests {
     }
 
     #[test]
+    fn turn_events_streams_thinking_chunks_inside_the_thinking_phase() {
+        // The reasoning text travels as ThinkingChunk events strictly between
+        // the ThinkingStart/ThinkingEnd pair — opaque to the renderer (never
+        // displayed) but counted into the live token tally, like a real API's
+        // reasoning deltas.
+        let events = turn_events("hi");
+        let start = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ThinkingStart))
+            .unwrap();
+        let end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ThinkingEnd))
+            .unwrap();
+        let chunk_positions: Vec<usize> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, StreamEvent::ThinkingChunk(_)))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(
+            !chunk_positions.is_empty(),
+            "the dummy streams reasoning text while it thinks"
+        );
+        assert!(
+            chunk_positions.iter().all(|&i| start < i && i < end),
+            "every ThinkingChunk sits inside the Start/End pair"
+        );
+    }
+
+    #[test]
     fn turn_events_each_tool_start_is_immediately_resolved() {
         // Tools don't nest: every ToolStart is followed straight away by a
         // ToolEnd, so the loop only ever tracks one running tool at a time.
@@ -428,6 +481,7 @@ mod tests {
         let mut tool_starts = 0;
         let mut tool_ends = 0;
         let mut think_starts = 0;
+        let mut think_chunks = 0;
         let mut think_ends = 0;
         // `blocking_recv` waits for each delayed event (no runtime here, so it's
         // allowed); `None` means the backend dropped its sender.
@@ -437,6 +491,7 @@ mod tests {
                 StreamEvent::ToolStart { .. } => tool_starts += 1,
                 StreamEvent::ToolEnd { .. } => tool_ends += 1,
                 StreamEvent::ThinkingStart => think_starts += 1,
+                StreamEvent::ThinkingChunk(_) => think_chunks += 1,
                 StreamEvent::ThinkingEnd => think_ends += 1,
                 StreamEvent::StreamDone => {
                     saw_done = true;
@@ -452,6 +507,7 @@ mod tests {
         assert!(tool_starts >= 1, "the dummy streams at least one tool call");
         assert_eq!(tool_starts, tool_ends, "every tool that starts also ends");
         assert_eq!(think_starts, 1, "the dummy thinks once");
+        assert!(think_chunks >= 1, "reasoning deltas stream while thinking");
         assert_eq!(
             think_starts, think_ends,
             "every think that starts also ends"

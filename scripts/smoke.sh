@@ -704,6 +704,10 @@ if ! printf '%s' "$band_open" | grep -qF "ctrl+c to quit"; then
 	echo "FAIL: the shortcuts band is missing its quit entry" >&2
 	status=1
 fi
+if ! printf '%s' "$band_open" | grep -qF "alt+↑ to edit queue"; then
+	echo "FAIL: the shortcuts band is missing the alt+↑ queue-edit entry" >&2
+	status=1
+fi
 if printf '%s' "$band_closed" | grep -qF "for commands"; then
 	echo "FAIL: a second '?' did not close the shortcuts band" >&2
 	status=1

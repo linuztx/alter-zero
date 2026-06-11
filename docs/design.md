@@ -141,7 +141,8 @@ unit-tested must be unit-tested.
   `docs/shortcuts.md`): pressing `?` (shift-modified or not) in an **empty
   composer** toggles a keyboard-shortcuts overview in the palette's slot below
   the box — two aligned columns of `{key} for {thing}` entries (keys cyan,
-  labels dim) listing `/`, `↑`, `alt+enter`, `ctrl+o`, `esc`, and `ctrl+c`;
+  labels dim) listing `/`, `↑`, `alt+enter`, `ctrl+o`, `esc`, `ctrl+c`, and
+  `alt+↑` (edit queue);
   the `esc` entry reads `to interrupt` while a turn runs and `to quit` idle.
   With a draft in the box `?` is just a character. The band is display-only,
   never modal: any other key closes it and still performs its action — except
@@ -215,7 +216,7 @@ logic is unit-testable without a real terminal.
 
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
-| `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
+| `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
 | `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`drain_queued`, Enter-queues + Alt+Up edit, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory`/`SessionInfo` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
 | `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), `render_live`, and `render_tool_view`. | Yes |
@@ -272,7 +273,9 @@ frame scheduler ─► draw-tick ─────┘                             
   view.
 - On `ThinkingStart`/`ThinkingEnd`: the loop flips its `thinking_start` `Instant`
   so the status line shows/drops `Thinking for Ns`; nothing is committed (thinking
-  is live-only).
+  is live-only). Each `ThinkingChunk` in between is counted into the token tally
+  (`App::push_thinking` — the text is opaque, never rendered), so the count keeps
+  ticking while the model thinks.
 - On `StreamDone`: clear streaming state and end the turn (record the `Done for Ns`
   summary), then commit the final text segment + spacer + the summary. Because the
   streaming strip (preview + gap + status + gap) is drawn *above* the box, the loop first
@@ -338,9 +341,10 @@ frame scheduler ─► draw-tick ─────┘                             
   `App::interrupt_turn` hands the loop to flush after an Esc interrupt (the
   `INTERRUPT_NOTICE` const is the committed notice text).
 - `StreamEvent { Chunk(String), ToolStart{name,args}, ToolEnd{output,ok},
-  ThinkingStart, ThinkingEnd, Error(String), StreamDone }` (in `stream.rs`) — what a
-  backend sends to the loop (`ThinkingStart`/`ThinkingEnd` drive the live `Thinking
-  for Ns`).
+  ThinkingStart, ThinkingChunk(String), ThinkingEnd, Error(String), StreamDone }`
+  (in `stream.rs`) — what a backend sends to the loop (`ThinkingStart`/`ThinkingEnd`
+  drive the live `Thinking for Ns`; the `ThinkingChunk` reasoning deltas between
+  them are counted into the token tally, never rendered).
 - `ReplySource` (trait) + `DummyAi` (impl) + `CancelToken` (in `stream.rs`) — the
   pluggable backend seam. `spawn(prompt, tx, cancel) -> JoinHandle<()>`; a real
   model is a drop-in `ReplySource` (emit `ToolStart`/`ToolEnd` for tool calls) and
@@ -358,7 +362,10 @@ frame scheduler ─► draw-tick ─────┘                             
   with both a success and a failure; ends with `StreamDone`; `DummyAi` emits the
   tool calls.
 - `stream` (thinking): `turn_events` emits exactly one `ThinkingStart`/`ThinkingEnd`
-  pair, before the first tool (so tool start/end stay adjacent); `DummyAi` emits it.
+  pair, before the first tool (so tool start/end stay adjacent), with ≥1
+  `ThinkingChunk` strictly inside the pair; `DummyAi` emits them.
+- `app` (thinking tokens): `push_thinking` grows the tally pointing `↓` (even
+  right after a tool's `↑`) without touching the reply buffer; a no-op when idle.
 - `app`: typing appends; backspace; Enter with text → `Submit` + clears input;
   Alt+Enter / Shift+Enter insert a newline (box grows) without submitting; Enter
   while empty / while streaming → `None`; Esc/Ctrl+C → `Quit` when idle, while
@@ -407,7 +414,8 @@ frame scheduler ─► draw-tick ─────┘                             
   acts (typing, ↑ recall, `/` palette); Esc only dismisses — no quit idle, no
   interrupt mid-turn (the turn is untouched); `?` is ignored in the tool view.
 - `ui` (shortcuts band): `shortcuts_rows` 0 closed / entries-per-2 open;
-  `shortcuts_lines` lists the bindings in two aligned columns, keys cyan and
+  `shortcuts_lines` lists the bindings in two aligned columns (including
+  `alt+↑ to edit queue`), keys cyan and
   labels dim, the `esc` entry flipping `to quit`/`to interrupt` with the turn;
   `live_height` grows by the band; `render_live` paints it below the box;
   `cursor_position` stays put when it opens.

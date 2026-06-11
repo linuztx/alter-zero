@@ -70,6 +70,7 @@ consts):
 / for commands            ↑ for input history
 alt+enter for newline     ctrl+o for tool output
 esc to quit               ctrl+c to quit
+alt+↑ to edit queue
 ```
 
 While a turn is in flight the Esc entry reads `esc to interrupt` instead

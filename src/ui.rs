@@ -220,6 +220,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("ctrl+o", " for tool output"),
     ("esc", " to quit"),
     ("ctrl+c", " to quit"),
+    ("alt+↑", " to edit queue"),
 ];
 /// The display column where a row's second entry starts (the first entry is
 /// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea.
@@ -2873,6 +2874,19 @@ mod tests {
     }
 
     #[test]
+    fn shortcuts_lines_list_the_alt_up_queue_edit_binding() {
+        // Alt+Up (pull the queued backlog back into the composer,
+        // docs/queue.md) is discoverable in the `?` band like every other
+        // binding.
+        let all: String = shortcuts_lines(false)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("alt+↑ to edit queue"), "{all:?}");
+    }
+
+    #[test]
     fn shortcuts_lines_flip_the_esc_entry_while_a_turn_runs() {
         // codex's quit entry is context-sensitive: "to interrupt" while a task
         // runs. Our Esc entry flips the same way.
@@ -2917,7 +2931,7 @@ mod tests {
             .join("\n");
         assert!(all.contains("/ for commands"), "band rendered: {all:?}");
         assert!(
-            row(&buf, h - 1, 40).contains("ctrl+c to quit"),
+            row(&buf, h - 1, 40).contains("alt+↑ to edit queue"),
             "the last band row sits on the last region row"
         );
     }

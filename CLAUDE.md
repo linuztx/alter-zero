@@ -196,12 +196,14 @@ reused to flush the whole backlog as one batched turn per turn end (Alt+Up
 pulls the backlog back into the composer, newline-joined, to edit; see
 `docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
-and a `ThinkingStart`/`ThinkingEnd` pair between `Chunk`s; the loop shows the tool
+and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
+deltas streamed in between) between `Chunk`s; the loop shows the tool
 running (blue) then commits it collapsed (green/red), and flips its `thinking_start`
-`Instant` so the status line shows/drops `Thinking for Ns`. `Chunk`s and a tool's
-output grow the cumulative token tally on `App::status` (`↓` while replying, `↑`
-right after a tool — never reset); on `StreamDone` `App::end_turn` records the
-`Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` instead of
+`Instant` so the status line shows/drops `Thinking for Ns`. `Chunk`s,
+`ThinkingChunk`s (counted via `App::push_thinking` — never rendered), and a tool's
+output grow the cumulative token tally on `App::status` (`↓` while replying or
+thinking, `↑` right after a tool — never reset); on `StreamDone` `App::end_turn`
+records the `Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` instead of
 `StreamDone`; the loop turns that into a red `Role::Error` notice via
 `App::fail_stream` (which also clears the status). **Esc while the turn is in
 flight returns `Action::Interrupt`** (palette-dismiss still wins; Esc only quits
@@ -326,7 +328,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   send `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure. For tool calls, send a
   `StreamEvent::ToolStart{name,args}` then a `ToolEnd{output,ok}`; wrap a reasoning
   phase in a `ThinkingStart`/`ThinkingEnd` pair to drive the `Thinking for Ns`
-  status (see `stream::turn_events` for the dummy's interleaved script). Return
+  status, streaming each reasoning delta as a `ThinkingChunk(text)` in between so
+  the token tally keeps ticking while the model thinks (the text is never shown —
+  only counted; see `stream::turn_events` for the dummy's interleaved script). Return
   your real model id from `model_name()` — the session footer under the box
   displays it. The loop and
   rendering treat chunks and tool output as opaque text, and estimate the status
