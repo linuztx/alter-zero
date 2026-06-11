@@ -129,7 +129,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             Action::None => {}
                             Action::Submit(text) => {
                                 inflight = Some(start_turn(
-                                    term, &mut app, &tx, &backend, text,
+                                    term, &mut app, &tx, &backend, vec![text],
                                     &mut committed, &mut clocks,
                                 )?);
                             }
@@ -144,15 +144,16 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     repaint_conversation(term, &app, &mut committed)?;
                                     // A turn may have ended while the overlay was up
                                     // (its queue flush was deferred — invariant 4);
-                                    // now that we commit inline again, send the next
-                                    // queued message as a fresh turn.
-                                    if inflight.is_none()
-                                        && let Some(text) = app.dequeue()
-                                    {
-                                        inflight = Some(start_turn(
-                                            term, &mut app, &tx, &backend, text,
-                                            &mut committed, &mut clocks,
-                                        )?);
+                                    // now that we commit inline again, send the whole
+                                    // backlog as the next turn.
+                                    if inflight.is_none() {
+                                        let queued = app.drain_queued();
+                                        if !queued.is_empty() {
+                                            inflight = Some(start_turn(
+                                                term, &mut app, &tx, &backend, queued,
+                                                &mut committed, &mut clocks,
+                                            )?);
+                                        }
                                     }
                                 }
                             }
@@ -218,14 +219,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 clocks.turn_start = None;
                                 clocks.thinking_start = None;
                                 // The user interrupted to send their queued
-                                // follow-up right away (their spec; codex's
-                                // submit-pending-steers-after-interrupt): start the
-                                // next queued message as a fresh turn. Interrupt
-                                // only arises in the conversation view, so
-                                // committing here is always safe.
-                                if let Some(text) = app.dequeue() {
+                                // follow-ups right away (their spec; codex's
+                                // submit-pending-steers-after-interrupt, which
+                                // merges the backlog into one fresh turn).
+                                // Interrupt only arises in the conversation view,
+                                // so committing here is always safe.
+                                let queued = app.drain_queued();
+                                if !queued.is_empty() {
                                     inflight = Some(start_turn(
-                                        term, &mut app, &tx, &backend, text,
+                                        term, &mut app, &tx, &backend, queued,
                                         &mut committed, &mut clocks,
                                     )?);
                                 }
@@ -255,18 +257,20 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     term, &mut app, &mut committed, &mut clocks, stream_event,
                 )? {
                     inflight = None; // the stream ended
-                    // Send the next queued message as its own turn (codex's
-                    // maybe_send_next_queued_input) — but only in the conversation
-                    // view; committing under the Ctrl+O overlay would violate the
-                    // no-scrollback-in-overlay invariant. A turn that ends in the
-                    // overlay flushes on return instead (see ToggleToolView).
-                    if app.view == View::Conversation
-                        && let Some(text) = app.dequeue()
-                    {
-                        inflight = Some(start_turn(
-                            term, &mut app, &tx, &backend, text,
-                            &mut committed, &mut clocks,
-                        )?);
+                    // Send the whole queued backlog as the next turn (Claude-Code
+                    // batching; codex's interrupt path merges the same way) — but
+                    // only in the conversation view; committing under the Ctrl+O
+                    // overlay would violate the no-scrollback-in-overlay
+                    // invariant. A turn that ends in the overlay flushes on
+                    // return instead (see ToggleToolView).
+                    if app.view == View::Conversation {
+                        let queued = app.drain_queued();
+                        if !queued.is_empty() {
+                            inflight = Some(start_turn(
+                                term, &mut app, &tx, &backend, queued,
+                                &mut committed, &mut clocks,
+                            )?);
+                        }
                     }
                 }
                 frame.schedule_frame();
@@ -311,32 +315,36 @@ struct StatusClocks {
     thinking_start: Option<Instant>,
 }
 
-/// Start a turn for `text`: record + commit the user bullet to scrollback, open
-/// the stream, reset the per-turn clocks and commit counter, and spawn the
-/// backend. Returns the in-flight cancel token + thread handle. Shared by the
-/// `Submit` key arm *and* every queue flush (a queued message starting its own
-/// turn — `StreamDone`/`Error`, an Esc interrupt, or a Ctrl+O return), so the
-/// paths can never drift. See `docs/queue.md`.
+/// Start one turn for `texts` (a Submit is a batch of one; a queue flush sends
+/// the whole backlog as a single turn, Claude-Code style): record + commit each
+/// user bullet to scrollback, open the stream, reset the per-turn clocks and
+/// commit counter, and spawn the backend on the joined prompt. Returns the
+/// in-flight cancel token + thread handle. Shared by the `Submit` key arm *and*
+/// every queue flush (`StreamDone`/`Error`, an Esc interrupt, or a Ctrl+O
+/// return), so the paths can never drift. Empty batches are the caller's job to
+/// skip. See `docs/queue.md`.
 fn start_turn(
     term: &mut InlineViewport,
     app: &mut App,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     backend: &impl ReplySource,
-    text: String,
+    texts: Vec<String>,
     committed: &mut usize,
     clocks: &mut StatusClocks,
 ) -> io::Result<(CancelToken, JoinHandle<()>)> {
     let width = term.screen().width;
-    app.record_user_message(&text);
-    term.insert_before(ui::message_lines(Role::User, &text, width))?;
-    term.insert_before(vec![Line::default()])?;
+    for text in &texts {
+        app.record_user_message(text);
+        term.insert_before(ui::message_lines(Role::User, text, width))?;
+        term.insert_before(vec![Line::default()])?;
+    }
     app.begin_stream();
     *committed = 0;
     // Start the turn clock; the draw branch keeps the status animated from here.
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
     let cancel = CancelToken::new();
-    let handle = backend.spawn(text, tx.clone(), cancel.clone());
+    let handle = backend.spawn(texts.join("\n"), tx.clone(), cancel.clone());
     Ok((cancel, handle))
 }
 

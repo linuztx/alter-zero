@@ -153,10 +153,11 @@ unit-tested must be unit-tested.
   joins `App::queued` (consuming the composer, recorded in `input_history` for ↑
   recall) and shows **above the box**, in the streaming strip under the status
   line, inset two columns and styled exactly like a sent user message (`❯`
-  bullet, dark background, wrapped). When the turn ends the loop sends **one**
-  queued message as its own turn
-  (`App::dequeue`, FIFO — `main.rs::start_turn`, shared with `Submit`), and
-  **Esc interrupts the current turn and sends the next queued one right away**.
+  bullet, dark background, wrapped) — every queued entry, uncapped. When the
+  turn ends the loop drains the **whole backlog into one batched next turn**
+  (`App::drain_queued`, FIFO — `main.rs::start_turn`, shared with `Submit`;
+  each message commits as its own bubble, the backend gets one joined prompt),
+  and **Esc interrupts the current turn and sends the backlog right away**.
   **Alt+Up** pulls the most-recent queued message back into an empty composer to
   edit, resend, or drop (codex's `edit_queued_message`). Slash commands aren't
   queued (they run inline via the palette).
@@ -202,7 +203,7 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`dequeue`, Enter-queues + Alt+Up edit, `docs/queue.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory` types. | Yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`drain_queued`, Enter-queues + Alt+Up edit, `docs/queue.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
 | `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
@@ -398,15 +399,15 @@ frame scheduler ─► draw-tick ─────┘                             
   `live_height` grows by the band; `render_live` paints it below the box;
   `cursor_position` stays put when it opens.
 - `app` (message queue): Enter mid-turn queues (composer cleared, FIFO order,
-  recorded for ↑ recall) while idle Enter still submits; `dequeue` pops front /
-  `None` empty; Alt+Up pulls the last queued message into an empty composer and
-  is a no-op against a draft or an empty queue.
+  recorded for ↑ recall) while idle Enter still submits; `drain_queued` takes
+  everything in order and empties; Alt+Up pulls the last queued message into an
+  empty composer and is a no-op against a draft or an empty queue.
 - `ui` (queued messages): `queued_rows` 0 empty / counts the queue / counts
-  wrapped lines / caps at `QUEUED_MAX_ROWS`; `queued_lines` insets every row two
-  columns (the indent outside the dark block) and past it styles each message
-  exactly like a user message (`❯` bullet, dark background), wrapping long ones;
-  `live_height` grows with the queue; `render_live` draws it *above* the box, in
-  its own strip slot independent of the shortcuts band below.
+  wrapped lines / uncapped (the whole backlog shows); `queued_lines` insets
+  every row two columns (the indent outside the dark block) and past it styles
+  each message exactly like a user message (`❯` bullet, dark background),
+  wrapping long ones; `live_height` grows with the queue; `render_live` draws it
+  *above* the box, in its own strip slot independent of the shortcuts band below.
 - `ui`: `wrap_text` (word wrap, hard-break long words, newlines, width 0, **wide
   & zero-width chars**); `message_lines` (bullet on first line, indented
   continuation; user lines carry a dark background padded to the full display

@@ -438,13 +438,13 @@ pub struct App {
     /// Survives `/clear` — like codex, whose history even spans sessions. See
     /// `docs/input-history.md`.
     pub input_history: InputHistory,
-    /// Messages submitted while a turn was in flight, awaiting their own turns
+    /// Messages submitted while a turn was in flight, awaiting the next turn
     /// (codex's `queued_user_messages`). Enter mid-turn enqueues here; the loop
-    /// pops one off the front ([`dequeue`]) to start the next turn whenever the
-    /// current one ends — and Esc-interrupt sends the next one right away. Only
-    /// ever non-empty while a turn is active. See `docs/queue.md`.
+    /// drains the whole queue ([`drain_queued`]) into one batched turn whenever
+    /// the current one ends — and Esc-interrupt sends the backlog right away.
+    /// Only ever non-empty while a turn is active. See `docs/queue.md`.
     ///
-    /// [`dequeue`]: App::dequeue
+    /// [`drain_queued`]: App::drain_queued
     pub queued: VecDeque<String>,
     /// Whether the `?` shortcuts band (the keyboard-shortcuts overview below
     /// the input box — codex's footer shortcut overlay) is showing. Toggled by
@@ -868,12 +868,14 @@ impl App {
         }));
     }
 
-    /// Pop the oldest queued message (FIFO) for the loop to start as the next
-    /// turn when the current one ends, or `None` when the queue is empty. Codex
-    /// sends queued inputs one at a time (`maybe_send_next_queued_input`).
+    /// Take the whole queue (FIFO order) for the loop to send as the next turn
+    /// when the current one ends; empty when nothing is queued. The entire
+    /// backlog goes out in one turn — Claude-Code-style batching, and codex's
+    /// merge of pending messages after an interrupt
+    /// (`merge_user_messages_with_history_record`).
     #[must_use]
-    pub fn dequeue(&mut self) -> Option<String> {
-        self.queued.pop_front()
+    pub fn drain_queued(&mut self) -> Vec<String> {
+        self.queued.drain(..).collect()
     }
 
     /// Record a system notice (from a slash command) in the history, so it
@@ -2211,16 +2213,20 @@ mod tests {
     }
 
     #[test]
-    fn dequeue_pops_the_oldest_first_then_empties() {
+    fn drain_queued_takes_everything_in_order_and_empties() {
+        // The whole queue flushes as the next turn (Claude-Code-style batching;
+        // codex merges pending messages the same way after an interrupt).
         let mut app = App::new();
         app.begin_stream();
         app.input = TextArea::from_text("a");
         app.on_key(key(KeyCode::Enter));
         app.input = TextArea::from_text("b");
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.dequeue(), Some("a".to_string()));
-        assert_eq!(app.dequeue(), Some("b".to_string()));
-        assert_eq!(app.dequeue(), None, "nothing left to flush");
+        app.input = TextArea::from_text("c");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.drain_queued(), vec!["a", "b", "c"], "FIFO, all at once");
+        assert!(app.queued.is_empty(), "the queue is emptied");
+        assert!(app.drain_queued().is_empty(), "nothing left to flush");
     }
 
     #[test]

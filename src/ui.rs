@@ -234,9 +234,6 @@ const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
 // the dark background, wrapped — so a queued follow-up reads like it is already
 // on its way. The loop sends them one per turn. See docs/queue.md. ---
 
-/// The most queued rows shown at once (totalled across the queued messages, each
-/// wrapped like a user message); a longer queue is truncated to this many rows.
-const QUEUED_MAX_ROWS: u16 = 6;
 /// Indent prefixed to every queued row, insetting the queue from the strip's
 /// left edge; the dark user-message block starts after it.
 const QUEUED_INDENT: &str = "  ";
@@ -797,9 +794,10 @@ pub fn shortcuts_lines(turn_active: bool) -> Vec<Line<'static>> {
 
 /// How many rows the queued messages occupy in the strip at `width`: the total
 /// wrapped height of every queued message (each styled like a user message),
-/// capped at [`QUEUED_MAX_ROWS`]; 0 when the queue is empty. [`live_height`]
-/// reserves this and [`render_live`] paints exactly this many — the two must
-/// agree (both go through [`queued_lines`], so they can't drift).
+/// uncapped — the whole backlog shows, codex-style; 0 when the queue is empty.
+/// [`live_height`] reserves this and [`render_live`] paints exactly this many —
+/// the two must agree (both go through [`queued_lines`], so they can't drift).
+/// `live_height`'s terminal-height clamp still bounds the region as a whole.
 #[must_use]
 pub fn queued_rows(app: &App, width: u16) -> u16 {
     queued_lines(app, width).len() as u16
@@ -807,26 +805,20 @@ pub fn queued_rows(app: &App, width: u16) -> u16 {
 
 /// The styled lines for the queued follow-up messages: each rendered like a sent
 /// user message ([`message_lines`] — the `❯ ` bullet, dark background, wrapped to
-/// `width` minus the [`QUEUED_INDENT`] every row is inset by), concatenated and
-/// truncated to [`QUEUED_MAX_ROWS`] rows so a long queue can't crowd out the box.
-/// Empty when the queue is empty.
+/// `width` minus the [`QUEUED_INDENT`] every row is inset by), concatenated —
+/// every queued message shows (no display cap; the queue drains whole at the
+/// next turn anyway). Empty when the queue is empty.
 #[must_use]
 pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let cap = QUEUED_MAX_ROWS as usize;
     let inner = width.saturating_sub(cols(QUEUED_INDENT) as u16);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for msg in &app.queued {
-        if lines.len() >= cap {
-            break;
-        }
-        lines.extend(
+    app.queued
+        .iter()
+        .flat_map(|msg| {
             message_lines(Role::User, msg, inner)
                 .into_iter()
-                .map(indent_queued_line),
-        );
-    }
-    lines.truncate(cap);
-    lines
+                .map(indent_queued_line)
+        })
+        .collect()
 }
 
 /// Prefix one queued-message row with the [`QUEUED_INDENT`], keeping the indent
@@ -2819,12 +2811,14 @@ mod tests {
     }
 
     #[test]
-    fn queued_rows_cap_at_the_max() {
+    fn queued_rows_are_uncapped_every_message_counts() {
+        // No display cap (codex shows the whole backlog): ten queued messages
+        // are ten rows.
         let mut app = App::new();
-        for i in 0..(QUEUED_MAX_ROWS as usize + 3) {
+        for i in 0..10 {
             app.queued.push_back(format!("m{i}"));
         }
-        assert_eq!(queued_rows(&app, 40), QUEUED_MAX_ROWS);
+        assert_eq!(queued_rows(&app, 40), 10);
     }
 
     #[test]
@@ -2879,12 +2873,14 @@ mod tests {
     }
 
     #[test]
-    fn queued_lines_cap_at_the_max() {
+    fn queued_lines_list_the_whole_backlog_uncapped() {
         let mut app = App::new();
-        for i in 0..(QUEUED_MAX_ROWS as usize + 3) {
+        for i in 0..10 {
             app.queued.push_back(format!("m{i}"));
         }
-        assert_eq!(queued_lines(&app, 40).len(), QUEUED_MAX_ROWS as usize);
+        let lines = queued_lines(&app, 40);
+        assert_eq!(lines.len(), 10, "every queued message shows");
+        assert!(plain(&lines[9]).contains("❯ m9"), "{:?}", plain(&lines[9]));
     }
 
     #[test]

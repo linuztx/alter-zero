@@ -1,9 +1,10 @@
 # Queueing messages while a turn streams
 
 Port of openai/codex's *queued user messages*: while a reply is generating, a
-submitted message doesn't have to wait at the keyboard — it joins a queue and is
-sent automatically, one per turn, as each turn ends. See `CLAUDE.md` for where
-this sits in the runtime model.
+submitted message doesn't have to wait at the keyboard — it joins a queue
+(every entry shown above the box) and the **whole backlog is sent automatically
+as the next turn** when the current one ends, Claude-Code style. See `CLAUDE.md`
+for where this sits in the runtime model.
 
 ## What codex does (findings)
 
@@ -14,11 +15,13 @@ we don't have). The mechanics that matter:
 - **Queue vs send** (`input_flow.rs::queue_user_message_with_options`): on submit,
   `if !is_session_configured() || is_user_turn_pending_or_running() { push_back } else { submit }`.
   A turn in flight means the message is queued, not sent.
-- **Drain, one at a time** (`input_flow.rs::maybe_send_next_queued_input`, called
-  from `turn_runtime.rs::on_task_complete`): when a turn completes it pops **one**
-  message off the **front** and submits it as the next turn (`break` after a
-  `Plain` submit). Each queued message becomes its own turn — the queue is never
-  concatenated.
+- **Drain on completion** (`input_flow.rs::maybe_send_next_queued_input`, called
+  from `turn_runtime.rs::on_task_complete`): when a turn completes the queue
+  flushes from the **front** into the next turn. (Codex's plain path submits one
+  `Plain` message per completion; its interrupt path
+  `merge_user_messages_with_history_record` merges the backlog into a single
+  fresh turn — Claude Code likewise batches everything queued into the next
+  turn, which is the form we adopt for every flush.)
 - **Display** (`bottom_pane/pending_input_preview.rs`): a dim italic
   "Queued follow-up inputs" section, each entry prefixed `↳`, truncated.
 - **Edit/dequeue** (`chatwidget/interaction.rs` + `input_restore.rs`): the
@@ -34,9 +37,11 @@ we don't have). The mechanics that matter:
 ## What we build
 
 We have one simple queue, not codex's steer/queue split, so we give it the
-unified form the user asked for: **Esc interrupts the current turn and sends the
-next queued message right away** — codex's steer-after-interrupt behaviour, made
-the rule for every queued message.
+unified form the user asked for: on **every** turn end — `StreamDone`, `Error`,
+or **Esc** (which interrupts the current turn and sends the backlog right away,
+codex's steer-after-interrupt) — the **entire queue drains into one batched next
+turn**: each message commits as its own user bubble, and the backend gets the
+texts joined with newlines as a single prompt.
 
 ### State (`app.rs`)
 
@@ -47,8 +52,8 @@ the rule for every queued message.
   `queued`. Idle Enter is unchanged (`Action::Submit`). A bare `/token` keeps the
   palette path (slash commands aren't queued — they run inline via the palette as
   before).
-- `App::dequeue() -> Option<String>` — `pop_front`, for the loop to start the
-  next turn. FIFO, one per completed turn (codex's `maybe_send_next_queued_input`).
+- `App::drain_queued() -> Vec<String>` — takes the whole queue (FIFO order) for
+  the loop to send as one batched next turn; empty when nothing is queued.
 - **Alt+Up** (`KeyCode::Up` with `ALT`, an **empty** composer, a non-empty queue):
   `pop_back` the most-recent queued message into the composer via `recall_input`
   (so it can be edited, resent, or dropped). Guarded on an empty composer so it
@@ -57,19 +62,21 @@ the rule for every queued message.
 
 ### Flush (`main.rs`, the I/O boundary)
 
-The `Action::Submit` body is extracted into `start_turn(...)` (record + commit the
-user bullet, `begin_stream`, reset the per-turn clocks/`committed`, spawn the
-backend, return the in-flight handle). Both the Submit arm and every flush call
-it, so they can never drift. After a turn goes **idle**, the loop pops one queued
-message and starts it:
+The `Action::Submit` body is extracted into `start_turn(texts: Vec<String>, …)`:
+for each text it records + commits the user bubble, then `begin_stream`s, resets
+the per-turn clocks/`committed`, and spawns the backend **once** on the
+newline-joined prompt (a Submit is a batch of one). Both the Submit arm and
+every flush call it, so they can never drift. After a turn goes **idle**, the
+loop `drain_queued()`s and — if the backlog is non-empty — starts it as one
+batched turn:
 
 - **`StreamDone` / `Error`** (branch 2, after `on_stream_event` returns "ended"):
-  flush one — *only in the conversation view* (committing to scrollback under the
-  Ctrl+O overlay would violate invariant 4).
+  flush the backlog — *only in the conversation view* (committing to scrollback
+  under the Ctrl+O overlay would violate invariant 4).
 - **Esc interrupt** (`Action::Interrupt` arm): after committing the partial + the
-  red `Conversation interrupted` notice, flush one — this is the user's spec
-  ("interrupt `hello`, send `world` right away"). Interrupt only arises in the
-  conversation view, so no gate is needed.
+  red `Conversation interrupted` notice, flush the backlog — this is the user's
+  spec ("interrupt `hello`, send `world` right away"). Interrupt only arises in
+  the conversation view, so no gate is needed.
 - **Returning from the Ctrl+O overlay** (`Action::ToggleToolView` exit branch): if
   a turn *ended while the overlay was up* (`inflight` is now `None`), the deferred
   flush runs after `repaint_conversation`, so the queue can't get stuck.
@@ -106,21 +113,24 @@ needs a `queued_rows` parameter threaded through `live_height` / `live_layout` /
 the palette/shortcuts `band_rows` below the box:
 
 - `queued_rows(app, width)` — the total wrapped height of every queued message
-  (each via `message_lines(Role::User, …)`), capped at `QUEUED_MAX_ROWS`; 0 when
-  empty. `live_height`/`live_layout` add it to the strip; `render_live` paints
-  exactly that many — both go through `queued_lines`, so they can't drift.
+  (each via `message_lines(Role::User, …)`), **uncapped** — the whole backlog
+  shows, codex-style; 0 when empty. `live_height`/`live_layout` add it to the
+  strip; `render_live` paints exactly that many — both go through
+  `queued_lines`, so they can't drift. (`live_height`'s terminal-height clamp
+  still bounds the region as a whole; the queue drains entirely at the next turn
+  end, so a backlog taller than the screen is a momentary, self-healing state.)
 - `queued_lines(app, width)` — each queued message rendered by `message_lines`
   (`❯` bullet, dark background) wrapped to `width` minus the indent, every row
   prefixed with `QUEUED_INDENT` (`indent_queued_line` folds the line style into
-  the spans so the indent stays *outside* the dark block), concatenated and
-  truncated to `QUEUED_MAX_ROWS` rows so a long queue can't crowd out the box.
+  the spans so the indent stays *outside* the dark block), concatenated.
 
 ## Known divergences from codex
 
-- **No steer/queue split.** One `VecDeque<String>`; every queued message is the
-  same "send as its own turn" kind. So Esc always sends the next queued message
-  right away (codex only does that for steers; for plain queued messages it
-  restores them to the composer).
+- **No steer/queue split.** One `VecDeque<String>`; every flush batches the
+  whole backlog into the next turn (codex's plain path sends one per completion
+  and only its steer path merges; Claude Code batches like we do). So Esc always
+  sends the backlog right away (codex only does that for steers; for plain
+  queued messages it restores them to the composer).
 - **We keep the red interrupt notice.** Codex's steer path shows a gentle info
   ("Model interrupted to submit steer instructions."); we keep our standard
   `Conversation interrupted` notice, then send the queued message — the interrupt
@@ -136,19 +146,20 @@ the palette/shortcuts `band_rows` below the box:
 ## Testing
 
 - `app` (queue): Enter mid-turn queues (composer cleared, `queued` grows, FIFO
-  order preserved); idle Enter still submits; `dequeue` pops front / `None` empty;
-  a queued message is recorded in `input_history` (↑ recalls it); Alt+Up pops the
-  last into the composer; Alt+Up with a draft is a no-op (no clobber); Alt+Up on an
-  empty queue is harmless.
+  order preserved); idle Enter still submits; `drain_queued` takes everything in
+  order and empties; a queued message is recorded in `input_history` (↑ recalls
+  it); Alt+Up pops the last into the composer; Alt+Up with a draft is a no-op
+  (no clobber); Alt+Up on an empty queue is harmless.
 - `ui` (queue): `queued_rows` is 0 empty / counts the queue / counts wrapped
-  lines / caps at `QUEUED_MAX_ROWS`; `queued_lines` styles each message exactly
-  like a user message (`❯` bullet, dark background) and wraps long ones;
-  `live_height` grows with the queue; `render_live` draws the queue *above* the
-  box (and the shortcuts band still shows below it, in its own slot).
-- `scripts/smoke.sh` Phase 12 (auto-send): submit `hello`, queue `world`
-  mid-stream (`❯ world` shows above the box while turn 1 streams), then both turns
-  complete — `❯ hello` and `❯ world` both land, `Finished for` (turn 2) confirms
-  `world` was auto-sent.
+  lines / is uncapped (ten messages are ten rows); `queued_lines` styles each
+  message exactly like a user message (`❯` bullet, dark background) and wraps
+  long ones; `live_height` grows with the queue; `render_live` draws the queue
+  *above* the box (and the shortcuts band still shows below it, in its own slot).
+- `scripts/smoke.sh` Phase 12 (batch-send): submit `hello`, queue `world` and
+  `again` mid-stream (both inset rows show above the box while turn 1 streams),
+  then the backlog batch-sends as ONE turn — `❯ world` and `❯ again` both
+  commit, `Finished for` (turn 2) appears and `Completed for` (a third turn)
+  must not.
 - `scripts/smoke.sh` Phase 13 (interrupt-send): submit `hello`, queue `world`,
-  press Esc — `Conversation interrupted` commits and `world` is sent right away
-  (`❯ world` + `Finished for`).
+  press Esc — `Conversation interrupted` commits and the backlog is sent right
+  away (`❯ world` + `Finished for`).

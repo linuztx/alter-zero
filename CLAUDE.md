@@ -75,8 +75,9 @@ an empty composer; any other key dismisses it, Esc dismiss-only; see
 submitted with Enter queue** instead of waiting (shown like sent user messages,
 inset two columns — `  ❯ {msg}` rows in the strip under the status line —
 `App::queued`, codex's
-`queued_user_messages`), auto-sent one per turn as each ends — **Esc interrupts
-and sends the next queued one right away**, Alt+Up edits the last; see
+`queued_user_messages`), the whole backlog auto-sent as one batched turn when
+the current one ends — **Esc interrupts and sends the backlog right away**,
+Alt+Up edits the last; see
 `docs/queue.md`) stays pinned at the bottom. The alternate screen is used in exactly one
 place: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
 call's complete output while the conversation keeps streaming underneath (see
@@ -176,15 +177,16 @@ frame scheduler ──► draw-tick ────┘                             
                                        └─ turn active? re-arm a frame in 32ms (status shimmer + timer)
 ```
 
-`Submit(text)` runs `main.rs::start_turn` — records the user message (the Enter
-arm also records the text into `App::input_history` for the ↑/↓ shell-style
-recall — adjacent duplicates collapse, `/clear` doesn't touch it),
-`insert_before`s it, then spawns a reply via the selected `ReplySource`
-(`backend.spawn(text, tx, cancel)`), keeping the thread handle + `CancelToken` so
-a quit mid-stream cancels and reaps it. **Enter *while a turn is in flight* queues**
-the message into `App::queued` (codex's `queued_user_messages`) instead of
-producing `Submit` — shown like sent user messages (`❯` rows) in the strip above
-the box; `start_turn` is reused to flush one queued message per turn end (Alt+Up
+`Submit(text)` runs `main.rs::start_turn` — a batch of one: it records each
+user message (the Enter arm also records the text into `App::input_history` for
+the ↑/↓ shell-style recall — adjacent duplicates collapse, `/clear` doesn't
+touch it), `insert_before`s it, then spawns one reply via the selected
+`ReplySource` (`backend.spawn(texts.join("\n"), tx, cancel)`), keeping the
+thread handle + `CancelToken` so a quit mid-stream cancels and reaps it.
+**Enter *while a turn is in flight* queues** the message into `App::queued`
+(codex's `queued_user_messages`) instead of producing `Submit` — shown like
+sent user messages (`❯` rows) in the strip above the box; `start_turn` is
+reused to flush the whole backlog as one batched turn per turn end (Alt+Up
 pulls the last back to edit; see `docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
 and a `ThinkingStart`/`ThinkingEnd` pair between `Chunk`s; the loop shows the tool
@@ -201,9 +203,10 @@ when idle): the loop cancels + joins the backend, **drains the channel** (a stal
 the partial, resolves a running tool as failed (`Interrupted by user`), records
 the red `INTERRUPT_NOTICE`, and clears the status with no summary
 (`docs/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc
-interrupt — the loop pops one queued message (`App::dequeue`) and `start_turn`s
-it as the next turn, so **Esc sends the next queued message right away**; a turn
-that ends under the Ctrl+O overlay defers its flush to the return (invariant 4).
+interrupt — the loop drains the whole queue (`App::drain_queued`) and
+`start_turn`s it as one batched next turn, so **Esc sends the backlog right
+away**; a turn that ends under the Ctrl+O overlay defers its flush to the
+return (invariant 4).
 `App` (`app.rs`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,
@@ -277,10 +280,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), the `?` shortcuts
   band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
-  key / dim label colours), the queued messages (`QUEUED_MAX_ROWS` cap, the
-  `QUEUED_INDENT` two-space inset,
-  `queued_rows`/`queued_lines` — each rendered by `message_lines(Role::User…)`,
-  so they reuse the user-message style), and
+  key / dim label colours), the queued messages (the `QUEUED_INDENT` two-space
+  inset, `queued_rows`/`queued_lines` — uncapped, each rendered by
+  `message_lines(Role::User…)`, so they reuse the user-message style), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap + status + gap strip shows *only while a turn streams* — `strip_rows`
   (`render_live` draws the status line under the preview's gap) — with the
