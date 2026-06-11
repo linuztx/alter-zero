@@ -92,8 +92,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // when the turn was submitted, and when the current thinking phase began
     // (`None` when not in one). The pure `App` only ever sees the *computed*
     // durations, via `set_status_times`. See docs/status-indicator.md.
-    let mut turn_start: Option<Instant> = None;
-    let mut thinking_start: Option<Instant> = None;
+    let mut clocks = StatusClocks::default();
 
     // Init already queried the cursor over stdin; the EventStream is now the sole
     // stdin reader (see the module-level invariant note).
@@ -129,19 +128,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             }
                             Action::None => {}
                             Action::Submit(text) => {
-                                let width = term.screen().width;
-                                app.record_user_message(&text);
-                                term.insert_before(ui::message_lines(Role::User, &text, width))?;
-                                term.insert_before(vec![Line::default()])?;
-                                app.begin_stream();
-                                committed = 0;
-                                // Start the turn clock; the draw branch keeps the
-                                // status animated from here (see its re-arm note).
-                                turn_start = Some(Instant::now());
-                                thinking_start = None;
-                                let cancel = CancelToken::new();
-                                let handle = backend.spawn(text, tx.clone(), cancel.clone());
-                                inflight = Some((cancel, handle));
+                                inflight = Some(start_turn(
+                                    term, &mut app, &tx, &backend, text,
+                                    &mut committed, &mut clocks,
+                                )?);
                             }
                             Action::ToggleToolView => {
                                 // on_key already flipped app.view; sync the overlay.
@@ -152,6 +142,18 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // Catch the inline view up on whatever streamed
                                     // while the overlay was showing.
                                     repaint_conversation(term, &app, &mut committed)?;
+                                    // A turn may have ended while the overlay was up
+                                    // (its queue flush was deferred — invariant 4);
+                                    // now that we commit inline again, send the next
+                                    // queued message as a fresh turn.
+                                    if inflight.is_none()
+                                        && let Some(text) = app.dequeue()
+                                    {
+                                        inflight = Some(start_turn(
+                                            term, &mut app, &tx, &backend, text,
+                                            &mut committed, &mut clocks,
+                                        )?);
+                                    }
                                 }
                             }
                             Action::Notice(text) => {
@@ -213,8 +215,20 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     term.insert_before(vec![Line::default()])?;
                                 }
                                 committed = 0;
-                                turn_start = None;
-                                thinking_start = None;
+                                clocks.turn_start = None;
+                                clocks.thinking_start = None;
+                                // The user interrupted to send their queued
+                                // follow-up right away (their spec; codex's
+                                // submit-pending-steers-after-interrupt): start the
+                                // next queued message as a fresh turn. Interrupt
+                                // only arises in the conversation view, so
+                                // committing here is always safe.
+                                if let Some(text) = app.dequeue() {
+                                    inflight = Some(start_turn(
+                                        term, &mut app, &tx, &backend, text,
+                                        &mut committed, &mut clocks,
+                                    )?);
+                                }
                             }
                         }
                         schedule_for_key(&frame, &mut burst, &key);
@@ -238,10 +252,22 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             //    overlay we hold off and repaint on return).
             Some(stream_event) = reply_rx.recv() => {
                 if on_stream_event(
-                    term, &mut app, &mut committed,
-                    &mut turn_start, &mut thinking_start, stream_event,
+                    term, &mut app, &mut committed, &mut clocks, stream_event,
                 )? {
                     inflight = None; // the stream ended
+                    // Send the next queued message as its own turn (codex's
+                    // maybe_send_next_queued_input) — but only in the conversation
+                    // view; committing under the Ctrl+O overlay would violate the
+                    // no-scrollback-in-overlay invariant. A turn that ends in the
+                    // overlay flushes on return instead (see ToggleToolView).
+                    if app.view == View::Conversation
+                        && let Some(text) = app.dequeue()
+                    {
+                        inflight = Some(start_turn(
+                            term, &mut app, &tx, &backend, text,
+                            &mut committed, &mut clocks,
+                        )?);
+                    }
                 }
                 frame.schedule_frame();
             }
@@ -254,7 +280,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             //    thinking pause). The chain seeds from the Submit keypress and
             //    stops by itself on the first draw after the turn ends.
             Some(()) = draw_rx.recv() => {
-                update_status_times(&mut app, turn_start, thinking_start);
+                update_status_times(&mut app, &clocks);
                 match app.view {
                     View::Conversation => draw(term, &app)?,
                     View::ToolOutput => draw_tool_view(term, &mut app)?,
@@ -274,20 +300,59 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     Ok(())
 }
 
+/// The live status indicator's clocks, bundled (the impurity kept at the
+/// boundary): when the turn was submitted — driving the elapsed timer and the
+/// verb's shimmer phase — and when the current thinking phase began (`None`
+/// outside one). Reset at each turn start; the pure `App` only ever sees the
+/// *computed* durations, via `set_status_times`. See docs/status-indicator.md.
+#[derive(Default)]
+struct StatusClocks {
+    turn_start: Option<Instant>,
+    thinking_start: Option<Instant>,
+}
+
+/// Start a turn for `text`: record + commit the user bullet to scrollback, open
+/// the stream, reset the per-turn clocks and commit counter, and spawn the
+/// backend. Returns the in-flight cancel token + thread handle. Shared by the
+/// `Submit` key arm *and* every queue flush (a queued message starting its own
+/// turn — `StreamDone`/`Error`, an Esc interrupt, or a Ctrl+O return), so the
+/// paths can never drift. See `docs/queue.md`.
+fn start_turn(
+    term: &mut InlineViewport,
+    app: &mut App,
+    tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    backend: &impl ReplySource,
+    text: String,
+    committed: &mut usize,
+    clocks: &mut StatusClocks,
+) -> io::Result<(CancelToken, JoinHandle<()>)> {
+    let width = term.screen().width;
+    app.record_user_message(&text);
+    term.insert_before(ui::message_lines(Role::User, &text, width))?;
+    term.insert_before(vec![Line::default()])?;
+    app.begin_stream();
+    *committed = 0;
+    // Start the turn clock; the draw branch keeps the status animated from here.
+    clocks.turn_start = Some(Instant::now());
+    clocks.thinking_start = None;
+    let cancel = CancelToken::new();
+    let handle = backend.spawn(text, tx.clone(), cancel.clone());
+    Ok((cancel, handle))
+}
+
 /// Apply one streamed reply event to `app`, committing finished lines to
 /// scrollback in the conversation view. Returns whether the stream just **ended**
 /// (`StreamDone`/`Error`), so the caller can clear its in-flight handle. The
 /// commit work mirrors how a resize repaints the same items from history.
 ///
-/// `turn_start`/`thinking_start` are the live-status clocks: thinking events flip
-/// `thinking_start`, and the turn-ending events read `turn_start` for the
-/// `"Done for Ns"` summary, then clear both.
+/// `clocks` holds the live-status timers: thinking events flip
+/// `clocks.thinking_start`, and the turn-ending events read `clocks.turn_start`
+/// for the `"Done for Ns"` summary, then clear both.
 fn on_stream_event(
     term: &mut InlineViewport,
     app: &mut App,
     committed: &mut usize,
-    turn_start: &mut Option<Instant>,
-    thinking_start: &mut Option<Instant>,
+    clocks: &mut StatusClocks,
     event: StreamEvent,
 ) -> io::Result<bool> {
     let width = term.screen().width;
@@ -334,16 +399,18 @@ fn on_stream_event(
         StreamEvent::ThinkingStart => {
             // Opaque phase boundary: start the thinking clock so the status line
             // shows `Thinking for Ns`. No scrollback commit (thinking is live-only).
-            *thinking_start = Some(Instant::now());
+            clocks.thinking_start = Some(Instant::now());
             Ok(false)
         }
         StreamEvent::ThinkingEnd => {
-            *thinking_start = None;
+            clocks.thinking_start = None;
             Ok(false)
         }
         StreamEvent::StreamDone => {
             let final_text = app.finish_stream();
-            let elapsed = turn_start.map_or(0, |start| start.elapsed().as_secs());
+            let elapsed = clocks
+                .turn_start
+                .map_or(0, |start| start.elapsed().as_secs());
             let summary = app.end_turn(elapsed);
             if committing {
                 // The reply just ended, so the streaming strip (preview + gap +
@@ -363,8 +430,8 @@ fn on_stream_event(
                 }
             }
             *committed = 0;
-            *turn_start = None;
-            *thinking_start = None;
+            clocks.turn_start = None;
+            clocks.thinking_start = None;
             Ok(true)
         }
         StreamEvent::Error(message) => {
@@ -386,8 +453,8 @@ fn on_stream_event(
                 }
             }
             *committed = 0;
-            *turn_start = None;
-            *thinking_start = None;
+            clocks.turn_start = None;
+            clocks.thinking_start = None;
             Ok(true)
         }
     }
@@ -421,13 +488,11 @@ const STATUS_FRAME_INTERVAL: Duration = Duration::from_millis(32);
 /// current thinking-phase duration (`Some` while thinking). Time is impure, so
 /// this is the boundary's job — the pure `App`/`ui` only ever see the
 /// already-computed values. No-op when no turn is in flight.
-fn update_status_times(
-    app: &mut App,
-    turn_start: Option<Instant>,
-    thinking_start: Option<Instant>,
-) {
-    let elapsed = turn_start.map_or(Duration::ZERO, |start| start.elapsed());
-    let thinking = thinking_start.map(|start| start.elapsed());
+fn update_status_times(app: &mut App, clocks: &StatusClocks) {
+    let elapsed = clocks
+        .turn_start
+        .map_or(Duration::ZERO, |start| start.elapsed());
+    let thinking = clocks.thinking_start.map(|start| start.elapsed());
     app.set_status_times(elapsed, thinking);
 }
 
@@ -448,7 +513,7 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
         screen.width,
         screen.height,
         app.is_streaming(),
-        ui::menu_rows(app) + ui::shortcuts_rows(app),
+        ui::menu_rows(app) + ui::shortcuts_rows(app) + ui::queued_rows(app),
     )
 }
 

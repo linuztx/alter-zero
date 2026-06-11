@@ -228,6 +228,20 @@ const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;
 /// Dim grey — an entry's label (codex dims the whole overlay).
 const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
 
+// --- The queued-message band. While a turn streams, messages submitted with
+// Enter join `App::queued` and are listed dim below the box (sharing the
+// palette/shortcuts slot, stacked beneath them) — a port of codex's pending
+// input preview: one `↳ {peek}` row each, the rest collapsed into a final
+// `… (+N more)` line. The loop sends them one per turn. See docs/queue.md. ---
+
+/// The most queued rows shown at once; a longer queue collapses the remainder
+/// into a final `… (+N more)` line.
+const QUEUED_MAX_ROWS: u16 = 3;
+/// Prefix for a queued follow-up message (codex's `↳`).
+const QUEUED_PREFIX: &str = "↳ ";
+/// Dim grey — queued messages (codex dims them).
+const QUEUED_COLOR: Color = TOOL_DIM_COLOR;
+
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
 // derive their layout from `input_box` so the drawn text and cursor never drift;
@@ -532,10 +546,14 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let streaming = app.is_streaming();
     let menu = menu_rows(app);
-    // The band below the box holds the palette *or* the shortcuts overview
-    // (mutually exclusive: the palette needs a `/token`, the band an empty
-    // composer).
-    let band = menu + shortcuts_rows(app);
+    let shortcuts = shortcuts_rows(app);
+    let queued = queued_rows(app);
+    // The band below the box stacks the palette *or* shortcuts overview
+    // (mutually exclusive — the palette needs a `/token`, the overview an empty
+    // composer — and sit adjacent to the box) above the queued follow-ups, which
+    // can accompany either.
+    let interactive = menu + shortcuts;
+    let band = interactive + queued;
     let [strip, _, band_area] = live_layout(area, streaming, band);
 
     // Strip preview (top row; the rest of the strip is the blank gap). A running
@@ -599,11 +617,24 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         .collect();
     Paragraph::new(lines).render(bx.text, buf);
 
-    // The palette or the shortcuts overview, pinned in the band below the box.
+    // The band below the box: the palette or shortcuts overview adjacent to the
+    // box (the top `interactive` rows), then the queued follow-ups beneath them.
+    let top = Rect {
+        height: interactive.min(band_area.height),
+        ..band_area
+    };
     if menu > 0 {
-        Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
-    } else if band > 0 {
-        Paragraph::new(shortcuts_lines(app.turn_active())).render(band_area, buf);
+        Paragraph::new(command_menu_lines(app, top.width)).render(top, buf);
+    } else if shortcuts > 0 {
+        Paragraph::new(shortcuts_lines(app.turn_active())).render(top, buf);
+    }
+    if queued > 0 {
+        let q_area = Rect {
+            y: band_area.y + interactive,
+            height: queued.min(band_area.height.saturating_sub(interactive)),
+            ..band_area
+        };
+        Paragraph::new(queued_lines(app, q_area.width)).render(q_area, buf);
     }
 }
 
@@ -747,6 +778,58 @@ pub fn shortcuts_lines(turn_active: bool) -> Vec<Line<'static>> {
             Line::from(spans)
         })
         .collect()
+}
+
+/// How many rows the queued-message band occupies for `app`: 0 when the queue
+/// is empty, else `min(len, QUEUED_MAX_ROWS)`. Folded into [`render_live`]'s band
+/// total so [`live_height`] reserves it; `render_live` paints exactly this many —
+/// the two must agree, like [`menu_rows`]/[`shortcuts_rows`].
+#[must_use]
+pub fn queued_rows(app: &App) -> u16 {
+    (app.queued.len() as u16).min(QUEUED_MAX_ROWS)
+}
+
+/// The dim lines for the queued follow-up messages: one `↳ {peek}` row each
+/// (newlines flattened, truncated to `width`), capped at [`QUEUED_MAX_ROWS`] — a
+/// longer queue shows `QUEUED_MAX_ROWS - 1` of them then a `… (+N more)` line.
+/// Empty when the queue is empty.
+#[must_use]
+pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let n = app.queued.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let cap = QUEUED_MAX_ROWS as usize;
+    // When the queue overflows the cap, reserve the last row for the count.
+    let shown = if n > cap { cap - 1 } else { n };
+    let avail = (width as usize).saturating_sub(cols(QUEUED_PREFIX));
+    let mut lines: Vec<Line<'static>> = app
+        .queued
+        .iter()
+        .take(shown)
+        .map(|msg| {
+            let peek = truncate_cols(&flatten(msg), avail);
+            Line::from(vec![
+                Span::styled(QUEUED_PREFIX, Style::new().fg(QUEUED_COLOR)),
+                Span::styled(peek, Style::new().fg(QUEUED_COLOR)),
+            ])
+        })
+        .collect();
+    if n > cap {
+        let more = n - shown;
+        lines.push(Line::from(Span::styled(
+            format!("  … (+{more} more)"),
+            Style::new().fg(QUEUED_COLOR),
+        )));
+    }
+    lines
+}
+
+/// Collapse a message to a single display row: every run of whitespace (newlines
+/// included) becomes one space, so a multi-line queued message previews on one
+/// line.
+fn flatten(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// The bullet colour for a tool's lifecycle: blue running, green ok, red fail.
@@ -1167,7 +1250,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         area,
         &app.input,
         false,
-        menu_rows(app) + shortcuts_rows(app),
+        menu_rows(app) + shortcuts_rows(app) + queued_rows(app),
     );
     let row = bx.cursor_row.saturating_sub(bx.scroll) as u16;
     let col = bx.cursor_col as u16;
@@ -2693,5 +2776,139 @@ mod tests {
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the band opens");
+    }
+
+    // --- message queue (docs/queue.md) ---
+
+    #[test]
+    fn queued_rows_is_zero_empty_and_counts_the_queue() {
+        let mut app = App::new();
+        assert_eq!(queued_rows(&app), 0);
+        app.queued.push_back("a".into());
+        app.queued.push_back("b".into());
+        assert_eq!(queued_rows(&app), 2);
+    }
+
+    #[test]
+    fn queued_rows_cap_at_the_max() {
+        let mut app = App::new();
+        for i in 0..(QUEUED_MAX_ROWS as usize + 3) {
+            app.queued.push_back(format!("m{i}"));
+        }
+        assert_eq!(queued_rows(&app), QUEUED_MAX_ROWS);
+    }
+
+    #[test]
+    fn queued_lines_list_messages_with_the_prefix() {
+        let mut app = App::new();
+        app.queued.push_back("world".into());
+        app.queued.push_back("again".into());
+        let lines = queued_lines(&app, 40);
+        assert_eq!(lines.len(), 2);
+        assert!(
+            plain(&lines[0]).contains("↳ world"),
+            "{:?}",
+            plain(&lines[0])
+        );
+        assert!(
+            plain(&lines[1]).contains("↳ again"),
+            "{:?}",
+            plain(&lines[1])
+        );
+    }
+
+    #[test]
+    fn queued_lines_render_dim() {
+        let mut app = App::new();
+        app.queued.push_back("world".into());
+        let lines = queued_lines(&app, 40);
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .all(|s| s.style.fg == Some(QUEUED_COLOR)),
+            "queued messages render dim"
+        );
+    }
+
+    #[test]
+    fn queued_lines_flatten_newlines_to_one_row() {
+        let mut app = App::new();
+        app.queued.push_back("line one\nline two".into());
+        let lines = queued_lines(&app, 40);
+        assert_eq!(lines.len(), 1, "one row per queued message");
+        let text = plain(&lines[0]);
+        assert!(
+            text.contains("line one") && text.contains("line two"),
+            "{text:?}"
+        );
+        assert!(!text.contains('\n'), "newlines flattened: {text:?}");
+    }
+
+    #[test]
+    fn queued_lines_show_an_overflow_count() {
+        let mut app = App::new();
+        for i in 0..(QUEUED_MAX_ROWS as usize + 2) {
+            app.queued.push_back(format!("m{i}"));
+        }
+        let lines = queued_lines(&app, 40);
+        assert_eq!(lines.len(), QUEUED_MAX_ROWS as usize);
+        let last = plain(&lines[QUEUED_MAX_ROWS as usize - 1]);
+        assert!(last.contains("more"), "overflow line: {last:?}");
+    }
+
+    #[test]
+    fn live_height_grows_with_the_queue() {
+        let mut app = App::new();
+        app.begin_stream();
+        let without = live_height(&app.input, 40, 24, true, 0);
+        app.queued.push_back("world".into());
+        let with = live_height(&app.input, 40, 24, true, queued_rows(&app));
+        assert_eq!(with, without + 1, "one queued row grows the region by one");
+    }
+
+    #[test]
+    fn render_live_draws_the_queue_below_the_box() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.queued.push_back("world".into());
+        let h = live_height(&app.input, 40, 24, true, queued_rows(&app));
+        let mut buf = buffer(40, h);
+        render_live(buf.area, &mut buf, &app);
+        assert!(
+            row(&buf, h - 1, 40).contains("↳ world"),
+            "the queue sits on the last region row"
+        );
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains('❯'), "the input box is still drawn");
+    }
+
+    #[test]
+    fn the_queue_renders_below_the_shortcuts_band() {
+        // Both can show at once (palette/shortcuts adjacent to the box, queue
+        // below): they share the band, stacked.
+        let mut app = App::new();
+        app.begin_stream();
+        app.shortcuts_open = true;
+        app.queued.push_back("world".into());
+        let band = shortcuts_rows(&app) + queued_rows(&app);
+        let h = live_height(&app.input, 40, 24, true, band);
+        let mut buf = buffer(40, h);
+        render_live(buf.area, &mut buf, &app);
+        assert!(
+            row(&buf, h - 1, 40).contains("↳ world"),
+            "the queue is the last row"
+        );
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("for commands"),
+            "shortcuts still shown: {all:?}"
+        );
     }
 }

@@ -24,6 +24,8 @@ cleanup() {
 	tmux kill-session -t "${S}_quit" 2>/dev/null
 	tmux kill-session -t "${S}_recall" 2>/dev/null
 	tmux kill-session -t "${S}_shortcuts" 2>/dev/null
+	tmux kill-session -t "${S}_queue" 2>/dev/null
+	tmux kill-session -t "${S}_queueint" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -351,6 +353,82 @@ echo "==== captured pane (after typing a draft containing '?') ===="
 printf '%s\n' "$band_typed"
 tmux kill-session -t "$S8" 2>/dev/null
 
+# --- Phase 12: a message submitted WHILE a turn streams is QUEUED (codex's
+# queued_user_messages, docs/queue.md): shown dim "↳ world" below the box, then
+# auto-sent as its OWN turn when the first finishes. Both "❯ hello there" and
+# "❯ world" must land, and turn 2's "Finished for" summary confirms the queued
+# message was sent on its own. ---
+S9="${S}_queue"
+tmux new-session -d -s "$S9" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S9" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S9" Enter
+for _ in $(seq 1 40); do # up to ~4s: wait until turn 1 is visibly streaming
+	if tmux capture-pane -t "$S9" -p | grep -qF "Happy"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S9" -l "world"
+sleep 0.2
+tmux send-keys -t "$S9" Enter # streaming → queued, not submitted
+queued_band=""
+for _ in $(seq 1 20); do # up to ~3s: the queued message shows dim below the box
+	queued_band="$(tmux capture-pane -t "$S9" -p)"
+	if printf '%s' "$queued_band" | grep -qF "↳ world"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (world queued below the box) ===="
+printf '%s\n' "$queued_band"
+queue_done=""
+for _ in $(seq 1 100); do # up to ~15s: both turns finish
+	queue_done="$(tmux capture-pane -t "$S9" -p -S -60)"
+	if printf '%s' "$queue_done" | grep -qF "Finished for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (queued message auto-sent as its own turn) ===="
+printf '%s\n' "$queue_done"
+tmux kill-session -t "$S9" 2>/dev/null
+
+# --- Phase 13: Esc with a queued message interrupts the current turn AND sends
+# the queued one right away (the user's spec; codex's steer-after-interrupt). Submit
+# "hello there", queue "world" mid-stream, then Esc: the red "Conversation
+# interrupted" notice commits for turn 1, and "world" is sent immediately as turn 2
+# ("❯ world" + "Finished for"). ---
+S10="${S}_queueint"
+tmux new-session -d -s "$S10" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S10" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S10" Enter
+for _ in $(seq 1 40); do # up to ~4s: wait until turn 1 is visibly streaming
+	if tmux capture-pane -t "$S10" -p | grep -qF "Happy"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S10" -l "world"
+sleep 0.2
+tmux send-keys -t "$S10" Enter # queued while streaming
+sleep 0.3
+tmux send-keys -t "$S10" Escape # interrupt turn 1 → send "world" right away
+queueint=""
+for _ in $(seq 1 80); do # up to ~12s: the flushed "world" turn finishes
+	queueint="$(tmux capture-pane -t "$S10" -p -S -60)"
+	if printf '%s' "$queueint" | grep -qF "Finished for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (Esc interrupted turn 1 and sent the queued 'world') ===="
+printf '%s\n' "$queueint"
+tmux kill-session -t "$S10" 2>/dev/null
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -551,7 +629,35 @@ if printf '%s' "$band_typed" | grep -qF "for commands"; then
 	echo "FAIL: typing a draft ending in '?' re-opened the shortcuts band" >&2
 	status=1
 fi
+# Phase 12: a message submitted mid-stream is queued (shown "↳ world") and
+# auto-sent as its own turn when the first finishes (docs/queue.md).
+if ! printf '%s' "$queued_band" | grep -qF "↳ world"; then
+	echo "FAIL: a message submitted while streaming was not queued below the box ('↳ world' missing)" >&2
+	status=1
+fi
+if ! printf '%s' "$queue_done" | grep -qF "❯ world"; then
+	echo "FAIL: the queued message was never sent — '❯ world' did not reach scrollback" >&2
+	status=1
+fi
+if ! printf '%s' "$queue_done" | grep -qF "Finished for"; then
+	echo "FAIL: the queued message did not run as its own (second) turn — no 'Finished for' summary" >&2
+	status=1
+fi
+# Phase 13: Esc with a queued message interrupts the current turn and sends the
+# queued one right away (the user's spec; codex's steer-after-interrupt).
+if ! printf '%s' "$queueint" | grep -qF "Conversation interrupted"; then
+	echo "FAIL: Esc with a queued message did not interrupt the current turn" >&2
+	status=1
+fi
+if ! printf '%s' "$queueint" | grep -qF "❯ world"; then
+	echo "FAIL: Esc did not send the queued 'world' right away ('❯ world' missing)" >&2
+	status=1
+fi
+if ! printf '%s' "$queueint" | grep -qF "Finished for"; then
+	echo "FAIL: the queued message sent on interrupt never finished its turn" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, and ? toggles the shortcuts band"
+	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, and messages submitted mid-turn queue and auto-send (Esc sends the queued one right away)"
 fi
 exit "$status"

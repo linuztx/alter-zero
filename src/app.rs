@@ -4,6 +4,7 @@
 //! loop in `main.rs` feeds key presses in and reacts to the returned
 //! [`Action`]s, and pushes streamed chunks in via [`App::push_chunk`].
 
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -437,6 +438,14 @@ pub struct App {
     /// Survives `/clear` — like codex, whose history even spans sessions. See
     /// `docs/input-history.md`.
     pub input_history: InputHistory,
+    /// Messages submitted while a turn was in flight, awaiting their own turns
+    /// (codex's `queued_user_messages`). Enter mid-turn enqueues here; the loop
+    /// pops one off the front ([`dequeue`]) to start the next turn whenever the
+    /// current one ends — and Esc-interrupt sends the next one right away. Only
+    /// ever non-empty while a turn is active. See `docs/queue.md`.
+    ///
+    /// [`dequeue`]: App::dequeue
+    pub queued: VecDeque<String>,
     /// Whether the `?` shortcuts band (the keyboard-shortcuts overview below
     /// the input box — codex's footer shortcut overlay) is showing. Toggled by
     /// `?` from an empty composer; any other key closes it. See
@@ -610,7 +619,15 @@ impl App {
                 Action::None
             }
             KeyCode::Enter => {
-                if self.is_streaming() || self.input.text().trim().is_empty() {
+                if self.input.text().trim().is_empty() {
+                    Action::None
+                } else if self.is_streaming() {
+                    // A turn is in flight — queue the message instead of dropping
+                    // it (codex's queued_user_messages); the loop sends it when the
+                    // turn ends. Record it for ↑ recall, like a normal submit.
+                    let text = self.input.take();
+                    self.input_history.record(&text);
+                    self.queued.push_back(text);
                     Action::None
                 } else {
                     let text = self.input.take();
@@ -638,6 +655,20 @@ impl App {
             }
             KeyCode::Right => {
                 self.input.move_right();
+                Action::None
+            }
+            // Alt+Up pulls the most-recent queued message back into an *empty*
+            // composer to edit, resend, or drop it (codex's edit_queued_message).
+            // Guarded on an empty composer so it never clobbers a draft (the
+            // composer is empty in the normal flow — Enter emptied it on queue).
+            KeyCode::Up
+                if key.modifiers.contains(KeyModifiers::ALT)
+                    && self.input.is_empty()
+                    && !self.queued.is_empty() =>
+            {
+                if let Some(text) = self.queued.pop_back() {
+                    self.recall_input(&text);
+                }
                 Action::None
             }
             // ↑/↓ first try shell-style history recall — only from an empty
@@ -835,6 +866,14 @@ impl App {
             text: text.to_string(),
             timestamp,
         }));
+    }
+
+    /// Pop the oldest queued message (FIFO) for the loop to start as the next
+    /// turn when the current one ends, or `None` when the queue is empty. Codex
+    /// sends queued inputs one at a time (`maybe_send_next_queued_input`).
+    #[must_use]
+    pub fn dequeue(&mut self) -> Option<String> {
+        self.queued.pop_front()
     }
 
     /// Record a system notice (from a slash command) in the history, so it
@@ -1156,12 +1195,19 @@ mod tests {
 
     #[test]
     fn enter_while_streaming_does_not_submit() {
+        // A turn is in flight: Enter never produces Submit — it queues the
+        // message (codex's queued_user_messages) and consumes the composer.
         let mut app = App::new();
         app.input = TextArea::from_text("hello");
         app.begin_stream();
         let action = app.on_key(key(KeyCode::Enter));
         assert_eq!(action, Action::None);
-        assert_eq!(app.input.text(), "hello");
+        assert_eq!(
+            app.input.text(),
+            "",
+            "the composer is consumed into the queue"
+        );
+        assert_eq!(app.queued.front().map(String::as_str), Some("hello"));
     }
 
     #[test]
@@ -2130,6 +2176,102 @@ mod tests {
             }
             other => panic!("unexpected interleaving: {other:?}"),
         }
+    }
+
+    // --- message queue (docs/queue.md) ---
+
+    fn alt(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    #[test]
+    fn enter_when_idle_submits_and_never_queues() {
+        let mut app = App::new();
+        app.input = TextArea::from_text("hello");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Submit("hello".to_string())
+        );
+        assert!(
+            app.queued.is_empty(),
+            "an idle submit doesn't touch the queue"
+        );
+    }
+
+    #[test]
+    fn queued_messages_keep_submission_order() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("first");
+        app.on_key(key(KeyCode::Enter));
+        app.input = TextArea::from_text("second");
+        app.on_key(key(KeyCode::Enter));
+        let order: Vec<&str> = app.queued.iter().map(String::as_str).collect();
+        assert_eq!(order, vec!["first", "second"], "FIFO, oldest first");
+    }
+
+    #[test]
+    fn dequeue_pops_the_oldest_first_then_empties() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("a");
+        app.on_key(key(KeyCode::Enter));
+        app.input = TextArea::from_text("b");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.dequeue(), Some("a".to_string()));
+        assert_eq!(app.dequeue(), Some("b".to_string()));
+        assert_eq!(app.dequeue(), None, "nothing left to flush");
+    }
+
+    #[test]
+    fn a_queued_message_is_recorded_for_up_recall() {
+        // Queueing records into input_history (like a submit), so ↑ brings it back.
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("queued line");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.input.text(), "");
+        app.on_key(key(KeyCode::Up)); // empty composer → history recall
+        assert_eq!(app.input.text(), "queued line");
+    }
+
+    #[test]
+    fn alt_up_pulls_the_last_queued_message_into_the_composer() {
+        // codex's edit_queued_message: Alt+Up pops the most-recent queued message
+        // back for editing/resending.
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("older");
+        app.on_key(key(KeyCode::Enter));
+        app.input = TextArea::from_text("newer");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+        assert_eq!(app.input.text(), "newer", "the last queued message returns");
+        let left: Vec<&str> = app.queued.iter().map(String::as_str).collect();
+        assert_eq!(left, vec!["older"], "and it leaves the queue");
+    }
+
+    #[test]
+    fn alt_up_does_not_clobber_a_draft() {
+        // With text already in the composer, Alt+Up must not yank a queued message
+        // over the draft (it falls through to cursor movement instead).
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("queued");
+        app.on_key(key(KeyCode::Enter));
+        app.input = TextArea::from_text("a draft");
+        assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+        assert_eq!(app.input.text(), "a draft", "the draft is untouched");
+        assert_eq!(app.queued.len(), 1, "and the queue is untouched");
+    }
+
+    #[test]
+    fn alt_up_on_an_empty_queue_is_harmless() {
+        let mut app = App::new();
+        app.begin_stream();
+        assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+        assert_eq!(app.input.text(), "");
+        assert!(app.queued.is_empty());
     }
 
     // --- slash-command palette ---

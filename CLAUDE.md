@@ -43,7 +43,7 @@ The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
 `docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
 input-history recall in `docs/input-history.md`; the `?` shortcuts band in
-`docs/shortcuts.md`.
+`docs/shortcuts.md`; the mid-turn message queue in `docs/queue.md`.
 
 ### The runtime model and its invariants
 
@@ -71,7 +71,11 @@ scrollable **slash-command palette** band *below* the box when the input is a ba
 `/token` (the same slot shows a **`?` shortcuts band** — codex's footer shortcut
 overlay, two dim columns of `{key} for {thing}` entries — when `?` is pressed in
 an empty composer; any other key dismisses it, Esc dismiss-only; see
-`docs/shortcuts.md`)) stays pinned at the bottom. The alternate screen is used in exactly one
+`docs/shortcuts.md`); plus, below the box while a turn streams, **messages
+submitted with Enter queue** instead of waiting (dim `↳ {msg}` rows —
+`App::queued`, codex's `queued_user_messages`), auto-sent one per turn as each
+ends — **Esc interrupts and sends the next queued one right away**, Alt+Up edits
+the last; see `docs/queue.md`) stays pinned at the bottom. The alternate screen is used in exactly one
 place: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
 call's complete output while the conversation keeps streaming underneath (see
 invariant 4). ratatui's `Viewport::Inline` can't change height after startup, so
@@ -170,11 +174,16 @@ frame scheduler ──► draw-tick ────┘                             
                                        └─ turn active? re-arm a frame in 32ms (status shimmer + timer)
 ```
 
-`Submit(text)` records the user message (the Enter arm also records the text
-into `App::input_history` for the ↑/↓ shell-style recall — adjacent duplicates
-collapse, `/clear` doesn't touch it), `insert_before`s it, then spawns a reply
-via the selected `ReplySource` (`backend.spawn(text, tx, cancel)`), keeping the
-thread handle + `CancelToken` so a quit mid-stream cancels and reaps it. The
+`Submit(text)` runs `main.rs::start_turn` — records the user message (the Enter
+arm also records the text into `App::input_history` for the ↑/↓ shell-style
+recall — adjacent duplicates collapse, `/clear` doesn't touch it),
+`insert_before`s it, then spawns a reply via the selected `ReplySource`
+(`backend.spawn(text, tx, cancel)`), keeping the thread handle + `CancelToken` so
+a quit mid-stream cancels and reaps it. **Enter *while a turn is in flight* queues**
+the message into `App::queued` (codex's `queued_user_messages`) instead of
+producing `Submit` — shown as dim `↳` rows below the box; `start_turn` is reused
+to flush one queued message per turn end (Alt+Up pulls the last back to edit; see
+`docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
 and a `ThinkingStart`/`ThinkingEnd` pair between `Chunk`s; the loop shows the tool
 running (blue) then commits it collapsed (green/red), and flips its `thinking_start`
@@ -189,7 +198,11 @@ when idle): the loop cancels + joins the backend, **drains the channel** (a stal
 `ToolStart` would wedge a phantom running tool), and `App::interrupt_turn` keeps
 the partial, resolves a running tool as failed (`Interrupted by user`), records
 the red `INTERRUPT_NOTICE`, and clears the status with no summary
-(`docs/interrupt.md`). `App` (`app.rs`) is pure state +
+(`docs/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc
+interrupt — the loop pops one queued message (`App::dequeue`) and `start_turn`s
+it as the next turn, so **Esc sends the next queued message right away**; a turn
+that ends under the Ctrl+O overlay defers its flush to the return (invariant 4).
+`App` (`app.rs`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,
 `TurnSummary`, `HistoryItem`, `View` live there too.
@@ -262,13 +275,15 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), the `?` shortcuts
   band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
-  key / dim label colours), and
+  key / dim label colours), the queued-message band (`QUEUED_*` — the dim `↳`
+  prefix rows and the `QUEUED_MAX_ROWS` cap, `queued_rows`/`queued_lines`), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap + status + gap strip shows *only while a turn streams* — `strip_rows`
   (`render_live` draws the status line under the preview's gap, a blank row above
   the box) — and the
-  command palette *or* the shortcuts band is a third band *below* the box —
-  `menu_rows` + `shortcuts_rows` — so the box's
+  command palette *or* the shortcuts band (adjacent to the box), with the queued
+  follow-ups stacked beneath them, form the band *below* the box —
+  `menu_rows` + `shortcuts_rows` + `queued_rows` — so the box's
   dynamic `live_height` is streaming- and band-aware, and idle with no band
   there is exactly one blank above the box: the committed spacer after the last
   message. `render_live` and `cursor_position` share the `input_box` helper, which
