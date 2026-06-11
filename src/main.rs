@@ -556,15 +556,15 @@ fn repaint_conversation(
     Ok(())
 }
 
-/// Render the live region at its current grown height and place the cursor (only
-/// while editing — it's hidden while a reply streams).
+/// Render the live region at its current grown height and place the cursor.
+/// The composer keeps its cursor even while a reply streams (codex-style —
+/// typing mid-turn edits the draft, Enter queues it); only the Ctrl+O overlay
+/// hides it (`enter_overlay`).
 fn draw(term: &mut InlineViewport, app: &App) -> io::Result<()> {
     let height = live_region_height(app, term.screen());
-    // The cursor sits at the end of the input; `term` places it from the final
-    // (content-anchored) viewport via `ui::cursor_position`, so we just hand it the
-    // app while editing (and `None` while streaming hides the cursor).
-    let cursor = (!app.is_streaming()).then_some(app);
-    term.draw(height, |area, buf| ui::render_live(area, buf, app), cursor)
+    // `term` places the cursor from the final (content-anchored) viewport via
+    // `ui::cursor_position`, which mirrors render_live's layout exactly.
+    term.draw(height, |area, buf| ui::render_live(area, buf, app), app)
 }
 
 /// Render the full-screen tool-output overlay. Clamps the scroll to the current

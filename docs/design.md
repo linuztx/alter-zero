@@ -161,7 +161,10 @@ unit-tested must be unit-tested.
   **Alt+Up** pulls the whole backlog back into an empty composer as one
   newline-joined, multi-line draft to edit, extend, or drop (the merge codex
   applies when restoring pending messages). Slash commands aren't queued (they
-  run inline via the palette).
+  run inline via the palette). The composer stays **focused** throughout: the
+  hardware cursor stays visible on the box's prompt row while the turn streams
+  (codex keeps the composer cursor during a running task; only the Ctrl+O
+  overlay hides it).
 - **A session-context footer under the box** (codex's footer status line — see
   `docs/footer.md`): the live region's last row shows `{model} · {cwd}` — the
   backend's `ReplySource::model_name()` and the home-relativized working
@@ -460,7 +463,10 @@ frame scheduler ─► draw-tick ─────┘                             
   header), a blank gap, the status line, then another blank gap above the box, and
   shows no strip when
   idle; `cursor_position` follows
-  the last wrapped row (and stays put when the palette opens); and
+  the last wrapped row, stays put when the palette opens, and sits on the
+  prompt row mid-stream too — the streaming strip and queue above the box are
+  part of its layout, so the always-visible cursor never lands on a strip
+  row; and
   `repin` keeps the box top-anchored (scrolling up only on overflow, clearing rows
   on shrink); `restore_cursor_row` lands the exit cursor just below the box (no
   blank gap on quit when the box is near the top); the `BULLET_WIDTH` / `repaint_budget`

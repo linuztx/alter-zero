@@ -1349,14 +1349,15 @@ pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
 /// wherever the user has moved it, not just at the end.
 #[must_use]
 pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
-    // The cursor is only ever placed while idle (it is hidden during streaming),
-    // so the box is laid out without the streaming strip — but *with* the band
-    // and footer below it, so the box (and the cursor) sit correctly.
+    // Laid out exactly as render_live lays the box out — the streaming strip
+    // and queued rows above, the band and footer below — so the cursor sits on
+    // the prompt row even mid-turn (codex keeps the composer focused while a
+    // task runs: typing edits the draft, Enter queues it).
     let band = menu_rows(app) + shortcuts_rows(app);
     let bx = input_box(
         area,
         &app.input,
-        false,
+        app.is_streaming(),
         queued_rows(app, area.width),
         band,
         footer_rows(app, band),
@@ -2492,6 +2493,30 @@ mod tests {
             rendered.contains('❯'),
             "cursor row carries the prompt glyph"
         );
+    }
+
+    #[test]
+    fn cursor_row_sits_on_the_prompt_row_while_a_turn_streams() {
+        // Codex keeps the composer focused while a task runs — typing mid-turn
+        // edits the draft (Enter queues it), so the cursor must land on the
+        // box's prompt row even with the streaming strip *and* a queued
+        // message stacked above it, not on a strip row.
+        let mut app = App::new();
+        app.begin_stream();
+        app.queued.push_back("world".into());
+        app.input = TextArea::from_text("x");
+        let q = queued_rows(&app, 40);
+        let h = live_height(&app.input, 40, 24, true, q, 0, 0);
+        let area = Rect::new(0, 0, 40, h);
+        let mut buf = buffer(40, h);
+        render_live(area, &mut buf, &app);
+        let (cx, cy) = cursor_position(area, &app);
+        let rendered = row(&buf, cy, 40);
+        assert!(
+            rendered.starts_with("❯ x"),
+            "cursor row carries the box prompt, not the strip: {rendered:?}"
+        );
+        assert_eq!(cx, 3, "right after the typed text");
     }
 
     #[test]

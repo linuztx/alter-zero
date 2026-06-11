@@ -98,17 +98,21 @@ impl InlineViewport {
 
     /// Repaint the live region at the new `height`, keeping it **content-anchored**
     /// (its top fixed — it grows downward, not up from the bottom), and place the
-    /// hardware cursor. `cursor` is `Some(app)` while editing (the cursor sits at
-    /// the end of the input, derived via [`ui::cursor_position`] which accounts for
-    /// the command palette's band); `None` while streaming hides the cursor.
+    /// hardware cursor on the input's prompt row (derived via
+    /// [`ui::cursor_position`], which accounts for the streaming strip, the
+    /// queue, the band and the footer). The composer keeps its cursor even while
+    /// a reply streams — codex-style, typing mid-turn stays focused; the cursor
+    /// is hidden only on the Ctrl+O alternate screen ([`enter_overlay`]).
     ///
     /// The box grows in place until it reaches the screen bottom, at which point
     /// it scrolls the chat up into scrollback; a shrink blanks the rows it vacates.
+    ///
+    /// [`enter_overlay`]: InlineViewport::enter_overlay
     pub fn draw(
         &mut self,
         height: u16,
         render: impl FnOnce(Rect, &mut Buffer),
-        cursor: Option<&App>,
+        app: &App,
     ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
         let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
@@ -125,7 +129,7 @@ impl InlineViewport {
         // markers. `EndSynchronizedUpdate` always runs (even if a write failed
         // mid-frame) so the terminal is never left buffering.
         queue!(self.backend, BeginSynchronizedUpdate)?;
-        let painted = self.paint_frame(&buf, &repin, height, cursor);
+        let painted = self.paint_frame(&buf, &repin, height, app);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         painted?;
         ended?;
@@ -146,7 +150,7 @@ impl InlineViewport {
         buf: &Buffer,
         repin: &ui::Repin,
         height: u16,
-        cursor: Option<&App>,
+        app: &App,
     ) -> io::Result<()> {
         self.scroll_up(repin.scroll_up)?;
         if repin.clear_below > 0 {
@@ -163,14 +167,9 @@ impl InlineViewport {
             }
             _ => self.blit(buf)?,
         }
-        match cursor {
-            Some(app) => {
-                let (x, y) = ui::cursor_position(self.view, app);
-                self.backend.set_cursor_position(Position::new(x, y))?;
-                self.backend.show_cursor()?;
-            }
-            None => self.backend.hide_cursor()?,
-        }
+        let (x, y) = ui::cursor_position(self.view, app);
+        self.backend.set_cursor_position(Position::new(x, y))?;
+        self.backend.show_cursor()?;
         Ok(())
     }
 

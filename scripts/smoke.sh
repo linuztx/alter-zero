@@ -51,6 +51,20 @@ for _ in $(seq 1 50); do # up to ~5s
 	sleep 0.1
 done
 
+# The composer keeps the hardware cursor while the reply streams (codex keeps
+# the box focused mid-turn — it used to be hidden until the turn finished).
+# Probe tmux's live cursor state NOW, while chunks are still flowing. The screen
+# scrolls between two tmux calls as lines commit, so retry the (row, text) pair
+# until it lands on a settled frame.
+cursor_mid_flag="$(tmux display-message -p -t "$S" '#{cursor_flag}')"
+cursor_mid_row=""
+for _ in $(seq 1 10); do
+	cy="$(tmux display-message -p -t "$S" '#{cursor_y}')"
+	cursor_mid_row="$(tmux capture-pane -t "$S" -p | sed -n "$((cy + 1))p")"
+	case "$cursor_mid_row" in "❯"*) break ;; esac
+	sleep 0.1
+done
+
 echo "==== captured pane (with scrollback) ===="
 printf '%s\n' "$pane"
 
@@ -497,6 +511,21 @@ if ! printf '%s' "$pane" | grep -qF "dummy_model_name ·"; then
 	echo "FAIL: the session footer ('dummy_model_name · …') is not shown under the input box" >&2
 	status=1
 fi
+# The cursor stays visible ON THE PROMPT ROW while the reply streams (probed
+# live during Phase 1): the box keeps focus mid-turn so typing/queueing has a
+# blinking cursor, codex-style. Before the fix the cursor was hidden
+# (cursor_flag=0) for the whole turn.
+if [ "$cursor_mid_flag" != "1" ]; then
+	echo "FAIL: the hardware cursor is hidden while the reply streams (cursor_flag=$cursor_mid_flag)" >&2
+	status=1
+fi
+case "$cursor_mid_row" in
+"❯"*) ;;
+*)
+	echo "FAIL: mid-stream the cursor is not on the input's prompt row: '$cursor_mid_row'" >&2
+	status=1
+	;;
+esac
 # …and a blank gap row separates the status line from the box's top rule ("… ("
 # is unique to the status line: verb + ellipsis + the opening metrics paren).
 status_gap=$(printf '%s\n' "$pane" | awk '
@@ -751,6 +780,6 @@ if printf '%s' "$altup" | grep -qF "  ❯ world"; then
 	status=1
 fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), and the session footer ({model} · {cwd}) sits under the box except while a band is open"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), and the session footer ({model} · {cwd}) sits under the box except while a band is open"
 fi
 exit "$status"
