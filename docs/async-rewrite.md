@@ -51,9 +51,10 @@ already in this codebase; this change ports the rest.
   ```
 
   `schedule_frame()` after every state change requests a redraw; the scheduler
-  emits a coalesced tick that drives the actual paint. `insert_before` /
-  `set_view_height` stay inline (they mutate scrollback immediately, as before);
-  only the live-region paint is tick-driven.
+  emits a coalesced tick that drives the actual paint. `insert_before` queues its
+  lines and `set_view_height` adjusts the tracked geometry inline; the tick then
+  writes the queued lines *and* repaints the live region in one synchronized
+  frame (the flicker fix — `docs/flicker.md`).
 
 ## Invariant 1, restated
 

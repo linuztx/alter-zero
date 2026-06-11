@@ -44,7 +44,9 @@ The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
 input-history recall in `docs/input-history.md`; the `?` shortcuts band in
 `docs/shortcuts.md`; the mid-turn message queue in `docs/queue.md`; the
-session-context footer in `docs/footer.md`.
+session-context footer in `docs/footer.md`; the flicker-free frame pipeline
+(scrollback commits deferred into the draw's synchronized update) in
+`docs/flicker.md`.
 
 ### The runtime model and its invariants
 
@@ -123,16 +125,21 @@ of bug:
    + gap) sits *above* the box, so it grows the region upward; when a reply ends the
    strip's rows become the committed final line + spacer + the `Done for Ns` summary
    and the box must **stay put**, so `StreamDone`/`Error` call `term::set_view_height`
-   to reseat the viewport to its idle height *before* the final `insert_before` —
-   skip it and `insert_before` over-scrolls, the box rises off the bottom, and blank
-   rows appear beneath it (guarded by `smoke.sh` Phase 5). On a width change every wrapped line is
+   to reseat the viewport to its idle height *before* the final `insert_before`s —
+   the queued lines flush with the *latest* tracked height, so skipping the reseat
+   makes the flush over-scroll, the box rise off the bottom, and blank rows appear
+   beneath it (guarded by `smoke.sh` Phase 5). (`insert_before` itself only
+   **queues**: the next `term::draw` writes the lines and repaints the live region
+   inside one synchronized update, so a commit can never flash a boxless frame —
+   `docs/flicker.md`, guarded by `smoke.sh` Phase 15.) On a width change every wrapped line is
    stale, so `App` retains a `history: Vec<HistoryItem>` of finished messages *and
    tool calls* (kept for two reasons: this repaint, and listing tools in the Ctrl+O
-   view) and `term::reflow` seats the viewport at the top and `insert_before`s the
-   re-wrapped tail (`ui::repaint_lines`), letting `insert_before` **overwrite the
-   screen in place** (it draws top-down then clears the rows below the tail).
-   `reflow` only `clear_region(All)`s for an *empty* tail (`/clear`): a leading full
-   clear before `insert_before`'s scroll makes tmux spill the on-screen frame into
+   view) and `term::reflow` seats the viewport at the top, writes the re-wrapped
+   tail (`ui::repaint_lines`) **overwriting the screen in place** (top-down, then
+   clearing the rows below the tail), and paints the live region below it — all in
+   the same synchronized frame (stale queued lines are dropped: the tail regenerates
+   them). `reflow` only `clear_region(All)`s for an *empty* tail (`/clear`): a leading full
+   clear before the tail-write's scroll makes tmux spill the on-screen frame into
    scrollback — harmless on a resize, but after a Ctrl+O return (invariant 4) it
    pushes the **stale streaming strip** (`Working… (… tokens)`) into scrollback above
    the rebuilt conversation (guarded by `smoke.sh` Phase 7). `committed` is reset so
@@ -173,8 +180,11 @@ animation frame (`schedule_frame_in(32ms)`, codex's status-widget cadence) so th
 status line's shimmer sweeps and its timer advances with no events; before each
 draw the loop writes the computed `elapsed`/`thinking` `Duration`s onto the status
 (`App::set_status_times`), keeping time out of the pure core (the timestamp-clock
-pattern). `insert_before` stays inline (immediate scrollback); only the live-region
-paint is tick-driven. (See `docs/async-rewrite.md`, `docs/status-indicator.md`.)
+pattern). `insert_before` only **queues** its lines: the draw tick writes them and
+repaints the live region in **one synchronized frame** (codex's pending-history
+pattern — no flushed state ever lacks the box, the flicker fix; `reflow` paints the
+same way, and `restore` flushes any quit-before-tick leftovers; `docs/flicker.md`).
+(See `docs/async-rewrite.md`, `docs/status-indicator.md`.)
 
 ```
 keyboard / resize ─► EventStream ─┐

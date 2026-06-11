@@ -14,14 +14,21 @@
 //! ([`ui::live_height`], [`ui::repin`]).
 //!
 //! Two operations:
-//! - [`InlineViewport::insert_before`] commits finished lines into scrollback
-//!   above the viewport — a direct port of ratatui's portable
-//!   (no-`scrolling-regions`) insert-before scroll math, including its tmux-safe
-//!   "draw then clear" ordering.
-//! - [`InlineViewport::draw`] re-pins the viewport to its new `height` keeping its
-//!   **top anchored** (it grows downward in place, scrolling the screen up only
-//!   when it would overflow the bottom, and blanking the rows a shrink vacates),
-//!   repaints the live region, and places the hardware cursor.
+//! - [`InlineViewport::insert_before`] **queues** finished lines for scrollback
+//!   above the viewport (codex's `pending_history_lines`); the actual write — a
+//!   direct port of ratatui's portable (no-`scrolling-regions`) insert-before
+//!   scroll math, including its tmux-safe "draw then clear" ordering — happens
+//!   inside the next [`draw`]/[`reflow`] frame (the private `write_above`).
+//! - [`InlineViewport::draw`] flushes the queued lines, re-pins the viewport to
+//!   its new `height` keeping its **top anchored** (it grows downward in place,
+//!   scrolling the screen up only when it would overflow the bottom, and
+//!   blanking the rows a shrink vacates), repaints the live region, and places
+//!   the hardware cursor — all in **one synchronized update**, so scrollback
+//!   growth and the box repaint land as a single atomic frame (no flushed state
+//!   ever lacks the box — the streaming flicker; see `docs/flicker.md`).
+//!
+//! [`draw`]: InlineViewport::draw
+//! [`reflow`]: InlineViewport::reflow
 
 use std::io::{self, Stdout, Write};
 
@@ -56,6 +63,22 @@ pub struct InlineViewport {
     ///
     /// [`draw`]: InlineViewport::draw
     prev: Option<Buffer>,
+    /// Lines queued by [`insert_before`] awaiting the next frame (codex's
+    /// `pending_history_lines`): [`draw`] writes them above the viewport inside
+    /// the same synchronized update as the live-region repaint, so scrollback
+    /// growth and the box land atomically — never a flushed frame without the
+    /// box (`docs/flicker.md`). Only ever non-empty in the conversation view
+    /// (the overlay defers commits), and only [`draw`]/[`reflow`]/[`restore`]
+    /// flush it — never [`draw_overlay`] — so queued lines can't be written
+    /// into the alternate screen. [`reflow`] *drops* the queue instead: its
+    /// rebuilt tail regenerates everything pending from history.
+    ///
+    /// [`insert_before`]: InlineViewport::insert_before
+    /// [`draw`]: InlineViewport::draw
+    /// [`reflow`]: InlineViewport::reflow
+    /// [`restore`]: InlineViewport::restore
+    /// [`draw_overlay`]: InlineViewport::draw_overlay
+    pending: Vec<Line<'static>>,
 }
 
 impl InlineViewport {
@@ -87,6 +110,7 @@ impl InlineViewport {
             screen,
             view,
             prev: None,
+            pending: Vec::new(),
         })
     }
 
@@ -104,10 +128,16 @@ impl InlineViewport {
     /// a reply streams — codex-style, typing mid-turn stays focused; the cursor
     /// is hidden only on the Ctrl+O alternate screen ([`enter_overlay`]).
     ///
+    /// Any lines queued by [`insert_before`] are written above the viewport
+    /// first, **inside the same frame** — scrollback growth and the box repaint
+    /// land as one atomic update (codex's pending-history pattern; the streaming
+    /// flicker fix, `docs/flicker.md`).
+    ///
     /// The box grows in place until it reaches the screen bottom, at which point
     /// it scrolls the chat up into scrollback; a shrink blanks the rows it vacates.
     ///
     /// [`enter_overlay`]: InlineViewport::enter_overlay
+    /// [`insert_before`]: InlineViewport::insert_before
     pub fn draw(
         &mut self,
         height: u16,
@@ -115,26 +145,39 @@ impl InlineViewport {
         app: &App,
     ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
-        let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
-        self.view = Rect::new(0, repin.top, self.screen.width, height);
-
-        let mut buf = Buffer::empty(self.view);
-        render(self.view, &mut buf);
-
         // Emit the whole frame inside a synchronized update (BSU/ESU, DEC mode 2026):
         // the terminal buffers everything between the markers and swaps it in one
-        // atomic step, so a fast burst of keystrokes never shows a half-painted frame
-        // or the cursor mid-flight. This is what makes typing look "in sync" — the
-        // same trick codex wraps its draws in. Terminals lacking 2026 ignore the
-        // markers. `EndSynchronizedUpdate` always runs (even if a write failed
+        // atomic step, so neither a fast burst of keystrokes nor a scrollback commit
+        // ever shows a half-painted frame, a missing box, or the cursor mid-flight.
+        // This is the trick codex wraps its draws in. Terminals lacking 2026 ignore
+        // the markers. `EndSynchronizedUpdate` always runs (even if a write failed
         // mid-frame) so the terminal is never left buffering.
         queue!(self.backend, BeginSynchronizedUpdate)?;
-        let painted = self.paint_frame(&buf, &repin, height, app);
+        let painted = self.paint_live(height, render, app);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
-        painted?;
+        self.prev = Some(painted?);
         ended?;
-        self.prev = Some(buf);
         Backend::flush(&mut self.backend)
+    }
+
+    /// The body of one inline frame, bracketed by [`draw`]'s synchronized update:
+    /// flush the pending scrollback lines, re-pin the viewport to `height`,
+    /// render and paint the live region. Returns the painted buffer for `prev`.
+    ///
+    /// [`draw`]: InlineViewport::draw
+    fn paint_live(
+        &mut self,
+        height: u16,
+        render: impl FnOnce(Rect, &mut Buffer),
+        app: &App,
+    ) -> io::Result<Buffer> {
+        self.flush_pending()?;
+        let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
+        self.view = Rect::new(0, repin.top, self.screen.width, height);
+        let mut buf = Buffer::empty(self.view);
+        render(self.view, &mut buf);
+        self.paint_frame(&buf, &repin, height, app)?;
+        Ok(buf)
     }
 
     /// Paint one already-rendered frame `buf` to the backend: prepare the screen
@@ -169,18 +212,47 @@ impl InlineViewport {
         }
         let (x, y) = ui::cursor_position(self.view, app);
         self.backend.set_cursor_position(Position::new(x, y))?;
-        self.backend.show_cursor()?;
+        // Queue the Show (ratatui's `show_cursor` would `execute!` — an extra
+        // flush mid-synchronized-update); the frame goes out in one write.
+        queue!(self.backend, Show)?;
         Ok(())
+    }
+
+    /// Queue `lines` for scrollback directly above the viewport. No terminal
+    /// I/O happens here (codex's `pending_history_lines`): the next [`draw`] or
+    /// [`reflow`] writes them inside the same synchronized update as the
+    /// live-region repaint, so the commit and the box land as one atomic frame
+    /// (`docs/flicker.md`). Callers already schedule a frame after every state
+    /// change; [`restore`] flushes any leftovers if the app quits first.
+    ///
+    /// [`draw`]: InlineViewport::draw
+    /// [`reflow`]: InlineViewport::reflow
+    /// [`restore`]: InlineViewport::restore
+    pub fn insert_before(&mut self, lines: Vec<Line<'static>>) {
+        self.pending.extend(lines);
+    }
+
+    /// Write any queued [`insert_before`] lines above the viewport and empty the
+    /// queue. Called inside a frame's synchronized update ([`draw`]) or, as a
+    /// backstop, by [`restore`].
+    ///
+    /// [`insert_before`]: InlineViewport::insert_before
+    /// [`draw`]: InlineViewport::draw
+    /// [`restore`]: InlineViewport::restore
+    fn flush_pending(&mut self) -> io::Result<()> {
+        if self.pending.is_empty() {
+            return Ok(());
+        }
+        let lines = std::mem::take(&mut self.pending);
+        self.write_above(lines)
     }
 
     /// Commit `lines` into scrollback directly above the viewport, pushing the
     /// viewport down to sit just below them. Port of ratatui's portable
     /// `insert_before`: draw the lines into the rows above the viewport, scrolling
     /// the screen up only as much as needed, then leave the viewport cleared for
-    /// the next [`draw`].
-    ///
-    /// [`draw`]: InlineViewport::draw
-    pub fn insert_before(&mut self, lines: Vec<Line<'static>>) -> io::Result<()> {
+    /// the repaint that follows in the same frame.
+    fn write_above(&mut self, lines: Vec<Line<'static>>) -> io::Result<()> {
         let height = lines.len() as u16;
         if height == 0 {
             return Ok(());
@@ -212,9 +284,10 @@ impl InlineViewport {
         drawn += remaining - scroll;
 
         self.view.y = drawn as u16;
-        // Clear the viewport now-stale on screen; the next `draw` repaints it. We
-        // clear *after* drawing (not before scrolling) to dodge a tmux bug where a
-        // full clear immediately followed by a scroll spills garbage to scrollback.
+        // Clear the viewport now-stale on screen; the paint that follows in this
+        // same frame redraws it. We clear *after* drawing (not before scrolling)
+        // to dodge a tmux bug where a full clear immediately followed by a scroll
+        // spills garbage to scrollback.
         self.backend
             .set_cursor_position(Position::new(0, self.view.y))?;
         self.backend.clear_region(ClearType::AfterCursor)?;
@@ -227,14 +300,16 @@ impl InlineViewport {
     ///
     /// The streaming strip (preview + gap) is drawn *above* the box, so it inflates
     /// the viewport height while a reply streams. When the reply finishes that strip
-    /// clears, but [`insert_before`] reserves `self.view.height` rows *below* the
-    /// committed lines to keep the viewport on screen — so if it still counted the
-    /// strip it would over-scroll, and the box would rise as the strip cleared,
-    /// leaving blank rows beneath it. Reseating the height to the idle box first lets
-    /// the committed final line + spacer replace the strip's rows in place and the
-    /// box stay put.
+    /// clears, but the queued lines' flush reserves `self.view.height` rows *below*
+    /// them to keep the viewport on screen — so if it still counted the strip it
+    /// would over-scroll, and the box would rise as the strip cleared, leaving blank
+    /// rows beneath it. Reseating the height to the idle box first lets the
+    /// committed final line + spacer replace the strip's rows in place and the box
+    /// stay put. (The flush happens at the next [`draw`] and uses the *latest*
+    /// tracked height, so this reseat covers every line queued this turn-end.)
     ///
     /// [`insert_before`]: InlineViewport::insert_before
+    /// [`draw`]: InlineViewport::draw
     pub fn set_view_height(&mut self, height: u16) {
         self.view.height = height.clamp(1, self.screen.height.max(1));
     }
@@ -251,20 +326,52 @@ impl InlineViewport {
     }
 
     /// Repaint the conversation `tail` re-wrapped to the new width after a resize
-    /// (or a Ctrl+O return / `/clear`): seat the viewport at the top, then
-    /// `insert_before` the tail so it fills the screen and pushes the viewport down
-    /// below it — the next [`draw`] paints the live region. `insert_before`
-    /// overwrites the screen in place (drawing top-down, then clearing the rows
-    /// below the tail), so a full `clear_region(All)` is needed only for an *empty*
-    /// tail (see the body for the tmux-spill reason). Mirrors the old
-    /// `repaint_after_resize`.
+    /// (or a Ctrl+O return / `/clear`) **and** the live region, in one
+    /// synchronized frame: seat the viewport at the top, write the tail so it
+    /// fills the screen and pushes the viewport down below it, then paint the
+    /// box at its final position — atomically, so the rebuilt screen never
+    /// flashes without the box (`docs/flicker.md`). The tail write overwrites
+    /// the screen in place (drawing top-down, then clearing the rows below it),
+    /// so a full `clear_region(All)` is needed only for an *empty* tail (see the
+    /// body for the tmux-spill reason).
     ///
-    /// [`draw`]: InlineViewport::draw
-    pub fn reflow(&mut self, tail: Vec<Line<'static>>, height: u16) -> io::Result<()> {
+    /// Lines still queued by [`insert_before`] are **dropped**, not flushed: the
+    /// tail regenerates everything pending from history (the caller resets its
+    /// `committed` count), so flushing them too would duplicate.
+    ///
+    /// [`insert_before`]: InlineViewport::insert_before
+    pub fn reflow(
+        &mut self,
+        tail: Vec<Line<'static>>,
+        height: u16,
+        render: impl FnOnce(Rect, &mut Buffer),
+        app: &App,
+    ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
-        // An empty tail (e.g. `/clear`) never reaches `insert_before`'s draw, so
+        self.pending.clear();
+        queue!(self.backend, BeginSynchronizedUpdate)?;
+        let painted = self.paint_reflow(tail, height, render, app);
+        let ended = queue!(self.backend, EndSynchronizedUpdate);
+        self.prev = Some(painted?);
+        ended?;
+        Backend::flush(&mut self.backend)
+    }
+
+    /// The body of one [`reflow`] frame, bracketed by its synchronized update:
+    /// rebuild the screen from the `tail` and paint the live region below it.
+    /// Returns the painted buffer for `prev`.
+    ///
+    /// [`reflow`]: InlineViewport::reflow
+    fn paint_reflow(
+        &mut self,
+        tail: Vec<Line<'static>>,
+        height: u16,
+        render: impl FnOnce(Rect, &mut Buffer),
+        app: &App,
+    ) -> io::Result<Buffer> {
+        // An empty tail (e.g. `/clear`) never reaches `write_above`'s draw, so
         // blank the screen outright for it. For a NON-empty tail we must *not*
-        // `clear_region(All)` first: `insert_before` already overwrites the screen
+        // `clear_region(All)` first: `write_above` already overwrites the screen
         // top-down and clears the rows below the tail (a spill-safe draw-then-clear).
         // A leading full clear, when the screen still holds the frame restored by
         // *leaving the Ctrl+O alt-screen*, makes tmux push that stale frame into
@@ -275,9 +382,21 @@ impl InlineViewport {
             self.backend.clear_region(ClearType::All)?;
         }
         self.backend.set_cursor_position(Position::new(0, 0))?;
-        self.prev = None; // screen is being rebuilt; repaint in full next draw
+        self.prev = None; // the screen is being rebuilt out from under `prev`
         self.view = Rect::new(0, 0, self.screen.width, height);
-        self.insert_before(tail)
+        self.write_above(tail)?;
+        // `write_above` seated the viewport just below the tail; paint the live
+        // region there in this same frame (a no-op repin — no scroll, no vacated
+        // rows; `prev` is `None`, so `paint_frame` blits in full).
+        let repin = ui::Repin {
+            scroll_up: 0,
+            top: self.view.y,
+            clear_below: 0,
+        };
+        let mut buf = Buffer::empty(self.view);
+        render(self.view, &mut buf);
+        self.paint_frame(&buf, &repin, height, app)?;
+        Ok(buf)
     }
 
     /// Switch to the alternate screen for the full-screen tool-output overlay,
@@ -336,6 +455,10 @@ impl InlineViewport {
     /// leave a blank gap when the box is anchored near the top), with the
     /// conversation left intact above.
     pub fn restore(&mut self) -> io::Result<()> {
+        // A quit can land between an `insert_before` and the draw tick that would
+        // have flushed it (e.g. `/help` then an instant Ctrl+C): write any queued
+        // lines now so committed content is never lost with the session.
+        self.flush_pending()?;
         match ui::restore_cursor_row(self.view.y, self.view.height, self.screen.height) {
             // Room below the box: land there and wipe anything beneath it (there
             // shouldn't be any — the box is the bottom-most content) so the prompt
@@ -384,7 +507,13 @@ impl InlineViewport {
     }
 
     /// Write `n` rows of `cells` at terminal row `y`, returning the unused tail of
-    /// the slice. Cells are addressed in absolute terminal coordinates.
+    /// the slice. Cells are addressed in absolute terminal coordinates. Queues
+    /// only — the enclosing frame ([`draw`]/[`reflow`]/[`restore`]) flushes, so
+    /// the commit and the live-region repaint go out in one write.
+    ///
+    /// [`draw`]: InlineViewport::draw
+    /// [`reflow`]: InlineViewport::reflow
+    /// [`restore`]: InlineViewport::restore
     fn draw_lines<'a>(&mut self, y: u16, n: u16, cells: &'a [Cell]) -> io::Result<&'a [Cell]> {
         let width = self.screen.width as usize;
         let (head, tail) = cells.split_at(width * n as usize);
@@ -394,7 +523,6 @@ impl InlineViewport {
                 .enumerate()
                 .map(|(i, c)| ((i % width) as u16, y + (i / width) as u16, c));
             self.backend.draw(iter)?;
-            Backend::flush(&mut self.backend)?;
         }
         Ok(tail)
     }

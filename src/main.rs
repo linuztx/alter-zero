@@ -24,8 +24,9 @@
 //! [`FrameRequester::schedule_frame`]; the scheduler coalesces a burst of those
 //! into one rate-limited (120 fps) draw. A paste / fast-type run is detected by
 //! [`PasteBurst`] so its redraw defers to the burst's tail. `insert_before`
-//! stays inline (it mutates scrollback immediately); only the live-region paint
-//! waits for a tick.
+//! only **queues** its lines (codex's pending-history pattern): the draw tick
+//! writes them and repaints the live region in one synchronized frame, so
+//! scrollback growth never flashes a missing box (see `docs/flicker.md`).
 //!
 //! On **any width change** (and on returning from the tool-output overlay) the
 //! visible conversation needs re-wrapping, so `App` retains a `history` and we
@@ -122,14 +123,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // A turn may have finished while the overlay was
                                 // showing — its scrollback commits were deferred
                                 // (invariant 4) — so repaint the inline view from
-                                // history (and draw the box) the same way a normal
-                                // Ctrl+O return does; otherwise restore() lands on the
-                                // stale live status strip ("Working… (… tokens)")
-                                // instead of the committed "Done for Ns" summary.
+                                // history (the reflow paints the box in the same
+                                // frame) the same way a normal Ctrl+O return does;
+                                // otherwise restore() lands on the stale live status
+                                // strip ("Working… (… tokens)") instead of the
+                                // committed "Done for Ns" summary.
                                 if app.view == View::ToolOutput {
                                     term.exit_overlay()?;
                                     repaint_conversation(term, &app, &mut committed)?;
-                                    draw(term, &app)?;
                                 }
                                 break;
                             }
@@ -144,6 +145,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // on_key already flipped app.view; sync the overlay.
                                 if app.view == View::ToolOutput {
                                     term.enter_overlay()?;
+                                    // Paint the overlay now rather than on the next
+                                    // tick — the freshly-cleared alt screen would
+                                    // show as a black flash for a frame otherwise.
+                                    draw_tool_view(term, &mut app)?;
                                 } else {
                                     term.exit_overlay()?;
                                     // Catch the inline view up on whatever streamed
@@ -171,13 +176,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // slots after it in scrollback and history alike.
                                 let width = term.screen().width;
                                 if let Some(segment) = app.flush_streaming_segment() {
-                                    term.insert_before(ui::final_commit(&segment, width, committed))?;
-                                    term.insert_before(vec![Line::default()])?;
+                                    term.insert_before(ui::final_commit(&segment, width, committed));
+                                    term.insert_before(vec![Line::default()]);
                                     committed = 0;
                                 }
                                 app.record_system_message(&text);
-                                term.insert_before(ui::message_lines(Role::System, &text, width))?;
-                                term.insert_before(vec![Line::default()])?;
+                                term.insert_before(ui::message_lines(Role::System, &text, width));
+                                term.insert_before(vec![Line::default()]);
                             }
                             Action::Clear => {
                                 // `/clear` already emptied app.history; repaint the
@@ -208,19 +213,19 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     let width = term.screen().width;
                                     term.set_view_height(live_region_height(&app, term.screen()));
                                     if let Some(partial) = interrupted.partial {
-                                        term.insert_before(ui::final_commit(&partial, width, committed))?;
-                                        term.insert_before(vec![Line::default()])?;
+                                        term.insert_before(ui::final_commit(&partial, width, committed));
+                                        term.insert_before(vec![Line::default()]);
                                     }
                                     if let Some(tool) = interrupted.tool {
-                                        term.insert_before(ui::tool_lines(&tool, width))?;
-                                        term.insert_before(vec![Line::default()])?;
+                                        term.insert_before(ui::tool_lines(&tool, width));
+                                        term.insert_before(vec![Line::default()]);
                                     }
                                     term.insert_before(ui::message_lines(
                                         Role::Error,
                                         INTERRUPT_NOTICE,
                                         width,
-                                    ))?;
-                                    term.insert_before(vec![Line::default()])?;
+                                    ));
+                                    term.insert_before(vec![Line::default()]);
                                 }
                                 committed = 0;
                                 clocks.turn_start = None;
@@ -342,8 +347,8 @@ fn start_turn(
     let width = term.screen().width;
     for text in &texts {
         app.record_user_message(text);
-        term.insert_before(ui::message_lines(Role::User, text, width))?;
-        term.insert_before(vec![Line::default()])?;
+        term.insert_before(ui::message_lines(Role::User, text, width));
+        term.insert_before(vec![Line::default()]);
     }
     app.begin_stream();
     *committed = 0;
@@ -380,7 +385,7 @@ fn on_stream_event(
             app.push_chunk(&chunk);
             if committing && let Some(text) = app.streaming_text() {
                 let (lines, new_committed) = ui::stable_commit(text, width, *committed);
-                term.insert_before(lines)?;
+                term.insert_before(lines);
                 *committed = new_committed;
             }
             Ok(false)
@@ -393,8 +398,8 @@ fn on_stream_event(
             if let Some(segment) = app.flush_streaming_segment()
                 && committing
             {
-                term.insert_before(ui::final_commit(&segment, width, *committed))?;
-                term.insert_before(vec![Line::default()])?;
+                term.insert_before(ui::final_commit(&segment, width, *committed));
+                term.insert_before(vec![Line::default()]);
             }
             *committed = 0;
             app.start_tool(&name, &args);
@@ -406,8 +411,8 @@ fn on_stream_event(
             if let Some(tool) = app.end_tool(&output, ok)
                 && committing
             {
-                term.insert_before(ui::tool_lines(&tool, width))?;
-                term.insert_before(vec![Line::default()])?;
+                term.insert_before(ui::tool_lines(&tool, width));
+                term.insert_before(vec![Line::default()]);
             }
             Ok(false)
         }
@@ -442,12 +447,12 @@ fn on_stream_event(
                 // blank rows beneath it).
                 term.set_view_height(live_region_height(app, term.screen()));
                 if let Some(text) = final_text {
-                    term.insert_before(ui::final_commit(&text, width, *committed))?;
-                    term.insert_before(vec![Line::default()])?; // blank spacer
+                    term.insert_before(ui::final_commit(&text, width, *committed));
+                    term.insert_before(vec![Line::default()]); // blank spacer
                 }
                 if let Some(summary) = summary {
-                    term.insert_before(ui::summary_lines(&summary, width))?;
-                    term.insert_before(vec![Line::default()])?; // blank spacer
+                    term.insert_before(ui::summary_lines(&summary, width));
+                    term.insert_before(vec![Line::default()]); // blank spacer
                 }
             }
             *committed = 0;
@@ -466,11 +471,11 @@ fn on_stream_event(
                     // so the box does not rise off the bottom.
                     term.set_view_height(live_region_height(app, term.screen()));
                     if let Some(partial) = failure.partial {
-                        term.insert_before(ui::final_commit(&partial, width, *committed))?;
-                        term.insert_before(vec![Line::default()])?;
+                        term.insert_before(ui::final_commit(&partial, width, *committed));
+                        term.insert_before(vec![Line::default()]);
                     }
-                    term.insert_before(ui::message_lines(Role::Error, &failure.error, width))?;
-                    term.insert_before(vec![Line::default()])?;
+                    term.insert_before(ui::message_lines(Role::Error, &failure.error, width));
+                    term.insert_before(vec![Line::default()]);
                 }
             }
             *committed = 0;
@@ -542,8 +547,10 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
 }
 
 /// Repaint the inline conversation from `App`'s retained history, re-wrapped to
-/// the current width. Used both after a resize *and* when returning from the
-/// tool-output overlay (which kept the stream advancing without committing).
+/// the current width — tail and live region in one synchronized frame
+/// ([`InlineViewport::reflow`]). Used both after a resize *and* when returning
+/// from the tool-output overlay (which kept the stream advancing without
+/// committing).
 ///
 /// We repaint the tail that fits above the live region; resetting `committed`
 /// lets any in-progress reply re-commit itself from scratch on its next chunk,
@@ -557,7 +564,12 @@ fn repaint_conversation(
     let height = live_region_height(app, screen);
     let budget = ui::repaint_budget(screen.height, height);
     let tail = ui::repaint_lines(&app.history, screen.width, budget);
-    term.reflow(tail, height)?;
+    term.reflow(
+        tail,
+        height,
+        |area, buf| ui::render_live(area, buf, app),
+        app,
+    )?;
     *committed = 0;
     Ok(())
 }

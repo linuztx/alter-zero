@@ -27,6 +27,7 @@ cleanup() {
 	tmux kill-session -t "${S}_queue" 2>/dev/null
 	tmux kill-session -t "${S}_queueint" 2>/dev/null
 	tmux kill-session -t "${S}_altup" 2>/dev/null
+	tmux kill-session -t "${S}_sync" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -489,6 +490,46 @@ echo "==== captured pane (Alt+Up restored the backlog into the composer) ===="
 printf '%s\n' "$altup"
 tmux kill-session -t "$S11" 2>/dev/null
 
+# --- Phase 15: scrollback commits are FLICKER-FREE — every live-region clear
+# rides inside a synchronized-update frame (docs/flicker.md). Record the raw
+# byte stream of a whole streaming turn via pipe-pane: each ESC[J region clear
+# (a commit blanking the live region before its repaint) must sit between
+# ESC[?2026h and ESC[?2026l, so a terminal honouring mode 2026 can never
+# present the boxless intermediate state. Before the fix insert_before cleared
+# the region OUTSIDE any sync block and the box repaint came on a later flush —
+# the streaming blink (the pre-fix stream shows every clear outside). The pipe
+# closes before the quit: restore()'s teardown clear is legitimately bare. ---
+S12="${S}_sync"
+RAW15="$(mktemp)"
+tmux new-session -d -s "$S12" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux pipe-pane -t "$S12" -o "cat > $RAW15"
+tmux send-keys -t "$S12" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S12" Enter
+for _ in $(seq 1 80); do # up to ~12s: the whole turn (text + thinking + tools)
+	if tmux capture-pane -t "$S12" -p -S -60 | grep -qF "Done for"; then
+		break
+	fi
+	sleep 0.15
+done
+tmux pipe-pane -t "$S12" # close the recording before quitting
+sleep 0.2
+tmux send-keys -t "$S12" Escape
+sleep 0.2
+tmux kill-session -t "$S12" 2>/dev/null
+# Tokenise the stream: each sync begin/end and each ESC[J / ESC[0J clear onto
+# its own line, then walk them in order counting clears outside a block.
+sync_clears=$(sed -e $'s/\x1b\[?2026h/\\\n@SYNC@\\\n/g' \
+	-e $'s/\x1b\[?2026l/\\\n@ENDS@\\\n/g' \
+	-e $'s/\x1b\[0\{0,1\}J/\\\n@CLRJ@\\\n/g' "$RAW15" | awk '
+	/@SYNC@/ { depth = 1; seen = 1; next }
+	/@ENDS@/ { depth = 0; next }
+	/@CLRJ@/ { total++; if (seen && depth == 0) bad++ }
+	END { printf "total=%d outside=%d", total + 0, bad + 0 }')
+rm -f "$RAW15"
+echo "==== Phase 15: live-region clears in the raw output stream — $sync_clears ===="
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -783,7 +824,24 @@ if printf '%s' "$altup" | grep -qF "  ❯ world"; then
 	echo "FAIL: the queued display did not clear after Alt+Up pulled the backlog into the composer" >&2
 	status=1
 fi
+# Phase 15: flicker-free commits (docs/flicker.md). The recorded turn must have
+# committed lines (so the clear-the-region path actually ran), and every one of
+# those clears must sit inside a synchronized-update block — a clear outside
+# means a terminal could present the boxless state (the streaming blink).
+case "$sync_clears" in
+total=0*)
+	echo "FAIL: the recorded turn shows no live-region clears — the commit path did not run (recording broken?)" >&2
+	status=1
+	;;
+esac
+case "$sync_clears" in
+*outside=0) ;;
+*)
+	echo "FAIL: live-region clears OUTSIDE a synchronized-update frame ($sync_clears) — scrollback commits can flicker the box" >&2
+	status=1
+	;;
+esac
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), and the session footer ({model} · {cwd}) sits under the box except while a band is open"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, and every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker)"
 fi
 exit "$status"

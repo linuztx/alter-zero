@@ -222,7 +222,7 @@ logic is unit-testable without a real terminal.
 | `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
 | `paste.rs`  | Paste-burst detection: `PasteBurst`, a pure state machine — a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop coalesces the run's redraw. | Yes |
-| `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (scrollback), `draw` (re-pin + diff + synchronized-update + cursor), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore. | No (I/O boundary) |
+| `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (queues scrollback lines for the next frame — `docs/flicker.md`), `draw` (pending-flush + re-pin + diff + cursor, one synchronized update), `reflow` (tail rebuild + live-region paint, one frame), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore (restore flushes leftovers). | No (I/O boundary) |
 | `main.rs`   | Thin glue: single-threaded **async (tokio) `select!`** loop over input (`EventStream`), reply events (tokio channel), and draw ticks; drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit. | No (tiny I/O boundary) |
 
 ### Data flow
@@ -246,10 +246,14 @@ Rendering is **tick-driven**: every state change calls `frame.schedule_frame()`,
 and the scheduler coalesces a burst of those into a single draw, rate-limited to
 120 fps (`MIN_FRAME_INTERVAL` = 8.33 ms). A paste / fast-type run is recognised by
 `PasteBurst`, so its redraw is *deferred to the burst's tail* (`schedule_frame_in`)
-— one repaint for the run instead of one per keystroke. `insert_before` stays inline
-(it mutates scrollback immediately); only the live-region paint waits for a tick.
-Guarded by `scripts/smoke.sh` Phase 6 (a 1000-char burst must finish rendering
-near-instantly).
+— one repaint for the run instead of one per keystroke. `insert_before` only
+**queues** its lines (codex's `pending_history_lines`): the draw tick writes them
+above the viewport and repaints the live region in **one synchronized frame**, so a
+scrollback commit can never flash a boxless state — the streaming-flicker fix, see
+`docs/flicker.md` (`reflow` paints the same way; `restore` flushes anything a
+quit-before-tick left queued). Guarded by `scripts/smoke.sh` Phase 6 (a 1000-char
+burst must finish rendering near-instantly) and Phase 15 (a raw byte recording of a
+streaming turn must show every live-region clear inside a sync block).
 
 ```
 keyboard / resize ─► EventStream ─┐
@@ -563,13 +567,15 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   already in the terminal's own scrollback keep their original wrapping (so
   after resizing a long chat, boundary messages can appear twice — once
   old-width above, once new-width below). Guarded against panics.
-- Resizing *mid-stream* recovers by re-committing the in-progress reply, but may
-  briefly flicker the partial line.
+- Resizing *mid-stream* recovers by re-committing the in-progress reply, but the
+  partial reply's already-committed lines are absent from the rebuilt screen until
+  the next chunk re-commits them (the reflow frame itself is atomic — the box never
+  flashes; the reply text just lands a beat later).
 - Returning from the tool-output view repaints the inline conversation from
   `history` (the same path as a resize), so it shares the same edge: anything that
   had already scrolled into the terminal's own scrollback before the overlay
   opened keeps its old position, and a reply segment that was *partially* committed
-  when the overlay opened is re-committed on return (a brief flicker, no data loss).
+  when the overlay opened is re-committed on return a chunk later (no data loss).
 - Tool output shown inline is always collapsed to a one-line peek; the only way to
   read it in full is the Ctrl+O conversation view, which shows the whole transcript
   with every tool expanded (by design — keeps the inline chat compact).
