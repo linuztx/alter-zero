@@ -71,16 +71,23 @@ unit-tested must be unit-tested.
   *downward*, only scrolling the chat up once it reaches the screen bottom (never
   jumping to the bottom). Geometry is pure (`ui::live_height`, `ui::repin`) and
   unit-tested.
-- **Resize reflow (both directions).** Any width change must re-wrap the visible
-  chat: ratatui clears the screen on a width *shrink* but not on a *grow*, and
-  either way the on-screen lines keep their old wrapping until redrawn. So `App`
-  retains a `history` of finished messages and, on any width change, parks the
-  cursor at row 0 (so ratatui seats the inline viewport at the top), clears the
-  screen via `resize`, and repaints the tail that fits above the live region —
-  re-wrapped to the new width, wider or narrower. With the viewport at the top
-  the repaint fills the screen without scrolling (the tmux-safe path). Lines that
-  had already scrolled into the terminal's own scrollback keep their original
-  wrapping.
+- **Resize reflow (both directions, both dimensions).** Any size change must
+  re-present the visible chat. A *width* change stales every wrapped line (the
+  on-screen lines keep their old wrapping until redrawn). A *height* change is
+  subtler: the emulator scrolls or clips the screen contents to fit the new
+  height, moving them out from under the tracked viewport row — so repainting at
+  the stale row leaves phantom input boxes behind and pushes the chat out of
+  view (codex redraws everything from source on every resize and re-clamps its
+  insert viewport into the new screen; we follow it). So `App` retains a
+  `history` of finished messages and, on **any** dimension change,
+  `term::resized` re-clamps the tracked viewport inside the new screen and the
+  loop repaints from history: the viewport is seated at the top and the tail
+  that fits above the live region is rewritten in place — re-wrapped to the new
+  width, wider or narrower (`term::reflow`). Lines that had already scrolled
+  into the terminal's own scrollback keep their original wrapping. Guarded by
+  `smoke.sh` Phase 17 (a height-only shrink, a grow back, and a mid-stream
+  shrink must each leave exactly one input box with the conversation tail in
+  view).
 - **Tool calls (Claude-Code style).** A reply can interleave tool calls. Each
   renders inline as a **coloured bullet header** `● name(args)` — **blue** while
   it runs (shown live in the bottom region's preview row), **green** when it
@@ -581,10 +588,13 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   `insert_before` over-scroll and the box rises off the bottom, leaving blank rows
   beneath. Covered by `scripts/smoke.sh` Phase 5 (a short terminal where one
   exchange overflows the screen, asserting no blank rows below the settled box).
-- On resize the on-screen chat is repainted (wider or narrower), but lines
+- On resize the on-screen chat is repainted (any dimension — a width change
+  re-wraps, a height change reseats the box; `smoke.sh` Phase 17), but lines
   already in the terminal's own scrollback keep their original wrapping (so
   after resizing a long chat, boundary messages can appear twice — once
-  old-width above, once new-width below). Guarded against panics.
+  old-width above, once new-width below; codex shares this edge — terminal
+  scrollback can't be rewritten, only re-emitted below). Guarded against panics
+  at every size by `ui::tests::render_pipeline_survives_extreme_terminal_sizes`.
 - Resizing *mid-stream* recovers by re-committing the in-progress reply, but the
   partial reply's already-committed lines are absent from the rebuilt screen until
   the next chunk re-commits them (the reflow frame itself is atomic — the box never

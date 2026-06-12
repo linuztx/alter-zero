@@ -131,8 +131,13 @@ of bug:
    beneath it (guarded by `smoke.sh` Phase 5). (`insert_before` itself only
    **queues**: the next `term::draw` writes the lines and repaints the live region
    inside one synchronized update, so a commit can never flash a boxless frame —
-   `docs/flicker.md`, guarded by `smoke.sh` Phase 15.) On a width change every wrapped line is
-   stale, so `App` retains a `history: Vec<HistoryItem>` of finished messages *and
+   `docs/flicker.md`, guarded by `smoke.sh` Phase 15.) On **any** size change the
+   conversation repaints from source — a width change stales every wrapped line, and
+   a height-only change moves the screen contents out from under the tracked
+   viewport row (the emulator scrolls/clips to fit; repainting at the stale row
+   leaves phantom input boxes — `term::resized` re-clamps the viewport like codex,
+   and the repaint reseats it; guarded by `smoke.sh` Phase 17). `App` retains a
+   `history: Vec<HistoryItem>` of finished messages *and
    tool calls* (kept for two reasons: this repaint, and listing tools in the Ctrl+O
    view) and `term::reflow` seats the viewport at the top, writes the re-wrapped
    tail (`ui::repaint_lines`) **overwriting the screen in place** (top-down, then

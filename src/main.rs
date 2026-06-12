@@ -262,10 +262,16 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         schedule_for_key(&frame, &mut burst, &key);
                     }
                     Event::Resize(width, height) => {
-                        let width_changed = term.resized(width, height);
-                        // Only the inline view reflows; the overlay just redraws at
-                        // the new size (reflowing would write the alternate screen).
-                        if width_changed && app.view == View::Conversation {
+                        let size_changed = term.resized(width, height);
+                        // Repaint from history on ANY dimension change (codex
+                        // redraws from source on every resize): a width change
+                        // stales the wrapping, and a height change moves the
+                        // screen contents out from under the tracked viewport
+                        // row — repainting at a stale row leaves phantom input
+                        // boxes behind. Only the inline view reflows; the
+                        // overlay just redraws at the new size (reflowing would
+                        // write the alternate screen).
+                        if size_changed && app.view == View::Conversation {
                             repaint_conversation(term, &app, &mut committed)?;
                         }
                         burst.reset();

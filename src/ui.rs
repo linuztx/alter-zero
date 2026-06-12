@@ -3255,4 +3255,129 @@ mod tests {
         let with_footer = cursor_position(Rect::new(0, 0, 40, footer_h), &app);
         assert_eq!(with_footer, bare, "cursor unchanged by the footer row");
     }
+
+    // --- terminal-size sweep ---
+
+    /// Mixed-width stress text: prose, wide CJK, emoji, and an unbreakable
+    /// over-long token, so the sweep hits every wrap branch.
+    const SWEEP_TEXT: &str = "The quick brown fox 世界你好 mixes wide CJK with \
+        emoji 🎉🎊 and averyveryverylongunbreakabletokenthatmusthardbreak too.";
+
+    /// One busy `App` per live-region feature, so the sweep exercises every
+    /// width-dependent render path on top of a shared finished history
+    /// (messages, a tool call, a summary, the session footer).
+    fn size_sweep_apps() -> Vec<(&'static str, App)> {
+        let base = || {
+            let mut app = App::new();
+            app.set_session_info("dummy_model_name", "~/repo/some/longish/path");
+            app.record_user_message("first message with CJK 世界 and emoji 🎉");
+            app.record_system_message("help text\nwith a second line");
+            app.begin_stream();
+            app.push_chunk("text before the tool call. ");
+            app.start_tool("read_file", "src/app.rs with a long argument string");
+            app.end_tool(SWEEP_TEXT, true);
+            app.push_chunk(SWEEP_TEXT);
+            app.finish_stream();
+            app.end_turn(3);
+            app
+        };
+        let streaming = || {
+            let mut app = base();
+            app.begin_stream();
+            app.push_chunk(SWEEP_TEXT);
+            app.set_status_times(Duration::from_secs(7), None);
+            app
+        };
+        let tool = {
+            let mut app = base();
+            app.begin_stream();
+            app.push_chunk("before tool ");
+            app.start_tool("write_file", SWEEP_TEXT);
+            app.set_status_times(Duration::from_secs(7), Some(Duration::from_secs(2)));
+            app
+        };
+        let queued = {
+            let mut app = streaming();
+            app.queued.push_back("queued one with CJK 世界".into());
+            app.queued.push_back(SWEEP_TEXT.into());
+            app
+        };
+        let menu = {
+            let mut app = base();
+            app.input = TextArea::from_text("/");
+            app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
+            app
+        };
+        let shortcuts = {
+            let mut app = base();
+            app.shortcuts_open = true;
+            app
+        };
+        let draft = {
+            let mut app = base();
+            app.input = TextArea::from_text(&format!("{SWEEP_TEXT}\n{SWEEP_TEXT}"));
+            app
+        };
+        vec![
+            ("idle", base()),
+            ("streaming", streaming()),
+            ("tool", tool),
+            ("queued", queued),
+            ("menu", menu),
+            ("shortcuts", shortcuts),
+            ("draft", draft),
+        ]
+    }
+
+    #[test]
+    fn render_pipeline_survives_extreme_terminal_sizes() {
+        // codex clamps every wrap width (`.max(1)` and friends) so narrow or
+        // short terminals degrade gracefully instead of panicking; this locks
+        // the same property over our whole pure pipeline — the live region,
+        // the cursor, the scrollback commits, the resize repaint tail, and the
+        // Ctrl+O overlay — at every awkward size, wide CJK/emoji included.
+        // (The terminal half of a real resize is smoke-covered: Phase 17.)
+        let widths = [0u16, 1, 2, 3, 4, 5, 8, 13, 34, 80, 120];
+        let heights = [1u16, 2, 3, 4, 5, 8, 12, 24, 48];
+        for (state, app) in &size_sweep_apps() {
+            for &w in &widths {
+                for &h in &heights {
+                    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        // mirror main.rs::draw
+                        let band = menu_rows(app) + shortcuts_rows(app);
+                        let lh = live_height(
+                            &app.input,
+                            w,
+                            h,
+                            app.is_streaming(),
+                            queued_rows(app, w),
+                            band,
+                            footer_rows(app, band),
+                        );
+                        let area = Rect::new(0, 0, w, lh.clamp(1, h.max(1)));
+                        let mut buf = Buffer::empty(area);
+                        render_live(area, &mut buf, app);
+                        let _ = cursor_position(area, app);
+                        // mirror main.rs::repaint_conversation
+                        let budget = repaint_budget(h, area.height);
+                        let _ = repaint_lines(&app.history, w, budget);
+                        // mirror the streaming commit path
+                        if let Some(text) = app.streaming_text() {
+                            let (_, c) = stable_commit(text, w, 0);
+                            let _ = final_commit(text, w, c);
+                        }
+                        // mirror the Ctrl+O overlay
+                        let screen = Rect::new(0, 0, w, h);
+                        let mut overlay = Buffer::empty(screen);
+                        render_tool_view(screen, &mut overlay, app);
+                        let _ = tool_view_max_scroll(app, w, h);
+                    }));
+                    assert!(
+                        run.is_ok(),
+                        "render pipeline panicked: state={state} width={w} height={h}"
+                    );
+                }
+            }
+        }
+    }
 }

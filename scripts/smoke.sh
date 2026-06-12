@@ -29,6 +29,7 @@ cleanup() {
 	tmux kill-session -t "${S}_altup" 2>/dev/null
 	tmux kill-session -t "${S}_sync" 2>/dev/null
 	tmux kill-session -t "${S}_clearkill" 2>/dev/null
+	tmux kill-session -t "${S}_resize" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -586,6 +587,68 @@ echo "==== captured pane (fresh turn after the /clear kill) ===="
 printf '%s\n' "$after_clear"
 tmux kill-session -t "$S13" 2>/dev/null
 
+# --- Phase 17: a terminal RESIZE re-presents the conversation at the new size —
+# HEIGHT-ONLY changes included. codex redraws everything from source on every
+# resize (and re-clamps its viewport into the new screen); the pre-fix bug here
+# reflowed only on a *width* change, so a height-only resize repainted the box at
+# a stale viewport row while the emulator had already moved the screen contents —
+# leaving phantom input boxes on screen and pushing the conversation out of view.
+# Finish a turn at 80x24, shrink to 80x12 (height only), grow back to 80x24, then
+# shrink the height again MID-STREAM: after each step the visible screen must
+# hold exactly ONE input box (one bare `❯` prompt row, two rules, one footer)
+# with the conversation tail above it. ---
+S14="${S}_resize"
+tmux new-session -d -s "$S14" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S14" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S14" Enter
+for _ in $(seq 1 80); do # up to ~8s: wait for the turn's committed summary
+	if tmux capture-pane -t "$S14" -p | grep -qE "^Done for [0-9]+s"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux resize-window -t "$S14" -x 80 -y 12
+sleep 0.6
+resize_shrunk="$(tmux capture-pane -t "$S14" -p)"
+echo "==== captured visible screen (after height-only shrink to 80x12) ===="
+printf '%s\n' "$resize_shrunk"
+tmux resize-window -t "$S14" -x 80 -y 24
+sleep 0.6
+resize_regrown="$(tmux capture-pane -t "$S14" -p)"
+echo "==== captured visible screen (after height grow back to 80x24) ===="
+printf '%s\n' "$resize_regrown"
+# A height shrink MID-STREAM must recover the same way: the repaint resets the
+# committed count, so the in-flight reply re-commits itself at the new size as
+# the remaining chunks flow ("Finished for" is turn 2's done verb).
+tmux send-keys -t "$S14" -l "again please"
+sleep 0.2
+tmux send-keys -t "$S14" Enter
+sleep 0.7 # mid-stream: the first text segment is flowing
+tmux resize-window -t "$S14" -x 80 -y 14
+resize_mid=""
+for _ in $(seq 1 80); do # up to ~12s: wait for the resized turn's summary
+	resize_mid="$(tmux capture-pane -t "$S14" -p)"
+	if printf '%s' "$resize_mid" | grep -qE "^Finished for [0-9]+s"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured visible screen (height shrunk mid-stream, turn finished at 80x14) ===="
+printf '%s\n' "$resize_mid"
+tmux kill-session -t "$S14" 2>/dev/null
+
+# Exactly one input box on a captured screen: one bare prompt row (the composer's
+# `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
+# two horizontal rules (the box's frame), one session footer. Phantom stale boxes
+# add extras of each.
+count_bare_prompts() { printf '%s\n' "$1" | grep -cE '^❯[[:space:]]*$'; }
+# (`(─)+` groups the multibyte rule char so the repeat applies to the whole
+# UTF-8 sequence even under a byte-wise C locale.)
+count_rules() { printf '%s\n' "$1" | grep -cE '^(─)+$'; }
+count_footers() { printf '%s\n' "$1" | grep -cF 'dummy_model_name ·'; }
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -932,7 +995,57 @@ if ! printf '%s' "$after_clear" | grep -qF "Finished for"; then
 	echo "FAIL: the turn after a mid-turn /clear did not finish (no 'Finished for' summary)" >&2
 	status=1
 fi
+# Phase 17: every resize re-presents the conversation at the new size. Each
+# captured screen must hold exactly one input box — phantom boxes (extra bare
+# prompts / rules / footers) are the stale-viewport-row bug — with the
+# conversation tail (the turn's committed summary) still in view, and no stale
+# streaming strip ("esc to interrupt" rides the live status line only).
+for step in shrunk regrown mid; do
+	case "$step" in
+	shrunk)
+		cap="$resize_shrunk"
+		label="height-only shrink to 80x12"
+		tail_marker="Done for"
+		;;
+	regrown)
+		cap="$resize_regrown"
+		label="height grow back to 80x24"
+		tail_marker="Done for"
+		;;
+	mid)
+		cap="$resize_mid"
+		label="mid-stream height shrink to 80x14"
+		tail_marker="Finished for"
+		;;
+	esac
+	prompts="$(count_bare_prompts "$cap")"
+	rules="$(count_rules "$cap")"
+	footers="$(count_footers "$cap")"
+	if [ "$prompts" != "1" ] || [ "$rules" != "2" ] || [ "$footers" != "1" ]; then
+		echo "FAIL: after the $label the screen does not hold exactly one input box (bare prompts=$prompts, rules=$rules, footers=$footers)" >&2
+		status=1
+	fi
+	if ! printf '%s' "$cap" | grep -qF "$tail_marker"; then
+		echo "FAIL: after the $label the conversation tail ('$tail_marker') is not in view" >&2
+		status=1
+	fi
+	if printf '%s' "$cap" | grep -qF "esc to interrupt"; then
+		echo "FAIL: after the $label a stale streaming status line is still on screen" >&2
+		status=1
+	fi
+done
+# The full conversation fits again once the screen regrows: the repaint must
+# rebuild the *whole* tail from history, not just the rows the shrunken screen
+# showed.
+if ! printf '%s' "$resize_regrown" | grep -qF "❯ $USER_MSG"; then
+	echo "FAIL: after growing back to 80x24 the user message did not return to view" >&2
+	status=1
+fi
+if ! printf '%s' "$resize_regrown" | grep -qF "$EXPECT_REPLY"; then
+	echo "FAIL: after growing back to 80x24 the reply did not return to view" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), and /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), and a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box"
 fi
 exit "$status"

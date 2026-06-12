@@ -314,13 +314,23 @@ impl InlineViewport {
         self.view.height = height.clamp(1, self.screen.height.max(1));
     }
 
-    /// Note a new terminal size. Returns whether the *width* changed (the only
-    /// change that forces the conversation to re-wrap; see [`reflow`]).
+    /// Note a new terminal size. Returns whether the size changed at all — any
+    /// change forces the conversation repaint (see [`reflow`]): a width change
+    /// stales every wrapped line, and a height change moves the screen contents
+    /// out from under the tracked viewport row (the emulator scrolls or clips
+    /// to fit the new height), so repainting from history is the only way to
+    /// reseat the box. The tracked viewport is also pulled back inside the new
+    /// screen here (codex re-clamps its insert area the same way), so even a
+    /// draw that lands before that repaint can't chase an off-screen row and
+    /// scroll a screenful of stale rows into scrollback.
     ///
     /// [`reflow`]: InlineViewport::reflow
     pub fn resized(&mut self, width: u16, height: u16) -> bool {
-        let changed = width != self.screen.width;
+        let changed = (width, height) != (self.screen.width, self.screen.height);
         self.screen = Rect::new(0, 0, width, height);
+        let view_height = self.view.height.clamp(1, height.max(1));
+        let view_top = self.view.y.min(height.saturating_sub(view_height));
+        self.view = Rect::new(0, view_top, width, view_height);
         self.prev = None; // geometry moved under us; repaint in full next draw
         changed
     }
