@@ -91,6 +91,13 @@ matches stream order regardless.
 `Action::Interrupt` can only originate in the conversation view (overlay Esc
 returns instead), so the commits never touch the alternate screen.
 
+**`/clear` mid-turn reuses steps 1–2** (cancel + reap + drain — the same
+"nothing stale can arrive afterwards" guarantee) but skips the commits
+entirely: `App::clear_conversation` wipes history, the streaming buffer, the
+running tool, the status, *and the queued backlog*, recording no partial, no
+notice, and no summary — the user asked for a blank slate, not a finished
+turn. See `docs/design.md` (the `/clear` paragraph) and `smoke.sh` Phase 16.
+
 ### The status-line hint (`ui::status_line`)
 
 The detail clause gains codex's discoverability hint as its final, dim

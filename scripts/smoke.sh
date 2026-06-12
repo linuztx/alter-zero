@@ -28,6 +28,7 @@ cleanup() {
 	tmux kill-session -t "${S}_queueint" 2>/dev/null
 	tmux kill-session -t "${S}_altup" 2>/dev/null
 	tmux kill-session -t "${S}_sync" 2>/dev/null
+	tmux kill-session -t "${S}_clearkill" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -530,6 +531,61 @@ sync_clears=$(sed -e $'s/\x1b\[?2026h/\\\n@SYNC@\\\n/g' \
 rm -f "$RAW15"
 echo "==== Phase 15: live-region clears in the raw output stream — $sync_clears ===="
 
+# --- Phase 16: /clear MID-TURN kills the generation (codex instead *disables*
+# /new//clear during a task — the kill is our spec). Run /clear while the reply
+# streams: the screen must blank with no trace of the turn (no echo, no reply
+# text, no live status, no interrupt notice), and the backend must be cancelled
+# + reaped + its channel drained — so nothing recommits while the rest of the
+# turn's schedule would still have been streaming (the pre-fix bug: the screen
+# cleared but chunks kept flowing in). The loop must survive the kill: a fresh
+# message streams and finishes normally. ---
+S13="${S}_clearkill"
+tmux new-session -d -s "$S13" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S13" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S13" Enter
+for _ in $(seq 1 40); do # up to ~4s: wait until the reply is visibly streaming
+	if tmux capture-pane -t "$S13" -p | grep -qF "Happy"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S13" -l "/clear"
+sleep 0.2
+tmux send-keys -t "$S13" Enter
+sleep 0.5
+# Capture the VISIBLE screen only (no -S): the empty-tail reflow clears with
+# clear_region(All), which tmux answers by spilling the old frame into its
+# scrollback (same as an idle /clear, or a shell `clear`) — the contract here
+# is that the screen the user sees is blank.
+cleared_now="$(tmux capture-pane -t "$S13" -p)"
+echo "==== captured visible screen (right after /clear mid-stream) ===="
+printf '%s\n' "$cleared_now"
+# The dummy turn would keep streaming (text, thinking, tools) for several more
+# seconds; if the backend survived the /clear its output would recommit into
+# the blank screen. Let that window pass, then look again.
+sleep 2.5
+cleared_later="$(tmux capture-pane -t "$S13" -p)"
+echo "==== captured visible screen (2.5s after /clear — must still be blank) ===="
+printf '%s\n' "$cleared_later"
+# The loop survives the kill: a fresh turn streams and finishes ("Finished
+# for" — turn 2's done verb, as in the Esc-interrupt phase).
+tmux send-keys -t "$S13" -l "again please"
+sleep 0.2
+tmux send-keys -t "$S13" Enter
+after_clear=""
+for _ in $(seq 1 80); do # up to ~12s: wait for the fresh turn's summary
+	after_clear="$(tmux capture-pane -t "$S13" -p -S -30)"
+	if printf '%s' "$after_clear" | grep -qF "Finished for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (fresh turn after the /clear kill) ===="
+printf '%s\n' "$after_clear"
+tmux kill-session -t "$S13" 2>/dev/null
+
 status=0
 if ! printf '%s' "$pane" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: user message line '❯ $USER_MSG' not echoed to scrollback" >&2
@@ -841,7 +897,42 @@ case "$sync_clears" in
 	status=1
 	;;
 esac
+# Phase 16: /clear mid-turn killed the generation. Right after the clear the
+# screen holds no trace of the turn …
+if printf '%s' "$cleared_now" | grep -qF "❯ hello there"; then
+	echo "FAIL: the old conversation ('❯ hello there') survived a mid-turn /clear" >&2
+	status=1
+fi
+if printf '%s' "$cleared_now" | grep -qF "esc to interrupt"; then
+	echo "FAIL: the live status line is still up after a mid-turn /clear" >&2
+	status=1
+fi
+if printf '%s' "$cleared_now" | grep -qF "Conversation interrupted"; then
+	echo "FAIL: /clear recorded the interrupt notice — it must wipe, not interrupt" >&2
+	status=1
+fi
+if ! printf '%s' "$cleared_now" | grep -qF "dummy_model_name ·"; then
+	echo "FAIL: the idle input box + footer did not reseat after a mid-turn /clear" >&2
+	status=1
+fi
+# … and the backend is dead: nothing recommitted while the remainder of the
+# turn's schedule played out (reply text, tool peeks, a summary).
+for leak in "Happy" "⎿" "Done for" "esc to interrupt"; do
+	if printf '%s' "$cleared_later" | grep -qF "$leak"; then
+		echo "FAIL: the backend kept streaming after a mid-turn /clear ('$leak' appeared on the cleared screen)" >&2
+		status=1
+	fi
+done
+# … and the loop survived the kill: the fresh turn streamed to completion.
+if ! printf '%s' "$after_clear" | grep -qF "❯ again please"; then
+	echo "FAIL: the message sent after a mid-turn /clear was not echoed" >&2
+	status=1
+fi
+if ! printf '%s' "$after_clear" | grep -qF "Finished for"; then
+	echo "FAIL: the turn after a mid-turn /clear did not finish (no 'Finished for' summary)" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, and every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), and /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards)"
 fi
 exit "$status"

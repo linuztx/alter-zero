@@ -185,8 +185,22 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 term.insert_before(vec![Line::default()]);
                             }
                             Action::Clear => {
-                                // `/clear` already emptied app.history; repaint the
-                                // now-blank inline view.
+                                // `/clear` already wiped the app state (history,
+                                // streaming buffer, running tool, status, queued
+                                // backlog). Mid-turn it is also a kill — the user
+                                // asked for a fresh slate, not a finished turn — so
+                                // stop + reap the backend and drain the channel
+                                // (the Esc-interrupt dance, minus the commits:
+                                // a stale chunk or ToolStart processed after the
+                                // wipe would repopulate the cleared state and
+                                // stream into the blank screen).
+                                if let Some((cancel, handle)) = inflight.take() {
+                                    cancel.cancel();
+                                    let _ = handle.join();
+                                }
+                                while reply_rx.try_recv().is_ok() {}
+                                clocks.turn_start = None;
+                                clocks.thinking_start = None;
                                 committed = 0;
                                 repaint_conversation(term, &app, &mut committed)?;
                             }

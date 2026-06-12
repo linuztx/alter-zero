@@ -130,13 +130,27 @@ unit-tested must be unit-tested.
   of quitting) and stays dismissed within the same token (delete the `/` and retype
   to reopen). The box's top is unchanged when the palette opens — it's reserved
   *below* the box — so the cursor never jumps. Running a command **consumes the
-  input** and dispatches an `Action`: `/clear` → `Clear` (empties `history`,
-  repaints), `/help` → `Notice` (lists the commands), and `/quit` → `Quit`
+  input** and dispatches an `Action`: `/clear` → `Clear` (a full wipe — see
+  below), `/help` → `Notice` (lists the commands), and `/quit` → `Quit`
   (exits — codex's `/quit`/`/exit`, "exit Codex"). A `Notice` is recorded as
   a `Role::System` message and committed to scrollback like any other. Adding a
   command later is a one-line registry edit + an effect arm in
   `run_selected_command` — the palette, filtering, scrolling, and dispatch don't
   change.
+  **`/clear` mid-turn is a kill.** `App::clear_conversation` wipes the whole
+  conversation state — `history`, the streaming buffer, a running tool, the
+  live status, *and the queued backlog* — recording nothing (no partial, no
+  interrupt notice, no summary), and the loop's `Clear` arm cancels + reaps the
+  in-flight backend and drains its channel (the Esc-interrupt dance minus the
+  commits) before the blank repaint, so a stale chunk or `ToolStart` can't
+  repopulate the cleared state and stream into the fresh screen. Codex instead
+  *disables* `/new`/`/clear` while a task runs (`available_during_task` → the
+  red `'/clear' is disabled while a task is in progress.` notice; Tab can queue
+  one for the turn's end — `QueuedInputAction::ParseSlash`); killing is a
+  deliberate divergence: `/clear` here means "stop and wipe *now*". The
+  ↑-recall input history still survives (drafts aren't part of the
+  conversation). Guarded by `smoke.sh` Phase 16: nothing may stream in after a
+  mid-turn `/clear`, and the next turn must run normally.
 - **`?` shows a shortcuts band** (codex's footer shortcut overlay — see
   `docs/shortcuts.md`): pressing `?` (shift-modified or not) in an **empty
   composer** toggles a keyboard-shortcuts overview in the palette's slot below
@@ -297,8 +311,12 @@ frame scheduler ─► draw-tick ─────┘                             
   `flush_streaming_segment` finalises its current segment first (the same ordering
   trick a tool call uses), then `record_system_message` + an `insert_before` commit
   a `Role::System` notice to scrollback.
-- On `Clear` (`/clear`): `App::history` is already empty; `repaint_conversation`
-  reflows the now-blank inline view (clears the visible conversation).
+- On `Clear` (`/clear`): `App::clear_conversation` already wiped the app state
+  (history, streaming buffer, running tool, status, queued backlog). Mid-turn
+  the loop also kills the backend — cancel + `join` + drain the reply channel,
+  the `Interrupt` dance minus the commits — then resets the boundary clocks and
+  `repaint_conversation` reflows the now-blank inline view (clears the visible
+  conversation; nothing may stream in afterwards — `smoke.sh` Phase 16).
 - On `Interrupt` (Esc while a turn is in flight — `docs/interrupt.md`): cancel +
   `join` the backend thread, **drain** the reply channel (events sent before the
   cancel was observed would otherwise arrive after the turn ended — a stale

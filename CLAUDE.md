@@ -240,7 +240,13 @@ shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
 dispatches an `Action`
 (`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
-message, `/quit`→`Quit`). Adding a command later is a one-line `COMMANDS` entry plus an effect arm
+message, `/quit`→`Quit`). **`/clear` mid-turn is a kill**, not codex's
+"disabled while a task is in progress" rejection: `App::clear_conversation`
+wipes history, the streaming buffer, the running tool, the status, and the
+queued backlog (recording no partial/notice/summary; ↑-recall survives), and
+the loop's `Clear` arm cancels + reaps the backend and drains its channel —
+the Esc-interrupt dance minus the commits — before the blank repaint, so
+nothing can stream into the cleared screen (`smoke.sh` Phase 16). Adding a command later is a one-line `COMMANDS` entry plus an effect arm
 in `App::run_selected_command`; the palette/filter/scroll don't change. **Ctrl+C
 first clears a non-empty input** (codex's composer-clear: one press empties the
 draft — recording it in `App::input_history` so ↑ brings it back, closing the

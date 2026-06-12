@@ -823,7 +823,7 @@ impl App {
         self.command_menu = None;
         match effect {
             CommandEffect::Clear => {
-                self.history.clear();
+                self.clear_conversation();
                 Action::Clear
             }
             CommandEffect::Help => Action::Notice(help_text()),
@@ -1163,6 +1163,25 @@ impl App {
         }));
         self.status = None;
         Some(InterruptedTurn { partial, tool })
+    }
+
+    /// Wipe the conversation to a fresh slate — the `/clear` effect. History,
+    /// any in-flight turn state (the streaming buffer, a running tool, the
+    /// live status), and the queued backlog all go, and *nothing* is recorded
+    /// — no partial, no interrupt notice, no summary: the user asked for a
+    /// blank screen, not a finished turn. Mid-turn the loop also kills the
+    /// backend and drains its channel before repainting (`main.rs`), so a
+    /// stale chunk can't repopulate the cleared state. (Codex instead
+    /// *disables* `/new`/`/clear` while a task runs — `available_during_task`
+    /// — killing is our deliberate divergence.) The ↑-recall input history
+    /// survives: drafts aren't part of the conversation
+    /// (`clear_command_keeps_the_recall_history`).
+    fn clear_conversation(&mut self) {
+        self.history.clear();
+        self.streaming = None;
+        self.current_tool = None;
+        self.status = None;
+        self.queued.clear();
     }
 }
 
@@ -2481,6 +2500,39 @@ mod tests {
         type_str(&mut app, "/clear");
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
         assert!(app.history.is_empty(), "clear emptied the conversation");
+    }
+
+    #[test]
+    fn clear_mid_turn_wipes_the_streaming_state_and_records_nothing() {
+        // `/clear` during a turn is a kill: the loop cancels + reaps the
+        // backend (main.rs); the app side must leave no trace of the
+        // half-done turn — no partial, no running tool, no live status, no
+        // interrupt notice — or the fresh slate isn't fresh.
+        let mut app = App::new();
+        app.record_user_message("old message");
+        app.begin_stream();
+        app.push_chunk("half a rep");
+        app.start_tool("read_file", "src/app.rs");
+        type_str(&mut app, "/clear");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
+        assert!(app.history.is_empty(), "no partial/notice/summary recorded");
+        assert!(!app.is_streaming(), "the streaming buffer was dropped");
+        assert!(!app.turn_active(), "the live status cleared");
+        assert!(app.current_tool().is_none(), "the running tool was dropped");
+    }
+
+    #[test]
+    fn clear_mid_turn_drops_the_queued_backlog() {
+        // The backlog belonged to the conversation being wiped — flushing it
+        // as the next turn would resurrect what `/clear` just removed.
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("queued follow-up");
+        app.on_key(key(KeyCode::Enter)); // a turn is in flight — this queues
+        assert_eq!(app.queued.len(), 1, "the message queued");
+        type_str(&mut app, "/clear");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
+        assert!(app.drain_queued().is_empty(), "the backlog was wiped");
     }
 
     #[test]
