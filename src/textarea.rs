@@ -28,7 +28,10 @@ fn cols(s: &str) -> usize {
 
 /// The editable composer buffer: raw text plus a movable cursor, a width-keyed
 /// cache of wrapped row ranges, and the remembered column for vertical motion.
-#[derive(Debug, Default)]
+/// `Clone` snapshots the whole draft — text *and* cursor — which is how the
+/// Ctrl+R history search restores it on cancel (codex's `ComposerDraft`
+/// snapshot/restore; see `docs/history-search.md`).
+#[derive(Debug, Default, Clone)]
 pub struct TextArea {
     /// The raw UTF-8 draft.
     text: String,

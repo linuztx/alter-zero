@@ -6,6 +6,7 @@
 //! ([`render_live`]). That keeps them unit-testable with a plain `Buffer` or
 //! ratatui's `TestBackend`, with no real terminal involved.
 
+use std::ops::Range;
 use std::path::Path;
 use std::time::Duration;
 
@@ -17,8 +18,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, HistoryItem, Role, SlashCommand, TokenArrow, ToolCall, ToolStatus, TurnStatus,
-    TurnSummary, command_query, matching_commands,
+    App, HistoryItem, HistorySearch, Role, SearchState, SlashCommand, TokenArrow, ToolCall,
+    ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
 };
 use crate::textarea::TextArea;
 
@@ -216,6 +217,7 @@ const MENU_DIM_COLOR: Color = TOOL_DIM_COLOR;
 const SHORTCUTS: &[(&str, &str)] = &[
     ("/", " for commands"),
     ("↑", " for input history"),
+    ("ctrl+r", " to search history"),
     ("alt+enter", " for newline"),
     ("ctrl+o", " for tool output"),
     ("esc", " to quit"),
@@ -250,6 +252,23 @@ const FOOTER_SEPARATOR: &str = " · ";
 /// The footer's text colour — every segment dim, codex's no-theme-colours
 /// status-line style.
 const FOOTER_COLOR: Color = TOOL_DIM_COLOR;
+
+// --- The Ctrl+R reverse history search line (codex's reverse-i-search footer,
+// `chat_composer/history_search.rs::history_search_footer_line`). It takes the
+// session footer's slot while a search is open, and the previewed match in the
+// composer highlights the query occurrences. See docs/history-search.md. ---
+
+/// The dim prompt opening the search line.
+const SEARCH_PROMPT: &str = "reverse-i-search: ";
+/// Cyan — the query text and the accept/cancel hint keys (codex's `.cyan()`;
+/// the palette-selection accent).
+const SEARCH_QUERY_COLOR: Color = MENU_SELECTED_COLOR;
+/// The notice appended to the line when the query matches nothing — red, like
+/// codex's `"  no match"`.
+const SEARCH_NO_MATCH: &str = "  no match";
+/// How a previewed match's query occurrences light up in the input box
+/// (codex's `REVERSED | BOLD` textarea highlight).
+const SEARCH_HIGHLIGHT: Modifier = Modifier::REVERSED.union(Modifier::BOLD);
 
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
@@ -398,6 +417,9 @@ struct InputBox {
     text: Rect,
     /// Every wrapped input row's displayed text (always at least one, possibly empty).
     rows: Vec<String>,
+    /// Each row's byte range into the input text (parallel to `rows`) — what
+    /// maps the Ctrl+R search-highlight byte ranges onto row columns.
+    row_ranges: Vec<Range<usize>>,
     /// The cursor's wrapped-row index and display column (from the [`TextArea`]).
     cursor_row: usize,
     cursor_col: usize,
@@ -417,12 +439,14 @@ fn input_box(
     let text = frame.inner(Margin::new(0, 1)); // inset past the top & bottom rules
     let field = field_width(area.width);
     let rows = input.display_rows(field);
+    let row_ranges = input.wrapped_rows(field);
     let (cursor_row, cursor_col) = input.cursor_row_col(field);
     let scroll = input_scroll(rows.len(), cursor_row, text.height as usize);
     InputBox {
         frame,
         text,
         rows,
+        row_ranges,
         cursor_row,
         cursor_col,
         scroll,
@@ -439,6 +463,48 @@ fn input_scroll(total: usize, cursor_row: usize, height: usize) -> usize {
     }
     let max = total - height;
     (cursor_row + 1).saturating_sub(height).min(max)
+}
+
+/// Split one wrapped input row into spans, styling the parts inside
+/// `highlights` with [`SEARCH_HIGHLIGHT`] — the Ctrl+R match preview
+/// (codex highlights its textarea the same way). `row` is the text of the
+/// row whose byte range into the whole input is `range`; `highlights` are
+/// sorted, non-overlapping byte ranges into that same text
+/// ([`App::search_highlight_ranges`]). With no highlights the row comes back
+/// as one plain span.
+fn highlight_row_spans(
+    row: &str,
+    range: &Range<usize>,
+    highlights: &[Range<usize>],
+) -> Vec<Span<'static>> {
+    if highlights.is_empty() {
+        return vec![Span::raw(row.to_string())];
+    }
+    let style = Style::new().add_modifier(SEARCH_HIGHLIGHT);
+    let mut spans = Vec::new();
+    let mut pos = range.start;
+    for h in highlights {
+        // This row's slice of the highlight (a match can span wrapped rows).
+        let start = h.start.clamp(pos, range.end);
+        let end = h.end.clamp(pos, range.end);
+        if start >= end {
+            continue;
+        }
+        if start > pos {
+            spans.push(Span::raw(
+                row[pos - range.start..start - range.start].to_string(),
+            ));
+        }
+        spans.push(Span::styled(
+            row[start - range.start..end - range.start].to_string(),
+            style,
+        ));
+        pos = end;
+    }
+    if pos < range.end {
+        spans.push(Span::raw(row[pos - range.start..].to_string()));
+    }
+    spans
 }
 
 /// Greedy word-wrap `text` to `width` columns.
@@ -651,13 +717,18 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         .border_style(Style::new().fg(BORDER_COLOR));
     block.render(bx.frame, buf);
 
+    // While a Ctrl+R search previews a match, the query's occurrences in it
+    // light up reversed+bold (codex's textarea highlight); otherwise the rows
+    // render as single plain spans.
+    let highlights = app.search_highlight_ranges();
     let lines: Vec<Line> = bx
         .rows
         .iter()
+        .zip(&bx.row_ranges)
         .enumerate()
         .skip(bx.scroll)
         .take(bx.text.height as usize)
-        .map(|(i, line)| {
+        .map(|(i, (line, range))| {
             // The prompt prefixes the real first line; wrapped/continuation lines
             // get a matching-width indent so the text stays aligned under it.
             let (prefix, style) = if i == 0 {
@@ -665,7 +736,9 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
             } else {
                 (INDENT, Style::default())
             };
-            Line::from(vec![Span::styled(prefix, style), Span::raw(line.clone())])
+            let mut spans = vec![Span::styled(prefix, style)];
+            spans.extend(highlight_row_spans(line, range, &highlights));
+            Line::from(spans)
         })
         .collect();
     Paragraph::new(lines).render(bx.text, buf);
@@ -678,9 +751,14 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     }
 
     // The session-context footer on the region's last row — only when no band
-    // is open (the band takes its place; see docs/footer.md).
+    // is open (the band takes its place; see docs/footer.md). An open Ctrl+R
+    // search takes the same slot with its query line (docs/history-search.md).
     if footer > 0 {
-        Paragraph::new(footer_line(app, footer_area.width)).render(footer_area, buf);
+        let line = app
+            .history_search
+            .as_ref()
+            .map_or_else(|| footer_line(app, footer_area.width), search_line);
+        Paragraph::new(line).render(footer_area, buf);
     }
 }
 
@@ -878,6 +956,12 @@ fn indent_queued_line(line: Line<'static>) -> Line<'static> {
 /// the two must agree, like [`menu_rows`].
 #[must_use]
 pub fn footer_rows(app: &App, band_rows: u16) -> u16 {
+    // The Ctrl+R search line takes the slot whenever a search is open — even
+    // with no session info injected, unlike the ambient footer (no band can be
+    // open during a search; see docs/history-search.md).
+    if app.history_search.is_some() {
+        return 1;
+    }
     u16::from(app.session.is_some() && band_rows == 0)
 }
 
@@ -920,6 +1004,39 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         }
     }
     spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
+    Line::from(spans)
+}
+
+/// The Ctrl+R search's footer-slot line — codex's
+/// `history_search_footer_line`: the dim `reverse-i-search: ` prompt behind
+/// the [`FOOTER_INDENT`], the query cyan, then per state the accept/cancel
+/// hints (keys cyan **bold**, labels dim) or the red no-match notice. The
+/// hardware cursor sits at the end of the query ([`cursor_position`]).
+#[must_use]
+pub fn search_line(search: &HistorySearch) -> Line<'static> {
+    let dim = Style::new().fg(FOOTER_COLOR);
+    let key = Style::new()
+        .fg(SEARCH_QUERY_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = vec![
+        Span::raw(FOOTER_INDENT),
+        Span::styled(SEARCH_PROMPT, dim),
+        Span::styled(search.query.clone(), Style::new().fg(SEARCH_QUERY_COLOR)),
+    ];
+    match search.state {
+        SearchState::Idle => {}
+        SearchState::Match { .. } => {
+            spans.push(Span::styled("  ", dim));
+            spans.push(Span::styled("enter", key));
+            spans.push(Span::styled(" accept", dim));
+            spans.push(Span::styled(" · ", dim));
+            spans.push(Span::styled("esc", key));
+            spans.push(Span::styled(" cancel", dim));
+        }
+        SearchState::NoMatch => {
+            spans.push(Span::styled(SEARCH_NO_MATCH, Style::new().fg(ERROR_COLOR)));
+        }
+    }
     Line::from(spans)
 }
 
@@ -1355,13 +1472,31 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // the prompt row even mid-turn (codex keeps the composer focused while a
     // task runs: typing edits the draft, Enter queues it).
     let band = menu_rows(app) + shortcuts_rows(app);
+    let footer = footer_rows(app, band);
+    // While a Ctrl+R search is open the hardware cursor tracks the end of the
+    // *footer query*, not the textarea preview — the shell reverse-i-search
+    // feel (codex's history_search_cursor_pos), clamped inside the row.
+    if let Some(search) = &app.history_search {
+        let [_, _, _, footer_area] = live_layout(
+            area,
+            app.is_streaming(),
+            queued_rows(app, area.width),
+            band,
+            footer,
+        );
+        if footer_area.height > 0 && footer_area.width > 0 {
+            let x = (cols(FOOTER_INDENT) + cols(SEARCH_PROMPT) + cols(&search.query))
+                .min(usize::from(footer_area.width.saturating_sub(1))) as u16;
+            return (footer_area.x.saturating_add(x), footer_area.y);
+        }
+    }
     let bx = input_box(
         area,
         &app.input,
         app.is_streaming(),
         queued_rows(app, area.width),
         band,
-        footer_rows(app, band),
+        footer,
     );
     let row = bx.cursor_row.saturating_sub(bx.scroll) as u16;
     let col = bx.cursor_col as u16;
@@ -2855,12 +2990,16 @@ mod tests {
             "{texts:?}"
         );
         assert!(
-            texts[1].contains("alt+enter for newline")
-                && texts[1].contains("ctrl+o for tool output"),
+            texts[1].contains("ctrl+r to search history")
+                && texts[1].contains("alt+enter for newline"),
             "{texts:?}"
         );
         assert!(
-            texts[2].contains("esc to quit") && texts[2].contains("ctrl+c to quit"),
+            texts[2].contains("ctrl+o for tool output") && texts[2].contains("esc to quit"),
+            "{texts:?}"
+        );
+        assert!(
+            texts[3].contains("ctrl+c to quit") && texts[3].contains("alt+↑ to edit queue"),
             "{texts:?}"
         );
         // The second column is aligned: both rows' right keys start at the
@@ -2868,7 +3007,7 @@ mod tests {
         let col = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);
         assert_eq!(
             col(&texts[0], "↑"),
-            col(&texts[1], "ctrl+o"),
+            col(&texts[1], "alt+enter"),
             "right column aligned: {texts:?}"
         );
     }
@@ -2922,16 +3061,16 @@ mod tests {
     fn render_live_draws_the_shortcuts_band_below_the_box() {
         let mut app = App::new();
         app.shortcuts_open = true;
-        let h = live_height(&app.input, 40, 24, false, 0, shortcuts_rows(&app), 0);
-        let mut buf = buffer(40, h);
+        let h = live_height(&app.input, 60, 24, false, 0, shortcuts_rows(&app), 0);
+        let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
-            .map(|y| row(&buf, y, 40))
+            .map(|y| row(&buf, y, 60))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(all.contains("/ for commands"), "band rendered: {all:?}");
         assert!(
-            row(&buf, h - 1, 40).contains("alt+↑ to edit queue"),
+            row(&buf, h - 1, 60).contains("alt+↑ to edit queue"),
             "the last band row sits on the last region row"
         );
     }
@@ -3379,5 +3518,154 @@ mod tests {
                 }
             }
         }
+    }
+
+    // --- the Ctrl+R search line in the footer slot (docs/history-search.md) ---
+
+    /// An app with `history` recorded and a Ctrl+R search open with `query`
+    /// typed, driven through the real key path.
+    fn searching(history: &[&str], query: &str) -> App {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new();
+        for text in history {
+            app.input_history.record(text);
+        }
+        app.on_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL));
+        for c in query.chars() {
+            app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+        }
+        app
+    }
+
+    #[test]
+    fn search_rows_take_the_footer_slot_even_without_session_info() {
+        let app = searching(&[], "");
+        assert_eq!(
+            footer_rows(&app, 0),
+            1,
+            "the search line must show even when no session info is injected"
+        );
+    }
+
+    #[test]
+    fn the_search_line_displaces_the_session_footer() {
+        let mut app = searching(&["git status"], "git");
+        app.set_session_info("dummy_model_name", "~/inline-tui");
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 1);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        let last = row(&buf, h - 1, 60);
+        assert!(
+            last.starts_with("  reverse-i-search: git"),
+            "the query line sits in the footer slot: {last:?}"
+        );
+        assert!(
+            !last.contains("dummy_model_name"),
+            "the session footer is displaced: {last:?}"
+        );
+    }
+
+    #[test]
+    fn the_search_line_shows_accept_hints_on_a_match() {
+        let line = search_line(
+            searching(&["git status"], "git")
+                .history_search
+                .as_ref()
+                .unwrap(),
+        );
+        let text = plain(&line);
+        assert_eq!(text, "  reverse-i-search: git  enter accept · esc cancel");
+        // The query is cyan and the hint keys are cyan+bold, the rest dim
+        // (codex's history_search_footer_line styling).
+        let query = &line.spans[2];
+        assert_eq!(query.content.as_ref(), "git");
+        assert_eq!(query.style.fg, Some(SEARCH_QUERY_COLOR));
+        let enter = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "enter")
+            .expect("enter key span");
+        assert_eq!(enter.style.fg, Some(SEARCH_QUERY_COLOR));
+        assert!(enter.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn the_search_line_shows_no_match_in_red() {
+        let line = search_line(
+            searching(&["git status"], "zzz")
+                .history_search
+                .as_ref()
+                .unwrap(),
+        );
+        assert_eq!(plain(&line), "  reverse-i-search: zzz  no match");
+        let no_match = line.spans.last().unwrap();
+        assert_eq!(no_match.style.fg, Some(ERROR_COLOR));
+    }
+
+    #[test]
+    fn the_search_line_is_bare_while_idle() {
+        let line = search_line(
+            searching(&["git status"], "")
+                .history_search
+                .as_ref()
+                .unwrap(),
+        );
+        assert_eq!(plain(&line), "  reverse-i-search: ");
+    }
+
+    #[test]
+    fn the_cursor_sits_at_the_end_of_the_query_in_the_search_line() {
+        let app = searching(&["git status"], "git");
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 1);
+        let area = Rect::new(0, 0, 60, h);
+        let (x, y) = cursor_position(area, &app);
+        assert_eq!(y, h - 1, "on the footer row, not in the textarea");
+        let expected = cols(FOOTER_INDENT) + cols(SEARCH_PROMPT) + cols("git");
+        assert_eq!(x as usize, expected);
+    }
+
+    #[test]
+    fn the_search_cursor_clamps_inside_a_narrow_terminal() {
+        let app = searching(&["git status"], "a very very long query indeed");
+        let h = live_height(&app.input, 20, 24, false, 0, 0, 1);
+        let area = Rect::new(0, 0, 20, h);
+        let (x, _) = cursor_position(area, &app);
+        assert!(x < 20, "clamped inside the width (codex clamps the same)");
+    }
+
+    #[test]
+    fn the_previewed_match_highlights_the_query_reversed() {
+        let app = searching(&["git status"], "stat");
+        assert_eq!(app.input.text(), "git status", "the match previews");
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 1);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        // The input row is "❯ git status" on the row inside the box frame:
+        // "stat" starts at column 2 (prompt) + 4 ("git ").
+        let y = 1;
+        assert_eq!(row(&buf, y, 60).trim_end(), "❯ git status");
+        for x in 6..10 {
+            assert!(
+                buf[(x, y)].modifier.contains(Modifier::REVERSED),
+                "match cols reversed at x={x}"
+            );
+        }
+        assert!(
+            !buf[(2, y)].modifier.contains(Modifier::REVERSED),
+            "outside the match stays plain"
+        );
+        assert!(
+            !buf[(10, y)].modifier.contains(Modifier::REVERSED),
+            "the highlight ends with the match"
+        );
+    }
+
+    #[test]
+    fn the_shortcuts_band_lists_ctrl_r() {
+        let texts: Vec<String> = shortcuts_lines(false).iter().map(plain).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("ctrl+r to search history")),
+            "band lists the search binding: {texts:?}"
+        );
     }
 }

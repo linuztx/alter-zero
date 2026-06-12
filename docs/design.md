@@ -220,6 +220,23 @@ unit-tested must be unit-tested.
   Adjacent duplicate submissions collapse; the history survives `/clear`
   (codex's spans whole sessions); recalling a bare `/token` re-derives the
   palette like typing it.
+- **Ctrl+R reverse-searches that history** (codex's reverse incremental
+  search — see `docs/history-search.md`): the footer slot becomes a
+  `reverse-i-search: {query}` line (query cyan; on a match `enter accept ·
+  esc cancel` hints; on a miss a red `no match`), the hardware cursor moves to
+  the end of the query, and **every key belongs to the search** while it's
+  open. Typing filters case-insensitively (substring, newest first, duplicate
+  texts collapsed) and previews the newest match in the composer with the
+  query occurrences highlighted reversed+bold; Ctrl+R/↑ step older and
+  Ctrl+S/↓ step newer (clamping at both ends — the match is kept, codex's
+  `AtBoundary`); Backspace/Ctrl+H pop the query, Ctrl+U clears it; a no-match
+  query shows the original draft again but keeps the search open. **Enter
+  accepts only an actual match** — the search closes, the text stays as an
+  editable draft (cursor at the end), ↑/↓ browsing is seated at the accepted
+  entry, and a bare `/token` re-opens the palette like a recall. **Esc/Ctrl+C
+  cancel**, restoring the pre-search draft *and cursor* (Esc never reaches
+  interrupt/quit — the palette-dismiss precedent; Ctrl+C neither clears nor
+  quits); Ctrl+O cancels first, then opens the overlay.
 - **Quit:** Esc (in the conversation, while **idle** — mid-turn it interrupts
   instead), Ctrl+C, or the `/quit` command. **Ctrl+C first clears a non-empty
   input** (codex's composer-clear step: a first press with a typed draft only
@@ -238,9 +255,9 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`drain_queued`, Enter-queues + Alt+Up edit, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory`/`SessionInfo` types. | Yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`drain_queued`, Enter-queues + Alt+Up edit, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory`/`SessionInfo` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), `render_live`, and `render_tool_view`. | Yes |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
 | `paste.rs`  | Paste-burst detection: `PasteBurst`, a pure state machine — a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop coalesces the run's redraw. | Yes |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (queues scrollback lines for the next frame — `docs/flicker.md`), `draw` (pending-flush + re-pin + diff + cursor, one synchronized update), `reflow` (tail rebuild + live-region paint, one frame), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore (restore flushes leftovers). | No (I/O boundary) |
@@ -438,6 +455,23 @@ frame scheduler ─► draw-tick ─────┘                             
   adjacent duplicates collapse; blanks are never recorded; Ctrl+C's cleared
   draft is recallable; a recalled `/token` reopens the palette; `/clear`
   keeps the recall history.
+- `app` (Ctrl+R search): `InputHistory::search` lists matches newest-first,
+  case-insensitively, duplicates collapsed; Ctrl+R opens Idle with no preview;
+  typing previews the newest match and Ctrl+R/↑ / Ctrl+S/↓ step with clamping
+  at both ends; Backspace pops the query and recovers from a miss; Ctrl+U
+  clears back to Idle; a no-match query restores the draft but stays open;
+  Enter accepts only a match (no submit/queue; ↑ browsing seated at it; a
+  `/token` reopens the palette) and is swallowed otherwise; Esc/Ctrl+C cancel
+  restoring text *and* cursor; Esc mid-turn cancels the search, not the turn;
+  Ctrl+O cancels and opens the overlay; opening closes the palette and
+  previews never reopen it; the highlight ranges cover the query
+  case-insensitively and only while a match previews.
+- `ui` (Ctrl+R search): `footer_rows` reserves the slot whenever a search is
+  open (session info or not); the search line shows the dim prompt, cyan
+  query, bold-cyan accept/cancel hint keys on a match, and a red `no match`;
+  `cursor_position` tracks the end of the query in the footer row (clamped at
+  narrow widths); the previewed match renders the query occurrences reversed
+  in the input box; the shortcuts band lists `ctrl+r`.
 - `app` (shortcuts band): `?` toggles it from an empty composer (shift-modified
   too) and types into a non-empty draft; any other key closes it but still
   acts (typing, ↑ recall, `/` palette); Esc only dismisses — no quit idle, no

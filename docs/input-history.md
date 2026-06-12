@@ -38,7 +38,9 @@ job of moving the cursor inside a multi-line draft.
   ↑ brings an accidentally-cleared draft back.
 - Codex also persists history across sessions (an async
   `LookupMessageHistoryEntry` fetch) and offers Ctrl+R incremental search —
-  **both out of scope here**; we port the in-session `local_history` machine.
+  both out of scope *here*; we port the in-session `local_history` machine.
+  (The Ctrl+R search was ported later on top of it — see
+  `docs/history-search.md`; cross-session persistence remains out of scope.)
   Codex's dispatched slash commands are recorded too; we record only submitted
   messages and Ctrl+C-cleared drafts (YAGNI — a recalled `/token` would mostly
   re-open the palette).

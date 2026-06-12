@@ -42,7 +42,8 @@ geometry decision `term.rs` makes is a pure `ui` helper it calls.
 The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
 `docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
-input-history recall in `docs/input-history.md`; the `?` shortcuts band in
+input-history recall in `docs/input-history.md`; the Ctrl+R reverse search over
+that history in `docs/history-search.md`; the `?` shortcuts band in
 `docs/shortcuts.md`; the mid-turn message queue in `docs/queue.md`; the
 session-context footer in `docs/footer.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
@@ -56,7 +57,14 @@ terminal's real scrollback; a live region (a rule-framed input box — a codex-s
 rows, Home/End) with insert/delete at the cursor, growing as the input wraps;
 from an **empty composer (or an unedited recall) ↑/↓ instead step through
 previously submitted inputs** shell-style (`App::input_history`, codex's
-`ChatComposerHistory` — ↓ past the newest clears; see `docs/input-history.md`) —
+`ChatComposerHistory` — ↓ past the newest clears; see `docs/input-history.md`),
+and **Ctrl+R reverse-searches them** codex-style (`App::history_search` — the
+footer slot becomes a `reverse-i-search: {query}` line owning **every** key,
+the newest case-insensitive substring match previews in the composer with the
+query occurrences highlighted, Ctrl+R/↑ and Ctrl+S/↓ step older/newer clamping
+at the ends, Enter accepts the preview as an editable draft seating ↑ at it,
+Esc/Ctrl+C cancel restoring the pre-search draft and cursor; see
+`docs/history-search.md`) —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's blue header when one is executing), a blank gap row,
 a codex-style **status line** (`( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
@@ -256,7 +264,9 @@ in `App::run_selected_command`; the palette/filter/scroll don't change. **Ctrl+C
 first clears a non-empty input** (codex's composer-clear: one press empties the
 draft — recording it in `App::input_history` so ↑ brings it back, closing the
 palette, never touching a streaming turn — and only an empty-input Ctrl+C quits;
-the Ctrl+O overlay has no input box, so Ctrl+C there always quits).
+an open Ctrl+R search wins over both: that Ctrl+C only cancels the search,
+restoring the pre-search draft; the Ctrl+O overlay has no input box, so Ctrl+C
+there always quits).
 
 ## Working style
 
@@ -316,7 +326,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   session footer (`FOOTER_*` — the two-space `FOOTER_INDENT`, the ` · `
   `FOOTER_SEPARATOR`, the dim `FOOTER_COLOR`; `footer_rows`/`footer_line`,
   ellipsis-truncated at narrow widths, with `display_cwd` formatting the
-  `~`-relative path), and
+  `~`-relative path), the Ctrl+R search line that takes the footer's slot while
+  a search is open (`SEARCH_*` — the dim `SEARCH_PROMPT`, the cyan
+  `SEARCH_QUERY_COLOR` shared by the bold accept/cancel hint keys, the red
+  `SEARCH_NO_MATCH` notice, and `SEARCH_HIGHLIGHT` — the reversed+bold styling
+  of the query occurrences in the previewed match; `search_line`, the
+  query-end cursor in `cursor_position`, `highlight_row_spans`), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap + status + gap strip shows *only while a turn streams* — `strip_rows`
   (`render_live` draws the status line under the preview's gap) — with the

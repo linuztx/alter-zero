@@ -4,7 +4,8 @@
 //! loop in `main.rs` feeds key presses in and reacts to the returned
 //! [`Action`]s, and pushes streamed chunks in via [`App::push_chunk`].
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
+use std::ops::Range;
 use std::time::Duration;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -401,6 +402,45 @@ impl InputHistory {
         Some(text)
     }
 
+    /// Indices of the entries whose text contains `query` (case-insensitively),
+    /// newest first, keeping only the **newest** occurrence of duplicated
+    /// texts — codex's Ctrl+R traversal (`chat_composer_history.rs::search`:
+    /// lowercased substring match, `seen_texts` dedup). An empty query matches
+    /// every entry, though the search session treats that as Idle. See
+    /// `docs/history-search.md`.
+    #[must_use]
+    pub fn search(&self, query: &str) -> Vec<usize> {
+        let needle = query.to_lowercase();
+        let mut seen = HashSet::new();
+        self.entries
+            .iter()
+            .enumerate()
+            .rev()
+            .filter(|(_, text)| text.to_lowercase().contains(&needle))
+            .filter(|(_, text)| seen.insert(text.as_str()))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// The recorded text at `index` (0 = oldest — as [`search`] indexes them).
+    ///
+    /// [`search`]: InputHistory::search
+    #[must_use]
+    pub fn entry(&self, index: usize) -> Option<&str> {
+        self.entries.get(index).map(String::as_str)
+    }
+
+    /// Seat ↑/↓ browsing at `index`, as if that entry had just been recalled:
+    /// the next ↑ steps to the entry older than it. Accepting a Ctrl+R match
+    /// lands here — codex's search shares its navigation cursor the same way
+    /// (`search_match` sets `history_cursor` + `last_history_text`).
+    pub fn resume_at(&mut self, index: usize) {
+        if let Some(text) = self.entries.get(index) {
+            self.cursor = Some(index);
+            self.last_recall = Some(text.clone());
+        }
+    }
+
     /// Step to the newer entry (↓). Past the newest returns an empty string —
     /// "clear the composer and stop browsing" (codex's `navigate_down`);
     /// `None` when not browsing at all.
@@ -417,6 +457,82 @@ impl InputHistory {
             Some(String::new())
         }
     }
+}
+
+/// One open Ctrl+R reverse history search — codex's `HistorySearchSession`
+/// (`chat_composer/history_search.rs`). While it is `Some` on [`App`] the
+/// search owns every key: typed characters edit [`query`], Ctrl+R/↑ and
+/// Ctrl+S/↓ step between matches, Enter accepts the previewed match as an
+/// editable draft, and Esc/Ctrl+C restore the [`snapshot`]. The footer slot
+/// renders it as `reverse-i-search: {query}` (`ui::search_line`). See
+/// `docs/history-search.md`.
+///
+/// [`query`]: HistorySearch::query
+/// [`snapshot`]: HistorySearch::snapshot
+#[derive(Debug)]
+pub struct HistorySearch {
+    /// The draft (text **and** cursor) from before the search opened, restored
+    /// verbatim on cancel — and shown again while a query has no match
+    /// (codex's `original_draft`).
+    snapshot: TextArea,
+    /// The footer-owned query typed while the search is active.
+    pub query: String,
+    /// The user-visible phase: drives the footer hints and the preview.
+    pub state: SearchState,
+}
+
+/// Byte ranges in `text` where `query` matches case-insensitively — a port of
+/// codex's `case_insensitive_match_ranges`: both sides are folded with
+/// `char::to_lowercase`, and a span map keeps the folded match positions
+/// aligned with the original bytes even when a fold changes length (e.g. `İ`
+/// lowercases to two chars). Non-overlapping, left to right.
+fn case_insensitive_match_ranges(text: &str, query: &str) -> Vec<Range<usize>> {
+    let query_lower: String = query.chars().flat_map(char::to_lowercase).collect();
+    if query_lower.is_empty() {
+        return Vec::new();
+    }
+    // The folded text, and each folded char's originating byte range.
+    let mut folded = String::new();
+    let mut spans: Vec<(Range<usize>, Range<usize>)> = Vec::new();
+    for (start, ch) in text.char_indices() {
+        let original = start..start + ch.len_utf8();
+        for lower in ch.to_lowercase() {
+            let folded_start = folded.len();
+            folded.push(lower);
+            spans.push((folded_start..folded.len(), original.clone()));
+        }
+    }
+    let mut ranges = Vec::new();
+    let mut from = 0;
+    while let Some(found) = folded.get(from..).and_then(|rest| rest.find(&query_lower)) {
+        let fold = from + found..from + found + query_lower.len();
+        let hit = |f: &Range<usize>| f.end > fold.start && f.start < fold.end;
+        let first = spans.iter().find(|(f, _)| hit(f));
+        let last = spans.iter().rev().find(|(f, _)| hit(f));
+        if let (Some((_, first)), Some((_, last))) = (first, last) {
+            ranges.push(first.start..last.end);
+        }
+        from = fold.end;
+    }
+    ranges
+}
+
+/// The phase of an open [`HistorySearch`] (codex's `HistorySearchStatus`,
+/// minus `Searching` — we have no async persistent history to wait on).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchState {
+    /// Empty query: nothing searched yet — the original draft still shows
+    /// (opening Ctrl+R never previews the latest entry by itself).
+    Idle,
+    /// A match is previewed in the composer; `selected` indexes the
+    /// newest-first unique match list ([`InputHistory::search`]).
+    Match {
+        /// Index into the current query's match list (0 = newest).
+        selected: usize,
+    },
+    /// The query matches nothing: the original draft shows again, but the
+    /// search stays open for more typing.
+    NoMatch,
 }
 
 /// The session context shown in the footer under the input box: the backend's
@@ -451,6 +567,14 @@ pub struct App {
     /// Survives `/clear` — like codex, whose history even spans sessions. See
     /// `docs/input-history.md`.
     pub input_history: InputHistory,
+    /// The open Ctrl+R reverse search over [`input_history`], if one is —
+    /// `None` when closed. While `Some`, every key routes to it
+    /// ([`on_key_search`]) and the footer slot shows the query line. See
+    /// `docs/history-search.md`.
+    ///
+    /// [`input_history`]: App::input_history
+    /// [`on_key_search`]: App::on_key_search
+    pub history_search: Option<HistorySearch>,
     /// Messages submitted while a turn was in flight, awaiting the next turn
     /// (codex's `queued_user_messages`). Enter mid-turn enqueues here; the loop
     /// drains the whole queue ([`drain_queued`]) into one batched turn whenever
@@ -553,6 +677,14 @@ impl App {
     /// tool-view toggle (Ctrl+O) always work, from either screen. Other keys are
     /// dispatched to the active [`View`].
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
+        // An open Ctrl+R search owns *every* key (codex consumes them all in
+        // handle_history_search_key) — including the global Ctrl+C/Ctrl+O
+        // below, which it redefines: Ctrl+C cancels the search instead of
+        // clearing the draft or quitting, and Ctrl+O cancels before the
+        // overlay opens so no search state leaks into it.
+        if self.view == View::Conversation && self.history_search.is_some() {
+            return self.on_key_search(key);
+        }
         // Ctrl+C: in the conversation, a first press with text in the input
         // clears the draft instead of quitting (codex's composer-clear step —
         // see docs/design.md); otherwise it quits, from either screen. The
@@ -734,6 +866,13 @@ impl App {
                 self.input.move_end();
                 Action::None
             }
+            // Ctrl+R opens the reverse history search (docs/history-search.md);
+            // once open, every key routes to on_key_search instead, where
+            // Ctrl+R steps to older matches.
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.begin_history_search();
+                Action::None
+            }
             // Plain (and Shift-modified) characters insert at the cursor; ALT/CONTROL
             // combos are not text, so they are ignored here.
             KeyCode::Char(c)
@@ -829,6 +968,214 @@ impl App {
             CommandEffect::Help => Action::Notice(help_text()),
             CommandEffect::Quit => Action::Quit,
         }
+    }
+
+    /// Open the Ctrl+R reverse history search: snapshot the draft — text and
+    /// cursor (codex's `snapshot_draft`) — close the palette (the search owns
+    /// the keys from here), and start Idle with an empty query: no preview
+    /// until something is typed. See `docs/history-search.md`.
+    fn begin_history_search(&mut self) {
+        self.command_menu = None;
+        self.history_search = Some(HistorySearch {
+            snapshot: self.input.clone(),
+            query: String::new(),
+            state: SearchState::Idle,
+        });
+    }
+
+    /// Every key while the search is open — codex's
+    /// `handle_history_search_key`: all of them are consumed here, so the
+    /// normal composer handling (and the global Ctrl+C/Ctrl+O arms) never see
+    /// a keystroke mid-search.
+    fn on_key_search(&mut self, key: KeyEvent) -> Action {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // The global overlay toggle still works, but the search cancels first
+        // so its preview never leaks into (or lingers under) the overlay.
+        if ctrl && key.code == KeyCode::Char('o') {
+            self.cancel_history_search();
+            self.toggle_tool_view();
+            return Action::ToggleToolView;
+        }
+        // Ctrl+R/↑ step to an older match, Ctrl+S/↓ back to a newer one.
+        if (ctrl && key.code == KeyCode::Char('r')) || key.code == KeyCode::Up {
+            self.step_history_search(true);
+            return Action::None;
+        }
+        if (ctrl && key.code == KeyCode::Char('s')) || key.code == KeyCode::Down {
+            self.step_history_search(false);
+            return Action::None;
+        }
+        match key.code {
+            // Esc and Ctrl+C cancel, restoring the snapshotted draft: Ctrl+C
+            // neither clears it nor quits, and Esc never reaches the
+            // interrupt/quit arms (the palette-dismiss precedent).
+            KeyCode::Esc => {
+                self.cancel_history_search();
+                Action::None
+            }
+            KeyCode::Char('c') if ctrl => {
+                self.cancel_history_search();
+                Action::None
+            }
+            KeyCode::Enter => {
+                self.accept_history_search();
+                Action::None
+            }
+            // Backspace (or Ctrl+H, its classic alias) pops the query; Ctrl+U
+            // clears it; plain characters extend it. Every edit restarts the
+            // search from the newest entry.
+            KeyCode::Backspace => self.edit_search_query(|query| {
+                query.pop();
+            }),
+            KeyCode::Char('h') if ctrl => self.edit_search_query(|query| {
+                query.pop();
+            }),
+            KeyCode::Char('u') if ctrl => self.edit_search_query(String::clear),
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.edit_search_query(|query| query.push(c))
+            }
+            // Everything else is swallowed (codex consumes unknown keys too).
+            _ => Action::None,
+        }
+    }
+
+    /// Apply `edit` to the query and re-run the search from the newest entry
+    /// (codex's `update_history_search_query` — every query edit restarts).
+    fn edit_search_query(&mut self, edit: impl FnOnce(&mut String)) -> Action {
+        if let Some(search) = self.history_search.as_mut() {
+            edit(&mut search.query);
+            self.rerun_history_search();
+        }
+        Action::None
+    }
+
+    /// Re-run the search after a query edit, restarting at the newest match.
+    /// An empty query goes back to Idle with the original draft showing.
+    fn rerun_history_search(&mut self) {
+        let Some(search) = self.history_search.as_ref() else {
+            return;
+        };
+        if search.query.is_empty() {
+            self.restore_search_snapshot();
+            if let Some(search) = self.history_search.as_mut() {
+                search.state = SearchState::Idle;
+            }
+            return;
+        }
+        let matches = self.input_history.search(&search.query);
+        self.show_search_match(&matches, 0);
+    }
+
+    /// Step the previewed match older/newer, clamping at both ends so the
+    /// current match is kept (codex's `AtBoundary` — never a "no match"
+    /// flicker at the end of the list). Stepping with an empty query stays
+    /// Idle: opening Ctrl+R never previews the latest entry by itself.
+    fn step_history_search(&mut self, older: bool) {
+        let Some(search) = self.history_search.as_ref() else {
+            return;
+        };
+        if search.query.is_empty() {
+            return;
+        }
+        let matches = self.input_history.search(&search.query);
+        let selected = match search.state {
+            SearchState::Match { selected } if older => {
+                (selected + 1).min(matches.len().saturating_sub(1))
+            }
+            SearchState::Match { selected } => selected.saturating_sub(1),
+            // NoMatch: the matches are still empty (the query hasn't changed
+            // since they came up empty), so this re-shows NoMatch below.
+            _ => 0,
+        };
+        self.show_search_match(&matches, selected);
+    }
+
+    /// Preview match `selected` of `matches` (entry indices, newest first) in
+    /// the composer — or show NoMatch when there is none: the original draft
+    /// comes back but the search stays open for more typing (codex's
+    /// `apply_history_search_result`).
+    fn show_search_match(&mut self, matches: &[usize], selected: usize) {
+        let entry = matches
+            .get(selected)
+            .and_then(|&index| self.input_history.entry(index))
+            .map(str::to_string);
+        match entry {
+            Some(text) => {
+                // Cursor at the end — codex's recall placement.
+                self.input.set_text(&text);
+                if let Some(search) = self.history_search.as_mut() {
+                    search.state = SearchState::Match { selected };
+                }
+            }
+            None => {
+                self.restore_search_snapshot();
+                if let Some(search) = self.history_search.as_mut() {
+                    search.state = SearchState::NoMatch;
+                }
+            }
+        }
+    }
+
+    /// Cancel the search, restoring the draft — text *and* cursor — from
+    /// before it opened (codex's `cancel_history_search` → `restore_draft`).
+    fn cancel_history_search(&mut self) {
+        if let Some(search) = self.history_search.take() {
+            self.input = search.snapshot;
+        }
+    }
+
+    /// Accept the previewed match (Enter): the search closes, the text stays
+    /// as an ordinary editable draft (cursor already at the end), ↑/↓
+    /// browsing is seated at the accepted entry — so ↑ continues *older* from
+    /// it, codex's shared history cursor — and the palette re-derives like
+    /// ↑-recall, so accepting a bare `/token` reopens it. Enter on
+    /// Idle/NoMatch is swallowed: only an actual match accepts.
+    fn accept_history_search(&mut self) {
+        let Some(search) = self.history_search.as_ref() else {
+            return;
+        };
+        let SearchState::Match { selected } = search.state else {
+            return;
+        };
+        let entry = self
+            .input_history
+            .search(&search.query)
+            .get(selected)
+            .copied();
+        let Some(entry) = entry else {
+            return;
+        };
+        self.history_search = None;
+        self.input_history.resume_at(entry);
+        self.refresh_command_menu(false);
+    }
+
+    /// Show the pre-search draft again without closing the search — what a
+    /// no-match query (and a query cleared back to empty) displays.
+    fn restore_search_snapshot(&mut self) {
+        if let Some(search) = self.history_search.as_ref() {
+            self.input = search.snapshot.clone();
+        }
+    }
+
+    /// Byte ranges of the query's occurrences in the composer text, **only
+    /// while a match is previewed** — once the search closes the accepted text
+    /// is an ordinary draft again, so this returns nothing (codex's
+    /// `history_search_highlight_ranges`). `ui::render_live` styles these
+    /// reversed+bold in the input box.
+    #[must_use]
+    pub fn search_highlight_ranges(&self) -> Vec<Range<usize>> {
+        let Some(search) = self.history_search.as_ref() else {
+            return Vec::new();
+        };
+        if !matches!(search.state, SearchState::Match { .. }) || search.query.is_empty() {
+            return Vec::new();
+        }
+        case_insensitive_match_ranges(self.input.text(), &search.query)
     }
 
     /// Keys while the full-screen tool-output view is showing: it is a read-only
@@ -2879,5 +3226,343 @@ mod tests {
         assert_eq!(estimate_tokens(""), 0);
         assert!(estimate_tokens("a") >= 1);
         assert!(estimate_tokens("a much longer string") > estimate_tokens("a"));
+    }
+
+    // --- Ctrl+R history search: InputHistory::search / entry / resume_at
+    // (docs/history-search.md — codex's chat_composer_history search) ---
+
+    /// An InputHistory with `texts` recorded oldest → newest.
+    fn history_of(texts: &[&str]) -> InputHistory {
+        let mut history = InputHistory::default();
+        for text in texts {
+            history.record(text);
+        }
+        history
+    }
+
+    #[test]
+    fn search_lists_matching_entries_newest_first() {
+        let history = history_of(&["git status", "cargo build", "git push"]);
+        assert_eq!(history.search("git"), vec![2, 0]);
+        assert_eq!(history.entry(2), Some("git push"));
+        assert_eq!(history.entry(0), Some("git status"));
+    }
+
+    #[test]
+    fn search_is_case_insensitive() {
+        let history = history_of(&["Build Release", "other"]);
+        assert_eq!(history.search("release"), vec![0]);
+        assert_eq!(history.search("BUILD"), vec![0]);
+    }
+
+    #[test]
+    fn search_skips_older_duplicates_of_the_same_text() {
+        let history = history_of(&["dup", "other dup", "dup"]);
+        // "dup" was recorded at 0 and again at 2 (not adjacent, so both kept);
+        // the search keeps only the newest occurrence — codex's seen_texts.
+        assert_eq!(history.search("dup"), vec![2, 1]);
+    }
+
+    #[test]
+    fn search_with_no_match_or_no_entries_is_empty() {
+        assert_eq!(history_of(&["alpha"]).search("zzz"), Vec::<usize>::new());
+        assert_eq!(InputHistory::default().search("a"), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn search_with_an_empty_query_matches_everything() {
+        let history = history_of(&["one", "two"]);
+        assert_eq!(history.search(""), vec![1, 0]);
+    }
+
+    #[test]
+    fn resume_at_seats_arrow_browsing_at_the_entry() {
+        let mut history = history_of(&["oldest", "middle", "newest"]);
+        history.resume_at(1);
+        // Browsing resumes as if "middle" had just been recalled: ↑ steps to
+        // the entry older than it (codex's shared history cursor on accept).
+        assert!(history.should_navigate("middle", "middle".len()));
+        assert_eq!(history.up(), Some("oldest".to_string()));
+    }
+
+    // --- Ctrl+R history search: the session over App (docs/history-search.md —
+    // codex's HistorySearchSession in chat_composer/history_search.rs) ---
+
+    /// An App with `texts` submitted (each its own finished-enough turn — the
+    /// submit helper records them), composer empty again.
+    fn searchable_app(texts: &[&str]) -> App {
+        let mut app = App::new();
+        for text in texts {
+            submit(&mut app, text);
+        }
+        app
+    }
+
+    /// Type `text` into the open search query through the real key path.
+    fn type_query(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn ctrl_r_opens_an_idle_search_without_previewing() {
+        let mut app = searchable_app(&["git status"]);
+        assert_eq!(app.on_key(ctrl('r')), Action::None);
+        let search = app.history_search.as_ref().expect("search open");
+        assert_eq!(search.query, "");
+        assert_eq!(search.state, SearchState::Idle);
+        assert_eq!(app.input.text(), "", "no preview until a query is typed");
+    }
+
+    #[test]
+    fn typing_builds_the_query_and_previews_the_newest_match() {
+        let mut app = searchable_app(&["git status", "cargo build", "git push"]);
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "git");
+        let search = app.history_search.as_ref().expect("search open");
+        assert_eq!(search.query, "git");
+        assert_eq!(search.state, SearchState::Match { selected: 0 });
+        assert_eq!(app.input.text(), "git push", "newest match previews");
+    }
+
+    #[test]
+    fn ctrl_r_steps_older_and_clamps_at_the_oldest_match() {
+        let mut app = searchable_app(&["git status", "cargo build", "git push"]);
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "git");
+        app.on_key(ctrl('r'));
+        assert_eq!(app.input.text(), "git status");
+        // At the boundary the match is kept (codex's AtBoundary — no flicker).
+        app.on_key(ctrl('r'));
+        assert_eq!(app.input.text(), "git status");
+        let search = app.history_search.as_ref().expect("search open");
+        assert_eq!(search.state, SearchState::Match { selected: 1 });
+    }
+
+    #[test]
+    fn ctrl_s_steps_back_newer_and_clamps_at_the_newest_match() {
+        let mut app = searchable_app(&["git status", "cargo build", "git push"]);
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "git");
+        app.on_key(ctrl('r'));
+        assert_eq!(app.input.text(), "git status");
+        app.on_key(ctrl('s'));
+        assert_eq!(app.input.text(), "git push");
+        app.on_key(ctrl('s'));
+        assert_eq!(app.input.text(), "git push", "newest end clamps too");
+    }
+
+    #[test]
+    fn up_and_down_step_the_search_instead_of_browsing_or_moving() {
+        let mut app = searchable_app(&["git status", "cargo build", "git push"]);
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "git");
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "git status", "↑ steps older, like Ctrl+R");
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.input.text(), "git push", "↓ steps newer, like Ctrl+S");
+        assert!(
+            app.history_search.is_some(),
+            "arrows never close the search"
+        );
+    }
+
+    #[test]
+    fn backspace_pops_the_query_and_restarts_from_the_newest() {
+        let mut app = searchable_app(&["git status", "git push"]);
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "gitz");
+        let search = app.history_search.as_ref().expect("search open");
+        assert_eq!(search.state, SearchState::NoMatch);
+        app.on_key(key(KeyCode::Backspace));
+        let search = app.history_search.as_ref().expect("search open");
+        assert_eq!(search.query, "git");
+        assert_eq!(search.state, SearchState::Match { selected: 0 });
+        assert_eq!(app.input.text(), "git push");
+    }
+
+    #[test]
+    fn ctrl_u_clears_the_query_back_to_idle_and_restores_the_draft() {
+        let mut app = searchable_app(&["git status"]);
+        app.input = TextArea::from_text("a draft");
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "git");
+        assert_eq!(app.input.text(), "git status");
+        app.on_key(ctrl('u'));
+        let search = app.history_search.as_ref().expect("search open");
+        assert_eq!(search.query, "");
+        assert_eq!(search.state, SearchState::Idle);
+        assert_eq!(app.input.text(), "a draft");
+    }
+
+    #[test]
+    fn a_no_match_query_restores_the_draft_and_keeps_the_search_open() {
+        let mut app = searchable_app(&["git status"]);
+        app.input = TextArea::from_text("a draft");
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "zzz");
+        let search = app.history_search.as_ref().expect("search stays open");
+        assert_eq!(search.state, SearchState::NoMatch);
+        assert_eq!(app.input.text(), "a draft");
+    }
+
+    #[test]
+    fn enter_accepts_the_match_into_the_composer_without_submitting() {
+        let mut app = searchable_app(&["git status", "git push"]);
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "status");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(app.history_search.is_none(), "accepting closes the search");
+        assert_eq!(app.input.text(), "git status", "the match stays as a draft");
+        assert_eq!(app.input.cursor(), "git status".len());
+        assert!(app.queued.is_empty());
+    }
+
+    #[test]
+    fn enter_without_a_match_is_swallowed_and_the_search_stays_open() {
+        let mut app = searchable_app(&["git status"]);
+        app.on_key(ctrl('r'));
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(app.history_search.is_some(), "Idle: Enter does nothing");
+        type_query(&mut app, "zzz");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(app.history_search.is_some(), "NoMatch: Enter does nothing");
+    }
+
+    #[test]
+    fn accepting_seats_arrow_browsing_at_the_match() {
+        let mut app = searchable_app(&["alpha one", "beta two", "alpha three"]);
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "two");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.input.text(), "beta two");
+        // ↑ continues *older* from the accepted entry, codex-style.
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "alpha one");
+    }
+
+    #[test]
+    fn esc_cancels_and_restores_the_draft_text_and_cursor() {
+        let mut app = searchable_app(&["git status"]);
+        app.input = TextArea::from_text("hello");
+        app.input.move_left();
+        app.input.move_left();
+        let cursor = app.input.cursor();
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "git");
+        assert_eq!(app.input.text(), "git status");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(app.history_search.is_none());
+        assert_eq!(app.input.text(), "hello");
+        assert_eq!(app.input.cursor(), cursor, "the exact cursor is restored");
+    }
+
+    #[test]
+    fn ctrl_c_cancels_the_search_instead_of_clearing_or_quitting() {
+        let mut app = searchable_app(&["git status"]);
+        app.input = TextArea::from_text("a draft");
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "git");
+        assert_eq!(app.on_key(ctrl('c')), Action::None);
+        assert!(app.history_search.is_none());
+        assert_eq!(app.input.text(), "a draft", "the restored draft survives");
+    }
+
+    #[test]
+    fn esc_mid_turn_cancels_the_search_not_the_turn() {
+        let mut app = searchable_app(&["git status"]);
+        app.begin_stream();
+        app.on_key(ctrl('r'));
+        assert_eq!(
+            app.on_key(key(KeyCode::Esc)),
+            Action::None,
+            "search-cancel wins over interrupt, like palette-dismiss"
+        );
+        assert!(app.history_search.is_none());
+        assert!(app.is_streaming(), "the turn keeps streaming");
+    }
+
+    #[test]
+    fn ctrl_o_during_a_search_cancels_it_and_opens_the_overlay() {
+        let mut app = searchable_app(&["git status"]);
+        app.input = TextArea::from_text("a draft");
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "git");
+        assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+        assert_eq!(app.view, View::ToolOutput);
+        assert!(
+            app.history_search.is_none(),
+            "no search leaks into the overlay"
+        );
+        assert_eq!(app.input.text(), "a draft");
+    }
+
+    #[test]
+    fn opening_the_search_closes_the_palette_and_canceling_keeps_it_closed() {
+        let mut app = searchable_app(&["git status"]);
+        app.input = TextArea::new();
+        type_query(&mut app, "/he"); // typing a bare /token opens the palette
+        assert!(app.command_menu.is_some());
+        app.on_key(ctrl('r'));
+        assert!(app.command_menu.is_none(), "search owns the keys");
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.input.text(), "/he");
+        assert!(app.command_menu.is_none(), "cancel restores the draft only");
+    }
+
+    #[test]
+    fn a_previewed_slash_token_does_not_open_the_palette_but_accepting_does() {
+        let mut app = App::new();
+        // A bare /token can enter the history via Ctrl+C's composer-clear.
+        app.input = TextArea::from_text("/help");
+        app.on_key(ctrl('c'));
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "help");
+        assert_eq!(app.input.text(), "/help");
+        assert!(app.command_menu.is_none(), "previews never pop the palette");
+        app.on_key(key(KeyCode::Enter));
+        assert!(
+            app.command_menu.is_some(),
+            "accepting re-derives the palette, like ↑-recall"
+        );
+    }
+
+    #[test]
+    fn searching_with_no_history_shows_no_match() {
+        let mut app = App::new();
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "a");
+        let search = app.history_search.as_ref().expect("search open");
+        assert_eq!(search.state, SearchState::NoMatch);
+    }
+
+    #[test]
+    fn highlight_ranges_cover_the_query_in_the_preview_case_insensitively() {
+        let mut app = searchable_app(&["Git status on git repo"]);
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "git");
+        let text = app.input.text();
+        let ranges = app.search_highlight_ranges();
+        let covered: Vec<&str> = ranges.iter().map(|r| &text[r.clone()]).collect();
+        assert_eq!(covered, vec!["Git", "git"]);
+    }
+
+    #[test]
+    fn highlight_ranges_are_empty_unless_a_match_is_previewed() {
+        let mut app = searchable_app(&["git status"]);
+        assert!(app.search_highlight_ranges().is_empty(), "no search open");
+        app.on_key(ctrl('r'));
+        assert!(app.search_highlight_ranges().is_empty(), "Idle");
+        type_query(&mut app, "zzz");
+        assert!(app.search_highlight_ranges().is_empty(), "NoMatch");
+        type_query(&mut app, ""); // unchanged
+        app.on_key(ctrl('u'));
+        type_query(&mut app, "git");
+        app.on_key(key(KeyCode::Enter));
+        assert!(
+            app.search_highlight_ranges().is_empty(),
+            "accepted = plain draft"
+        );
     }
 }

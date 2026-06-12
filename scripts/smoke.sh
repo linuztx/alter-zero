@@ -30,6 +30,7 @@ cleanup() {
 	tmux kill-session -t "${S}_sync" 2>/dev/null
 	tmux kill-session -t "${S}_clearkill" 2>/dev/null
 	tmux kill-session -t "${S}_resize" 2>/dev/null
+	tmux kill-session -t "${S}_search" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -639,6 +640,64 @@ echo "==== captured visible screen (height shrunk mid-stream, turn finished at 8
 printf '%s\n' "$resize_mid"
 tmux kill-session -t "$S14" 2>/dev/null
 
+# --- Phase 18: Ctrl+R reverse history search (docs/history-search.md). Build
+# two history entries — one submitted turn plus one Ctrl+C-cleared draft (the
+# clear records it, no second slow turn needed) — then: Ctrl+R opens the
+# reverse-i-search line in the footer slot; typing a query previews the newest
+# matching entry in the composer; Ctrl+R again steps to the older match; Enter
+# accepts it (the search line closes, the session footer returns, the text
+# stays as an editable draft); a hopeless query shows "no match" with the
+# draft restored; and Esc closes the search WITHOUT quitting the app. ---
+S15="${S}_search"
+tmux new-session -d -s "$S15" -x 80 -y 24 "$BIN"
+sleep 0.4
+tmux send-keys -t "$S15" -l "alpha bravo"
+sleep 0.2
+tmux send-keys -t "$S15" Enter
+for _ in $(seq 1 80); do # up to ~8s: the turn must finish first
+	if tmux capture-pane -t "$S15" -p | grep -qE "^Done for [0-9]+s"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S15" -l "charlie alpha"
+sleep 0.2
+tmux send-keys -t "$S15" C-c
+sleep 0.2
+tmux send-keys -t "$S15" C-r
+sleep 0.3
+search_open="$(tmux capture-pane -t "$S15" -p)"
+echo "==== captured visible screen (Ctrl+R pressed — search open, idle) ===="
+printf '%s\n' "$search_open"
+tmux send-keys -t "$S15" -l "alpha"
+sleep 0.3
+search_match="$(tmux capture-pane -t "$S15" -p)"
+echo "==== captured visible screen (query 'alpha' typed — newest match previews) ===="
+printf '%s\n' "$search_match"
+tmux send-keys -t "$S15" C-r
+sleep 0.3
+search_older="$(tmux capture-pane -t "$S15" -p)"
+echo "==== captured visible screen (Ctrl+R again — older match) ===="
+printf '%s\n' "$search_older"
+tmux send-keys -t "$S15" Enter
+sleep 0.3
+search_accept="$(tmux capture-pane -t "$S15" -p)"
+echo "==== captured visible screen (Enter — match accepted as a draft) ===="
+printf '%s\n' "$search_accept"
+tmux send-keys -t "$S15" C-r
+sleep 0.2
+tmux send-keys -t "$S15" -l "zzz"
+sleep 0.3
+search_nomatch="$(tmux capture-pane -t "$S15" -p)"
+echo "==== captured visible screen (query 'zzz' — no match) ===="
+printf '%s\n' "$search_nomatch"
+tmux send-keys -t "$S15" Escape
+sleep 0.3
+search_cancel="$(tmux capture-pane -t "$S15" -p)"
+echo "==== captured visible screen (Esc — search cancelled, app still alive) ===="
+printf '%s\n' "$search_cancel"
+tmux kill-session -t "$S15" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -1045,7 +1104,60 @@ if ! printf '%s' "$resize_regrown" | grep -qF "$EXPECT_REPLY"; then
 	echo "FAIL: after growing back to 80x24 the reply did not return to view" >&2
 	status=1
 fi
+
+# Phase 18: the Ctrl+R reverse history search. "❯ alpha bravo" appears once on
+# screen from the committed turn, so the composer holding it shows up as a
+# SECOND occurrence (the never-submitted "charlie alpha" is unambiguous).
+count_msg_lines() { printf '%s\n' "$1" | grep -cF "❯ $2"; }
+if ! printf '%s' "$search_open" | grep -qF "reverse-i-search:"; then
+	echo "FAIL: Ctrl+R did not open the reverse-i-search line" >&2
+	status=1
+fi
+if ! printf '%s' "$search_match" | grep -qF "reverse-i-search: alpha"; then
+	echo "FAIL: the search line does not show the typed query" >&2
+	status=1
+fi
+if [ "$(count_msg_lines "$search_match" "charlie alpha")" != "1" ]; then
+	echo "FAIL: the newest match (the Ctrl+C-cleared draft) did not preview in the composer" >&2
+	status=1
+fi
+if [ "$(count_msg_lines "$search_older" "alpha bravo")" != "2" ]; then
+	echo "FAIL: Ctrl+R again did not step the preview to the older match" >&2
+	status=1
+fi
+if printf '%s' "$search_accept" | grep -qF "reverse-i-search:"; then
+	echo "FAIL: accepting with Enter did not close the search line" >&2
+	status=1
+fi
+if [ "$(count_msg_lines "$search_accept" "alpha bravo")" != "2" ]; then
+	echo "FAIL: the accepted match did not stay in the composer as a draft" >&2
+	status=1
+fi
+if ! printf '%s' "$search_accept" | grep -qF "dummy_model_name ·"; then
+	echo "FAIL: the session footer did not return once the search closed" >&2
+	status=1
+fi
+if ! printf '%s' "$search_nomatch" | grep -qF "no match"; then
+	echo "FAIL: a hopeless query does not show 'no match'" >&2
+	status=1
+fi
+if [ "$(count_msg_lines "$search_nomatch" "alpha bravo")" != "2" ]; then
+	echo "FAIL: the draft was not restored while the query has no match" >&2
+	status=1
+fi
+if printf '%s' "$search_cancel" | grep -qF "reverse-i-search:"; then
+	echo "FAIL: Esc did not close the search" >&2
+	status=1
+fi
+if ! printf '%s' "$search_cancel" | grep -qF "dummy_model_name ·"; then
+	echo "FAIL: the app quit on Esc instead of only closing the search" >&2
+	status=1
+fi
+if [ "$(count_msg_lines "$search_cancel" "alpha bravo")" != "2" ]; then
+	echo "FAIL: Esc-cancel did not keep the restored draft" >&2
+	status=1
+fi
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), and a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, and Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting)"
 fi
 exit "$status"
