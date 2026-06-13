@@ -91,11 +91,16 @@ inset two columns — `  ❯ {msg}` rows in the strip under the status line —
 the current one ends — **Esc interrupts and sends the backlog right away**,
 Alt+Up pulls it all back into the composer to edit; see
 `docs/queue.md`; plus **`!command` runs a local shell command** (codex's `!`
-shell mode — the footer slot flips to a red `Shell mode` hint, Enter from an
-idle composer runs the rest under `sh -c` on a background thread as a turn
-(`App::begin_shell`) that renders as a `● {command}` tool cell, green/red by
-exit, with the spinner/`esc to interrupt` status and a `Ran for Ns` summary;
-mid-turn it queues as text; see `docs/shell-command.md`); plus a one-row
+shell mode: a leading `!` is **absorbed** into `App::shell_mode` and rendered
+back as the composer's red `! ` prompt — `! pwd`, never `❯ !pwd` — with a red
+`Shell mode` hint in the footer slot (Backspace/Esc on the empty shell composer
+exit the mode; the palette/`?` band are suppressed in it); Enter from an idle
+composer runs the draft under `sh -c` on a background thread as a turn
+(`App::begin_shell`) committing a codex-style **exec cell** — the `! command`
+header on the dark user-style line (a `Role::Shell` message) with the `⎿`
+output **flush** below, `⎿ Running…` while it runs, the `Running…`/`esc to
+interrupt` status, **no** `Ran for Ns` summary, Esc killing the child;
+mid-turn it queues as literal text; see `docs/shell-command.md`); plus a one-row
 **session footer** on the region's last row —
 codex's footer status line, `{model} · {cwd}` dim and two-space inset
 (`dummy_model_name · ~/repo`) — whenever no band is open (the palette/shortcuts
@@ -340,9 +345,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `SEARCH_NO_MATCH` notice, and `SEARCH_HIGHLIGHT` — the reversed+bold styling
   of the query occurrences in the previewed match; `search_line`, the
   query-end cursor in `cursor_position`, `highlight_row_spans`), the `!`
-  shell-mode hint that takes the same footer slot while the composer holds a
-  `!command` (`SHELL_MODE_*` — the red `SHELL_MODE_LABEL`; `shell_mode_line`,
-  and `tool_header` rendering `● {command}` for the argless shell tool), and
+  shell mode (`SHELL_MODE_*`/`SHELL_BULLET` — the red `Shell mode` footer
+  hint (`shell_mode_line`) and the red `! ` that doubles as the composer
+  prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell
+  header bullet in `message_lines`; shell `tool_lines` are headerless `⎿`
+  rows — `⎿ Running…` live — kept flush by `conversation_lines`), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap + status + gap strip shows *only while a turn streams* — `strip_rows`
   (`render_live` draws the status line under the preview's gap) — with the

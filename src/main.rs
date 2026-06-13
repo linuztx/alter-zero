@@ -408,11 +408,12 @@ fn run_shell(
     clocks: &mut StatusClocks,
 ) -> io::Result<(CancelToken, JoinHandle<()>)> {
     let width = term.screen().width;
-    let echo = format!("!{command}");
-    app.record_user_message(&echo);
-    term.insert_before(ui::message_lines(Role::User, &echo, width));
-    term.insert_before(vec![Line::default()]);
+    // begin_shell records the cell's `! command` header (Role::Shell) in
+    // history; commit it with NO trailing blank — the `⎿ Running…` preview
+    // (and later the committed `⎿` output) sits flush below it, forming the
+    // codex-style exec cell (docs/shell-command.md).
     app.begin_shell(&command);
+    term.insert_before(ui::message_lines(Role::Shell, &command, width));
     *committed = 0;
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;

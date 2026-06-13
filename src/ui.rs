@@ -19,7 +19,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
     App, HistoryItem, HistorySearch, Role, SearchState, SlashCommand, TokenArrow, ToolCall,
-    ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands, shell_query,
+    ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
 };
 use crate::textarea::TextArea;
 
@@ -279,7 +279,12 @@ const SEARCH_HIGHLIGHT: Modifier = Modifier::REVERSED.union(Modifier::BOLD);
 /// The shell-mode hint text.
 const SHELL_MODE_LABEL: &str = "Shell mode";
 /// The hint's colour — red, like codex's `light_red()` (reuses our error red).
+/// Also colours the `! ` bullet/prompt everywhere shell mode shows.
 const SHELL_MODE_COLOR: Color = ERROR_COLOR;
+/// The bullet opening a committed shell command's header (`! pwd` on the dark
+/// user-style line) — and the composer prompt while shell mode is on (the
+/// absorbed bang rendered back; same two columns as [`PROMPT`]).
+const SHELL_BULLET: &str = "! ";
 
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
@@ -612,11 +617,15 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         Role::Assistant => (AI_BULLET, AI_COLOR),
         Role::Error => (ERROR_BULLET, ERROR_COLOR),
         Role::System => (SYSTEM_BULLET, SYSTEM_COLOR),
+        Role::Shell => (SHELL_BULLET, SHELL_MODE_COLOR),
     };
     let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
     let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
 
-    let bg = if role == Role::User {
+    // User messages get the dark full-width block; a shell command's header
+    // (`! pwd`) shares it — the mock's "dark line, like a user message".
+    let dark = matches!(role, Role::User | Role::Shell);
+    let bg = if dark {
         Style::new().bg(USER_BG_COLOR)
     } else {
         Style::default()
@@ -628,7 +637,7 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         .map(|(i, line)| {
             // Pad to content_width *columns* (not chars) so the background fills
             // the full terminal row even when the line holds wide CJK/emoji.
-            let padded = if role == Role::User {
+            let padded = if dark {
                 let pad = " ".repeat(cw.saturating_sub(cols(&line)));
                 format!("{line}{pad}")
             } else {
@@ -741,11 +750,15 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         .take(bx.text.height as usize)
         .map(|(i, (line, range))| {
             // The prompt prefixes the real first line; wrapped/continuation lines
-            // get a matching-width indent so the text stays aligned under it.
-            let (prefix, style) = if i == 0 {
-                (PROMPT, Style::new().fg(PROMPT_COLOR))
-            } else {
+            // get a matching-width indent so the text stays aligned under it. In
+            // shell mode the absorbed `!` renders back as a red prompt (`! pwd`
+            // instead of `❯ pwd` — docs/shell-command.md).
+            let (prefix, style) = if i != 0 {
                 (INDENT, Style::default())
+            } else if app.shell_mode {
+                (SHELL_BULLET, Style::new().fg(SHELL_MODE_COLOR))
+            } else {
+                (PROMPT, Style::new().fg(PROMPT_COLOR))
             };
             let mut spans = vec![Span::styled(prefix, style)];
             spans.extend(highlight_row_spans(line, range, &highlights));
@@ -768,7 +781,7 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     if footer > 0 {
         let line = if let Some(search) = app.history_search.as_ref() {
             search_line(search)
-        } else if shell_query(app.input.text()).is_some() {
+        } else if app.shell_mode {
             shell_mode_line()
         } else {
             footer_line(app, footer_area.width)
@@ -979,7 +992,7 @@ pub fn footer_rows(app: &App, band_rows: u16) -> u16 {
     }
     // The `!` shell-mode hint takes the slot the same way (no band can be open
     // in shell mode either; see docs/shell-command.md).
-    if shell_query(app.input.text()).is_some() {
+    if app.shell_mode {
         return 1;
     }
     u16::from(app.session.is_some() && band_rows == 0)
@@ -1146,8 +1159,6 @@ fn tool_header(tool: &ToolCall) -> Line<'static> {
 /// rendered in the separate tool-output view, never here.
 #[must_use]
 pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
-    let header = tool_header(tool);
-
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
@@ -1165,17 +1176,25 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     }
 
     let peek = match tool.status {
+        // The shell cell's running peek, capitalised per the exec-cell mock
+        // (`! pwd` / `  ⎿ Running…`); a backend tool keeps the quiet lowercase
+        // under its `● name(args)` header.
+        ToolStatus::Running if tool.shell => "Running…".to_string(),
         ToolStatus::Running => "running…".to_string(),
         _ if out_lines.is_empty() => "(no output)".to_string(),
         _ => truncate_cols(out_lines[0], peek_width),
     };
-    let mut lines = vec![
-        header,
-        Line::from(vec![
-            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
-            Span::styled(peek, dim),
-        ]),
-    ];
+    let mut lines = Vec::new();
+    // A `!` shell call is headerless: its Role::Shell header message (`! pwd`)
+    // sits flush above, so the cell contributes only its `⎿` lines
+    // (docs/shell-command.md).
+    if !tool.shell {
+        lines.push(tool_header(tool));
+    }
+    lines.push(Line::from(vec![
+        Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
+        Span::styled(peek, dim),
+    ]));
 
     // A hint line whenever output beyond the first peeked line is hidden.
     let hidden = out_lines.len().saturating_sub(1);
@@ -1473,7 +1492,13 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
         }
-        lines.push(Line::default()); // blank spacer after every item
+        // Blank spacer after every item — except a shell command's header
+        // message: its tool's `⎿` output (or the live `⎿ Running…` preview)
+        // sits flush below it, forming one cell (docs/shell-command.md).
+        let shell_header = matches!(item, HistoryItem::Message(m) if m.role == Role::Shell);
+        if !shell_header {
+            lines.push(Line::default());
+        }
     }
     lines
 }
@@ -1945,6 +1970,7 @@ mod tests {
                 status: ToolStatus::Ok,
                 output: "out".to_string(),
                 timestamp: STAMP.to_string(),
+                shell: false,
             }),
             HistoryItem::Message(Message {
                 role: Role::Assistant,
@@ -1994,6 +2020,7 @@ mod tests {
                 status: ToolStatus::Ok,
                 output: "out".to_string(),
                 timestamp: STAMP.to_string(),
+                shell: false,
             }),
             HistoryItem::Summary(TurnSummary {
                 verb: "Done",
@@ -2068,6 +2095,7 @@ mod tests {
             arrow,
             elapsed: Duration::from_secs(elapsed),
             thinking: thinking.map(Duration::from_secs),
+            shell: false,
         }
     }
 
@@ -2745,6 +2773,7 @@ mod tests {
             status,
             output: output.to_string(),
             timestamp: String::new(),
+            shell: false,
         }
     }
 
@@ -3719,28 +3748,30 @@ mod tests {
         );
     }
 
-    // --- the `!` shell-mode footer line (docs/shell-command.md) ---
+    // --- the `!` shell mode + its exec cell (docs/shell-command.md) ---
 
-    /// An app with `text` in the composer (no session info, no search).
-    fn composing(text: &str) -> App {
+    /// An app in shell mode with `command` typed (the bang absorbed into the
+    /// mode flag, codex-style — the textarea holds just the command).
+    fn shelling(command: &str) -> App {
         let mut app = App::new();
-        app.input = TextArea::from_text(text);
+        app.shell_mode = true;
+        app.input = TextArea::from_text(command);
         app
     }
 
     #[test]
     fn shell_mode_takes_the_footer_slot_even_without_session_info() {
         assert_eq!(
-            footer_rows(&composing("!ls"), 0),
+            footer_rows(&shelling("ls"), 0),
             1,
             "the Shell mode hint shows even with no session info"
         );
-        assert_eq!(footer_rows(&composing("ls"), 0), 0, "not a shell command");
+        assert_eq!(footer_rows(&App::new(), 0), 0, "not in shell mode");
     }
 
     #[test]
     fn the_shell_mode_line_displaces_the_session_footer() {
-        let mut app = composing("!ls -la");
+        let mut app = shelling("ls -la");
         app.set_session_info("dummy_model_name", "~/inline-tui");
         let h = live_height(&app.input, 60, 24, false, 0, 0, 1);
         let mut buf = buffer(60, h);
@@ -3763,10 +3794,25 @@ mod tests {
     }
 
     #[test]
+    fn shell_mode_swaps_the_composer_prompt_for_a_red_bang() {
+        // The absorbed `!` renders back as the prompt: `! pwd`, not `❯ pwd`.
+        let app = shelling("pwd");
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 1);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        assert_eq!(row(&buf, 1, 60).trim_end(), "! pwd");
+        assert_eq!(
+            buf[(0, 1)].fg,
+            SHELL_MODE_COLOR,
+            "the bang prompt is red, the shell accent"
+        );
+    }
+
+    #[test]
     fn the_cursor_stays_in_the_box_in_shell_mode() {
         // Unlike the Ctrl+R search (which owns the footer cursor), shell mode
-        // keeps the cursor on the composer's `!command` line.
-        let app = composing("!ls");
+        // keeps the cursor on the composer's command line.
+        let app = shelling("ls");
         let h = live_height(&app.input, 60, 24, false, 0, 0, 1);
         let area = Rect::new(0, 0, 60, h);
         let (_, y) = cursor_position(area, &app);
@@ -3779,6 +3825,85 @@ mod tests {
         assert!(
             texts.iter().any(|t| t.contains("! for shell command")),
             "band lists the shell binding: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_shell_header_message_renders_like_a_user_line_with_a_bang() {
+        let lines = message_lines(Role::Shell, "pwd", 40);
+        assert_eq!(plain(&lines[0]).trim_end(), "! pwd");
+        // The bang is the shell accent; the row carries the dark user block,
+        // padded to the full content width (the mock's "dark line wrap").
+        assert_eq!(lines[0].spans[0].style.fg, Some(SHELL_MODE_COLOR));
+        assert_eq!(lines[0].style.bg, Some(USER_BG_COLOR));
+        assert_eq!(cols(&plain(&lines[0])), 40, "padded to the full width");
+    }
+
+    #[test]
+    fn a_shell_tool_renders_headerless_output_only() {
+        // The Role::Shell header message is the cell's first line; the tool
+        // itself contributes only the `⎿` output lines, flush below it.
+        let mut t = tool("pwd", "", ToolStatus::Ok, "/home/user/inline-tui");
+        t.shell = true;
+        let lines = tool_lines(&t, 60);
+        assert_eq!(plain(&lines[0]), "  ⎿ /home/user/inline-tui");
+        assert!(
+            !plain(&lines[0]).contains("pwd"),
+            "no `● pwd` header — the Shell message above is the header"
+        );
+    }
+
+    #[test]
+    fn a_running_shell_tool_peeks_running() {
+        let mut t = tool("sleep 5", "", ToolStatus::Running, "");
+        t.shell = true;
+        let lines = tool_lines(&t, 60);
+        assert_eq!(plain(&lines[0]), "  ⎿ Running…", "the mock's running cell");
+    }
+
+    #[test]
+    fn a_shell_tool_keeps_the_hidden_lines_hint() {
+        let mut t = tool("ls", "", ToolStatus::Ok, "a\nb\nc");
+        t.shell = true;
+        let lines = tool_lines(&t, 60);
+        assert_eq!(plain(&lines[0]), "  ⎿ a");
+        assert!(plain(&lines[1]).contains("+2 lines (ctrl+o to expand)"));
+    }
+
+    #[test]
+    fn conversation_lines_keep_the_shell_cell_flush() {
+        // No blank spacer between the `! pwd` header and its `⎿` output —
+        // they form one cell (and the running preview sits flush the same way).
+        let mut t = tool("pwd", "", ToolStatus::Ok, "/home");
+        t.shell = true;
+        let history = vec![
+            HistoryItem::Message(Message {
+                role: Role::Shell,
+                text: "pwd".to_string(),
+                timestamp: String::new(),
+            }),
+            HistoryItem::Tool(t),
+        ];
+        let texts: Vec<String> = conversation_lines(&history, 40)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(texts, vec!["! pwd", "  ⎿ /home", ""]);
+    }
+
+    #[test]
+    fn the_running_shell_preview_is_the_flush_running_peek() {
+        let mut app = App::new();
+        app.begin_shell("sleep 5");
+        let q = queued_rows(&app, 60);
+        let h = live_height(&app.input, 60, 24, true, q, 0, footer_rows(&app, 0));
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        assert_eq!(
+            row(&buf, 0, 60).trim_end(),
+            "  ⎿ Running…",
+            "the strip preview is the cell's running peek, flush under the \
+             committed `! sleep 5` header just above the live region"
         );
     }
 }

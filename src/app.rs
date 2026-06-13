@@ -24,6 +24,13 @@ pub enum Role {
     /// or a stub's "not wired up yet" placeholder). Rendered like a message — a
     /// distinct bullet colour — so it flows into scrollback and repaints uniformly.
     System,
+    /// A `!` shell command the user ran — the header line of its cell, rendered
+    /// like a user message but with a `! ` bullet (`! pwd` on the dark
+    /// user-style background). Its tool's `⎿` output sits **flush** below it
+    /// (no blank spacer), forming the codex-style exec cell. Recorded by
+    /// [`App::begin_shell`] when the command starts, so a mid-run resize
+    /// repaints it. See `docs/shell-command.md`.
+    Shell,
 }
 
 /// One finished message in the conversation.
@@ -75,6 +82,11 @@ pub struct ToolCall {
     /// Empty while running and when no clock is injected. See
     /// `docs/timestamps.md`.
     pub timestamp: String,
+    /// Whether this is a `!` shell command (set by [`App::begin_shell`]). A
+    /// shell call renders **headerless** — just its `⎿` output lines, flush
+    /// under the [`Role::Shell`] header message recorded with it — instead of
+    /// the `● name(args)` bullet header. See `docs/shell-command.md`.
+    pub shell: bool,
 }
 
 /// Which way the live token tally is moving, selecting the arrow glyph in the
@@ -120,6 +132,11 @@ pub struct TurnStatus {
     /// — set by the boundary each frame. `Some` renders the `Thinking for Ns`
     /// suffix; cleared the moment thinking ends.
     pub thinking: Option<Duration>,
+    /// Whether this is a `!` shell-command turn ([`App::begin_shell`]). A shell
+    /// turn ends **without** a `"{verb} for Ns"` summary — the committed cell
+    /// is its own record ([`App::end_turn`] returns `None`). See
+    /// `docs/shell-command.md`.
+    pub shell: bool,
 }
 
 /// A finished turn's summary, committed to scrollback as a dim `"{verb} for
@@ -502,6 +519,11 @@ pub struct HistorySearch {
     /// verbatim on cancel — and shown again while a query has no match
     /// (codex's `original_draft`).
     snapshot: TextArea,
+    /// Whether the composer was in `!` shell mode when the search opened. The
+    /// mode is suspended during the search (previews show entries raw) and
+    /// restored with the snapshot on cancel; accepting re-derives it from the
+    /// accepted text instead. See `docs/shell-command.md`.
+    snapshot_shell: bool,
     /// The footer-owned query typed while the search is active.
     pub query: String,
     /// The user-visible phase: drives the footer hints and the preview.
@@ -602,6 +624,15 @@ pub struct App {
     /// [`input_history`]: App::input_history
     /// [`on_key_search`]: App::on_key_search
     pub history_search: Option<HistorySearch>,
+    /// Whether the composer is in `!` shell mode — codex's absorbed-prefix
+    /// `is_bash_mode`: the leading `!` is held here, *not* in the textarea, so
+    /// the box renders `! pwd` (the bang as the prompt) instead of `❯ !pwd`.
+    /// Entered by typing `!` first ([`sync_shell_mode`] absorbs it), exited by
+    /// Backspace/Esc on an empty composer or by submitting; the footer slot
+    /// shows a red `Shell mode` hint while it's on. See `docs/shell-command.md`.
+    ///
+    /// [`sync_shell_mode`]: App::sync_shell_mode
+    pub shell_mode: bool,
     /// Messages submitted while a turn was in flight, awaiting the next turn
     /// (codex's `queued_user_messages`). Enter mid-turn enqueues here; the loop
     /// drains the whole queue ([`drain_queued`]) into one batched turn whenever
@@ -719,8 +750,14 @@ impl App {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             if self.view == View::Conversation && !self.input.is_empty() {
                 // Record the cleared draft so ↑ can bring it back (codex's
-                // clear_for_ctrl_c does the same).
-                self.input_history.record(&self.input.take());
+                // clear_for_ctrl_c does the same). A shell-mode draft re-gains
+                // its `!` so the recall re-enters the mode.
+                let mut text = self.input.take();
+                if self.shell_mode {
+                    self.shell_mode = false;
+                    text = format!("!{text}");
+                }
+                self.input_history.record(&text);
                 self.command_menu = None; // an emptied input can't be a /token
                 return Action::None;
             }
@@ -755,7 +792,9 @@ impl App {
             && !key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && self.input.is_empty();
+            && self.input.is_empty()
+            // In shell mode `?` is a shell character (e.g. a glob), not the band.
+            && !self.shell_mode;
         if shortcuts_toggle {
             self.shortcuts_open = !self.shortcuts_open;
             return Action::None;
@@ -773,6 +812,13 @@ impl App {
             // (codex-style, see docs/interrupt.md); else it quits as before.
             KeyCode::Esc if menu_open => {
                 self.command_menu = None;
+                Action::None
+            }
+            // Esc on an empty shell-mode composer exits the mode (codex's
+            // bash-mode escape) — before the interrupt/quit fallbacks, like the
+            // palette dismissal. With a draft, Esc keeps its normal meaning.
+            KeyCode::Esc if self.shell_mode && self.input.is_empty() => {
+                self.shell_mode = false;
                 Action::None
             }
             KeyCode::Esc if self.turn_active() => Action::Interrupt,
@@ -808,32 +854,35 @@ impl App {
                 Action::None
             }
             KeyCode::Enter => {
-                let text = self.input.text().to_string();
-                if text.trim().is_empty() {
+                if self.shell_mode && self.input.text().trim().is_empty() {
+                    // A bare `!` runs nothing — post the help notice and stay
+                    // in the mode (codex's empty-bang help).
+                    return Action::Notice(SHELL_EMPTY_NOTICE.to_string());
+                }
+                if self.input.text().trim().is_empty() {
                     Action::None
                 } else if self.is_streaming() {
                     // A turn is in flight — queue the message instead of dropping
                     // it (codex's queued_user_messages); the loop sends it when the
                     // turn ends. Record it for ↑ recall, like a normal submit. A
-                    // `!command` queued here is sent as literal text (a v1
-                    // limitation; see docs/shell-command.md).
-                    let text = self.input.take();
+                    // shell-mode draft re-gains its `!` and queues as literal
+                    // text (a v1 limitation; see docs/shell-command.md).
+                    let mut text = self.input.take();
+                    if self.shell_mode {
+                        self.shell_mode = false;
+                        text = format!("!{text}");
+                    }
                     self.input_history.record(&text);
                     self.queued.push_back(text);
                     Action::None
-                } else if let Some(rest) = shell_query(&text) {
-                    // `!command` from an idle composer runs locally
-                    // (docs/shell-command.md). Record the full `!command` for ↑
-                    // recall (codex records the whole text); a bare `!` posts a
-                    // help notice instead of running nothing.
-                    let recorded = self.input.take();
-                    self.input_history.record(&recorded);
-                    let command = rest.trim();
-                    if command.is_empty() {
-                        Action::Notice(SHELL_EMPTY_NOTICE.to_string())
-                    } else {
-                        Action::RunShell(command.to_string())
-                    }
+                } else if self.shell_mode {
+                    // Shell mode: run the draft locally (docs/shell-command.md).
+                    // Record the full `!command` for ↑ recall (codex records the
+                    // whole text — recall re-absorbs the bang).
+                    let raw = self.input.take();
+                    self.shell_mode = false;
+                    self.input_history.record(&format!("!{raw}"));
+                    Action::RunShell(raw.trim().to_string())
                 } else {
                     let text = self.input.take();
                     self.input_history.record(&text);
@@ -842,16 +891,24 @@ impl App {
             }
             // Editing and cursor movement, dispatched to the textarea. Backspace /
             // Delete / typing also re-derive the slash-command palette.
+            // Backspace on an empty shell-mode composer deletes the absorbed
+            // `!` — i.e. exits the mode (the natural inverse of typing it).
+            KeyCode::Backspace if self.shell_mode && self.input.is_empty() => {
+                self.shell_mode = false;
+                Action::None
+            }
             KeyCode::Backspace => {
                 let had_query = command_query(self.input.text()).is_some();
                 self.input.delete_backward();
                 self.refresh_command_menu(had_query);
+                self.sync_shell_mode();
                 Action::None
             }
             KeyCode::Delete => {
                 let had_query = command_query(self.input.text()).is_some();
                 self.input.delete_forward();
                 self.refresh_command_menu(had_query);
+                self.sync_shell_mode();
                 Action::None
             }
             KeyCode::Left => {
@@ -917,7 +974,9 @@ impl App {
                 Action::None
             }
             // Plain (and Shift-modified) characters insert at the cursor; ALT/CONTROL
-            // combos are not text, so they are ignored here.
+            // combos are not text, so they are ignored here. An insert that
+            // leaves the text starting with `!` is absorbed into shell mode
+            // (sync_shell_mode — codex's bash-mode sync after every edit).
             KeyCode::Char(c)
                 if !key
                     .modifiers
@@ -926,6 +985,7 @@ impl App {
                 let had_query = command_query(self.input.text()).is_some();
                 self.input.insert_char(c);
                 self.refresh_command_menu(had_query);
+                self.sync_shell_mode();
                 Action::None
             }
             _ => Action::None,
@@ -943,11 +1003,35 @@ impl App {
 
     /// Replace the draft with a recalled history entry. `set_text` puts the
     /// cursor at the end (codex's recall placement), and the palette is
-    /// re-derived so recalling a bare `/token` reopens it like typing one.
+    /// re-derived so recalling a bare `/token` reopens it like typing one. The
+    /// shell mode is re-derived from scratch — a recalled `!command` re-enters
+    /// it (codex re-absorbs the bang), a plain entry leaves it.
     fn recall_input(&mut self, text: &str) {
+        self.shell_mode = false;
         let had_query = command_query(self.input.text()).is_some();
         self.input.set_text(text);
         self.refresh_command_menu(had_query);
+        self.sync_shell_mode();
+    }
+
+    /// Absorb a leading `!` out of the textarea into [`shell_mode`] — codex's
+    /// `sync_bash_mode_from_text`, run after every edit that could produce one:
+    /// the bang lives in the flag (rendered as the `! ` prompt), never in the
+    /// text. Only ever *enters* the mode; leaving it is an explicit gesture
+    /// (Backspace/Esc on empty, or submitting). No-op when already in the mode
+    /// or when the text doesn't start with `!`.
+    ///
+    /// [`shell_mode`]: App::shell_mode
+    fn sync_shell_mode(&mut self) {
+        if self.shell_mode {
+            return;
+        }
+        if let Some(rest) = shell_query(self.input.text()) {
+            let rest = rest.to_string();
+            self.shell_mode = true;
+            self.input.set_text(&rest);
+            self.command_menu = None; // the draft is a literal command now
+        }
     }
 
     /// Re-derive the palette after an edit. Opens it when the input *becomes* a
@@ -957,6 +1041,12 @@ impl App {
     /// token won't reopen the palette — only leaving and re-entering command mode
     /// (a None→Some transition) does.
     fn refresh_command_menu(&mut self, had_query: bool) {
+        // In shell mode the whole draft is a literal command — a leading `/`
+        // there (e.g. `!/usr/bin/env`) is a path, never the palette.
+        if self.shell_mode {
+            self.command_menu = None;
+            return;
+        }
         match command_query(self.input.text()) {
             None => self.command_menu = None,
             Some(query) => {
@@ -1021,9 +1111,14 @@ impl App {
         self.command_menu = None;
         self.history_search = Some(HistorySearch {
             snapshot: self.input.clone(),
+            snapshot_shell: self.shell_mode,
             query: String::new(),
             state: SearchState::Idle,
         });
+        // Suspend shell mode while the search owns the composer: previewed
+        // entries are raw text (`❯ !cmd`), not shell-mode drafts. Cancel
+        // restores the flag with the snapshot; accept re-derives it.
+        self.shell_mode = false;
     }
 
     /// Every key while the search is open — codex's
@@ -1168,6 +1263,7 @@ impl App {
     fn cancel_history_search(&mut self) {
         if let Some(search) = self.history_search.take() {
             self.input = search.snapshot;
+            self.shell_mode = search.snapshot_shell;
         }
     }
 
@@ -1195,6 +1291,8 @@ impl App {
         self.history_search = None;
         self.input_history.resume_at(entry);
         self.refresh_command_menu(false);
+        // An accepted `!entry` re-enters shell mode (the recall rule).
+        self.sync_shell_mode();
     }
 
     /// Show the pre-search draft again without closing the search — what a
@@ -1320,6 +1418,7 @@ impl App {
             status: ToolStatus::Running,
             output: String::new(),
             timestamp: String::new(), // stamped when it finishes (see end_tool)
+            shell: false,
         });
     }
 
@@ -1387,6 +1486,7 @@ impl App {
             arrow: TokenArrow::Down,
             elapsed: Duration::ZERO,
             thinking: None,
+            shell: false,
         });
     }
 
@@ -1394,21 +1494,31 @@ impl App {
     /// command gets the live status strip, the spinner/timer, `esc to
     /// interrupt`, and the resize repaint for free (see `docs/shell-command.md`):
     ///
+    /// - the command itself is recorded **up front** as a [`Role::Shell`]
+    ///   header message (`! pwd` on the dark user-style line) — the top of the
+    ///   codex-style exec cell, in history so a mid-run resize repaints it;
     /// - an **empty** streaming buffer (a shell turn has no assistant text) — so
     ///   [`is_streaming`] is true (the strip shows, a mid-run Enter queues) but
     ///   [`finish_stream`] records no phantom message;
-    /// - a fixed-verb status ([`SHELL_VERB`]/[`SHELL_DONE_VERB`] → `Running…`,
-    ///   `Ran for Ns`), not the cycled AI verbs;
-    /// - the command itself as the running tool (no args, so [`ui::tool_header`]
-    ///   renders `● {command}`), shown blue in the preview immediately.
+    /// - a fixed-verb, `shell`-flagged status ([`SHELL_VERB`] → `Running…`; the
+    ///   flag makes [`end_turn`] skip the summary — the cell is its own record);
+    /// - the command as the running **shell** tool: headerless, so its
+    ///   `⎿ Running…` peek previews flush under the header, resolving into the
+    ///   `⎿ output` lines on completion.
     ///
     /// The boundary's runner then streams a `ToolEnd`/`StreamDone` pair back,
-    /// committing the cell and the summary through the existing paths.
+    /// committing the cell through the existing paths.
     ///
     /// [`is_streaming`]: App::is_streaming
     /// [`finish_stream`]: App::finish_stream
-    /// [`ui::tool_header`]: crate::ui
+    /// [`end_turn`]: App::end_turn
     pub fn begin_shell(&mut self, command: &str) {
+        let timestamp = self.now_stamp();
+        self.history.push(HistoryItem::Message(Message {
+            role: Role::Shell,
+            text: command.to_string(),
+            timestamp,
+        }));
         self.streaming = Some(String::new());
         self.status = Some(TurnStatus {
             verb: SHELL_VERB,
@@ -1417,8 +1527,12 @@ impl App {
             arrow: TokenArrow::Down,
             elapsed: Duration::ZERO,
             thinking: None,
+            shell: true,
         });
         self.start_tool(command, "");
+        if let Some(tool) = self.current_tool.as_mut() {
+            tool.shell = true;
+        }
     }
 
     /// Append a streamed chunk to the in-progress reply (and grow the live token
@@ -1507,6 +1621,11 @@ impl App {
     /// [`finish_stream`]: App::finish_stream
     pub fn end_turn(&mut self, elapsed_secs: u64) -> Option<TurnSummary> {
         let status = self.status.take()?;
+        // A `!` shell turn ends without a summary: its committed cell
+        // (`! cmd` + `⎿ output`) is the record (docs/shell-command.md).
+        if status.shell {
+            return None;
+        }
         let summary = TurnSummary {
             verb: status.done_verb,
             secs: elapsed_secs,
@@ -2445,6 +2564,7 @@ mod tests {
                 status: ToolStatus::Ok,
                 output: "line1\nline2".to_string(),
                 timestamp: String::new(),
+                shell: false,
             }))
         );
     }
@@ -3640,7 +3760,8 @@ mod tests {
         );
     }
 
-    // --- `!` shell commands (docs/shell-command.md — codex's bang shell mode) ---
+    // --- `!` shell commands (docs/shell-command.md — codex's bang shell mode,
+    // with the absorbed `!` prefix: the bang becomes the prompt, not text) ---
 
     #[test]
     fn shell_query_strips_a_leading_bang_keeping_the_rest_verbatim() {
@@ -3659,31 +3780,128 @@ mod tests {
     }
 
     #[test]
-    fn idle_enter_on_a_bang_command_runs_it_as_a_shell_command() {
+    fn typing_a_bang_into_an_empty_composer_enters_shell_mode() {
+        // codex's absorbed prefix: the `!` flips the mode flag and is *not*
+        // inserted — the prompt renders it instead (`! pwd`, not `❯ !pwd`).
         let mut app = App::new();
-        app.input = TextArea::from_text("!echo hello");
+        type_query(&mut app, "!pwd");
+        assert!(app.shell_mode);
+        assert_eq!(app.input.text(), "pwd", "the bang is absorbed, not typed");
+    }
+
+    #[test]
+    fn a_bang_typed_mid_text_is_just_a_character() {
+        let mut app = App::new();
+        type_query(&mut app, "hi!");
+        assert!(!app.shell_mode);
+        assert_eq!(app.input.text(), "hi!");
+    }
+
+    #[test]
+    fn an_edit_that_creates_a_leading_bang_absorbs_it() {
+        // codex syncs the mode from the text after every edit, so inserting a
+        // `!` in front of an existing draft enters shell mode too.
+        let mut app = App::new();
+        type_query(&mut app, "ls");
+        app.on_key(key(KeyCode::Home));
+        type_query(&mut app, "!");
+        assert!(app.shell_mode);
+        assert_eq!(app.input.text(), "ls");
+    }
+
+    #[test]
+    fn backspace_on_an_empty_shell_composer_exits_shell_mode() {
+        let mut app = App::new();
+        type_query(&mut app, "!");
+        app.on_key(key(KeyCode::Backspace));
+        assert!(!app.shell_mode, "backspace deletes the absorbed bang");
+        assert_eq!(app.input.text(), "");
+    }
+
+    #[test]
+    fn esc_on_an_empty_shell_composer_exits_the_mode_instead_of_quitting() {
+        let mut app = App::new();
+        type_query(&mut app, "!");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(!app.shell_mode, "Esc exits shell mode (codex)");
+        // A second Esc, now out of the mode, quits as usual.
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
+    }
+
+    #[test]
+    fn the_palette_never_opens_in_shell_mode() {
+        let mut app = App::new();
+        type_query(&mut app, "!/he");
+        assert!(app.shell_mode);
+        assert_eq!(app.input.text(), "/he");
+        assert!(
+            app.command_menu.is_none(),
+            "a /token inside a shell command is literal"
+        );
+    }
+
+    #[test]
+    fn question_mark_types_into_shell_mode_not_the_band() {
+        let mut app = App::new();
+        type_query(&mut app, "!");
+        type_query(&mut app, "?");
+        assert!(!app.shortcuts_open, "`?` is a shell character here");
+        assert_eq!(app.input.text(), "?");
+    }
+
+    #[test]
+    fn ctrl_c_in_shell_mode_records_the_prefixed_draft_and_exits_the_mode() {
+        let mut app = App::new();
+        type_query(&mut app, "!ls");
+        assert_eq!(app.on_key(ctrl('c')), Action::None);
+        assert!(!app.shell_mode);
+        assert_eq!(app.input.text(), "");
+        app.on_key(key(KeyCode::Up));
+        assert!(app.shell_mode, "↑ recalls the cleared draft back into mode");
+        assert_eq!(app.input.text(), "ls");
+    }
+
+    #[test]
+    fn idle_enter_in_shell_mode_runs_the_command() {
+        let mut app = App::new();
+        type_query(&mut app, "!echo hello");
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
             Action::RunShell("echo hello".to_string())
         );
         assert_eq!(app.input.text(), "", "the composer is consumed");
+        assert!(!app.shell_mode, "running exits the mode");
     }
 
     #[test]
-    fn the_bang_command_is_recorded_in_history_with_its_bang() {
+    fn recalling_a_bang_entry_restores_shell_mode() {
         let mut app = App::new();
-        app.input = TextArea::from_text("!echo hello");
+        type_query(&mut app, "!echo hello");
         app.on_key(key(KeyCode::Enter));
-        // ↑ recalls the full "!echo hello" (codex records the whole text), so
-        // re-Enter re-runs it.
+        // ↑ recalls the recorded "!echo hello" — absorbed back into the mode
+        // (codex records the full text and re-absorbs it on recall).
         app.on_key(key(KeyCode::Up));
-        assert_eq!(app.input.text(), "!echo hello");
+        assert!(app.shell_mode);
+        assert_eq!(app.input.text(), "echo hello");
+    }
+
+    #[test]
+    fn recalling_a_plain_entry_clears_shell_mode() {
+        let mut app = App::new();
+        submit(&mut app, "hello there");
+        type_query(&mut app, "!");
+        app.on_key(key(KeyCode::Up));
+        assert!(
+            !app.shell_mode,
+            "a recalled plain message replaces the mode"
+        );
+        assert_eq!(app.input.text(), "hello there");
     }
 
     #[test]
     fn the_shell_command_is_trimmed_before_running() {
         let mut app = App::new();
-        app.input = TextArea::from_text("!  ls -la  ");
+        type_query(&mut app, "!  ls -la  ");
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
             Action::RunShell("ls -la".to_string())
@@ -3691,14 +3909,18 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_bang_posts_the_help_notice_instead_of_running() {
+    fn an_empty_bang_posts_the_help_notice_and_stays_in_the_mode() {
         let mut app = App::new();
-        app.input = TextArea::from_text("!");
+        type_query(&mut app, "!");
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
             Action::Notice(SHELL_EMPTY_NOTICE.to_string())
         );
-        app.input = TextArea::from_text("!   ");
+        assert!(
+            app.shell_mode,
+            "codex keeps the mode open on the help notice"
+        );
+        type_query(&mut app, "   ");
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
             Action::Notice(SHELL_EMPTY_NOTICE.to_string())
@@ -3708,16 +3930,44 @@ mod tests {
     #[test]
     fn a_bang_command_mid_turn_queues_as_text_rather_than_running() {
         // v1 limitation: a !command typed while a turn streams queues like any
-        // follow-up (sent to the backend as literal text on drain), not run.
+        // follow-up (sent to the backend as literal text on drain), not run —
+        // re-prefixed with its bang so nothing is lost.
         let mut app = App::new();
         app.begin_stream();
-        app.input = TextArea::from_text("!echo hi");
+        type_query(&mut app, "!echo hi");
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(!app.shell_mode);
         assert_eq!(app.drain_queued(), vec!["!echo hi".to_string()]);
     }
 
     #[test]
-    fn begin_shell_sets_up_a_turn_with_the_command_as_its_running_tool() {
+    fn searching_from_shell_mode_previews_plainly_and_esc_restores_the_mode() {
+        let mut app = App::new();
+        submit(&mut app, "git status");
+        type_query(&mut app, "!pw");
+        app.on_key(ctrl('r'));
+        assert!(!app.shell_mode, "previews show raw text, outside the mode");
+        type_query(&mut app, "git");
+        assert_eq!(app.input.text(), "git status");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.shell_mode, "cancel restores the shell-mode draft");
+        assert_eq!(app.input.text(), "pw");
+    }
+
+    #[test]
+    fn accepting_a_bang_match_restores_shell_mode() {
+        let mut app = App::new();
+        type_query(&mut app, "!echo hello");
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "echo");
+        app.on_key(key(KeyCode::Enter)); // accept "!echo hello"
+        assert!(app.shell_mode, "the accepted !entry re-enters the mode");
+        assert_eq!(app.input.text(), "echo hello");
+    }
+
+    #[test]
+    fn begin_shell_records_the_command_and_runs_it_as_the_turn_tool() {
         let mut app = App::new();
         app.begin_shell("ls -la");
         assert!(app.turn_active(), "the status strip shows");
@@ -3725,28 +3975,40 @@ mod tests {
             app.is_streaming(),
             "an empty stream buffer so the strip shows and mid-run Enter queues"
         );
+        // The command itself is the cell's header — a Role::Shell message
+        // recorded up front so a mid-run resize repaints it.
+        match app.history.as_slice() {
+            [HistoryItem::Message(m)] => {
+                assert_eq!(m.role, Role::Shell);
+                assert_eq!(m.text, "ls -la");
+            }
+            other => panic!("unexpected history: {other:?}"),
+        }
         let tool = app.current_tool().expect("the command runs as a tool");
         assert_eq!(tool.name, "ls -la");
-        assert_eq!(tool.args, "", "no args — tool_header renders `● ls -la`");
+        assert!(tool.shell, "marked shell so it renders headerless (⎿ only)");
         assert_eq!(tool.status, ToolStatus::Running);
         let status = app.status().expect("a live status");
         assert_eq!(status.verb, SHELL_VERB);
-        assert_eq!(status.done_verb, SHELL_DONE_VERB);
+        assert!(status.shell);
     }
 
     #[test]
-    fn a_shell_turn_finishes_with_a_ran_summary_and_no_phantom_message() {
+    fn a_shell_turn_ends_without_a_summary_or_phantom_message() {
         let mut app = App::new();
         app.begin_shell("echo hi");
         app.end_tool("hi", true);
         assert!(app.finish_stream().is_none(), "no assistant text to record");
-        let summary = app.end_turn(2).expect("a summary");
-        assert_eq!(summary.verb, SHELL_DONE_VERB);
-        // history = [Tool, Summary] — no empty assistant Message.
+        assert!(
+            app.end_turn(2).is_none(),
+            "no `Ran for Ns` line — the cell itself is the record"
+        );
+        assert!(!app.turn_active(), "the status is still cleared");
+        // history = [Message(Shell), Tool] — the mock's two-line cell.
         match app.history.as_slice() {
-            [HistoryItem::Tool(t), HistoryItem::Summary(s)] => {
+            [HistoryItem::Message(m), HistoryItem::Tool(t)] => {
+                assert_eq!(m.role, Role::Shell);
                 assert_eq!(t.name, "echo hi");
-                assert_eq!(s.verb, SHELL_DONE_VERB);
             }
             other => panic!("unexpected history: {other:?}"),
         }

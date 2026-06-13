@@ -38,95 +38,114 @@ interruptible with Esc.
 We have no real model, so "inject the output into the model's context" is moot
 — a `!command` is **purely local**. Everything else maps cleanly onto the
 existing turn + tool machinery, so a shell run reuses the streaming strip
-(spinner, elapsed timer, `esc to interrupt`), the collapsed/expandable tool
-cell, the resize repaint, and the queue — almost no new rendering.
+(spinner, elapsed timer, `esc to interrupt`), the `⎿` peek/expand cell, the
+resize repaint, and the queue — almost no new rendering.
 
-### Detecting shell mode — `app::shell_query` (pure)
+### The absorbed prefix — `App::shell_mode` (codex's `is_bash_mode`)
 
-Mirrors `command_query` (the `/`-palette detector), but for `!` and **not**
-stopping at whitespace (a command has spaces):
-
-```rust
-pub fn shell_query(input: &str) -> Option<&str> {
-    input.strip_prefix('!')   // Some(rest) for "!…", None otherwise
-}
-```
-
-We keep the `!` **in the textarea** (our `/token` convention) rather than
-absorbing it like codex — simpler, no cursor arithmetic, and the visible `!`
-plus the `Shell mode` footer reads just as clearly. `!`-prefixed `/text` is a
-literal shell command (no palette), since `command_query` only fires on a
-leading `/`.
+Typing `!` as the first character of an empty composer is **absorbed**: the
+bang lives in the `App::shell_mode` flag, never in the textarea, and renders
+back as the composer's prompt — the box reads `! pwd`, not `❯ !pwd`
+(`SHELL_BULLET`, red). `sync_shell_mode` (codex's `sync_bash_mode_from_text`)
+runs after every edit/recall, so any text gaining a leading `!` — typed,
+recalled, or accepted from a Ctrl+R search — is absorbed the same way.
+Backspace or Esc on the **empty** shell composer deletes the absorbed bang
+(exits the mode; the Esc arm sits with the palette-dismiss precedence, before
+interrupt/quit). While the mode is on, the palette never opens (`/` is a path
+character) and `?` types instead of toggling the band. A Ctrl+R search
+*suspends* the mode (`HistorySearch::snapshot_shell` — previews show entries
+raw) and cancel restores it with the snapshot. `shell_query` (mirroring
+`command_query`) is the one place the leading-`!` test lives.
 
 ### Submit routing — `Action::RunShell(String)`
 
-A new `Action`. In `on_key_conversation`'s Enter arm, **after** the
-mid-turn-queue check (so a `!command` typed while a turn runs queues like any
-follow-up — a v1 limitation: it's then sent to the backend as literal text, not
-run; codex instead dispatches queued shell commands locally) and **before** the
-normal submit:
+In `on_key_conversation`'s Enter arm, in shell mode:
 
-- idle + `shell_query` is `Some(rest)`, `rest.trim()` non-empty →
-  `Action::RunShell(rest.trim())`, recording the full `!command` in
-  `input_history` (codex records the full text → ↑ recall / Ctrl+R find it).
-- idle + empty command (`!` or `! `) → `Action::Notice(SHELL_EMPTY_NOTICE)`.
+- empty/whitespace draft → `Action::Notice(SHELL_EMPTY_NOTICE)`, staying in the
+  mode (codex's empty-bang help).
+- mid-turn → the draft re-gains its `!` and **queues as literal text** (a v1
+  limitation: codex dispatches queued shell commands locally), exiting the mode.
+- idle → `Action::RunShell(draft.trim())`, recording the full `!command` in
+  `input_history` (codex records the whole text; recall re-absorbs the bang).
 
-### Running it — `App::begin_shell` + the boundary runner
+### Running it — the exec cell (`App::begin_shell` + the boundary runner)
 
-`begin_shell(command)` (pure) sets up the turn so the existing strip/interrupt
-paths just work, treating the command as the turn's single tool:
+The committed result is one codex-style **exec cell**:
 
-- `streaming = Some(String::new())` — an **empty** buffer (a shell turn has no
-  assistant text). This is what makes `is_streaming()` true, so the strip shows
-  and a second mid-run Enter queues, exactly like an AI turn; `finish_stream`
-  returns `None` for the empty buffer so no phantom message commits.
-- `status = Some(TurnStatus { verb: "Running", done_verb: "Ran", … })` — the
-  live status reads `Running…`, the summary `Ran for Ns`.
-- `start_tool(command, "")` — the command shows as the running (blue) tool in
-  the preview immediately, with **no args** (`tool_header` omits the `()` when
-  args are empty), so it renders `● {command}`.
+```
+! pwd                          ← Role::Shell header: dark user-style line
+  ⎿ /home/user/inline-tui      ← the tool's peek lines, flush below (no blank)
+```
 
-`main.rs::run_shell` (the I/O boundary, like `start_turn`): echo
-`❯ !command` to scrollback and history (`record_user_message`), `begin_shell`,
-then spawn `spawn_shell_command` on a background thread that — reusing the
-`StreamEvent` channel and `CancelToken` like `DummyAi` — runs
-`sh -c {command}` with piped stdout/stderr drained on reader threads (no
-pipe-buffer deadlock), and sends `ToolEnd { output, ok }` then `StreamDone`.
-The existing `on_stream_event` arms commit the collapsed tool cell and the
-`Ran for Ns` summary; **Esc** routes to the existing `Action::Interrupt`
-(cancel kills the child, `interrupt_turn` resolves the tool as failed). Output
-is stdout then stderr concatenated; a non-zero exit appends `[exit status: N]`
-and resolves the cell red.
+`begin_shell(command)` (pure) sets up the turn so the existing paths produce
+exactly that:
+
+- records the **`Role::Shell` header message** up front (so a mid-run resize
+  repaints it) — `message_lines` renders it like a user message (dark
+  full-width block) with the red `! ` bullet;
+- `streaming = Some(String::new())` — an **empty** buffer: `is_streaming()` is
+  true (the strip shows, a mid-run Enter queues) but `finish_stream` records no
+  phantom message;
+- a `shell`-flagged `TurnStatus` (`SHELL_VERB` → the live `Running…` status;
+  the flag makes `end_turn` skip the `Ran for Ns` summary — **the cell is its
+  own record**);
+- the command as the running **shell-flagged tool**: `tool_lines` renders it
+  **headerless** (no `● name(args)` — the Shell message above is the header),
+  so while it runs the strip's preview row is just `  ⎿ Running…`, sitting
+  flush under the committed header; on `ToolEnd` the committed `⎿` lines (first
+  line + `+N lines (ctrl+o to expand)`) replace it. `conversation_lines` skips
+  the blank spacer after a Shell message so the repaint keeps the cell flush.
+
+`main.rs::run_shell` (the I/O boundary, like `start_turn`): `begin_shell`,
+commit the header lines **without** a trailing blank, then spawn
+`spawn_shell_command` on a background thread that — reusing the `StreamEvent`
+channel and `CancelToken` like `DummyAi` — runs `sh -c {command}` with piped
+stdout/stderr drained on reader threads (no pipe-buffer deadlock), and sends
+`ToolEnd { output, ok }` then `StreamDone`. **Esc** routes to the existing
+`Action::Interrupt`: the cancel kills the child (the runner returns at once
+*without* joining its reader threads — a reparented grandchild like `sleep`
+can hold the pipe open long after `sh` dies), and `interrupt_turn` resolves
+the cell as `⎿ Interrupted by user`. Output is stdout then stderr
+concatenated; a non-zero exit appends `[exit status: N]` and resolves the
+cell red.
 
 ### Footer — the `Shell mode` line (`ui.rs`)
 
 Like the Ctrl+R search line, the shell-mode hint takes the **footer slot**:
-`footer_rows` returns 1 whenever `shell_query(input)` is `Some` (even with no
-session info), and `render_live` paints `  Shell mode` (red `SHELL_MODE_COLOR`,
+`footer_rows` returns 1 whenever `app.shell_mode` is on (even with no session
+info), and `render_live` paints `  Shell mode` (red `SHELL_MODE_COLOR`,
 `FOOTER_INDENT`) there instead of the `{model} · {cwd}` line. The cursor stays
 in the input box (unlike search, which owns the footer cursor). A band can't be
-open in shell mode (the palette needs `/`, the shortcuts band an empty
-composer), so the slot is always free.
+open in shell mode (the palette is suppressed, the shortcuts band needs a
+non-shell empty composer), so the slot is always free.
 
 The `?` shortcuts band gains a `! for shell command` entry.
 
 ## Testing
 
-- `app`: `shell_query` strips a leading `!` (returning the rest incl. spaces),
-  `None` otherwise, `Some("")` for a lone `!`; idle Enter on `!cmd` →
-  `RunShell("cmd")` recording `!cmd` in history; `!` / `! ` → `Notice`;
-  `!cmd` mid-turn queues as literal text (no `RunShell`); `begin_shell` makes
-  `turn_active()` and `is_streaming()` true, sets the running tool with empty
-  args and the `Running`/`Ran` verbs; a `!cmd` is recalled by ↑ and found by
-  Ctrl+R; interrupting a shell turn resolves the tool failed.
-- `ui`: `tool_header` omits `()` for an empty-args tool (`● cmd`), keeps it
-  otherwise; `footer_rows` is 1 in shell mode without session info; the footer
-  slot shows `Shell mode` (red) in shell mode, displacing `{model} · {cwd}`;
-  the shortcuts band lists `!`.
-- `main.rs` (smoke, Phase 19): `!ls` shows the `Shell mode` footer; `!echo
-  hello` runs and the cell shows `● echo hello` + `hello` + a `Ran for` summary;
-  a failing command resolves red; `!sleep 5` then Esc commits the interrupt
-  notice without hanging.
+- `app`: typing `!` first absorbs into the mode (mid-text it's a character; an
+  edit creating a leading `!` absorbs too); Backspace/Esc on the empty shell
+  composer exit the mode (Esc never quits from it); the palette and `?` band
+  are suppressed in the mode; Ctrl+C records the re-prefixed draft; idle Enter
+  → `RunShell(trimmed)` recording `!cmd` (recall re-enters the mode; a plain
+  recall clears it; a Ctrl+R search suspends and restores it, and accepting a
+  `!entry` re-enters it); an empty bang → the help `Notice`, staying in the
+  mode; mid-turn Enter queues the re-prefixed literal text; `begin_shell`
+  records the `Role::Shell` header, flags the status + tool, and `end_turn`
+  then returns no summary; interrupting resolves the command failed.
+- `ui`: `message_lines(Role::Shell…)` is the dark user-style line with the red
+  `! ` bullet, width-padded; a shell tool renders headerless (`⎿` lines only;
+  `⎿ Running…` while running; the `+N lines` hint kept); `conversation_lines`
+  keeps the cell flush (no spacer after the Shell header); shell mode swaps the
+  composer prompt to a red `! `; `footer_rows` is 1 in the mode without session
+  info; the footer slot shows the red `Shell mode`, displacing
+  `{model} · {cwd}`; the cursor stays in the box; the shortcuts band lists `!`;
+  `tool_header` still omits `()` for an empty-args backend tool.
+- `main.rs` (smoke, Phase 19): typing `!echo …` shows the `! echo …` prompt and
+  the `Shell mode` footer (never `❯ !echo`); the run commits the exec cell
+  (`! echo …` header + `⎿` output, no `●` header, no `Ran for` summary); a
+  failing command reports `[exit status: N]`; `!sleep 9` then Esc commits the
+  interrupt notice promptly.
 
 ## Known limitations (v1)
 

@@ -699,25 +699,27 @@ echo "==== captured visible screen (Esc — search cancelled, app still alive) =
 printf '%s\n' "$search_cancel"
 tmux kill-session -t "$S15" 2>/dev/null
 
-# --- Phase 19: `!` shell commands (docs/shell-command.md). Typing `!cmd` flips
-# the footer to "Shell mode"; Enter from an idle composer runs the command
-# locally and renders it as a tool cell (`● cmd` + output + a "Ran for" summary);
-# a long command is interruptible with Esc. ---
+# --- Phase 19: `!` shell commands (docs/shell-command.md). Typing `!cmd` enters
+# shell mode: the bang is absorbed into the prompt (the composer reads `! cmd`,
+# not `❯ !cmd`) and the footer flips to "Shell mode". Enter from an idle
+# composer runs the command locally as a codex-style exec cell — the `! cmd`
+# header on the dark user-style line with its `⎿` output flush below (and
+# `⎿ Running…` while it runs); a long command is interruptible with Esc. ---
 S16="${S}_shell"
 tmux new-session -d -s "$S16" -x 80 -y 24 "$BIN"
 sleep 0.4
-# Shell mode: the footer hint shows while a !command is in the composer.
+# Shell mode: the bang becomes the prompt and the footer hint shows.
 tmux send-keys -t "$S16" -l "!echo smoke_shell_ok"
 sleep 0.3
 shell_mode="$(tmux capture-pane -t "$S16" -p)"
 echo "==== captured visible screen (typing !echo … — Shell mode hint) ===="
 printf '%s\n' "$shell_mode"
-# Run it: Enter dispatches the command; poll for the committed "Ran for" summary.
+# Run it: Enter dispatches the command; poll for the cell's ⎿ output line.
 tmux send-keys -t "$S16" Enter
 shell_ran=""
 for _ in $(seq 1 60); do # up to ~6s
 	shell_ran="$(tmux capture-pane -t "$S16" -p -S -40)"
-	if printf '%s' "$shell_ran" | grep -qE "^Ran for [0-9]+s"; then
+	if printf '%s' "$shell_ran" | grep -qF "⎿ smoke_shell_ok"; then
 		break
 	fi
 	sleep 0.1
@@ -1221,16 +1223,24 @@ if ! printf '%s' "$shell_mode" | grep -qF "Shell mode"; then
 	echo "FAIL: typing a !command did not show the 'Shell mode' footer hint" >&2
 	status=1
 fi
-if ! printf '%s' "$shell_ran" | grep -qF "● echo smoke_shell_ok"; then
-	echo "FAIL: the shell command did not render as a '● echo …' tool cell" >&2
+if ! printf '%s' "$shell_mode" | grep -qE "^! echo smoke_shell_ok"; then
+	echo "FAIL: the composer does not absorb the bang into a '! cmd' prompt" >&2
 	status=1
 fi
-if ! printf '%s' "$shell_ran" | grep -qF "smoke_shell_ok"; then
-	echo "FAIL: the shell command's output (smoke_shell_ok) is not in view" >&2
+if printf '%s' "$shell_mode" | grep -qF "❯ !echo"; then
+	echo "FAIL: the composer still shows the bang as text ('❯ !echo …')" >&2
 	status=1
 fi
-if ! printf '%s' "$shell_ran" | grep -qE "^Ran for [0-9]+s"; then
-	echo "FAIL: the shell turn did not commit a 'Ran for Ns' summary" >&2
+if ! printf '%s' "$shell_ran" | grep -qE "^! echo smoke_shell_ok"; then
+	echo "FAIL: the committed cell is missing its '! echo …' header line" >&2
+	status=1
+fi
+if ! printf '%s' "$shell_ran" | grep -qF "⎿ smoke_shell_ok"; then
+	echo "FAIL: the shell command's ⎿ output line is not in view" >&2
+	status=1
+fi
+if printf '%s' "$shell_ran" | grep -qE "● echo|^Ran for"; then
+	echo "FAIL: the old '● cmd' tool header / 'Ran for' summary resurfaced" >&2
 	status=1
 fi
 if ! printf '%s' "$shell_fail" | grep -qF "exit status: 3"; then
@@ -1243,6 +1253,6 @@ if ! printf '%s' "$shell_interrupt" | grep -qF "Conversation interrupted"; then
 fi
 
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (Shell mode hint while typing, the command + output render as a tool cell with a Ran summary, a non-zero exit shows red, and Esc interrupts a long one)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, and Esc interrupts a long one)"
 fi
 exit "$status"
