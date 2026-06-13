@@ -130,17 +130,28 @@ transcript (stamp-free there — only user messages display a timestamp):
 
 ## Strip geometry
 
-The strip above the box already shows the streaming/tool **preview + gap**; the
-status line is a third strip row, followed by a blank gap so it never butts up
-against the box's top rule (mirroring the gap under the preview):
+The strip above the box has two parts. The **status line + its gap** are always
+present while a turn runs. The **preview line + its gap are only reserved when
+there is something to preview** — a running tool, or a reply whose buffer is
+non-empty (`ui::strip_has_preview`). During the pre-stream pause (and any moment
+before the first chunk) there is no preview, so the strip is just status + gap
+and **no empty preview line is reserved** — codex does the same (its bottom-pane
+only reserves a blank *separator* when the status is visible, never an empty
+content/preview row; `bottom_pane/mod.rs`):
 
 ```
-strip = preview (1) + gap (1) + status (1) + gap (1) = 4 rows while a turn streams, else 0
+strip = (has_preview ? preview (1) + gap (1) : 0) + status (1) + gap (1)
+      = 4 rows streaming a reply / running a tool
+      = 2 rows during the pre-stream pause (status + gap only)
+      = 0 idle
 ```
 
-`render_live` draws `status_line` at `PREVIEW_ROWS + GAP_ROWS`; the
-`STATUS_GAP_ROWS` row below it stays blank. No `live_height`/`live_layout`
-signature changes — the existing `streaming` flag still drives the whole strip.
+`render_live` draws `status_line` at `preview_rows` into the strip (0 when there
+is no preview, so the status is the strip's top row); the `STATUS_GAP_ROWS` row
+below it stays blank. `live_height`/`live_layout`/`input_box` take a
+`has_preview: bool` alongside the `streaming` (turn-active) flag, fed by
+`strip_has_preview` from the `App`-having callers (`render_live`,
+`cursor_position`, `main.rs`).
 
 ## The shimmer wave (ported from openai/codex)
 
@@ -183,9 +194,11 @@ reaps the thread at once and streams nothing). The delay is configurable
 (`DummyAi::with_startup_delay`); `main.rs` reads `INLINE_TUI_STARTUP_DELAY_MS`
 (so the smoke test runs short and one phase long), defaulting to `STARTUP_DELAY`.
 A real backend's own first-token latency plays the same role. During the pause
-the strip shows just the status line — the empty reply buffer renders **no**
-preview bullet (`render_live` skips the preview while `streaming_text()` is
-empty).
+the strip is **status + gap only** — no preview row is reserved (`strip_has_preview`
+is false while the reply buffer is empty and no tool runs), so the status sits
+one blank below the committed user message, with no stray empty line above it
+(the "don't preserve a line" fix; codex reserves no empty preview row either —
+see *Strip geometry*).
 
 ## Thinking in the dummy backend
 
@@ -207,8 +220,10 @@ The loop maps the pair to `thinking_start = Some(now)` / `None`; the thinking
   and clears status; `fail_stream` clears status; `set_status_times` writes the
   boundary durations.
 - `ui`: `status_line` for each phase (no tokens at 0; `↓`/`↑`; `Thinking for`);
-  the pre-stream pause renders the status with `↑` tokens and **no** preview
-  bullet (the empty reply buffer);
+  `strip_has_preview` is false on the pre-stream pause, so `live_height` reserves
+  no preview row and `render_live` draws the status as the strip's top row (with
+  `↑` tokens, no reserved blank above it); `live_layout` tiles the four areas for
+  every `(streaming, has_preview)` combination;
   the spinner's ball is white bold between dim walls, steps a frame per
   interval, reverses at the right wall, and loops after a full cycle; the verb
   per-char greyscale-white bold spans, the metrics

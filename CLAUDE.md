@@ -240,8 +240,9 @@ running (blue) then commits it collapsed (green/red), and flips its `thinking_st
 `begin_stream`, arrow `↑` — uploaded input), so the status shows `↑ N tokens`
 through the backend's **pre-stream pause** (`DummyAi` waits `STARTUP_DELAY`/3s
 before its first chunk so the indicator is visibly working first — overridable
-via `INLINE_TUI_STARTUP_DELAY_MS`; the empty reply buffer shows no preview
-bullet during it). Then `Chunk`s,
+via `INLINE_TUI_STARTUP_DELAY_MS`; the strip reserves **no preview row** while
+there's nothing to preview — `ui::strip_has_preview` — so the pause is status +
+gap only, no stray empty line, like codex). Then `Chunk`s,
 `ThinkingChunk`s (counted via `App::push_thinking` — never rendered), and a tool's
 output grow the cumulative token tally on `App::status` (`↓` while replying or
 thinking, `↑` for the input and right after a tool — never reset); on `StreamDone` `App::end_turn`
@@ -357,8 +358,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   header bullet in `message_lines`; shell `tool_lines` are headerless `⎿`
   rows — `⎿ Running…` live — kept flush by `conversation_lines`), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
-  the preview + gap + status + gap strip shows *only while a turn streams* — `strip_rows`
-  (`render_live` draws the status line under the preview's gap) — with the
+  the status + gap strip shows *while a turn is active*, and the preview + gap
+  is added *only when there's content to preview* (`strip_rows(streaming,
+  has_preview)`/`strip_has_preview` — a running tool or a non-empty reply; the
+  pre-stream pause reserves **no** empty preview row, like codex) —
+  (`render_live` draws the status line under the preview's gap, or at the strip
+  top during the pause) — with the
   **queued messages stacked below the status, *above* the box** (`queued_rows`,
   user-message style), the
   command palette *or* the shortcuts band forms the band *below* the box —

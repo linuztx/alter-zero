@@ -53,8 +53,11 @@ unit-tested must be unit-tested.
   chunk — `DummyAi`'s `STARTUP_DELAY`, 3s, overridable via
   `INLINE_TUI_STARTUP_DELAY_MS`) so the indicator is visibly working first: the
   just-sent user message is counted up front (`App::count_user_input`, `↑`), so
-  the pause shows `↑ N tokens` and the timer ticks, with no preview bullet until
-  the first chunk flips the arrow `↓`. While a
+  the pause shows `↑ N tokens` and the timer ticks. The strip reserves **no
+  preview row** while there is nothing to preview (`strip_has_preview` false —
+  the status sits one blank below the user message, no stray empty line, like
+  codex); the preview row appears only once the reply streams (or a tool runs),
+  and the first chunk flips the arrow `↓`. While a
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
   cadence), so the ball bounces, the shimmer sweeps, and the timer moves even
   with no events. On

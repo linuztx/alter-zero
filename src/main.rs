@@ -730,6 +730,7 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
         screen.width,
         screen.height,
         app.is_streaming(),
+        ui::strip_has_preview(app),
         ui::queued_rows(app, screen.width),
         band,
         ui::footer_rows(app, band),
