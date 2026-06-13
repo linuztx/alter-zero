@@ -237,6 +237,16 @@ unit-tested must be unit-tested.
   cancel**, restoring the pre-search draft *and cursor* (Esc never reaches
   interrupt/quit — the palette-dismiss precedent; Ctrl+C neither clears nor
   quits); Ctrl+O cancels first, then opens the overlay.
+- **`!` runs a local shell command** (codex's `!` shell mode — see
+  `docs/shell-command.md`): a `!`-prefixed composer flips the footer to a red
+  `Shell mode` hint, and Enter from an **idle** composer runs the rest under
+  `sh -c` on a background thread. It reuses the turn machinery
+  (`App::begin_shell`): the command shows as a running (blue) tool `● {command}`
+  in the strip, with the spinner/elapsed/`esc to interrupt` status, then commits
+  as a green/red tool cell (output expandable in the Ctrl+O view) with a
+  `Ran for Ns` summary — Esc interrupts a long one (kills the child). The full
+  `!command` is recorded for ↑ recall / Ctrl+R. A bare `!` posts a help notice;
+  mid-turn a `!command` queues as literal text (a v1 limitation, see below).
 - **Quit:** Esc (in the conversation, while **idle** — mid-turn it interrupts
   instead), Ctrl+C, or the `/quit` command. **Ctrl+C first clears a non-empty
   input** (codex's composer-clear step: a first press with a typed draft only
@@ -255,13 +265,13 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer) + built-in `DummyAi` impl, a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`drain_queued`, Enter-queues + Alt+Up edit, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory`/`SessionInfo` types. | Yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command dispatch** (`shell_query`, `Action::RunShell`, `begin_shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`drain_queued`, Enter-queues + Alt+Up edit, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory`/`SessionInfo` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), `render_live`, and `render_tool_view`. | Yes |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`, `tool_header` rendering `● {command}` for an argless tool), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
 | `paste.rs`  | Paste-burst detection: `PasteBurst`, a pure state machine — a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop coalesces the run's redraw. | Yes |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (queues scrollback lines for the next frame — `docs/flicker.md`), `draw` (pending-flush + re-pin + diff + cursor, one synchronized update), `reflow` (tail rebuild + live-region paint, one frame), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore (restore flushes leftovers). | No (I/O boundary) |
-| `main.rs`   | Thin glue: single-threaded **async (tokio) `select!`** loop over input (`EventStream`), reply events (tokio channel), and draw ticks; drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit. | No (tiny I/O boundary) |
+| `main.rs`   | Thin glue: single-threaded **async (tokio) `select!`** loop over input (`EventStream`), reply events (tokio channel), and draw ticks; drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit; runs a `!command` locally (`run_shell`/`spawn_shell_command` — `sh -c` on a thread, output back over the reply channel as a tool, `docs/shell-command.md`). | No (tiny I/O boundary) |
 
 ### Data flow
 
@@ -472,6 +482,17 @@ frame scheduler ─► draw-tick ─────┘                             
   `cursor_position` tracks the end of the query in the footer row (clamped at
   narrow widths); the previewed match renders the query occurrences reversed
   in the input box; the shortcuts band lists `ctrl+r`.
+- `app` (`!` shell): `shell_query` strips a leading `!` (rest kept verbatim,
+  spaces and all), `None` otherwise; idle Enter on `!cmd` → `RunShell` (trimmed)
+  recording the full `!cmd`; `!`/`! ` → the help `Notice`; mid-turn it queues as
+  literal text; `begin_shell` makes `turn_active` + `is_streaming` true with the
+  command as the running argless tool and the `Running`/`Ran` verbs; a finished
+  shell turn records `[Tool, Summary]` (no phantom assistant message); an
+  interrupt resolves the command failed.
+- `ui` (`!` shell): `tool_header` drops the `()` for an argless tool (`● cmd`);
+  `footer_rows` reserves the slot in shell mode without session info; the footer
+  shows a red `Shell mode` displacing `{model} · {cwd}`; the cursor stays in the
+  box (not the footer); the shortcuts band lists `!`.
 - `app` (shortcuts band): `?` toggles it from an empty composer (shift-modified
   too) and types into a non-empty draft; any other key closes it but still
   acts (typing, ↑ recall, `/` palette); Esc only dismisses — no quit idle, no
@@ -657,5 +678,11 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   real model usage — the dummy has no tokenizer; a real `ReplySource` could report
   exact counts later. The working/done verbs cycle deterministically (a turn
   counter), not at random. See `docs/status-indicator.md`.
+- `!` shell commands run only from an **idle** composer (`docs/shell-command.md`);
+  mid-turn a `!command` queues as a normal follow-up and is sent to the backend as
+  literal text (codex dispatches queued shell commands locally). They run under
+  `sh -c` with **no sandbox** and no timeout (codex caps at 1 hour); stdout and
+  stderr are concatenated, not interleaved; the interrupt notice is the shared
+  `Conversation interrupted…` text.
 - No markdown rendering or scrollback nav keys (YAGNI).
 ```

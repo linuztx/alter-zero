@@ -167,6 +167,17 @@ pub const WORKING_VERBS: &[&str] = &[
 /// The done verbs, one chosen per turn for the committed `"{verb} for Ns"` summary.
 pub const DONE_VERBS: &[&str] = &["Done", "Finished", "Completed", "Wrapped up", "Ready"];
 
+/// The live-status verb for a `!` shell command (fixed, not cycled like the AI
+/// [`WORKING_VERBS`]): the status line reads `Running…`. See
+/// `docs/shell-command.md`.
+pub const SHELL_VERB: &str = "Running";
+/// The done verb for a finished shell command's summary: `Ran for Ns`.
+pub const SHELL_DONE_VERB: &str = "Ran";
+
+/// The notice shown when Enter is pressed on a bare `!` (no command) — codex's
+/// `Prefix a command with ! to run it locally`.
+pub const SHELL_EMPTY_NOTICE: &str = "Type a command after ! to run it locally (e.g. !ls)";
+
 /// A rough token estimate for `text` (≈ 4 characters per token, the usual
 /// heuristic). The dummy has no real tokenizer, so the status line's counts are
 /// approximate — but accumulate faithfully as text and tool output arrive.
@@ -229,6 +240,11 @@ pub enum Action {
     /// A slash command cleared the conversation (`/clear`). [`App::history`] is
     /// already empty; the loop repaints the now-blank inline view.
     Clear,
+    /// The user pressed Enter on a `!`-prefixed line from an idle composer: run
+    /// the carried command (the text after the `!`, trimmed) locally. The loop
+    /// echoes `❯ !command`, calls [`App::begin_shell`], and spawns it. See
+    /// `docs/shell-command.md`.
+    RunShell(String),
     /// The user pressed Esc while a turn was in flight: stop the generation
     /// (cancel + reap the backend, then [`App::interrupt_turn`]) — codex-style.
     Interrupt,
@@ -328,6 +344,17 @@ pub fn command_query(input: &str) -> Option<&str> {
 pub fn matching_commands(query: &str) -> Vec<&'static SlashCommand> {
     let q = query.to_lowercase();
     COMMANDS.iter().filter(|c| c.name.starts_with(&q)).collect()
+}
+
+/// The shell command in `input`, if it is a **`!`-prefixed** line: a leading
+/// `!` followed by the rest of the line (spaces and all — unlike
+/// [`command_query`], a shell command obviously contains whitespace). `Some("")`
+/// for a lone `!`. This is what flips the composer into "shell mode" (the red
+/// footer hint) and, on Enter from an idle composer, runs the rest locally. A
+/// port of codex's `is_bash_shell_command`; see `docs/shell-command.md`.
+#[must_use]
+pub fn shell_query(input: &str) -> Option<&str> {
+    input.strip_prefix('!')
 }
 
 /// The `/help` notice: a header followed by every command's `/name — description`.
@@ -781,16 +808,32 @@ impl App {
                 Action::None
             }
             KeyCode::Enter => {
-                if self.input.text().trim().is_empty() {
+                let text = self.input.text().to_string();
+                if text.trim().is_empty() {
                     Action::None
                 } else if self.is_streaming() {
                     // A turn is in flight — queue the message instead of dropping
                     // it (codex's queued_user_messages); the loop sends it when the
-                    // turn ends. Record it for ↑ recall, like a normal submit.
+                    // turn ends. Record it for ↑ recall, like a normal submit. A
+                    // `!command` queued here is sent as literal text (a v1
+                    // limitation; see docs/shell-command.md).
                     let text = self.input.take();
                     self.input_history.record(&text);
                     self.queued.push_back(text);
                     Action::None
+                } else if let Some(rest) = shell_query(&text) {
+                    // `!command` from an idle composer runs locally
+                    // (docs/shell-command.md). Record the full `!command` for ↑
+                    // recall (codex records the whole text); a bare `!` posts a
+                    // help notice instead of running nothing.
+                    let recorded = self.input.take();
+                    self.input_history.record(&recorded);
+                    let command = rest.trim();
+                    if command.is_empty() {
+                        Action::Notice(SHELL_EMPTY_NOTICE.to_string())
+                    } else {
+                        Action::RunShell(command.to_string())
+                    }
                 } else {
                     let text = self.input.take();
                     self.input_history.record(&text);
@@ -1345,6 +1388,37 @@ impl App {
             elapsed: Duration::ZERO,
             thinking: None,
         });
+    }
+
+    /// Begin a `!` shell command as a turn, reusing the AI turn machinery so the
+    /// command gets the live status strip, the spinner/timer, `esc to
+    /// interrupt`, and the resize repaint for free (see `docs/shell-command.md`):
+    ///
+    /// - an **empty** streaming buffer (a shell turn has no assistant text) — so
+    ///   [`is_streaming`] is true (the strip shows, a mid-run Enter queues) but
+    ///   [`finish_stream`] records no phantom message;
+    /// - a fixed-verb status ([`SHELL_VERB`]/[`SHELL_DONE_VERB`] → `Running…`,
+    ///   `Ran for Ns`), not the cycled AI verbs;
+    /// - the command itself as the running tool (no args, so [`ui::tool_header`]
+    ///   renders `● {command}`), shown blue in the preview immediately.
+    ///
+    /// The boundary's runner then streams a `ToolEnd`/`StreamDone` pair back,
+    /// committing the cell and the summary through the existing paths.
+    ///
+    /// [`is_streaming`]: App::is_streaming
+    /// [`finish_stream`]: App::finish_stream
+    /// [`ui::tool_header`]: crate::ui
+    pub fn begin_shell(&mut self, command: &str) {
+        self.streaming = Some(String::new());
+        self.status = Some(TurnStatus {
+            verb: SHELL_VERB,
+            done_verb: SHELL_DONE_VERB,
+            tokens: 0,
+            arrow: TokenArrow::Down,
+            elapsed: Duration::ZERO,
+            thinking: None,
+        });
+        self.start_tool(command, "");
     }
 
     /// Append a streamed chunk to the in-progress reply (and grow the live token
@@ -3564,5 +3638,129 @@ mod tests {
             app.search_highlight_ranges().is_empty(),
             "accepted = plain draft"
         );
+    }
+
+    // --- `!` shell commands (docs/shell-command.md — codex's bang shell mode) ---
+
+    #[test]
+    fn shell_query_strips_a_leading_bang_keeping_the_rest_verbatim() {
+        assert_eq!(shell_query("!ls -la"), Some("ls -la"));
+        assert_eq!(shell_query("!"), Some(""), "a lone ! is empty shell mode");
+        assert_eq!(shell_query("! echo hi"), Some(" echo hi"), "spaces kept");
+        assert_eq!(shell_query("!/usr/bin/env"), Some("/usr/bin/env"));
+    }
+
+    #[test]
+    fn shell_query_is_none_without_a_leading_bang() {
+        assert_eq!(shell_query(""), None);
+        assert_eq!(shell_query("ls"), None);
+        assert_eq!(shell_query("ask !ls"), None, "the ! must lead");
+        assert_eq!(shell_query("/help"), None);
+    }
+
+    #[test]
+    fn idle_enter_on_a_bang_command_runs_it_as_a_shell_command() {
+        let mut app = App::new();
+        app.input = TextArea::from_text("!echo hello");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::RunShell("echo hello".to_string())
+        );
+        assert_eq!(app.input.text(), "", "the composer is consumed");
+    }
+
+    #[test]
+    fn the_bang_command_is_recorded_in_history_with_its_bang() {
+        let mut app = App::new();
+        app.input = TextArea::from_text("!echo hello");
+        app.on_key(key(KeyCode::Enter));
+        // ↑ recalls the full "!echo hello" (codex records the whole text), so
+        // re-Enter re-runs it.
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.input.text(), "!echo hello");
+    }
+
+    #[test]
+    fn the_shell_command_is_trimmed_before_running() {
+        let mut app = App::new();
+        app.input = TextArea::from_text("!  ls -la  ");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::RunShell("ls -la".to_string())
+        );
+    }
+
+    #[test]
+    fn an_empty_bang_posts_the_help_notice_instead_of_running() {
+        let mut app = App::new();
+        app.input = TextArea::from_text("!");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Notice(SHELL_EMPTY_NOTICE.to_string())
+        );
+        app.input = TextArea::from_text("!   ");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Notice(SHELL_EMPTY_NOTICE.to_string())
+        );
+    }
+
+    #[test]
+    fn a_bang_command_mid_turn_queues_as_text_rather_than_running() {
+        // v1 limitation: a !command typed while a turn streams queues like any
+        // follow-up (sent to the backend as literal text on drain), not run.
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("!echo hi");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert_eq!(app.drain_queued(), vec!["!echo hi".to_string()]);
+    }
+
+    #[test]
+    fn begin_shell_sets_up_a_turn_with_the_command_as_its_running_tool() {
+        let mut app = App::new();
+        app.begin_shell("ls -la");
+        assert!(app.turn_active(), "the status strip shows");
+        assert!(
+            app.is_streaming(),
+            "an empty stream buffer so the strip shows and mid-run Enter queues"
+        );
+        let tool = app.current_tool().expect("the command runs as a tool");
+        assert_eq!(tool.name, "ls -la");
+        assert_eq!(tool.args, "", "no args — tool_header renders `● ls -la`");
+        assert_eq!(tool.status, ToolStatus::Running);
+        let status = app.status().expect("a live status");
+        assert_eq!(status.verb, SHELL_VERB);
+        assert_eq!(status.done_verb, SHELL_DONE_VERB);
+    }
+
+    #[test]
+    fn a_shell_turn_finishes_with_a_ran_summary_and_no_phantom_message() {
+        let mut app = App::new();
+        app.begin_shell("echo hi");
+        app.end_tool("hi", true);
+        assert!(app.finish_stream().is_none(), "no assistant text to record");
+        let summary = app.end_turn(2).expect("a summary");
+        assert_eq!(summary.verb, SHELL_DONE_VERB);
+        // history = [Tool, Summary] — no empty assistant Message.
+        match app.history.as_slice() {
+            [HistoryItem::Tool(t), HistoryItem::Summary(s)] => {
+                assert_eq!(t.name, "echo hi");
+                assert_eq!(s.verb, SHELL_DONE_VERB);
+            }
+            other => panic!("unexpected history: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interrupting_a_shell_turn_resolves_the_command_as_failed() {
+        let mut app = App::new();
+        app.begin_shell("sleep 5");
+        let interrupted = app.interrupt_turn().expect("a turn was in flight");
+        let tool = interrupted.tool.expect("the running command is resolved");
+        assert_eq!(tool.name, "sleep 5");
+        assert_eq!(tool.status, ToolStatus::Failed);
+        assert!(app.current_tool().is_none());
+        assert!(!app.turn_active());
     }
 }

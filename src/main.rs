@@ -141,6 +141,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     &mut committed, &mut clocks,
                                 )?);
                             }
+                            Action::RunShell(command) => {
+                                // `!command` from an idle composer: echo it, then
+                                // run it locally as a turn (docs/shell-command.md).
+                                // Reuses the streamed-reply channel + inflight
+                                // handle, so the status strip, Esc-interrupt, and
+                                // resize repaint all work exactly like an AI turn.
+                                inflight = Some(run_shell(
+                                    term, &mut app, &tx, command,
+                                    &mut committed, &mut clocks,
+                                )?);
+                            }
                             Action::ToggleToolView => {
                                 // on_key already flipped app.view; sync the overlay.
                                 if app.view == View::ToolOutput {
@@ -379,6 +390,152 @@ fn start_turn(
     let handle = backend.spawn(texts.join("\n"), tx.clone(), cancel.clone());
     Ok((cancel, handle))
 }
+
+/// Run a `!command` locally as a turn (the [`Action::RunShell`] arm; see
+/// `docs/shell-command.md`). Echoes `❯ !command` to scrollback + history,
+/// calls [`App::begin_shell`] (which sets up the status strip with the command
+/// as its running tool), then spawns [`spawn_shell_command`] on the same
+/// streamed-reply channel — so the existing `ToolEnd`/`StreamDone` arms commit
+/// the cell + the `Ran for Ns` summary, and Esc routes through the normal
+/// interrupt path. Returns the in-flight cancel token + thread handle, like
+/// [`start_turn`].
+fn run_shell(
+    term: &mut InlineViewport,
+    app: &mut App,
+    tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    command: String,
+    committed: &mut usize,
+    clocks: &mut StatusClocks,
+) -> io::Result<(CancelToken, JoinHandle<()>)> {
+    let width = term.screen().width;
+    let echo = format!("!{command}");
+    app.record_user_message(&echo);
+    term.insert_before(ui::message_lines(Role::User, &echo, width));
+    term.insert_before(vec![Line::default()]);
+    app.begin_shell(&command);
+    *committed = 0;
+    clocks.turn_start = Some(Instant::now());
+    clocks.thinking_start = None;
+    let cancel = CancelToken::new();
+    let handle = spawn_shell_command(command, tx.clone(), cancel.clone());
+    Ok((cancel, handle))
+}
+
+/// Run `command` under `sh -c` on a background thread, streaming the result back
+/// on the reply channel as a `ToolEnd`/`StreamDone` pair (the command was
+/// already shown as the running tool by [`App::begin_shell`]). Reader threads
+/// drain stdout/stderr so a chatty command can't deadlock on a full pipe; the
+/// loop polls `cancel` so an Esc interrupt kills the child and reaps it. Output
+/// is stdout then stderr; a non-zero exit appends `[exit status: N]` and
+/// resolves the cell red. The I/O boundary — verified by `scripts/smoke.sh`
+/// (Phase 19), not unit tests. See `docs/shell-command.md`.
+fn spawn_shell_command(
+    command: String,
+    tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    cancel: CancelToken,
+) -> JoinHandle<()> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    std::thread::spawn(move || {
+        let mut child = match Command::new("sh")
+            .arg("-c")
+            .arg(&command)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(err) => {
+                let _ = tx.send(StreamEvent::ToolEnd {
+                    output: format!("failed to run command: {err}"),
+                    ok: false,
+                });
+                let _ = tx.send(StreamEvent::StreamDone);
+                return;
+            }
+        };
+
+        // Drain both pipes on their own threads so a command that writes more
+        // than the pipe buffer can't block (and thus never exit) while we wait.
+        let read_pipe = |pipe: Option<std::process::ChildStdout>| {
+            std::thread::spawn(move || {
+                let mut buf = String::new();
+                if let Some(mut pipe) = pipe {
+                    let _ = pipe.read_to_string(&mut buf);
+                }
+                buf
+            })
+        };
+        let out_reader = read_pipe(child.stdout.take());
+        // ChildStderr → ChildStdout type mismatch, so read stderr inline-typed.
+        let mut err_pipe = child.stderr.take();
+        let err_reader = std::thread::spawn(move || {
+            let mut buf = String::new();
+            if let Some(pipe) = err_pipe.as_mut() {
+                let _ = pipe.read_to_string(&mut buf);
+            }
+            buf
+        });
+
+        // Wait for the child, polling so an Esc interrupt (cancel) kills it.
+        let status = loop {
+            if cancel.is_cancelled() {
+                let _ = child.kill();
+                let _ = child.wait();
+                // The interrupt path (App::interrupt_turn) owns the UI from
+                // here — resolve the tool failed, commit the notice. Send
+                // nothing and return at once so the loop's `handle.join()`
+                // unblocks promptly. We deliberately do **not** join the reader
+                // threads: killing `sh` can leave a reparented grandchild (e.g.
+                // `sleep`) holding the pipe's write end, so `read_to_string`
+                // would block until *it* dies. Detached, the readers finish
+                // harmlessly when that happens (they only drop a buffer).
+                return;
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) => std::thread::sleep(SHELL_POLL_INTERVAL),
+                Err(err) => {
+                    let _ = out_reader.join();
+                    let _ = err_reader.join();
+                    let _ = tx.send(StreamEvent::ToolEnd {
+                        output: format!("error waiting on command: {err}"),
+                        ok: false,
+                    });
+                    let _ = tx.send(StreamEvent::StreamDone);
+                    return;
+                }
+            }
+        };
+
+        let mut output = out_reader.join().unwrap_or_default();
+        let stderr = err_reader.join().unwrap_or_default();
+        if !stderr.is_empty() {
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(&stderr);
+        }
+        let ok = status.success();
+        if !ok {
+            let code = status
+                .code()
+                .map_or_else(|| "signal".to_string(), |c| c.to_string());
+            if !output.is_empty() && !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(&format!("[exit status: {code}]"));
+        }
+        let _ = tx.send(StreamEvent::ToolEnd { output, ok });
+        let _ = tx.send(StreamEvent::StreamDone);
+    })
+}
+
+/// How often [`spawn_shell_command`] polls a running child for completion while
+/// watching for an interrupt — short enough that Esc kills it promptly.
+const SHELL_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// Apply one streamed reply event to `app`, committing finished lines to
 /// scrollback in the conversation view. Returns whether the stream just **ended**

@@ -31,6 +31,7 @@ cleanup() {
 	tmux kill-session -t "${S}_clearkill" 2>/dev/null
 	tmux kill-session -t "${S}_resize" 2>/dev/null
 	tmux kill-session -t "${S}_search" 2>/dev/null
+	tmux kill-session -t "${S}_shell" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -698,6 +699,63 @@ echo "==== captured visible screen (Esc — search cancelled, app still alive) =
 printf '%s\n' "$search_cancel"
 tmux kill-session -t "$S15" 2>/dev/null
 
+# --- Phase 19: `!` shell commands (docs/shell-command.md). Typing `!cmd` flips
+# the footer to "Shell mode"; Enter from an idle composer runs the command
+# locally and renders it as a tool cell (`● cmd` + output + a "Ran for" summary);
+# a long command is interruptible with Esc. ---
+S16="${S}_shell"
+tmux new-session -d -s "$S16" -x 80 -y 24 "$BIN"
+sleep 0.4
+# Shell mode: the footer hint shows while a !command is in the composer.
+tmux send-keys -t "$S16" -l "!echo smoke_shell_ok"
+sleep 0.3
+shell_mode="$(tmux capture-pane -t "$S16" -p)"
+echo "==== captured visible screen (typing !echo … — Shell mode hint) ===="
+printf '%s\n' "$shell_mode"
+# Run it: Enter dispatches the command; poll for the committed "Ran for" summary.
+tmux send-keys -t "$S16" Enter
+shell_ran=""
+for _ in $(seq 1 60); do # up to ~6s
+	shell_ran="$(tmux capture-pane -t "$S16" -p -S -40)"
+	if printf '%s' "$shell_ran" | grep -qE "^Ran for [0-9]+s"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (after !echo ran) ===="
+printf '%s\n' "$shell_ran"
+# A failing command resolves the cell red (non-zero exit) and keeps running.
+tmux send-keys -t "$S16" -l "!exit 3"
+sleep 0.2
+tmux send-keys -t "$S16" Enter
+shell_fail=""
+for _ in $(seq 1 60); do
+	shell_fail="$(tmux capture-pane -t "$S16" -p -S -40)"
+	if printf '%s' "$shell_fail" | grep -qF "exit status: 3"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (after !exit 3 — failure) ===="
+printf '%s\n' "$shell_fail"
+# A long command is interruptible: Esc commits the interrupt notice promptly.
+tmux send-keys -t "$S16" -l "!sleep 9"
+sleep 0.2
+tmux send-keys -t "$S16" Enter
+sleep 0.6 # let it start running
+tmux send-keys -t "$S16" Escape
+shell_interrupt=""
+for _ in $(seq 1 40); do # up to ~4s — far less than the 9s sleep
+	shell_interrupt="$(tmux capture-pane -t "$S16" -p -S -40)"
+	if printf '%s' "$shell_interrupt" | grep -qF "Conversation interrupted"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (after Esc interrupts !sleep 9) ===="
+printf '%s\n' "$shell_interrupt"
+tmux kill-session -t "$S16" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -1157,7 +1215,34 @@ if [ "$(count_msg_lines "$search_cancel" "alpha bravo")" != "2" ]; then
 	echo "FAIL: Esc-cancel did not keep the restored draft" >&2
 	status=1
 fi
+
+# Phase 19: `!` shell commands.
+if ! printf '%s' "$shell_mode" | grep -qF "Shell mode"; then
+	echo "FAIL: typing a !command did not show the 'Shell mode' footer hint" >&2
+	status=1
+fi
+if ! printf '%s' "$shell_ran" | grep -qF "● echo smoke_shell_ok"; then
+	echo "FAIL: the shell command did not render as a '● echo …' tool cell" >&2
+	status=1
+fi
+if ! printf '%s' "$shell_ran" | grep -qF "smoke_shell_ok"; then
+	echo "FAIL: the shell command's output (smoke_shell_ok) is not in view" >&2
+	status=1
+fi
+if ! printf '%s' "$shell_ran" | grep -qE "^Ran for [0-9]+s"; then
+	echo "FAIL: the shell turn did not commit a 'Ran for Ns' summary" >&2
+	status=1
+fi
+if ! printf '%s' "$shell_fail" | grep -qF "exit status: 3"; then
+	echo "FAIL: a failing !command did not report its non-zero exit status" >&2
+	status=1
+fi
+if ! printf '%s' "$shell_interrupt" | grep -qF "Conversation interrupted"; then
+	echo "FAIL: Esc did not interrupt a long-running !command" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, and Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (Shell mode hint while typing, the command + output render as a tool cell with a Ran summary, a non-zero exit shows red, and Esc interrupts a long one)"
 fi
 exit "$status"

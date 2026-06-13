@@ -43,7 +43,8 @@ The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
 `docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
 input-history recall in `docs/input-history.md`; the Ctrl+R reverse search over
-that history in `docs/history-search.md`; the `?` shortcuts band in
+that history in `docs/history-search.md`; the `!` local shell commands in
+`docs/shell-command.md`; the `?` shortcuts band in
 `docs/shortcuts.md`; the mid-turn message queue in `docs/queue.md`; the
 session-context footer in `docs/footer.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
@@ -89,10 +90,17 @@ inset two columns — `  ❯ {msg}` rows in the strip under the status line —
 `queued_user_messages`), the whole backlog auto-sent as one batched turn when
 the current one ends — **Esc interrupts and sends the backlog right away**,
 Alt+Up pulls it all back into the composer to edit; see
-`docs/queue.md`; plus a one-row **session footer** on the region's last row —
+`docs/queue.md`; plus **`!command` runs a local shell command** (codex's `!`
+shell mode — the footer slot flips to a red `Shell mode` hint, Enter from an
+idle composer runs the rest under `sh -c` on a background thread as a turn
+(`App::begin_shell`) that renders as a `● {command}` tool cell, green/red by
+exit, with the spinner/`esc to interrupt` status and a `Ran for Ns` summary;
+mid-turn it queues as text; see `docs/shell-command.md`); plus a one-row
+**session footer** on the region's last row —
 codex's footer status line, `{model} · {cwd}` dim and two-space inset
 (`dummy_model_name · ~/repo`) — whenever no band is open (the palette/shortcuts
-band displaces it; `App::set_session_info` injects the strings at the boundary
+band displaces it, and the Ctrl+R search line / `!` shell-mode hint take its
+slot; `App::set_session_info` injects the strings at the boundary
 like the clock, the model name coming from `ReplySource::model_name`; see
 `docs/footer.md`) stays pinned at the bottom. The alternate screen is used in exactly one
 place: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
@@ -331,7 +339,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `SEARCH_QUERY_COLOR` shared by the bold accept/cancel hint keys, the red
   `SEARCH_NO_MATCH` notice, and `SEARCH_HIGHLIGHT` — the reversed+bold styling
   of the query occurrences in the previewed match; `search_line`, the
-  query-end cursor in `cursor_position`, `highlight_row_spans`), and
+  query-end cursor in `cursor_position`, `highlight_row_spans`), the `!`
+  shell-mode hint that takes the same footer slot while the composer holds a
+  `!command` (`SHELL_MODE_*` — the red `SHELL_MODE_LABEL`; `shell_mode_line`,
+  and `tool_header` rendering `● {command}` for the argless shell tool), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the preview + gap + status + gap strip shows *only while a turn streams* — `strip_rows`
   (`render_live` draws the status line under the preview's gap) — with the

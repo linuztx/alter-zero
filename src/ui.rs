@@ -19,7 +19,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
     App, HistoryItem, HistorySearch, Role, SearchState, SlashCommand, TokenArrow, ToolCall,
-    ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
+    ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands, shell_query,
 };
 use crate::textarea::TextArea;
 
@@ -216,6 +216,7 @@ const MENU_DIM_COLOR: Color = TOOL_DIM_COLOR;
 /// quit entry does the same).
 const SHORTCUTS: &[(&str, &str)] = &[
     ("/", " for commands"),
+    ("!", " for shell command"),
     ("↑", " for input history"),
     ("ctrl+r", " to search history"),
     ("alt+enter", " for newline"),
@@ -269,6 +270,16 @@ const SEARCH_NO_MATCH: &str = "  no match";
 /// How a previewed match's query occurrences light up in the input box
 /// (codex's `REVERSED | BOLD` textarea highlight).
 const SEARCH_HIGHLIGHT: Modifier = Modifier::REVERSED.union(Modifier::BOLD);
+
+// --- The `!` shell-mode footer hint. While the composer holds a `!command`
+// the footer slot reads `Shell mode` in red (codex's light-red
+// `shell_mode_footer_line`), displacing the `{model} · {cwd}` line. See
+// docs/shell-command.md. ---
+
+/// The shell-mode hint text.
+const SHELL_MODE_LABEL: &str = "Shell mode";
+/// The hint's colour — red, like codex's `light_red()` (reuses our error red).
+const SHELL_MODE_COLOR: Color = ERROR_COLOR;
 
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
@@ -752,12 +763,16 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 
     // The session-context footer on the region's last row — only when no band
     // is open (the band takes its place; see docs/footer.md). An open Ctrl+R
-    // search takes the same slot with its query line (docs/history-search.md).
+    // search (docs/history-search.md) or a `!command` shell mode
+    // (docs/shell-command.md) takes the same slot with its own line.
     if footer > 0 {
-        let line = app
-            .history_search
-            .as_ref()
-            .map_or_else(|| footer_line(app, footer_area.width), search_line);
+        let line = if let Some(search) = app.history_search.as_ref() {
+            search_line(search)
+        } else if shell_query(app.input.text()).is_some() {
+            shell_mode_line()
+        } else {
+            footer_line(app, footer_area.width)
+        };
         Paragraph::new(line).render(footer_area, buf);
     }
 }
@@ -962,6 +977,11 @@ pub fn footer_rows(app: &App, band_rows: u16) -> u16 {
     if app.history_search.is_some() {
         return 1;
     }
+    // The `!` shell-mode hint takes the slot the same way (no band can be open
+    // in shell mode either; see docs/shell-command.md).
+    if shell_query(app.input.text()).is_some() {
+        return 1;
+    }
     u16::from(app.session.is_some() && band_rows == 0)
 }
 
@@ -1005,6 +1025,18 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     }
     spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
     Line::from(spans)
+}
+
+/// The `!` shell-mode footer line: the [`FOOTER_INDENT`] then `Shell mode` in
+/// red ([`SHELL_MODE_COLOR`]) — codex's `shell_mode_footer_line`. Shown in the
+/// footer slot whenever the composer holds a `!command` (see
+/// `docs/shell-command.md`).
+#[must_use]
+pub fn shell_mode_line() -> Line<'static> {
+    Line::from(vec![
+        Span::raw(FOOTER_INDENT),
+        Span::styled(SHELL_MODE_LABEL, Style::new().fg(SHELL_MODE_COLOR)),
+    ])
 }
 
 /// The Ctrl+R search's footer-slot line — codex's
@@ -1088,7 +1120,7 @@ fn tool_header(tool: &ToolCall) -> Line<'static> {
     let bullet_style = Style::new()
         .fg(tool_status_color(tool.status))
         .add_modifier(Modifier::BOLD);
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(TOOL_BULLET.to_string(), bullet_style),
         Span::styled(
             tool.name.clone(),
@@ -1096,8 +1128,16 @@ fn tool_header(tool: &ToolCall) -> Line<'static> {
                 .fg(TOOL_NAME_COLOR)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("({})", tool.args), Style::new().fg(TOOL_DIM_COLOR)),
-    ])
+    ];
+    // A `!` shell command is a tool with no args (name = the command), so it
+    // shows as a bare `● {command}` — only append `(args)` when there are any.
+    if !tool.args.is_empty() {
+        spans.push(Span::styled(
+            format!("({})", tool.args),
+            Style::new().fg(TOOL_DIM_COLOR),
+        ));
+    }
+    Line::from(spans)
 }
 
 /// Build the styled lines for one tool call as shown **inline**: a coloured
@@ -1674,6 +1714,14 @@ mod tests {
     fn tool_lines_header_shows_name_and_args() {
         let lines = tool_lines(&tool("Bash", "cargo test", ToolStatus::Ok, "a\nb\nc"), 80);
         assert_eq!(plain(&lines[0]), "● Bash(cargo test)");
+    }
+
+    #[test]
+    fn tool_lines_header_omits_the_parens_when_args_are_empty() {
+        // A `!` shell command is a tool with no args (name = the command), so
+        // its header reads `● {command}`, not `● {command}()`.
+        let lines = tool_lines(&tool("echo hi", "", ToolStatus::Ok, "hi"), 80);
+        assert_eq!(plain(&lines[0]), "● echo hi");
     }
 
     #[test]
@@ -2986,28 +3034,30 @@ mod tests {
             .collect();
         assert_eq!(texts.len(), SHORTCUTS.len().div_ceil(2));
         assert!(
-            texts[0].contains("/ for commands") && texts[0].contains("↑ for input history"),
+            texts[0].contains("/ for commands") && texts[0].contains("! for shell command"),
             "{texts:?}"
         );
         assert!(
-            texts[1].contains("ctrl+r to search history")
-                && texts[1].contains("alt+enter for newline"),
+            texts[1].contains("↑ for input history")
+                && texts[1].contains("ctrl+r to search history"),
             "{texts:?}"
         );
         assert!(
-            texts[2].contains("ctrl+o for tool output") && texts[2].contains("esc to quit"),
+            texts[2].contains("alt+enter for newline")
+                && texts[2].contains("ctrl+o for tool output"),
             "{texts:?}"
         );
         assert!(
-            texts[3].contains("ctrl+c to quit") && texts[3].contains("alt+↑ to edit queue"),
+            texts[3].contains("esc to quit") && texts[3].contains("ctrl+c to quit"),
             "{texts:?}"
         );
+        assert!(texts[4].contains("alt+↑ to edit queue"), "{texts:?}");
         // The second column is aligned: both rows' right keys start at the
         // same display column.
         let col = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);
         assert_eq!(
-            col(&texts[0], "↑"),
-            col(&texts[1], "alt+enter"),
+            col(&texts[0], "!"),
+            col(&texts[1], "ctrl+r"),
             "right column aligned: {texts:?}"
         );
     }
@@ -3666,6 +3716,69 @@ mod tests {
         assert!(
             texts.iter().any(|t| t.contains("ctrl+r to search history")),
             "band lists the search binding: {texts:?}"
+        );
+    }
+
+    // --- the `!` shell-mode footer line (docs/shell-command.md) ---
+
+    /// An app with `text` in the composer (no session info, no search).
+    fn composing(text: &str) -> App {
+        let mut app = App::new();
+        app.input = TextArea::from_text(text);
+        app
+    }
+
+    #[test]
+    fn shell_mode_takes_the_footer_slot_even_without_session_info() {
+        assert_eq!(
+            footer_rows(&composing("!ls"), 0),
+            1,
+            "the Shell mode hint shows even with no session info"
+        );
+        assert_eq!(footer_rows(&composing("ls"), 0), 0, "not a shell command");
+    }
+
+    #[test]
+    fn the_shell_mode_line_displaces_the_session_footer() {
+        let mut app = composing("!ls -la");
+        app.set_session_info("dummy_model_name", "~/inline-tui");
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 1);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        let last = row(&buf, h - 1, 60);
+        assert!(last.starts_with("  Shell mode"), "the hint shows: {last:?}");
+        assert!(
+            !last.contains("dummy_model_name"),
+            "the session footer is displaced: {last:?}"
+        );
+    }
+
+    #[test]
+    fn the_shell_mode_line_is_red() {
+        let line = shell_mode_line();
+        assert_eq!(plain(&line), "  Shell mode");
+        let label = line.spans.last().unwrap();
+        assert_eq!(label.content.as_ref(), "Shell mode");
+        assert_eq!(label.style.fg, Some(SHELL_MODE_COLOR));
+    }
+
+    #[test]
+    fn the_cursor_stays_in_the_box_in_shell_mode() {
+        // Unlike the Ctrl+R search (which owns the footer cursor), shell mode
+        // keeps the cursor on the composer's `!command` line.
+        let app = composing("!ls");
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 1);
+        let area = Rect::new(0, 0, 60, h);
+        let (_, y) = cursor_position(area, &app);
+        assert!(y < h - 1, "cursor is in the box, not on the footer row");
+    }
+
+    #[test]
+    fn the_shortcuts_band_lists_the_bang() {
+        let texts: Vec<String> = shortcuts_lines(false).iter().map(plain).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("! for shell command")),
+            "band lists the shell binding: {texts:?}"
         );
     }
 }
