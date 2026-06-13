@@ -32,6 +32,7 @@ cleanup() {
 	tmux kill-session -t "${S}_resize" 2>/dev/null
 	tmux kill-session -t "${S}_search" 2>/dev/null
 	tmux kill-session -t "${S}_shell" 2>/dev/null
+	tmux kill-session -t "${S}_delay" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -40,7 +41,16 @@ if [ ! -x "$BIN" ]; then
 	exit 1
 fi
 
-tmux new-session -d -s "$S" -x 80 -y 24 "$BIN"
+# The dummy AI now pauses before streaming (so the status indicator shows
+# first) — 3s by default. Run every phase with a SHORT delay so the turns
+# stream promptly, threaded through INLINE_TUI_STARTUP_DELAY_MS; Phase 20
+# overrides it back to a visible pause to verify that behaviour. The `env`
+# wrapper is robust even when a tmux server is already running (an exported
+# var would not reach its panes).
+SMOKE_STARTUP_MS="${SMOKE_STARTUP_MS:-200}"
+APP="env INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+
+tmux new-session -d -s "$S" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S" -l "$USER_MSG"
 sleep 0.2
@@ -137,7 +147,7 @@ sleep 0.2
 # rise by the strip's height once the reply finished, leaving blank rows beneath. ---
 S2="${S}_bottom"
 TMP5="$(mktemp)"
-tmux new-session -d -s "$S2" -x 40 -y 12 "$BIN"
+tmux new-session -d -s "$S2" -x 40 -y 12 "$APP"
 sleep 0.4
 tmux send-keys -t "$S2" -l "hello there"
 sleep 0.2
@@ -171,7 +181,7 @@ rm -f "$TMP5"
 # after it is a single redraw (~10ms). Assert the marker lands well inside that
 # gap. (Kept under tmux's 1024-char single-burst cap so it's delivered at once.) ---
 S3="${S}_burst"
-tmux new-session -d -s "$S3" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S3" -x 80 -y 24 "$APP"
 sleep 0.4
 BURST="$(printf 'x%.0s' $(seq 1 997))END"
 burst_ms=0
@@ -200,7 +210,7 @@ S4="${S}_overlayquit"
 BIN_ABS="$(realpath "$BIN" 2>/dev/null || echo "$BIN")"
 tmux new-session -d -s "$S4" -x 80 -y 24
 sleep 0.3
-tmux send-keys -t "$S4" -l "$BIN_ABS"
+tmux send-keys -t "$S4" -l "INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
 tmux send-keys -t "$S4" Enter
 sleep 0.6
 tmux send-keys -t "$S4" -l "hello there"
@@ -244,7 +254,7 @@ tmux kill-session -t "$S4" 2>/dev/null
 # ("Finished for", turn 2's done verb). Esc when *idle* still quits — Phase 4's
 # Escape (sent long after the turn ended) relies on exactly that. ---
 S5="${S}_interrupt"
-tmux new-session -d -s "$S5" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S5" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S5" -l "hello there"
 sleep 0.2
@@ -282,7 +292,7 @@ tmux kill-session -t "$S5" 2>/dev/null
 # palette runs the highlighted command) must terminate the process, which ends
 # the tmux session. ---
 S6="${S}_quit"
-tmux new-session -d -s "$S6" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S6" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S6" -l "a draft the user wants gone"
 sleep 0.3
@@ -315,7 +325,7 @@ tmux kill-session -t "$S6" 2>/dev/null
 # "Finished for" summary. ---
 S7="${S}_recall"
 RECALL_MSG="history one"
-tmux new-session -d -s "$S7" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S7" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S7" -l "$RECALL_MSG"
 sleep 0.2
@@ -356,7 +366,7 @@ tmux kill-session -t "$S7" 2>/dev/null
 # box (codex's footer shortcut overlay — docs/shortcuts.md); a second `?` hides
 # it; and with a draft in the box `?` is just a character (no band). ---
 S8="${S}_shortcuts"
-tmux new-session -d -s "$S8" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S8" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S8" -l "?"
 sleep 0.3
@@ -381,7 +391,7 @@ tmux kill-session -t "$S8" 2>/dev/null
 # runs: turn 2's "Finished for" summary appears, turn 3's "Completed for" must
 # NOT (two separate turns would produce it). ---
 S9="${S}_queue"
-tmux new-session -d -s "$S9" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S9" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S9" -l "hello there"
 sleep 0.2
@@ -431,7 +441,7 @@ tmux kill-session -t "$S9" 2>/dev/null
 # interrupted" notice commits for turn 1, and "world" is sent immediately as turn 2
 # ("❯ world" + "Finished for"). ---
 S10="${S}_queueint"
-tmux new-session -d -s "$S10" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S10" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S10" -l "hello there"
 sleep 0.2
@@ -464,7 +474,7 @@ tmux kill-session -t "$S10" 2>/dev/null
 # press Alt+Up — the queue display clears and the input box shows the multi-line
 # draft ("❯ world" prompt line + "  again" indented continuation) for editing. ---
 S11="${S}_altup"
-tmux new-session -d -s "$S11" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S11" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S11" -l "hello there"
 sleep 0.2
@@ -505,7 +515,7 @@ tmux kill-session -t "$S11" 2>/dev/null
 # closes before the quit: restore()'s teardown clear is legitimately bare. ---
 S12="${S}_sync"
 RAW15="$(mktemp)"
-tmux new-session -d -s "$S12" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S12" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux pipe-pane -t "$S12" -o "cat > $RAW15"
 tmux send-keys -t "$S12" -l "hello there"
@@ -543,7 +553,7 @@ echo "==== Phase 15: live-region clears in the raw output stream — $sync_clear
 # cleared but chunks kept flowing in). The loop must survive the kill: a fresh
 # message streams and finishes normally. ---
 S13="${S}_clearkill"
-tmux new-session -d -s "$S13" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S13" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S13" -l "hello there"
 sleep 0.2
@@ -600,7 +610,7 @@ tmux kill-session -t "$S13" 2>/dev/null
 # hold exactly ONE input box (one bare `❯` prompt row, two rules, one footer)
 # with the conversation tail above it. ---
 S14="${S}_resize"
-tmux new-session -d -s "$S14" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S14" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S14" -l "hello there"
 sleep 0.2
@@ -650,7 +660,7 @@ tmux kill-session -t "$S14" 2>/dev/null
 # stays as an editable draft); a hopeless query shows "no match" with the
 # draft restored; and Esc closes the search WITHOUT quitting the app. ---
 S15="${S}_search"
-tmux new-session -d -s "$S15" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S15" -x 80 -y 24 "$APP"
 sleep 0.4
 tmux send-keys -t "$S15" -l "alpha bravo"
 sleep 0.2
@@ -706,7 +716,7 @@ tmux kill-session -t "$S15" 2>/dev/null
 # header on the dark user-style line with its `⎿` output flush below (and
 # `⎿ Running…` while it runs); a long command is interruptible with Esc. ---
 S16="${S}_shell"
-tmux new-session -d -s "$S16" -x 80 -y 24 "$BIN"
+tmux new-session -d -s "$S16" -x 80 -y 24 "$APP"
 sleep 0.4
 # Shell mode: the bang becomes the prompt and the footer hint shows.
 tmux send-keys -t "$S16" -l "!echo smoke_shell_ok"
@@ -757,6 +767,38 @@ done
 echo "==== captured pane (after Esc interrupts !sleep 9) ===="
 printf '%s\n' "$shell_interrupt"
 tmux kill-session -t "$S16" 2>/dev/null
+
+# --- Phase 20: the dummy AI PAUSES before streaming so the status indicator is
+# visible first (docs/status-indicator.md), and the just-sent user message is
+# counted into the tally with the ↑ arrow. Launch with a longer startup delay
+# (overriding the smoke-wide short one), submit, then capture MID-PAUSE: the
+# status line must show with `↑ N tokens` and NO reply text yet — then the
+# reply must still stream once the pause elapses. ---
+S17="${S}_delay"
+DELAY_MSG="count my input tokens"
+# 21 chars → responses[0] ("Sure! This is a streaming demo …").
+DELAY_REPLY="Sure! This is a streaming demo"
+tmux new-session -d -s "$S17" -x 80 -y 24 "env INLINE_TUI_STARTUP_DELAY_MS=2000 $BIN"
+sleep 0.5
+tmux send-keys -t "$S17" -l "$DELAY_MSG"
+sleep 0.2
+tmux send-keys -t "$S17" Enter
+sleep 0.9 # mid-pause: the 2s startup delay is still running
+delay_pause="$(tmux capture-pane -t "$S17" -p)"
+echo "==== captured visible screen (mid pre-stream pause — status shows, no reply yet) ===="
+printf '%s\n' "$delay_pause"
+# The reply must still arrive once the pause elapses (the pause is not a hang).
+delay_reply=""
+for _ in $(seq 1 60); do # up to ~6s
+	delay_reply="$(tmux capture-pane -t "$S17" -p -S -40)"
+	if printf '%s' "$delay_reply" | grep -qF "$DELAY_REPLY"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (after the pause — reply streaming, arrow flipped down) ===="
+printf '%s\n' "$delay_reply"
+tmux kill-session -t "$S17" 2>/dev/null
 
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
@@ -1252,7 +1294,30 @@ if ! printf '%s' "$shell_interrupt" | grep -qF "Conversation interrupted"; then
 	status=1
 fi
 
+# Phase 20: the pre-stream pause shows the status indicator with the input
+# counted as ↑ tokens, before any reply text.
+if ! printf '%s' "$delay_pause" | grep -qF "esc to interrupt"; then
+	echo "FAIL: the status indicator is not visible during the pre-stream pause" >&2
+	status=1
+fi
+if ! printf '%s' "$delay_pause" | grep -qE "↑ [0-9]+ tokens"; then
+	echo "FAIL: the just-sent user message is not counted as '↑ N tokens' during the pause" >&2
+	status=1
+fi
+if printf '%s' "$delay_pause" | grep -qF "$DELAY_REPLY"; then
+	echo "FAIL: the reply streamed during the pause (the startup delay did not hold)" >&2
+	status=1
+fi
+if ! printf '%s' "$delay_reply" | grep -qF "$DELAY_REPLY"; then
+	echo "FAIL: the reply never streamed after the pause (a hang, not a delay)" >&2
+	status=1
+fi
+if ! printf '%s' "$delay_reply" | grep -qE "↓ [0-9]+ tokens"; then
+	echo "FAIL: the arrow did not flip to ↓ once the reply started streaming" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, and Esc interrupts a long one)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, and Esc interrupts a long one), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams"
 fi
 exit "$status"

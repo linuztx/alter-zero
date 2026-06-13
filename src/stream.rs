@@ -47,6 +47,16 @@ pub enum StreamEvent {
     StreamDone,
 }
 
+/// How long [`DummyAi`] waits after a turn starts before streaming its first
+/// chunk — so the status indicator (the spinner, the ticking elapsed timer, and
+/// the `↑ N tokens` count for the just-sent user message) is visible *before*
+/// any reply text appears. The status animates during this pause because the
+/// draw loop re-arms a frame every 32ms while a turn is active (see `main.rs`),
+/// and an Esc reaps the thread promptly (the wait is an interruptible
+/// [`nap`]). Configurable per backend via [`DummyAi::with_startup_delay`] (the
+/// app reads `INLINE_TUI_STARTUP_DELAY_MS`; tests use a short delay).
+pub const STARTUP_DELAY: Duration = Duration::from_secs(3);
+
 /// Delay between streamed chunks. Small enough to feel responsive, large
 /// enough that the word-by-word reveal is visible.
 pub const CHUNK_DELAY: Duration = Duration::from_millis(45);
@@ -212,8 +222,36 @@ pub trait ReplySource {
 }
 
 /// The built-in canned-reply backend used by the demo.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DummyAi;
+#[derive(Debug, Clone, Copy)]
+pub struct DummyAi {
+    /// Pause before the first streamed event so the status indicator shows
+    /// first ([`STARTUP_DELAY`] by default; the app overrides it from
+    /// `INLINE_TUI_STARTUP_DELAY_MS`, tests use a short value).
+    startup_delay: Duration,
+}
+
+impl Default for DummyAi {
+    fn default() -> Self {
+        Self {
+            startup_delay: STARTUP_DELAY,
+        }
+    }
+}
+
+impl DummyAi {
+    /// The default dummy: a [`STARTUP_DELAY`] pause before streaming.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A dummy with a custom pre-stream pause — the app threads
+    /// `INLINE_TUI_STARTUP_DELAY_MS` through here, and tests pass a short delay.
+    #[must_use]
+    pub fn with_startup_delay(startup_delay: Duration) -> Self {
+        Self { startup_delay }
+    }
+}
 
 impl ReplySource for DummyAi {
     /// Plays back [`turn_events`]: streams the reply word-by-word (with
@@ -228,7 +266,14 @@ impl ReplySource for DummyAi {
         tx: UnboundedSender<StreamEvent>,
         cancel: CancelToken,
     ) -> JoinHandle<()> {
+        let startup_delay = self.startup_delay;
         thread::spawn(move || {
+            // Pause before streaming so the status indicator is visible first
+            // (interruptibly — an Esc during the wait reaps the thread at once).
+            nap(startup_delay, &cancel);
+            if cancel.is_cancelled() {
+                return;
+            }
             for event in turn_events(&prompt) {
                 if cancel.is_cancelled() {
                     return; // asked to stop — drop the rest quietly
@@ -290,7 +335,47 @@ mod tests {
     fn dummy_ai_reports_its_model_name() {
         // The footer under the input box names the active backend's model
         // (see docs/footer.md); the dummy reports its placeholder id.
-        assert_eq!(DummyAi.model_name(), "dummy_model_name");
+        assert_eq!(DummyAi::default().model_name(), "dummy_model_name");
+    }
+
+    #[test]
+    fn dummy_ai_waits_the_startup_delay_before_the_first_chunk() {
+        // The dummy pauses before streaming so the status indicator (spinner,
+        // ticking timer, `↑ N tokens` for the just-sent input) is visible
+        // first. Use a short, deterministic delay; assert the first event only
+        // arrives after it (a lower bound — the thread genuinely sleeps).
+        let delay = Duration::from_millis(150);
+        let (tx, mut rx) = unbounded_channel();
+        let start = std::time::Instant::now();
+        let handle =
+            DummyAi::with_startup_delay(delay).spawn("hi".to_string(), tx, CancelToken::new());
+        let first = rx.blocking_recv().expect("a first event arrives");
+        assert!(
+            start.elapsed() >= delay,
+            "the first chunk waits out the startup delay"
+        );
+        assert!(
+            matches!(first, StreamEvent::Chunk(_)),
+            "streaming still opens with reply text"
+        );
+        while rx.blocking_recv().is_some() {} // drain the rest
+        handle.join().unwrap();
+    }
+
+    #[test]
+    fn a_cancel_during_the_startup_delay_streams_nothing() {
+        // Esc during the pre-stream pause must reap the thread at once — the
+        // interruptible nap returns early and no events are sent.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let backend = DummyAi::with_startup_delay(Duration::from_secs(30));
+        let handle = backend.spawn("hello".to_string(), tx, cancel.clone());
+        cancel.cancel();
+        handle.join().unwrap();
+        assert!(
+            rx.try_recv().is_err(),
+            "a cancel during the delay streams nothing"
+        );
     }
 
     #[test]
@@ -474,7 +559,9 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let prompt = "hi".to_string();
         let expected = dummy_response(&prompt);
-        let handle = DummyAi.spawn(prompt, tx, CancelToken::new());
+        // Zero startup delay so this content test stays fast.
+        let handle =
+            DummyAi::with_startup_delay(Duration::ZERO).spawn(prompt, tx, CancelToken::new());
 
         let mut streamed = String::new();
         let mut saw_done = false;
@@ -519,7 +606,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         cancel.cancel();
-        DummyAi
+        DummyAi::default()
             .spawn("hello".to_string(), tx, cancel)
             .join()
             .unwrap();

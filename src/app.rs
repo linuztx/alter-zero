@@ -1535,6 +1535,24 @@ impl App {
         }
     }
 
+    /// Count a just-submitted user message into the live tally as **uploaded
+    /// input** — the tokens grow and the arrow points `↑` (like a tool result
+    /// folded back in, the reverse of streaming output). Called right after
+    /// [`begin_stream`] with the turn's prompt, so the status shows
+    /// `↑ N tokens` while the model spins up before its first chunk (the first
+    /// [`push_chunk`] flips the arrow back to `↓`). The tally is **added to**,
+    /// never reset (see `docs/status-indicator.md`). No-op when no turn is in
+    /// flight.
+    ///
+    /// [`begin_stream`]: App::begin_stream
+    /// [`push_chunk`]: App::push_chunk
+    pub fn count_user_input(&mut self, text: &str) {
+        if let Some(status) = self.status.as_mut() {
+            status.tokens += estimate_tokens(text);
+            status.arrow = TokenArrow::Up;
+        }
+    }
+
     /// Append a streamed chunk to the in-progress reply (and grow the live token
     /// tally, arrow pointing down — output streaming). No-op if not streaming.
     pub fn push_chunk(&mut self, chunk: &str) {
@@ -3254,6 +3272,42 @@ mod tests {
         assert!(
             app.status().unwrap().tokens > before,
             "the tally only grows"
+        );
+    }
+
+    #[test]
+    fn count_user_input_adds_tokens_pointing_the_arrow_up() {
+        // The user's just-sent message is counted into the tally as uploaded
+        // input (arrow ↑), so the status shows `↑ N tokens` while the model
+        // spins up before its first chunk.
+        let mut app = App::new();
+        app.begin_stream();
+        app.count_user_input("a user message worth several tokens");
+        let status = app.status().unwrap();
+        assert!(status.tokens > 0, "the user message is counted");
+        assert_eq!(status.arrow, TokenArrow::Up, "uploaded input → ↑");
+    }
+
+    #[test]
+    fn count_user_input_is_a_noop_when_no_turn_is_active() {
+        let mut app = App::new();
+        app.count_user_input("nothing is streaming yet");
+        assert!(app.status.is_none(), "no status to count into");
+    }
+
+    #[test]
+    fn the_first_chunk_flips_the_arrow_back_down_after_the_user_input() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.count_user_input("hello");
+        let input_tokens = app.status().unwrap().tokens;
+        assert_eq!(app.status().unwrap().arrow, TokenArrow::Up);
+        app.push_chunk("hi there");
+        let status = app.status().unwrap();
+        assert_eq!(status.arrow, TokenArrow::Down, "streaming output → ↓");
+        assert!(
+            status.tokens > input_tokens,
+            "the reply's tokens add on top of the counted input"
         );
     }
 

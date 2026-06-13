@@ -47,7 +47,7 @@ use tokio_stream::StreamExt;
 use inline_tui::app::{Action, App, INTERRUPT_NOTICE, Role, View};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::paste::{self, PasteBurst};
-use inline_tui::stream::{CancelToken, DummyAi, ReplySource, StreamEvent};
+use inline_tui::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
 use inline_tui::term::InlineViewport;
 use inline_tui::ui;
 
@@ -81,8 +81,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // shown only in the Ctrl+O transcript (see docs/timestamps.md).
     app.set_clock(local_timestamp);
     // The reply backend. Swap this single line for a real model (any
-    // `ReplySource`) and nothing else in the loop has to change.
-    let backend = DummyAi;
+    // `ReplySource`) and nothing else in the loop has to change. The dummy
+    // pauses before streaming so the status indicator shows first; the pause is
+    // `STARTUP_DELAY` unless `INLINE_TUI_STARTUP_DELAY_MS` overrides it (the
+    // smoke test runs with a short delay; one phase uses a longer one).
+    let startup_delay = std::env::var("INLINE_TUI_STARTUP_DELAY_MS")
+        .ok()
+        .and_then(|ms| ms.parse::<u64>().ok())
+        .map_or(stream::STARTUP_DELAY, Duration::from_millis);
+    let backend = DummyAi::with_startup_delay(startup_delay);
     // Session context for the footer under the box — the backend's model name
     // and the cwd — formatted here at the boundary (the set_clock pattern: the
     // pure core never reads the environment). See docs/footer.md.
@@ -382,12 +389,17 @@ fn start_turn(
         term.insert_before(vec![Line::default()]);
     }
     app.begin_stream();
+    // Count the user's uploaded input into the tally (arrow ↑) so the status
+    // shows `↑ N tokens` during the backend's pre-stream pause, before its
+    // first chunk flips the arrow back to ↓.
+    let prompt = texts.join("\n");
+    app.count_user_input(&prompt);
     *committed = 0;
     // Start the turn clock; the draw branch keeps the status animated from here.
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
     let cancel = CancelToken::new();
-    let handle = backend.spawn(texts.join("\n"), tx.clone(), cancel.clone());
+    let handle = backend.spawn(prompt, tx.clone(), cancel.clone());
     Ok((cancel, handle))
 }
 

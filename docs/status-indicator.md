@@ -32,12 +32,21 @@ The live line is
 
 | phase                | line                                                                          |
 |----------------------|-------------------------------------------------------------------------------|
-| just submitted       | `( ●    ) Working… (0s · esc to interrupt)`                                    |
-| streaming text       | `(  ●   ) Working… (1s · ↓ 100 tokens · esc to interrupt)`                     |
-| streaming + thinking | `(   ●  ) Working… (1s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)`   |
-| after a tool result  | `(    ● ) Working… (1s · ↑ 200 tokens · esc to interrupt)`                     |
+| pre-stream pause     | `( ●    ) Working… (1s · ↑ 7 tokens · esc to interrupt)`                       |
+| streaming text       | `(  ●   ) Working… (3s · ↓ 100 tokens · esc to interrupt)`                     |
+| streaming + thinking | `(   ●  ) Working… (3s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)`   |
+| after a tool result  | `(    ● ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
 | finished (committed) | `Done for 20s`                                                                 |
 | interrupted (Esc)    | *no summary* — the red `Conversation interrupted` notice (see `docs/interrupt.md`) |
+
+The turn opens with a **pre-stream pause** (the backend waits `STARTUP_DELAY`,
+3s, before its first chunk — so the indicator is visibly *working* before any
+text appears): the just-sent **user message is counted into the tally up front
+with the `↑` arrow** (uploaded input, like a tool result folded back in), so the
+pause shows `↑ N tokens` and the timer ticks. The first streamed chunk flips the
+arrow to `↓`. The pause is `DummyAi`'s (`stream::STARTUP_DELAY`, overridable via
+`INLINE_TUI_STARTUP_DELAY_MS` — the smoke test runs short, one phase long); a
+real backend's own latency plays the same role.
 
 - **spinner** — the line opens with the classic cli-spinners **`bouncingBall`**:
   a white bold ball ping-ponging between dim parenthesis walls, one frame per
@@ -52,12 +61,16 @@ The live line is
 - **elapsed** — whole seconds since the turn was submitted. Advances even when no
   events arrive (the draw branch re-arms an animation frame while a turn is
   active — see the shimmer section).
-- **tokens** — a single cumulative tally for the whole turn (text, **reasoning
-  deltas**, and tool output), estimated app-side (≈ `chars / 4`). It is **never
-  reset** mid-turn. Omitted while it is 0 (the "just submitted" state).
-- **arrow** — `↓` while the reply (or its reasoning) streams, flipping to `↑`
-  right after a tool result (its output is "uploaded" back); the count keeps
-  growing either way.
+- **tokens** — a single cumulative tally for the whole turn (the **user's input**
+  message, the reply text, **reasoning deltas**, and tool output), estimated
+  app-side (≈ `chars / 4`). It is **never reset** mid-turn. Omitted only while it
+  is 0 — which, now that the input is counted up front, is just the very first
+  frame before `count_user_input` runs.
+- **arrow** — `↑` for **uploaded** tokens (the user's input at turn start, and a
+  tool result folded back in), `↓` while the reply (or its reasoning) streams.
+  So a turn opens `↑` (the counted input during the pre-stream pause), flips `↓`
+  on the first chunk, and back to `↑` after each tool; the count keeps growing
+  either way.
 - **Thinking for {m}s** — shown *only while actively thinking*; dropped once
   thinking ends.
 - **esc to interrupt** — the closing clause, always present while the line
@@ -95,7 +108,9 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
   (`turn_active()` == `status.is_some()`).
 - `App.turn_count: usize` — drives verb selection.
 - `begin_stream` creates the status (picks verbs, increments the counter);
-  `push_chunk` adds tokens (`↓`); `push_thinking` adds tokens (`↓`, the reply
+  `count_user_input(text)` adds the user message's tokens (`↑`) right after, so
+  the pre-stream pause shows the input count uploaded; `push_chunk` adds tokens
+  (`↓`); `push_thinking` adds tokens (`↓`, the reply
   buffer untouched — reasoning text is opaque); `end_tool` adds tokens (`↑`); `fail_stream`
   clears the status (an error is the summary — no "Done" line); `interrupt_turn`
   clears it the same way (the `Conversation interrupted` notice is the summary);
@@ -159,6 +174,19 @@ like the shimmer, derives the frame index purely from `TurnStatus::elapsed`; the
 same 32 ms draw re-arm animates it. Fixed-width frames mean the verb after the
 spinner never shifts as the ball moves.
 
+## The pre-stream pause (dummy backend)
+
+`DummyAi` waits `STARTUP_DELAY` (3s) before playing back its first event, so the
+status indicator is visibly working before any reply text — the point of the
+pause is to show it off. The wait is an interruptible `nap` (an Esc during it
+reaps the thread at once and streams nothing). The delay is configurable
+(`DummyAi::with_startup_delay`); `main.rs` reads `INLINE_TUI_STARTUP_DELAY_MS`
+(so the smoke test runs short and one phase long), defaulting to `STARTUP_DELAY`.
+A real backend's own first-token latency plays the same role. During the pause
+the strip shows just the status line — the empty reply buffer renders **no**
+preview bullet (`render_live` skips the preview while `streaming_text()` is
+empty).
+
 ## Thinking in the dummy backend
 
 `StreamEvent::ThinkingStart` / `ThinkingEnd` are emitted by `DummyAi` after the
@@ -172,11 +200,15 @@ The loop maps the pair to `thinking_start = Some(now)` / `None`; the thinking
 
 ## Testing
 
-- `app`: verbs cycle per turn; tokens accumulate (`↓`) and survive a tool (`↑`,
-  not reset); thinking chunks grow the tally (`↓`) without touching the reply
-  buffer; `end_turn` records the summary and clears status; `fail_stream`
-  clears status; `set_status_times` writes the boundary durations.
+- `app`: verbs cycle per turn; `count_user_input` adds the input tokens with
+  `↑` (no-op when idle) and the first chunk flips the arrow back to `↓`; tokens
+  accumulate (`↓`) and survive a tool (`↑`, not reset); thinking chunks grow the
+  tally (`↓`) without touching the reply buffer; `end_turn` records the summary
+  and clears status; `fail_stream` clears status; `set_status_times` writes the
+  boundary durations.
 - `ui`: `status_line` for each phase (no tokens at 0; `↓`/`↑`; `Thinking for`);
+  the pre-stream pause renders the status with `↑` tokens and **no** preview
+  bullet (the empty reply buffer);
   the spinner's ball is white bold between dim walls, steps a frame per
   interval, reverses at the right wall, and loops after a full cycle; the verb
   per-char greyscale-white bold spans, the metrics
@@ -184,7 +216,10 @@ The loop maps the pair to `thinking_start = Some(now)` / `None`; the thinking
   advances; `summary_lines` is one dim line; the strip stacks preview / gap /
   status / gap above the box; `conversation` / `transcript` render a `Summary`.
 - `stream`: `turn_events` emits a paired `ThinkingStart`/`ThinkingEnd` with
-  `ThinkingChunk`s strictly inside the pair; chunks still reconstruct the reply.
+  `ThinkingChunk`s strictly inside the pair; chunks still reconstruct the reply;
+  `DummyAi` waits the startup delay before the first chunk (a short delay in the
+  test), and a cancel during the wait streams nothing.
 - `main.rs` (smoke): the live line shows `tokens` while streaming with a blank
   gap row between it and the box, and a committed `Done for Ns` after the turn
-  settles.
+  settles. Phase 20 (longer startup delay): mid-pause the status shows
+  `↑ N tokens` with no reply text, then the reply streams with the arrow `↓`.

@@ -679,11 +679,13 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 
     // Strip preview (top row; the rest of the strip is the blank gap). A running
     // tool takes precedence — its coloured header (blue) shows what's executing;
-    // otherwise the in-progress reply's last line previews. Nothing when idle.
+    // otherwise the in-progress reply's last line previews. Nothing when idle —
+    // or before the first chunk (an empty buffer has nothing to preview, so the
+    // pre-stream pause shows only the status line, no stray `●` bullet).
     let preview = if let Some(tool) = app.current_tool() {
         tool_lines(tool, strip.width).into_iter().next()
     } else {
-        app.streaming_text().map(|text| {
+        app.streaming_text().filter(|t| !t.is_empty()).map(|text| {
             message_lines(Role::Assistant, text, strip.width)
                 .pop()
                 .unwrap_or_default()
@@ -2325,6 +2327,30 @@ mod tests {
         assert!(
             all.contains("Working…") && all.contains("3s"),
             "the live status line is drawn in the strip: {all:?}"
+        );
+    }
+
+    #[test]
+    fn the_pre_stream_pause_shows_up_tokens_and_no_preview_bullet() {
+        // After submit, before the first chunk arrives: the user's input is
+        // counted into the tally (arrow ↑), the status spins, and the empty
+        // reply buffer shows NO preview bullet (just the status line).
+        let mut app = App::new();
+        app.begin_stream();
+        app.count_user_input("hello there"); // ↑ N tokens
+        let h = live_height(&app.input, 60, 24, true, 0, 0, 0);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 60))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains('↑'), "the counted input points up: {all:?}");
+        assert!(all.contains("tokens"), "the token count shows: {all:?}");
+        assert!(
+            !row(&buf, 0, 60).contains('●'),
+            "no stray preview bullet before the first chunk: {:?}",
+            row(&buf, 0, 60)
         );
     }
 

@@ -235,10 +235,16 @@ backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pai
 and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
 running (blue) then commits it collapsed (green/red), and flips its `thinking_start`
-`Instant` so the status line shows/drops `Thinking for Ns`. `Chunk`s,
+`Instant` so the status line shows/drops `Thinking for Ns`. The just-sent
+**user message is counted up front** (`App::count_user_input` after
+`begin_stream`, arrow `↑` — uploaded input), so the status shows `↑ N tokens`
+through the backend's **pre-stream pause** (`DummyAi` waits `STARTUP_DELAY`/3s
+before its first chunk so the indicator is visibly working first — overridable
+via `INLINE_TUI_STARTUP_DELAY_MS`; the empty reply buffer shows no preview
+bullet during it). Then `Chunk`s,
 `ThinkingChunk`s (counted via `App::push_thinking` — never rendered), and a tool's
 output grow the cumulative token tally on `App::status` (`↓` while replying or
-thinking, `↑` right after a tool — never reset); on `StreamDone` `App::end_turn`
+thinking, `↑` for the input and right after a tool — never reset); on `StreamDone` `App::end_turn`
 records the `Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` instead of
 `StreamDone`; the loop turns that into a red `Role::Error` notice via
 `App::fail_stream` (which also clears the status). **Esc while the turn is in
@@ -386,6 +392,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   the token tally keeps ticking while the model thinks (the text is never shown —
   only counted; see `stream::turn_events` for the dummy's interleaved script). Return
   your real model id from `model_name()` — the session footer under the box
-  displays it. The loop and
+  displays it. A real backend's own first-token latency replaces `DummyAi`'s
+  artificial `STARTUP_DELAY` (the deliberate pre-stream pause that shows off the
+  status indicator); the loop already counts the user's input into the tally
+  (`↑`) at turn start, so the status reads `↑ N tokens` until your first chunk.
+  The loop and
   rendering treat chunks and tool output as opaque text, and estimate the status
   token counts app-side (no usage reporting in the protocol); nothing else changes.
