@@ -362,8 +362,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   shell mode (`SHELL_MODE_*`/`SHELL_BULLET` — the red `Shell mode` footer
   hint (`shell_mode_line`) and the red `! ` that doubles as the composer
   prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell
-  header bullet in `message_lines`; shell `tool_lines` are headerless `⎿`
-  rows — `⎿ Running…` live — kept flush by `conversation_lines`), and
+  header bullet in `message_lines`; shell `tool_lines`/`tool_full_lines` are
+  headerless `⎿` blocks — inline up to `TOOL_PEEK_LINES` aligned rows
+  (`result_row` does the corner/continuation indent) then `… +N lines (ctrl+o
+  to expand)`, `⎿ Running…` live, the full output uncapped in the Ctrl+O view —
+  kept flush by `conversation_lines`), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the status + gap strip shows *while a turn is active*, and the preview + gap
   is added *only when there's content to preview* (`strip_rows(streaming,

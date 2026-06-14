@@ -70,11 +70,23 @@ In `on_key_conversation`'s Enter arm, in shell mode:
 
 ### Running it — the exec cell (`App::begin_shell` + the boundary runner)
 
-The committed result is one codex-style **exec cell**:
+The committed result is one Claude-Code-style **exec cell** — the `! command`
+dark header, then the output as a `⎿` block (the first line under the corner,
+the rest aligned beneath it), capped inline at `TOOL_PEEK_LINES` (4) lines with
+a `… +N lines (ctrl+o to expand)` hint when more is hidden:
 
 ```
-! pwd                          ← Role::Shell header: dark user-style line
-  ⎿ /home/user/inline-tui      ← the tool's peek lines, flush below (no blank)
+! ls                           ← Role::Shell header: dark user-style line
+  ⎿ index.html                 ← first output line, under the ⎿ corner
+    script.js                  ← continuation lines aligned beneath it
+    styles.css
+
+! tree .
+  ⎿ .
+    ├── index.html
+    ├── script.js
+    ├── styles.css
+    … +2 lines (ctrl+o to expand)   ← capped at TOOL_PEEK_LINES, rest in Ctrl+O
 ```
 
 `begin_shell(command)` (pure) sets up the turn so the existing paths produce
@@ -92,9 +104,17 @@ exactly that:
 - the command as the running **shell-flagged tool**: `tool_lines` renders it
   **headerless** (no `● name(args)` — the Shell message above is the header),
   so while it runs the strip's preview row is just `  ⎿ Running…`, sitting
-  flush under the committed header; on `ToolEnd` the committed `⎿` lines (first
-  line + `+N lines (ctrl+o to expand)`) replace it. `conversation_lines` skips
-  the blank spacer after a Shell message so the repaint keeps the cell flush.
+  flush under the committed header; on `ToolEnd` the committed `⎿` block (up to
+  `TOOL_PEEK_LINES` aligned lines, then `… +N lines (ctrl+o to expand)`)
+  replaces it (`result_row` does the corner/continuation alignment).
+  `conversation_lines` skips the blank spacer after a Shell message so the
+  repaint keeps the cell flush.
+
+The **Ctrl+O view** renders the same shell cell **headerless** too
+(`tool_full_lines` skips `tool_header` for a shell tool), so the overlay shows
+the `! command` dark header (the `Role::Shell` message) and the **full** output
+as an uncapped `⎿` block — never the `● command` bullet that a backend tool
+gets.
 
 `main.rs::run_shell` (the I/O boundary, like `start_turn`): `begin_shell`,
 commit the header lines **without** a trailing blank, then spawn
@@ -134,9 +154,13 @@ The `?` shortcuts band gains a `! for shell command` entry.
   records the `Role::Shell` header, flags the status + tool, and `end_turn`
   then returns no summary; interrupting resolves the command failed.
 - `ui`: `message_lines(Role::Shell…)` is the dark user-style line with the red
-  `! ` bullet, width-padded; a shell tool renders headerless (`⎿` lines only;
-  `⎿ Running…` while running; the `+N lines` hint kept); `conversation_lines`
-  keeps the cell flush (no spacer after the Shell header); shell mode swaps the
+  `! ` bullet, width-padded; a shell tool renders headerless — inline a `⎿`
+  block of up to `TOOL_PEEK_LINES` lines (continuation lines aligned under the
+  corner) with a `… +N lines (ctrl+o to expand)` hint when more is hidden,
+  `⎿ Running…` while running; the Ctrl+O `tool_full_lines` is headerless too
+  (no `● ls` bullet) and shows the **full** output uncapped under `⎿`;
+  `conversation_lines` keeps the cell flush (no spacer after the Shell header);
+  shell mode swaps the
   composer prompt to a red `! `; `footer_rows` is 1 in the mode without session
   info; the footer slot shows the red `Shell mode`, displacing
   `{model} · {cwd}`; the cursor stays in the box; the shortcuts band lists `!`;

@@ -73,12 +73,18 @@ const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
 /// Bullet prefixing a tool call (same glyph as the assistant, recoloured by
 /// status — see [`tool_status_color`]).
 const TOOL_BULLET: &str = "● ";
-/// Prefix for the collapsed result peek line: indent + a turnstile glyph.
+/// Prefix for the first result line: indent + a turnstile glyph. Continuation
+/// lines are indented by its display width so a multi-line result aligns under
+/// it (see [`result_row`]).
 const TOOL_RESULT_PREFIX: &str = "  ⎿ ";
-/// Prefix for the "+N lines" hint line under a collapsed peek.
+/// Prefix for the "+N lines" hint line under a capped peek.
 const TOOL_MORE_PREFIX: &str = "    … ";
 /// Hint telling the user how to see the full output.
 const EXPAND_HINT: &str = " (ctrl+o to expand)";
+/// How many output lines a `!` shell command shows inline before collapsing the
+/// rest behind a `… +N lines (ctrl+o to expand)` hint (Claude-Code's exec-cell
+/// preview). The full output is always in the Ctrl+O view.
+const TOOL_PEEK_LINES: usize = 4;
 
 /// Blue — a tool that is still executing.
 const TOOL_RUNNING_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
@@ -1225,50 +1231,86 @@ fn tool_header(tool: &ToolCall) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Build the styled lines for one tool call as shown **inline**: a coloured
-/// bullet header `● name(args)`, then a collapsed one-line peek of its output
-/// with a `(ctrl+o to expand)` hint when more is hidden. The full output is only
-/// rendered in the separate tool-output view, never here.
+/// One row of a `⎿` result block, dim: the **first** row (index 0) opens with
+/// the [`TOOL_RESULT_PREFIX`] corner, continuation rows indent by its display
+/// width so the text aligns under it (Claude-Code's exec-cell output style).
+fn result_row(index: usize, text: String) -> Line<'static> {
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let prefix = if index == 0 {
+        TOOL_RESULT_PREFIX.to_string()
+    } else {
+        " ".repeat(cols(TOOL_RESULT_PREFIX))
+    };
+    Line::from(vec![Span::styled(prefix, dim), Span::styled(text, dim)])
+}
+
+/// The output of `tool` split into display lines (a single trailing blank from a
+/// final newline dropped, so a hidden-line count is accurate).
+fn tool_output_lines(tool: &ToolCall) -> Vec<&str> {
+    if tool.output.is_empty() {
+        return Vec::new();
+    }
+    let mut out: Vec<&str> = tool.output.split('\n').collect();
+    if out.last() == Some(&"") {
+        out.pop();
+    }
+    out
+}
+
+/// Build the styled lines for one tool call as shown **inline**.
+///
+/// A `!` shell command is **headerless** — its `Role::Shell` header (`! pwd`)
+/// sits flush above (docs/shell-command.md) — and shows up to
+/// [`TOOL_PEEK_LINES`] of its output as a `⎿` block (each line aligned under
+/// the corner), then a `… +N lines (ctrl+o to expand)` hint when more is
+/// hidden (Claude-Code's exec cell). A backend tool keeps its coloured
+/// `● name(args)` header and a single collapsed peek line. The full output is
+/// only rendered in the separate tool-output view, never here.
 #[must_use]
 pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
+    let out_lines = tool_output_lines(tool);
 
-    // Output split into lines (ignoring a single trailing blank from a final
-    // newline), so the hidden-line count is accurate.
-    let mut out_lines: Vec<&str> = if tool.output.is_empty() {
-        Vec::new()
-    } else {
-        tool.output.split('\n').collect()
-    };
-    if out_lines.last() == Some(&"") {
-        out_lines.pop();
+    if tool.shell {
+        // The running/empty single-row states; else up to TOOL_PEEK_LINES rows.
+        return match tool.status {
+            ToolStatus::Running => vec![result_row(0, "Running…".to_string())],
+            _ if out_lines.is_empty() => vec![result_row(0, "(no output)".to_string())],
+            _ => {
+                let shown = out_lines.len().min(TOOL_PEEK_LINES);
+                let mut lines: Vec<Line> = out_lines[..shown]
+                    .iter()
+                    .enumerate()
+                    .map(|(i, line)| result_row(i, truncate_cols(line, peek_width)))
+                    .collect();
+                let hidden = out_lines.len() - shown;
+                if hidden > 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled(TOOL_MORE_PREFIX.to_string(), dim),
+                        Span::styled(format!("+{hidden} lines{EXPAND_HINT}"), dim),
+                    ]));
+                }
+                lines
+            }
+        };
     }
 
+    // A backend tool: coloured header + a single collapsed peek line.
     let peek = match tool.status {
-        // The shell cell's running peek, capitalised per the exec-cell mock
-        // (`! pwd` / `  ⎿ Running…`); a backend tool keeps the quiet lowercase
-        // under its `● name(args)` header.
-        ToolStatus::Running if tool.shell => "Running…".to_string(),
         ToolStatus::Running => "running…".to_string(),
         _ if out_lines.is_empty() => "(no output)".to_string(),
         _ => truncate_cols(out_lines[0], peek_width),
     };
-    let mut lines = Vec::new();
-    // A `!` shell call is headerless: its Role::Shell header message (`! pwd`)
-    // sits flush above, so the cell contributes only its `⎿` lines
-    // (docs/shell-command.md).
-    if !tool.shell {
-        lines.push(tool_header(tool));
-    }
-    lines.push(Line::from(vec![
-        Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
-        Span::styled(peek, dim),
-    ]));
-
-    // A hint line whenever output beyond the first peeked line is hidden.
+    let mut lines = vec![
+        tool_header(tool),
+        Line::from(vec![
+            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
+            Span::styled(peek, dim),
+        ]),
+    ];
     let hidden = out_lines.len().saturating_sub(1);
     if hidden > 0 {
         lines.push(Line::from(vec![
@@ -1279,15 +1321,37 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// One tool call's full lines for the transcript view: its coloured header plus
-/// its **complete** output (wrapped and indented), or `running…` / `(no output)`
-/// when there is none yet. The expanded counterpart of [`tool_lines`].
+/// One tool call's full lines for the transcript view: its **complete** output
+/// (wrapped), or `running…` / `(no output)` when there is none yet. The expanded
+/// counterpart of [`tool_lines`]. A `!` shell command stays **headerless** here
+/// too (the `! pwd` dark header is the `Role::Shell` message above it) and its
+/// output renders as the same `⎿` block, uncapped; a backend tool keeps its
+/// coloured `● name(args)` header with the output indented under it.
 fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+    let running_word = if tool.shell {
+        "Running…"
+    } else {
+        "running…"
+    };
+    if tool.shell {
+        let body_width = width.saturating_sub(cols(TOOL_RESULT_PREFIX) as u16).max(1);
+        let body = match (tool.status, tool.output.is_empty()) {
+            (ToolStatus::Running, true) => vec![running_word.to_string()],
+            (_, true) => vec!["(no output)".to_string()],
+            _ => wrap_text(&tool.output, body_width),
+        };
+        return body
+            .into_iter()
+            .enumerate()
+            .map(|(i, line)| result_row(i, line))
+            .collect();
+    }
+
     let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let mut lines = vec![tool_header(tool)];
     let body = match (tool.status, tool.output.is_empty()) {
-        (ToolStatus::Running, true) => vec!["running…".to_string()],
+        (ToolStatus::Running, true) => vec![running_word.to_string()],
         (_, true) => vec!["(no output)".to_string()],
         _ => wrap_text(&tool.output, content_width),
     };
@@ -4052,12 +4116,96 @@ mod tests {
     }
 
     #[test]
-    fn a_shell_tool_keeps_the_hidden_lines_hint() {
-        let mut t = tool("ls", "", ToolStatus::Ok, "a\nb\nc");
+    fn a_short_shell_output_shows_every_line_aligned_under_the_corner() {
+        // Up to TOOL_PEEK_LINES lines all show, the continuation lines indented
+        // to align under the first (Claude-Code exec style), no truncation hint.
+        let mut t = tool(
+            "ls",
+            "",
+            ToolStatus::Ok,
+            "index.html\nscript.js\nstyles.css",
+        );
         t.shell = true;
-        let lines = tool_lines(&t, 60);
-        assert_eq!(plain(&lines[0]), "  ⎿ a");
-        assert!(plain(&lines[1]).contains("+2 lines (ctrl+o to expand)"));
+        let lines: Vec<String> = tool_lines(&t, 60)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(
+            lines,
+            vec!["  ⎿ index.html", "    script.js", "    styles.css"],
+            "every line shown, continuation aligned under the first"
+        );
+    }
+
+    #[test]
+    fn a_long_shell_output_caps_the_preview_with_an_expand_hint() {
+        // More than the cap → the first TOOL_PEEK_LINES lines, then a
+        // `… +N lines (ctrl+o to expand)` row aligned with them.
+        let output = (1..=6)
+            .map(|n| n.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut t = tool("seq 6", "", ToolStatus::Ok, &output);
+        t.shell = true;
+        let lines: Vec<String> = tool_lines(&t, 60)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(
+            lines.len(),
+            TOOL_PEEK_LINES + 1,
+            "capped lines + the hint row"
+        );
+        assert_eq!(lines[0], "  ⎿ 1");
+        assert_eq!(lines[1], "    2", "continuation aligned, no corner");
+        let hidden = 6 - TOOL_PEEK_LINES;
+        assert_eq!(
+            lines[TOOL_PEEK_LINES],
+            format!("    … +{hidden} lines (ctrl+o to expand)")
+        );
+    }
+
+    #[test]
+    fn the_tool_view_renders_a_shell_cell_headerless_with_full_output() {
+        // In the Ctrl+O transcript the shell cell shows its `! ls` dark header
+        // (the Role::Shell message) and the FULL output under `⎿` — no `● ls`
+        // bullet, and uncapped (this is the expand view).
+        let mut app = App::new();
+        let output = ('a'..='f')
+            .map(|c| c.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut t = tool("ls", "", ToolStatus::Ok, &output);
+        t.shell = true;
+        app.history = vec![
+            HistoryItem::Message(Message {
+                role: Role::Shell,
+                text: "ls".to_string(),
+                timestamp: String::new(),
+            }),
+            HistoryItem::Tool(t),
+        ];
+        let texts: Vec<String> = transcript_lines(&app, 60)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(
+            texts.contains(&"! ls".to_string()),
+            "dark header: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.starts_with("● ls")),
+            "no bullet header in the overlay: {texts:?}"
+        );
+        assert!(texts.contains(&"  ⎿ a".to_string()), "{texts:?}");
+        assert!(
+            texts.contains(&"    f".to_string()),
+            "every output line, uncapped: {texts:?}"
+        );
+        assert!(
+            !texts.iter().any(|t| t.contains("ctrl+o to expand")),
+            "no truncation hint in the expand view: {texts:?}"
+        );
     }
 
     #[test]
