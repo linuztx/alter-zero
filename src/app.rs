@@ -633,14 +633,18 @@ pub struct App {
     ///
     /// [`sync_shell_mode`]: App::sync_shell_mode
     pub shell_mode: bool,
-    /// Messages submitted while a turn was in flight, awaiting the next turn
-    /// (codex's `queued_user_messages`). Enter mid-turn enqueues here; the loop
-    /// drains the whole queue ([`drain_queued`]) into one batched turn whenever
-    /// the current one ends — and Esc-interrupt sends the backlog right away.
-    /// Only ever non-empty while a turn is active. See `docs/queue.md`.
+    /// Messages submitted while a turn was in flight, awaiting their own turns
+    /// (codex's `queued_user_messages`). The queue is a sequence of **turn
+    /// batches**: an Enter mid-turn appends to the last batch (consecutive
+    /// Enters share one next turn), while **Tab opens a new batch** so its
+    /// message runs as a *separate follow-up turn* after the ones already
+    /// queued. The loop pops the front batch ([`drain_next_batch`]) into one
+    /// turn whenever the current one ends, so the batches iterate in order — and
+    /// Esc-interrupt sends the front batch right away. Only ever non-empty while
+    /// a turn is active. See `docs/queue.md`.
     ///
-    /// [`drain_queued`]: App::drain_queued
-    pub queued: VecDeque<String>,
+    /// [`drain_next_batch`]: App::drain_next_batch
+    pub queued: VecDeque<Vec<String>>,
     /// Whether the `?` shortcuts band (the keyboard-shortcuts overview below
     /// the input box — codex's footer shortcut overlay) is showing. Toggled by
     /// `?` from an empty composer; any other key closes it. See
@@ -833,6 +837,14 @@ impl App {
                 Action::None
             }
             KeyCode::Tab if menu_open => self.run_selected_command(),
+            // Tab while a turn streams queues the draft as a *new* follow-up
+            // batch — a separate turn that runs after the batches already queued,
+            // instead of merging into the current one like Enter (codex's
+            // Tab-to-queue). Empty/idle Tab falls through to a no-op.
+            KeyCode::Tab if self.is_streaming() && !self.input.text().trim().is_empty() => {
+                self.queue_draft(/*new_batch*/ true);
+                Action::None
+            }
             KeyCode::Enter if menu_open => {
                 if self.highlighted_command().is_some() {
                     self.run_selected_command()
@@ -862,18 +874,12 @@ impl App {
                 if self.input.text().trim().is_empty() {
                     Action::None
                 } else if self.is_streaming() {
-                    // A turn is in flight — queue the message instead of dropping
-                    // it (codex's queued_user_messages); the loop sends it when the
-                    // turn ends. Record it for ↑ recall, like a normal submit. A
-                    // shell-mode draft re-gains its `!` and queues as literal
-                    // text (a v1 limitation; see docs/shell-command.md).
-                    let mut text = self.input.take();
-                    if self.shell_mode {
-                        self.shell_mode = false;
-                        text = format!("!{text}");
-                    }
-                    self.input_history.record(&text);
-                    self.queued.push_back(text);
+                    // A turn is in flight — queue the draft for a later turn
+                    // instead of dropping it (codex's queued_user_messages).
+                    // Enter appends to the batch being accumulated, so
+                    // consecutive Enters batch into one next turn; Tab instead
+                    // opens a new follow-up batch (see the Tab arm above).
+                    self.queue_draft(/*new_batch*/ false);
                     Action::None
                 } else if self.shell_mode {
                     // Shell mode: run the draft locally (docs/shell-command.md).
@@ -930,7 +936,7 @@ impl App {
                     && self.input.is_empty()
                     && !self.queued.is_empty() =>
             {
-                let text = self.drain_queued().join("\n");
+                let text = self.drain_all_queued().join("\n");
                 self.recall_input(&text);
                 Action::None
             }
@@ -1387,14 +1393,44 @@ impl App {
         }));
     }
 
-    /// Take the whole queue (FIFO order) for the loop to send as the next turn
-    /// when the current one ends; empty when nothing is queued. The entire
-    /// backlog goes out in one turn — Claude-Code-style batching, and codex's
-    /// merge of pending messages after an interrupt
-    /// (`merge_user_messages_with_history_record`).
+    /// Pop the front queued batch — the messages of the next turn — for the loop
+    /// to send when the current turn ends; empty when nothing is queued. Each
+    /// batch is its own turn, so popping one per turn-end iterates the
+    /// Tab-separated follow-ups in order; a batch's own messages (consecutive
+    /// Enters) join with newlines into that single turn (`start_turn`). See
+    /// `docs/queue.md`.
     #[must_use]
-    pub fn drain_queued(&mut self) -> Vec<String> {
-        self.queued.drain(..).collect()
+    pub fn drain_next_batch(&mut self) -> Vec<String> {
+        self.queued.pop_front().unwrap_or_default()
+    }
+
+    /// Take **every** queued message across all batches, flattened oldest-first,
+    /// for Alt+Up to pull the whole backlog into the composer as one editable
+    /// draft — the batch boundaries dissolve (the user re-queues however they
+    /// like).
+    fn drain_all_queued(&mut self) -> Vec<String> {
+        self.queued.drain(..).flatten().collect()
+    }
+
+    /// Queue the composer draft while a turn streams. `new_batch` picks the
+    /// Enter vs Tab semantics: Enter (`false`) appends to the batch currently
+    /// being accumulated so consecutive Enters batch into one next turn; **Tab
+    /// (`true`) opens a new batch** so the message runs as its own follow-up
+    /// turn after the batches already queued. An empty queue starts a fresh
+    /// batch either way. A shell-mode draft re-gains its `!` and queues as
+    /// literal text (a v1 limitation; see `docs/shell-command.md`). The text is
+    /// recorded for ↑ recall, like a normal submit.
+    fn queue_draft(&mut self, new_batch: bool) {
+        let mut text = self.input.take();
+        if self.shell_mode {
+            self.shell_mode = false;
+            text = format!("!{text}");
+        }
+        self.input_history.record(&text);
+        match self.queued.back_mut() {
+            Some(batch) if !new_batch => batch.push(text),
+            _ => self.queued.push_back(vec![text]),
+        }
     }
 
     /// Record a system notice (from a slash command) in the history, so it
@@ -1829,7 +1865,7 @@ mod tests {
             "",
             "the composer is consumed into the queue"
         );
-        assert_eq!(app.queued.front().map(String::as_str), Some("hello"));
+        assert_eq!(app.queued.front(), Some(&vec!["hello".to_string()]));
     }
 
     #[test]
@@ -2822,21 +2858,23 @@ mod tests {
     }
 
     #[test]
-    fn queued_messages_keep_submission_order() {
+    fn enter_mid_turn_appends_to_one_batch_in_order() {
+        // Consecutive Enters share a single turn-batch, oldest first — they
+        // flush together as one next turn.
         let mut app = App::new();
         app.begin_stream();
         app.input = TextArea::from_text("first");
         app.on_key(key(KeyCode::Enter));
         app.input = TextArea::from_text("second");
         app.on_key(key(KeyCode::Enter));
-        let order: Vec<&str> = app.queued.iter().map(String::as_str).collect();
-        assert_eq!(order, vec!["first", "second"], "FIFO, oldest first");
+        assert_eq!(app.queued.len(), 1, "both Enters land in one batch");
+        let batch: Vec<&str> = app.queued[0].iter().map(String::as_str).collect();
+        assert_eq!(batch, vec!["first", "second"], "FIFO, oldest first");
     }
 
     #[test]
-    fn drain_queued_takes_everything_in_order_and_empties() {
-        // The whole queue flushes as the next turn (Claude-Code-style batching;
-        // codex merges pending messages the same way after an interrupt).
+    fn drain_next_batch_takes_the_front_batch_in_order_and_empties() {
+        // A batch (the Enters that share a turn) flushes whole as the next turn.
         let mut app = App::new();
         app.begin_stream();
         app.input = TextArea::from_text("a");
@@ -2845,9 +2883,103 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         app.input = TextArea::from_text("c");
         app.on_key(key(KeyCode::Enter));
-        assert_eq!(app.drain_queued(), vec!["a", "b", "c"], "FIFO, all at once");
+        assert_eq!(
+            app.drain_next_batch(),
+            vec!["a", "b", "c"],
+            "the whole front batch, FIFO"
+        );
         assert!(app.queued.is_empty(), "the queue is emptied");
-        assert!(app.drain_queued().is_empty(), "nothing left to flush");
+        assert!(app.drain_next_batch().is_empty(), "nothing left to flush");
+    }
+
+    #[test]
+    fn tab_mid_turn_opens_a_new_follow_up_batch() {
+        // Enter accumulates into the current batch; Tab starts a *new* batch so
+        // its message runs as its own follow-up turn after the first queue.
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("first");
+        app.on_key(key(KeyCode::Enter)); // batch 1
+        app.input = TextArea::from_text("follow");
+        assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+        assert_eq!(app.input.text(), "", "Tab consumes the composer like Enter");
+        assert_eq!(app.queued.len(), 2, "Tab opened a second batch");
+        assert_eq!(app.queued[0], vec!["first".to_string()]);
+        assert_eq!(app.queued[1], vec!["follow".to_string()]);
+    }
+
+    #[test]
+    fn enter_after_tab_appends_to_the_follow_up_batch() {
+        // Once Tab opens a new batch, a plain Enter joins *that* batch (the one
+        // now being accumulated), not the first.
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("a");
+        app.on_key(key(KeyCode::Enter)); // batch 1 = [a]
+        app.input = TextArea::from_text("b");
+        app.on_key(key(KeyCode::Tab)); // batch 2 = [b]
+        app.input = TextArea::from_text("c");
+        app.on_key(key(KeyCode::Enter)); // batch 2 = [b, c]
+        assert_eq!(app.queued.len(), 2);
+        assert_eq!(app.queued[0], vec!["a".to_string()]);
+        assert_eq!(app.queued[1], vec!["b".to_string(), "c".to_string()]);
+    }
+
+    #[test]
+    fn tab_follow_ups_drain_one_turn_at_a_time() {
+        // Each batch is its own turn: drain yields the first queue, then the Tab
+        // follow-up, in order — sequential turns, not one merged blob.
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("first");
+        app.on_key(key(KeyCode::Enter));
+        app.input = TextArea::from_text("later");
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(
+            app.drain_next_batch(),
+            vec!["first"],
+            "the first queue goes first"
+        );
+        assert_eq!(
+            app.drain_next_batch(),
+            vec!["later"],
+            "the Tab follow-up next"
+        );
+        assert!(app.drain_next_batch().is_empty());
+    }
+
+    #[test]
+    fn tab_queued_message_is_recorded_for_up_recall() {
+        // Like Enter, a Tab-queued message is recorded so ↑ brings it back.
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("tabbed");
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(app.input.text(), "");
+        app.on_key(key(KeyCode::Up)); // empty composer → history recall
+        assert_eq!(app.input.text(), "tabbed");
+    }
+
+    #[test]
+    fn tab_when_idle_does_not_queue() {
+        // Tab only queues while a turn streams; idle it's a no-op (you queue
+        // follow-ups against a *running* turn).
+        let mut app = App::new();
+        app.input = TextArea::from_text("hello");
+        assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+        assert!(app.queued.is_empty(), "idle Tab queues nothing");
+        assert_eq!(app.input.text(), "hello", "and leaves the draft intact");
+    }
+
+    #[test]
+    fn tab_on_an_empty_composer_mid_turn_is_a_no_op() {
+        let mut app = App::new();
+        app.begin_stream();
+        assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+        assert!(
+            app.queued.is_empty(),
+            "nothing to queue from an empty composer"
+        );
     }
 
     #[test]
@@ -3091,7 +3223,7 @@ mod tests {
         assert_eq!(app.queued.len(), 1, "the message queued");
         type_str(&mut app, "/clear");
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
-        assert!(app.drain_queued().is_empty(), "the backlog was wiped");
+        assert!(app.drain_next_batch().is_empty(), "the backlog was wiped");
     }
 
     #[test]
@@ -3991,7 +4123,7 @@ mod tests {
         type_query(&mut app, "!echo hi");
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         assert!(!app.shell_mode);
-        assert_eq!(app.drain_queued(), vec!["!echo hi".to_string()]);
+        assert_eq!(app.drain_next_batch(), vec!["!echo hi".to_string()]);
     }
 
     #[test]

@@ -1,10 +1,20 @@
 # Queueing messages while a turn streams
 
 Port of openai/codex's *queued user messages*: while a reply is generating, a
-submitted message doesn't have to wait at the keyboard — it joins a queue
-(every entry shown above the box) and the **whole backlog is sent automatically
-as the next turn** when the current one ends, Claude-Code style. See `CLAUDE.md`
-for where this sits in the runtime model.
+submitted message doesn't have to wait at the keyboard — it joins a queue (every
+entry shown above the box) and flushes automatically as a later turn. Two keys
+queue, with **different intent** (codex's `submit_keys` vs `queue_keys` split,
+mapped onto our no-steer model):
+
+- **Enter** appends to the batch currently being accumulated — consecutive
+  Enters flush **together as the immediate next turn** (Claude-Code-style
+  batching).
+- **Tab** opens a **new** batch — its message runs as a *separate follow-up
+  turn* that iterates **after** the first queue finishes, instead of merging
+  into it (codex's Tab-to-queue).
+
+So the queue is a sequence of **turn-batches**, and each batch is one future
+turn. See `CLAUDE.md` for where this sits in the runtime model.
 
 ## What codex does (findings)
 
@@ -12,16 +22,22 @@ The queue lives on `chatwidget/input_queue.rs::InputQueueState` as
 `queued_user_messages: VecDeque<QueuedUserMessage>` (plus steer/slash machinery
 we don't have). The mechanics that matter:
 
-- **Queue vs send** (`input_flow.rs::queue_user_message_with_options`): on submit,
+- **Tab is the queue key** (`bottom_pane/chat_composer.rs` ~3106): the composer's
+  `queue_keys` is `Tab`. While a turn runs, **Tab** yields `InputResult::Queued`
+  → `queue_user_message_with_options` (push onto `queued_user_messages`), whereas
+  **Enter** (`submit_keys`) yields `InputResult::Submitted` → `submit_user_message`,
+  which *steers the running turn* rather than queueing. Idle, Tab on a draft just
+  submits like Enter (and on a `!` bang draft it inserts a literal tab); the
+  footer shows `Tab to queue message` only while a turn runs and the composer has
+  a draft (`footer.rs`).
+- **Queue vs send** (`input_flow.rs::queue_user_message_with_options`):
   `if !is_session_configured() || is_user_turn_pending_or_running() { push_back } else { submit }`.
-  A turn in flight means the message is queued, not sent.
-- **Drain on completion** (`input_flow.rs::maybe_send_next_queued_input`, called
-  from `turn_runtime.rs::on_task_complete`): when a turn completes the queue
-  flushes from the **front** into the next turn. (Codex's plain path submits one
-  `Plain` message per completion; its interrupt path
-  `merge_user_messages_with_history_record` merges the backlog into a single
-  fresh turn — Claude Code likewise batches everything queued into the next
-  turn, which is the form we adopt for every flush.)
+- **Drain on completion** (`input_flow.rs::maybe_send_next_queued_input`, from
+  `turn_runtime.rs::on_task_complete`): pops from the **front** and submits **one
+  `Plain` message per completion** (it `break`s after one) — so every queued
+  message becomes **its own sequential turn**. (Its interrupt path
+  `merge_user_messages_with_history_record` instead merges the backlog into one
+  fresh turn.)
 - **Display** (`bottom_pane/pending_input_preview.rs`): a dim italic
   "Queued follow-up inputs" section, each entry prefixed `↳`, truncated.
 - **Edit/dequeue** (`chatwidget/interaction.rs` + `input_restore.rs`): the
@@ -29,149 +45,167 @@ we don't have). The mechanics that matter:
   (`pop_back`) back into the composer to edit, resend, or drop.
 - **Interrupt** (`interaction.rs` ~115, `input_restore.rs::on_interrupted_turn`):
   two tiers. *Plain* queued messages are restored to the composer on Esc. But a
-  *steer* (a message aimed at the running turn) takes the
-  `submit_pending_steers_after_interrupt` path: Esc interrupts the current turn
-  and **resubmits the steer immediately as a fresh turn**, with a gentle info
-  notice instead of the red error.
+  *steer* takes the `submit_pending_steers_after_interrupt` path: Esc interrupts
+  and resubmits the steer immediately as a fresh turn.
 
 ## What we build
 
-We have one simple queue, not codex's steer/queue split, so we give it the
-unified form the user asked for: on **every** turn end — `StreamDone`, `Error`,
-or **Esc** (which interrupts the current turn and sends the backlog right away,
-codex's steer-after-interrupt) — the **entire queue drains into one batched next
-turn**: each message commits as its own user bubble, and the backend gets the
-texts joined with newlines as a single prompt.
+We have no steering, so we map codex's two-key intent onto the queue itself: the
+queue is a `VecDeque<Vec<String>>` of **turn-batches**, each batch one future
+turn. **Enter** appends to the last batch (the Claude-Code merge — those messages
+share one turn); **Tab** opens a new batch (codex's one-per-completion sequencing
+— that message runs as its own turn after the batches already queued). On
+**every** turn end — `StreamDone`, `Error`, or **Esc** (which interrupts and
+flushes right away) — the loop pops the **front** batch and sends it as one turn;
+the remaining batches each flush at their own following turn-end, so Tab-opened
+follow-ups iterate in order.
+
+A batch's messages commit as their own user bubbles and the backend gets them
+joined with newlines as a single prompt (`start_turn`, a Submit being a batch of
+one).
 
 ### State (`app.rs`)
 
-- `App.queued: VecDeque<String>` — messages awaiting their own turns.
+- `App.queued: VecDeque<Vec<String>>` — the turn-batches awaiting their turns.
+  Each inner `Vec` is one batch (one turn); we never push an empty batch, so
+  `is_empty()`/`len()` count batches and `queued[0]` is the next turn's messages.
+- `App::queue_draft(new_batch: bool)` — the shared mid-turn queue path. Consumes
+  the composer, re-absorbs a shell-mode `!` (queued as literal text, a v1
+  limitation), and records the text in `input_history` (so ↑ recalls it like a
+  submit). `new_batch` picks the semantics: `false` (Enter) appends to the last
+  batch (`back_mut`), `true` (Tab) pushes a new batch; an empty queue starts a
+  fresh batch either way.
 - **Enter while a turn is in flight** (`on_key_conversation`): with a non-empty,
-  non-command composer, instead of the old "do nothing", consume the composer,
-  record it in `input_history` (so ↑ still recalls it), and `push_back` to
-  `queued`. Idle Enter is unchanged (`Action::Submit`). A bare `/token` keeps the
-  palette path (slash commands aren't queued — they run inline via the palette as
-  before).
-- `App::drain_queued() -> Vec<String>` — takes the whole queue (FIFO order) for
-  the loop to send as one batched next turn; empty when nothing is queued.
+  non-command composer, `queue_draft(false)`. Idle Enter is unchanged
+  (`Action::Submit`); a bare `/token` keeps the palette path.
+- **Tab while a turn is in flight** (`on_key_conversation`, after the palette's
+  Tab arm so the menu still wins): with a non-empty composer, `queue_draft(true)`
+  → a new follow-up batch. **Idle or empty Tab falls through to a no-op** — Tab
+  only queues against a running turn (the user's spec; idle behaviour unchanged).
+- `App::drain_next_batch() -> Vec<String>` — pops the **front** batch (FIFO) for
+  the loop to send as the next turn; empty when nothing is queued. Popping one
+  per turn-end is what makes Tab batches iterate sequentially.
+- `App::drain_all_queued() -> Vec<String>` — flattens **every** batch oldest-first
+  (boundaries dissolve), for Alt+Up.
 - **Alt+Up** (`KeyCode::Up` with `ALT`, an **empty** composer, a non-empty queue):
-  `drain_queued` the **whole backlog** into the composer as one newline-joined,
-  multi-line draft (oldest first) via `recall_input` — so the box shows
-  `❯ Hello` / `  World` / … for editing, extending, or dropping; Enter then
-  re-queues it as one message (codex merges pending messages the same way when
-  restoring to the composer). Guarded on an empty composer so it never clobbers
-  a draft (the composer is empty in the normal flow — Enter emptied it when
-  queueing).
+  `drain_all_queued` the whole backlog into the composer as one newline-joined,
+  multi-line draft (oldest first) via `recall_input`, to edit/extend/drop. Guarded
+  on an empty composer so it never clobbers a draft.
 
 ### Flush (`main.rs`, the I/O boundary)
 
-The `Action::Submit` body is extracted into `start_turn(texts: Vec<String>, …)`:
-for each text it records + commits the user bubble, then `begin_stream`s, resets
-the per-turn clocks/`committed`, and spawns the backend **once** on the
-newline-joined prompt (a Submit is a batch of one). Both the Submit arm and
-every flush call it, so they can never drift. After a turn goes **idle**, the
-loop `drain_queued()`s and — if the backlog is non-empty — starts it as one
-batched turn:
+`start_turn(texts, …)` records + commits each user bubble, opens the stream,
+resets the per-turn clocks/`committed`, and spawns the backend once on the
+newline-joined prompt. Both the Submit arm and every flush call it. After a turn
+goes idle the loop `drain_next_batch()`es one batch and — if non-empty — starts
+it:
 
-- **`StreamDone` / `Error`** (branch 2, after `on_stream_event` returns "ended"):
-  flush the backlog — *only in the conversation view* (committing to scrollback
-  under the Ctrl+O overlay would violate invariant 4).
-- **Esc interrupt** (`Action::Interrupt` arm): after committing the partial + the
-  red `Conversation interrupted` notice, flush the backlog — this is the user's
-  spec ("interrupt `hello`, send `world` right away"). Interrupt only arises in
-  the conversation view, so no gate is needed.
-- **Returning from the Ctrl+O overlay** (`Action::ToggleToolView` exit branch): if
-  a turn *ended while the overlay was up* (`inflight` is now `None`), the deferred
-  flush runs after `repaint_conversation`, so the queue can't get stuck.
+- **`StreamDone` / `Error`** (after `on_stream_event` returns "ended"): pop the
+  next batch — *only in the conversation view* (committing under the Ctrl+O
+  overlay would violate invariant 4). The **next** turn-end pops the **next**
+  batch, so Tab follow-ups iterate one turn at a time.
+- **Esc interrupt** (`Action::Interrupt`): after committing the partial + the red
+  `Conversation interrupted` notice, pop the **front** batch (the first queue) and
+  send it right away; later Tab batches iterate at the following turn-ends.
+- **Returning from the Ctrl+O overlay**: if a turn *ended while the overlay was
+  up* (`inflight` is now `None`), the deferred pop runs after
+  `repaint_conversation`.
 
 Because a message can only be queued *while streaming*, and a non-empty queue
 always starts a fresh turn the instant the current one ends, the invariant holds:
 **the queue is non-empty only while a turn is active** (no draw ever shows a
-queued band at idle — the flush happens in the same loop turn as the end event,
-before the next frame).
+queued band at idle).
 
 ### Display (`ui.rs`)
 
 Queued messages render **above the box, in the streaming strip** — stacked just
-under the status line's gap, between it and the box's top rule — each **inset
-two columns** (`QUEUED_INDENT`) and past the indent styled **exactly like a sent
-user message** (the `❯ ` bullet, the dark background, wrapped), so a queued
-follow-up reads like it is already on its way:
+under the status line's gap, between it and the box's top rule — each **inset two
+columns** (`QUEUED_INDENT`) and past the indent styled **exactly like a sent user
+message** (the `❯ ` bullet, the dark background, wrapped). A **blank row divides
+each turn-batch from the next**, so Tab-opened follow-ups read as separate turns
+from the first queue:
 
 ```
 ● Happy to help!…            ← streaming preview
 ( ●    ) Working… (…)         ← status line
 
-  ❯ Hello                     ← queued: two-space inset, user-message style
+  ❯ Hello                     ← batch 1 (Enter): two-space inset, user-style
   ❯ World
+                              ← blank: a batch boundary (Tab opened the next)
+  ❯ Later                     ← batch 2 (Tab): its own follow-up turn
 ────────────────────────────
 ❯                             ← the input box
 ────────────────────────────
 ```
 
-The strip's height already collapses to 0 when idle, and the queue is only ever
-non-empty while streaming, so the queued rows live naturally in the strip. This
-needs a `queued_rows` parameter threaded through `live_height` / `live_layout` /
-`input_box` (the strip's height now depends on the wrapped queue), separate from
-the palette/shortcuts `band_rows` below the box:
+The strip's height collapses to 0 when idle and the queue is only non-empty while
+streaming, so the queued rows live naturally in the strip. `queued_rows` /
+`queued_lines` (threaded through `live_height`/`live_layout`/`input_box`):
 
-- `queued_rows(app, width)` — the total wrapped height of every queued message
-  (each via `message_lines(Role::User, …)`), **uncapped** — the whole backlog
-  shows, codex-style; 0 when empty. `live_height`/`live_layout` add it to the
-  strip; `render_live` paints exactly that many — both go through
-  `queued_lines`, so they can't drift. (`live_height`'s terminal-height clamp
-  still bounds the region as a whole; the queue drains entirely at the next turn
-  end, so a backlog taller than the screen is a momentary, self-healing state.)
-- `queued_lines(app, width)` — each queued message rendered by `message_lines`
-  (`❯` bullet, dark background) wrapped to `width` minus the indent, every row
-  prefixed with `QUEUED_INDENT` (`indent_queued_line` folds the line style into
-  the spans so the indent stays *outside* the dark block), concatenated.
+- `queued_lines(app, width)` — each batch's messages rendered via
+  `message_lines(Role::User, …)`, every row prefixed with `QUEUED_INDENT`
+  (`indent_queued_line` keeps the indent outside the dark block), with a blank
+  `Line` inserted between batches; **uncapped** (the whole backlog shows).
+- `queued_rows(app, width)` — `queued_lines(...).len()`, so the strip reserves
+  exactly what `render_live` paints (they can't drift). `live_height`'s
+  terminal-height clamp still bounds the region.
+
+The `tab to queue next turn` binding is listed in the `?` shortcuts band
+(alongside `alt+↑ to edit queue`, `docs/shortcuts.md`).
 
 ## Known divergences from codex
 
-- **No steer/queue split.** One `VecDeque<String>`; every flush batches the
-  whole backlog into the next turn (codex's plain path sends one per completion
-  and only its steer path merges; Claude Code batches like we do). So Esc always
-  sends the backlog right away (codex only does that for steers; for plain
-  queued messages it restores them to the composer).
-- **We keep the red interrupt notice.** Codex's steer path shows a gentle info
-  ("Model interrupted to submit steer instructions."); we keep our standard
-  `Conversation interrupted` notice, then send the queued message — the interrupt
-  honestly happened.
-- **Slash commands aren't queued.** A bare `/token` runs inline via the palette
-  (as today); only plain text queues.
-- **Alt+Up restores everything, not just the last.** Codex's
-  `edit_queued_message` pops one message; ours drains the whole backlog into the
-  composer (the merge codex itself applies when restoring after an interrupt) —
-  one binding, the entire queue editable at once.
-- **No per-queue edit hint row.** Codex shows a dim "Alt+Up edit last queued
-  message" hint line under its queued list; we spend no strip row on it —
-  instead the binding is listed in the `?` shortcuts band (`alt+↑ to edit
-  queue`, docs/shortcuts.md).
+- **Enter batches, Tab sequences — no steering.** Codex's Enter steers the
+  running turn and Tab queues; *every* codex queued message is its own turn
+  (one per completion). We have no steer path, so Enter instead **batches** into
+  the next turn (Claude-Code style) and **Tab** is what splits the queue into
+  sequential follow-up turns. Esc sends the front batch right away (codex does
+  that only for steers).
+- **We keep the red interrupt notice.** Codex's steer path shows a gentle info;
+  we keep our standard `Conversation interrupted` notice, then send the front
+  batch — the interrupt honestly happened.
+- **Slash commands aren't queued.** A bare `/token` runs inline via the palette;
+  only plain text queues. (The palette's own Tab still runs the highlighted
+  command — it wins over the queue Tab.)
+- **Idle Tab is a no-op.** Codex's idle Tab submits like Enter (and inserts a tab
+  in a `!` bang draft); ours does nothing — Tab only queues against a running
+  turn, which is all the user asked for.
+- **Alt+Up restores everything flattened, not just the last.** Codex's
+  `edit_queued_message` pops one message; ours flattens the whole backlog (across
+  batches) into the composer — batch boundaries dissolve, and the user re-queues
+  however they like.
+- **No per-queue edit hint row.** Codex shows a dim hint line under its queued
+  list; we spend no strip row on it — the bindings live in the `?` shortcuts band
+  (`alt+↑ to edit queue`, `tab to queue next turn`).
 - **Quitting drops the queue.** The queue only exists mid-turn; Ctrl+C there quits
   (the composer is empty) and the queue is discarded with the session.
 
 ## Testing
 
-- `app` (queue): Enter mid-turn queues (composer cleared, `queued` grows, FIFO
-  order preserved); idle Enter still submits; `drain_queued` takes everything in
-  order and empties; a queued message is recorded in `input_history` (↑ recalls
-  it); Alt+Up pulls the whole backlog into the composer newline-joined (cursor
-  at the end, queue emptied); Alt+Up with a draft is a no-op (no clobber);
-  Alt+Up on an empty queue is harmless.
-- `ui` (queue): `queued_rows` is 0 empty / counts the queue / counts wrapped
-  lines / is uncapped (ten messages are ten rows); `queued_lines` styles each
-  message exactly like a user message (`❯` bullet, dark background) and wraps
-  long ones; `live_height` grows with the queue; `render_live` draws the queue
-  *above* the box (and the shortcuts band still shows below it, in its own slot).
+- `app` (queue): Enter mid-turn appends to one batch in order; **Tab mid-turn
+  opens a new batch** (composer consumed, a second batch added); an Enter after a
+  Tab joins the Tab's batch; the batches drain one turn at a time
+  (`drain_next_batch` yields the first queue, then the follow-up); a Tab-queued
+  message is recorded in `input_history` (↑ recalls it); **idle Tab and empty
+  mid-turn Tab are no-ops** (nothing queued, draft intact); idle Enter still
+  submits; `drain_next_batch` takes the front batch and empties it; Alt+Up pulls
+  the whole backlog (flattened) into the composer newline-joined; Alt+Up with a
+  draft is a no-op; `/clear` mid-turn drops the backlog.
+- `ui` (queue): `queued_rows` is 0 empty / counts a batch's messages / counts a
+  long message's wrapped rows / **counts the blank between batches** (two
+  single-message batches are three rows); `queued_lines` styles each message
+  like a user message and **divides batches with a blank row**; `live_height`
+  grows with the queue; `render_live` draws the queue above the box.
 - `scripts/smoke.sh` Phase 12 (batch-send): submit `hello`, queue `world` and
-  `again` mid-stream (both inset rows show above the box while turn 1 streams),
-  then the backlog batch-sends as ONE turn — `❯ world` and `❯ again` both
-  commit, `Finished for` (turn 2) appears and `Completed for` (a third turn)
-  must not.
+  `again` mid-stream **with Enter** (both inset rows show), then the backlog
+  batch-sends as ONE turn.
 - `scripts/smoke.sh` Phase 13 (interrupt-send): submit `hello`, queue `world`,
-  press Esc — `Conversation interrupted` commits and the backlog is sent right
-  away (`❯ world` + `Finished for`).
+  press Esc — `Conversation interrupted` commits and the front batch is sent
+  right away.
 - `scripts/smoke.sh` Phase 14 (Alt+Up restore): queue `world` and `again`
-  mid-stream, press Alt+Up — the inset queued rows clear and the box shows the
-  multi-line draft (`❯ world` + the `  again` continuation).
+  mid-stream, press Alt+Up — the inset rows clear and the box shows the
+  multi-line draft.
+- `scripts/smoke.sh` Phase 18 (Tab follow-up): submit `hello`, queue `world`
+  with **Enter** then `later` with **Tab** mid-stream (a blank divides them),
+  and watch `world` send as one turn and `later` send as a **separate** turn
+  after it — a third turn the all-Enter Phase 12 never produces.

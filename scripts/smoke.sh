@@ -27,6 +27,7 @@ cleanup() {
 	tmux kill-session -t "${S}_queue" 2>/dev/null
 	tmux kill-session -t "${S}_queueint" 2>/dev/null
 	tmux kill-session -t "${S}_altup" 2>/dev/null
+	tmux kill-session -t "${S}_tabqueue" 2>/dev/null
 	tmux kill-session -t "${S}_sync" 2>/dev/null
 	tmux kill-session -t "${S}_clearkill" 2>/dev/null
 	tmux kill-session -t "${S}_resize" 2>/dev/null
@@ -800,6 +801,55 @@ echo "==== captured pane (after the pause — reply streaming, arrow flipped dow
 printf '%s\n' "$delay_reply"
 tmux kill-session -t "$S17" 2>/dev/null
 
+# --- Phase 21: TAB queues a message as a SEPARATE follow-up turn (docs/queue.md),
+# unlike Enter which batches into the next turn. Submit "hello there", then queue
+# "world" with Enter and "later" with TAB while turn 1 streams: both show inset
+# above the box ("  ❯ world", "  ❯ later"), divided by a blank batch boundary.
+# "world" then runs as turn 2 ("Finished for") and "later" runs as a SEPARATE
+# turn 3 ("Completed for") — the third turn Phase 12's all-Enter batching never
+# produces. ---
+S18="${S}_tabqueue"
+tmux new-session -d -s "$S18" -x 80 -y 24 "$APP"
+sleep 0.4
+tmux send-keys -t "$S18" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S18" Enter
+for _ in $(seq 1 40); do # up to ~4s: wait until turn 1 is visibly streaming
+	if tmux capture-pane -t "$S18" -p | grep -qF "Happy"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S18" -l "world"
+sleep 0.2
+tmux send-keys -t "$S18" Enter # streaming → batch 1 (the first queue)
+tmux send-keys -t "$S18" -l "later"
+sleep 0.2
+tmux send-keys -t "$S18" Tab # streaming → a NEW batch (a separate follow-up turn)
+tabqueue_band=""
+for _ in $(seq 1 20); do # up to ~3s: both queued messages show above the box
+	tabqueue_band="$(tmux capture-pane -t "$S18" -p)"
+	if printf '%s' "$tabqueue_band" | grep -qF "  ❯ world" &&
+		printf '%s' "$tabqueue_band" | grep -qF "  ❯ later" &&
+		printf '%s' "$tabqueue_band" | grep -qF "tokens"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (world via Enter + later via Tab queued above the box) ===="
+printf '%s\n' "$tabqueue_band"
+tabqueue=""
+for _ in $(seq 1 160); do # up to ~24s: turns 1, 2, then the SEPARATE turn 3 finish
+	tabqueue="$(tmux capture-pane -t "$S18" -p -S -100)"
+	if printf '%s' "$tabqueue" | grep -qF "Completed for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (the Tab follow-up ran as a separate third turn) ===="
+printf '%s\n' "$tabqueue"
+tmux kill-session -t "$S18" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -1104,6 +1154,28 @@ if printf '%s' "$altup" | grep -qF "  ❯ world"; then
 	echo "FAIL: the queued display did not clear after Alt+Up pulled the backlog into the composer" >&2
 	status=1
 fi
+# Phase 21: TAB queues a SEPARATE follow-up turn (docs/queue.md). While turn 1
+# streams, "world" (Enter) and "later" (Tab) both show inset above the box; then
+# "world" runs as turn 2 and "later" as a SEPARATE turn 3, so "Completed for"
+# (turn 3's done verb) MUST appear — unlike Phase 12's batched backlog, which
+# asserts the opposite.
+if ! printf '%s' "$tabqueue_band" | grep -qF "  ❯ world"; then
+	echo "FAIL: the Enter-queued 'world' was not shown inset above the box while turn 1 streamed" >&2
+	status=1
+fi
+if ! printf '%s' "$tabqueue_band" | grep -qF "  ❯ later"; then
+	echo "FAIL: the Tab-queued 'later' was not shown inset above the box — did Tab fail to queue?" >&2
+	status=1
+fi
+if ! printf '%s' "$tabqueue" | grep -qF "❯ world" ||
+	! printf '%s' "$tabqueue" | grep -qF "❯ later"; then
+	echo "FAIL: the queued messages never reached scrollback — '❯ world' and '❯ later' did not both commit" >&2
+	status=1
+fi
+if ! printf '%s' "$tabqueue" | grep -qF "Completed for"; then
+	echo "FAIL: the Tab-queued 'later' did not run as a SEPARATE third turn ('Completed for' = turn 3 missing) — Tab must open a new follow-up batch, not merge like Enter" >&2
+	status=1
+fi
 # Phase 15: flicker-free commits (docs/flicker.md). The recorded turn must have
 # committed lines (so the clear-the-region path actually ran), and every one of
 # those clears must sit inside a synchronized-update block — a clear outside
@@ -1318,6 +1390,6 @@ if ! printf '%s' "$delay_reply" | grep -qE "↓ [0-9]+ tokens"; then
 fi
 
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, and Esc interrupts a long one), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, and Esc interrupts a long one), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams"
 fi
 exit "$status"

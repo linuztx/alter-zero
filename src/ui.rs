@@ -224,6 +224,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("esc", " to quit"),
     ("ctrl+c", " to quit"),
     ("alt+↑", " to edit queue"),
+    ("tab", " to queue next turn"),
 ];
 /// The display column where a row's second entry starts (the first entry is
 /// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea.
@@ -233,11 +234,13 @@ const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;
 /// Dim grey — an entry's label (codex dims the whole overlay).
 const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
 
-// --- Queued messages. While a turn streams, messages submitted with Enter join
-// `App::queued` and are shown **above the box** (in the strip, just under the
-// status line's gap) styled exactly like a sent user message — the `❯ ` bullet,
-// the dark background, wrapped — so a queued follow-up reads like it is already
-// on its way. The loop sends them one per turn. See docs/queue.md. ---
+// --- Queued messages. While a turn streams, messages submitted with Enter (or
+// Tab) join `App::queued` and are shown **above the box** (in the strip, just
+// under the status line's gap) styled exactly like a sent user message — the
+// `❯ ` bullet, the dark background, wrapped — so a queued follow-up reads like
+// it is already on its way. The queue is a sequence of turn-batches: Enter
+// appends to the current batch, **Tab opens a new one**, and the loop sends one
+// batch per turn-end (a blank row divides the batches). See docs/queue.md. ---
 
 /// Indent prefixed to every queued row, insetting the queue from the strip's
 /// left edge; the dark user-message block starts after it.
@@ -1003,19 +1006,28 @@ pub fn queued_rows(app: &App, width: u16) -> u16 {
 /// The styled lines for the queued follow-up messages: each rendered like a sent
 /// user message ([`message_lines`] — the `❯ ` bullet, dark background, wrapped to
 /// `width` minus the [`QUEUED_INDENT`] every row is inset by), concatenated —
-/// every queued message shows (no display cap; the queue drains whole at the
-/// next turn anyway). Empty when the queue is empty.
+/// every queued message shows (no display cap). A **blank row divides each
+/// turn-batch** from the next, so Tab-opened follow-ups read as separate turns
+/// from the first queue (`docs/queue.md`). Empty when the queue is empty.
 #[must_use]
 pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let inner = width.saturating_sub(cols(QUEUED_INDENT) as u16);
-    app.queued
-        .iter()
-        .flat_map(|msg| {
-            message_lines(Role::User, msg, inner)
-                .into_iter()
-                .map(indent_queued_line)
-        })
-        .collect()
+    let mut lines = Vec::new();
+    for (i, batch) in app.queued.iter().enumerate() {
+        // A blank row divides each turn-batch from the next, so Tab-opened
+        // follow-ups read as separate from the first queue.
+        if i > 0 {
+            lines.push(Line::default());
+        }
+        for msg in batch {
+            lines.extend(
+                message_lines(Role::User, msg, inner)
+                    .into_iter()
+                    .map(indent_queued_line),
+            );
+        }
+    }
+    lines
 }
 
 /// Prefix one queued-message row with the [`QUEUED_INDENT`], keeping the indent
@@ -2833,7 +2845,7 @@ mod tests {
         // message stacked above it, not on a strip row.
         let mut app = App::new();
         app.begin_stream();
-        app.queued.push_back("world".into());
+        app.queued.push_back(vec!["world".into()]);
         app.input = TextArea::from_text("x");
         let q = queued_rows(&app, 40);
         let h = live_height(&app.input, 40, 24, true, true, q, 0, 0);
@@ -3300,9 +3312,43 @@ mod tests {
     fn queued_rows_is_zero_empty_and_counts_the_queue() {
         let mut app = App::new();
         assert_eq!(queued_rows(&app, 40), 0);
-        app.queued.push_back("a".into());
-        app.queued.push_back("b".into());
+        app.queued.push_back(vec!["a".into(), "b".into()]);
         assert_eq!(queued_rows(&app, 40), 2, "one short message per row");
+    }
+
+    #[test]
+    fn queued_rows_counts_the_blank_between_batches() {
+        // Two single-message batches occupy three rows — a blank divides them.
+        let mut app = App::new();
+        app.queued.push_back(vec!["a".into()]);
+        app.queued.push_back(vec!["b".into()]);
+        assert_eq!(queued_rows(&app, 40), 3);
+    }
+
+    #[test]
+    fn queued_lines_separate_batches_with_a_blank_row() {
+        // Tab-opened batches read as separate turns: a blank row sits between
+        // each batch, grouping the follow-ups apart from the first queue.
+        let mut app = App::new();
+        app.queued.push_back(vec!["first".into()]);
+        app.queued.push_back(vec!["later".into()]);
+        let lines = queued_lines(&app, 40);
+        assert_eq!(lines.len(), 3, "two single-message batches + one separator");
+        assert!(
+            plain(&lines[0]).contains("❯ first"),
+            "{:?}",
+            plain(&lines[0])
+        );
+        assert_eq!(
+            plain(&lines[1]).trim(),
+            "",
+            "a blank separator row divides the batches"
+        );
+        assert!(
+            plain(&lines[2]).contains("❯ later"),
+            "{:?}",
+            plain(&lines[2])
+        );
     }
 
     #[test]
@@ -3310,7 +3356,7 @@ mod tests {
         // A queued message wraps like a user message, so a long one is >1 row.
         let mut app = App::new();
         app.queued
-            .push_back("one two three four five six seven eight".into());
+            .push_back(vec!["one two three four five six seven eight".into()]);
         assert!(queued_rows(&app, 16) >= 2, "a long queued message wraps");
     }
 
@@ -3319,9 +3365,8 @@ mod tests {
         // No display cap (codex shows the whole backlog): ten queued messages
         // are ten rows.
         let mut app = App::new();
-        for i in 0..10 {
-            app.queued.push_back(format!("m{i}"));
-        }
+        app.queued
+            .push_back((0..10).map(|i| format!("m{i}")).collect());
         assert_eq!(queued_rows(&app, 40), 10);
     }
 
@@ -3332,7 +3377,7 @@ mod tests {
         // background) wrapped to the remaining width — and the indent itself
         // stays *outside* the dark block.
         let mut app = App::new();
-        app.queued.push_back("world".into());
+        app.queued.push_back(vec!["world".into()]);
         let lines = queued_lines(&app, 40);
         let expected = message_lines(Role::User, "world", 38); // 40 minus the indent
         assert_eq!(lines.len(), expected.len());
@@ -3352,8 +3397,7 @@ mod tests {
     #[test]
     fn queued_lines_list_every_message_with_the_user_bullet() {
         let mut app = App::new();
-        app.queued.push_back("world".into());
-        app.queued.push_back("again".into());
+        app.queued.push_back(vec!["world".into(), "again".into()]);
         let all: String = queued_lines(&app, 40)
             .iter()
             .map(plain)
@@ -3367,7 +3411,7 @@ mod tests {
     fn queued_lines_wrap_a_long_message_across_rows() {
         let mut app = App::new();
         app.queued
-            .push_back("alpha beta gamma delta epsilon".into());
+            .push_back(vec!["alpha beta gamma delta epsilon".into()]);
         let lines = queued_lines(&app, 18);
         assert!(lines.len() >= 2, "a long queued message wraps: {lines:?}");
         assert!(
@@ -3379,9 +3423,8 @@ mod tests {
     #[test]
     fn queued_lines_list_the_whole_backlog_uncapped() {
         let mut app = App::new();
-        for i in 0..10 {
-            app.queued.push_back(format!("m{i}"));
-        }
+        app.queued
+            .push_back((0..10).map(|i| format!("m{i}")).collect());
         let lines = queued_lines(&app, 40);
         assert_eq!(lines.len(), 10, "every queued message shows");
         assert!(plain(&lines[9]).contains("❯ m9"), "{:?}", plain(&lines[9]));
@@ -3392,7 +3435,7 @@ mod tests {
         let mut app = App::new();
         app.begin_stream();
         let without = live_height(&app.input, 40, 24, true, true, 0, 0, 0);
-        app.queued.push_back("world".into());
+        app.queued.push_back(vec!["world".into()]);
         let q = queued_rows(&app, 40);
         let with = live_height(&app.input, 40, 24, true, true, q, 0, 0);
         assert_eq!(with, without + q, "the queue grows the region by its rows");
@@ -3403,7 +3446,7 @@ mod tests {
     fn render_live_draws_the_queue_above_the_box_as_a_user_message() {
         let mut app = App::new();
         app.begin_stream();
-        app.queued.push_back("world".into());
+        app.queued.push_back(vec!["world".into()]);
         let q = queued_rows(&app, 40);
         let h = live_height(&app.input, 40, 24, true, true, q, 0, 0);
         let mut buf = buffer(40, h);
@@ -3436,7 +3479,7 @@ mod tests {
         let mut app = App::new();
         app.begin_stream();
         app.shortcuts_open = true;
-        app.queued.push_back("world".into());
+        app.queued.push_back(vec!["world".into()]);
         let q = queued_rows(&app, 40);
         let h = live_height(&app.input, 40, 24, true, true, q, shortcuts_rows(&app), 0);
         let mut buf = buffer(40, h);
@@ -3649,8 +3692,8 @@ mod tests {
         };
         let queued = {
             let mut app = streaming();
-            app.queued.push_back("queued one with CJK 世界".into());
-            app.queued.push_back(SWEEP_TEXT.into());
+            app.queued
+                .push_back(vec!["queued one with CJK 世界".into(), SWEEP_TEXT.into()]);
             app
         };
         let menu = {

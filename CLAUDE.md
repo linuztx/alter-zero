@@ -86,10 +86,13 @@ an empty composer; any other key dismisses it, Esc dismiss-only; see
 `docs/shortcuts.md`); plus, *above* the box while a turn streams, **messages
 submitted with Enter queue** instead of waiting (shown like sent user messages,
 inset two columns — `  ❯ {msg}` rows in the strip under the status line —
-`App::queued`, codex's
-`queued_user_messages`), the whole backlog auto-sent as one batched turn when
-the current one ends — **Esc interrupts and sends the backlog right away**,
-Alt+Up pulls it all back into the composer to edit; see
+`App::queued`, a `VecDeque<Vec<String>>` of **turn-batches**, codex's
+`queued_user_messages`): **Enter appends to the current batch** (those messages
+auto-sent together as one next turn) while **Tab opens a new batch** (codex's
+Tab-to-queue — its message runs as a *separate follow-up turn* after the first
+queue, a blank row dividing them), the loop sending one batch per turn end —
+**Esc interrupts and sends the front batch right away**, Alt+Up pulls the whole
+backlog (flattened) back into the composer to edit; see
 `docs/queue.md`; plus **`!command` runs a local shell command** (codex's `!`
 shell mode: a leading `!` is **absorbed** into `App::shell_mode` and rendered
 back as the composer's red `! ` prompt — `! pwd`, never `❯ !pwd` — with a red
@@ -227,10 +230,13 @@ touch it), `insert_before`s it, then spawns one reply via the selected
 thread handle + `CancelToken` so a quit mid-stream cancels and reaps it.
 **Enter *while a turn is in flight* queues** the message into `App::queued`
 (codex's `queued_user_messages`) instead of producing `Submit` — shown like
-sent user messages (`❯` rows) in the strip above the box; `start_turn` is
-reused to flush the whole backlog as one batched turn per turn end (Alt+Up
-pulls the backlog back into the composer, newline-joined, to edit; see
-`docs/queue.md`). The
+sent user messages (`❯` rows) in the strip above the box. The queue is a
+sequence of **turn-batches**: Enter appends to the last (`queue_draft(false)`),
+**Tab opens a new batch** (`queue_draft(true)`, a separate follow-up turn);
+`start_turn` is reused to flush **one batch** (`drain_next_batch`) per turn end,
+so Enter messages batch into one turn while Tab follow-ups iterate in order
+(Alt+Up pulls the whole backlog, flattened newline-joined, back into the
+composer to edit; see `docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
 and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
@@ -342,7 +348,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
   key / dim label colours), the queued messages (the `QUEUED_INDENT` two-space
   inset, `queued_rows`/`queued_lines` — uncapped, each rendered by
-  `message_lines(Role::User…)`, so they reuse the user-message style), the
+  `message_lines(Role::User…)`, so they reuse the user-message style, with a
+  blank row dividing each Tab-opened turn-batch from the next), the
   session footer (`FOOTER_*` — the two-space `FOOTER_INDENT`, the ` · `
   `FOOTER_SEPARATOR`, the dim `FOOTER_COLOR`; `footer_rows`/`footer_line`,
   ellipsis-truncated at narrow widths, with `display_cwd` formatting the

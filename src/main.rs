@@ -174,13 +174,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     repaint_conversation(term, &app, &mut committed)?;
                                     // A turn may have ended while the overlay was up
                                     // (its queue flush was deferred — invariant 4);
-                                    // now that we commit inline again, send the whole
-                                    // backlog as the next turn.
+                                    // now that we commit inline again, send the next
+                                    // queued batch (later batches flush at each
+                                    // following turn-end, see the StreamDone arm).
                                     if inflight.is_none() {
-                                        let queued = app.drain_queued();
-                                        if !queued.is_empty() {
+                                        let batch = app.drain_next_batch();
+                                        if !batch.is_empty() {
                                             inflight = Some(start_turn(
-                                                term, &mut app, &tx, &backend, queued,
+                                                term, &mut app, &tx, &backend, batch,
                                                 &mut committed, &mut clocks,
                                             )?);
                                         }
@@ -264,14 +265,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 clocks.thinking_start = None;
                                 // The user interrupted to send their queued
                                 // follow-ups right away (their spec; codex's
-                                // submit-pending-steers-after-interrupt, which
-                                // merges the backlog into one fresh turn).
-                                // Interrupt only arises in the conversation view,
-                                // so committing here is always safe.
-                                let queued = app.drain_queued();
-                                if !queued.is_empty() {
+                                // submit-pending-steers-after-interrupt). The
+                                // front batch — the first queue — goes out now;
+                                // any Tab-opened follow-up batches iterate at the
+                                // following turn-ends. Interrupt only arises in the
+                                // conversation view, so committing here is safe.
+                                let batch = app.drain_next_batch();
+                                if !batch.is_empty() {
                                     inflight = Some(start_turn(
-                                        term, &mut app, &tx, &backend, queued,
+                                        term, &mut app, &tx, &backend, batch,
                                         &mut committed, &mut clocks,
                                     )?);
                                 }
@@ -307,17 +309,18 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     term, &mut app, &mut committed, &mut clocks, stream_event,
                 )? {
                     inflight = None; // the stream ended
-                    // Send the whole queued backlog as the next turn (Claude-Code
-                    // batching; codex's interrupt path merges the same way) — but
-                    // only in the conversation view; committing under the Ctrl+O
-                    // overlay would violate the no-scrollback-in-overlay
-                    // invariant. A turn that ends in the overlay flushes on
-                    // return instead (see ToggleToolView).
+                    // Send the next queued batch as the following turn — Enter
+                    // messages batch into one turn, while Tab-opened follow-up
+                    // batches each flush at their own turn-end, so they iterate in
+                    // order. Only in the conversation view; committing under the
+                    // Ctrl+O overlay would violate the no-scrollback-in-overlay
+                    // invariant. A turn that ends in the overlay flushes on return
+                    // instead (see ToggleToolView).
                     if app.view == View::Conversation {
-                        let queued = app.drain_queued();
-                        if !queued.is_empty() {
+                        let batch = app.drain_next_batch();
+                        if !batch.is_empty() {
                             inflight = Some(start_turn(
-                                term, &mut app, &tx, &backend, queued,
+                                term, &mut app, &tx, &backend, batch,
                                 &mut committed, &mut clocks,
                             )?);
                         }
@@ -366,12 +369,13 @@ struct StatusClocks {
 }
 
 /// Start one turn for `texts` (a Submit is a batch of one; a queue flush sends
-/// the whole backlog as a single turn, Claude-Code style): record + commit each
-/// user bullet to scrollback, open the stream, reset the per-turn clocks and
-/// commit counter, and spawn the backend on the joined prompt. Returns the
-/// in-flight cancel token + thread handle. Shared by the `Submit` key arm *and*
-/// every queue flush (`StreamDone`/`Error`, an Esc interrupt, or a Ctrl+O
-/// return), so the paths can never drift. Empty batches are the caller's job to
+/// one batch — the Enter messages sharing that turn — as a single turn, the
+/// Tab-opened batches flushing across later turns): record + commit each user
+/// bullet to scrollback, open the stream, reset the per-turn clocks and commit
+/// counter, and spawn the backend on the joined prompt. Returns the in-flight
+/// cancel token + thread handle. Shared by the `Submit` key arm *and* every
+/// queue flush (`StreamDone`/`Error`, an Esc interrupt, or a Ctrl+O return), so
+/// the paths can never drift. Empty batches are the caller's job to
 /// skip. See `docs/queue.md`.
 fn start_turn(
     term: &mut InlineViewport,
