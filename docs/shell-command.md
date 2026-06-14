@@ -129,36 +129,57 @@ the cell as `⎿ Interrupted by user`. Output is stdout then stderr
 concatenated; a non-zero exit appends `[exit status: N]` and resolves the
 cell red.
 
-### Output too large — save to a file (Claude-Code's huge-output handling)
+### Output too large — cap it in memory (the peak-memory fix)
 
-When a command's output exceeds `SHELL_OUTPUT_MAX_BYTES` (100KB), the runner
-(`main.rs::save_if_too_large`, boundary I/O) writes the **full** output to a
-unique temp file (`$TMPDIR/inline-tui-shell-{pid}-{nanos}.txt`) and streams back
-only a preview — the first `ui::SHELL_PREVIEW_BYTES` (2KB), cut on a char
-boundary — in `ToolEnd { output: preview, ok, saved: Some((path, total_bytes)) }`
-(a normal backend tool sends `saved: None`). The loop calls
-`App::set_tool_saved(path, total_bytes)` before `end_tool`, so the recorded
-`ToolCall.saved` (a `SavedOutput { path, total_bytes }`) makes the cell render
-the saved block instead of the normal peek:
+A command like `! tree ~/` can emit tens of MB. Reading that whole thing into a
+`String` (what `read_to_string` did) spikes **peak** RSS by the output size: a
+~10MB `tree ~/` took the process from ~5MB to ~12MB (measured via
+`/proc/self/status`'s `VmHWM`, scaling linearly — ~31MB peak for 30MB of output).
+It is **not** a leak — RSS returns to baseline and repeated runs don't accumulate
+— but it is a real, avoidable peak (a big enough command could OOM a constrained
+box). The earlier "save the full output to a file" approach didn't help: it still
+read everything into memory *first*, then wrote the file.
+
+So the runner **caps what it keeps as it reads** (`main.rs::read_capped`, codex's
+`read_capped`/`append_capped` pattern). Each pipe reader retains at most
+`SHELL_OUTPUT_MAX_BYTES` (100KB) and **drains the rest** — so the child never
+blocks on a full pipe (the reason for the two reader threads) — tracking whether
+anything was dropped. The combined stdout+stderr is re-capped to the same limit
+(cut on a char boundary). Peak RSS is now flat regardless of output size (a
+`VmHWM` repro: ~2.5MB for 7/10/30MB outputs, vs 9/12/31MB before). The trade-off
+is that a truncated command's *retained* output is up to 100KB (vs the old 2KB
+preview) — but it lives only in `App.history`, and the peak is what mattered.
+
+The runner sends `ToolEnd { output: head, ok, truncated }` (`truncated` true when
+bytes were dropped; a normal backend tool always sends `false`). The loop calls
+`App::set_tool_truncated()` before `end_tool`, so the recorded
+`ToolCall.truncated` makes the **expanded** (Ctrl+O) cell append a dim `…` marker
+after the last retained line:
 
 ```
 ! tree ~/
-  ⎿
-    Output too large (6.8MB). Full output saved to: /tmp/inline-tui-shell-…txt
-
-    Preview (first 2KB):
-    /home/me/
+  ⎿ /home/me/
     ├── Codes
+    ├── Downloads
+    ├── Documents
+    … +18514 lines (ctrl+o to expand)   ← inline: the usual peek hint
+
+(Ctrl+O view, pinned to the bottom)
     …
+    └── zzz/last-retained-line
+    …                                   ← TOOL_TRUNCATED_MARKER: the cap cut here
 ```
 
-`ui::saved_output_lines` builds it (the corner alone, then the `human_bytes`
-size + path — prose so it wraps — a blank, the `Preview (first 2KB):` label, and
-the preview kept verbatim/truncated, *not* whitespace-collapsed so a tree keeps
-its shape). There is **no** `ctrl+o to expand` hint: the saved file is the full
-output, and the Ctrl+O view renders the identical block (nothing more to
-expand). On a write failure the runner falls back to streaming the full output
-unsaved.
+`ui::tool_full_lines` appends `ui::TOOL_TRUNCATED_MARKER` (`…`) when
+`tool.truncated`. Inline (`tool_lines`) needs no extra marker — the existing
+`… +N lines (ctrl+o to expand)` peek hint already signals more (its count is of
+the *retained* lines, so it under-counts a truncated output). The dropped bytes
+are **not recoverable**: unlike a paged file there is nothing to expand to; the
+`…` only says "this is where the cap cut it".
+
+Reading goes through `String::from_utf8_lossy`, so non-UTF-8 output no longer
+errors (`read_to_string` did), and a cap that splits a multi-byte char yields a
+single `U+FFFD`.
 
 ### Footer — the `Shell mode` line (`ui.rs`)
 
@@ -189,26 +210,26 @@ The `?` shortcuts band gains a `! for shell command` entry.
   block of up to `TOOL_PEEK_LINES` lines (continuation lines aligned under the
   corner) with a `… +N lines (ctrl+o to expand)` hint when more is hidden,
   `⎿ Running…` while running; the Ctrl+O `tool_full_lines` is headerless too
-  (no `● ls` bullet) and shows the **full** output uncapped under `⎿`; a
-  too-large output (`tool.saved` set) renders the `Output too large (…). Full
-  output saved to: …` block + a `Preview (first 2KB):` instead (no expand hint),
-  with `human_bytes` formatting the size; `conversation_lines` keeps the cell
-  flush (no spacer after the Shell header); shell mode swaps the
+  (no `● ls` bullet) and shows the retained output uncapped under `⎿`; a
+  truncated output (`tool.truncated` set) appends a dim `…`
+  (`TOOL_TRUNCATED_MARKER`) line after the last retained line in the expanded
+  view, while a complete output appends nothing; `conversation_lines` keeps the
+  cell flush (no spacer after the Shell header); shell mode swaps the
   composer prompt to a red `! `; `footer_rows` is 1 in the mode without session
   info; the footer slot shows the red `Shell mode`, displacing
   `{model} · {cwd}`; the cursor stays in the box; the shortcuts band lists `!`;
-  `tool_header` still omits `()` for an empty-args backend tool; `human_bytes`
-  formats `512B`/`2KB`/`6.8MB`/`2.0GB`; a `tool.saved` cell renders the corner,
-  the `Output too large (…). Full output saved to: …` notice, the blank, the
-  `Preview (first 2KB):` label and the preview, with no expand hint.
+  `tool_header` still omits `()` for an empty-args backend tool.
+- `app`: `set_tool_truncated` flags the running tool and the flag survives
+  `end_tool`; it is a no-op when no tool is running.
 - `main.rs` (smoke, Phase 19): typing `!echo …` shows the `! echo …` prompt and
   the `Shell mode` footer (never `❯ !echo`); the run commits the exec cell
   (`! echo …` header + `⎿` output, no `●` header, no `Ran for` summary); a
   failing command reports `[exit status: N]`; `!sleep 9` then Esc commits the
-  interrupt notice promptly. **Phase 22**: a `!` command with ~200KB output
-  renders the `Output too large (size). Full output saved to: <path>` block + a
-  `Preview (first 2KB):` (no expand hint), and the full output lands in the named
-  `/tmp/inline-tui-shell-*.txt` file.
+  interrupt notice promptly. **Phase 22**: a `!` command with >100KB output
+  (`seq 1 50000`) renders its retained head with the `+N lines (ctrl+o to
+  expand)` peek hint, writes **no** `/tmp/inline-tui-shell-*.txt` file (the
+  output is capped in memory, never saved), and the Ctrl+O view ends with the `…`
+  truncation marker.
 
 ## Known limitations (v1)
 
@@ -216,6 +237,10 @@ The `?` shortcuts band gains a `! for shell command` entry.
   sent to the backend as literal text when the turn ends (codex dispatches
   queued shell commands locally). Shell dispatch happens only from an idle
   composer.
+- **Output past `SHELL_OUTPUT_MAX_BYTES` (100KB) is dropped**, not saved — only
+  the retained head is kept (with a `…` marker). The cap bounds peak memory; the
+  trade-off is the tail is unrecoverable. Bump the const (or add head+tail
+  retention, codex's `HeadTailBuffer`) if more is needed.
 - stdout and stderr are **concatenated**, not truly interleaved.
 - The interrupt notice is the shared `Conversation interrupted…` text.
 - No timeout — a hung command runs until Esc (codex caps at 1 hour).

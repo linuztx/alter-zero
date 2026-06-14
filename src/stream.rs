@@ -28,15 +28,14 @@ pub enum StreamEvent {
     /// The in-flight tool call finished with this `output` and outcome (`ok` →
     /// green, else red). Always follows a [`StreamEvent::ToolStart`].
     ///
-    /// `saved` is `Some((path, total_bytes))` when the output was too large to
-    /// keep and the backend wrote the full output to `path` — `output` then
-    /// holds only a preview, and the cell renders an `Output too large …` block
-    /// (see `docs/shell-command.md`). The `!` shell runner sets it; a normal
-    /// backend tool always sends `None`.
+    /// `truncated` is `true` when the output exceeded the in-memory cap and was
+    /// cut — `output` then holds only the retained head, and the cell appends a
+    /// `…` marker (see `docs/shell-command.md`). The `!` shell runner sets it; a
+    /// normal backend tool always sends `false`.
     ToolEnd {
         output: String,
         ok: bool,
-        saved: Option<(String, u64)>,
+        truncated: bool,
     },
     /// The model began a "thinking" (reasoning) phase. The loop shows
     /// `· Thinking for Ns` in the live status line until the matching
@@ -169,7 +168,7 @@ pub fn turn_events(prompt: &str) -> Vec<StreamEvent> {
     events.push(StreamEvent::ToolEnd {
         output: DUMMY_READ_OUTPUT.to_string(),
         ok: true,
-        saved: None,
+        truncated: false,
     });
     events.push(StreamEvent::ToolStart {
         name: "Bash".to_string(),
@@ -178,7 +177,7 @@ pub fn turn_events(prompt: &str) -> Vec<StreamEvent> {
     events.push(StreamEvent::ToolEnd {
         output: DUMMY_BASH_OUTPUT.to_string(),
         ok: false,
-        saved: None,
+        truncated: false,
     });
     events.extend(chunks(&second).into_iter().map(StreamEvent::Chunk));
     events.push(StreamEvent::StreamDone);

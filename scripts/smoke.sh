@@ -853,35 +853,48 @@ echo "==== captured pane (the Tab follow-up ran as a separate third turn) ===="
 printf '%s\n' "$tabqueue"
 tmux kill-session -t "$S18" 2>/dev/null
 
-# --- Phase 22: a `!` command with HUGE output is SAVED TO A FILE, not dumped
-# (docs/shell-command.md). Run a command producing ~200KB (over the 100KB
-# threshold): the cell must show an "Output too large (NNNKB). Full output saved
-# to: <path>" block with a "Preview (first 2KB):" of the output, and the full
-# output must land in the named file on disk. ---
+# --- Phase 22: a `!` command with HUGE output is CAPPED IN MEMORY, not buffered
+# whole (docs/shell-command.md). Run a command producing >100KB (over the cap):
+# the cell renders the retained head with the usual `+N lines (ctrl+o to expand)`
+# peek hint, NO temp file is written (the output is never held in full — this is
+# the memory fix), and the Ctrl+O view appends a `…` truncation marker at its
+# end. ---
 S19="${S}_bigoutput"
+# Start from a clean slate so the "no temp file" check sees only what this run
+# would create (the feature is gone, so it should stay zero).
+rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 tmux new-session -d -s "$S19" -x 80 -y 24 "$APP"
 sleep 0.4
-# "PREVIEW_MARKER" + 200000 'x' on one line → >100KB; the preview opens with the
-# marker so we can assert the preview content shows.
-tmux send-keys -t "$S19" -l "!printf PREVIEW_MARKER; head -c 200000 /dev/zero | tr '\\0' x"
+# `seq 1 50000` is ~280KB across many lines (well over the 100KB cap) and
+# contains no `…` of its own, so any `…` in the Ctrl+O view is the marker.
+tmux send-keys -t "$S19" -l "!seq 1 50000"
 sleep 0.2
 tmux send-keys -t "$S19" Enter
 bigoutput=""
 for _ in $(seq 1 60); do # up to ~6s
 	bigoutput="$(tmux capture-pane -t "$S19" -p -S -40)"
-	if printf '%s' "$bigoutput" | grep -qF "Output too large"; then
+	if printf '%s' "$bigoutput" | grep -qF "ctrl+o to expand"; then
 		break
 	fi
 	sleep 0.1
 done
-echo "==== captured pane (huge !output saved to a file) ===="
+echo "==== captured pane (huge !output capped in memory) ===="
 printf '%s\n' "$bigoutput"
-# The saved path appears in the cell; pull it out and confirm the file holds the
-# full output.
-saved_path="$(printf '%s\n' "$bigoutput" | grep -oE '/tmp/inline-tui-shell-[0-9]+-[0-9]+\.txt' | head -1)"
-echo "saved_path=[$saved_path]"
-saved_bytes=0
-[ -n "$saved_path" ] && [ -f "$saved_path" ] && saved_bytes="$(wc -c <"$saved_path" 2>/dev/null | tr -d ' ')"
+# No temp file may be created — the full output is never written anywhere now.
+bigoutput_tmpfiles="$(ls /tmp/inline-tui-shell-*.txt 2>/dev/null | wc -l | tr -d ' ')"
+echo "bigoutput_tmpfiles=[$bigoutput_tmpfiles]"
+# Open the Ctrl+O view (it opens pinned to the bottom) — its end carries the `…`.
+tmux send-keys -t "$S19" C-o
+bigoutput_overlay=""
+for _ in $(seq 1 30); do
+	bigoutput_overlay="$(tmux capture-pane -t "$S19" -p)"
+	if printf '%s' "$bigoutput_overlay" | grep -qF "PgUp/PgDn"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured Ctrl+O overlay (bottom — truncation marker) ===="
+printf '%s\n' "$bigoutput_overlay"
 tmux kill-session -t "$S19" 2>/dev/null
 
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
@@ -1423,36 +1436,25 @@ if ! printf '%s' "$delay_reply" | grep -qE "↓ [0-9]+ tokens"; then
 	status=1
 fi
 
-# Phase 22: a huge !output is saved to a file, with a preview inline.
-if ! printf '%s' "$bigoutput" | grep -qE "Output too large \([0-9.]+[KMG]B\)\."; then
-	echo "FAIL: a huge !output did not render the 'Output too large (size).' notice" >&2
+# Phase 22: a huge !output is capped in memory (no temp file), `…` marks the cut.
+if ! printf '%s' "$bigoutput" | grep -qF "⎿ 1"; then
+	echo "FAIL: a huge !output did not render its retained head (the '⎿ 1' first line)" >&2
 	status=1
 fi
-if ! printf '%s' "$bigoutput" | grep -qF "Full output saved to:"; then
-	echo "FAIL: the 'Full output saved to:' line is missing" >&2
+if ! printf '%s' "$bigoutput" | grep -qF "ctrl+o to expand"; then
+	echo "FAIL: a huge !output did not show the '+N lines (ctrl+o to expand)' peek hint" >&2
 	status=1
 fi
-if ! printf '%s' "$bigoutput" | grep -qF "Preview (first 2KB):"; then
-	echo "FAIL: the 'Preview (first 2KB):' label is missing" >&2
+if [ "${bigoutput_tmpfiles:-x}" != "0" ]; then
+	echo "FAIL: a huge !output wrote a temp file ($bigoutput_tmpfiles found) — output must be capped in memory, not saved" >&2
 	status=1
 fi
-if ! printf '%s' "$bigoutput" | grep -qF "PREVIEW_MARKER"; then
-	echo "FAIL: the preview content (PREVIEW_MARKER) is not shown" >&2
-	status=1
-fi
-if printf '%s' "$bigoutput" | grep -qF "ctrl+o to expand"; then
-	echo "FAIL: a saved !output should not show the 'ctrl+o to expand' hint" >&2
-	status=1
-fi
-if [ -z "$saved_path" ]; then
-	echo "FAIL: the cell did not name a /tmp/inline-tui-shell-*.txt save path" >&2
-	status=1
-elif [ "$saved_bytes" != "200014" ]; then # "PREVIEW_MARKER" (14) + 200000 'x'
-	echo "FAIL: the saved file does not hold the full output (bytes=$saved_bytes, want 200014, path=$saved_path)" >&2
+if ! printf '%s' "$bigoutput_overlay" | grep -qF "…"; then
+	echo "FAIL: the Ctrl+O view did not append a '…' truncation marker for the capped output" >&2
 	status=1
 fi
 
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is saved to a file with an 'Output too large (size). Full output saved to: <path>' notice + a 2KB preview), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams"
 fi
 exit "$status"

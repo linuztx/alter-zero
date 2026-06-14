@@ -451,7 +451,6 @@ fn spawn_shell_command(
     tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     cancel: CancelToken,
 ) -> JoinHandle<()> {
-    use std::io::Read;
     use std::process::{Command, Stdio};
 
     std::thread::spawn(move || {
@@ -468,7 +467,7 @@ fn spawn_shell_command(
                 let _ = tx.send(StreamEvent::ToolEnd {
                     output: format!("failed to run command: {err}"),
                     ok: false,
-                    saved: None,
+                    truncated: false,
                 });
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
@@ -477,24 +476,19 @@ fn spawn_shell_command(
 
         // Drain both pipes on their own threads so a command that writes more
         // than the pipe buffer can't block (and thus never exit) while we wait.
-        let read_pipe = |pipe: Option<std::process::ChildStdout>| {
-            std::thread::spawn(move || {
-                let mut buf = String::new();
-                if let Some(mut pipe) = pipe {
-                    let _ = pipe.read_to_string(&mut buf);
-                }
-                buf
-            })
-        };
-        let out_reader = read_pipe(child.stdout.take());
-        // ChildStderr → ChildStdout type mismatch, so read stderr inline-typed.
-        let mut err_pipe = child.stderr.take();
-        let err_reader = std::thread::spawn(move || {
-            let mut buf = String::new();
-            if let Some(pipe) = err_pipe.as_mut() {
-                let _ = pipe.read_to_string(&mut buf);
-            }
-            buf
+        // Each reader *caps* what it retains (`read_capped`) so a command with
+        // huge output (e.g. `tree ~/`) can't spike memory — it keeps draining
+        // the pipe but only the first `SHELL_OUTPUT_MAX_BYTES` are kept.
+        let cap = SHELL_OUTPUT_MAX_BYTES;
+        let out_pipe = child.stdout.take();
+        let out_reader = std::thread::spawn(move || match out_pipe {
+            Some(pipe) => read_capped(pipe, cap),
+            None => (Vec::new(), false),
+        });
+        let err_pipe = child.stderr.take();
+        let err_reader = std::thread::spawn(move || match err_pipe {
+            Some(pipe) => read_capped(pipe, cap),
+            None => (Vec::new(), false),
         });
 
         // Wait for the child, polling so an Esc interrupt (cancel) kills it.
@@ -521,7 +515,7 @@ fn spawn_shell_command(
                     let _ = tx.send(StreamEvent::ToolEnd {
                         output: format!("error waiting on command: {err}"),
                         ok: false,
-                        saved: None,
+                        truncated: false,
                     });
                     let _ = tx.send(StreamEvent::StreamDone);
                     return;
@@ -529,13 +523,28 @@ fn spawn_shell_command(
             }
         };
 
-        let mut output = out_reader.join().unwrap_or_default();
-        let stderr = err_reader.join().unwrap_or_default();
+        let (out_bytes, out_trunc) = out_reader.join().unwrap_or((Vec::new(), false));
+        let (err_bytes, err_trunc) = err_reader.join().unwrap_or((Vec::new(), false));
+        // Lossy UTF-8: a command may emit non-UTF-8 bytes (read_to_string used to
+        // error on those); the cap may also cut a multi-byte char (→ one U+FFFD).
+        let mut output = String::from_utf8_lossy(&out_bytes).into_owned();
+        let stderr = String::from_utf8_lossy(&err_bytes);
         if !stderr.is_empty() {
             if !output.is_empty() && !output.ends_with('\n') {
                 output.push('\n');
             }
             output.push_str(&stderr);
+        }
+        let mut truncated = out_trunc || err_trunc;
+        // stdout + stderr together can exceed the cap even if neither did alone;
+        // keep the retained output bounded (cut on a char boundary).
+        if output.len() > cap {
+            let mut cut = cap;
+            while cut > 0 && !output.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            output.truncate(cut);
+            truncated = true;
         }
         let ok = status.success();
         if !ok {
@@ -547,57 +556,60 @@ fn spawn_shell_command(
             }
             output.push_str(&format!("[exit status: {code}]"));
         }
-        // Output too large to keep? Write it to a file and stream only a
-        // preview, so the cell shows an `Output too large …` block instead of
-        // dumping megabytes into scrollback / memory (Claude-Code's behaviour).
-        let (output, saved) = save_if_too_large(output);
-        let _ = tx.send(StreamEvent::ToolEnd { output, ok, saved });
+        let _ = tx.send(StreamEvent::ToolEnd {
+            output,
+            ok,
+            truncated,
+        });
         let _ = tx.send(StreamEvent::StreamDone);
     })
+}
+
+/// Read `reader` to EOF — so the child never blocks on a full pipe — but retain
+/// at most `cap` bytes in memory; bytes past the cap are drained and dropped.
+/// Returns the retained head and whether anything was dropped (the output was
+/// truncated). This bounds peak memory regardless of how much a command emits
+/// (codex's `read_capped`/`append_capped` pattern), so `! tree ~/` can't spike
+/// RSS by buffering its whole output. See `docs/shell-command.md`.
+fn read_capped(mut reader: impl io::Read, cap: usize) -> (Vec<u8>, bool) {
+    let mut buf = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    let mut truncated = false;
+    loop {
+        match reader.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => {
+                if buf.len() < cap {
+                    let take = (cap - buf.len()).min(n);
+                    buf.extend_from_slice(&chunk[..take]);
+                    if take < n {
+                        truncated = true;
+                    }
+                } else {
+                    truncated = true;
+                }
+                // Past the cap we keep looping (draining) but retain nothing.
+            }
+            // Retry a signal-interrupted read (as `read_to_string` does); any
+            // other error means the pipe is done.
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    (buf, truncated)
 }
 
 /// How often [`spawn_shell_command`] polls a running child for completion while
 /// watching for an interrupt — short enough that Esc kills it promptly.
 const SHELL_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// Above this many bytes a `!` shell command's output is **saved to a file**
-/// rather than kept: only a preview (`ui::SHELL_PREVIEW_BYTES`) is streamed
-/// back, and the cell renders an `Output too large …` block. See
+/// A `!` shell command retains at most this many bytes of output in memory; the
+/// rest is drained and dropped (the cell appends a `…` marker). This caps peak
+/// memory so a command with huge output (`tree ~/`) can't spike RSS — the
+/// previous "save the full output to a file" approach still read everything into
+/// memory first, which is what we're avoiding (codex caps in memory too). See
 /// `docs/shell-command.md`.
 const SHELL_OUTPUT_MAX_BYTES: usize = 100_000;
-
-/// If `output` exceeds [`SHELL_OUTPUT_MAX_BYTES`], write the **full** output to
-/// a unique temp file and return `(preview, Some((path, total_bytes)))` — the
-/// preview is its first `ui::SHELL_PREVIEW_BYTES` (cut on a char boundary).
-/// Otherwise (or if the write fails) returns `(output, None)` unchanged. The
-/// I/O boundary — smoke-covered (Phase 22), not unit-tested.
-fn save_if_too_large(output: String) -> (String, Option<(String, u64)>) {
-    if output.len() <= SHELL_OUTPUT_MAX_BYTES {
-        return (output, None);
-    }
-    let total_bytes = output.len() as u64;
-    let mut cut = ui::SHELL_PREVIEW_BYTES.min(output.len());
-    while cut > 0 && !output.is_char_boundary(cut) {
-        cut -= 1;
-    }
-    let preview = output[..cut].to_string();
-    // A unique name so concurrent / repeated saves don't collide.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let path = std::env::temp_dir().join(format!(
-        "inline-tui-shell-{}-{nanos}.txt",
-        std::process::id()
-    ));
-    match std::fs::write(&path, &output) {
-        Ok(()) => (
-            preview,
-            Some((path.to_string_lossy().into_owned(), total_bytes)),
-        ),
-        // Couldn't save — fall back to showing the full output unsaved.
-        Err(_) => (output, None),
-    }
-}
 
 /// Apply one streamed reply event to `app`, committing finished lines to
 /// scrollback in the conversation view. Returns whether the stream just **ended**
@@ -644,15 +656,19 @@ fn on_stream_event(
             app.start_tool(&name, &args);
             Ok(false)
         }
-        StreamEvent::ToolEnd { output, ok, saved } => {
-            // A too-large `!` output was saved to a file (the runner did the
-            // I/O); mark the running tool so its cell renders the `Output too
-            // large …` block (before end_tool takes it). `output` is the preview.
-            if let Some((path, total_bytes)) = saved {
-                app.set_tool_saved(path, total_bytes);
+        StreamEvent::ToolEnd {
+            output,
+            ok,
+            truncated,
+        } => {
+            // A `!` output that overflowed the in-memory cap was cut by the
+            // runner; mark the running tool so its expanded cell appends a `…`
+            // marker (before end_tool takes it). `output` is the retained head.
+            if truncated {
+                app.set_tool_truncated();
             }
             // Commit the finished tool *collapsed* (green/red) to scrollback; its
-            // full output lives in the Ctrl+O view (or the saved file).
+            // full (retained) output lives in the Ctrl+O view.
             if let Some(tool) = app.end_tool(&output, ok)
                 && committing
             {

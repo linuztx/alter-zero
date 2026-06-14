@@ -365,10 +365,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   header bullet in `message_lines`; shell `tool_lines`/`tool_full_lines` are
   headerless `⎿` blocks — inline up to `TOOL_PEEK_LINES` aligned rows
   (`result_row` does the corner/continuation indent) then `… +N lines (ctrl+o
-  to expand)`, `⎿ Running…` live, the full output uncapped in the Ctrl+O view;
-  a too-large output (over `main.rs`'s `SHELL_OUTPUT_MAX_BYTES`) is saved to a
-  file and the cell shows `saved_output_lines` — `Output too large (…). Full
-  output saved to: …` + a `SHELL_PREVIEW_BYTES` preview, `human_bytes` sizing —
+  to expand)`, `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;
+  output over `main.rs`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
+  read (`main.rs::read_capped`, codex's pattern — bounds peak RSS so `! tree ~/`
+  can't spike memory; the dropped tail is gone, not saved) and the expanded cell
+  appends a dim `TOOL_TRUNCATED_MARKER` (`…`) when `tool.truncated` —
   kept flush by `conversation_lines`), and
   the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the status + gap strip shows *while a turn is active*, and the preview + gap

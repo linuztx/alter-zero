@@ -18,8 +18,8 @@ use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, HistoryItem, HistorySearch, Role, SavedOutput, SearchState, SlashCommand, TokenArrow,
-    ToolCall, ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
+    App, HistoryItem, HistorySearch, Role, SearchState, SlashCommand, TokenArrow, ToolCall,
+    ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
 };
 use crate::textarea::TextArea;
 
@@ -85,11 +85,10 @@ const EXPAND_HINT: &str = " (ctrl+o to expand)";
 /// rest behind a `… +N lines (ctrl+o to expand)` hint (Claude-Code's exec-cell
 /// preview). The full output is always in the Ctrl+O view.
 const TOOL_PEEK_LINES: usize = 4;
-/// How much of a too-large `!` shell output is kept as the inline preview (the
-/// rest is saved to a file). The boundary truncates the output to this many
-/// bytes; the cell labels it `Preview (first {N}KB):`. See
-/// `docs/shell-command.md`.
-pub const SHELL_PREVIEW_BYTES: usize = 2048;
+/// Dim marker appended at the end of a `!` shell command's **expanded** output
+/// (`tool_full_lines`) when it was cut at the in-memory cap (`tool.truncated`),
+/// to show that more output was dropped. See `docs/shell-command.md`.
+const TOOL_TRUNCATED_MARKER: &str = "…";
 
 /// Blue — a tool that is still executing.
 const TOOL_RUNNING_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
@@ -1249,53 +1248,6 @@ fn result_row(index: usize, text: String) -> Line<'static> {
     Line::from(vec![Span::styled(prefix, dim), Span::styled(text, dim)])
 }
 
-/// A byte count in its largest binary unit (`512B`, `2KB`, `6.8MB`, `2.0GB`) —
-/// KB/MB/GB powers of 1024, MB/GB with one decimal. For the `Output too large
-/// (…)` notice on a saved shell output.
-fn human_bytes(n: u64) -> String {
-    const KB: u64 = 1024;
-    const MB: u64 = 1024 * KB;
-    const GB: u64 = 1024 * MB;
-    if n >= GB {
-        format!("{:.1}GB", n as f64 / GB as f64)
-    } else if n >= MB {
-        format!("{:.1}MB", n as f64 / MB as f64)
-    } else if n >= KB {
-        format!("{}KB", n / KB)
-    } else {
-        format!("{n}B")
-    }
-}
-
-/// The `⎿` block for a `!` shell output that was **too large to keep**: the
-/// corner alone, then `Output too large ({size}). Full output saved to:
-/// {path}`, a blank, `Preview (first {N}KB):`, and the `preview` lines (kept
-/// verbatim, truncated to width — the structure isn't reflowed). No expand
-/// hint: the saved file *is* the full output. Rendered identically inline and
-/// in the Ctrl+O view. See `docs/shell-command.md`.
-fn saved_output_lines(preview: &str, saved: &SavedOutput, width: u16) -> Vec<Line<'static>> {
-    let avail = (width as usize)
-        .saturating_sub(cols(TOOL_RESULT_PREFIX))
-        .max(1);
-    let mut content = vec![String::new()]; // the ⎿ corner sits on its own row
-    let notice = format!(
-        "Output too large ({}). Full output saved to: {}",
-        human_bytes(saved.total_bytes),
-        saved.path,
-    );
-    content.extend(wrap_text(&notice, avail as u16)); // prose + path may wrap
-    content.push(String::new());
-    content.push(format!("Preview (first {}KB):", SHELL_PREVIEW_BYTES / 1024));
-    // The preview is verbatim output (e.g. a tree) — keep each line's structure,
-    // only truncating over-wide lines, rather than whitespace-collapsing it.
-    content.extend(preview.split('\n').map(|line| truncate_cols(line, avail)));
-    content
-        .into_iter()
-        .enumerate()
-        .map(|(i, line)| result_row(i, line))
-        .collect()
-}
-
 /// The output of `tool` split into display lines (a single trailing blank from a
 /// final newline dropped, so a hidden-line count is accurate).
 fn tool_output_lines(tool: &ToolCall) -> Vec<&str> {
@@ -1327,12 +1279,9 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     let out_lines = tool_output_lines(tool);
 
     if tool.shell {
-        // Too-large output: the `Output too large … saved to …` block (same
-        // inline and expanded — the file is the full output).
-        if let Some(saved) = &tool.saved {
-            return saved_output_lines(&tool.output, saved, width);
-        }
         // The running/empty single-row states; else up to TOOL_PEEK_LINES rows.
+        // (Truncation of an over-cap output is marked only in the expanded view;
+        // inline, the `… +N lines (ctrl+o to expand)` hint already signals more.)
         return match tool.status {
             ToolStatus::Running => vec![result_row(0, "Running…".to_string())],
             _ if out_lines.is_empty() => vec![result_row(0, "(no output)".to_string())],
@@ -1383,7 +1332,9 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
 /// counterpart of [`tool_lines`]. A `!` shell command stays **headerless** here
 /// too (the `! pwd` dark header is the `Role::Shell` message above it) and its
 /// output renders as the same `⎿` block, uncapped; a backend tool keeps its
-/// coloured `● name(args)` header with the output indented under it.
+/// coloured `● name(args)` header with the output indented under it. An
+/// over-cap shell output ([`ToolCall::truncated`]) appends a dim
+/// [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
 fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     let running_word = if tool.shell {
         "Running…"
@@ -1391,17 +1342,17 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         "running…"
     };
     if tool.shell {
-        // Too-large output renders the same block as inline (the file holds the
-        // full output, so there is nothing more to expand here).
-        if let Some(saved) = &tool.saved {
-            return saved_output_lines(&tool.output, saved, width);
-        }
         let body_width = width.saturating_sub(cols(TOOL_RESULT_PREFIX) as u16).max(1);
-        let body = match (tool.status, tool.output.is_empty()) {
+        let mut body = match (tool.status, tool.output.is_empty()) {
             (ToolStatus::Running, true) => vec![running_word.to_string()],
             (_, true) => vec!["(no output)".to_string()],
             _ => wrap_text(&tool.output, body_width),
         };
+        // The output was cut at the in-memory cap — mark the end so the user
+        // knows more was dropped (it is not recoverable; nothing to expand to).
+        if tool.truncated {
+            body.push(TOOL_TRUNCATED_MARKER.to_string());
+        }
         return body
             .into_iter()
             .enumerate()
@@ -2172,7 +2123,7 @@ mod tests {
                 output: "out".to_string(),
                 timestamp: STAMP.to_string(),
                 shell: false,
-                saved: None,
+                truncated: false,
             }),
             HistoryItem::Message(Message {
                 role: Role::Assistant,
@@ -2223,7 +2174,7 @@ mod tests {
                 output: "out".to_string(),
                 timestamp: STAMP.to_string(),
                 shell: false,
-                saved: None,
+                truncated: false,
             }),
             HistoryItem::Summary(TurnSummary {
                 verb: "Done",
@@ -3045,7 +2996,7 @@ mod tests {
             output: output.to_string(),
             timestamp: String::new(),
             shell: false,
-            saved: None,
+            truncated: false,
         }
     }
 
@@ -4231,41 +4182,39 @@ mod tests {
     }
 
     #[test]
-    fn human_bytes_formats_sizes_in_the_largest_unit() {
-        assert_eq!(human_bytes(512), "512B");
-        assert_eq!(human_bytes(2048), "2KB");
-        assert_eq!(human_bytes(200_000), "195KB");
-        assert_eq!(human_bytes(7_130_316), "6.8MB");
-        assert_eq!(human_bytes(2 * 1024 * 1024 * 1024), "2.0GB");
-    }
-
-    #[test]
-    fn a_saved_shell_output_renders_the_too_large_block_with_a_preview() {
-        // When the output was too large, the cell shows the size + saved path
-        // and a preview (no `… ctrl+o to expand` — the file is the full output).
+    fn a_truncated_shell_output_appends_an_ellipsis_marker_in_the_full_view() {
+        // Over-cap output is cut to its head; the expanded (Ctrl+O) view appends
+        // a dim `…` line after the last retained line so the user sees more was
+        // dropped (it is not recoverable — nothing to expand to).
         let mut t = tool("tree ~/", "", ToolStatus::Ok, "/home/me\n├── a\n├── b");
         t.shell = true;
-        t.saved = Some(SavedOutput {
-            path: "/tmp/x.txt".to_string(),
-            total_bytes: 7_130_316,
-        });
-        let lines: Vec<String> = tool_lines(&t, 70)
+        t.truncated = true;
+        let lines: Vec<String> = tool_full_lines(&t, 70)
             .iter()
             .map(|l| plain(l).trim_end().to_string())
             .collect();
-        assert_eq!(lines[0], "  ⎿", "the corner sits alone");
+        assert_eq!(lines[0], "  ⎿ /home/me");
+        assert_eq!(lines[1], "    ├── a");
+        assert_eq!(lines[2], "    ├── b");
         assert_eq!(
-            lines[1],
-            "    Output too large (6.8MB). Full output saved to: /tmp/x.txt"
+            lines[3], "    …",
+            "the truncation marker, aligned under the corner: {lines:?}"
         );
-        assert_eq!(lines[2], "", "blank before the preview");
-        assert_eq!(lines[3], "    Preview (first 2KB):");
-        assert_eq!(lines[4], "    /home/me");
-        assert_eq!(lines[5], "    ├── a");
-        assert_eq!(lines[6], "    ├── b");
-        assert!(
-            !lines.iter().any(|l| l.contains("ctrl+o to expand")),
-            "no expand hint — the saved file is the full output: {lines:?}"
+    }
+
+    #[test]
+    fn a_complete_shell_output_has_no_truncation_marker() {
+        // When the output was kept in full, no `…` marker is appended.
+        let mut t = tool("ls", "", ToolStatus::Ok, "a\nb");
+        t.shell = true;
+        let lines: Vec<String> = tool_full_lines(&t, 70)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(
+            lines,
+            vec!["  ⎿ a", "    b"],
+            "no trailing marker: {lines:?}"
         );
     }
 

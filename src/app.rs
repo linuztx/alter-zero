@@ -87,24 +87,12 @@ pub struct ToolCall {
     /// under the [`Role::Shell`] header message recorded with it — instead of
     /// the `● name(args)` bullet header. See `docs/shell-command.md`.
     pub shell: bool,
-    /// Set when a `!` shell command's output was **too large to keep**: the full
-    /// output was written to a file (boundary) and `output` holds only a
-    /// preview. The cell then renders an `Output too large (…). Full output
-    /// saved to: …` block with the preview, instead of the normal `⎿` peek
-    /// (`ui::tool_lines`). `None` for normal output. See `docs/shell-command.md`.
-    pub saved: Option<SavedOutput>,
-}
-
-/// Where a too-large `!` shell output was saved, and how big it was — so the
-/// cell can render `Output too large ({total_bytes}). Full output saved to:
-/// {path}`. The boundary writes the file and fills this in; `ui` formats the
-/// size. See `docs/shell-command.md`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SavedOutput {
-    /// Absolute path the full output was written to.
-    pub path: String,
-    /// Total size of the full output in bytes (for the human-readable size).
-    pub total_bytes: u64,
+    /// Set when a `!` shell command's output **exceeded the in-memory cap** and
+    /// was cut: `output` holds only the retained head, and the cell appends a
+    /// dim `…` marker at the end of the expanded output (`ui::tool_full_lines`)
+    /// to show more was dropped. `false` for output kept in full. See
+    /// `docs/shell-command.md`.
+    pub truncated: bool,
 }
 
 /// Which way the live token tally is moving, selecting the arrow glyph in the
@@ -1473,20 +1461,19 @@ impl App {
             output: String::new(),
             timestamp: String::new(), // stamped when it finishes (see end_tool)
             shell: false,
-            saved: None,
+            truncated: false,
         });
     }
 
-    /// Mark the running tool's output as **saved to a file** (set by the
-    /// boundary just before [`end_tool`] when a `!` command's output was too
-    /// large to keep): the cell will render the `Output too large … saved to …`
-    /// block with the preview `end_tool` records. No-op when no tool is
-    /// running. See `docs/shell-command.md`.
+    /// Mark the running tool's output as **truncated** (set by the boundary just
+    /// before [`end_tool`] when a `!` command's output exceeded the in-memory
+    /// cap): the cell will append a dim `…` marker at the end of the expanded
+    /// output. No-op when no tool is running. See `docs/shell-command.md`.
     ///
     /// [`end_tool`]: App::end_tool
-    pub fn set_tool_saved(&mut self, path: String, total_bytes: u64) {
+    pub fn set_tool_truncated(&mut self) {
         if let Some(tool) = self.current_tool.as_mut() {
-            tool.saved = Some(SavedOutput { path, total_bytes });
+            tool.truncated = true;
         }
     }
 
@@ -2651,7 +2638,7 @@ mod tests {
                 output: "line1\nline2".to_string(),
                 timestamp: String::new(),
                 shell: false,
-                saved: None,
+                truncated: false,
             }))
         );
     }
@@ -2669,6 +2656,24 @@ mod tests {
         let mut app = App::new();
         assert!(app.end_tool("ignored", true).is_none());
         assert!(app.history.is_empty());
+    }
+
+    #[test]
+    fn set_tool_truncated_marks_the_running_tool_and_end_tool_keeps_it() {
+        let mut app = App::new();
+        app.begin_shell("tree ~/");
+        app.set_tool_truncated();
+        let finished = app
+            .end_tool("/home/me\n├── a", true)
+            .expect("a tool was running");
+        assert!(finished.truncated, "the over-cap flag survives end_tool");
+    }
+
+    #[test]
+    fn set_tool_truncated_is_a_noop_when_no_tool_is_running() {
+        let mut app = App::new();
+        app.set_tool_truncated(); // must not panic
+        assert!(app.current_tool().is_none());
     }
 
     #[test]
