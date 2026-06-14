@@ -261,10 +261,10 @@ when idle): the loop cancels + joins the backend, **drains the channel** (a stal
 the partial, resolves a running tool as failed (`Interrupted by user`), records
 the red `INTERRUPT_NOTICE`, and clears the status with no summary
 (`docs/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc
-interrupt — the loop drains the whole queue (`App::drain_queued`) and
-`start_turn`s it as one batched next turn, so **Esc sends the backlog right
-away**; a turn that ends under the Ctrl+O overlay defers its flush to the
-return (invariant 4).
+interrupt — the loop pops the front queued batch (`App::drain_next_batch`) and
+`start_turn`s it as the next turn (the remaining batches iterate at the
+following turn-ends), so **Esc sends the front batch right away**; a turn that
+ends under the Ctrl+O overlay defers its flush to the return (invariant 4).
 `App` (`app.rs`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,

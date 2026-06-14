@@ -185,15 +185,22 @@ unit-tested must be unit-tested.
   joins `App::queued` (consuming the composer, recorded in `input_history` for ↑
   recall) and shows **above the box**, in the streaming strip under the status
   line, inset two columns and styled exactly like a sent user message (`❯`
-  bullet, dark background, wrapped) — every queued entry, uncapped. When the
-  turn ends the loop drains the **whole backlog into one batched next turn**
-  (`App::drain_queued`, FIFO — `main.rs::start_turn`, shared with `Submit`;
-  each message commits as its own bubble, the backend gets one joined prompt),
-  and **Esc interrupts the current turn and sends the backlog right away**.
-  **Alt+Up** pulls the whole backlog back into an empty composer as one
+  bullet, dark background, wrapped) — every queued entry, uncapped. The queue is
+  a sequence of **turn-batches** (`VecDeque<Vec<String>>`): **Enter appends to
+  the current batch** (consecutive Enters share one next turn — Claude-Code
+  batching) while **Tab opens a new batch** (codex's Tab-to-queue — its message
+  runs as a *separate follow-up turn* after the ones already queued, a blank row
+  dividing the batches in the strip). When the turn ends the loop pops the
+  **front batch** as the next turn (`App::drain_next_batch`, FIFO —
+  `main.rs::start_turn`, shared with `Submit`; each message commits as its own
+  bubble, the backend gets one joined prompt), so the batches iterate
+  one-per-turn-end in order, and **Esc interrupts the current turn and sends the
+  front batch right away**. **Alt+Up** pulls the whole backlog (all batches
+  flattened, `App::drain_all_queued`) back into an empty composer as one
   newline-joined, multi-line draft to edit, extend, or drop (the merge codex
-  applies when restoring pending messages). Slash commands aren't queued (they
-  run inline via the palette). The composer stays **focused** throughout: the
+  applies when restoring pending messages). Idle/empty Tab is a no-op. Slash
+  commands aren't queued (they run inline via the palette). The composer stays
+  **focused** throughout: the
   hardware cursor stays visible on the box's prompt row while the turn streams
   (codex keeps the composer cursor during a running task; only the Ctrl+O
   overlay hides it).
@@ -282,7 +289,7 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer) + built-in `DummyAi` impl (with a configurable `STARTUP_DELAY` pre-stream pause — `with_startup_delay`), a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued`/`drain_queued`, Enter-queues + Alt+Up edit, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory`/`SessionInfo` types. | Yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued` turn-batches/`drain_next_batch`/`drain_all_queued`, Enter-appends + Tab-new-batch + Alt+Up edit, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`InputHistory`/`SessionInfo` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, and byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
 | `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`; the red `SHELL_BULLET` composer prompt; `message_lines(Role::Shell…)` exec-cell headers, headerless shell `tool_lines`, and `conversation_lines`' flush shell cells), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
@@ -529,11 +536,16 @@ frame scheduler ─► draw-tick ─────┘                             
   `live_height` grows by the band; `render_live` paints it below the box;
   `cursor_position` stays put when it opens.
 - `app` (message queue): Enter mid-turn queues (composer cleared, FIFO order,
-  recorded for ↑ recall) while idle Enter still submits; `drain_queued` takes
-  everything in order and empties; Alt+Up pulls the whole backlog into an empty
-  composer newline-joined and is a no-op against a draft or an empty queue.
+  recorded for ↑ recall) while idle Enter still submits — consecutive Enters
+  append to one batch, **Tab opens a new follow-up batch** (recorded for ↑ too;
+  idle/empty Tab is a no-op); `drain_next_batch` pops the front batch in order
+  and empties; Alt+Up (`drain_all_queued`) pulls the whole flattened backlog
+  into an empty composer newline-joined and is a no-op against a draft or an
+  empty queue.
 - `ui` (queued messages): `queued_rows` 0 empty / counts the queue / counts
-  wrapped lines / uncapped (the whole backlog shows); `queued_lines` insets
+  wrapped lines (incl. the blank divider between batches) / uncapped (the whole
+  backlog shows); `queued_lines` separates each turn-batch with a blank row and
+  insets
   every row two columns (the indent outside the dark block) and past it styles
   each message exactly like a user message (`❯` bullet, dark background),
   wrapping long ones; `live_height` grows with the queue; `render_live` draws it
