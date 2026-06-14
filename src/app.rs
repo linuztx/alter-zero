@@ -87,6 +87,24 @@ pub struct ToolCall {
     /// under the [`Role::Shell`] header message recorded with it — instead of
     /// the `● name(args)` bullet header. See `docs/shell-command.md`.
     pub shell: bool,
+    /// Set when a `!` shell command's output was **too large to keep**: the full
+    /// output was written to a file (boundary) and `output` holds only a
+    /// preview. The cell then renders an `Output too large (…). Full output
+    /// saved to: …` block with the preview, instead of the normal `⎿` peek
+    /// (`ui::tool_lines`). `None` for normal output. See `docs/shell-command.md`.
+    pub saved: Option<SavedOutput>,
+}
+
+/// Where a too-large `!` shell output was saved, and how big it was — so the
+/// cell can render `Output too large ({total_bytes}). Full output saved to:
+/// {path}`. The boundary writes the file and fills this in; `ui` formats the
+/// size. See `docs/shell-command.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedOutput {
+    /// Absolute path the full output was written to.
+    pub path: String,
+    /// Total size of the full output in bytes (for the human-readable size).
+    pub total_bytes: u64,
 }
 
 /// Which way the live token tally is moving, selecting the arrow glyph in the
@@ -1455,7 +1473,21 @@ impl App {
             output: String::new(),
             timestamp: String::new(), // stamped when it finishes (see end_tool)
             shell: false,
+            saved: None,
         });
+    }
+
+    /// Mark the running tool's output as **saved to a file** (set by the
+    /// boundary just before [`end_tool`] when a `!` command's output was too
+    /// large to keep): the cell will render the `Output too large … saved to …`
+    /// block with the preview `end_tool` records. No-op when no tool is
+    /// running. See `docs/shell-command.md`.
+    ///
+    /// [`end_tool`]: App::end_tool
+    pub fn set_tool_saved(&mut self, path: String, total_bytes: u64) {
+        if let Some(tool) = self.current_tool.as_mut() {
+            tool.saved = Some(SavedOutput { path, total_bytes });
+        }
     }
 
     /// The tool currently executing, if any.
@@ -2619,6 +2651,7 @@ mod tests {
                 output: "line1\nline2".to_string(),
                 timestamp: String::new(),
                 shell: false,
+                saved: None,
             }))
         );
     }

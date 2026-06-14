@@ -129,6 +129,37 @@ the cell as `⎿ Interrupted by user`. Output is stdout then stderr
 concatenated; a non-zero exit appends `[exit status: N]` and resolves the
 cell red.
 
+### Output too large — save to a file (Claude-Code's huge-output handling)
+
+When a command's output exceeds `SHELL_OUTPUT_MAX_BYTES` (100KB), the runner
+(`main.rs::save_if_too_large`, boundary I/O) writes the **full** output to a
+unique temp file (`$TMPDIR/inline-tui-shell-{pid}-{nanos}.txt`) and streams back
+only a preview — the first `ui::SHELL_PREVIEW_BYTES` (2KB), cut on a char
+boundary — in `ToolEnd { output: preview, ok, saved: Some((path, total_bytes)) }`
+(a normal backend tool sends `saved: None`). The loop calls
+`App::set_tool_saved(path, total_bytes)` before `end_tool`, so the recorded
+`ToolCall.saved` (a `SavedOutput { path, total_bytes }`) makes the cell render
+the saved block instead of the normal peek:
+
+```
+! tree ~/
+  ⎿
+    Output too large (6.8MB). Full output saved to: /tmp/inline-tui-shell-…txt
+
+    Preview (first 2KB):
+    /home/me/
+    ├── Codes
+    …
+```
+
+`ui::saved_output_lines` builds it (the corner alone, then the `human_bytes`
+size + path — prose so it wraps — a blank, the `Preview (first 2KB):` label, and
+the preview kept verbatim/truncated, *not* whitespace-collapsed so a tree keeps
+its shape). There is **no** `ctrl+o to expand` hint: the saved file is the full
+output, and the Ctrl+O view renders the identical block (nothing more to
+expand). On a write failure the runner falls back to streaming the full output
+unsaved.
+
 ### Footer — the `Shell mode` line (`ui.rs`)
 
 Like the Ctrl+R search line, the shell-mode hint takes the **footer slot**:
@@ -158,18 +189,26 @@ The `?` shortcuts band gains a `! for shell command` entry.
   block of up to `TOOL_PEEK_LINES` lines (continuation lines aligned under the
   corner) with a `… +N lines (ctrl+o to expand)` hint when more is hidden,
   `⎿ Running…` while running; the Ctrl+O `tool_full_lines` is headerless too
-  (no `● ls` bullet) and shows the **full** output uncapped under `⎿`;
-  `conversation_lines` keeps the cell flush (no spacer after the Shell header);
-  shell mode swaps the
+  (no `● ls` bullet) and shows the **full** output uncapped under `⎿`; a
+  too-large output (`tool.saved` set) renders the `Output too large (…). Full
+  output saved to: …` block + a `Preview (first 2KB):` instead (no expand hint),
+  with `human_bytes` formatting the size; `conversation_lines` keeps the cell
+  flush (no spacer after the Shell header); shell mode swaps the
   composer prompt to a red `! `; `footer_rows` is 1 in the mode without session
   info; the footer slot shows the red `Shell mode`, displacing
   `{model} · {cwd}`; the cursor stays in the box; the shortcuts band lists `!`;
-  `tool_header` still omits `()` for an empty-args backend tool.
+  `tool_header` still omits `()` for an empty-args backend tool; `human_bytes`
+  formats `512B`/`2KB`/`6.8MB`/`2.0GB`; a `tool.saved` cell renders the corner,
+  the `Output too large (…). Full output saved to: …` notice, the blank, the
+  `Preview (first 2KB):` label and the preview, with no expand hint.
 - `main.rs` (smoke, Phase 19): typing `!echo …` shows the `! echo …` prompt and
   the `Shell mode` footer (never `❯ !echo`); the run commits the exec cell
   (`! echo …` header + `⎿` output, no `●` header, no `Ran for` summary); a
   failing command reports `[exit status: N]`; `!sleep 9` then Esc commits the
-  interrupt notice promptly.
+  interrupt notice promptly. **Phase 22**: a `!` command with ~200KB output
+  renders the `Output too large (size). Full output saved to: <path>` block + a
+  `Preview (first 2KB):` (no expand hint), and the full output lands in the named
+  `/tmp/inline-tui-shell-*.txt` file.
 
 ## Known limitations (v1)
 

@@ -468,6 +468,7 @@ fn spawn_shell_command(
                 let _ = tx.send(StreamEvent::ToolEnd {
                     output: format!("failed to run command: {err}"),
                     ok: false,
+                    saved: None,
                 });
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
@@ -520,6 +521,7 @@ fn spawn_shell_command(
                     let _ = tx.send(StreamEvent::ToolEnd {
                         output: format!("error waiting on command: {err}"),
                         ok: false,
+                        saved: None,
                     });
                     let _ = tx.send(StreamEvent::StreamDone);
                     return;
@@ -545,7 +547,11 @@ fn spawn_shell_command(
             }
             output.push_str(&format!("[exit status: {code}]"));
         }
-        let _ = tx.send(StreamEvent::ToolEnd { output, ok });
+        // Output too large to keep? Write it to a file and stream only a
+        // preview, so the cell shows an `Output too large …` block instead of
+        // dumping megabytes into scrollback / memory (Claude-Code's behaviour).
+        let (output, saved) = save_if_too_large(output);
+        let _ = tx.send(StreamEvent::ToolEnd { output, ok, saved });
         let _ = tx.send(StreamEvent::StreamDone);
     })
 }
@@ -553,6 +559,45 @@ fn spawn_shell_command(
 /// How often [`spawn_shell_command`] polls a running child for completion while
 /// watching for an interrupt — short enough that Esc kills it promptly.
 const SHELL_POLL_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Above this many bytes a `!` shell command's output is **saved to a file**
+/// rather than kept: only a preview (`ui::SHELL_PREVIEW_BYTES`) is streamed
+/// back, and the cell renders an `Output too large …` block. See
+/// `docs/shell-command.md`.
+const SHELL_OUTPUT_MAX_BYTES: usize = 100_000;
+
+/// If `output` exceeds [`SHELL_OUTPUT_MAX_BYTES`], write the **full** output to
+/// a unique temp file and return `(preview, Some((path, total_bytes)))` — the
+/// preview is its first `ui::SHELL_PREVIEW_BYTES` (cut on a char boundary).
+/// Otherwise (or if the write fails) returns `(output, None)` unchanged. The
+/// I/O boundary — smoke-covered (Phase 22), not unit-tested.
+fn save_if_too_large(output: String) -> (String, Option<(String, u64)>) {
+    if output.len() <= SHELL_OUTPUT_MAX_BYTES {
+        return (output, None);
+    }
+    let total_bytes = output.len() as u64;
+    let mut cut = ui::SHELL_PREVIEW_BYTES.min(output.len());
+    while cut > 0 && !output.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let preview = output[..cut].to_string();
+    // A unique name so concurrent / repeated saves don't collide.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let path = std::env::temp_dir().join(format!(
+        "inline-tui-shell-{}-{nanos}.txt",
+        std::process::id()
+    ));
+    match std::fs::write(&path, &output) {
+        Ok(()) => (
+            preview,
+            Some((path.to_string_lossy().into_owned(), total_bytes)),
+        ),
+        // Couldn't save — fall back to showing the full output unsaved.
+        Err(_) => (output, None),
+    }
+}
 
 /// Apply one streamed reply event to `app`, committing finished lines to
 /// scrollback in the conversation view. Returns whether the stream just **ended**
@@ -599,9 +644,15 @@ fn on_stream_event(
             app.start_tool(&name, &args);
             Ok(false)
         }
-        StreamEvent::ToolEnd { output, ok } => {
+        StreamEvent::ToolEnd { output, ok, saved } => {
+            // A too-large `!` output was saved to a file (the runner did the
+            // I/O); mark the running tool so its cell renders the `Output too
+            // large …` block (before end_tool takes it). `output` is the preview.
+            if let Some((path, total_bytes)) = saved {
+                app.set_tool_saved(path, total_bytes);
+            }
             // Commit the finished tool *collapsed* (green/red) to scrollback; its
-            // full output lives in the Ctrl+O view.
+            // full output lives in the Ctrl+O view (or the saved file).
             if let Some(tool) = app.end_tool(&output, ok)
                 && committing
             {

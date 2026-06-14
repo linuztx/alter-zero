@@ -27,7 +27,17 @@ pub enum StreamEvent {
     ToolStart { name: String, args: String },
     /// The in-flight tool call finished with this `output` and outcome (`ok` →
     /// green, else red). Always follows a [`StreamEvent::ToolStart`].
-    ToolEnd { output: String, ok: bool },
+    ///
+    /// `saved` is `Some((path, total_bytes))` when the output was too large to
+    /// keep and the backend wrote the full output to `path` — `output` then
+    /// holds only a preview, and the cell renders an `Output too large …` block
+    /// (see `docs/shell-command.md`). The `!` shell runner sets it; a normal
+    /// backend tool always sends `None`.
+    ToolEnd {
+        output: String,
+        ok: bool,
+        saved: Option<(String, u64)>,
+    },
     /// The model began a "thinking" (reasoning) phase. The loop shows
     /// `· Thinking for Ns` in the live status line until the matching
     /// [`StreamEvent::ThinkingEnd`] arrives.
@@ -159,6 +169,7 @@ pub fn turn_events(prompt: &str) -> Vec<StreamEvent> {
     events.push(StreamEvent::ToolEnd {
         output: DUMMY_READ_OUTPUT.to_string(),
         ok: true,
+        saved: None,
     });
     events.push(StreamEvent::ToolStart {
         name: "Bash".to_string(),
@@ -167,6 +178,7 @@ pub fn turn_events(prompt: &str) -> Vec<StreamEvent> {
     events.push(StreamEvent::ToolEnd {
         output: DUMMY_BASH_OUTPUT.to_string(),
         ok: false,
+        saved: None,
     });
     events.extend(chunks(&second).into_iter().map(StreamEvent::Chunk));
     events.push(StreamEvent::StreamDone);
