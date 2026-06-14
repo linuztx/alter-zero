@@ -931,18 +931,18 @@ impl App {
                 self.input.move_right();
                 Action::None
             }
-            // Alt+Up pulls the whole queued backlog back into an *empty*
-            // composer as one newline-joined, multi-line draft (oldest first) to
-            // edit, extend, or drop (codex merges pending messages the same way
-            // when restoring to the composer). Guarded on an empty composer so
-            // it never clobbers a draft (the composer is empty in the normal
-            // flow — Enter emptied it on queue).
+            // Alt+Up pulls the *last* queued batch back into an *empty* composer
+            // as one newline-joined draft (its own messages oldest first) to
+            // edit, extend, or drop — codex's edit_queued_message pops the most
+            // recent entry, leaving the earlier batches queued. Guarded on an
+            // empty composer so it never clobbers a draft (the composer is empty
+            // in the normal flow — Enter/Tab emptied it on queue).
             KeyCode::Up
                 if key.modifiers.contains(KeyModifiers::ALT)
                     && self.input.is_empty()
                     && !self.queued.is_empty() =>
             {
-                let text = self.drain_all_queued().join("\n");
+                let text = self.drain_last_batch().join("\n");
                 self.recall_input(&text);
                 Action::None
             }
@@ -1410,12 +1410,13 @@ impl App {
         self.queued.pop_front().unwrap_or_default()
     }
 
-    /// Take **every** queued message across all batches, flattened oldest-first,
-    /// for Alt+Up to pull the whole backlog into the composer as one editable
-    /// draft — the batch boundaries dissolve (the user re-queues however they
-    /// like).
-    fn drain_all_queued(&mut self) -> Vec<String> {
-        self.queued.drain(..).flatten().collect()
+    /// Take the **last** queued batch (`pop_back`), for Alt+Up to pull just that
+    /// most-recent turn-batch into the composer as one editable draft — its
+    /// messages newline-joined, the earlier batches left queued (codex's
+    /// `edit_queued_message`, which pops the most recent entry). Empty when
+    /// nothing is queued.
+    fn drain_last_batch(&mut self) -> Vec<String> {
+        self.queued.pop_back().unwrap_or_default()
     }
 
     /// Queue the composer draft while a turn streams. `new_batch` picks the
@@ -3033,28 +3034,63 @@ mod tests {
     }
 
     #[test]
-    fn alt_up_pulls_the_whole_queue_into_the_composer_for_editing() {
-        // Alt+Up restores the entire backlog as one newline-joined draft (codex's
-        // drain_pending_messages_for_restore merges the same way), oldest first,
-        // emptying the queue — edit it, then Enter re-queues it as one message.
+    fn alt_up_pulls_only_the_last_batch_into_the_composer_for_editing() {
+        // Alt+Up edits the *last* turn-batch (codex's edit_queued_message
+        // pop_back), not the whole backlog: with an Enter batch then a Tab
+        // batch, Alt+Up yanks back only the Tab batch — the earlier Enter batch
+        // stays queued, untouched.
         let mut app = App::new();
         app.begin_stream();
-        app.input = TextArea::from_text("older");
-        app.on_key(key(KeyCode::Enter));
-        app.input = TextArea::from_text("newer");
-        app.on_key(key(KeyCode::Enter));
+        app.input = TextArea::from_text("hello");
+        app.on_key(key(KeyCode::Enter)); // batch 1 = [hello]
+        app.input = TextArea::from_text("world");
+        app.on_key(key(KeyCode::Enter)); // batch 1 = [hello, world]
+        app.input = TextArea::from_text("deploy");
+        app.on_key(key(KeyCode::Tab)); // batch 2 = [deploy]
         assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
         assert_eq!(
             app.input.text(),
-            "older\nnewer",
-            "the whole backlog returns, newline-joined, oldest first"
+            "deploy",
+            "only the last batch returns — not hello/world"
         );
         assert_eq!(
             app.input.cursor(),
-            "older\nnewer".len(),
+            "deploy".len(),
             "the cursor lands at the end, ready to edit"
         );
-        assert!(app.queued.is_empty(), "the queue is emptied");
+        assert_eq!(app.queued.len(), 1, "the earlier batch stays queued");
+        assert_eq!(
+            app.queued[0],
+            vec!["hello".to_string(), "world".to_string()],
+            "and is left untouched"
+        );
+    }
+
+    #[test]
+    fn alt_up_concats_the_last_batchs_messages() {
+        // The last batch can itself hold several messages (a Tab opened it, an
+        // Enter extended it): Alt+Up returns them newline-joined, oldest first.
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("deploy");
+        app.on_key(key(KeyCode::Tab)); // batch 1 = [deploy]
+        app.input = TextArea::from_text("rollback");
+        app.on_key(key(KeyCode::Enter)); // batch 1 = [deploy, rollback]
+        assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+        assert_eq!(
+            app.input.text(),
+            "deploy\nrollback",
+            "the last batch's messages return newline-joined, oldest first"
+        );
+        assert_eq!(
+            app.input.cursor(),
+            "deploy\nrollback".len(),
+            "the cursor lands at the end, ready to edit"
+        );
+        assert!(
+            app.queued.is_empty(),
+            "popping the only batch empties the queue"
+        );
     }
 
     #[test]

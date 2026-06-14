@@ -91,8 +91,9 @@ inset two columns — `  ❯ {msg}` rows in the strip under the status line —
 auto-sent together as one next turn) while **Tab opens a new batch** (codex's
 Tab-to-queue — its message runs as a *separate follow-up turn* after the first
 queue, a blank row dividing them), the loop sending one batch per turn end —
-**Esc interrupts and sends the front batch right away**, Alt+Up pulls the whole
-backlog (flattened) back into the composer to edit; see
+**Esc interrupts and sends the front batch right away**, Alt+Up pulls the **last
+batch** (its messages newline-joined) back into the composer to edit, leaving
+earlier batches queued; see
 `docs/queue.md`; plus **`!command` runs a local shell command** (codex's `!`
 shell mode: a leading `!` is **absorbed** into `App::shell_mode` and rendered
 back as the composer's red `! ` prompt — `! pwd`, never `❯ !pwd` — with a red
@@ -235,8 +236,9 @@ sequence of **turn-batches**: Enter appends to the last (`queue_draft(false)`),
 **Tab opens a new batch** (`queue_draft(true)`, a separate follow-up turn);
 `start_turn` is reused to flush **one batch** (`drain_next_batch`) per turn end,
 so Enter messages batch into one turn while Tab follow-ups iterate in order
-(Alt+Up pulls the whole backlog, flattened newline-joined, back into the
-composer to edit; see `docs/queue.md`). The
+(Alt+Up pulls the **last batch** (`drain_last_batch`, `pop_back`), its messages
+newline-joined, back into the composer to edit — earlier batches stay queued;
+see `docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
 and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool

@@ -3317,7 +3317,7 @@ mod tests {
 
     #[test]
     fn shortcuts_lines_list_the_alt_up_queue_edit_binding() {
-        // Alt+Up (pull the queued backlog back into the composer,
+        // Alt+Up (pull the last queued batch back into the composer,
         // docs/queue.md) is discoverable in the `?` band like every other
         // binding.
         let all: String = shortcuts_lines(false)

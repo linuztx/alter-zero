@@ -85,12 +85,14 @@ one).
 - `App::drain_next_batch() -> Vec<String>` — pops the **front** batch (FIFO) for
   the loop to send as the next turn; empty when nothing is queued. Popping one
   per turn-end is what makes Tab batches iterate sequentially.
-- `App::drain_all_queued() -> Vec<String>` — flattens **every** batch oldest-first
-  (boundaries dissolve), for Alt+Up.
+- `App::drain_last_batch() -> Vec<String>` — pops the **last** batch (`pop_back`),
+  for Alt+Up. The earlier batches stay queued; empty when nothing is queued.
 - **Alt+Up** (`KeyCode::Up` with `ALT`, an **empty** composer, a non-empty queue):
-  `drain_all_queued` the whole backlog into the composer as one newline-joined,
-  multi-line draft (oldest first) via `recall_input`, to edit/extend/drop. Guarded
-  on an empty composer so it never clobbers a draft.
+  `drain_last_batch` the most-recent batch into the composer as one newline-joined
+  draft (its own messages oldest first) via `recall_input`, to edit/extend/drop —
+  the earlier batches stay queued (codex's `edit_queued_message` pops the most
+  recent entry the same way). Guarded on an empty composer so it never clobbers a
+  draft.
 
 ### Flush (`main.rs`, the I/O boundary)
 
@@ -170,10 +172,12 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
 - **Idle Tab is a no-op.** Codex's idle Tab submits like Enter (and inserts a tab
   in a `!` bang draft); ours does nothing — Tab only queues against a running
   turn, which is all the user asked for.
-- **Alt+Up restores everything flattened, not just the last.** Codex's
-  `edit_queued_message` pops one message; ours flattens the whole backlog (across
-  batches) into the composer — batch boundaries dissolve, and the user re-queues
-  however they like.
+- **Alt+Up restores the last batch (like codex), as a newline-joined draft.**
+  Codex's `edit_queued_message` pops the most recent queued entry; ours pops the
+  most recent **batch** (`pop_back`) — its messages newline-joined into the
+  composer (a batch can hold several, where codex's entry is one) — leaving the
+  earlier batches queued. The user edits/extends/drops it and re-queues however
+  they like.
 - **No per-queue edit hint row.** Codex shows a dim hint line under its queued
   list; we spend no strip row on it — the bindings live in the `?` shortcuts band
   (`alt+↑ to edit queue`, `tab to queue next turn`).
@@ -188,9 +192,10 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   (`drain_next_batch` yields the first queue, then the follow-up); a Tab-queued
   message is recorded in `input_history` (↑ recalls it); **idle Tab and empty
   mid-turn Tab are no-ops** (nothing queued, draft intact); idle Enter still
-  submits; `drain_next_batch` takes the front batch and empties it; Alt+Up pulls
-  the whole backlog (flattened) into the composer newline-joined; Alt+Up with a
-  draft is a no-op; `/clear` mid-turn drops the backlog.
+  submits; `drain_next_batch` takes the front batch and empties it; **Alt+Up pulls
+  only the last batch** into the composer newline-joined, leaving earlier batches
+  queued (and concats a multi-message last batch); Alt+Up with a draft is a no-op;
+  `/clear` mid-turn drops the backlog.
 - `ui` (queue): `queued_rows` is 0 empty / counts a batch's messages / counts a
   long message's wrapped rows / **counts the blank between batches** (two
   single-message batches are three rows); `queued_lines` styles each message
@@ -202,9 +207,10 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
 - `scripts/smoke.sh` Phase 13 (interrupt-send): submit `hello`, queue `world`,
   press Esc — `Conversation interrupted` commits and the front batch is sent
   right away.
-- `scripts/smoke.sh` Phase 14 (Alt+Up restore): queue `world` and `again`
-  mid-stream, press Alt+Up — the inset rows clear and the box shows the
-  multi-line draft.
+- `scripts/smoke.sh` Phase 14 (Alt+Up restore): queue `world` with **Enter**
+  (batch 1) and `again` with **Tab** (batch 2) mid-stream, press Alt+Up — only
+  `again` returns to the box as the draft while the `world` batch stays queued
+  (its inset row remains).
 - `scripts/smoke.sh` Phase 18 (Tab follow-up): submit `hello`, queue `world`
   with **Enter** then `later` with **Tab** mid-stream (a blank divides them),
   and watch `world` send as one turn and `later` send as a **separate** turn

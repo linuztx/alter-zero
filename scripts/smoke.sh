@@ -473,10 +473,11 @@ echo "==== captured pane (Esc interrupted turn 1 and sent the queued 'world') ==
 printf '%s\n' "$queueint"
 tmux kill-session -t "$S10" 2>/dev/null
 
-# --- Phase 14: Alt+Up pulls the WHOLE queued backlog back into the composer as
-# one newline-joined draft (docs/queue.md): queue "world" and "again" mid-stream,
-# press Alt+Up — the queue display clears and the input box shows the multi-line
-# draft ("❯ world" prompt line + "  again" indented continuation) for editing. ---
+# --- Phase 14: Alt+Up pulls only the LAST queued batch back into the composer
+# (docs/queue.md): queue "world" with Enter (batch 1) and "again" with Tab
+# (batch 2 — a separate turn) mid-stream, press Alt+Up — only "again" returns to
+# the box as the draft ("❯ again"), while the earlier "world" batch stays queued
+# (its "  ❯ world" inset row remains) and the pulled "  ❯ again" inset row is gone. ---
 S11="${S}_altup"
 tmux new-session -d -s "$S11" -x 80 -y 24 "$APP"
 sleep 0.4
@@ -491,10 +492,10 @@ for _ in $(seq 1 40); do # up to ~4s: wait until turn 1 is visibly streaming
 done
 tmux send-keys -t "$S11" -l "world"
 sleep 0.2
-tmux send-keys -t "$S11" Enter
+tmux send-keys -t "$S11" Enter # batch 1 = [world]
 tmux send-keys -t "$S11" -l "again"
 sleep 0.2
-tmux send-keys -t "$S11" Enter
+tmux send-keys -t "$S11" Tab # batch 2 = [again] — a separate follow-up turn
 for _ in $(seq 1 20); do # both queued rows visible before the restore
 	if tmux capture-pane -t "$S11" -p | grep -qF "  ❯ again"; then
 		break
@@ -504,7 +505,7 @@ done
 tmux send-keys -t "$S11" M-Up
 sleep 0.4
 altup="$(tmux capture-pane -t "$S11" -p)"
-echo "==== captured pane (Alt+Up restored the backlog into the composer) ===="
+echo "==== captured pane (Alt+Up restored only the last batch into the composer) ===="
 printf '%s\n' "$altup"
 tmux kill-session -t "$S11" 2>/dev/null
 
@@ -1186,19 +1187,19 @@ if ! printf '%s' "$queueint" | grep -qF "Finished for"; then
 	echo "FAIL: the queued message sent on interrupt never finished its turn" >&2
 	status=1
 fi
-# Phase 14: Alt+Up restores the whole backlog into the composer, newline-joined:
-# the box shows "❯ world" + the indented continuation "  again", and the inset
-# queued rows ("  ❯ …") are gone.
-if ! printf '%s' "$altup" | grep -qF "❯ world"; then
-	echo "FAIL: Alt+Up did not restore the queued backlog into the composer ('❯ world' draft line missing)" >&2
+# Phase 14: Alt+Up restores only the LAST batch into the composer. The box shows
+# "❯ again" (the Tab batch pulled back), the earlier "world" batch stays queued
+# (its "  ❯ world" inset row remains), and the pulled "again" inset row is gone.
+if ! printf '%s' "$altup" | grep -qF "❯ again"; then
+	echo "FAIL: Alt+Up did not restore the last batch into the composer ('❯ again' draft line missing)" >&2
 	status=1
 fi
-if ! printf '%s' "$altup" | grep -qE '^  again'; then
-	echo "FAIL: the restored draft is not multi-line — the '  again' continuation row is missing" >&2
+if ! printf '%s' "$altup" | grep -qF "  ❯ world"; then
+	echo "FAIL: Alt+Up pulled the earlier 'world' batch too — it should have stayed queued ('  ❯ world' inset row missing)" >&2
 	status=1
 fi
-if printf '%s' "$altup" | grep -qF "  ❯ world"; then
-	echo "FAIL: the queued display did not clear after Alt+Up pulled the backlog into the composer" >&2
+if printf '%s' "$altup" | grep -qF "  ❯ again"; then
+	echo "FAIL: the pulled 'again' batch is still shown queued after Alt+Up restored it into the composer" >&2
 	status=1
 fi
 # Phase 21: TAB queues a SEPARATE follow-up turn (docs/queue.md). While turn 1
@@ -1455,6 +1456,6 @@ if ! printf '%s' "$bigoutput_overlay" | grep -qF "…"; then
 fi
 
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls it back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams"
 fi
 exit "$status"
