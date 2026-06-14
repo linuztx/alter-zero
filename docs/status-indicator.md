@@ -50,9 +50,11 @@ real backend's own latency plays the same role.
 
 - **spinner** — the line opens with the classic cli-spinners **`bouncingBall`**:
   a white bold ball ping-ponging between dim parenthesis walls, one frame per
-  80 ms (`( ●    )` → `(  ●   )` → … → `(     ●)` → back; 8 fixed-width frames,
-  so nothing after it jitters). Like the shimmer, `ui::spinner_spans` is pure —
-  the frame index derives from the boundary-supplied `elapsed`.
+  80 ms (`( ●    )` → `(  ●   )` → … → `(     ●)` (right wall) → back across to
+  `(●     )` (left wall, flush against `(` — the leftmost cell is used, not
+  wasted); all **ten** fixed-width frames, so nothing after it jitters). Like
+  the shimmer, `ui::spinner_spans` is pure — the frame index derives from the
+  boundary-supplied `elapsed`.
 - **verb** — a whimsical word (`Working`, `Cooking`, …) chosen *once per turn*, and
   a matching **done verb** (`Done`, `Finished`, …) for the summary. Picked by a
   per-turn counter (`App::turn_count`) so it varies across turns yet stays
@@ -177,9 +179,10 @@ max blend) live with the other styling consts at the top of `ui.rs`.
 ## The bouncing-ball spinner
 
 The line's opening `( ●    )` is cli-spinners' **`bouncingBall`** (codex has no
-equivalent — it shimmers a static `•`): eight fixed-width frames
-(`SPINNER_FRAMES`), the ball stepping one cell per `SPINNER_INTERVAL` (80 ms) to
-the right wall and back, looping every 640 ms. `ui::spinner_spans` styles each
+equivalent — it shimmers a static `•`): **ten** fixed-width frames
+(`SPINNER_FRAMES`), the ball stepping one cell per `SPINNER_INTERVAL` (80 ms) out
+to the right wall (`(     ●)`) and back across to the left wall (`(●     )`, flush
+against `(`), looping every 800 ms. `ui::spinner_spans` styles each
 frame as three spans — dim left wall, white **bold** ball, dim right wall — and,
 like the shimmer, derives the frame index purely from `TurnStatus::elapsed`; the
 same 32 ms draw re-arm animates it. Fixed-width frames mean the verb after the

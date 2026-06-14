@@ -125,9 +125,10 @@ const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
 
 /// White — the spinner's ball (matches the codex/Claude-Code white status text).
 const STATUS_COLOR: Color = AI_COLOR;
-/// The bouncing-ball animation frames (cli-spinners' `bouncingBall`): the ball
-/// travels to the right wall and back, then the cycle repeats. Every frame is
-/// the same width, so the verb after it never jitters.
+/// The bouncing-ball animation frames (cli-spinners' `bouncingBall`, all ten):
+/// the ball travels out to the right wall, back across to the **left wall**
+/// (flush against `(` — no wasted leading cell), then the cycle repeats. Every
+/// frame is the same width, so the verb after it never jitters.
 const SPINNER_FRAMES: &[&str] = &[
     "( ●    )",
     "(  ●   )",
@@ -137,6 +138,8 @@ const SPINNER_FRAMES: &[&str] = &[
     "(    ● )",
     "(   ●  )",
     "(  ●   )",
+    "( ●    )",
+    "(●     )",
 ];
 /// How long each spinner frame shows (cli-spinners' `bouncingBall` interval —
 /// well under the loop's ~30 fps animation re-arm, so no frame is skipped).
@@ -2248,7 +2251,8 @@ mod tests {
     #[test]
     fn status_spinner_ball_bounces_between_the_walls_and_loops() {
         // The bouncing-ball spinner advances one frame per SPINNER_INTERVAL
-        // (80 ms): out to the right wall, back again, and the cycle loops.
+        // (80 ms): out to the right wall, back to the LEFT wall (flush against
+        // `(`, using the leftmost cell), and the cycle loops.
         let frame_at = |ms: u64| {
             let mut s = status(0, TokenArrow::Down, 0, None);
             s.elapsed = Duration::from_millis(ms);
@@ -2257,12 +2261,21 @@ mod tests {
         };
         assert_eq!(frame_at(0).trim_end(), "( ●    )");
         assert_eq!(frame_at(80).trim_end(), "(  ●   )", "one frame later");
-        assert_eq!(frame_at(320).trim_end(), "(     ●)", "at the right wall");
+        assert_eq!(
+            frame_at(320).trim_end(),
+            "(     ●)",
+            "out at the right wall"
+        );
         assert_eq!(frame_at(400).trim_end(), "(    ● )", "bouncing back");
         assert_eq!(
-            frame_at(640),
+            frame_at(720).trim_end(),
+            "(●     )",
+            "back to the left wall — flush against `(`, no wasted leading cell"
+        );
+        assert_eq!(
+            frame_at(800),
             frame_at(0),
-            "the bounce loops after a full cycle"
+            "the bounce loops after a full 10-frame cycle"
         );
     }
 
