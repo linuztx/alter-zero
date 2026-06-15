@@ -36,6 +36,7 @@ cleanup() {
 	tmux kill-session -t "${S}_delay" 2>/dev/null
 	tmux kill-session -t "${S}_tabqueue" 2>/dev/null
 	tmux kill-session -t "${S}_bigoutput" 2>/dev/null
+	tmux kill-session -t "${S}_ctrlj" 2>/dev/null
 	rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 }
 trap cleanup EXIT
@@ -898,6 +899,37 @@ echo "==== captured Ctrl+O overlay (bottom — truncation marker) ===="
 printf '%s\n' "$bigoutput_overlay"
 tmux kill-session -t "$S19" 2>/dev/null
 
+# --- Phase 23: Ctrl+J is the UNIVERSAL newline key (docs/shift-enter.md). Unlike
+# Shift+Enter (which needs keyboard enhancement to even be reported), Ctrl+J grows
+# the input box on every terminal — in raw mode the byte 0x0A parses to
+# Char('j')+CONTROL. Type two lines separated by Ctrl+J: the box must grow to show
+# the prompt on the first line and an indented continuation on the second (same
+# shape as Phase 2's Alt+Enter, via a different key). A plain Enter then submits
+# the whole multi-line draft. ---
+S20="${S}_ctrlj"
+tmux new-session -d -s "$S20" -x 80 -y 24 "$APP"
+sleep 0.4
+tmux send-keys -t "$S20" -l "CCC"
+tmux send-keys -t "$S20" C-j
+tmux send-keys -t "$S20" -l "DDD"
+sleep 0.3
+ctrlj_grown="$(tmux capture-pane -t "$S20" -p)"
+echo "==== captured pane (Ctrl+J grew the input box) ===="
+printf '%s\n' "$ctrlj_grown"
+tmux send-keys -t "$S20" Enter # a plain Enter submits the multi-line draft
+ctrlj_sent=""
+for _ in $(seq 1 40); do # up to ~6s: the two-line message commits to scrollback
+	ctrlj_sent="$(tmux capture-pane -t "$S20" -p -S -40)"
+	if printf '%s' "$ctrlj_sent" | grep -qF "❯ CCC" &&
+		printf '%s' "$ctrlj_sent" | grep -qF "DDD"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (multi-line draft submitted with Enter) ===="
+printf '%s\n' "$ctrlj_sent"
+tmux kill-session -t "$S20" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -1455,7 +1487,22 @@ if ! printf '%s' "$bigoutput_overlay" | grep -qF "…"; then
 	status=1
 fi
 
+# Phase 23: Ctrl+J grows the box (the universal newline fallback, docs/shift-enter.md).
+if ! printf '%s' "$ctrlj_grown" | grep -qF "❯ CCC"; then
+	echo "FAIL: first draft line '❯ CCC' not shown in the input box after Ctrl+J" >&2
+	status=1
+fi
+if ! printf '%s' "$ctrlj_grown" | grep -qF "  DDD"; then
+	echo "FAIL: Ctrl+J did not insert a newline — indented continuation '  DDD' missing (the box did not grow)" >&2
+	status=1
+fi
+# A plain Enter then submits the whole multi-line draft to scrollback.
+if ! printf '%s' "$ctrlj_sent" | grep -qF "❯ CCC"; then
+	echo "FAIL: a plain Enter did not submit the Ctrl+J multi-line draft ('❯ CCC' not committed)" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft"
 fi
 exit "$status"

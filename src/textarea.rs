@@ -136,7 +136,8 @@ impl TextArea {
         self.insert_str(c.encode_utf8(&mut buf));
     }
 
-    /// Insert a newline at the cursor (Alt/Shift+Enter — grows the box).
+    /// Insert a newline at the cursor (Ctrl+J / Alt+Enter / Shift+Enter — grows
+    /// the box; see `docs/shift-enter.md`).
     pub fn insert_newline(&mut self) {
         self.insert_char('\n');
     }

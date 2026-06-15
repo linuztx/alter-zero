@@ -34,10 +34,12 @@ A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea` (plus the pure cores of `frame`/`paste`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
-**and `term.rs`** are the I/O boundary — not unit-tested — verified via
-`scripts/smoke.sh`; `frame`'s async scheduler **task** is smoke-covered too (its
-rate-limit/coalesce math is unit-tested). Keep logic out of the boundary; every
-geometry decision `term.rs` makes is a pure `ui` helper it calls.
+**and `term.rs`** are the I/O boundary — verified via `scripts/smoke.sh`, not
+unit-tested save for the odd pure helper that has no terminal in it (like
+`term`'s `keyboard_enhancement_disabled` env predicate — see
+`docs/shift-enter.md`); `frame`'s async scheduler **task** is smoke-covered too
+(its rate-limit/coalesce math is unit-tested). Keep logic out of the boundary;
+every geometry decision `term.rs` makes is a pure `ui` helper it calls.
 
 The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
@@ -45,7 +47,8 @@ The design rationale lives in `docs/design.md`; the async-loop design in
 input-history recall in `docs/input-history.md`; the Ctrl+R reverse search over
 that history in `docs/history-search.md`; the `!` local shell commands in
 `docs/shell-command.md`; the `?` shortcuts band in
-`docs/shortcuts.md`; the mid-turn message queue in `docs/queue.md`; the
+`docs/shortcuts.md`; the Shift+Enter / Ctrl+J newline keys in
+`docs/shift-enter.md`; the mid-turn message queue in `docs/queue.md`; the
 session-context footer in `docs/footer.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
 `docs/flicker.md`.

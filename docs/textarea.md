@@ -82,7 +82,7 @@ unit-tested from scratch rather than mirroring codex's sentinel arithmetic.
 | Backspace | `delete_backward` | delete the grapheme before the cursor |
 | Delete | `delete_forward` | delete the grapheme at the cursor |
 | char | `insert_char` | insert at the cursor |
-| Alt/Shift+Enter | `insert_newline` | insert `'\n'` at the cursor |
+| Ctrl+J / Alt+Enter / Shift+Enter | `insert_newline` | insert `'\n'` at the cursor (see `docs/shift-enter.md`) |
 
 Vertical motion reads the wrap cache **without a width argument** — exactly like
 codex's `move_cursor_up`/`down`. The cache is populated by the most recent render

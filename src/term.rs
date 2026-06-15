@@ -35,6 +35,9 @@ use std::io::{self, Stdout, Write};
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::cursor::Show;
+use ratatui::crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use ratatui::crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
     disable_raw_mode, enable_raw_mode,
@@ -79,6 +82,15 @@ pub struct InlineViewport {
     /// [`restore`]: InlineViewport::restore
     /// [`draw_overlay`]: InlineViewport::draw_overlay
     pending: Vec<Line<'static>>,
+    /// Whether [`init`] pushed the kitty keyboard-enhancement flags (so the
+    /// terminal reports Shift+Enter distinctly from Enter — see
+    /// `docs/shift-enter.md`). Recorded so [`restore`] and the panic hook only
+    /// **pop** the stack when we actually pushed; `false` when the
+    /// `INLINE_TUI_DISABLE_KEYBOARD_ENHANCEMENT` escape hatch is set.
+    ///
+    /// [`init`]: InlineViewport::init
+    /// [`restore`]: InlineViewport::restore
+    keyboard_enhanced: bool,
 }
 
 impl InlineViewport {
@@ -87,7 +99,14 @@ impl InlineViewport {
     /// inline viewport). Queries the cursor over stdin — safe here because this
     /// runs on the main thread before any reply thread is spawned.
     pub fn init(min_height: u16) -> io::Result<Self> {
-        install_panic_hook();
+        // Decide up front whether to turn on keyboard enhancement, so the panic
+        // hook captures the same answer and only pops the stack if we pushed.
+        let keyboard_enhanced = !keyboard_enhancement_disabled(
+            std::env::var(DISABLE_KEYBOARD_ENHANCEMENT_ENV)
+                .ok()
+                .as_deref(),
+        );
+        install_panic_hook(keyboard_enhanced);
         enable_raw_mode()?;
         let mut backend = CrosstermBackend::new(io::stdout());
         let size = backend.size()?;
@@ -95,6 +114,19 @@ impl InlineViewport {
 
         let height = min_height.clamp(1, size.height.max(1));
         let cursor = backend.get_cursor_position()?;
+        // Push the kitty keyboard-enhancement flags *after* the cursor query (a
+        // push gets no reply, so it adds no stdin reader — invariant 1 holds) and
+        // before the EventStream exists. DISAMBIGUATE_ESCAPE_CODES is what makes a
+        // terminal report Shift+Enter as a modified Enter instead of a bare `\r`;
+        // terminals that don't support it ignore the sequence. We deliberately do
+        // *not* call crossterm's `supports_keyboard_enhancement()` probe — it
+        // blocks up to 2s on terminals that never answer. See docs/shift-enter.md.
+        if keyboard_enhanced {
+            let _ = execute!(
+                backend,
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            );
+        }
         // Make room below the cursor for the viewport, scrolling if we're near
         // the bottom, and anchor the viewport top to where the cursor ended up.
         let below = height.saturating_sub(1);
@@ -111,6 +143,7 @@ impl InlineViewport {
             view,
             prev: None,
             pending: Vec::new(),
+            keyboard_enhanced,
         })
     }
 
@@ -469,6 +502,11 @@ impl InlineViewport {
         // have flushed it (e.g. `/help` then an instant Ctrl+C): write any queued
         // lines now so committed content is never lost with the session.
         self.flush_pending()?;
+        // Pop the keyboard-enhancement flags we pushed in `init` (while still in
+        // raw mode) so the parent shell doesn't inherit enhanced key reporting.
+        if self.keyboard_enhanced {
+            let _ = execute!(self.backend, PopKeyboardEnhancementFlags);
+        }
         match ui::restore_cursor_row(self.view.y, self.view.height, self.screen.height) {
             // Room below the box: land there and wipe anything beneath it (there
             // shouldn't be any — the box is the bottom-most content) so the prompt
@@ -556,12 +594,61 @@ impl InlineViewport {
 }
 
 /// Chain a hook that leaves raw mode and shows the cursor before the default
-/// panic handler runs, so a panic doesn't strand the terminal in raw mode.
-fn install_panic_hook() {
+/// panic handler runs, so a panic doesn't strand the terminal in raw mode. When
+/// `keyboard_enhanced` (i.e. [`init`] pushed the flags), it also pops the
+/// keyboard-enhancement stack so a panic can't leave the shell with enhanced key
+/// reporting.
+///
+/// [`init`]: InlineViewport::init
+fn install_panic_hook(keyboard_enhanced: bool) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        if keyboard_enhanced {
+            let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+        }
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), Show);
         previous(info);
     }));
+}
+
+/// Environment escape hatch: set this to a truthy value to keep keyboard
+/// enhancement **off** on terminals where the kitty protocol misbehaves (codex's
+/// `CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT`). See `docs/shift-enter.md`.
+const DISABLE_KEYBOARD_ENHANCEMENT_ENV: &str = "INLINE_TUI_DISABLE_KEYBOARD_ENHANCEMENT";
+
+/// Whether keyboard enhancement should be left **off**, given the value of
+/// [`DISABLE_KEYBOARD_ENHANCEMENT_ENV`]. A truthy value (`1`/`true`/`yes`,
+/// case-insensitive, surrounding whitespace ignored) disables it; anything else —
+/// including unset (`None`) — leaves it enabled. Pure, so it's unit-tested while
+/// the surrounding terminal I/O is only smoke-covered.
+fn keyboard_enhancement_disabled(value: Option<&str>) -> bool {
+    matches!(
+        value.map(|v| v.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "yes")
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keyboard_enhancement_disabled;
+
+    #[test]
+    fn keyboard_enhancement_is_on_by_default() {
+        // Unset (or an unrecognised value) keeps enhancement enabled.
+        assert!(!keyboard_enhancement_disabled(None));
+        assert!(!keyboard_enhancement_disabled(Some("")));
+        assert!(!keyboard_enhancement_disabled(Some("0")));
+        assert!(!keyboard_enhancement_disabled(Some("false")));
+        assert!(!keyboard_enhancement_disabled(Some("nope")));
+    }
+
+    #[test]
+    fn truthy_env_values_disable_keyboard_enhancement() {
+        assert!(keyboard_enhancement_disabled(Some("1")));
+        assert!(keyboard_enhancement_disabled(Some("true")));
+        assert!(keyboard_enhancement_disabled(Some("TRUE")));
+        assert!(keyboard_enhancement_disabled(Some("yes")));
+        assert!(keyboard_enhancement_disabled(Some("  Yes  ")));
+    }
 }

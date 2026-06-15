@@ -860,9 +860,10 @@ impl App {
                     Action::None
                 }
             }
-            // Alt+Enter (and Shift+Enter where the terminal reports it) inserts a
-            // newline at the cursor so the input box grows on demand; a plain Enter
-            // submits.
+            // Alt+Enter and Shift+Enter insert a newline at the cursor so the input
+            // box grows on demand; a plain Enter submits. Shift+Enter only reaches
+            // us when keyboard enhancement is on (pushed by `term::init`); Ctrl+J
+            // below is the universal fallback. See docs/shift-enter.md.
             KeyCode::Enter
                 if key
                     .modifiers
@@ -900,6 +901,15 @@ impl App {
                     self.input_history.record(&text);
                     Action::Submit(text)
                 }
+            }
+            // Ctrl+J is the *universal* newline key: in raw mode every terminal
+            // delivers it as Char('j')+CONTROL (no keyboard enhancement needed), so
+            // it inserts a newline like Alt/Shift+Enter even where the terminal
+            // can't report a modified Enter (codex binds Ctrl+J the same way; see
+            // docs/shift-enter.md).
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.insert_newline();
+                Action::None
             }
             // Editing and cursor movement, dispatched to the textarea. Backspace /
             // Delete / typing also re-derive the slash-command palette.
@@ -1910,6 +1920,30 @@ mod tests {
         let shift_enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
         assert_eq!(app.on_key(shift_enter), Action::None);
         assert_eq!(app.input.text(), "a\n");
+    }
+
+    #[test]
+    fn ctrl_j_inserts_a_newline_too() {
+        // Ctrl+J is the *universal* newline key: in raw mode the byte 0x0A parses
+        // to Char('j')+CONTROL on every terminal (no keyboard enhancement needed),
+        // so it's the reliable fallback when a terminal can't report Shift+Enter
+        // (codex binds Ctrl+J the same way). See docs/shift-enter.md.
+        let mut app = App::new();
+        app.input = TextArea::from_text("a");
+        let ctrl_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_j), Action::None);
+        assert_eq!(app.input.text(), "a\n");
+    }
+
+    #[test]
+    fn ctrl_j_grows_input_while_streaming_without_submitting() {
+        // Editing (incl. newlines) is allowed mid-stream; only sending is blocked.
+        let mut app = App::new();
+        app.input = TextArea::from_text("draft");
+        app.begin_stream();
+        let ctrl_j = KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_j), Action::None);
+        assert_eq!(app.input.text(), "draft\n");
     }
 
     #[test]

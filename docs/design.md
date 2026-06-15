@@ -71,8 +71,9 @@ unit-tested must be unit-tested.
 - **Responsive:** every draw re-wraps to the current terminal width, measured in
   **display columns** (`unicode-width`) so CJK/emoji wrap and pad correctly.
 - **Growing input box.** The input field is multi-line and grows downward as the
-  text wraps (or as explicit newlines are added with **Alt+Enter** / Shift+Enter),
-  so a long message is never lost off the right edge. The live region height is
+  text wraps (or as explicit newlines are added with **Ctrl+J / Alt+Enter /
+  Shift+Enter** — `docs/shift-enter.md`), so a long message is never lost off the
+  right edge. The live region height is
   therefore dynamic: `LIVE_MIN_HEIGHT` (a one-row box, no preview strip) at rest,
   growing one row per wrapped input line up to the terminal height (plus a preview
   + gap row while a reply streams), after which the box scrolls internally to keep
@@ -448,7 +449,8 @@ frame scheduler ─► draw-tick ─────┘                             
 - `app` (thinking tokens): `push_thinking` grows the tally pointing `↓` (even
   right after a tool's `↑`) without touching the reply buffer; a no-op when idle.
 - `app`: typing appends; backspace; Enter with text → `Submit` + clears input;
-  Alt+Enter / Shift+Enter insert a newline (box grows) without submitting; Enter
+  Ctrl+J / Alt+Enter / Shift+Enter insert a newline (box grows) without submitting
+  (`docs/shift-enter.md`); Enter
   while empty / while streaming → `None`; Esc/Ctrl+C → `Quit` when idle, while
   Esc mid-turn → `Interrupt` (palette-dismiss still wins); Ctrl+C with a
   non-empty input clears the draft instead (closing the palette, leaving a
