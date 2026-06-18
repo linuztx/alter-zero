@@ -813,6 +813,7 @@ impl App {
                 }
                 self.input_history.record(&text);
                 self.command_menu = None; // an emptied input can't be a /token
+                self.file_search = None; // …nor an @token, so close the picker too
                 return Action::None;
             }
             return Action::Quit;
@@ -2238,6 +2239,20 @@ mod tests {
         assert!(
             app.command_menu.is_none(),
             "an emptied input is no longer a /token — the palette closes"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_clearing_an_at_token_also_closes_the_file_picker() {
+        let mut app = App::new();
+        type_str(&mut app, "@src");
+        assert!(app.file_search.is_some(), "the @ picker opened");
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert_eq!(app.on_key(ctrl_c), Action::None);
+        assert!(app.input.is_empty());
+        assert!(
+            app.file_search.is_none(),
+            "an emptied input is no longer an @token — the picker closes"
         );
     }
 
