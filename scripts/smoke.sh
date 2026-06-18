@@ -37,6 +37,7 @@ cleanup() {
 	tmux kill-session -t "${S}_tabqueue" 2>/dev/null
 	tmux kill-session -t "${S}_bigoutput" 2>/dev/null
 	tmux kill-session -t "${S}_ctrlj" 2>/dev/null
+	tmux kill-session -t "${S}_shellqueue" 2>/dev/null
 	rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 }
 trap cleanup EXIT
@@ -930,6 +931,57 @@ echo "==== captured pane (multi-line draft submitted with Enter) ===="
 printf '%s\n' "$ctrlj_sent"
 tmux kill-session -t "$S20" 2>/dev/null
 
+# --- Phase 24: a `!` command typed WHILE A TURN STREAMS queues as its own
+# STANDALONE shell entry and runs LOCALLY as a separate turn after it
+# (docs/queue.md, docs/shell-command.md) — codex's action-tagged queued shell
+# command, NOT the old v1 behaviour of sending "!echo …" to the backend as
+# literal text. Submit "hello there", then mid-stream queue "world" (Enter, a
+# text turn) and "!echo smoke_queue_ok" (Enter in shell mode, a standalone shell
+# turn). Both show inset above the box ("  ❯ world", "  ! echo smoke_queue_ok");
+# then "world" runs as turn 2 and the command runs LOCALLY as turn 3, committing
+# an exec cell ("! echo …" header + "⎿ smoke_queue_ok" output) — never a
+# "❯ !echo …" user message. ---
+S21="${S}_shellqueue"
+tmux new-session -d -s "$S21" -x 80 -y 24 "$APP"
+sleep 0.4
+tmux send-keys -t "$S21" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S21" Enter
+for _ in $(seq 1 40); do # up to ~4s: wait until turn 1 is visibly streaming
+	if tmux capture-pane -t "$S21" -p | grep -qF "Happy"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S21" -l "world"
+sleep 0.2
+tmux send-keys -t "$S21" Enter # streaming → a text batch (runs as turn 2)
+tmux send-keys -t "$S21" -l "!echo smoke_queue_ok"
+sleep 0.2
+tmux send-keys -t "$S21" Enter # streaming → a STANDALONE shell entry (turn 3, local)
+shellqueue_band=""
+for _ in $(seq 1 20); do # up to ~3s: both queued entries show inset above the box
+	shellqueue_band="$(tmux capture-pane -t "$S21" -p)"
+	if printf '%s' "$shellqueue_band" | grep -qF "  ❯ world" &&
+		printf '%s' "$shellqueue_band" | grep -qF "  ! echo smoke_queue_ok"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (text + shell command queued above the box) ===="
+printf '%s\n' "$shellqueue_band"
+shellqueue=""
+for _ in $(seq 1 160); do # up to ~24s: turn 1, turn 2 (world), then the LOCAL shell turn
+	shellqueue="$(tmux capture-pane -t "$S21" -p -S -100)"
+	if printf '%s' "$shellqueue" | grep -qF "⎿ smoke_queue_ok"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (the queued !command ran locally as its own turn) ===="
+printf '%s\n' "$shellqueue"
+tmux kill-session -t "$S21" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -1502,7 +1554,33 @@ if ! printf '%s' "$ctrlj_sent" | grep -qF "❯ CCC"; then
 	status=1
 fi
 
+# Phase 24: a !command queued mid-turn runs LOCALLY as its own turn (docs/queue.md).
+# While turn 1 streams, the text "world" (❯, a model turn) and the command
+# "! echo …" (the red shell prompt) both show inset above the box; then the
+# command commits an exec cell (⎿ output), proving it ran locally — NOT a
+# "❯ !echo …" user message sent to the backend (the old v1 limitation).
+if ! printf '%s' "$shellqueue_band" | grep -qF "  ❯ world"; then
+	echo "FAIL: the Enter-queued 'world' was not shown inset above the box while turn 1 streamed" >&2
+	status=1
+fi
+if ! printf '%s' "$shellqueue_band" | grep -qF "  ! echo smoke_queue_ok"; then
+	echo "FAIL: the mid-turn !command did not queue as an inset '! echo …' shell entry (the red bang prompt)" >&2
+	status=1
+fi
+if ! printf '%s' "$shellqueue" | grep -qE "^! echo smoke_queue_ok"; then
+	echo "FAIL: the queued !command did not commit its '! echo …' exec-cell header — did it run locally?" >&2
+	status=1
+fi
+if ! printf '%s' "$shellqueue" | grep -qF "⎿ smoke_queue_ok"; then
+	echo "FAIL: the queued !command produced no '⎿' output cell — it was not run locally as its own turn" >&2
+	status=1
+fi
+if printf '%s' "$shellqueue" | grep -qF "❯ !echo smoke_queue_ok"; then
+	echo "FAIL: the queued !command was sent to the backend as literal text ('❯ !echo …') — the old v1 limitation, not run locally" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft"
 fi
 exit "$status"

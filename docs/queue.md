@@ -51,67 +51,92 @@ we don't have). The mechanics that matter:
 ## What we build
 
 We have no steering, so we map codex's two-key intent onto the queue itself: the
-queue is a `VecDeque<Vec<String>>` of **turn-batches**, each batch one future
-turn. **Enter** appends to the last batch (the Claude-Code merge — those messages
-share one turn); **Tab** opens a new batch (codex's one-per-completion sequencing
-— that message runs as its own turn after the batches already queued). On
-**every** turn end — `StreamDone`, `Error`, or **Esc** (which interrupts and
-flushes right away) — the loop pops the **front** batch and sends it as one turn;
-the remaining batches each flush at their own following turn-end, so Tab-opened
-follow-ups iterate in order.
+queue is a `VecDeque<QueuedTurn>` of **typed entries** — codex's action-tagged
+queued messages (`QueuedInputAction`), drained FIFO one entry per turn-end. A
+`QueuedTurn::Messages(Vec<String>)` is a text batch (sent to the model); a
+`QueuedTurn::Shell(String)` is a standalone `!` command (**run locally**). The
+variant is the dispatch discriminator, so submission order is preserved across
+mixed entries.
 
-A batch's messages commit as their own user bubbles and the backend gets them
+**Enter** appends to the last `Messages` batch (the Claude-Code merge — those
+messages share one turn); **Tab** opens a new `Messages` batch (codex's
+one-per-completion sequencing — that message runs as its own turn after the
+batches already queued); a **shell-mode `!` draft** queues as its own `Shell`
+entry, **never merged** (a `Shell` at the back of the queue isn't a `Messages`,
+so the next Enter-text starts a fresh batch — codex's per-completion shell
+dispatch). On **every** turn end — `StreamDone`, `Error`, or **Esc** (which
+interrupts and flushes right away) — the loop pops the **front** entry and
+dispatches it: a text batch to the model, a `!` command run locally. The
+remaining entries each flush at their own following turn-end, so the queue
+iterates in order.
+
+A `Messages` batch commits as its own user bubbles and the backend gets them
 joined with newlines as a single prompt (`start_turn`, a Submit being a batch of
-one).
+one); a `Shell` entry runs through `run_shell` exactly like an idle `!command`
+(`begin_shell` + `spawn_shell_command`), committing a codex-style exec cell.
 
 ### State (`app.rs`)
 
-- `App.queued: VecDeque<Vec<String>>` — the turn-batches awaiting their turns.
-  Each inner `Vec` is one batch (one turn); we never push an empty batch, so
-  `is_empty()`/`len()` count batches and `queued[0]` is the next turn's messages.
-- `App::queue_draft(new_batch: bool)` — the shared mid-turn queue path. Consumes
-  the composer, re-absorbs a shell-mode `!` (queued as literal text, a v1
-  limitation), and records the text in `input_history` (so ↑ recalls it like a
-  submit). `new_batch` picks the semantics: `false` (Enter) appends to the last
-  batch (`back_mut`), `true` (Tab) pushes a new batch; an empty queue starts a
-  fresh batch either way.
+- `App.queued: VecDeque<QueuedTurn>` — the typed entries awaiting their turns
+  (`Messages(Vec<String>)` text batches and `Shell(String)` commands). We never
+  push an empty entry, so `is_empty()`/`len()` count entries and `queued[0]` is
+  the next turn.
+- `App::queue_draft(new_batch: bool)` — the shared mid-turn **text**-queue path.
+  Consumes the composer and records the text in `input_history` (so ↑ recalls it
+  like a submit). `new_batch` picks the semantics: `false` (Enter) appends to the
+  last `Messages` batch (`back_mut`), `true` (Tab) pushes a new one; an empty
+  queue — or a `Shell` entry at the back — starts a fresh batch either way. A
+  **shell-mode draft short-circuits to `queue_shell`** instead.
+- `App::queue_shell()` — queues the shell-mode draft as a standalone
+  `QueuedTurn::Shell` entry (codex's `submit_queued_shell_prompt` on a queued
+  `RunShell` action), exits the mode, and records the full `!command` for ↑
+  recall (mirroring the idle `Action::RunShell` path). **Always a new entry,
+  never merged.**
 - **Enter while a turn is in flight** (`on_key_conversation`): with a non-empty,
-  non-command composer, `queue_draft(false)`. Idle Enter is unchanged
-  (`Action::Submit`); a bare `/token` keeps the palette path.
+  non-command composer, `queue_draft(false)` — which routes a shell draft to
+  `queue_shell`. Idle Enter is unchanged (`Action::Submit` / `Action::RunShell`);
+  a bare `/token` keeps the palette path.
 - **Tab while a turn is in flight** (`on_key_conversation`, after the palette's
   Tab arm so the menu still wins): with a non-empty composer, `queue_draft(true)`
-  → a new follow-up batch. **Idle or empty Tab falls through to a no-op** — Tab
-  only queues against a running turn (the user's spec; idle behaviour unchanged).
-- `App::drain_next_batch() -> Vec<String>` — pops the **front** batch (FIFO) for
-  the loop to send as the next turn; empty when nothing is queued. Popping one
-  per turn-end is what makes Tab batches iterate sequentially.
-- `App::drain_last_batch() -> Vec<String>` — pops the **last** batch (`pop_back`),
-  for Alt+Up. The earlier batches stay queued; empty when nothing is queued.
+  → a new follow-up batch (or, in shell mode, a `Shell` entry — `queue_shell`
+  ignores `new_batch`, a shell command being always standalone). **Idle or empty
+  Tab falls through to a no-op** — Tab only queues against a running turn.
+- `App::drain_next_batch() -> Option<QueuedTurn>` — pops the **front** entry
+  (FIFO) for the loop to dispatch as the next turn; `None` when nothing is queued.
+  Popping one per turn-end is what makes the entries iterate sequentially.
+- `App::drain_last_batch() -> Option<QueuedTurn>` — pops the **last** entry
+  (`pop_back`), for Alt+Up. The earlier entries stay queued; `None` when empty.
 - **Alt+Up** (`KeyCode::Up` with `ALT`, an **empty** composer, a non-empty queue):
-  `drain_last_batch` the most-recent batch into the composer as one newline-joined
-  draft (its own messages oldest first) via `recall_input`, to edit/extend/drop —
-  the earlier batches stay queued (codex's `edit_queued_message` pops the most
-  recent entry the same way). Guarded on an empty composer so it never clobbers a
-  draft.
+  `drain_last_batch` the most-recent entry into the composer to edit/extend/drop,
+  the earlier entries left queued (codex's `edit_queued_message`). A `Messages`
+  batch returns as one newline-joined draft (its messages oldest first); a `Shell`
+  entry returns as `!command` — `recall_input` re-absorbs the bang, so the
+  composer **re-enters shell mode** with the red `! ` prompt. Guarded on an empty
+  composer so it never clobbers a draft.
 
 ### Flush (`main.rs`, the I/O boundary)
 
-`start_turn(texts, …)` records + commits each user bubble, opens the stream,
-resets the per-turn clocks/`committed`, and spawns the backend once on the
-newline-joined prompt. Both the Submit arm and every flush call it. After a turn
-goes idle the loop `drain_next_batch()`es one batch and — if non-empty — starts
-it:
+`flush_next_queued(…)` pops the next entry (`drain_next_batch`) and dispatches by
+kind — a `Messages` batch through `start_turn` (record + commit each user bubble,
+open the stream, spawn the backend on the newline-joined prompt), a `Shell` entry
+through `run_shell` (`begin_shell` + `spawn_shell_command`, the same path an idle
+`!command` takes). It returns the new in-flight handle, or `None` when the queue
+is empty. **Every** turn-end drain site calls it, so they can't drift:
 
-- **`StreamDone` / `Error`** (after `on_stream_event` returns "ended"): pop the
-  next batch — *only in the conversation view* (committing under the Ctrl+O
-  overlay would violate invariant 4). The **next** turn-end pops the **next**
-  batch, so Tab follow-ups iterate one turn at a time.
+- **`StreamDone` / `Error`** (after `on_stream_event` returns "ended"): flush the
+  next entry — *only in the conversation view* (committing under the Ctrl+O
+  overlay would violate invariant 4). The **next** turn-end flushes the **next**
+  entry, so the queue iterates one turn at a time.
 - **Esc interrupt** (`Action::Interrupt`): after committing the partial + the red
-  `Conversation interrupted` notice, pop the **front** batch (the first queue) and
-  send it right away; later Tab batches iterate at the following turn-ends.
+  `Conversation interrupted` notice, flush the **front** entry (the first queue)
+  right away; later entries iterate at the following turn-ends.
 - **Returning from the Ctrl+O overlay**: if a turn *ended while the overlay was
-  up* (`inflight` is now `None`), the deferred pop runs after
+  up* (`inflight` is now `None`), the deferred flush runs after
   `repaint_conversation`.
+
+(The Submit arm still calls `start_turn` directly with the just-typed text, and
+the idle `Action::RunShell` arm calls `run_shell` — `flush_next_queued` is only
+the *queue* drain.)
 
 Because a message can only be queued *while streaming*, and a non-empty queue
 always starts a fresh turn the instant the current one ends, the invariant holds:
@@ -120,12 +145,13 @@ queued band at idle).
 
 ### Display (`ui.rs`)
 
-Queued messages render **above the box, in the streaming strip** — stacked just
+Queued entries render **above the box, in the streaming strip** — stacked just
 under the status line's gap, between it and the box's top rule — each **inset two
-columns** (`QUEUED_INDENT`) and past the indent styled **exactly like a sent user
-message** (the `❯ ` bullet, the dark background, wrapped). A **blank row divides
-each turn-batch from the next**, so Tab-opened follow-ups read as separate turns
-from the first queue:
+columns** (`QUEUED_INDENT`). Past the indent a text message is styled **exactly
+like a sent user message** (the `❯ ` bullet, the dark background, wrapped) and a
+**shell command** like the exec cell it becomes (the red `! ` `Role::Shell`
+header). A **blank row divides each entry from the next**, so Tab-opened
+follow-ups and standalone `!` commands read as separate turns:
 
 ```
 ● Happy to help!…            ← streaming preview
@@ -133,8 +159,9 @@ from the first queue:
 
   ❯ Hello                     ← batch 1 (Enter): two-space inset, user-style
   ❯ World
-                              ← blank: a batch boundary (Tab opened the next)
-  ❯ Later                     ← batch 2 (Tab): its own follow-up turn
+                              ← blank: an entry boundary
+  ! ls -la                    ← a Shell entry (Enter in shell mode): red `! `,
+                                runs locally as its own turn
 ────────────────────────────
 ❯                             ← the input box
 ────────────────────────────
@@ -144,10 +171,12 @@ The strip's height collapses to 0 when idle and the queue is only non-empty whil
 streaming, so the queued rows live naturally in the strip. `queued_rows` /
 `queued_lines` (threaded through `live_height`/`live_layout`/`input_box`):
 
-- `queued_lines(app, width)` — each batch's messages rendered via
-  `message_lines(Role::User, …)`, every row prefixed with `QUEUED_INDENT`
-  (`indent_queued_line` keeps the indent outside the dark block), with a blank
-  `Line` inserted between batches; **uncapped** (the whole backlog shows).
+- `queued_lines(app, width)` — each `Messages` batch's messages rendered via
+  `message_lines(Role::User, …)` and each `Shell` entry via
+  `message_lines(Role::Shell, …)` (the red `! ` header), every row prefixed with
+  `QUEUED_INDENT` (`indent_queued_line` keeps the indent outside the dark block),
+  with a blank `Line` inserted between entries; **uncapped** (the whole backlog
+  shows).
 - `queued_rows(app, width)` — `queued_lines(...).len()`, so the strip reserves
   exactly what `render_live` paints (they can't drift). `live_height`'s
   terminal-height clamp still bounds the region.
@@ -172,12 +201,19 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
 - **Idle Tab is a no-op.** Codex's idle Tab submits like Enter (and inserts a tab
   in a `!` bang draft); ours does nothing — Tab only queues against a running
   turn, which is all the user asked for.
-- **Alt+Up restores the last batch (like codex), as a newline-joined draft.**
+- **Alt+Up restores the last entry (like codex), as an editable draft.**
   Codex's `edit_queued_message` pops the most recent queued entry; ours pops the
-  most recent **batch** (`pop_back`) — its messages newline-joined into the
-  composer (a batch can hold several, where codex's entry is one) — leaving the
-  earlier batches queued. The user edits/extends/drops it and re-queues however
-  they like.
+  most recent **entry** (`pop_back`) — a `Messages` batch newline-joined into the
+  composer (a batch can hold several, where codex's entry is one), a `Shell` entry
+  back as `!command` re-entering shell mode — leaving the earlier entries queued.
+  The user edits/extends/drops it and re-queues however they like.
+- **Mid-turn `!` commands now match codex (run locally, not queued as text).** A
+  shell command submitted while a turn streams queues as its own `Shell` entry and
+  runs locally when its turn comes — codex's action-tagged `RunShell` dispatch.
+  This retires the v1 limitation (`docs/shell-command.md`) where a mid-turn
+  `!command` queued as literal text and was sent to the backend. Each `!` command
+  is a **standalone** entry (never merged into a text batch), so the user's
+  "individual separate queue" intent and codex's per-completion dispatch coincide.
 - **No per-queue edit hint row.** Codex shows a dim hint line under its queued
   list; we spend no strip row on it — the bindings live in the `?` shortcuts band
   (`alt+↑ to edit queue`, `tab to queue next turn`).
@@ -196,11 +232,19 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   only the last batch** into the composer newline-joined, leaving earlier batches
   queued (and concats a multi-message last batch); Alt+Up with a draft is a no-op;
   `/clear` mid-turn drops the backlog.
+- `app` (mid-turn shell, `docs/shell-command.md`): a `!command` mid-turn queues
+  as a standalone `QueuedTurn::Shell` entry (not text), recording `!command` for
+  ↑ recall and exiting the mode; a `Shell` entry is **never merged** — a text
+  Enter after it opens a fresh `Messages` batch, and two `!` commands queue as two
+  separate `Shell` entries; **Alt+Up over a `Shell` entry re-enters shell mode**
+  with the command in the composer.
 - `ui` (queue): `queued_rows` is 0 empty / counts a batch's messages / counts a
   long message's wrapped rows / **counts the blank between batches** (two
   single-message batches are three rows); `queued_lines` styles each message
-  like a user message and **divides batches with a blank row**; `live_height`
-  grows with the queue; `render_live` draws the queue above the box.
+  like a user message and **divides batches with a blank row**, and renders a
+  `Shell` entry with the red `! ` `Role::Shell` header (a text batch + a shell
+  entry are three lines: message, blank divider, command); `live_height` grows
+  with the queue; `render_live` draws the queue above the box.
 - `scripts/smoke.sh` Phase 12 (batch-send): submit `hello`, queue `world` and
   `again` mid-stream **with Enter** (both inset rows show), then the backlog
   batch-sends as ONE turn.
@@ -215,3 +259,8 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   with **Enter** then `later` with **Tab** mid-stream (a blank divides them),
   and watch `world` send as one turn and `later` send as a **separate** turn
   after it — a third turn the all-Enter Phase 12 never produces.
+- `scripts/smoke.sh` Phase 24 (mid-turn shell queue): submit `hello there`, queue
+  `world` (Enter) and `!echo smoke_queue_ok` (Enter in shell mode) mid-stream —
+  both show inset (`  ❯ world`, `  ! echo smoke_queue_ok`); then `world` runs as a
+  model turn and the command runs **locally** as its own turn, committing the exec
+  cell (`! echo …` header + `⎿ smoke_queue_ok`), never a `❯ !echo …` user message.

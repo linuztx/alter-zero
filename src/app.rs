@@ -288,6 +288,26 @@ pub enum View {
     ToolOutput,
 }
 
+/// One queued turn awaiting its slot while a turn streams — codex's
+/// action-tagged queued message (`QueuedInputAction`). The queue is a
+/// `VecDeque<QueuedTurn>` drained FIFO, one entry per turn-end; the variant is
+/// the dispatch discriminator, so a text batch goes to the model while a `!`
+/// command runs locally. See `docs/queue.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueuedTurn {
+    /// One or more Enter-batched text messages — sent to the backend as a
+    /// single turn (newline-joined). Consecutive Enters append to the last such
+    /// batch; **Tab** opens a new one (a separate follow-up turn).
+    Messages(Vec<String>),
+    /// A standalone `!` shell command, run locally as its own turn (via
+    /// [`App::begin_shell`]). **Never merged** with a neighbouring entry — the
+    /// next Enter-text starts a fresh [`Messages`] batch — matching codex's
+    /// per-completion shell dispatch (`submit_queued_shell_prompt`).
+    ///
+    /// [`Messages`]: QueuedTurn::Messages
+    Shell(String),
+}
+
 /// How many lines PageUp/PageDown move the tool-output view.
 const TOOL_VIEW_PAGE: usize = 10;
 
@@ -650,7 +670,7 @@ pub struct App {
     /// a turn is active. See `docs/queue.md`.
     ///
     /// [`drain_next_batch`]: App::drain_next_batch
-    pub queued: VecDeque<Vec<String>>,
+    pub queued: VecDeque<QueuedTurn>,
     /// Whether the `?` shortcuts band (the keyboard-shortcuts overview below
     /// the input box — codex's footer shortcut overlay) is showing. Toggled by
     /// `?` from an empty composer; any other key closes it. See
@@ -952,8 +972,15 @@ impl App {
                     && self.input.is_empty()
                     && !self.queued.is_empty() =>
             {
-                let text = self.drain_last_batch().join("\n");
-                self.recall_input(&text);
+                match self.drain_last_batch() {
+                    // A text batch returns newline-joined (oldest first).
+                    Some(QueuedTurn::Messages(msgs)) => self.recall_input(&msgs.join("\n")),
+                    // A shell entry re-enters shell mode: recalling `!command`
+                    // re-absorbs the bang (sync_shell_mode), so the composer
+                    // shows the red `! command` prompt again, ready to edit/re-run.
+                    Some(QueuedTurn::Shell(cmd)) => self.recall_input(&format!("!{cmd}")),
+                    None => {}
+                }
                 Action::None
             }
             // ↑/↓ first try shell-style history recall — only from an empty
@@ -1416,8 +1443,8 @@ impl App {
     /// Enters) join with newlines into that single turn (`start_turn`). See
     /// `docs/queue.md`.
     #[must_use]
-    pub fn drain_next_batch(&mut self) -> Vec<String> {
-        self.queued.pop_front().unwrap_or_default()
+    pub fn drain_next_batch(&mut self) -> Option<QueuedTurn> {
+        self.queued.pop_front()
     }
 
     /// Take the **last** queued batch (`pop_back`), for Alt+Up to pull just that
@@ -1425,8 +1452,8 @@ impl App {
     /// messages newline-joined, the earlier batches left queued (codex's
     /// `edit_queued_message`, which pops the most recent entry). Empty when
     /// nothing is queued.
-    fn drain_last_batch(&mut self) -> Vec<String> {
-        self.queued.pop_back().unwrap_or_default()
+    fn drain_last_batch(&mut self) -> Option<QueuedTurn> {
+        self.queued.pop_back()
     }
 
     /// Queue the composer draft while a turn streams. `new_batch` picks the
@@ -1434,20 +1461,37 @@ impl App {
     /// being accumulated so consecutive Enters batch into one next turn; **Tab
     /// (`true`) opens a new batch** so the message runs as its own follow-up
     /// turn after the batches already queued. An empty queue starts a fresh
-    /// batch either way. A shell-mode draft re-gains its `!` and queues as
-    /// literal text (a v1 limitation; see `docs/shell-command.md`). The text is
-    /// recorded for ↑ recall, like a normal submit.
+    /// batch either way. A **shell-mode draft** instead queues as a standalone
+    /// [`QueuedTurn::Shell`] entry ([`queue_shell`]) — run locally, never merged
+    /// — so this only ever touches the [`QueuedTurn::Messages`] batches. The text
+    /// is recorded for ↑ recall, like a normal submit.
+    ///
+    /// [`queue_shell`]: App::queue_shell
     fn queue_draft(&mut self, new_batch: bool) {
-        let mut text = self.input.take();
         if self.shell_mode {
-            self.shell_mode = false;
-            text = format!("!{text}");
+            return self.queue_shell();
         }
+        let text = self.input.take();
         self.input_history.record(&text);
         match self.queued.back_mut() {
-            Some(batch) if !new_batch => batch.push(text),
-            _ => self.queued.push_back(vec![text]),
+            Some(QueuedTurn::Messages(batch)) if !new_batch => batch.push(text),
+            _ => self.queued.push_back(QueuedTurn::Messages(vec![text])),
         }
+    }
+
+    /// Queue the shell-mode draft as a standalone [`QueuedTurn::Shell`] entry —
+    /// run locally as its own turn when the queue drains (`main.rs`'s
+    /// `flush_next_queued` → `run_shell`), **never merged** with a neighbouring
+    /// batch (codex's `submit_queued_shell_prompt` on a queued `RunShell`
+    /// action: the next Enter-text starts a fresh batch since the back is a
+    /// `Shell`). Exits the mode and records the full `!command` for ↑ recall,
+    /// mirroring the idle [`Action::RunShell`] path. See `docs/shell-command.md`.
+    fn queue_shell(&mut self) {
+        let raw = self.input.take();
+        self.shell_mode = false;
+        self.input_history.record(&format!("!{raw}"));
+        self.queued
+            .push_back(QueuedTurn::Shell(raw.trim().to_string()));
     }
 
     /// Record a system notice (from a slash command) in the history, so it
@@ -1895,7 +1939,10 @@ mod tests {
             "",
             "the composer is consumed into the queue"
         );
-        assert_eq!(app.queued.front(), Some(&vec!["hello".to_string()]));
+        assert_eq!(
+            app.queued.front(),
+            Some(&QueuedTurn::Messages(vec!["hello".to_string()]))
+        );
     }
 
     #[test]
@@ -2941,8 +2988,11 @@ mod tests {
         app.input = TextArea::from_text("second");
         app.on_key(key(KeyCode::Enter));
         assert_eq!(app.queued.len(), 1, "both Enters land in one batch");
-        let batch: Vec<&str> = app.queued[0].iter().map(String::as_str).collect();
-        assert_eq!(batch, vec!["first", "second"], "FIFO, oldest first");
+        assert_eq!(
+            app.queued[0],
+            QueuedTurn::Messages(vec!["first".to_string(), "second".to_string()]),
+            "FIFO, oldest first"
+        );
     }
 
     #[test]
@@ -2958,11 +3008,15 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert_eq!(
             app.drain_next_batch(),
-            vec!["a", "b", "c"],
+            Some(QueuedTurn::Messages(vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string()
+            ])),
             "the whole front batch, FIFO"
         );
         assert!(app.queued.is_empty(), "the queue is emptied");
-        assert!(app.drain_next_batch().is_empty(), "nothing left to flush");
+        assert!(app.drain_next_batch().is_none(), "nothing left to flush");
     }
 
     #[test]
@@ -2977,8 +3031,14 @@ mod tests {
         assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
         assert_eq!(app.input.text(), "", "Tab consumes the composer like Enter");
         assert_eq!(app.queued.len(), 2, "Tab opened a second batch");
-        assert_eq!(app.queued[0], vec!["first".to_string()]);
-        assert_eq!(app.queued[1], vec!["follow".to_string()]);
+        assert_eq!(
+            app.queued[0],
+            QueuedTurn::Messages(vec!["first".to_string()])
+        );
+        assert_eq!(
+            app.queued[1],
+            QueuedTurn::Messages(vec!["follow".to_string()])
+        );
     }
 
     #[test]
@@ -2994,8 +3054,11 @@ mod tests {
         app.input = TextArea::from_text("c");
         app.on_key(key(KeyCode::Enter)); // batch 2 = [b, c]
         assert_eq!(app.queued.len(), 2);
-        assert_eq!(app.queued[0], vec!["a".to_string()]);
-        assert_eq!(app.queued[1], vec!["b".to_string(), "c".to_string()]);
+        assert_eq!(app.queued[0], QueuedTurn::Messages(vec!["a".to_string()]));
+        assert_eq!(
+            app.queued[1],
+            QueuedTurn::Messages(vec!["b".to_string(), "c".to_string()])
+        );
     }
 
     #[test]
@@ -3010,15 +3073,15 @@ mod tests {
         app.on_key(key(KeyCode::Tab));
         assert_eq!(
             app.drain_next_batch(),
-            vec!["first"],
+            Some(QueuedTurn::Messages(vec!["first".to_string()])),
             "the first queue goes first"
         );
         assert_eq!(
             app.drain_next_batch(),
-            vec!["later"],
+            Some(QueuedTurn::Messages(vec!["later".to_string()])),
             "the Tab follow-up next"
         );
-        assert!(app.drain_next_batch().is_empty());
+        assert!(app.drain_next_batch().is_none());
     }
 
     #[test]
@@ -3095,7 +3158,7 @@ mod tests {
         assert_eq!(app.queued.len(), 1, "the earlier batch stays queued");
         assert_eq!(
             app.queued[0],
-            vec!["hello".to_string(), "world".to_string()],
+            QueuedTurn::Messages(vec!["hello".to_string(), "world".to_string()]),
             "and is left untouched"
         );
     }
@@ -3331,7 +3394,7 @@ mod tests {
         assert_eq!(app.queued.len(), 1, "the message queued");
         type_str(&mut app, "/clear");
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
-        assert!(app.drain_next_batch().is_empty(), "the backlog was wiped");
+        assert!(app.drain_next_batch().is_none(), "the backlog was wiped");
     }
 
     #[test]
@@ -4222,16 +4285,94 @@ mod tests {
     }
 
     #[test]
-    fn a_bang_command_mid_turn_queues_as_text_rather_than_running() {
-        // v1 limitation: a !command typed while a turn streams queues like any
-        // follow-up (sent to the backend as literal text on drain), not run —
-        // re-prefixed with its bang so nothing is lost.
+    fn a_bang_command_mid_turn_queues_as_a_standalone_shell_entry() {
+        // codex parity (submit_queued_shell_prompt): a !command typed while a
+        // turn streams queues as its own Shell entry — run locally when its turn
+        // comes — NOT concatenated into a text batch and sent to the backend as
+        // literal text (the old v1 limitation). The full `!command` is recorded
+        // for ↑ recall, and submitting exits the mode.
         let mut app = App::new();
         app.begin_stream();
         type_query(&mut app, "!echo hi");
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
-        assert!(!app.shell_mode);
-        assert_eq!(app.drain_next_batch(), vec!["!echo hi".to_string()]);
+        assert!(!app.shell_mode, "submitting exits shell mode");
+        assert_eq!(
+            app.drain_next_batch(),
+            Some(QueuedTurn::Shell("echo hi".to_string())),
+            "queued as a local shell command, not literal text"
+        );
+        assert_eq!(
+            app.input_history.up(),
+            Some("!echo hi".to_string()),
+            "the full !command is recorded for ↑ recall"
+        );
+    }
+
+    #[test]
+    fn a_queued_shell_entry_is_never_merged_with_text() {
+        // A Shell entry stands alone: an Enter-text after it opens a *fresh*
+        // Messages batch (the back is a Shell, not a Messages), so the command
+        // never gets concatenated into a text turn — codex's per-completion
+        // shell dispatch ("cannot be added to").
+        let mut app = App::new();
+        app.begin_stream();
+        app.input = TextArea::from_text("hello");
+        app.on_key(key(KeyCode::Enter)); // Messages(["hello"])
+        type_query(&mut app, "!ls");
+        app.on_key(key(KeyCode::Enter)); // Shell("ls") — standalone
+        app.input = TextArea::from_text("world");
+        app.on_key(key(KeyCode::Enter)); // a NEW Messages(["world"]), not merged
+        assert_eq!(
+            app.queued,
+            VecDeque::from(vec![
+                QueuedTurn::Messages(vec!["hello".to_string()]),
+                QueuedTurn::Shell("ls".to_string()),
+                QueuedTurn::Messages(vec!["world".to_string()]),
+            ]),
+            "the shell entry stands alone between the two text batches"
+        );
+    }
+
+    #[test]
+    fn two_mid_turn_shell_commands_queue_as_separate_entries() {
+        // Each !command is individual: two of them mid-turn become two Shell
+        // entries (each its own local run), never one merged blob.
+        let mut app = App::new();
+        app.begin_stream();
+        type_query(&mut app, "!one");
+        app.on_key(key(KeyCode::Enter));
+        type_query(&mut app, "!two");
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            app.queued,
+            VecDeque::from(vec![
+                QueuedTurn::Shell("one".to_string()),
+                QueuedTurn::Shell("two".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn alt_up_pulls_a_queued_shell_entry_back_into_shell_mode() {
+        // The user chose: Alt+Up over a queued !command yanks it back into the
+        // composer *re-entering shell mode* (the red `! ` prompt), ready to
+        // edit/re-run — recalling `!command` re-absorbs the bang.
+        let mut app = App::new();
+        app.begin_stream();
+        type_query(&mut app, "!deploy --prod");
+        app.on_key(key(KeyCode::Enter)); // Shell("deploy --prod")
+        assert_eq!(app.queued.len(), 1);
+        assert_eq!(app.on_key(alt(KeyCode::Up)), Action::None);
+        assert!(app.shell_mode, "Alt+Up re-enters shell mode");
+        assert_eq!(
+            app.input.text(),
+            "deploy --prod",
+            "the command returns with its bang absorbed into the mode"
+        );
+        assert!(
+            app.queued.is_empty(),
+            "the entry was pulled out of the queue"
+        );
     }
 
     #[test]

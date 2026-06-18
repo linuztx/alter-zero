@@ -89,11 +89,13 @@ an empty composer; any other key dismisses it, Esc dismiss-only; see
 `docs/shortcuts.md`); plus, *above* the box while a turn streams, **messages
 submitted with Enter queue** instead of waiting (shown like sent user messages,
 inset two columns — `  ❯ {msg}` rows in the strip under the status line —
-`App::queued`, a `VecDeque<Vec<String>>` of **turn-batches**, codex's
+`App::queued`, a `VecDeque<QueuedTurn>` of **typed entries** (text `Messages`
+batches and standalone `Shell` commands — codex's action-tagged
 `queued_user_messages`): **Enter appends to the current batch** (those messages
 auto-sent together as one next turn) while **Tab opens a new batch** (codex's
 Tab-to-queue — its message runs as a *separate follow-up turn* after the first
-queue, a blank row dividing them), the loop sending one batch per turn end —
+queue, a blank row dividing them), the loop dispatching one entry per turn end
+(a text batch to the model, a queued `!command` run locally) —
 **Esc interrupts and sends the front batch right away**, Alt+Up pulls the **last
 batch** (its messages newline-joined) back into the composer to edit, leaving
 earlier batches queued; see
@@ -107,7 +109,9 @@ composer runs the draft under `sh -c` on a background thread as a turn
 header on the dark user-style line (a `Role::Shell` message) with the `⎿`
 output **flush** below, `⎿ Running…` while it runs, the `Running…`/`esc to
 interrupt` status, **no** `Ran for Ns` summary, Esc killing the child;
-mid-turn it queues as literal text; see `docs/shell-command.md`); plus a one-row
+mid-turn it queues as a standalone `Shell` entry run locally when its turn comes
+— codex parity, never merged into a text batch, Alt+Up over it re-enters shell
+mode; see `docs/shell-command.md` and `docs/queue.md`); plus a one-row
 **session footer** on the region's last row —
 codex's footer status line, `{model} · {cwd}` dim and two-space inset
 (`dummy_model_name · ~/repo`) — whenever no band is open (the palette/shortcuts
@@ -235,13 +239,17 @@ thread handle + `CancelToken` so a quit mid-stream cancels and reaps it.
 **Enter *while a turn is in flight* queues** the message into `App::queued`
 (codex's `queued_user_messages`) instead of producing `Submit` — shown like
 sent user messages (`❯` rows) in the strip above the box. The queue is a
-sequence of **turn-batches**: Enter appends to the last (`queue_draft(false)`),
-**Tab opens a new batch** (`queue_draft(true)`, a separate follow-up turn);
-`start_turn` is reused to flush **one batch** (`drain_next_batch`) per turn end,
-so Enter messages batch into one turn while Tab follow-ups iterate in order
-(Alt+Up pulls the **last batch** (`drain_last_batch`, `pop_back`), its messages
-newline-joined, back into the composer to edit — earlier batches stay queued;
-see `docs/queue.md`). The
+sequence of **typed entries** (`QueuedTurn`): Enter appends to the last
+`Messages` batch (`queue_draft(false)`), **Tab opens a new batch**
+(`queue_draft(true)`, a separate follow-up turn), and a **mid-turn `!command`
+queues as a standalone `Shell` entry** (`queue_shell`, run locally, never
+merged); `main.rs::flush_next_queued` dispatches **one entry**
+(`drain_next_batch`) per turn end — a `Messages` batch via `start_turn`, a
+`Shell` via `run_shell` — so Enter messages batch into one turn while Tab
+follow-ups and `!` commands iterate in order (Alt+Up pulls the **last entry**
+(`drain_last_batch`, `pop_back`) back into the composer to edit — a `Messages`
+batch newline-joined, a `Shell` entry as `!command` re-entering shell mode —
+earlier entries stay queued; see `docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
 and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
@@ -273,7 +281,7 @@ ends under the Ctrl+O overlay defers its flush to the return (invariant 4).
 `App` (`app.rs`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,
-`TurnSummary`, `HistoryItem`, `View` live there too.
+`TurnSummary`, `HistoryItem`, `QueuedTurn`, `View` live there too.
 
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
@@ -351,10 +359,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), the `?` shortcuts
   band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
-  key / dim label colours), the queued messages (the `QUEUED_INDENT` two-space
-  inset, `queued_rows`/`queued_lines` — uncapped, each rendered by
-  `message_lines(Role::User…)`, so they reuse the user-message style, with a
-  blank row dividing each Tab-opened turn-batch from the next), the
+  key / dim label colours), the queued entries (the `QUEUED_INDENT` two-space
+  inset, `queued_rows`/`queued_lines` — uncapped; a text `Messages` batch
+  rendered by `message_lines(Role::User…)` and a standalone `Shell` command by
+  `message_lines(Role::Shell…)` (the red `! ` header), so they reuse the
+  user-/shell-message style, with a blank row dividing each entry from the next),
+  the
   session footer (`FOOTER_*` — the two-space `FOOTER_INDENT`, the ` · `
   `FOOTER_SEPARATOR`, the dim `FOOTER_COLOR`; `footer_rows`/`footer_line`,
   ellipsis-truncated at narrow widths, with `display_cwd` formatting the

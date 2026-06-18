@@ -63,8 +63,10 @@ In `on_key_conversation`'s Enter arm, in shell mode:
 
 - empty/whitespace draft → `Action::Notice(SHELL_EMPTY_NOTICE)`, staying in the
   mode (codex's empty-bang help).
-- mid-turn → the draft re-gains its `!` and **queues as literal text** (a v1
-  limitation: codex dispatches queued shell commands locally), exiting the mode.
+- mid-turn → **queues as a standalone `QueuedTurn::Shell` entry** (`queue_shell`),
+  run locally when its turn comes — codex's action-tagged `RunShell` dispatch
+  (`submit_queued_shell_prompt`) — exiting the mode and recording the full
+  `!command` for ↑ recall. **Never merged** into a text batch; see `docs/queue.md`.
 - idle → `Action::RunShell(draft.trim())`, recording the full `!command` in
   `input_history` (codex records the whole text; recall re-absorbs the bang).
 
@@ -202,9 +204,12 @@ The `?` shortcuts band gains a `! for shell command` entry.
   → `RunShell(trimmed)` recording `!cmd` (recall re-enters the mode; a plain
   recall clears it; a Ctrl+R search suspends and restores it, and accepting a
   `!entry` re-enters it); an empty bang → the help `Notice`, staying in the
-  mode; mid-turn Enter queues the re-prefixed literal text; `begin_shell`
-  records the `Role::Shell` header, flags the status + tool, and `end_turn`
-  then returns no summary; interrupting resolves the command failed.
+  mode; **mid-turn Enter queues a standalone `QueuedTurn::Shell` entry** (run
+  locally, never merged — two `!` commands make two entries, a text Enter after
+  one opens a fresh batch, Alt+Up over it re-enters shell mode; see
+  `docs/queue.md`); `begin_shell` records the `Role::Shell` header, flags the
+  status + tool, and `end_turn` then returns no summary; interrupting resolves
+  the command failed.
 - `ui`: `message_lines(Role::Shell…)` is the dark user-style line with the red
   `! ` bullet, width-padded; a shell tool renders headerless — inline a `⎿`
   block of up to `TOOL_PEEK_LINES` lines (continuation lines aligned under the
@@ -233,10 +238,11 @@ The `?` shortcuts band gains a `! for shell command` entry.
 
 ## Known limitations (v1)
 
-- **Mid-turn `!command` is not run** — it queues as a normal follow-up and is
-  sent to the backend as literal text when the turn ends (codex dispatches
-  queued shell commands locally). Shell dispatch happens only from an idle
-  composer.
+- ~~**Mid-turn `!command` is not run**~~ — **resolved** (codex parity): a
+  `!command` submitted while a turn streams now queues as a standalone
+  `QueuedTurn::Shell` entry and runs locally when its turn comes (never merged
+  into a text batch). See `docs/queue.md`. Idle dispatch is the same `run_shell`
+  path.
 - **Output past `SHELL_OUTPUT_MAX_BYTES` (100KB) is dropped**, not saved — only
   the retained head is kept (with a `…` marker). The cap bounds peak memory; the
   trade-off is the tail is unrecoverable. Bump the const (or add head+tail

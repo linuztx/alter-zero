@@ -44,7 +44,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
-use inline_tui::app::{Action, App, INTERRUPT_NOTICE, Role, View};
+use inline_tui::app::{Action, App, INTERRUPT_NOTICE, QueuedTurn, Role, View};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::paste::{self, PasteBurst};
 use inline_tui::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
@@ -178,13 +178,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // queued batch (later batches flush at each
                                     // following turn-end, see the StreamDone arm).
                                     if inflight.is_none() {
-                                        let batch = app.drain_next_batch();
-                                        if !batch.is_empty() {
-                                            inflight = Some(start_turn(
-                                                term, &mut app, &tx, &backend, batch,
-                                                &mut committed, &mut clocks,
-                                            )?);
-                                        }
+                                        inflight = flush_next_queued(
+                                            term, &mut app, &tx, &backend,
+                                            &mut committed, &mut clocks,
+                                        )?;
                                     }
                                 }
                             }
@@ -266,17 +263,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // The user interrupted to send their queued
                                 // follow-ups right away (their spec; codex's
                                 // submit-pending-steers-after-interrupt). The
-                                // front batch — the first queue — goes out now;
-                                // any Tab-opened follow-up batches iterate at the
+                                // front entry — the first queue — goes out now
+                                // (a text batch to the model, or a `!` command
+                                // run locally); any later batches iterate at the
                                 // following turn-ends. Interrupt only arises in the
                                 // conversation view, so committing here is safe.
-                                let batch = app.drain_next_batch();
-                                if !batch.is_empty() {
-                                    inflight = Some(start_turn(
-                                        term, &mut app, &tx, &backend, batch,
-                                        &mut committed, &mut clocks,
-                                    )?);
-                                }
+                                inflight = flush_next_queued(
+                                    term, &mut app, &tx, &backend, &mut committed, &mut clocks,
+                                )?;
                             }
                         }
                         schedule_for_key(&frame, &mut burst, &key);
@@ -317,13 +311,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     // invariant. A turn that ends in the overlay flushes on return
                     // instead (see ToggleToolView).
                     if app.view == View::Conversation {
-                        let batch = app.drain_next_batch();
-                        if !batch.is_empty() {
-                            inflight = Some(start_turn(
-                                term, &mut app, &tx, &backend, batch,
-                                &mut committed, &mut clocks,
-                            )?);
-                        }
+                        inflight = flush_next_queued(
+                            term, &mut app, &tx, &backend, &mut committed, &mut clocks,
+                        )?;
                     }
                 }
                 frame.schedule_frame();
@@ -436,6 +426,31 @@ fn run_shell(
     let cancel = CancelToken::new();
     let handle = spawn_shell_command(command, tx.clone(), cancel.clone());
     Ok((cancel, handle))
+}
+
+/// Flush the next queued turn, if any, dispatching by its kind: a text batch
+/// goes to the model ([`start_turn`]) and a `!` command runs locally
+/// ([`run_shell`]) — codex's action-tagged drain (`maybe_send_next_queued_input`).
+/// Returns the new in-flight handle, or `None` when the queue is empty. Shared
+/// by every turn-end drain site (`StreamDone`/`Error`, an Esc interrupt, and a
+/// Ctrl+O return) so they can't drift. See `docs/queue.md`.
+fn flush_next_queued(
+    term: &mut InlineViewport,
+    app: &mut App,
+    tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    backend: &impl ReplySource,
+    committed: &mut usize,
+    clocks: &mut StatusClocks,
+) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
+    match app.drain_next_batch() {
+        Some(QueuedTurn::Messages(texts)) => Ok(Some(start_turn(
+            term, app, tx, backend, texts, committed, clocks,
+        )?)),
+        Some(QueuedTurn::Shell(command)) => {
+            Ok(Some(run_shell(term, app, tx, command, committed, clocks)?))
+        }
+        None => Ok(None),
+    }
 }
 
 /// Run `command` under `sh -c` on a background thread, streaming the result back
