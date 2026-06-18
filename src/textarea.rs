@@ -130,6 +130,20 @@ impl TextArea {
         self.dirty();
     }
 
+    /// Replace the byte `range` with `with`, leaving the cursor **after** the
+    /// inserted text. Used to swap a typed `@token` for a chosen file path
+    /// (`docs/file-search.md`); unlike [`insert_str`] (which inserts at the
+    /// cursor), this targets an arbitrary span. `range` must fall on char
+    /// boundaries (the caller passes [`crate::file_search::at_token`]'s range).
+    ///
+    /// [`insert_str`]: TextArea::insert_str
+    pub fn replace_range(&mut self, range: Range<usize>, with: &str) {
+        let start = range.start;
+        self.text.replace_range(range, with);
+        self.cursor = start + with.len();
+        self.dirty();
+    }
+
     /// Insert a single character at the cursor.
     pub fn insert_char(&mut self, c: char) {
         let mut buf = [0u8; 4];
@@ -548,6 +562,14 @@ mod tests {
         ta.insert_str("xy");
         assert_eq!(ta.text(), "(xy)");
         assert_eq!(ta.cursor(), 3);
+    }
+
+    #[test]
+    fn replace_range_splices_and_seats_the_cursor_after() {
+        let mut ta = at("see @al here", 7); // cursor just after "@al"
+        ta.replace_range(4..7, "alpha.txt"); // swap the "@al" token for the path
+        assert_eq!(ta.text(), "see alpha.txt here");
+        assert_eq!(ta.cursor(), 4 + "alpha.txt".len());
     }
 
     #[test]

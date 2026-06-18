@@ -38,6 +38,7 @@ cleanup() {
 	tmux kill-session -t "${S}_bigoutput" 2>/dev/null
 	tmux kill-session -t "${S}_ctrlj" 2>/dev/null
 	tmux kill-session -t "${S}_shellqueue" 2>/dev/null
+	tmux kill-session -t "${S}_atmention" 2>/dev/null
 	rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 }
 trap cleanup EXIT
@@ -982,6 +983,42 @@ echo "==== captured pane (the queued !command ran locally as its own turn) ===="
 printf '%s\n' "$shellqueue"
 tmux kill-session -t "$S21" 2>/dev/null
 
+# --- Phase 25: `@` file-path mentions (docs/file-search.md). Typing `@query`
+# opens a file picker BELOW the box listing workspace files that fuzzy-match the
+# query (fetched asynchronously by a background walk+rank worker); Enter inserts
+# the highlighted path into the composer, replacing the `@token`. Launch in a
+# temp dir with known files so the match set is deterministic. ---
+S22="${S}_atmention"
+ATDIR="$(mktemp -d)"
+: >"$ATDIR/alpha_smoke.txt"
+: >"$ATDIR/readme_notes.md"
+mkdir -p "$ATDIR/subdir"
+: >"$ATDIR/subdir/beta_smoke.txt"
+# The session starts in $ATDIR, so the binary needs an ABSOLUTE path ($APP's is
+# relative to the project dir); the app then walks $ATDIR for the @ picker.
+APP_ABS="env INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $(realpath "$BIN")"
+tmux new-session -d -s "$S22" -x 80 -y 24 -c "$ATDIR" "$APP_ABS"
+sleep 0.4
+tmux send-keys -t "$S22" -l "see @alpha"
+at_open=""
+for _ in $(seq 1 30); do # up to ~3s: the worker walks + ranks, the picker shows
+	at_open="$(tmux capture-pane -t "$S22" -p)"
+	if printf '%s' "$at_open" | grep -qF "alpha_smoke.txt"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (@ file picker open) ===="
+printf '%s\n' "$at_open"
+# Enter accepts the highlighted file: the `@alpha` token becomes the path + a space.
+tmux send-keys -t "$S22" Enter
+sleep 0.3
+at_inserted="$(tmux capture-pane -t "$S22" -p)"
+echo "==== captured pane (file path inserted into the composer) ===="
+printf '%s\n' "$at_inserted"
+tmux kill-session -t "$S22" 2>/dev/null
+rm -rf "$ATDIR"
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -1580,7 +1617,28 @@ if printf '%s' "$shellqueue" | grep -qF "❯ !echo smoke_queue_ok"; then
 	status=1
 fi
 
+# Phase 25: the `@` file picker (docs/file-search.md). Typing "@alpha" lists the
+# matching workspace file below the box; Enter inserts its path into the composer.
+if ! printf '%s' "$at_open" | grep -qF "alpha_smoke.txt"; then
+	echo "FAIL: typing '@alpha' did not list the matching file in the picker below the box" >&2
+	status=1
+fi
+# The picker displaces the session footer (codex's popups take its row), like the palette.
+if printf '%s' "$at_open" | grep -qF "dummy_model_name"; then
+	echo "FAIL: the session footer is still shown while the @ file picker is open (the band must displace it)" >&2
+	status=1
+fi
+if ! printf '%s' "$at_inserted" | grep -qF "❯ see alpha_smoke.txt"; then
+	echo "FAIL: Enter did not insert the highlighted file path into the composer (expected '❯ see alpha_smoke.txt')" >&2
+	status=1
+fi
+# The picker closed on accept: the session footer returns to its row.
+if ! printf '%s' "$at_inserted" | grep -qF "dummy_model_name ·"; then
+	echo "FAIL: the session footer did not return after the @ file picker closed on accept" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer"
 fi
 exit "$status"

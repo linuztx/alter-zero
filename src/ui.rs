@@ -21,6 +21,7 @@ use crate::app::{
     App, HistoryItem, HistorySearch, QueuedTurn, Role, SearchState, SlashCommand, TokenArrow,
     ToolCall, ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
 };
+use crate::file_search::FileMatch;
 use crate::textarea::TextArea;
 
 /// Display width of `s` in terminal columns.
@@ -216,6 +217,20 @@ const MENU_DESC_COL: usize = 25;
 const MENU_SELECTED_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
 /// Dim grey — an unselected row (name and description alike).
 const MENU_DIM_COLOR: Color = TOOL_DIM_COLOR;
+
+// --- The `@` file picker. A file list pinned **below the input box** (the
+// palette's slot — the bands never show together), opened by an `@token` under
+// the cursor — a port of codex's file-search popup. It reuses the palette's
+// cyan-selected / dim-unselected colours, additionally **bolding the characters
+// the query matched** (from `FileMatch.indices`). See docs/file-search.md. ---
+
+/// The most file rows shown at once; longer match lists scroll to keep the
+/// selection visible (`menu_window`), like the command palette.
+const FILE_MENU_MAX_ROWS: u16 = 8;
+/// The picker's single placeholder row while a search is in flight.
+const FILE_MENU_SEARCHING: &str = "Searching…";
+/// The picker's single placeholder row when the query matched nothing.
+const FILE_MENU_NO_MATCH: &str = "No matching files";
 
 // --- The `?` shortcuts band. A keyboard-shortcuts overview pinned **below the
 // input box** (the palette's slot — the two never show together), toggled by
@@ -719,12 +734,13 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let streaming = app.is_streaming();
     let menu = menu_rows(app);
     let shortcuts = shortcuts_rows(app);
-    // The band below the box holds the palette *or* the shortcuts overview
-    // (mutually exclusive: the palette needs a `/token`, the band an empty
-    // composer). Queued messages render in the strip *above* the box instead;
-    // the session-context footer takes the very last row unless a band
-    // displaces it.
-    let band = menu + shortcuts;
+    let file = file_menu_rows(app);
+    // The band below the box holds the palette, the shortcuts overview, *or* the
+    // `@` file picker (mutually exclusive: the palette needs a `/token`, the
+    // shortcuts an empty composer, the picker an `@token`). Queued messages
+    // render in the strip *above* the box instead; the session-context footer
+    // takes the very last row unless a band displaces it.
+    let band = menu + shortcuts + file;
     let queued = queued_rows(app, area.width);
     let footer = footer_rows(app, band);
     // The preview row + its gap are only reserved when there is something to
@@ -840,11 +856,14 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
         .collect();
     Paragraph::new(lines).render(bx.text, buf);
 
-    // The palette or the shortcuts overview, pinned in the band below the box.
+    // The palette, the shortcuts overview, or the file picker, pinned in the
+    // band below the box (at most one is open).
     if menu > 0 {
         Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
     } else if shortcuts > 0 {
         Paragraph::new(shortcuts_lines(app.turn_active())).render(band_area, buf);
+    } else if file > 0 {
+        Paragraph::new(file_menu_lines(app, band_area.width)).render(band_area, buf);
     }
 
     // The session-context footer on the region's last row — only when no band
@@ -954,6 +973,87 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .skip(offset)
         .take(max)
         .map(|(i, cmd)| menu_row(cmd, i == menu.selected, width))
+        .collect()
+}
+
+/// How many rows the `@` file picker occupies for `app`: 0 when closed, one
+/// placeholder row while searching / when nothing matched, else the match count
+/// capped at [`FILE_MENU_MAX_ROWS`] (longer lists scroll, like the palette).
+/// [`live_height`] adds this to its band and [`render_live`] paints exactly this
+/// many rows — the two must agree. See `docs/file-search.md`.
+#[must_use]
+pub fn file_menu_rows(app: &App) -> u16 {
+    match &app.file_search {
+        None => 0,
+        Some(fs) if fs.matches.is_empty() => 1,
+        Some(fs) => (fs.matches.len() as u16).min(FILE_MENU_MAX_ROWS),
+    }
+}
+
+/// One file-picker row: the path with the query's matched characters bolded
+/// (the byte offsets in [`FileMatch::indices`]); the selected row lights up cyan
+/// like the palette, the rest dim. Truncated to `width` (the surviving prefix
+/// keeps the same byte offsets, so the highlight stays aligned).
+fn file_menu_row(m: &FileMatch, selected: bool, width: u16) -> Line<'static> {
+    let color = if selected {
+        MENU_SELECTED_COLOR
+    } else {
+        MENU_DIM_COLOR
+    };
+    let base = Style::new().fg(color);
+    let matched = base.add_modifier(Modifier::BOLD);
+    let shown = truncate_cols(&m.path, width as usize);
+    // Group consecutive matched / unmatched characters into spans.
+    let mut spans = Vec::new();
+    let mut run = String::new();
+    let mut run_matched = false;
+    for (off, ch) in shown.char_indices() {
+        let is_match = m.indices.binary_search(&off).is_ok();
+        if !run.is_empty() && is_match != run_matched {
+            let style = if run_matched { matched } else { base };
+            spans.push(Span::styled(std::mem::take(&mut run), style));
+        }
+        run_matched = is_match;
+        run.push(ch);
+    }
+    if !run.is_empty() {
+        let style = if run_matched { matched } else { base };
+        spans.push(Span::styled(run, style));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(String::new(), base));
+    }
+    Line::from(spans)
+}
+
+/// The styled lines for the open file picker: a *Searching…* / *No matching
+/// files* placeholder while the band has no matches, else the file rows windowed
+/// (`menu_window`) to keep the selection visible and capped at
+/// [`FILE_MENU_MAX_ROWS`]. Empty when the picker is closed.
+#[must_use]
+pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(fs) = &app.file_search else {
+        return Vec::new();
+    };
+    if fs.matches.is_empty() {
+        let text = if fs.waiting {
+            FILE_MENU_SEARCHING
+        } else {
+            FILE_MENU_NO_MATCH
+        };
+        return vec![Line::from(Span::styled(
+            text.to_string(),
+            Style::new().fg(MENU_DIM_COLOR),
+        ))];
+    }
+    let max = FILE_MENU_MAX_ROWS as usize;
+    let offset = menu_window(fs.matches.len(), fs.selected, max);
+    fs.matches
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(max)
+        .map(|(i, m)| file_menu_row(m, i == fs.selected, width))
         .collect()
 }
 
@@ -1696,7 +1796,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // and queued rows above, the band and footer below — so the cursor sits on
     // the prompt row even mid-turn (codex keeps the composer focused while a
     // task runs: typing edits the draft, Enter queues it).
-    let band = menu_rows(app) + shortcuts_rows(app);
+    let band = menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app);
     let footer = footer_rows(app, band);
     let has_preview = strip_has_preview(app);
     // While a Ctrl+R search is open the hardware cursor tracks the end of the
@@ -1734,7 +1834,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::Message;
+    use crate::app::{FileSearch, Message};
 
     /// Concatenate a line's span contents into its plain text.
     fn plain(line: &Line) -> String {
@@ -4362,5 +4462,125 @@ mod tests {
             "the strip preview is the cell's running peek, flush under the \
              committed `! sleep 5` header just above the live region"
         );
+    }
+
+    // --- the `@` file picker (docs/file-search.md) ---
+
+    /// A bare file match for the picker render tests.
+    fn fmatch(path: &str) -> FileMatch {
+        FileMatch {
+            path: path.to_string(),
+            score: 0,
+            indices: Vec::new(),
+        }
+    }
+
+    /// An app with an open file picker over `matches` (input is the `@query`).
+    fn file_picker(query: &str, matches: Vec<FileMatch>, selected: usize) -> App {
+        let mut app = App::new();
+        app.input = TextArea::from_text(&format!("@{query}"));
+        app.file_search = Some(FileSearch {
+            selected,
+            query: query.to_string(),
+            matches,
+            waiting: false,
+        });
+        app
+    }
+
+    #[test]
+    fn file_menu_rows_counts_closed_placeholder_and_capped_matches() {
+        assert_eq!(file_menu_rows(&App::new()), 0, "closed");
+        assert_eq!(
+            file_menu_rows(&file_picker("a", vec![], 0)),
+            1,
+            "one placeholder row while empty"
+        );
+        let many: Vec<_> = (0..12).map(|i| fmatch(&format!("d/f{i}.rs"))).collect();
+        assert_eq!(
+            file_menu_rows(&file_picker("f", many, 0)),
+            FILE_MENU_MAX_ROWS,
+            "capped"
+        );
+    }
+
+    #[test]
+    fn file_menu_lines_placeholder_is_searching_then_no_match() {
+        let mut app = file_picker("a", vec![], 0);
+        app.file_search.as_mut().unwrap().waiting = true;
+        assert!(plain(&file_menu_lines(&app, 40)[0]).contains("Searching"));
+        app.file_search.as_mut().unwrap().waiting = false;
+        assert!(plain(&file_menu_lines(&app, 40)[0]).contains("No matching files"));
+    }
+
+    #[test]
+    fn file_menu_lines_lists_paths_with_the_selection_highlighted() {
+        let app = file_picker("ma", vec![fmatch("src/main.rs"), fmatch("READ.md")], 1);
+        let lines = file_menu_lines(&app, 40);
+        assert_eq!(lines.len(), 2);
+        assert!(plain(&lines[0]).contains("src/main.rs"));
+        assert!(plain(&lines[1]).contains("READ.md"));
+        // The selected row (index 1) is rendered in the cyan selection colour;
+        // the unselected row is not.
+        assert!(
+            lines[1]
+                .spans
+                .iter()
+                .any(|s| s.style.fg == Some(MENU_SELECTED_COLOR))
+        );
+        assert!(
+            lines[0]
+                .spans
+                .iter()
+                .all(|s| s.style.fg != Some(MENU_SELECTED_COLOR))
+        );
+    }
+
+    #[test]
+    fn file_menu_bolds_the_matched_characters() {
+        // The query matched "ma" → bytes 0 and 1 of "main.rs".
+        let m = FileMatch {
+            path: "main.rs".to_string(),
+            score: 1,
+            indices: vec![0, 1],
+        };
+        let app = file_picker("ma", vec![m], 0);
+        let line = &file_menu_lines(&app, 40)[0];
+        assert!(
+            line.spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::BOLD)),
+            "the matched characters are bolded: {line:?}"
+        );
+    }
+
+    #[test]
+    fn render_live_draws_the_file_picker_below_the_box() {
+        let app = file_picker("ma", vec![fmatch("src/main.rs")], 0);
+        let band = file_menu_rows(&app);
+        let h = live_height(&app.input, 40, 24, false, false, 0, band, 0);
+        let mut buf = buffer(40, h);
+        render_live(buf.area, &mut buf, &app);
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("src/main.rs"),
+            "the file picker rendered below the box: {all:?}"
+        );
+    }
+
+    #[test]
+    fn cursor_stays_in_the_box_when_the_file_picker_opens() {
+        // The picker is reserved *below* the box, so opening it must not move the
+        // cursor (mirrors the palette).
+        let area = Rect::new(0, 0, 40, 24);
+        let mut closed = App::new();
+        closed.input = TextArea::from_text("@m");
+        let before = cursor_position(area, &closed);
+        let open = file_picker("m", vec![fmatch("main.rs")], 0);
+        let after = cursor_position(area, &open);
+        assert_eq!(after, before, "cursor unchanged when the picker opens");
     }
 }

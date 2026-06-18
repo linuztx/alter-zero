@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::file_search::{FileMatch, at_token};
 use crate::textarea::TextArea;
 
 /// Who authored a message — selects its bullet and colour when rendered.
@@ -367,6 +368,24 @@ pub struct CommandMenu {
     pub selected: usize,
 }
 
+/// The open `@` file picker (when the cursor is in an `@token`); `None` when
+/// closed. Unlike the slash palette — whose matches derive from the input —
+/// these come from the **filesystem** asynchronously, so they're stored here.
+/// The boundary dispatches a search whenever [`App::file_search_query`] changes
+/// and feeds results back via [`App::set_file_matches`]. See
+/// `docs/file-search.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileSearch {
+    /// Index of the highlighted match.
+    pub selected: usize,
+    /// The `@token` query the current `matches` are for (staleness guard).
+    pub query: String,
+    /// The ranked file matches for `query`, capped by the boundary.
+    pub matches: Vec<FileMatch>,
+    /// A search for the current query is in flight (show *Searching…*).
+    pub waiting: bool,
+}
+
 /// The slash-command query in `input`, if it is a **bare command token**: a
 /// leading `/` followed by no whitespace (so `/`, `/he`, `/help` qualify, but
 /// `ask /help`, `/help me`, and `/a\nb` do not — a space or newline ends it).
@@ -696,6 +715,11 @@ pub struct App {
     /// `None` when closed. Esc dismisses it (and it stays dismissed within the
     /// same token); see [`App::refresh_command_menu`].
     pub command_menu: Option<CommandMenu>,
+    /// The open `@` file picker (when the cursor is in an `@token`); `None` when
+    /// closed. Esc dismisses it (sticky within the token); the boundary fetches
+    /// its matches asynchronously. See [`App::refresh_file_search`] and
+    /// `docs/file-search.md`.
+    pub file_search: Option<FileSearch>,
     /// The live status of the turn in flight (verb, token tally, arrow, and the
     /// boundary-supplied seconds), shown in the strip above the box. `Some` from
     /// [`begin_stream`] until the turn ends; `None` when idle. See
@@ -836,12 +860,23 @@ impl App {
             }
         }
         let menu_open = self.command_menu.is_some();
+        // The `@` file picker (docs/file-search.md): when its band is open it
+        // intercepts the same navigation/select keys as the palette (they are
+        // mutually exclusive — a bare `/token` has no whitespace, so an `@` in
+        // it isn't at a token boundary).
+        let file_open = self.file_search.is_some();
         match key.code {
             // Esc dismisses the palette when it's open (codex's "popup wins"
             // rule — even mid-turn); else it interrupts an in-flight turn
             // (codex-style, see docs/interrupt.md); else it quits as before.
             KeyCode::Esc if menu_open => {
                 self.command_menu = None;
+                Action::None
+            }
+            // Esc likewise dismisses the file picker (sticky within the token —
+            // see refresh_file_search), before the interrupt/quit fallbacks.
+            KeyCode::Esc if file_open => {
+                self.file_search = None;
                 Action::None
             }
             // Esc on an empty shell-mode composer exits the mode (codex's
@@ -862,7 +897,23 @@ impl App {
                 self.move_command_selection(1);
                 Action::None
             }
+            // File-picker navigation (only while it's open and has matches).
+            KeyCode::Up if file_open => {
+                self.move_file_selection(-1);
+                Action::None
+            }
+            KeyCode::Down if file_open => {
+                self.move_file_selection(1);
+                Action::None
+            }
             KeyCode::Tab if menu_open => self.run_selected_command(),
+            // Tab/Enter accept the highlighted file when the picker is open and
+            // a match is selected (codex's accept) — replacing the `@token` with
+            // the path. With no matches they fall through to the normal Tab/Enter
+            // (queue / submit), so an unmatched `@query` is still sendable text.
+            KeyCode::Tab if file_open && self.highlighted_file().is_some() => {
+                self.accept_file_selection()
+            }
             // Tab while a turn streams queues the draft as a *new* follow-up
             // batch — a separate turn that runs after the batches already queued,
             // instead of merging into the current one like Enter (codex's
@@ -879,6 +930,9 @@ impl App {
                     // rather than submitting the literal "/typo".
                     Action::None
                 }
+            }
+            KeyCode::Enter if file_open && self.highlighted_file().is_some() => {
+                self.accept_file_selection()
             }
             // Alt+Enter and Shift+Enter insert a newline at the cursor so the input
             // box grows on demand; a plain Enter submits. Shift+Enter only reaches
@@ -914,10 +968,12 @@ impl App {
                     // whole text — recall re-absorbs the bang).
                     let raw = self.input.take();
                     self.shell_mode = false;
+                    self.file_search = None;
                     self.input_history.record(&format!("!{raw}"));
                     Action::RunShell(raw.trim().to_string())
                 } else {
                     let text = self.input.take();
+                    self.file_search = None;
                     self.input_history.record(&text);
                     Action::Submit(text)
                 }
@@ -941,16 +997,20 @@ impl App {
             }
             KeyCode::Backspace => {
                 let had_query = command_query(self.input.text()).is_some();
+                let had_token = self.in_at_token();
                 self.input.delete_backward();
                 self.refresh_command_menu(had_query);
                 self.sync_shell_mode();
+                self.refresh_file_search(had_token);
                 Action::None
             }
             KeyCode::Delete => {
                 let had_query = command_query(self.input.text()).is_some();
+                let had_token = self.in_at_token();
                 self.input.delete_forward();
                 self.refresh_command_menu(had_query);
                 self.sync_shell_mode();
+                self.refresh_file_search(had_token);
                 Action::None
             }
             KeyCode::Left => {
@@ -1032,9 +1092,11 @@ impl App {
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
             {
                 let had_query = command_query(self.input.text()).is_some();
+                let had_token = self.in_at_token();
                 self.input.insert_char(c);
                 self.refresh_command_menu(had_query);
                 self.sync_shell_mode();
+                self.refresh_file_search(had_token);
                 Action::None
             }
             _ => Action::None,
@@ -1057,6 +1119,9 @@ impl App {
     /// it (codex re-absorbs the bang), a plain entry leaves it.
     fn recall_input(&mut self, text: &str) {
         self.shell_mode = false;
+        // A recalled draft never pops the `@` picker (recall isn't typing an
+        // `@token`); close any open one, like the search snapshot restore.
+        self.file_search = None;
         let had_query = command_query(self.input.text()).is_some();
         self.input.set_text(text);
         self.refresh_command_menu(had_query);
@@ -1152,12 +1217,129 @@ impl App {
         }
     }
 
+    /// Is the cursor currently inside an `@token`? (The `had_token` state the
+    /// editing arms snapshot *before* a change so [`refresh_file_search`]'s
+    /// Esc-sticky logic mirrors the palette's `had_query`.)
+    ///
+    /// [`refresh_file_search`]: App::refresh_file_search
+    fn in_at_token(&self) -> bool {
+        at_token(self.input.text(), self.input.cursor()).is_some()
+    }
+
+    /// Re-derive the `@` file picker after an edit — the palette's
+    /// [`refresh_command_menu`] logic, applied to [`at_token`]. Opens it when the
+    /// cursor *enters* an `@token` (the None→Some transition, so an Esc-dismiss
+    /// stays dismissed within the same token), updates the query as it changes
+    /// (marking it `waiting` and resetting the highlight so the boundary's next
+    /// results refresh the band), and closes it when the token's gone. Suppressed
+    /// in shell mode (a `!command` draft is a literal command).
+    ///
+    /// [`refresh_command_menu`]: App::refresh_command_menu
+    fn refresh_file_search(&mut self, had_token: bool) {
+        if self.shell_mode {
+            self.file_search = None;
+            return;
+        }
+        match at_token(self.input.text(), self.input.cursor()) {
+            None => self.file_search = None,
+            Some(tok) => match &mut self.file_search {
+                Some(fs) if fs.query != tok.query => {
+                    fs.query = tok.query;
+                    fs.waiting = true;
+                    fs.selected = 0;
+                }
+                Some(_) => {}
+                // Just entered an `@token` → open at the top.
+                None if !had_token => {
+                    self.file_search = Some(FileSearch {
+                        selected: 0,
+                        query: tok.query,
+                        matches: Vec::new(),
+                        waiting: true,
+                    });
+                }
+                // Dismissed earlier and still in the same token → stay closed.
+                None => {}
+            },
+        }
+    }
+
+    /// The active `@token` query the boundary should search for — `None` when the
+    /// picker is closed (or in shell mode). The loop dispatches a file search
+    /// whenever this changes; see `docs/file-search.md`.
+    #[must_use]
+    pub fn file_search_query(&self) -> Option<String> {
+        if self.file_search.is_none() || self.shell_mode {
+            return None;
+        }
+        at_token(self.input.text(), self.input.cursor()).map(|t| t.query)
+    }
+
+    /// Feed asynchronously-fetched file matches into the open picker — codex's
+    /// `on_file_search_result`. Stale results (the token moved on since the
+    /// search was dispatched) are dropped; otherwise they replace the band's
+    /// matches, clear the `waiting` flag, and clamp the highlight.
+    pub fn set_file_matches(&mut self, query: &str, matches: Vec<FileMatch>) {
+        // Compare against the *live* token so a result that raced the user's
+        // typing is discarded (the loop also re-dispatches on every change).
+        let active = at_token(self.input.text(), self.input.cursor()).map(|t| t.query);
+        if active.as_deref() != Some(query) {
+            return;
+        }
+        if let Some(fs) = &mut self.file_search {
+            fs.selected = fs.selected.min(matches.len().saturating_sub(1));
+            fs.matches = matches;
+            fs.query = query.to_string();
+            fs.waiting = false;
+        }
+    }
+
+    /// Move the file-picker highlight by `delta`, clamped to the current matches.
+    fn move_file_selection(&mut self, delta: isize) {
+        if let Some(fs) = &mut self.file_search {
+            let len = fs.matches.len();
+            if len == 0 {
+                return;
+            }
+            let last = (len - 1) as isize;
+            fs.selected = (fs.selected as isize + delta).clamp(0, last) as usize;
+        }
+    }
+
+    /// The file match currently highlighted in the picker, if one is.
+    #[must_use]
+    pub fn highlighted_file(&self) -> Option<&FileMatch> {
+        let fs = self.file_search.as_ref()?;
+        fs.matches.get(fs.selected)
+    }
+
+    /// Accept the highlighted file: replace the `@token` under the cursor with the
+    /// path plus a trailing space (codex's `insert_selected_path`; paths with
+    /// whitespace are quoted), and close the picker. `Action::None` if nothing is
+    /// highlighted.
+    fn accept_file_selection(&mut self) -> Action {
+        let Some(path) = self.highlighted_file().map(|m| m.path.clone()) else {
+            return Action::None;
+        };
+        if let Some(tok) = at_token(self.input.text(), self.input.cursor()) {
+            let inserted = if path.chars().any(char::is_whitespace) && !path.contains('"') {
+                format!("\"{path}\"")
+            } else {
+                path
+            };
+            self.input.replace_range(tok.range, &format!("{inserted} "));
+        }
+        self.file_search = None;
+        Action::None
+    }
+
     /// Open the Ctrl+R reverse history search: snapshot the draft — text and
     /// cursor (codex's `snapshot_draft`) — close the palette (the search owns
     /// the keys from here), and start Idle with an empty query: no preview
     /// until something is typed. See `docs/history-search.md`.
     fn begin_history_search(&mut self) {
         self.command_menu = None;
+        self.file_search = None; // the search owns the keys from here
         self.history_search = Some(HistorySearch {
             snapshot: self.input.clone(),
             snapshot_shell: self.shell_mode,
@@ -1472,6 +1654,7 @@ impl App {
             return self.queue_shell();
         }
         let text = self.input.take();
+        self.file_search = None; // the composer is consumed into the queue
         self.input_history.record(&text);
         match self.queued.back_mut() {
             Some(QueuedTurn::Messages(batch)) if !new_batch => batch.push(text),
@@ -1850,6 +2033,7 @@ impl App {
         self.current_tool = None;
         self.status = None;
         self.queued.clear();
+        self.file_search = None;
     }
 }
 
@@ -2092,6 +2276,15 @@ mod tests {
             app.on_key(key(KeyCode::Enter)),
             Action::Submit(text.to_string())
         );
+    }
+
+    /// A bare file match (no score/indices) for the file-picker tests.
+    fn fm(path: &str) -> FileMatch {
+        FileMatch {
+            path: path.to_string(),
+            score: 0,
+            indices: Vec::new(),
+        }
     }
 
     #[test]
@@ -4459,5 +4652,106 @@ mod tests {
         assert_eq!(tool.status, ToolStatus::Failed);
         assert!(app.current_tool().is_none());
         assert!(!app.turn_active());
+    }
+
+    // ===== `@` file picker (docs/file-search.md) =====
+
+    #[test]
+    fn typing_at_opens_the_file_picker() {
+        let mut app = App::new();
+        type_str(&mut app, "see @al");
+        assert!(app.file_search.is_some());
+        assert_eq!(app.file_search_query().as_deref(), Some("al"));
+    }
+
+    #[test]
+    fn the_file_picker_does_not_open_for_an_email() {
+        let mut app = App::new();
+        type_str(&mut app, "mail@host");
+        assert!(app.file_search.is_none());
+        assert_eq!(app.file_search_query(), None);
+    }
+
+    #[test]
+    fn esc_dismisses_the_file_picker_and_stays_dismissed_in_the_token() {
+        let mut app = App::new();
+        type_str(&mut app, "@a");
+        assert!(app.file_search.is_some());
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(app.file_search.is_none());
+        // Editing within the same token does not reopen it (sticky, like the palette).
+        type_str(&mut app, "b");
+        assert!(app.file_search.is_none());
+    }
+
+    #[test]
+    fn enter_accepts_the_highlighted_file_replacing_the_token() {
+        let mut app = App::new();
+        type_str(&mut app, "see @ma");
+        app.set_file_matches("ma", vec![fm("src/main.rs")]);
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert_eq!(app.input.text(), "see src/main.rs ");
+        assert!(app.file_search.is_none());
+    }
+
+    #[test]
+    fn tab_accepts_the_highlighted_file_too() {
+        let mut app = App::new();
+        type_str(&mut app, "@m");
+        app.set_file_matches("m", vec![fm("a.rs"), fm("b.rs")]);
+        app.on_key(key(KeyCode::Down)); // pick the second match
+        assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
+        assert_eq!(app.input.text(), "b.rs ");
+    }
+
+    #[test]
+    fn up_down_move_the_file_selection_clamped() {
+        let mut app = App::new();
+        type_str(&mut app, "@x");
+        app.set_file_matches("x", vec![fm("x1"), fm("x2")]);
+        assert_eq!(app.file_search.as_ref().unwrap().selected, 0);
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.file_search.as_ref().unwrap().selected, 1);
+        app.on_key(key(KeyCode::Down)); // clamp at the last match
+        assert_eq!(app.file_search.as_ref().unwrap().selected, 1);
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.file_search.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn stale_file_matches_are_dropped() {
+        let mut app = App::new();
+        type_str(&mut app, "@ab");
+        app.set_file_matches("a", vec![fm("axe")]); // results for the OLD query
+        assert!(app.file_search.as_ref().unwrap().matches.is_empty());
+        app.set_file_matches("ab", vec![fm("abc")]); // results for the live query
+        assert_eq!(app.file_search.as_ref().unwrap().matches.len(), 1);
+    }
+
+    #[test]
+    fn the_file_picker_stays_closed_in_shell_mode() {
+        let mut app = App::new();
+        type_str(&mut app, "!ls @a");
+        assert!(app.shell_mode);
+        assert!(app.file_search.is_none());
+    }
+
+    #[test]
+    fn accepting_a_path_with_spaces_quotes_it() {
+        let mut app = App::new();
+        type_str(&mut app, "@my");
+        app.set_file_matches("my", vec![fm("my docs/notes.md")]);
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.input.text(), "\"my docs/notes.md\" ");
+    }
+
+    #[test]
+    fn submitting_an_unmatched_at_query_closes_the_picker() {
+        let mut app = App::new();
+        type_str(&mut app, "hi @zzz"); // no matches → nothing highlighted
+        assert!(app.file_search.is_some());
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(action, Action::Submit("hi @zzz".to_string()));
+        assert!(app.file_search.is_none());
     }
 }

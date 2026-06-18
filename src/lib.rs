@@ -9,6 +9,7 @@
 //! - [`term`]   — the custom inline viewport (dynamic-height live region; I/O).
 
 pub mod app;
+pub mod file_search;
 pub mod frame;
 pub mod paste;
 pub mod stream;

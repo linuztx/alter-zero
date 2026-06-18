@@ -30,9 +30,10 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`textarea`) holds the logic; **`src/main.rs`** is a thin terminal shell driving a
+`textarea`, `file_search`) holds the logic; **`src/main.rs`** is a thin terminal
+shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
-`app`/`stream`/`ui`/`textarea` (plus the pure cores of `frame`/`paste`) so behavior
+`app`/`stream`/`ui`/`textarea`/`file_search` (plus the pure cores of `frame`/`paste`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
 **and `term.rs`** are the I/O boundary — verified via `scripts/smoke.sh`, not
 unit-tested save for the odd pure helper that has no terminal in it (like
@@ -51,7 +52,8 @@ that history in `docs/history-search.md`; the `!` local shell commands in
 `docs/shift-enter.md`; the mid-turn message queue in `docs/queue.md`; the
 session-context footer in `docs/footer.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
-`docs/flicker.md`.
+`docs/flicker.md`; the `@` file-path picker (async walk+rank file search below
+the box) in `docs/file-search.md`.
 
 ### The runtime model and its invariants
 
@@ -86,7 +88,16 @@ scrollable **slash-command palette** band *below* the box when the input is a ba
 `/token` (the same slot shows a **`?` shortcuts band** — codex's footer shortcut
 overlay, two dim columns of `{key} for {thing}` entries — when `?` is pressed in
 an empty composer; any other key dismisses it, Esc dismiss-only; see
-`docs/shortcuts.md`); plus, *above* the box while a turn streams, **messages
+`docs/shortcuts.md`; **and the same slot shows an `@` file picker** — a fuzzy
+file list — whenever the cursor is in an `@token`: the boundary's background
+worker walks the cwd once and ranks it per query off-thread (codex's
+`StartFileSearch`/`FileSearchResult` round-trip — `App::file_search_query`
+changes drive a `dispatch_file_search`, results come back via
+`App::set_file_matches` with a staleness guard), ↑/↓ move and **Tab/Enter insert
+the path** (replacing the `@token`, a trailing space added, whitespace paths
+quoted), Esc dismisses sticky-per-token; the matched characters are bolded in
+each row; suppressed in `!` shell mode and mutually exclusive with the palette;
+see `docs/file-search.md`); plus, *above* the box while a turn streams, **messages
 submitted with Enter queue** instead of waiting (shown like sent user messages,
 inset two columns — `  ❯ {msg}` rows in the strip under the status line —
 `App::queued`, a `VecDeque<QueuedTurn>` of **typed entries** (text `Messages`
@@ -281,7 +292,9 @@ ends under the Ctrl+O overlay defers its flush to the return (invariant 4).
 `App` (`app.rs`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,
-`TurnSummary`, `HistoryItem`, `QueuedTurn`, `View` live there too.
+`TurnSummary`, `HistoryItem`, `QueuedTurn`, `FileSearch`, `View` live there too
+(the `@`-picker primitives `AtToken`/`FileMatch`/`at_token`/`fuzzy_match`/`rank_files`
+live in the pure `file_search` module).
 
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
@@ -357,7 +370,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `app.rs`, picked per-turn), the
   slash-command palette (`MENU_*` — the `MENU_DESC_COL`
   description column, the cyan/dimmed colours that light up the whole selected row
-  — name and description alike — and the `MENU_MAX_ROWS` cap), the `?` shortcuts
+  — name and description alike — and the `MENU_MAX_ROWS` cap), the `@` file
+  picker (`FILE_MENU_*` — it reuses the palette's `MENU_SELECTED_COLOR`/
+  `MENU_DIM_COLOR`, additionally bolding the query-matched characters, with a
+  `FILE_MENU_MAX_ROWS` cap and the `FILE_MENU_SEARCHING`/`FILE_MENU_NO_MATCH`
+  placeholder rows; `file_menu_rows`/`file_menu_lines`/`file_menu_row` mirror the
+  palette helpers — see `docs/file-search.md`), the `?` shortcuts
   band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
   key / dim label colours), the queued entries (the `QUEUED_INDENT` two-space
   inset, `queued_rows`/`queued_lines` — uncapped; a text `Messages` batch

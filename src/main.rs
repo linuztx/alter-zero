@@ -32,8 +32,9 @@
 //! visible conversation needs re-wrapping, so `App` retains a `history` and we
 //! repaint from it — see [`repaint_conversation`].
 
+use std::collections::VecDeque;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -45,6 +46,7 @@ use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
 use inline_tui::app::{Action, App, INTERRUPT_NOTICE, QueuedTurn, Role, View};
+use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::paste::{self, PasteBurst};
 use inline_tui::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
@@ -96,6 +98,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let home = std::env::var_os("HOME").map(PathBuf::from);
     app.set_session_info(backend.model_name(), ui::display_cwd(&cwd, home.as_deref()));
+    // The `@` file-search pipeline (docs/file-search.md): a background worker
+    // walks the cwd once and ranks it per query off the UI thread. The loop sends
+    // queries on a std channel and receives results on a tokio channel it can
+    // `select!` on; `last_file_query` (boundary state, like `committed`) dedupes
+    // dispatches. The worker only *sends* — it is not a stdin reader (invariant 1).
+    let (file_req_tx, file_req_rx) = std::sync::mpsc::channel::<String>();
+    let (file_res_tx, mut file_rx) = tokio::sync::mpsc::unbounded_channel::<FileSearchResult>();
+    let _file_worker = spawn_file_search_worker(cwd.clone(), file_req_rx, file_res_tx);
+    let mut last_file_query: Option<String> = None;
     // The in-flight reply's cancel token + thread handle, so a quit mid-stream
     // can stop and reap it cleanly. `None` whenever no reply is streaming.
     let mut inflight: Option<(CancelToken, JoinHandle<()>)> = None;
@@ -274,6 +285,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             }
                         }
                         schedule_for_key(&frame, &mut burst, &key);
+                        // The edit may have changed the active `@token`; kick off
+                        // a (coalesced) file search if so (docs/file-search.md).
+                        dispatch_file_search(&app, &file_req_tx, &mut last_file_query);
                     }
                     Event::Resize(width, height) => {
                         let size_changed = term.resized(width, height);
@@ -335,6 +349,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 if app.turn_active() {
                     frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
                 }
+            }
+
+            // 4. A file-search result from the worker. Feed it into the open `@`
+            //    picker (stale results — the token moved on — are dropped by
+            //    `set_file_matches`), then repaint. See docs/file-search.md.
+            Some(result) = file_rx.recv() => {
+                app.set_file_matches(&result.query, result.matches);
+                frame.schedule_frame();
             }
         }
     }
@@ -810,7 +832,7 @@ fn local_timestamp() -> String {
 /// the next [`draw`] will use. Shared so a post-stream commit can reserve that same
 /// idle height before flushing the final lines (see [`InlineViewport::set_view_height`]).
 fn live_region_height(app: &App, screen: Rect) -> u16 {
-    let band = ui::menu_rows(app) + ui::shortcuts_rows(app);
+    let band = ui::menu_rows(app) + ui::shortcuts_rows(app) + ui::file_menu_rows(app);
     ui::live_height(
         &app.input,
         screen.width,
@@ -870,4 +892,105 @@ fn draw_tool_view(term: &mut InlineViewport, app: &mut App) -> io::Result<()> {
     let max = ui::tool_view_max_scroll(app, screen.width, screen.height);
     app.settle_tool_scroll(max);
     term.draw_overlay(|area, buf| ui::render_tool_view(area, buf, app))
+}
+
+// ===== `@` file-search boundary (docs/file-search.md) =====
+
+/// Max files the `@` picker's worker indexes — bounds the walk's memory/time
+/// (codex's nucleo walk is similarly capped). Captured once per worker lifetime.
+const FILE_INDEX_CAP: usize = 10_000;
+/// Max ranked matches returned per query (the picker shows up to this many).
+const FILE_MENU_LIMIT: usize = 8;
+/// Directory names the walk skips, on top of every hidden (dotfile) entry.
+const FILE_WALK_DENYLIST: &[&str] = &["target", "node_modules"];
+
+/// A file-search result for the `@` picker: the `query` it answers (for the
+/// staleness guard in `App::set_file_matches`) and its ranked `matches`.
+struct FileSearchResult {
+    query: String,
+    matches: Vec<FileMatch>,
+}
+
+/// Walk `root` breadth-first collecting up to `cap` relative paths, skipping
+/// hidden entries (dotfiles — so `.git` too) and [`FILE_WALK_DENYLIST`]
+/// directories; directories are listed with a trailing `/`. Dependency-free (the
+/// agreed design — no `.gitignore` parsing). See `docs/file-search.md`.
+fn walk_files(root: &Path, cap: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut queue = VecDeque::new();
+    queue.push_back(root.to_path_buf());
+    while let Some(dir) = queue.pop_front() {
+        if out.len() >= cap {
+            break;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || FILE_WALK_DENYLIST.contains(&name.as_ref()) {
+                continue;
+            }
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(root)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                out.push(format!("{rel}/"));
+                queue.push_back(path);
+            } else {
+                out.push(rel);
+            }
+            if out.len() >= cap {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Spawn the `@` file-search worker: a background thread that walks `root` once
+/// (caching the file list), then for each query — coalescing any that queued
+/// while it worked (the debounce) — ranks the cache ([`rank_files`]) and sends a
+/// [`FileSearchResult`] back. Exits when the request channel closes (app exit).
+/// It only *sends* on the tokio channel; it never reads stdin (invariant 1).
+fn spawn_file_search_worker(
+    root: PathBuf,
+    req_rx: std::sync::mpsc::Receiver<String>,
+    res_tx: tokio::sync::mpsc::UnboundedSender<FileSearchResult>,
+) -> JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut cache: Option<Vec<String>> = None;
+        while let Ok(mut query) = req_rx.recv() {
+            // Coalesce: if the user kept typing, only serve the newest query.
+            while let Ok(newer) = req_rx.try_recv() {
+                query = newer;
+            }
+            let files = cache.get_or_insert_with(|| walk_files(&root, FILE_INDEX_CAP));
+            let matches = rank_files(&query, files, FILE_MENU_LIMIT);
+            if res_tx.send(FileSearchResult { query, matches }).is_err() {
+                break; // the loop is gone
+            }
+        }
+    })
+}
+
+/// Dispatch a file search when the active `@token` query changes — codex's
+/// `StartFileSearch` on every token change. `last` is the boundary's record of
+/// the query last sent, so an unchanged query (or a non-edit key) sends nothing.
+fn dispatch_file_search(
+    app: &App,
+    req_tx: &std::sync::mpsc::Sender<String>,
+    last: &mut Option<String>,
+) {
+    let query = app.file_search_query();
+    if query.as_deref() != last.as_deref() {
+        if let Some(q) = &query {
+            let _ = req_tx.send(q.clone());
+        }
+        *last = query;
+    }
 }
