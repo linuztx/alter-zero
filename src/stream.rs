@@ -6,6 +6,7 @@
 //! early if its [`CancelToken`] is tripped. Swap in a real model by implementing
 //! [`ReplySource`] — the event loop depends only on the trait, not on this dummy.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
@@ -130,6 +131,19 @@ pub fn chunks(text: &str) -> Vec<String> {
     text.split_inclusive(' ').map(str::to_string).collect()
 }
 
+/// The dummy's leading acknowledgement for `count` pasted images, or `None` when
+/// none are attached. The dummy has no vision (see [`turn_events`]); this is a
+/// stand-in so the demo visibly reflects that the images reached the backend.
+/// Pluralised, with a trailing space so it streams as a leading chunk.
+#[must_use]
+pub fn image_ack(count: usize) -> Option<String> {
+    match count {
+        0 => None,
+        1 => Some("Looking at your 1 image. ".to_string()),
+        n => Some(format!("Looking at your {n} images. ")),
+    }
+}
+
 /// The full ordered sequence of events for one dummy turn, with a thinking phase
 /// and tool calls **interleaved** in the reply: stream the first half of the
 /// text, *think* for a moment, run a `Read` tool (resolves green) and a `Bash`
@@ -145,7 +159,7 @@ pub fn chunks(text: &str) -> Vec<String> {
 /// on a thread with delays. The `Chunk` events still concatenate to exactly
 /// [`dummy_response`], so streaming stays faithful.
 #[must_use]
-pub fn turn_events(prompt: &str) -> Vec<StreamEvent> {
+pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
     let reply = dummy_response(prompt);
     let words: Vec<&str> = reply.split_inclusive(' ').collect();
     let mid = (words.len() / 2).max(1).min(words.len());
@@ -153,6 +167,13 @@ pub fn turn_events(prompt: &str) -> Vec<StreamEvent> {
     let second: String = words[mid..].concat();
 
     let mut events = Vec::new();
+    // The dummy can't actually see images, so when some are attached it opens by
+    // acknowledging them — visible proof the typed image channel (codex's
+    // `UserInput::LocalImage`) carried the paths to the backend. A real vision
+    // model would read the files instead. See `docs/image-paste.md`.
+    if let Some(ack) = image_ack(image_count) {
+        events.extend(chunks(&ack).into_iter().map(StreamEvent::Chunk));
+    }
     events.extend(chunks(&first).into_iter().map(StreamEvent::Chunk));
     events.push(StreamEvent::ThinkingStart);
     events.extend(
@@ -218,10 +239,17 @@ impl CancelToken {
 /// `insert_before` own stdin; see `main.rs`). It should poll `cancel` and stop
 /// early when cancellation is requested, and may send [`StreamEvent::Error`] to
 /// report a failure in place of [`StreamEvent::StreamDone`].
+///
+/// `images` are the temp-PNG paths of any Ctrl+V-pasted images attached to the
+/// turn (codex's `UserInput::LocalImage` typed channel, distinct from the text
+/// `prompt`): a real vision backend reads each file and attaches it to its
+/// request. The built-in [`DummyAi`] has no vision, so it only acknowledges
+/// their count. See `docs/image-paste.md`.
 pub trait ReplySource {
     fn spawn(
         &self,
         prompt: String,
+        images: Vec<PathBuf>,
         tx: UnboundedSender<StreamEvent>,
         cancel: CancelToken,
     ) -> JoinHandle<()>;
@@ -270,14 +298,19 @@ impl ReplySource for DummyAi {
     /// interleaved, pausing [`TOOL_DELAY`] after each `ToolStart` so the blue
     /// running state shows before it resolves, and ends with
     /// [`StreamEvent::StreamDone`]. Stops early — sending nothing further — if
-    /// `cancel` is tripped or the receiver has hung up.
+    /// `cancel` is tripped or the receiver has hung up. With `images` attached the
+    /// reply opens with an acknowledgement (the dummy has no vision; see
+    /// [`turn_events`] and `docs/image-paste.md`).
     fn spawn(
         &self,
         prompt: String,
+        images: Vec<PathBuf>,
         tx: UnboundedSender<StreamEvent>,
         cancel: CancelToken,
     ) -> JoinHandle<()> {
         let startup_delay = self.startup_delay;
+        // The dummy can't read the files, only acknowledge how many arrived.
+        let image_count = images.len();
         thread::spawn(move || {
             // Pause before streaming so the status indicator is visible first
             // (interruptibly — an Esc during the wait reaps the thread at once).
@@ -285,7 +318,7 @@ impl ReplySource for DummyAi {
             if cancel.is_cancelled() {
                 return;
             }
-            for event in turn_events(&prompt) {
+            for event in turn_events(&prompt, image_count) {
                 if cancel.is_cancelled() {
                     return; // asked to stop — drop the rest quietly
                 }
@@ -358,8 +391,12 @@ mod tests {
         let delay = Duration::from_millis(150);
         let (tx, mut rx) = unbounded_channel();
         let start = std::time::Instant::now();
-        let handle =
-            DummyAi::with_startup_delay(delay).spawn("hi".to_string(), tx, CancelToken::new());
+        let handle = DummyAi::with_startup_delay(delay).spawn(
+            "hi".to_string(),
+            vec![],
+            tx,
+            CancelToken::new(),
+        );
         let first = rx.blocking_recv().expect("a first event arrives");
         assert!(
             start.elapsed() >= delay,
@@ -380,7 +417,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let backend = DummyAi::with_startup_delay(Duration::from_secs(30));
-        let handle = backend.spawn("hello".to_string(), tx, cancel.clone());
+        let handle = backend.spawn("hello".to_string(), vec![], tx, cancel.clone());
         cancel.cancel();
         handle.join().unwrap();
         assert!(
@@ -415,7 +452,7 @@ mod tests {
         // Tool events are interleaved, but the Chunk events alone must still
         // concatenate to exactly the dummy reply.
         let prompt = "tell me something";
-        let text: String = turn_events(prompt)
+        let text: String = turn_events(prompt, 0)
             .iter()
             .filter_map(|e| match e {
                 StreamEvent::Chunk(c) => Some(c.as_str()),
@@ -427,7 +464,7 @@ mod tests {
 
     #[test]
     fn turn_events_interleaves_at_least_one_tool_call() {
-        let events = turn_events("hi");
+        let events = turn_events("hi", 0);
         let starts = events
             .iter()
             .filter(|e| matches!(e, StreamEvent::ToolStart { .. }))
@@ -442,7 +479,7 @@ mod tests {
 
     #[test]
     fn turn_events_includes_one_paired_thinking_phase_before_the_tools() {
-        let events = turn_events("hi");
+        let events = turn_events("hi", 0);
         let starts = events
             .iter()
             .filter(|e| matches!(e, StreamEvent::ThinkingStart))
@@ -479,7 +516,7 @@ mod tests {
         // the ThinkingStart/ThinkingEnd pair — opaque to the renderer (never
         // displayed) but counted into the live token tally, like a real API's
         // reasoning deltas.
-        let events = turn_events("hi");
+        let events = turn_events("hi", 0);
         let start = events
             .iter()
             .position(|e| matches!(e, StreamEvent::ThinkingStart))
@@ -508,7 +545,7 @@ mod tests {
     fn turn_events_each_tool_start_is_immediately_resolved() {
         // Tools don't nest: every ToolStart is followed straight away by a
         // ToolEnd, so the loop only ever tracks one running tool at a time.
-        let events = turn_events("anything");
+        let events = turn_events("anything", 0);
         for (i, event) in events.iter().enumerate() {
             if matches!(event, StreamEvent::ToolStart { .. }) {
                 assert!(
@@ -522,7 +559,7 @@ mod tests {
     #[test]
     fn turn_events_shows_both_a_success_and_a_failure() {
         // The demo exercises green and red: at least one ok tool and one failing.
-        let events = turn_events("x");
+        let events = turn_events("x", 0);
         let oks = events
             .iter()
             .filter(|e| matches!(e, StreamEvent::ToolEnd { ok: true, .. }))
@@ -537,7 +574,41 @@ mod tests {
 
     #[test]
     fn turn_events_ends_with_stream_done() {
-        assert_eq!(turn_events("x").last(), Some(&StreamEvent::StreamDone));
+        assert_eq!(turn_events("x", 0).last(), Some(&StreamEvent::StreamDone));
+    }
+
+    /// Concatenate just the `Chunk` text of a turn (its visible reply).
+    fn chunk_text(events: &[StreamEvent]) -> String {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Chunk(c) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn turn_events_without_images_streams_just_the_reply() {
+        // image_count 0 is the old behaviour: chunks reconstruct the reply.
+        let prompt = "hello";
+        assert_eq!(chunk_text(&turn_events(prompt, 0)), dummy_response(prompt));
+    }
+
+    #[test]
+    fn turn_events_acknowledges_attached_images_up_front() {
+        // The dummy has no vision, so it acknowledges the attachments instead —
+        // a leading chunk proving the typed image channel reached the backend.
+        let prompt = "what is this";
+        assert_eq!(
+            chunk_text(&turn_events(prompt, 2)),
+            format!("Looking at your 2 images. {}", dummy_response(prompt))
+        );
+    }
+
+    #[test]
+    fn image_acknowledgement_is_singular_for_one_image() {
+        assert!(chunk_text(&turn_events("x", 1)).starts_with("Looking at your 1 image. "));
     }
 
     #[test]
@@ -571,8 +642,12 @@ mod tests {
         let prompt = "hi".to_string();
         let expected = dummy_response(&prompt);
         // Zero startup delay so this content test stays fast.
-        let handle =
-            DummyAi::with_startup_delay(Duration::ZERO).spawn(prompt, tx, CancelToken::new());
+        let handle = DummyAi::with_startup_delay(Duration::ZERO).spawn(
+            prompt,
+            vec![],
+            tx,
+            CancelToken::new(),
+        );
 
         let mut streamed = String::new();
         let mut saw_done = false;
@@ -613,12 +688,39 @@ mod tests {
     }
 
     #[test]
+    fn dummy_ai_acknowledges_attached_images_it_was_spawned_with() {
+        // The typed image channel reaches the backend: spawning with two paths
+        // makes the dummy open its reply with the acknowledgement.
+        let (tx, mut rx) = unbounded_channel();
+        let images = vec![PathBuf::from("/tmp/a.png"), PathBuf::from("/tmp/b.png")];
+        let handle = DummyAi::with_startup_delay(Duration::ZERO).spawn(
+            "describe".to_string(),
+            images,
+            tx,
+            CancelToken::new(),
+        );
+        let mut streamed = String::new();
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                StreamEvent::Chunk(c) => streamed.push_str(&c),
+                StreamEvent::StreamDone => break,
+                _ => {}
+            }
+        }
+        handle.join().unwrap();
+        assert!(
+            streamed.starts_with("Looking at your 2 images. "),
+            "the dummy acknowledges the two images up front, got {streamed:?}"
+        );
+    }
+
+    #[test]
     fn dummy_ai_sends_nothing_when_cancelled_before_it_starts() {
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         cancel.cancel();
         DummyAi::default()
-            .spawn("hello".to_string(), tx, cancel)
+            .spawn("hello".to_string(), vec![], tx, cancel)
             .join()
             .unwrap();
         // Cancelled before the first chunk → no Chunk and no StreamDone arrive.
@@ -637,6 +739,7 @@ mod tests {
             fn spawn(
                 &self,
                 _prompt: String,
+                _images: Vec<PathBuf>,
                 tx: UnboundedSender<StreamEvent>,
                 _cancel: CancelToken,
             ) -> JoinHandle<()> {
@@ -651,7 +754,7 @@ mod tests {
         }
         let (tx, mut rx) = unbounded_channel();
         Failing
-            .spawn("x".to_string(), tx, CancelToken::new())
+            .spawn("x".to_string(), vec![], tx, CancelToken::new())
             .join()
             .unwrap();
         assert_eq!(

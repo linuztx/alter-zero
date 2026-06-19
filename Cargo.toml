@@ -25,6 +25,17 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 # `clock` feature pulls in local-timezone support, default features off to stay
 # lean. See docs/timestamps.md.
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Ctrl+V image paste (docs/image-paste.md). These three are used ONLY at the I/O
+# boundary (src/clipboard.rs) — the pure attach/placeholder logic stays in `app`.
+# arboard reads the system clipboard (image bytes or a copied file); on Linux it
+# speaks X11 + Wayland (the `wayland-data-control` feature) through pure-Rust
+# backends (x11rb / wl-clipboard), so no system C libraries are needed to build.
+arboard = { version = "3", features = ["wayland-data-control"] }
+# Decode whatever the clipboard holds (PNG/JPEG/GIF/WebP) and re-encode it to one
+# consistent PNG on disk. Default features off — only the codecs we accept.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp"] }
+# Write the decoded image to a kept temporary PNG the backend reads by path.
+tempfile = "3"
 
 # Bake the project's pre-commit gate into every build so it can't silently
 # regress (there is no CI yet). Mirrors `clippy --all-targets -- -D warnings`.

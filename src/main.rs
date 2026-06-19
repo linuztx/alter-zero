@@ -46,6 +46,7 @@ use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
 use inline_tui::app::{Action, App, INTERRUPT_NOTICE, QueuedTurn, Role, View};
+use inline_tui::clipboard;
 use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::paste::{self, PasteBurst};
@@ -154,10 +155,27 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             }
                             Action::None => {}
                             Action::Submit(text) => {
+                                // Drain any Ctrl+V-attached images staged by the
+                                // submit (docs/image-paste.md) to deliver them on
+                                // the turn's typed image channel.
+                                let images = app.take_submission_images();
                                 inflight = Some(start_turn(
-                                    term, &mut app, &tx, &backend, vec![text],
+                                    term, &mut app, &tx, &backend,
+                                    TurnInput { texts: vec![text], images },
                                     &mut committed, &mut clocks,
                                 )?);
+                            }
+                            Action::PasteImage => {
+                                // Ctrl+V: do the clipboard I/O here at the boundary
+                                // (on_key stayed pure). On success attach the image
+                                // to the composer; on failure commit a red notice.
+                                match clipboard::read_clipboard_image() {
+                                    Ok(path) => app.attach_image(path),
+                                    Err(reason) => commit_error_notice(
+                                        term, &mut app, &mut committed,
+                                        &format!("Failed to paste image: {reason}"),
+                                    ),
+                                }
                             }
                             Action::RunShell(command) => {
                                 // `!command` from an idle composer: echo it, then
@@ -403,15 +421,25 @@ struct StatusClocks {
 /// queue flush (`StreamDone`/`Error`, an Esc interrupt, or a Ctrl+O return), so
 /// the paths can never drift. Empty batches are the caller's job to
 /// skip. See `docs/queue.md`.
+/// One turn's user input handed to [`start_turn`]: the text message(s) — a
+/// Submit is a batch of one, a queue flush a batch — plus any Ctrl+V-attached
+/// image paths that travel the typed image channel (codex's `UserMessage`'s
+/// `text` + `local_images`). See `docs/image-paste.md`.
+struct TurnInput {
+    texts: Vec<String>,
+    images: Vec<PathBuf>,
+}
+
 fn start_turn(
     term: &mut InlineViewport,
     app: &mut App,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     backend: &impl ReplySource,
-    texts: Vec<String>,
+    input: TurnInput,
     committed: &mut usize,
     clocks: &mut StatusClocks,
 ) -> io::Result<(CancelToken, JoinHandle<()>)> {
+    let TurnInput { texts, images } = input;
     let width = term.screen().width;
     for text in &texts {
         app.record_user_message(text);
@@ -421,16 +449,42 @@ fn start_turn(
     app.begin_stream();
     // Count the user's uploaded input into the tally (arrow ↑) so the status
     // shows `↑ N tokens` during the backend's pre-stream pause, before its
-    // first chunk flips the arrow back to ↓.
+    // first chunk flips the arrow back to ↓. Any Ctrl+V-attached images add to
+    // the same ↑ tally (docs/image-paste.md).
     let prompt = texts.join("\n");
     app.count_user_input(&prompt);
+    app.count_input_images(images.len());
     *committed = 0;
     // Start the turn clock; the draw branch keeps the status animated from here.
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
     let cancel = CancelToken::new();
-    let handle = backend.spawn(prompt, tx.clone(), cancel.clone());
+    // The image paths travel a separate typed channel alongside the text prompt
+    // (codex's `UserInput::LocalImage`); a real vision backend reads the files.
+    let handle = backend.spawn(prompt, images, tx.clone(), cancel.clone());
     Ok((cancel, handle))
+}
+
+/// Commit a red error notice to scrollback + history (a Ctrl+V clipboard
+/// failure), finalising any in-flight streamed segment first so it slots in
+/// order — the same flush trick [`Action::Notice`] uses. Only reached in the
+/// conversation view (Ctrl+V is a conversation key), so it never writes the
+/// alternate screen. See `docs/image-paste.md`.
+fn commit_error_notice(
+    term: &mut InlineViewport,
+    app: &mut App,
+    committed: &mut usize,
+    text: &str,
+) {
+    let width = term.screen().width;
+    if let Some(segment) = app.flush_streaming_segment() {
+        term.insert_before(ui::final_commit(&segment, width, *committed));
+        term.insert_before(vec![Line::default()]);
+        *committed = 0;
+    }
+    app.record_error_message(text);
+    term.insert_before(ui::message_lines(Role::Error, text, width));
+    term.insert_before(vec![Line::default()]);
 }
 
 /// Run a `!command` locally as a turn (the [`Action::RunShell`] arm; see
@@ -479,8 +533,19 @@ fn flush_next_queued(
     clocks: &mut StatusClocks,
 ) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
     match app.drain_next_batch() {
+        // Queued text batches carry no images in v1 (idle-submit scope; see
+        // docs/image-paste.md) — an empty image list.
         Some(QueuedTurn::Messages(texts)) => Ok(Some(start_turn(
-            term, app, tx, backend, texts, committed, clocks,
+            term,
+            app,
+            tx,
+            backend,
+            TurnInput {
+                texts,
+                images: Vec::new(),
+            },
+            committed,
+            clocks,
         )?)),
         Some(QueuedTurn::Shell(command)) => {
             Ok(Some(run_shell(term, app, tx, command, committed, clocks)?))

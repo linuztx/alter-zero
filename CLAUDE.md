@@ -30,12 +30,12 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`textarea`, `file_search`) holds the logic; **`src/main.rs`** is a thin terminal
+`textarea`, `file_search`, `clipboard`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search` (plus the pure cores of `frame`/`paste`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
-**and `term.rs`** are the I/O boundary — verified via `scripts/smoke.sh`, not
+**and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read) — verified via `scripts/smoke.sh`, not
 unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
 `docs/shift-enter.md`); `frame`'s async scheduler **task** is smoke-covered too
@@ -55,7 +55,9 @@ session-context footer in `docs/footer.md`; the flicker-free frame pipeline
 `docs/flicker.md`; the `@` file-path picker (async walk+rank file search below
 the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
 placeholder (bracketed paste → a compact placeholder, expanded back on send) in
-`docs/paste.md`.
+`docs/paste.md`; the **Ctrl+V image paste** (clipboard image → temp PNG → an
+`[Image #N]` composer placeholder whose path rides a separate typed channel to
+the backend) in `docs/image-paste.md`.
 
 ### The runtime model and its invariants
 
@@ -247,7 +249,9 @@ frame scheduler ──► draw-tick ────┘                             
 user message (the Enter arm also records the text into `App::input_history` for
 the ↑/↓ shell-style recall — adjacent duplicates collapse, `/clear` doesn't
 touch it), `insert_before`s it, then spawns one reply via the selected
-`ReplySource` (`backend.spawn(texts.join("\n"), tx, cancel)`), keeping the
+`ReplySource` (`backend.spawn(texts.join("\n"), images, tx, cancel)` — the
+Ctrl+V image paths drained from `App::take_submission_images`, see
+`docs/image-paste.md`), keeping the
 thread handle + `CancelToken` so a quit mid-stream cancels and reaps it.
 **Enter *while a turn is in flight* queues** the message into `App::queued`
 (codex's `queued_user_messages`) instead of producing `Submit` — shown like
@@ -436,7 +440,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `docs/textarea.md`.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
   as a template) and changing the single `let backend = …;` line in
-  `main.rs::run`. Stream `StreamEvent::Chunk(..)` per token on the `tokio`
+  `main.rs::run`. `spawn(prompt, images, tx, cancel)` hands you the text prompt
+  **plus** the paths of any Ctrl+V-pasted images (`images: Vec<PathBuf>` — codex's
+  `UserInput::LocalImage` typed channel; a real vision backend reads each file and
+  attaches it, the dummy only acknowledges the count — see `docs/image-paste.md`).
+  Stream `StreamEvent::Chunk(..)` per token on the `tokio`
   `UnboundedSender` (its `send` is sync — callable straight from your background
   thread, no runtime needed), poll the `CancelToken` so a quit can stop you, then
   send `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure. For tool calls, send a

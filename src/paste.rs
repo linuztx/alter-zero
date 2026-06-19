@@ -105,15 +105,42 @@ pub fn next_paste_placeholder(char_count: usize, existing: &[(String, String)]) 
     }
 }
 
+/// The placeholder for the next pasted **image**, given the image attachments
+/// already in the composer (a slice of `(placeholder, path)` pairs — generic
+/// over the payload, only the placeholder strings are read). The form is codex's
+/// `[Image #N]`, with `N` the **max existing `#k` + 1** (or 1 for the first).
+///
+/// Numbering by max-existing rather than count keeps labels unique even after a
+/// deletion (delete `[Image #2]` of three and the next is `[Image #4]`, not a
+/// duplicate `[Image #3]`): unlike codex's element-id model, deletion and the
+/// send-time channel match images **by placeholder string**, so a collision
+/// would be ambiguous. Gaps in the numbers are harmless. See `docs/image-paste.md`.
+#[must_use]
+pub fn next_image_placeholder<T>(existing: &[(String, T)]) -> String {
+    let mut max = 0usize;
+    for (placeholder, _) in existing {
+        if let Some(n) = placeholder
+            .strip_prefix("[Image #")
+            .and_then(|rest| rest.strip_suffix(']'))
+            .and_then(|digits| digits.parse::<usize>().ok())
+        {
+            max = max.max(n);
+        }
+    }
+    format!("[Image #{}]", max + 1)
+}
+
 /// The longest placeholder in `pastes` that `text[i..]` starts with, if any.
 /// Longest-match so a base `[Pasted Content N chars]` can't shadow its `… #N`
 /// extension (of which it is a prefix). Shared by the left-to-right walk in
-/// [`expand_pastes`] and [`placeholder_to_delete`].
-fn longest_placeholder_at<'a>(
+/// [`expand_pastes`] and [`placeholder_to_delete`]. Generic over the payload
+/// `T` (text `String` or an image `PathBuf`) — only the placeholder string
+/// (`.0`) is read here.
+fn longest_placeholder_at<'a, T>(
     text: &str,
     i: usize,
-    pastes: &'a [(String, String)],
-) -> Option<&'a (String, String)> {
+    pastes: &'a [(String, T)],
+) -> Option<&'a (String, T)> {
     pastes
         .iter()
         .filter(|(placeholder, _)| text[i..].starts_with(placeholder.as_str()))
@@ -158,10 +185,10 @@ pub fn expand_pastes(text: &str, pastes: &[(String, String)]) -> String {
 /// removes it (a cursor at its end deletes the character after). Placeholders are
 /// matched longest-first, like [`expand_pastes`]. See `docs/paste.md`.
 #[must_use]
-pub fn placeholder_to_delete(
+pub fn placeholder_to_delete<T>(
     text: &str,
     cursor: usize,
-    pastes: &[(String, String)],
+    pastes: &[(String, T)],
     backward: bool,
 ) -> Option<Range<usize>> {
     let mut i = 0;
@@ -451,6 +478,53 @@ mod tests {
         assert_eq!(
             placeholder_to_delete(&text, second.len(), &pastes, true),
             Some(0..second.len())
+        );
+    }
+
+    // ===== image placeholders (Ctrl+V image paste, docs/image-paste.md) =====
+
+    /// `(placeholder, path)` pairs for an image-attachment list (the path is
+    /// irrelevant to placeholder numbering / deletion span math).
+    fn image_pairs(placeholders: &[&str]) -> Vec<(String, std::path::PathBuf)> {
+        placeholders
+            .iter()
+            .map(|p| ((*p).to_string(), std::path::PathBuf::from("/tmp/x.png")))
+            .collect()
+    }
+
+    #[test]
+    fn image_placeholder_is_codex_format() {
+        assert_eq!(
+            next_image_placeholder::<std::path::PathBuf>(&[]),
+            "[Image #1]"
+        );
+    }
+
+    #[test]
+    fn image_placeholder_increments_past_the_existing_ones() {
+        let one = image_pairs(&["[Image #1]"]);
+        assert_eq!(next_image_placeholder(&one), "[Image #2]");
+        let two = image_pairs(&["[Image #1]", "[Image #2]"]);
+        assert_eq!(next_image_placeholder(&two), "[Image #3]");
+    }
+
+    #[test]
+    fn image_placeholder_uses_max_plus_one_after_a_deletion() {
+        // #2 deleted from {#1,#2,#3} leaves {#1,#3}; the next is max(3)+1 = #4.
+        // A gap is fine — labels must stay unique because we match by string.
+        let gapped = image_pairs(&["[Image #1]", "[Image #3]"]);
+        assert_eq!(next_image_placeholder(&gapped), "[Image #4]");
+    }
+
+    #[test]
+    fn placeholder_to_delete_is_generic_over_an_image_path_payload() {
+        // The deletion span math reads only the placeholder string, so the same
+        // helper serves the `(String, PathBuf)` image list as the text one.
+        let imgs = image_pairs(&["[Image #1]"]);
+        let text = "[Image #1]";
+        assert_eq!(
+            placeholder_to_delete(text, text.len(), &imgs, true),
+            Some(0..text.len())
         );
     }
 }

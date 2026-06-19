@@ -253,6 +253,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("ctrl+c", " to quit"),
     ("alt+↑", " to edit queue"),
     ("tab", " to queue next turn"),
+    ("ctrl+v", " for image paste"),
 ];
 /// The display column where a row's second entry starts (the first entry is
 /// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea.
@@ -3392,6 +3393,19 @@ mod tests {
     }
 
     #[test]
+    fn shortcuts_band_advertises_ctrl_v_image_paste() {
+        // The `?` overlay lists Ctrl+V image paste (docs/image-paste.md).
+        let texts: Vec<String> = shortcuts_lines(false)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("ctrl+v for image paste")),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
     fn shortcuts_lines_list_the_bindings_in_two_columns() {
         let texts: Vec<String> = shortcuts_lines(false)
             .iter()
@@ -3485,7 +3499,7 @@ mod tests {
             .join("\n");
         assert!(all.contains("/ for commands"), "band rendered: {all:?}");
         assert!(
-            row(&buf, h - 1, 60).contains("alt+↑ to edit queue"),
+            row(&buf, h - 1, 60).contains("ctrl+v for image paste"),
             "the last band row sits on the last region row"
         );
     }

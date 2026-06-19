@@ -6,6 +6,7 @@
 
 use std::collections::{HashSet, VecDeque};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -210,6 +211,12 @@ fn estimate_tokens(text: &str) -> usize {
     text.chars().count().div_ceil(4)
 }
 
+/// A flat token estimate charged per Ctrl+V-attached image
+/// ([`App::count_input_images`]). The protocol carries no real usage and an
+/// image has no text to size, so this is a demo stand-in for a vision model's
+/// per-image cost. See `docs/image-paste.md`.
+const IMAGE_INPUT_TOKENS: usize = 256;
+
 /// What a backend error leaves behind, handed to the event loop to flush to
 /// scrollback. The partial reply (if any) and the error are also recorded in
 /// [`App::history`] so a later resize repaints them.
@@ -252,8 +259,15 @@ pub struct InterruptedTurn {
 pub enum Action {
     /// Nothing to do.
     None,
-    /// The user submitted a (non-empty) message; start a reply for it.
+    /// The user submitted a (non-empty) message; start a reply for it. Any
+    /// Ctrl+V-attached images travel separately — the loop drains
+    /// [`App::take_submission_images`] for their paths. See `docs/image-paste.md`.
     Submit(String),
+    /// The user pressed Ctrl+V (or Ctrl+Alt+V) to paste an image. The decision is
+    /// pure; the loop does the clipboard I/O ([`crate::clipboard`]) and calls
+    /// [`App::attach_image`] on success (or commits a red notice on failure). See
+    /// `docs/image-paste.md`.
+    PasteImage,
     /// The user toggled the tool-output view (Ctrl+O, or Esc to leave it). The
     /// loop syncs the full-screen overlay to the now-updated [`App::view`].
     ToggleToolView,
@@ -755,6 +769,30 @@ pub struct App {
     /// [`on_paste`]: App::on_paste
     /// [`take_input`]: App::take_input
     pub pasted: Vec<(String, String)>,
+    /// Ctrl+V-pasted images currently in the composer, as `(placeholder, path)`
+    /// pairs in insertion order — the image analogue of [`pasted`] (codex's
+    /// `AttachedImage`). [`attach_image`] inserts an `[Image #N]` placeholder and
+    /// records the temp-PNG path here; unlike a text paste the placeholder is
+    /// **not** expanded on send (it stays in the message text), and the path is
+    /// surfaced separately via [`take_submission_images`]. Cleared by
+    /// [`take_input`] (any draft-take drops attachments), so the idle submit path
+    /// stages them into [`submission_images`] first. See `docs/image-paste.md`.
+    ///
+    /// [`pasted`]: App::pasted
+    /// [`attach_image`]: App::attach_image
+    /// [`take_input`]: App::take_input
+    /// [`take_submission_images`]: App::take_submission_images
+    /// [`submission_images`]: App::submission_images
+    pub images: Vec<(String, PathBuf)>,
+    /// The just-submitted turn's image paths, staged by the idle submit path
+    /// (moved out of [`images`] before [`take_input`] clears the composer) for the
+    /// loop to drain via [`take_submission_images`] — codex's
+    /// `recent_submission_images`. See `docs/image-paste.md`.
+    ///
+    /// [`images`]: App::images
+    /// [`take_input`]: App::take_input
+    /// [`take_submission_images`]: App::take_submission_images
+    submission_images: Vec<PathBuf>,
 }
 
 impl App {
@@ -840,6 +878,11 @@ impl App {
     /// [`pasted`]: App::pasted
     fn take_input(&mut self) -> String {
         let text = self.input.take();
+        // Taking the draft consumes its attachments too (the idle submit path
+        // stages image paths into `submission_images` first); see
+        // `docs/image-paste.md`. Image placeholders are *not* expanded — they
+        // stay in `text`, only the paths travel a separate channel.
+        self.images.clear();
         if self.pasted.is_empty() {
             return text;
         }
@@ -848,26 +891,88 @@ impl App {
         expanded
     }
 
-    /// If the cursor is on a large-paste placeholder, delete the **whole**
-    /// `[Pasted Content N chars]` placeholder atomically — one keystroke removes
-    /// it, not one character — and drop its remembered text, returning `true`.
+    /// If the cursor is on an atomic placeholder — a large-paste
+    /// `[Pasted Content N chars]` **or** a Ctrl+V `[Image #N]` — delete the
+    /// **whole** placeholder atomically (one keystroke removes it, not one
+    /// character) and drop its remembered text/path, returning `true`. Text
+    /// pastes are tried first, then images; both are matched by string.
     /// `backward` is Backspace (vs Delete; see [`crate::paste::placeholder_to_delete`]
     /// for the cursor rules). Returns `false` when the cursor isn't on a
     /// placeholder, leaving the keypress to the normal per-grapheme edit. See
-    /// `docs/paste.md`.
+    /// `docs/paste.md` and `docs/image-paste.md`.
     fn delete_placeholder(&mut self, backward: bool) -> bool {
-        let Some(span) = crate::paste::placeholder_to_delete(
+        if let Some(span) = crate::paste::placeholder_to_delete(
             self.input.text(),
             self.input.cursor(),
             &self.pasted,
             backward,
-        ) else {
-            return false;
-        };
-        let placeholder = self.input.text()[span.clone()].to_string();
+        ) {
+            let placeholder = self.delete_span(span);
+            self.pasted.retain(|(ph, _)| ph != &placeholder);
+            return true;
+        }
+        if let Some(span) = crate::paste::placeholder_to_delete(
+            self.input.text(),
+            self.input.cursor(),
+            &self.images,
+            backward,
+        ) {
+            let placeholder = self.delete_span(span);
+            self.images.retain(|(ph, _)| ph != &placeholder);
+            return true;
+        }
+        false
+    }
+
+    /// Splice the byte `span` out of the composer, returning the text it held —
+    /// the shared half of [`delete_placeholder`] across the text/image lists.
+    fn delete_span(&mut self, span: Range<usize>) -> String {
+        let removed = self.input.text()[span.clone()].to_string();
         self.input.replace_range(span, "");
-        self.pasted.retain(|(ph, _)| ph != &placeholder);
-        true
+        removed
+    }
+
+    /// Attach a Ctrl+V-pasted image: insert an `[Image #N]` placeholder at the
+    /// cursor and remember its temp-PNG `path` in [`images`] (codex's
+    /// `attach_image`). The placeholder stays in the message text on send; the
+    /// path is delivered separately (see [`take_submission_images`]). The loop
+    /// calls this at the I/O boundary after [`crate::clipboard`] reads the
+    /// image. See `docs/image-paste.md`.
+    ///
+    /// [`images`]: App::images
+    /// [`take_submission_images`]: App::take_submission_images
+    pub fn attach_image(&mut self, path: PathBuf) {
+        // Like `on_paste`, an insert next to a `/command` or `@token` re-derives
+        // the same menu/shell/file-search state every composer edit runs.
+        let had_query = command_query(self.input.text()).is_some();
+        let had_token = self.in_at_token();
+        let placeholder = crate::paste::next_image_placeholder(&self.images);
+        self.input.insert_str(&placeholder);
+        self.images.push((placeholder, path));
+        self.refresh_command_menu(had_query);
+        self.sync_shell_mode();
+        self.refresh_file_search(had_token);
+    }
+
+    /// Take the image paths staged by the last idle submit (codex's
+    /// `take_recent_submission_images`): the loop drains these into
+    /// [`crate::stream::ReplySource::spawn`] alongside the text prompt. See
+    /// `docs/image-paste.md`.
+    pub fn take_submission_images(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.submission_images)
+    }
+
+    /// Count `count` attached images into the live token tally as uploaded input
+    /// (arrow ↑), like [`count_user_input`] does for the text, so the status
+    /// reflects the images during the backend's pre-stream pause. No-op when no
+    /// turn is in flight. See `docs/image-paste.md`.
+    ///
+    /// [`count_user_input`]: App::count_user_input
+    pub fn count_input_images(&mut self, count: usize) {
+        if let Some(status) = self.status.as_mut() {
+            status.tokens += count * IMAGE_INPUT_TOKENS;
+            status.arrow = TokenArrow::Up;
+        }
     }
 
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
@@ -1055,6 +1160,14 @@ impl App {
                     self.input_history.record(&format!("!{raw}"));
                     Action::RunShell(raw.trim().to_string())
                 } else {
+                    // Stage any Ctrl+V-attached images for the boundary to
+                    // deliver alongside the text, *before* take_input clears the
+                    // composer (the placeholder text stays; only the paths travel
+                    // the side channel — docs/image-paste.md).
+                    self.submission_images = std::mem::take(&mut self.images)
+                        .into_iter()
+                        .map(|(_, path)| path)
+                        .collect();
                     let text = self.take_input();
                     self.file_search = None;
                     self.input_history.record(&text);
@@ -1069,6 +1182,18 @@ impl App {
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.insert_newline();
                 Action::None
+            }
+            // Ctrl+V (and Ctrl+Alt+V — the WSL-friendly alias codex also binds)
+            // pastes an image from the system clipboard. The decision is pure; the
+            // loop performs the clipboard I/O (`crate::clipboard`) and calls
+            // `attach_image` on success. See docs/image-paste.md.
+            KeyCode::Char(c)
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && c.eq_ignore_ascii_case(&'v') =>
+            {
+                Action::PasteImage
             }
             // Editing and cursor movement, dispatched to the textarea. Backspace /
             // Delete / typing also re-derive the slash-command palette.
@@ -1778,6 +1903,18 @@ impl App {
         }));
     }
 
+    /// Record a red error notice in the history (so a resize repaints it), like
+    /// [`record_system_message`] but [`Role::Error`]. Used for a Ctrl+V clipboard
+    /// failure — codex's `new_error_event`. See `docs/image-paste.md`.
+    pub fn record_error_message(&mut self, text: &str) {
+        let timestamp = self.now_stamp();
+        self.history.push(HistoryItem::Message(Message {
+            role: Role::Error,
+            text: text.to_string(),
+            timestamp,
+        }));
+    }
+
     /// Begin a tool call: record it as the currently-running tool so the bottom
     /// region can show it live (blue) before any output arrives.
     pub fn start_tool(&mut self, name: &str, args: &str) {
@@ -2275,6 +2412,117 @@ mod tests {
         app.on_key(key(KeyCode::Backspace)); // deletes 'x', placeholder intact
         assert_eq!(app.input.text(), "[Pasted Content 1001 chars]");
         assert_eq!(app.pasted.len(), 1, "the placeholder and its paste survive");
+    }
+
+    // ===== Ctrl+V image paste (docs/image-paste.md) =====
+
+    #[test]
+    fn ctrl_v_requests_an_image_paste() {
+        let mut app = App::new();
+        assert_eq!(app.on_key(ctrl('v')), Action::PasteImage);
+    }
+
+    #[test]
+    fn ctrl_alt_v_also_requests_an_image_paste() {
+        // The WSL-friendly alias — codex binds both Ctrl+V and Ctrl+Alt+V.
+        let mut app = App::new();
+        let key = KeyEvent::new(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        );
+        assert_eq!(app.on_key(key), Action::PasteImage);
+    }
+
+    #[test]
+    fn attach_image_inserts_a_placeholder_and_records_the_path() {
+        let mut app = App::new();
+        app.attach_image(PathBuf::from("/tmp/a.png"));
+        assert_eq!(app.input.text(), "[Image #1]");
+        assert_eq!(app.images.len(), 1);
+        assert_eq!(app.images[0].1, PathBuf::from("/tmp/a.png"));
+    }
+
+    #[test]
+    fn attach_image_numbers_each_attachment() {
+        let mut app = App::new();
+        app.attach_image(PathBuf::from("/tmp/a.png"));
+        app.attach_image(PathBuf::from("/tmp/b.png"));
+        assert_eq!(app.input.text(), "[Image #1][Image #2]");
+        assert_eq!(app.images.len(), 2);
+    }
+
+    #[test]
+    fn attach_image_inserts_at_the_cursor() {
+        let mut app = App::new();
+        app.input = TextArea::from_text("ab");
+        app.input.move_left(); // cursor between a and b
+        app.attach_image(PathBuf::from("/tmp/a.png"));
+        assert_eq!(app.input.text(), "a[Image #1]b");
+    }
+
+    #[test]
+    fn submitting_keeps_the_image_placeholder_and_surfaces_the_path() {
+        // Unlike a text paste (expanded on send), an image placeholder STAYS in
+        // the message text; the path travels the separate submission channel.
+        let mut app = App::new();
+        app.attach_image(PathBuf::from("/tmp/a.png"));
+        for c in " describe".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(action, Action::Submit("[Image #1] describe".to_string()));
+        assert_eq!(
+            app.take_submission_images(),
+            vec![PathBuf::from("/tmp/a.png")]
+        );
+    }
+
+    #[test]
+    fn one_backspace_removes_the_whole_image_placeholder_and_drops_the_path() {
+        let mut app = App::new();
+        app.attach_image(PathBuf::from("/tmp/a.png")); // cursor at the end of it
+        app.on_key(key(KeyCode::Backspace));
+        assert_eq!(app.input.text(), "");
+        assert!(
+            app.images.is_empty(),
+            "the path is dropped with the placeholder"
+        );
+    }
+
+    #[test]
+    fn clearing_the_draft_with_ctrl_c_drops_attached_images() {
+        // Ctrl+C empties the composer; its attachments go too, so they can't leak
+        // onto a later submit.
+        let mut app = App::new();
+        app.attach_image(PathBuf::from("/tmp/a.png"));
+        app.on_key(ctrl('c'));
+        assert!(app.images.is_empty());
+        assert!(app.take_submission_images().is_empty());
+    }
+
+    #[test]
+    fn count_input_images_adds_to_the_up_tally() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.count_input_images(2);
+        let status = app.status().unwrap();
+        assert!(status.tokens > 0, "attached images are counted as input");
+        assert_eq!(status.arrow, TokenArrow::Up, "uploaded input → ↑");
+    }
+
+    #[test]
+    fn record_error_message_appends_a_red_error_to_history() {
+        // The loop records a Ctrl+V clipboard failure here (so it repaints on a
+        // resize) before committing the red notice to scrollback.
+        let mut app = App::new();
+        app.record_error_message("Failed to paste image: no image on the clipboard");
+        match app.history.last() {
+            Some(HistoryItem::Message(m)) => {
+                assert_eq!(m.role, Role::Error);
+                assert!(m.text.starts_with("Failed to paste image"));
+            }
+            other => panic!("expected an error message, got {other:?}"),
+        }
     }
 
     #[test]
