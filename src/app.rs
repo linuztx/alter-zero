@@ -743,6 +743,18 @@ pub struct App {
     /// ([`App::set_session_info`]). `None` — the unit-test default — means no
     /// footer row. See `docs/footer.md`.
     pub session: Option<SessionInfo>,
+    /// Real text behind each large-paste placeholder currently in the composer,
+    /// as `(placeholder, real_text)` pairs in insertion order (codex's
+    /// `pending_pastes`). A paste over [`crate::paste::LARGE_PASTE_CHAR_THRESHOLD`]
+    /// shows a compact `[Pasted Content N chars]` placeholder
+    /// ([`on_paste`]) while its text waits here; [`take_input`] splices it back in
+    /// when the draft is sent. Cleared whenever the composer empties (every
+    /// `take`), but **not** by `/clear` (the draft survives `/clear`, so its
+    /// pastes do too). See `docs/paste.md`.
+    ///
+    /// [`on_paste`]: App::on_paste
+    /// [`take_input`]: App::take_input
+    pub pasted: Vec<(String, String)>,
 }
 
 impl App {
@@ -788,6 +800,76 @@ impl App {
     /// Sending is disabled while a reply streams; quitting (Ctrl+C) and the
     /// tool-view toggle (Ctrl+O) always work, from either screen. Other keys are
     /// dispatched to the active [`View`].
+    /// Handle a bracketed-paste event. A paste over
+    /// [`crate::paste::LARGE_PASTE_CHAR_THRESHOLD`] characters is shown in the
+    /// composer as a compact `[Pasted Content N chars]` placeholder, with the
+    /// real text remembered in [`pasted`] for [`take_input`] to splice back in on
+    /// send; a smaller paste is inserted verbatim, indistinguishable from typing
+    /// it. The loop only calls this in the conversation view (the Ctrl+O overlay
+    /// has no composer, like typing there). See `docs/paste.md`.
+    ///
+    /// [`pasted`]: App::pasted
+    /// [`take_input`]: App::take_input
+    pub fn on_paste(&mut self, pasted: &str) {
+        // Terminals such as iTerm2 send CR (or CRLF) for newlines in a paste;
+        // normalise to LF so the char count and stored text match the display.
+        let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
+        // An edit may change the active /command or @token, like the Char arm.
+        let had_query = command_query(self.input.text()).is_some();
+        let had_token = self.in_at_token();
+        let char_count = pasted.chars().count();
+        if char_count > crate::paste::LARGE_PASTE_CHAR_THRESHOLD {
+            let placeholder = crate::paste::next_paste_placeholder(char_count, &self.pasted);
+            self.input.insert_str(&placeholder);
+            self.pasted.push((placeholder, pasted));
+        } else {
+            self.input.insert_str(&pasted);
+        }
+        self.refresh_command_menu(had_query);
+        self.sync_shell_mode();
+        self.refresh_file_search(had_token);
+    }
+
+    /// Take the composer draft, splicing every large-paste placeholder back to
+    /// its real text and clearing [`pasted`] (the composer is now empty). The one
+    /// choke point every send/queue path uses in place of a bare
+    /// `self.input.take()`, so the model — and the committed record of what was
+    /// sent — receives the real content, never a `[Pasted Content N chars]`
+    /// placeholder. See `docs/paste.md`.
+    ///
+    /// [`pasted`]: App::pasted
+    fn take_input(&mut self) -> String {
+        let text = self.input.take();
+        if self.pasted.is_empty() {
+            return text;
+        }
+        let expanded = crate::paste::expand_pastes(&text, &self.pasted);
+        self.pasted.clear();
+        expanded
+    }
+
+    /// If the cursor is on a large-paste placeholder, delete the **whole**
+    /// `[Pasted Content N chars]` placeholder atomically — one keystroke removes
+    /// it, not one character — and drop its remembered text, returning `true`.
+    /// `backward` is Backspace (vs Delete; see [`crate::paste::placeholder_to_delete`]
+    /// for the cursor rules). Returns `false` when the cursor isn't on a
+    /// placeholder, leaving the keypress to the normal per-grapheme edit. See
+    /// `docs/paste.md`.
+    fn delete_placeholder(&mut self, backward: bool) -> bool {
+        let Some(span) = crate::paste::placeholder_to_delete(
+            self.input.text(),
+            self.input.cursor(),
+            &self.pasted,
+            backward,
+        ) else {
+            return false;
+        };
+        let placeholder = self.input.text()[span.clone()].to_string();
+        self.input.replace_range(span, "");
+        self.pasted.retain(|(ph, _)| ph != &placeholder);
+        true
+    }
+
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
         // An open Ctrl+R search owns *every* key (codex consumes them all in
         // handle_history_search_key) — including the global Ctrl+C/Ctrl+O
@@ -806,7 +888,7 @@ impl App {
                 // Record the cleared draft so ↑ can bring it back (codex's
                 // clear_for_ctrl_c does the same). A shell-mode draft re-gains
                 // its `!` so the recall re-enters the mode.
-                let mut text = self.input.take();
+                let mut text = self.take_input();
                 if self.shell_mode {
                     self.shell_mode = false;
                     text = format!("!{text}");
@@ -967,13 +1049,13 @@ impl App {
                     // Shell mode: run the draft locally (docs/shell-command.md).
                     // Record the full `!command` for ↑ recall (codex records the
                     // whole text — recall re-absorbs the bang).
-                    let raw = self.input.take();
+                    let raw = self.take_input();
                     self.shell_mode = false;
                     self.file_search = None;
                     self.input_history.record(&format!("!{raw}"));
                     Action::RunShell(raw.trim().to_string())
                 } else {
-                    let text = self.input.take();
+                    let text = self.take_input();
                     self.file_search = None;
                     self.input_history.record(&text);
                     Action::Submit(text)
@@ -999,7 +1081,11 @@ impl App {
             KeyCode::Backspace => {
                 let had_query = command_query(self.input.text()).is_some();
                 let had_token = self.in_at_token();
-                self.input.delete_backward();
+                // A Backspace on a large-paste placeholder removes the whole
+                // placeholder atomically (docs/paste.md); otherwise one grapheme.
+                if !self.delete_placeholder(/*backward*/ true) {
+                    self.input.delete_backward();
+                }
                 self.refresh_command_menu(had_query);
                 self.sync_shell_mode();
                 self.refresh_file_search(had_token);
@@ -1008,7 +1094,9 @@ impl App {
             KeyCode::Delete => {
                 let had_query = command_query(self.input.text()).is_some();
                 let had_token = self.in_at_token();
-                self.input.delete_forward();
+                if !self.delete_placeholder(/*backward*/ false) {
+                    self.input.delete_forward();
+                }
                 self.refresh_command_menu(had_query);
                 self.sync_shell_mode();
                 self.refresh_file_search(had_token);
@@ -1654,7 +1742,7 @@ impl App {
         if self.shell_mode {
             return self.queue_shell();
         }
-        let text = self.input.take();
+        let text = self.take_input();
         self.file_search = None; // the composer is consumed into the queue
         self.input_history.record(&text);
         match self.queued.back_mut() {
@@ -1671,7 +1759,7 @@ impl App {
     /// `Shell`). Exits the mode and records the full `!command` for ↑ recall,
     /// mirroring the idle [`Action::RunShell`] path. See `docs/shell-command.md`.
     fn queue_shell(&mut self) {
-        let raw = self.input.take();
+        let raw = self.take_input();
         self.shell_mode = false;
         self.input_history.record(&format!("!{raw}"));
         self.queued
@@ -2089,6 +2177,104 @@ mod tests {
         let mut app = App::new();
         app.on_key(key(KeyCode::Backspace));
         assert_eq!(app.input.text(), "");
+    }
+
+    // ===== large-paste placeholders (docs/paste.md) =====
+
+    #[test]
+    fn large_paste_shows_a_placeholder_not_the_raw_text() {
+        let mut app = App::new();
+        let big = "x".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 1);
+        app.on_paste(&big);
+        assert_eq!(app.input.text(), "[Pasted Content 1001 chars]");
+        assert_eq!(app.pasted.len(), 1, "the real text is remembered");
+        assert_eq!(app.pasted[0].1, big);
+    }
+
+    #[test]
+    fn small_paste_inserts_inline() {
+        let mut app = App::new();
+        app.on_paste("just a little");
+        assert_eq!(app.input.text(), "just a little");
+        assert!(app.pasted.is_empty());
+    }
+
+    #[test]
+    fn paste_inserts_at_the_cursor() {
+        let mut app = App::new();
+        app.input = TextArea::from_text("ab");
+        app.input.move_left(); // cursor between a and b
+        app.on_paste("XY");
+        assert_eq!(app.input.text(), "aXYb");
+    }
+
+    #[test]
+    fn paste_normalises_crlf_newlines() {
+        let mut app = App::new();
+        app.on_paste("a\r\nb");
+        assert_eq!(app.input.text(), "a\nb", "CRLF becomes LF");
+    }
+
+    #[test]
+    fn large_paste_expands_to_full_text_on_submit() {
+        let mut app = App::new();
+        let big = "y".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 5);
+        app.on_paste(&big);
+        assert!(
+            app.input.text().starts_with("[Pasted Content"),
+            "the composer shows the placeholder"
+        );
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(action, Action::Submit(big), "but the full text is sent");
+        assert!(app.pasted.is_empty(), "consumed on submit");
+    }
+
+    #[test]
+    fn two_large_pastes_both_expand_on_submit() {
+        let mut app = App::new();
+        let a = "a".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 1);
+        let b = "b".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 2);
+        app.on_paste(&a);
+        app.on_key(key(KeyCode::Char(' ')));
+        app.on_paste(&b);
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(action, Action::Submit(format!("{a} {b}")));
+    }
+
+    #[test]
+    fn backspace_removes_a_whole_placeholder_atomically() {
+        let mut app = App::new();
+        let big = "z".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 1);
+        app.on_paste(&big);
+        assert_eq!(app.input.text(), "[Pasted Content 1001 chars]");
+        // A single Backspace removes the entire placeholder, not one character.
+        app.on_key(key(KeyCode::Backspace));
+        assert_eq!(app.input.text(), "");
+        assert!(app.pasted.is_empty(), "the remembered paste is dropped too");
+    }
+
+    #[test]
+    fn delete_removes_a_whole_placeholder_atomically() {
+        let mut app = App::new();
+        let big = "z".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 1);
+        app.on_paste(&big);
+        app.on_key(key(KeyCode::Home)); // cursor to the placeholder's start
+        app.on_key(key(KeyCode::Delete));
+        assert_eq!(app.input.text(), "");
+        assert!(app.pasted.is_empty());
+    }
+
+    #[test]
+    fn backspace_before_a_placeholder_deletes_only_the_preceding_char() {
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('x')));
+        let big = "z".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 1);
+        app.on_paste(&big); // input: "x[Pasted Content 1001 chars]", cursor at end
+        app.on_key(key(KeyCode::Home));
+        app.on_key(key(KeyCode::Right)); // between 'x' and the placeholder
+        app.on_key(key(KeyCode::Backspace)); // deletes 'x', placeholder intact
+        assert_eq!(app.input.text(), "[Pasted Content 1001 chars]");
+        assert_eq!(app.pasted.len(), 1, "the placeholder and its paste survive");
     }
 
     #[test]

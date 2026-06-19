@@ -36,7 +36,8 @@ use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell};
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{
-    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::terminal::{
     BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
@@ -114,6 +115,12 @@ impl InlineViewport {
 
         let height = min_height.clamp(1, size.height.max(1));
         let cursor = backend.get_cursor_position()?;
+        // Turn on bracketed paste so a real paste arrives as one `Event::Paste`
+        // (a large one collapses to a `[Pasted Content N chars]` placeholder —
+        // see docs/paste.md) instead of a burst of synthetic key presses. Like
+        // the keyboard-enhancement push below, this is a terminal mode-set with
+        // no reply, so it adds no stdin reader (invariant 1 holds).
+        let _ = execute!(backend, EnableBracketedPaste);
         // Push the kitty keyboard-enhancement flags *after* the cursor query (a
         // push gets no reply, so it adds no stdin reader — invariant 1 holds) and
         // before the EventStream exists. DISAMBIGUATE_ESCAPE_CODES is what makes a
@@ -507,6 +514,9 @@ impl InlineViewport {
         if self.keyboard_enhanced {
             let _ = execute!(self.backend, PopKeyboardEnhancementFlags);
         }
+        // Turn bracketed paste back off (while still in raw mode) so the parent
+        // shell doesn't inherit it.
+        let _ = execute!(self.backend, DisableBracketedPaste);
         match ui::restore_cursor_row(self.view.y, self.view.height, self.screen.height) {
             // Room below the box: land there and wipe anything beneath it (there
             // shouldn't be any — the box is the bottom-most content) so the prompt
@@ -594,10 +604,10 @@ impl InlineViewport {
 }
 
 /// Chain a hook that leaves raw mode and shows the cursor before the default
-/// panic handler runs, so a panic doesn't strand the terminal in raw mode. When
-/// `keyboard_enhanced` (i.e. [`init`] pushed the flags), it also pops the
-/// keyboard-enhancement stack so a panic can't leave the shell with enhanced key
-/// reporting.
+/// panic handler runs, so a panic doesn't strand the terminal in raw mode. It
+/// also turns bracketed paste back off, and — when `keyboard_enhanced` (i.e.
+/// [`init`] pushed the flags) — pops the keyboard-enhancement stack, so a panic
+/// can't leave the shell with enhanced key reporting or paste bracketing.
 ///
 /// [`init`]: InlineViewport::init
 fn install_panic_hook(keyboard_enhanced: bool) {
@@ -606,6 +616,7 @@ fn install_panic_hook(keyboard_enhanced: bool) {
         if keyboard_enhanced {
             let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
         }
+        let _ = execute!(io::stdout(), DisableBracketedPaste);
         let _ = disable_raw_mode();
         let _ = execute!(io::stdout(), Show);
         previous(info);

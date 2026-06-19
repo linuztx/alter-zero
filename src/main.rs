@@ -305,6 +305,20 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         burst.reset();
                         frame.schedule_frame();
                     }
+                    // A real bracketed paste (term::init enables it). A large
+                    // paste collapses to a `[Pasted Content N chars]` placeholder
+                    // in the composer, expanded back on send — docs/paste.md.
+                    // Only the conversation view has a composer; the Ctrl+O
+                    // overlay ignores it, like typing there.
+                    Event::Paste(pasted) => {
+                        if app.view == View::Conversation {
+                            app.on_paste(&pasted);
+                            // The paste may have changed the active `@token`.
+                            dispatch_file_search(&app, &file_req_tx, &mut last_file_query);
+                        }
+                        burst.reset();
+                        frame.schedule_frame();
+                    }
                     _ => {}
                 }
             }

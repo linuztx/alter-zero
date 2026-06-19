@@ -7,6 +7,7 @@
 //! paints at once. Decisions come from injected `Instant`s, so it is unit-tested
 //! with no clock.
 
+use std::ops::Range;
 use std::time::{Duration, Instant};
 
 /// The longest gap between two characters that still counts them as part of the
@@ -62,6 +63,128 @@ impl PasteBurst {
         self.last_at = None;
         self.run = 0;
     }
+}
+
+// ===== large-paste placeholders =====
+//
+// A *different* job from the burst detector above (which only coalesces
+// redraws): when a real bracketed paste arrives, anything longer than
+// [`LARGE_PASTE_CHAR_THRESHOLD`] is shown in the composer as a compact
+// `[Pasted Content N chars]` placeholder, with the real text remembered and
+// spliced back in on send. See `docs/paste.md`.
+
+/// A paste of more than this many characters is replaced by a placeholder in the
+/// composer instead of inserted verbatim. Matches codex's
+/// `LARGE_PASTE_CHAR_THRESHOLD`.
+pub const LARGE_PASTE_CHAR_THRESHOLD: usize = 1000;
+
+/// The placeholder string for a paste of `char_count` characters, disambiguated
+/// against the placeholders already pending in `existing` (a slice of
+/// `(placeholder, real_text)` pairs). A port of codex's
+/// `next_large_paste_placeholder`: the base form is `[Pasted Content N chars]`,
+/// and a same-base collision gets a ` #2`, ` #3`, … suffix (max existing + 1) so
+/// two same-size pastes never share a placeholder.
+#[must_use]
+pub fn next_paste_placeholder(char_count: usize, existing: &[(String, String)]) -> String {
+    let base = format!("[Pasted Content {char_count} chars]");
+    let prefix = format!("{base} #");
+    let mut max_suffix = 0usize;
+    for (placeholder, _) in existing {
+        if placeholder == &base {
+            max_suffix = max_suffix.max(1);
+        } else if let Some(suffix) = placeholder.strip_prefix(&prefix)
+            && let Ok(value) = suffix.parse::<usize>()
+        {
+            max_suffix = max_suffix.max(value);
+        }
+    }
+    if max_suffix == 0 {
+        base
+    } else {
+        format!("{base} #{}", max_suffix + 1)
+    }
+}
+
+/// The longest placeholder in `pastes` that `text[i..]` starts with, if any.
+/// Longest-match so a base `[Pasted Content N chars]` can't shadow its `… #N`
+/// extension (of which it is a prefix). Shared by the left-to-right walk in
+/// [`expand_pastes`] and [`placeholder_to_delete`].
+fn longest_placeholder_at<'a>(
+    text: &str,
+    i: usize,
+    pastes: &'a [(String, String)],
+) -> Option<&'a (String, String)> {
+    pastes
+        .iter()
+        .filter(|(placeholder, _)| text[i..].starts_with(placeholder.as_str()))
+        .max_by_key(|(placeholder, _)| placeholder.len())
+}
+
+/// Splice every pasted placeholder in `text` back to its real content, given the
+/// `(placeholder, real_text)` pairs. Scans `text` left-to-right, and at each
+/// position substitutes the **longest** matching placeholder (so a base
+/// `[Pasted Content N chars]` doesn't shadow its `… #2` extension, of which it is
+/// a prefix). Substituted content is emitted straight to the output and never
+/// re-scanned, so real content that happens to contain another placeholder
+/// string can't be re-expanded. A placeholder the user has since deleted is
+/// simply never matched, so its content is dropped.
+#[must_use]
+pub fn expand_pastes(text: &str, pastes: &[(String, String)]) -> String {
+    if pastes.is_empty() {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if let Some((placeholder, content)) = longest_placeholder_at(text, i, pastes) {
+            out.push_str(content);
+            i += placeholder.len();
+        } else {
+            // No placeholder here — copy one whole character and advance.
+            let ch = text[i..].chars().next().expect("i < text.len()");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
+/// The byte span of the pasted placeholder the cursor is "on", for an **atomic**
+/// Backspace/Delete that removes the whole `[Pasted Content N chars]` placeholder
+/// in one keystroke, or `None` when the cursor isn't on one. With `backward`
+/// (Backspace) a cursor at the placeholder's end — or anywhere inside it —
+/// removes the whole placeholder (a cursor at its *start* deletes the character
+/// before it instead); with `!backward` (Delete) a cursor at the start or inside
+/// removes it (a cursor at its end deletes the character after). Placeholders are
+/// matched longest-first, like [`expand_pastes`]. See `docs/paste.md`.
+#[must_use]
+pub fn placeholder_to_delete(
+    text: &str,
+    cursor: usize,
+    pastes: &[(String, String)],
+    backward: bool,
+) -> Option<Range<usize>> {
+    let mut i = 0;
+    while i < text.len() {
+        if let Some((placeholder, _)) = longest_placeholder_at(text, i, pastes) {
+            let span = i..i + placeholder.len();
+            let on_it = if backward {
+                // Backspace: at the end, or anywhere strictly inside.
+                span.start < cursor && cursor <= span.end
+            } else {
+                // Delete: at the start, or anywhere strictly inside.
+                span.start <= cursor && cursor < span.end
+            };
+            if on_it {
+                return Some(span);
+            }
+            i += placeholder.len();
+        } else {
+            let ch = text[i..].chars().next().expect("i < text.len()");
+            i += ch.len_utf8();
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -145,5 +268,189 @@ mod tests {
         assert!(!burst.is_burst(), "reset clears the run");
         // After a reset the next char starts a fresh run of 1.
         assert!(!burst.note_char(base + Duration::from_millis(4)));
+    }
+
+    // ===== large-paste placeholders =====
+
+    /// Build a `(placeholder, content)` pair list from placeholder strings (the
+    /// content is irrelevant to `next_paste_placeholder`).
+    fn pairs(placeholders: &[&str]) -> Vec<(String, String)> {
+        placeholders
+            .iter()
+            .map(|p| ((*p).to_string(), "…".to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn placeholder_is_codex_format() {
+        assert_eq!(
+            next_paste_placeholder(3907, &[]),
+            "[Pasted Content 3907 chars]"
+        );
+    }
+
+    #[test]
+    fn placeholder_disambiguates_same_size_pastes() {
+        // A second paste of the same size gets ` #2`, a third ` #3`.
+        let one = pairs(&["[Pasted Content 1500 chars]"]);
+        assert_eq!(
+            next_paste_placeholder(1500, &one),
+            "[Pasted Content 1500 chars] #2"
+        );
+        let two = pairs(&[
+            "[Pasted Content 1500 chars]",
+            "[Pasted Content 1500 chars] #2",
+        ]);
+        assert_eq!(
+            next_paste_placeholder(1500, &two),
+            "[Pasted Content 1500 chars] #3"
+        );
+    }
+
+    #[test]
+    fn placeholder_ignores_other_sizes() {
+        // A pending paste of a *different* size doesn't bump our suffix.
+        let other = pairs(&["[Pasted Content 2000 chars]"]);
+        assert_eq!(
+            next_paste_placeholder(1500, &other),
+            "[Pasted Content 1500 chars]"
+        );
+    }
+
+    #[test]
+    fn expand_substitutes_the_placeholder() {
+        let pastes = pairs2(&[("[Pasted Content 1500 chars]", "REAL")]);
+        assert_eq!(
+            expand_pastes("see [Pasted Content 1500 chars] ok", &pastes),
+            "see REAL ok"
+        );
+    }
+
+    #[test]
+    fn expand_handles_multiple_pastes_in_order() {
+        let pastes = pairs2(&[
+            ("[Pasted Content 1500 chars]", "AAA"),
+            ("[Pasted Content 1500 chars] #2", "BBB"),
+        ]);
+        // Note the #2 placeholder precedes the base one in the text — expansion
+        // is by position, so both land correctly regardless of pair order.
+        assert_eq!(
+            expand_pastes(
+                "x [Pasted Content 1500 chars] #2 y [Pasted Content 1500 chars] z",
+                &pastes
+            ),
+            "x BBB y AAA z"
+        );
+    }
+
+    #[test]
+    fn expand_drops_a_deleted_placeholder() {
+        // The user pasted then deleted the placeholder: it isn't in the text, so
+        // its content is simply not spliced in.
+        let pastes = pairs2(&[("[Pasted Content 1500 chars]", "REAL")]);
+        assert_eq!(expand_pastes("nothing here", &pastes), "nothing here");
+    }
+
+    #[test]
+    fn expand_is_a_noop_without_pastes() {
+        assert_eq!(expand_pastes("plain text", &[]), "plain text");
+    }
+
+    #[test]
+    fn expand_does_not_re_expand_inside_pasted_content() {
+        // The real content of the first paste literally contains the second
+        // paste's placeholder; expansion must not re-expand it.
+        let pastes = pairs2(&[
+            (
+                "[Pasted Content 1500 chars]",
+                "literal [Pasted Content 9 chars]",
+            ),
+            ("[Pasted Content 9 chars]", "SHOULD-NOT-APPEAR"),
+        ]);
+        assert_eq!(
+            expand_pastes("[Pasted Content 1500 chars]", &pastes),
+            "literal [Pasted Content 9 chars]"
+        );
+    }
+
+    /// `(placeholder, content)` pairs from explicit string pairs.
+    fn pairs2(items: &[(&str, &str)]) -> Vec<(String, String)> {
+        items
+            .iter()
+            .map(|(p, c)| ((*p).to_string(), (*c).to_string()))
+            .collect()
+    }
+
+    // ===== atomic placeholder deletion =====
+
+    const PH: &str = "[Pasted Content 1500 chars]"; // 27 bytes
+
+    #[test]
+    fn backspace_at_placeholder_end_targets_the_whole_placeholder() {
+        let pastes = pairs(&[PH]);
+        let text = PH; // composer holds just the placeholder
+        // Cursor at the end (just typed/pasted) → remove the whole thing.
+        assert_eq!(
+            placeholder_to_delete(text, PH.len(), &pastes, true),
+            Some(0..PH.len())
+        );
+    }
+
+    #[test]
+    fn backspace_inside_placeholder_targets_the_whole_placeholder() {
+        let pastes = pairs(&[PH]);
+        assert_eq!(
+            placeholder_to_delete(PH, 5, &pastes, true),
+            Some(0..PH.len()),
+            "a cursor inside still removes the whole placeholder"
+        );
+    }
+
+    #[test]
+    fn backspace_at_placeholder_start_is_not_atomic() {
+        let pastes = pairs(&[PH]);
+        let text = format!("x{PH}");
+        // Cursor right before the placeholder (after the 'x'): Backspace should
+        // delete the 'x', not the placeholder.
+        assert_eq!(placeholder_to_delete(&text, 1, &pastes, true), None);
+    }
+
+    #[test]
+    fn delete_forward_at_placeholder_start_targets_it() {
+        let pastes = pairs(&[PH]);
+        assert_eq!(
+            placeholder_to_delete(PH, 0, &pastes, false),
+            Some(0..PH.len())
+        );
+    }
+
+    #[test]
+    fn delete_forward_at_placeholder_end_is_not_atomic() {
+        let pastes = pairs(&[PH]);
+        let text = format!("{PH}x");
+        assert_eq!(placeholder_to_delete(&text, PH.len(), &pastes, false), None);
+    }
+
+    #[test]
+    fn cursor_off_any_placeholder_targets_nothing() {
+        let pastes = pairs(&[PH]);
+        let text = format!("hi {PH}");
+        // Cursor in the "hi " prefix.
+        assert_eq!(placeholder_to_delete(&text, 1, &pastes, true), None);
+    }
+
+    #[test]
+    fn atomic_delete_picks_the_right_one_among_prefix_duplicates() {
+        // The base placeholder is a prefix of the `#2` one; the cursor sits at
+        // the end of the *second* (longer) occurrence.
+        let base = PH;
+        let second = format!("{PH} #2"); // 30 bytes
+        let pastes = pairs2(&[(base, "A"), (second.as_str(), "B")]);
+        let text = format!("{second} {base}");
+        // Cursor at the end of `second` (byte 30) → its full 0..30 span.
+        assert_eq!(
+            placeholder_to_delete(&text, second.len(), &pastes, true),
+            Some(0..second.len())
+        );
     }
 }

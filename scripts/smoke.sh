@@ -39,6 +39,7 @@ cleanup() {
 	tmux kill-session -t "${S}_ctrlj" 2>/dev/null
 	tmux kill-session -t "${S}_shellqueue" 2>/dev/null
 	tmux kill-session -t "${S}_atmention" 2>/dev/null
+	tmux kill-session -t "${S}_paste" 2>/dev/null
 	rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 }
 trap cleanup EXIT
@@ -1019,6 +1020,43 @@ printf '%s\n' "$at_inserted"
 tmux kill-session -t "$S22" 2>/dev/null
 rm -rf "$ATDIR"
 
+# --- Phase 26: a large BRACKETED PASTE collapses to a compact
+# "[Pasted Content N chars]" placeholder in the composer instead of dumping the
+# raw text (docs/paste.md). term::init enables bracketed paste, so tmux's
+# `paste-buffer -p` (which wraps the buffer in the ESC[200~ … ESC[201~ control
+# codes) is delivered as one Event::Paste — unlike Phase 6's `send-keys -l`
+# burst, which is real keystrokes typed verbatim and stays unaffected. ---
+S23="${S}_paste"
+tmux new-session -d -s "$S23" -x 80 -y 24 "$APP"
+sleep 0.4
+PASTE_CONTENT="$(printf 'P%.0s' $(seq 1 1500))" # 1500 chars, over the 1000 threshold
+tmux set-buffer -- "$PASTE_CONTENT"
+tmux paste-buffer -p -t "$S23"
+paste_pane=""
+for _ in $(seq 1 20); do # up to ~2s for the placeholder to render
+	paste_pane="$(tmux capture-pane -t "$S23" -p)"
+	if printf '%s' "$paste_pane" | grep -qF "[Pasted Content 1500 chars]"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (large bracketed paste → placeholder) ===="
+printf '%s\n' "$paste_pane"
+# A single Backspace removes the WHOLE placeholder atomically (docs/paste.md) —
+# not one of its ~27 characters. After one keystroke the composer is empty again.
+tmux send-keys -t "$S23" BSpace
+paste_backspaced=""
+for _ in $(seq 1 20); do # up to ~2s for the redraw
+	paste_backspaced="$(tmux capture-pane -t "$S23" -p)"
+	if ! printf '%s' "$paste_backspaced" | grep -qF "[Pasted Content"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (after one Backspace — placeholder gone) ===="
+printf '%s\n' "$paste_backspaced"
+tmux kill-session -t "$S23" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -1637,8 +1675,24 @@ if ! printf '%s' "$at_inserted" | grep -qF "dummy_model_name ·"; then
 	echo "FAIL: the session footer did not return after the @ file picker closed on accept" >&2
 	status=1
 fi
+# Phase 26: a large bracketed paste collapses to the "[Pasted Content N chars]"
+# placeholder in the composer rather than dumping the raw text (docs/paste.md).
+if ! printf '%s' "$paste_pane" | grep -qF "[Pasted Content 1500 chars]"; then
+	echo "FAIL: a large bracketed paste did not collapse to the '[Pasted Content 1500 chars]' placeholder in the composer" >&2
+	status=1
+fi
+if printf '%s' "$paste_pane" | grep -qE 'P{20,}'; then
+	echo "FAIL: the raw pasted text was dumped into the composer instead of the placeholder" >&2
+	status=1
+fi
+# … and a single Backspace removes the whole placeholder atomically (one
+# keystroke, not one of its characters — docs/paste.md).
+if printf '%s' "$paste_backspaced" | grep -qF "[Pasted Content"; then
+	echo "FAIL: one Backspace did not remove the whole '[Pasted Content …]' placeholder (atomic delete regressed)" >&2
+	status=1
+fi
 
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically)"
 fi
 exit "$status"

@@ -53,7 +53,9 @@ that history in `docs/history-search.md`; the `!` local shell commands in
 session-context footer in `docs/footer.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
 `docs/flicker.md`; the `@` file-path picker (async walk+rank file search below
-the box) in `docs/file-search.md`.
+the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
+placeholder (bracketed paste → a compact placeholder, expanded back on send) in
+`docs/paste.md`.
 
 ### The runtime model and its invariants
 
