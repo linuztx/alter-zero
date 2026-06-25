@@ -137,7 +137,7 @@ unit-tested must be unit-tested.
   space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
   (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
-  and `/quit`),
+  `/copy`, and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone lists everything.
   ↑/↓ move the highlight (the window scrolls, capped at `MENU_MAX_ROWS`, to keep it
   visible); descriptions line up in a column (names padded to `MENU_DESC_COL`), and
@@ -149,8 +149,11 @@ unit-tested must be unit-tested.
   to reopen). The box's top is unchanged when the palette opens — it's reserved
   *below* the box — so the cursor never jumps. Running a command **consumes the
   input** and dispatches an `Action`: `/clear` → `Clear` (a full wipe — see
-  below), `/help` → `Notice` (lists the commands), and `/quit` → `Quit`
-  (exits — codex's `/quit`/`/exit`, "exit Codex"). A `Notice` is recorded as
+  below), `/help` → `Notice` (lists the commands), `/quit` → `Quit`
+  (exits — codex's `/quit`/`/exit`, "exit Codex"), and `/copy` →
+  `Copy(Option<String>)` (codex's `/copy` — the last assistant response to the
+  system clipboard; the loop does the arboard/OSC 52 write at the boundary and
+  commits a system or red error notice, see `docs/copy.md`). A `Notice` is recorded as
   a `Role::System` message and committed to scrollback like any other. Adding a
   command later is a one-line registry edit + an effect arm in
   `run_selected_command` — the palette, filtering, scrolling, and dispatch don't
@@ -410,10 +413,10 @@ frame scheduler ─► draw-tick ─────┘                             
 - `Role { User, Assistant, Error, System }` — drives bullet/colour (errors red,
   system notices cyan).
 - `Action { None, Submit(String), ToggleToolView, Notice(String), Clear,
-  Interrupt, Quit }` — returned by `App::on_key`.
+  Copy(Option<String>), Interrupt, Quit }` — returned by `App::on_key`.
 - `View { Conversation, ToolOutput }` — which screen is showing (Ctrl+O toggles).
 - `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Help,
-  Quit }` + the `COMMANDS` registry (`/help`, `/clear`, `/quit`) — the
+  Copy, Quit }` + the `COMMANDS` registry (`/help`, `/clear`, `/copy`, `/quit`) — the
   slash-command palette's data; adding a command is one registry entry (+ an
   effect arm).
 - `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
@@ -497,7 +500,8 @@ frame scheduler ─► draw-tick ─────┘                             
   past the slash closes it; Esc dismisses (not quits) and is **sticky** within the
   same token (re-entering command mode reopens it); Enter/Tab run the highlighted
   command, returning the right `Action` (`/clear`→`Clear` + history emptied,
-  `/help`→`Notice` listing commands, `/quit`→`Quit`) and consuming the input; an
+  `/help`→`Notice` listing commands, `/copy`→`Copy` with the last assistant
+  text, `/quit`→`Quit`) and consuming the input; an
   empty-match Enter doesn't submit; with no palette open Enter still submits
   normally.
 - `app` (input history): ↑ recalls the newest submission (cursor at the end)
@@ -720,7 +724,7 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   with every tool expanded (by design — keeps the inline chat compact).
 - The slash-command palette only matches a **bare** `/token` (a leading slash, no
   whitespace); there's no argument parsing yet. The registry is intentionally small
-  for now (`/help`, `/clear`, `/quit`) — adding a command is a one-line `COMMANDS`
+  for now (`/help`, `/clear`, `/copy`, `/quit`) — adding a command is a one-line `COMMANDS`
   entry plus an effect arm in `run_selected_command`. Esc's dismissal reopens on
   the next keystroke only if you leave and re-enter command mode; and running
   `/help` mid-stream finalises the reply's current segment first (so the notice

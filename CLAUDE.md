@@ -305,13 +305,19 @@ live in the pure `file_search` module).
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
 dispatches an `Action`
 (`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
-message, `/quit`→`Quit`). **`/clear` mid-turn is a kill**, not codex's
+message, `/quit`→`Quit`, **`/copy`→`Copy(Option<String>)`** — codex's `/copy`:
+the pure core picks the last assistant message (`App::last_assistant_text`) and
+the loop writes it to the system clipboard, arboard with an OSC 52 fallback for
+headless/SSH/tmux, committing a `Copied last message to clipboard` system notice
+or a red `No agent response to copy`/`Copy failed` error; the clipboard write is
+the I/O boundary, the `base64`/OSC 52 framing a tested pure core in `clipboard`;
+see `docs/copy.md`). **`/clear` mid-turn is a kill**, not codex's
 "disabled while a task is in progress" rejection: `App::clear_conversation`
 wipes history, the streaming buffer, the running tool, the status, and the
 queued backlog (recording no partial/notice/summary; ↑-recall survives), and

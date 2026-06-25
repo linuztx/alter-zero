@@ -41,6 +41,7 @@ cleanup() {
 	tmux kill-session -t "${S}_atmention" 2>/dev/null
 	tmux kill-session -t "${S}_paste" 2>/dev/null
 	tmux kill-session -t "${S}_imagepaste" 2>/dev/null
+	tmux kill-session -t "${S}_copy" 2>/dev/null
 	rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 	rm -f /tmp/inline-tui-clipboard-*.png 2>/dev/null
 }
@@ -1087,6 +1088,67 @@ echo "==== captured pane (composer responsive after the failed paste) ===="
 printf '%s\n' "$imgalive"
 tmux kill-session -t "$S24" 2>/dev/null
 
+# --- Phase 28: /copy copies the last assistant response to the clipboard
+# (docs/copy.md). Headless here, so arboard has no clipboard server and the
+# OSC 52 fallback fires — which tmux (set-clipboard on) captures into its paste
+# buffer, so `show-buffer` reads it back. First an empty conversation: /copy
+# reports "No agent response to copy". Then after a reply finishes, /copy writes
+# the reply's tail to the clipboard and confirms "Copied last message to
+# clipboard". ---
+S25="${S}_copy"
+tmux new-session -d -s "$S25" -x 80 -y 24 "$APP"
+# tmux must capture OSC 52 from the app into its own buffer (default is
+# `external`: forward-only, not stored) — `on` stores it so show-buffer sees it.
+tmux set-option -g set-clipboard on
+sleep 0.4
+# Empty conversation: nothing to copy → the red "No agent response to copy".
+tmux send-keys -t "$S25" -l "/copy"
+sleep 0.3
+tmux send-keys -t "$S25" Enter
+copy_empty=""
+for _ in $(seq 1 30); do # up to ~3s
+	copy_empty="$(tmux capture-pane -t "$S25" -p -S -20)"
+	if printf '%s' "$copy_empty" | grep -qF "No agent response to copy"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (/copy with nothing to copy) ===="
+printf '%s\n' "$copy_empty"
+# Now send a message and let the dummy reply finish (its tail "changes size"
+# committed AND the screen settled, so the final segment is in history).
+tmux send-keys -t "$S25" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S25" Enter
+copy_prev=""
+for _ in $(seq 1 60); do # up to ~12s
+	copy_cur="$(tmux capture-pane -t "$S25" -p)"
+	if printf '%s' "$copy_cur" | grep -qF "changes size" && [ "$copy_cur" = "$copy_prev" ]; then
+		break
+	fi
+	copy_prev="$copy_cur"
+	sleep 0.2
+done
+# Clear any pre-existing tmux paste buffers so show-buffer reflects *our* copy.
+while tmux delete-buffer 2>/dev/null; do :; done
+tmux send-keys -t "$S25" -l "/copy"
+sleep 0.3
+tmux send-keys -t "$S25" Enter
+copy_ok=""
+for _ in $(seq 1 30); do # up to ~3s
+	copy_ok="$(tmux capture-pane -t "$S25" -p -S -20)"
+	if printf '%s' "$copy_ok" | grep -qF "Copied last message to clipboard"; then
+		break
+	fi
+	sleep 0.1
+done
+copy_clip="$(tmux show-buffer 2>/dev/null)"
+echo "==== captured pane (after /copy) ===="
+printf '%s\n' "$copy_ok"
+echo "==== tmux clipboard buffer (the OSC 52 fallback landed here) ===="
+printf '%s\n' "$copy_clip"
+tmux kill-session -t "$S25" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -1731,8 +1793,23 @@ if ! printf '%s' "$imgalive" | grep -qF "still alive"; then
 	echo "FAIL: the composer was unresponsive after a failed image paste (Ctrl+V hung or crashed the app)" >&2
 	status=1
 fi
+# Phase 28: /copy reports the empty case, confirms the copy, and the OSC 52
+# fallback actually reached the clipboard — tmux's buffer holds the reply tail
+# (docs/copy.md).
+if ! printf '%s' "$copy_empty" | grep -qF "No agent response to copy"; then
+	echo "FAIL: /copy with no assistant message did not show 'No agent response to copy'" >&2
+	status=1
+fi
+if ! printf '%s' "$copy_ok" | grep -qF "Copied last message to clipboard"; then
+	echo "FAIL: /copy did not confirm with 'Copied last message to clipboard'" >&2
+	status=1
+fi
+if ! printf '%s' "$copy_clip" | grep -qF "changes size"; then
+	echo "FAIL: /copy's OSC 52 fallback did not put the reply on the clipboard (tmux buffer missing the reply tail)" >&2
+	status=1
+fi
 
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer)"
 fi
 exit "$status"

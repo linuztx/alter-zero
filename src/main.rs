@@ -45,7 +45,9 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
-use inline_tui::app::{Action, App, INTERRUPT_NOTICE, QueuedTurn, Role, View};
+use inline_tui::app::{
+    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, INTERRUPT_NOTICE, QueuedTurn, Role, View,
+};
 use inline_tui::clipboard;
 use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
@@ -111,6 +113,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // The in-flight reply's cancel token + thread handle, so a quit mid-stream
     // can stop and reap it cleanly. `None` whenever no reply is streaming.
     let mut inflight: Option<(CancelToken, JoinHandle<()>)> = None;
+    // Keeps the last `/copy`'s native clipboard selection alive (Linux/arboard
+    // serves it from a thread tied to the Clipboard's lifetime); replaced on each
+    // copy, dropped at exit. Held only for its Drop — never read — hence the `_`
+    // prefix. `None` until the first successful native copy (the OSC 52 fallback
+    // needs no lease). See docs/copy.md.
+    let mut _clipboard_lease: Option<clipboard::ClipboardLease> = None;
     // How many lines of the in-progress reply have been flushed to scrollback.
     let mut committed = 0usize;
     // Detects a paste / fast-type burst so its redraw can be coalesced.
@@ -215,19 +223,36 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 }
                             }
                             Action::Notice(text) => {
-                                // A slash command's one-off system notice. If a reply
-                                // is mid-flight, finalise its current segment first
-                                // (same ordering trick as a tool call) so the notice
-                                // slots after it in scrollback and history alike.
-                                let width = term.screen().width;
-                                if let Some(segment) = app.flush_streaming_segment() {
-                                    term.insert_before(ui::final_commit(&segment, width, committed));
-                                    term.insert_before(vec![Line::default()]);
-                                    committed = 0;
+                                // A slash command's one-off system notice. The helper
+                                // finalises any mid-flight reply segment first (same
+                                // ordering trick as a tool call) so the notice slots
+                                // after it in scrollback and history alike.
+                                commit_system_notice(term, &mut app, &mut committed, &text);
+                            }
+                            Action::Copy(maybe_text) => {
+                                // `/copy`: do the clipboard I/O here at the boundary
+                                // (run_selected_command stayed pure). The pure core
+                                // already decided *what* to copy — Some(text) or, for
+                                // an empty conversation, None. See docs/copy.md.
+                                match maybe_text {
+                                    None => commit_error_notice(
+                                        term, &mut app, &mut committed, COPY_EMPTY_NOTICE,
+                                    ),
+                                    Some(text) => match clipboard::copy_to_clipboard(&text) {
+                                        Ok(lease) => {
+                                            // Hold the native selection alive for the
+                                            // app's lifetime (Linux); None over OSC 52.
+                                            _clipboard_lease = lease;
+                                            commit_system_notice(
+                                                term, &mut app, &mut committed, COPY_OK_NOTICE,
+                                            );
+                                        }
+                                        Err(reason) => commit_error_notice(
+                                            term, &mut app, &mut committed,
+                                            &format!("Copy failed: {reason}"),
+                                        ),
+                                    },
                                 }
-                                app.record_system_message(&text);
-                                term.insert_before(ui::message_lines(Role::System, &text, width));
-                                term.insert_before(vec![Line::default()]);
                             }
                             Action::Clear => {
                                 // `/clear` already wiped the app state (history,
@@ -484,6 +509,28 @@ fn commit_error_notice(
     }
     app.record_error_message(text);
     term.insert_before(ui::message_lines(Role::Error, text, width));
+    term.insert_before(vec![Line::default()]);
+}
+
+/// Commit a cyan [`Role::System`] notice to scrollback + history — `/help`'s
+/// command list, or `/copy`'s "Copied last message to clipboard" confirmation.
+/// Like [`commit_error_notice`] but a system (info) message: a mid-flight reply
+/// segment is finalised first so the notice slots after it in scrollback and
+/// history alike (the same ordering trick a tool call uses).
+fn commit_system_notice(
+    term: &mut InlineViewport,
+    app: &mut App,
+    committed: &mut usize,
+    text: &str,
+) {
+    let width = term.screen().width;
+    if let Some(segment) = app.flush_streaming_segment() {
+        term.insert_before(ui::final_commit(&segment, width, *committed));
+        term.insert_before(vec![Line::default()]);
+        *committed = 0;
+    }
+    app.record_system_message(text);
+    term.insert_before(ui::message_lines(Role::System, text, width));
     term.insert_before(vec![Line::default()]);
 }
 

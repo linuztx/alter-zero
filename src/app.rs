@@ -235,6 +235,16 @@ pub struct StreamError {
 pub const INTERRUPT_NOTICE: &str =
     "Conversation interrupted - tell the model what to do differently.";
 
+/// The notice committed when `/copy` writes the last response to the clipboard —
+/// codex's info event, verbatim. Recorded as a [`Role::System`] message. See
+/// `docs/copy.md`.
+pub const COPY_OK_NOTICE: &str = "Copied last message to clipboard";
+
+/// The notice committed when `/copy` finds no assistant response to copy —
+/// codex's error event, verbatim. Recorded as a [`Role::Error`] message. See
+/// `docs/copy.md`.
+pub const COPY_EMPTY_NOTICE: &str = "No agent response to copy";
+
 /// The output recorded on a tool that was still running when the user
 /// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
 /// (codex: an aborted tool "may have partially executed").
@@ -278,6 +288,12 @@ pub enum Action {
     /// A slash command cleared the conversation (`/clear`). [`App::history`] is
     /// already empty; the loop repaints the now-blank inline view.
     Clear,
+    /// `/copy` — write the last assistant response to the system clipboard.
+    /// `Some(text)` is the text to copy ([`App::last_assistant_text`]); `None`
+    /// means there was no response to copy. The decision is pure; the loop does
+    /// the clipboard I/O ([`crate::clipboard::copy_to_clipboard`]) and commits
+    /// the success/empty/failure notice — codex's `/copy`. See `docs/copy.md`.
+    Copy(Option<String>),
     /// The user pressed Enter on a `!`-prefixed line from an idle composer: run
     /// the carried command (the text after the `!`, trimmed) locally. The loop
     /// echoes `❯ !command`, calls [`App::begin_shell`], and spawns it. See
@@ -335,6 +351,9 @@ pub enum CommandEffect {
     Clear,
     /// Post the list of available commands as a system notice (`/help`).
     Help,
+    /// Copy the last assistant response to the clipboard (`/copy`). See
+    /// `docs/copy.md`.
+    Copy,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
 }
@@ -365,6 +384,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "clear",
         description: "Clear the conversation",
         effect: CommandEffect::Clear,
+    },
+    SlashCommand {
+        name: "copy",
+        description: "Copy the last response to the clipboard",
+        effect: CommandEffect::Copy,
     },
     SlashCommand {
         name: "quit",
@@ -1427,8 +1451,26 @@ impl App {
                 Action::Clear
             }
             CommandEffect::Help => Action::Notice(help_text()),
+            CommandEffect::Copy => Action::Copy(self.last_assistant_text()),
             CommandEffect::Quit => Action::Quit,
         }
+    }
+
+    /// The text of the last assistant message in [`history`](Self::history), if
+    /// any non-empty one exists — what `/copy` writes to the clipboard. Our turn
+    /// model splits assistant prose around tool calls, so this is the last
+    /// recorded assistant *segment*, mirroring codex's `last_agent_markdown`
+    /// (likewise the latest agent message). The in-progress streaming buffer is
+    /// not considered — only finished history. `None` (the nothing-to-copy path)
+    /// when there's no assistant message, or the latest one is empty. See
+    /// `docs/copy.md`.
+    #[must_use]
+    pub fn last_assistant_text(&self) -> Option<String> {
+        let latest = self.history.iter().rev().find_map(|item| match item {
+            HistoryItem::Message(m) if m.role == Role::Assistant => Some(&m.text),
+            _ => None,
+        })?;
+        (!latest.is_empty()).then(|| latest.clone())
     }
 
     /// Is the cursor currently inside an `@token`? (The `had_token` state the
@@ -4074,6 +4116,87 @@ mod tests {
         type_str(&mut app, "/clear");
         assert_eq!(app.on_key(key(KeyCode::Tab)), Action::Clear);
         assert!(app.history.is_empty(), "Tab ran the command, like Enter");
+    }
+
+    #[test]
+    fn last_assistant_text_returns_the_last_assistant_message() {
+        let mut app = App::new();
+        app.record_user_message("q1");
+        app.begin_stream();
+        app.push_chunk("first answer");
+        app.finish_stream();
+        app.record_user_message("q2");
+        app.begin_stream();
+        app.push_chunk("second answer");
+        app.finish_stream();
+        assert_eq!(app.last_assistant_text().as_deref(), Some("second answer"));
+    }
+
+    #[test]
+    fn last_assistant_text_skips_trailing_non_assistant_items() {
+        // A later user message, tool call, or system notice must not shadow the
+        // last *assistant* message — `/copy` copies the model's last response.
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("the answer");
+        app.finish_stream();
+        app.start_tool("Read", "f");
+        app.end_tool("out", true);
+        app.record_user_message("a follow-up");
+        app.record_system_message("a notice");
+        assert_eq!(app.last_assistant_text().as_deref(), Some("the answer"));
+    }
+
+    #[test]
+    fn last_assistant_text_is_none_without_an_assistant_message() {
+        let mut app = App::new();
+        app.record_user_message("only a user message");
+        assert!(app.last_assistant_text().is_none());
+    }
+
+    #[test]
+    fn enter_runs_copy_returning_the_last_assistant_text() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("copy this answer");
+        app.finish_stream();
+        type_str(&mut app, "/copy");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Copy(Some("copy this answer".to_string()))
+        );
+        assert!(app.input.is_empty(), "the command was consumed");
+        assert!(app.command_menu.is_none());
+    }
+
+    #[test]
+    fn copy_with_no_assistant_message_returns_copy_none() {
+        // Nothing to copy → Action::Copy(None); the loop turns that into the red
+        // "No agent response to copy" notice (codex's empty case).
+        let mut app = App::new();
+        app.record_user_message("just me");
+        type_str(&mut app, "/copy");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Copy(None));
+    }
+
+    #[test]
+    fn copy_dispatches_mid_turn_instead_of_queuing() {
+        // `/copy` is available during a task (codex): the palette's Enter wins
+        // over the mid-turn queue, copying the last *completed* answer (not the
+        // streaming buffer).
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("earlier answer");
+        app.finish_stream();
+        app.begin_stream();
+        app.push_chunk("streaming, not yet recorded");
+        type_str(&mut app, "/copy");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Copy(Some("earlier answer".to_string())),
+            "the palette runs /copy mid-turn rather than queuing it"
+        );
+        assert!(app.queued.is_empty(), "nothing was queued");
     }
 
     #[test]
