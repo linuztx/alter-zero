@@ -8,7 +8,7 @@ modelled on the spinner line in openai/codex and Claude Code.
 
 ● Happy to help! …                                          (streaming preview — existing)
 
-( ●    ) Working… (1s · ↓ 100 tokens · esc to interrupt)    (live status — ball bounces, verb shimmers)
+(●•·   ) Working… (1s · ↓ 100 tokens · esc to interrupt)    (live status — comet sweeps, verb shimmers)
                                                             (blank gap so the status clears the box)
 ─────────────────────────────────────                       (input box)
 ❯ ▏
@@ -28,14 +28,14 @@ Done for 20s                       (NEW: committed turn summary)
 ## What shows, and when
 
 The live line is
-`( ●    ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s] · esc to interrupt)`:
+`(●•·   ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s] · esc to interrupt)`:
 
 | phase                | line                                                                          |
 |----------------------|-------------------------------------------------------------------------------|
-| pre-stream pause     | `( ●    ) Working… (1s · ↑ 7 tokens · esc to interrupt)`                       |
-| streaming text       | `(  ●   ) Working… (3s · ↓ 100 tokens · esc to interrupt)`                     |
-| streaming + thinking | `(   ●  ) Working… (3s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)`   |
-| after a tool result  | `(    ● ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
+| pre-stream pause     | `(●•·   ) Working… (1s · ↑ 7 tokens · esc to interrupt)`                       |
+| streaming text       | `(•●    ) Working… (3s · ↓ 100 tokens · esc to interrupt)`                     |
+| streaming + thinking | `(·•●   ) Working… (3s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)`   |
+| after a tool result  | `( ·•●  ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
 | finished (committed) | `Done for 20s`                                                                 |
 | interrupted (Esc)    | *no summary* — the red `Conversation interrupted` notice (see `docs/interrupt.md`) |
 
@@ -48,10 +48,11 @@ arrow to `↓`. The pause is `DummyAi`'s (`stream::STARTUP_DELAY`, overridable v
 `INLINE_TUI_STARTUP_DELAY_MS` — the smoke test runs short, one phase long); a
 real backend's own latency plays the same role.
 
-- **spinner** — the line opens with the classic cli-spinners **`bouncingBall`**:
-  a white bold ball ping-ponging between dim parenthesis walls, one frame per
-  80 ms (`( ●    )` → `(  ●   )` → … → `(     ●)` (right wall) → back across to
-  `(●     )` (left wall, flush against `(` — the leftmost cell is used, not
+- **spinner** — the line opens with a **comet** (a Larson-scanner sweep): a
+  white bold head dragging a two-cell fading tail between dim parenthesis
+  walls, one frame per 80 ms (`(●•·   )` → `(•●    )` → … → `(   ·•●)` (right
+  wall) → `(    ●•)` (the tail whips around at the bounce) → back across to
+  `(●•·   )` (left wall, flush against `(` — the leftmost cell is used, not
   wasted); all **ten** fixed-width frames, so nothing after it jitters). Like
   the shimmer, `ui::spinner_spans` is pure — the frame index derives from the
   boundary-supplied `elapsed`.
@@ -176,17 +177,22 @@ The verb (`Working…`) renders one **bold span per char**, colours from
 The `SHIMMER_*` constants (base/highlight colours, sweep, padding, band width,
 max blend) live with the other styling consts at the top of `ui.rs`.
 
-## The bouncing-ball spinner
+## The comet spinner
 
-The line's opening `( ●    )` is cli-spinners' **`bouncingBall`** (codex has no
-equivalent — it shimmers a static `•`): **ten** fixed-width frames
-(`SPINNER_FRAMES`), the ball stepping one cell per `SPINNER_INTERVAL` (80 ms) out
-to the right wall (`(     ●)`) and back across to the left wall (`(●     )`, flush
-against `(`), looping every 800 ms. `ui::spinner_spans` styles each
-frame as three spans — dim left wall, white **bold** ball, dim right wall — and,
-like the shimmer, derives the frame index purely from `TurnStatus::elapsed`; the
-same 32 ms draw re-arm animates it. Fixed-width frames mean the verb after the
-spinner never shifts as the ball moves.
+The line's opening `(●•·   )` is a **comet** — a Larson-scanner sweep (codex
+has no equivalent — it shimmers a static `•`): **ten** fixed-width frames
+(`SPINNER_FRAMES`), the bright head (`●`) stepping one cell per
+`SPINNER_INTERVAL` (80 ms) out to the right wall (`(   ·•●)`) and back across
+to the left wall (`(●•·   )`, flush against `(`), looping every 800 ms. A
+two-cell tail fades behind the head — `•` mid grey, `·` down at the dim
+detail grey — whipping around behind it at each bounce (`(   ·•●)` →
+`(    ●•)`); a tail cell the head overlaps is hidden under it.
+`ui::spinner_spans` styles each frame as one span per cell — the white
+**bold** head, the mid-grey `•`, everything else (the faint `·`, walls, empty
+track) dim, the right wall carrying the separator space — and, like the
+shimmer, derives the frame index purely from `TurnStatus::elapsed`; the same
+32 ms draw re-arm animates it. Fixed-width frames mean the verb after the
+spinner never shifts as the comet moves.
 
 ## The pre-stream pause (dummy backend)
 
@@ -227,8 +233,9 @@ The loop maps the pair to `thinking_start = Some(now)` / `None`; the thinking
   no preview row and `render_live` draws the status as the strip's top row (with
   `↑` tokens, no reserved blank above it); `live_layout` tiles the four areas for
   every `(streaming, has_preview)` combination;
-  the spinner's ball is white bold between dim walls, steps a frame per
-  interval, reverses at the right wall, and loops after a full cycle; the verb
+  the spinner's comet head is white bold with a monotonically fading tail
+  between dim walls, steps a frame per interval, reverses at the right wall
+  (the tail whipping around behind it), and loops after a full cycle; the verb
   per-char greyscale-white bold spans, the metrics
   dim; the wave's crest is brighter than off-band chars and moves as `elapsed`
   advances; `summary_lines` is one dim line; the strip stacks preview / gap /

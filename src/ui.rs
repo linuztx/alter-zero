@@ -124,9 +124,9 @@ const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
 // --- Live status indicator (codex / Claude-Code style). While a turn is in
 // flight a status line sits in the strip above the box (with a blank gap row
 // between it and the box's top rule):
-// `( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`. The
-// line opens with a **bouncing-ball spinner** (the classic cli-spinners
-// `bouncingBall`: a white ball ping-ponging between dim walls, one frame per
+// `(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`. The
+// line opens with a **comet spinner** (a Larson-scanner sweep: a white head
+// dragging a fading grey tail back and forth between dim walls, one frame per
 // `SPINNER_INTERVAL` — see [`spinner_spans`]); the working verb is picked
 // per-turn (in `App`) and its white text carries a codex-style **shimmer**: a
 // bright-white band sweeps across the white-grey text (see [`shimmer_spans`],
@@ -134,30 +134,40 @@ const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
 // `{done verb} for {n}s` summary commits to scrollback (a
 // `HistoryItem::Summary`). See docs/status-indicator.md. ---
 
-/// White — the spinner's ball (matches the codex/Claude-Code white status text).
+/// White — the comet's head (matches the codex/Claude-Code white status text).
 const STATUS_COLOR: Color = AI_COLOR;
-/// The bouncing-ball animation frames (cli-spinners' `bouncingBall`, all ten):
-/// the ball travels out to the right wall, back across to the **left wall**
-/// (flush against `(` — no wasted leading cell), then the cycle repeats. Every
-/// frame is the same width, so the verb after it never jitters.
+/// The comet-spinner animation frames (a Larson-scanner sweep, ten frames):
+/// the bright head (`●`) drags a two-cell fading tail (`•` then `·`) out to
+/// the right wall and back across to the **left wall** (flush against `(` —
+/// no wasted leading cell), the tail whipping around behind it at each
+/// bounce (a tail cell the head overlaps is hidden under it). Every frame is
+/// the same width, so the verb after it never jitters.
 const SPINNER_FRAMES: &[&str] = &[
-    "( ●    )",
-    "(  ●   )",
-    "(   ●  )",
-    "(    ● )",
-    "(     ●)",
-    "(    ● )",
-    "(   ●  )",
-    "(  ●   )",
-    "( ●    )",
-    "(●     )",
+    "(●•·   )",
+    "(•●    )",
+    "(·•●   )",
+    "( ·•●  )",
+    "(  ·•● )",
+    "(   ·•●)",
+    "(    ●•)",
+    "(   ●•·)",
+    "(  ●•· )",
+    "( ●•·  )",
 ];
-/// How long each spinner frame shows (cli-spinners' `bouncingBall` interval —
+/// How long each spinner frame shows (the classic cli-spinners 80 ms cadence —
 /// well under the loop's ~30 fps animation re-arm, so no frame is skipped).
 const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
-/// How many spans [`spinner_spans`] emits (left wall, ball, right wall) — the
-/// verb's per-char spans start at this index in the status line.
-const SPINNER_SPAN_COUNT: usize = 3;
+/// The comet's bright bold head in a [`SPINNER_FRAMES`] frame.
+const SPINNER_HEAD: char = '●';
+/// The tail cell right behind the head; the `·` end (and everything else in
+/// the frame — walls, empty track) fades to [`STATUS_DETAIL_COLOR`].
+const SPINNER_TAIL_MID: char = '•';
+/// Mid grey — the `•` tail cell, between the white head and the dim tail end.
+const SPINNER_TAIL_COLOR: Color = Color::Rgb(0xC8, 0xC8, 0xC8);
+/// How many spans [`spinner_spans`] emits (one per frame cell: the left wall,
+/// six track cells, the right wall) — the verb's per-char spans start at this
+/// index in the status line.
+const SPINNER_SPAN_COUNT: usize = 8;
 /// Dim grey — the parenthesised metrics (`elapsed · tokens · thinking`).
 const STATUS_DETAIL_COLOR: Color = TOOL_DIM_COLOR;
 /// Trailing ellipsis after the working verb (`Working…`).
@@ -1535,36 +1545,46 @@ fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
         .collect()
 }
 
-/// The bouncing-ball spinner opening the status line: the [`SPINNER_FRAMES`]
-/// frame for `elapsed` (one frame per [`SPINNER_INTERVAL`], looping), split into
-/// exactly [`SPINNER_SPAN_COUNT`] spans — the dim left wall, the white bold
-/// ball, and the dim right wall (plus the trailing separator space). Pure, like
-/// [`shimmer_spans`]: the frame index derives from the boundary-supplied
-/// `elapsed`, and the loop's animation re-arm keeps it advancing.
+/// The comet spinner opening the status line: the [`SPINNER_FRAMES`] frame
+/// for `elapsed` (one frame per [`SPINNER_INTERVAL`], looping), split into
+/// exactly [`SPINNER_SPAN_COUNT`] spans — one per cell, so each carries its
+/// own fade step: the white bold [`SPINNER_HEAD`], the mid-grey
+/// [`SPINNER_TAIL_MID`] behind it, and everything else (the faint `·` tail
+/// end, the walls, the empty track) dim; the right wall carries the trailing
+/// separator space. Pure, like [`shimmer_spans`]: the frame index derives
+/// from the boundary-supplied `elapsed`, and the loop's animation re-arm
+/// keeps it advancing.
 fn spinner_spans(elapsed: Duration) -> Vec<Span<'static>> {
     let frame_index =
         (elapsed.as_millis() / SPINNER_INTERVAL.as_millis()) as usize % SPINNER_FRAMES.len();
     let frame = SPINNER_FRAMES[frame_index];
-    // Every frame is `(walls)` around one ball char, so the split can't fail.
-    let (left, right) = frame.split_once('●').expect("a frame contains the ball");
     let dim = Style::new().fg(STATUS_DETAIL_COLOR);
-    let spans = vec![
-        Span::styled(left.to_string(), dim),
-        Span::styled(
-            "●".to_string(),
-            Style::new().fg(STATUS_COLOR).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(format!("{right} "), dim),
-    ];
+    let spans: Vec<Span<'static>> = frame
+        .chars()
+        .enumerate()
+        .map(|(i, c)| {
+            let style = match c {
+                SPINNER_HEAD => Style::new().fg(STATUS_COLOR).add_modifier(Modifier::BOLD),
+                SPINNER_TAIL_MID => Style::new().fg(SPINNER_TAIL_COLOR),
+                _ => dim,
+            };
+            let text = if i == SPINNER_SPAN_COUNT - 1 {
+                format!("{c} ")
+            } else {
+                c.to_string()
+            };
+            Span::styled(text, style)
+        })
+        .collect();
     debug_assert_eq!(spans.len(), SPINNER_SPAN_COUNT);
     spans
 }
 
 /// The live status line shown in the strip above the box while a turn is in
 /// flight:
-/// `( ●    ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s] · esc to interrupt)`.
+/// `(●•·   ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s] · esc to interrupt)`.
 ///
-/// It opens with the bouncing-ball spinner ([`spinner_spans`]) and the verb
+/// It opens with the comet spinner ([`spinner_spans`]) and the verb
 /// text **shimmers** — a bright-white band sweeping its white-grey chars
 /// ([`shimmer_spans`]) — both animations phase-driven by the boundary-supplied
 /// `elapsed`; the parenthesised metrics are dim. The token clause is omitted
@@ -2382,8 +2402,8 @@ mod tests {
         let line = status_line(&status(0, TokenArrow::Down, 0, None));
         let text = plain(&line);
         assert_eq!(
-            text, "( ●    ) Working… (0s · esc to interrupt)",
-            "the bare just-submitted state, ball on the first frame"
+            text, "(●•·   ) Working… (0s · esc to interrupt)",
+            "the bare just-submitted state, comet on the first frame"
         );
         assert!(
             !text.contains("tokens"),
@@ -2440,58 +2460,108 @@ mod tests {
     }
 
     #[test]
-    fn status_spinner_ball_bounces_between_the_walls_and_loops() {
-        // The bouncing-ball spinner advances one frame per SPINNER_INTERVAL
-        // (80 ms): out to the right wall, back to the LEFT wall (flush against
-        // `(`, using the leftmost cell), and the cycle loops.
+    fn status_spinner_comet_sweeps_between_the_walls_and_its_tail_whips() {
+        // The comet spinner advances one frame per SPINNER_INTERVAL (80 ms):
+        // the head sweeps out to the right wall dragging its fading tail,
+        // bounces (the tail whipping around behind it), sweeps back to the
+        // left wall (flush against `(`, using the leftmost cell), and loops.
         let frame_at = |ms: u64| {
             let mut s = status(0, TokenArrow::Down, 0, None);
             s.elapsed = Duration::from_millis(ms);
             let text = plain(&status_line(&s));
             text.chars().take_while(|&c| c != 'W').collect::<String>()
         };
-        assert_eq!(frame_at(0).trim_end(), "( ●    )");
-        assert_eq!(frame_at(80).trim_end(), "(  ●   )", "one frame later");
         assert_eq!(
-            frame_at(320).trim_end(),
-            "(     ●)",
-            "out at the right wall"
+            frame_at(0).trim_end(),
+            "(●•·   )",
+            "head flush at the left wall, tail trailing right"
         );
-        assert_eq!(frame_at(400).trim_end(), "(    ● )", "bouncing back");
+        assert_eq!(
+            frame_at(80).trim_end(),
+            "(•●    )",
+            "one frame later — moving right, the tail behind (its faint end under the head)"
+        );
+        assert_eq!(
+            frame_at(160).trim_end(),
+            "(·•●   )",
+            "the full tail streams out behind the head"
+        );
+        assert_eq!(
+            frame_at(400).trim_end(),
+            "(   ·•●)",
+            "head out at the right wall"
+        );
+        assert_eq!(
+            frame_at(480).trim_end(),
+            "(    ●•)",
+            "bounced — the tail whips around to trail rightward"
+        );
         assert_eq!(
             frame_at(720).trim_end(),
-            "(●     )",
-            "back to the left wall — flush against `(`, no wasted leading cell"
+            "( ●•·  )",
+            "sweeping back toward the left wall"
         );
         assert_eq!(
             frame_at(800),
             frame_at(0),
-            "the bounce loops after a full 10-frame cycle"
+            "the sweep loops after a full 10-frame cycle"
         );
     }
 
     #[test]
-    fn status_line_has_a_white_ball_dim_walls_shimmering_verb_and_dim_metrics() {
+    fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
         let line = status_line(&status(0, TokenArrow::Down, 0, None));
-        // The spinner: a white bold ball between dim walls.
-        let ball = line
+        // The spinner: a white bold comet head dragging a tail that fades
+        // through mid grey to the dim detail grey, between dim walls.
+        let head = line
             .spans
             .iter()
             .find(|s| s.content.as_ref() == "●")
-            .expect("the spinner's ball span");
-        assert_eq!(ball.style.fg, Some(STATUS_COLOR), "white ball");
+            .expect("the comet's head span");
+        assert_eq!(head.style.fg, Some(STATUS_COLOR), "white head");
         assert!(
-            ball.style.add_modifier.contains(Modifier::BOLD),
-            "the ball is bold"
+            head.style.add_modifier.contains(Modifier::BOLD),
+            "the head is bold"
         );
         assert_eq!(STATUS_COLOR, AI_COLOR, "the status white is the text white");
+        let mid = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "•")
+            .expect("the tail's mid span");
+        assert_eq!(mid.style.fg, Some(SPINNER_TAIL_COLOR), "mid-grey tail cell");
+        let faint = line
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "·")
+            .expect("the tail's faint span");
+        assert_eq!(
+            faint.style.fg,
+            Some(STATUS_DETAIL_COLOR),
+            "the tail's end fades to the dim detail grey"
+        );
+        // The fade is monotonic: head brighter than mid, mid than the end.
+        let grey = |c: Option<Color>| match c {
+            Some(Color::Rgb(r, _, _)) => r,
+            other => panic!("expected an RGB fg, got {other:?}"),
+        };
+        assert!(
+            grey(head.style.fg) > grey(mid.style.fg) && grey(mid.style.fg) > grey(faint.style.fg),
+            "the tail fades behind the head"
+        );
+        assert_eq!(line.spans[0].content.as_ref(), "(", "the left wall span");
         assert_eq!(
             line.spans[0].style.fg,
             Some(STATUS_DETAIL_COLOR),
             "dim left wall"
         );
         assert_eq!(
-            line.spans[2].style.fg,
+            line.spans[SPINNER_SPAN_COUNT - 1].content.as_ref(),
+            ") ",
+            "the right wall carries the separator space"
+        );
+        assert_eq!(
+            line.spans[SPINNER_SPAN_COUNT - 1].style.fg,
             Some(STATUS_DETAIL_COLOR),
             "dim right wall"
         );
@@ -2631,7 +2701,7 @@ mod tests {
             row(&buf, 0, 60)
         );
         // No row is an assistant preview line (`● ` at the start) — the only
-        // `●` on screen is the status spinner's ball inside `( ●    )`.
+        // `●` on screen is the comet spinner's head inside `(●•·   )`.
         for y in 0..h {
             assert!(
                 !row(&buf, y, 60).starts_with("● "),

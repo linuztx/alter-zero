@@ -77,9 +77,10 @@ Esc/Ctrl+C cancel restoring the pre-search draft and cursor; see
 `docs/history-search.md`) —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's blue header when one is executing), a blank gap row,
-a codex-style **status line** (`( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
-Thinking for {m}s · esc to interrupt)` — opened by a bouncing-ball spinner (cli-spinners'
-`bouncingBall`: a white ball ping-ponging between dim walls), the verb text
+a codex-style **status line** (`(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
+Thinking for {m}s · esc to interrupt)` — opened by a comet spinner (a
+Larson-scanner sweep: a white head dragging a fading grey tail back and forth
+between dim walls), the verb text
 shimmering with a white sweep ported from
 codex's `shimmer_spans`; on finish a dim `{done verb} for {n}s` summary commits to
 scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
@@ -372,8 +373,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`TOOL_VIEW_*`), the transcript timestamp (`TIMESTAMP_COLOR` — the dim
   `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,
   the only stamp shown, only in the Ctrl+O view), the status
-  indicator (`STATUS_*` — the bouncing-ball spinner's white ball + dim walls and
-  the `SPINNER_FRAMES`/`SPINNER_INTERVAL` animation, dim metrics, the `↓`/`↑` arrows
+  indicator (`STATUS_*` — the comet spinner's white head + mid-grey
+  `SPINNER_TAIL_COLOR` fading tail + dim walls and the
+  `SPINNER_FRAMES`/`SPINNER_INTERVAL` animation, dim metrics, the `↓`/`↑` arrows
   and `…` ellipsis, the `STATUS_INTERRUPT_HINT` (`esc to interrupt`, the detail's
   closing clause), the dim committed-summary colour, and `STATUS_ROWS`/`STATUS_GAP_ROWS`;
   the verb's white shimmer wave is the `SHIMMER_*` consts — base/highlight

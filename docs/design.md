@@ -38,8 +38,9 @@ unit-tested must be unit-tested.
   spacer becomes the single blank line between the reply and the box (no double
   blank). A blank spacer is also committed after every user message.
 - **Status indicator.** While a turn is in flight, the strip's status line opens
-  with a **bouncing-ball spinner** (cli-spinners' `bouncingBall`: a white ball
-  ping-ponging between dim walls, one frame per 80 ms — `ui::spinner_spans`),
+  with a **comet spinner** (a Larson-scanner sweep: a white head dragging a
+  fading grey tail back and forth between dim walls, one frame per 80 ms —
+  `ui::spinner_spans`),
   then a per-turn whimsical **verb** (`Working`, `Cooking`, …, picked
   deterministically by a turn counter) whose white text carries a codex-style
   **shimmer** — a bright-white raised-cosine band sweeping the chars every 2 s
@@ -59,7 +60,7 @@ unit-tested must be unit-tested.
   codex); the preview row appears only once the reply streams (or a tool runs),
   and the first chunk flips the arrow `↓`. While a
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
-  cadence), so the ball bounces, the shimmer sweeps, and the timer moves even
+  cadence), so the comet sweeps, the shimmer waves, and the timer moves even
   with no events. On
   finish the line is replaced by a dim, committed **`{done verb} for Ns`** summary
   that flows into scrollback (a `HistoryItem::Summary`, so it survives a resize
@@ -593,8 +594,9 @@ frame scheduler ─► draw-tick ─────┘                             
   and **never** any in the inline `conversation_lines`); the
   **status indicator** — `status_line` formats each phase (`(0s)` with the token
   clause dropped at 0; `↓`/`↑` arrows; `Thinking for Ns` only when set; a
-  bouncing-ball spinner — white bold ball between dim walls — that steps a frame
-  per interval, reverses at the right wall, and loops; dim metrics; and a
+  comet spinner — a white bold head with a fading grey tail between dim walls —
+  that steps a frame per interval, reverses at the right wall (the tail
+  whipping around behind it), and loops; dim metrics; and a
   per-char bold greyscale-white shimmering verb whose
   crest outshines off-band chars and moves as `elapsed` advances), `summary_lines`
   is one dim bullet-less `"{verb} for
