@@ -1,6 +1,8 @@
 [toolchain]
 # Pin the toolchain so everyone builds the edition-2024 crate the same way and
-# the documented gate (fmt + clippy + test) is reproducible. `stable` tracks the
-# latest stable Rust, which supports edition 2024.
-channel = "stable"
+# the documented gate (fmt + clippy + test) is reproducible. A concrete version
+# (not `stable`, which floats): Cargo.toml denies warnings and clippy::all, so
+# a new stable release shipping a new lint would otherwise break every build.
+# Bump deliberately, with the gate run against the new version.
+channel = "1.94.1"
 components = ["rustfmt", "clippy"]

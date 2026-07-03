@@ -48,6 +48,14 @@ red `Failed to paste image: {msg}` notice (codex's `new_error_event`), using the
 same mid-stream flush-segment ordering as a slash-command `Notice` so the notice
 slots correctly if a reply is streaming.
 
+**Temp-file lifecycle**: an attachment that is *dropped without being submitted*
+— an atomic placeholder Backspace/Delete, a Ctrl+C-cleared draft, a `/clear`'d
+queue — lands its path in `App::take_discarded_images`, which the loop drains
+after each key event to `remove_file` the orphaned PNG (the pure core records
+the drops; the file I/O stays at the boundary). *Submitted* images are left on
+disk deliberately: the backend reads them by path — possibly again on a
+history re-send — so they fall to the OS temp cleaner, codex-style.
+
 `Cargo.toml` gains `arboard` (with `wayland-data-control`), `image`
 (`jpeg,png,gif,webp`, default features off), and `tempfile`. The crates are
 pure-Rust on Linux (`arboard` → `x11rb`/`wl-clipboard`), so they build in CI with

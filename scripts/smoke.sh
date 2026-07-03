@@ -34,7 +34,6 @@ cleanup() {
 	tmux kill-session -t "${S}_search" 2>/dev/null
 	tmux kill-session -t "${S}_shell" 2>/dev/null
 	tmux kill-session -t "${S}_delay" 2>/dev/null
-	tmux kill-session -t "${S}_tabqueue" 2>/dev/null
 	tmux kill-session -t "${S}_bigoutput" 2>/dev/null
 	tmux kill-session -t "${S}_ctrlj" 2>/dev/null
 	tmux kill-session -t "${S}_shellqueue" 2>/dev/null

@@ -324,6 +324,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         // The edit may have changed the active `@token`; kick off
                         // a (coalesced) file search if so (docs/file-search.md).
                         dispatch_file_search(&app, &file_req_tx, &mut last_file_query);
+                        // Remove the temp PNGs of any attachments this key
+                        // discarded (an atomic placeholder delete, a Ctrl+C
+                        // clear, a /clear'd queue) — the pure core records the
+                        // drops, the file I/O lives here (docs/image-paste.md).
+                        for path in app.take_discarded_images() {
+                            let _ = std::fs::remove_file(path);
+                        }
                     }
                     Event::Resize(width, height) => {
                         let size_changed = term.resized(width, height);

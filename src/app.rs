@@ -847,6 +847,15 @@ pub struct App {
     /// [`take_input`]: App::take_input
     /// [`take_submission_images`]: App::take_submission_images
     submission_images: Vec<PathBuf>,
+    /// Temp-PNG paths of attachments that were **dropped without being
+    /// submitted** — an atomic placeholder delete, a Ctrl+C-cleared draft, a
+    /// `/clear`'d queue. The pure core only records the drops; the boundary
+    /// drains [`take_discarded_images`] and removes the files (the file I/O
+    /// stays out of the library). Submitted images are *not* recorded here —
+    /// their files outlive the send. See `docs/image-paste.md`.
+    ///
+    /// [`take_discarded_images`]: App::take_discarded_images
+    discarded_images: Vec<PathBuf>,
 }
 
 impl App {
@@ -965,11 +974,12 @@ impl App {
     /// [`pasted`]: App::pasted
     fn take_input(&mut self) -> String {
         let text = self.input.take();
-        // Taking the draft consumes its attachments too (the idle submit path
-        // stages image paths into `submission_images` first); see
-        // `docs/image-paste.md`. Image placeholders are *not* expanded — they
-        // stay in `text`, only the paths travel a separate channel.
-        self.images.clear();
+        // Taking the draft consumes its attachments too (the idle submit and
+        // queue paths stage image paths out first); whatever is still attached
+        // here is a *drop* — record it so the boundary can remove the temp
+        // file. Image placeholders are *not* expanded — they stay in `text`,
+        // only the paths travel a separate channel. See `docs/image-paste.md`.
+        self.discard_attachments();
         if self.pasted.is_empty() {
             return text;
         }
@@ -1005,7 +1015,14 @@ impl App {
             backward,
         ) {
             let placeholder = self.delete_span(span);
-            self.images.retain(|(ph, _)| ph != &placeholder);
+            // The dropped attachment's temp file is orphaned now — hand its
+            // path to the boundary for removal (docs/image-paste.md).
+            let (dropped, kept) = std::mem::take(&mut self.images)
+                .into_iter()
+                .partition(|(ph, _)| ph == &placeholder);
+            self.images = kept;
+            self.discarded_images
+                .extend(dropped.into_iter().map(|(_, path)| path));
             return true;
         }
         false
@@ -1047,6 +1064,21 @@ impl App {
     /// `docs/image-paste.md`.
     pub fn take_submission_images(&mut self) -> Vec<PathBuf> {
         std::mem::take(&mut self.submission_images)
+    }
+
+    /// Move every still-attached image into the discarded list — the shared
+    /// tail of the drop paths (a `take_input` with nothing staged out first).
+    fn discard_attachments(&mut self) {
+        self.discarded_images
+            .extend(self.images.drain(..).map(|(_, path)| path));
+    }
+
+    /// Drain the temp-PNG paths of attachments dropped since the last drain —
+    /// the boundary deletes these files after handling each key event (the
+    /// pure core records the drops, the file I/O stays in `main.rs`). See
+    /// `docs/image-paste.md`.
+    pub fn take_discarded_images(&mut self) -> Vec<PathBuf> {
+        std::mem::take(&mut self.discarded_images)
     }
 
     /// Count `count` attached images into the live token tally as uploaded input
@@ -2348,7 +2380,14 @@ impl App {
         self.streaming = None;
         self.current_tool = None;
         self.status = None;
-        self.queued.clear();
+        // The wiped batches' image attachments will never dispatch — record
+        // their temp files as discarded so the boundary removes them.
+        for entry in self.queued.drain(..) {
+            if let QueuedTurn::Messages { images, .. } = entry {
+                self.discarded_images
+                    .extend(images.into_iter().map(|(_, path)| path));
+            }
+        }
         self.file_search = None;
     }
 }
@@ -2628,6 +2667,65 @@ mod tests {
         app.on_key(ctrl('c'));
         assert!(app.images.is_empty());
         assert!(app.take_submission_images().is_empty());
+    }
+
+    // ===== discarded temp-PNG bookkeeping (docs/image-paste.md: the boundary
+    // deletes the files of attachments that will never be submitted) =====
+
+    #[test]
+    fn deleting_an_image_placeholder_discards_its_temp_path() {
+        let mut app = App::new();
+        app.attach_image(PathBuf::from("/tmp/a.png"));
+        app.on_key(key(KeyCode::Backspace)); // atomic placeholder delete
+        assert_eq!(
+            app.take_discarded_images(),
+            vec![PathBuf::from("/tmp/a.png")],
+            "the orphaned temp file is handed to the boundary to remove"
+        );
+        assert!(app.take_discarded_images().is_empty(), "drained once");
+    }
+
+    #[test]
+    fn ctrl_c_clearing_a_draft_discards_its_image_paths() {
+        let mut app = App::new();
+        app.attach_image(PathBuf::from("/tmp/a.png"));
+        app.on_key(ctrl('c'));
+        assert_eq!(
+            app.take_discarded_images(),
+            vec![PathBuf::from("/tmp/a.png")]
+        );
+    }
+
+    #[test]
+    fn clear_command_discards_the_queued_batches_image_paths() {
+        // /clear wipes the queued backlog; the images riding those batches
+        // will never dispatch, so their temp files must not leak.
+        let mut app = App::new();
+        app.begin_stream();
+        app.attach_image(PathBuf::from("/tmp/q.png"));
+        app.on_key(key(KeyCode::Enter)); // queue the draft mid-turn
+        type_str(&mut app, "/clear");
+        app.on_key(key(KeyCode::Enter)); // run the highlighted /clear
+        assert!(app.queued.is_empty());
+        assert_eq!(
+            app.take_discarded_images(),
+            vec![PathBuf::from("/tmp/q.png")]
+        );
+    }
+
+    #[test]
+    fn submitted_and_queued_images_are_never_discarded() {
+        // The idle submit stages its paths; a queued batch carries its own —
+        // neither is a drop, so no file may be deleted underneath them.
+        let mut app = App::new();
+        app.attach_image(PathBuf::from("/tmp/sent.png"));
+        app.on_key(key(KeyCode::Enter)); // idle submit
+        assert!(app.take_discarded_images().is_empty());
+        app.begin_stream();
+        app.attach_image(PathBuf::from("/tmp/queued.png"));
+        app.on_key(key(KeyCode::Enter)); // queue mid-turn
+        assert!(app.drain_next_batch().is_some());
+        assert!(app.take_discarded_images().is_empty());
     }
 
     #[test]
