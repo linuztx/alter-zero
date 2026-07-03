@@ -31,6 +31,7 @@
 //! [`reflow`]: InlineViewport::reflow
 
 use std::io::{self, Stdout, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell};
@@ -154,7 +155,8 @@ impl InlineViewport {
         })
     }
 
-    /// The live region rectangle to render into (full width, current height).
+    /// The full terminal area, `(0, 0, width, height)` — not the live region,
+    /// which is the private `view` field.
     #[must_use]
     pub const fn screen(&self) -> Rect {
         self.screen
@@ -457,6 +459,10 @@ impl InlineViewport {
     /// [`exit_overlay`]: InlineViewport::exit_overlay
     /// [`draw_overlay`]: InlineViewport::draw_overlay
     pub fn enter_overlay(&mut self) -> io::Result<()> {
+        // Record the switch BEFORE emitting it: if the write fails part-way,
+        // the exit paths still emit a LeaveAlternateScreen (harmless when the
+        // terminal never actually switched) rather than risk stranding it.
+        OVERLAY_ACTIVE.store(true, Ordering::SeqCst);
         execute!(self.backend, EnterAlternateScreen)?;
         self.backend.hide_cursor()?;
         self.backend.clear_region(ClearType::All)?;
@@ -471,6 +477,9 @@ impl InlineViewport {
     /// [`reflow`]: InlineViewport::reflow
     pub fn exit_overlay(&mut self) -> io::Result<()> {
         execute!(self.backend, LeaveAlternateScreen)?;
+        // Cleared only once the leave was actually written — on failure the
+        // flag stays set and restore()/the panic hook retry the leave.
+        OVERLAY_ACTIVE.store(false, Ordering::SeqCst);
         self.prev = None; // returning to a screen the inline view will repaint
         Backend::flush(&mut self.backend)
     }
@@ -503,8 +512,25 @@ impl InlineViewport {
     /// Leave raw mode and drop the cursor just below the live region so the shell
     /// prompt returns directly under it (not at the screen bottom, which would
     /// leave a blank gap when the box is anchored near the top), with the
-    /// conversation left intact above.
+    /// conversation left intact above. If the Ctrl+O overlay is somehow still
+    /// up (an error exit that never reached [`exit_overlay`]), the alternate
+    /// screen is left first — see [`OVERLAY_ACTIVE`].
+    ///
+    /// [`exit_overlay`]: InlineViewport::exit_overlay
     pub fn restore(&mut self) -> io::Result<()> {
+        // Safety net for exits that break out of the event loop with the
+        // Ctrl+O overlay still up (stdin closing, an EventStream error — paths
+        // that never reach main's exit_overlay calls): leave the alternate
+        // screen FIRST, so everything below — the pending flush, the mode
+        // resets, the cursor placement — lands on the primary screen instead
+        // of stranding the shell in the alt screen. The primary screen still
+        // holds the inline conversation exactly as the overlay left it (the
+        // overlay defers commits and never moves the viewport), so `self.view`
+        // remains valid for the normal cursor-placement dance below. A no-op
+        // on the clean path, where exit_overlay already cleared the flag.
+        if OVERLAY_ACTIVE.swap(false, Ordering::SeqCst) {
+            let _ = execute!(self.backend, LeaveAlternateScreen);
+        }
         // A quit can land between an `insert_before` and the draw tick that would
         // have flushed it (e.g. `/help` then an instant Ctrl+C): write any queued
         // lines now so committed content is never lost with the session.
@@ -603,16 +629,41 @@ impl InlineViewport {
     }
 }
 
+/// Whether the terminal is currently switched to the alternate screen (the
+/// Ctrl+O overlay). The runtime sibling of the `keyboard_enhanced` flag the
+/// panic hook captures — but overlay state changes after the hook is
+/// installed, so it lives in a process-wide atomic instead of a captured bool.
+/// Set by [`enter_overlay`], cleared by [`exit_overlay`]; the panic hook and
+/// [`restore`] emit a `LeaveAlternateScreen` when it is still set, so the exit
+/// paths that never reach main's `exit_overlay` calls — a panic with the
+/// overlay up, or a loop error / stdin close breaking out of the event loop —
+/// can't strand the shell in the alt screen (scrollback invisible until
+/// `reset`).
+///
+/// [`enter_overlay`]: InlineViewport::enter_overlay
+/// [`exit_overlay`]: InlineViewport::exit_overlay
+/// [`restore`]: InlineViewport::restore
+static OVERLAY_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 /// Chain a hook that leaves raw mode and shows the cursor before the default
 /// panic handler runs, so a panic doesn't strand the terminal in raw mode. It
-/// also turns bracketed paste back off, and — when `keyboard_enhanced` (i.e.
-/// [`init`] pushed the flags) — pops the keyboard-enhancement stack, so a panic
-/// can't leave the shell with enhanced key reporting or paste bracketing.
+/// first leaves the alternate screen when the Ctrl+O overlay is up
+/// ([`OVERLAY_ACTIVE`]), also turns bracketed paste back off, and — when
+/// `keyboard_enhanced` (i.e. [`init`] pushed the flags) — pops the
+/// keyboard-enhancement stack, so a panic can't leave the shell swapped to the
+/// alt screen, with enhanced key reporting, or with paste bracketing.
 ///
 /// [`init`]: InlineViewport::init
 fn install_panic_hook(keyboard_enhanced: bool) {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        // Leave the alternate screen FIRST: the resets below assume the
+        // primary screen (kitty keeps a separate keyboard-enhancement stack
+        // per screen buffer, and `init` pushed onto the primary one), and the
+        // panic message itself must land where the user can read it.
+        if OVERLAY_ACTIVE.swap(false, Ordering::SeqCst) {
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+        }
         if keyboard_enhanced {
             let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
         }
