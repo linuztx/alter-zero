@@ -140,6 +140,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             // 1. Terminal input. The events branch always matches (it binds the
             //    Option), so `select!` can never run out of armed branches.
             maybe_read = events.next() => {
+                // Stdin closing (or `read?` bailing below) can leave the loop
+                // with the Ctrl+O overlay still up — no exit_overlay runs on
+                // these paths, so main's term.restore() leaves the alternate
+                // screen itself (term::OVERLAY_ACTIVE, the panic hook's net).
                 let Some(read) = maybe_read else { break }; // stdin closed
                 match read? {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -437,15 +441,6 @@ struct StatusClocks {
     thinking_start: Option<Instant>,
 }
 
-/// Start one turn for `texts` (a Submit is a batch of one; a queue flush sends
-/// one batch — the Enter messages sharing that turn — as a single turn, the
-/// Tab-opened batches flushing across later turns): record + commit each user
-/// bullet to scrollback, open the stream, reset the per-turn clocks and commit
-/// counter, and spawn the backend on the joined prompt. Returns the in-flight
-/// cancel token + thread handle. Shared by the `Submit` key arm *and* every
-/// queue flush (`StreamDone`/`Error`, an Esc interrupt, or a Ctrl+O return), so
-/// the paths can never drift. Empty batches are the caller's job to
-/// skip. See `docs/queue.md`.
 /// One turn's user input handed to [`start_turn`]: the text message(s) — a
 /// Submit is a batch of one, a queue flush a batch — plus any Ctrl+V-attached
 /// image paths that travel the typed image channel (codex's `UserMessage`'s
@@ -455,6 +450,15 @@ struct TurnInput {
     images: Vec<PathBuf>,
 }
 
+/// Start one turn for `texts` (a Submit is a batch of one; a queue flush sends
+/// one batch — the Enter messages sharing that turn — as a single turn, the
+/// Tab-opened batches flushing across later turns): record + commit each user
+/// bullet to scrollback, open the stream, reset the per-turn clocks and commit
+/// counter, and spawn the backend on the joined prompt. Returns the in-flight
+/// cancel token + thread handle. Shared by the `Submit` key arm *and* every
+/// queue flush (`StreamDone`/`Error`, an Esc interrupt, or a Ctrl+O return), so
+/// the paths can never drift. Empty batches are the caller's job to
+/// skip. See `docs/queue.md`.
 fn start_turn(
     term: &mut InlineViewport,
     app: &mut App,
@@ -539,9 +543,10 @@ fn commit_system_notice(
 /// calls [`App::begin_shell`] (which sets up the status strip with the command
 /// as its running tool), then spawns [`spawn_shell_command`] on the same
 /// streamed-reply channel — so the existing `ToolEnd`/`StreamDone` arms commit
-/// the cell + the `Ran for Ns` summary, and Esc routes through the normal
-/// interrupt path. Returns the in-flight cancel token + thread handle, like
-/// [`start_turn`].
+/// the cell with **no** `Ran for Ns` summary ([`App::end_turn`] deliberately
+/// returns `None` for a shell turn — the cell is the record, codex parity; see
+/// `docs/shell-command.md`), and Esc routes through the normal interrupt path.
+/// Returns the in-flight cancel token + thread handle, like [`start_turn`].
 fn run_shell(
     term: &mut InlineViewport,
     app: &mut App,
@@ -1118,5 +1123,132 @@ fn dispatch_file_search(
             let _ = req_tx.send(q.clone());
         }
         *last = query;
+    }
+}
+
+// `main.rs` is the terminal I/O boundary (smoke-covered, not unit-tested) —
+// except the odd pure helper with no terminal in it, like `term.rs`'s
+// `keyboard_enhancement_disabled`. `read_capped` is that helper here: pure,
+// reader-generic drain/cap logic, tested with in-memory readers.
+#[cfg(test)]
+mod tests {
+    use std::io;
+
+    use super::read_capped;
+
+    /// Serves its chunks one per `read` call (each far smaller than
+    /// `read_capped`'s 64 KiB buffer, so every chunk arrives whole), then EOF —
+    /// letting a test control exactly how the input splits across reads,
+    /// independent of `read_capped`'s internal chunk size.
+    struct ChunkedReader {
+        chunks: Vec<Vec<u8>>,
+        served: usize,
+    }
+
+    impl ChunkedReader {
+        fn new(chunks: &[&[u8]]) -> Self {
+            Self {
+                chunks: chunks.iter().map(|c| c.to_vec()).collect(),
+                served: 0,
+            }
+        }
+    }
+
+    impl io::Read for ChunkedReader {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            let Some(chunk) = self.chunks.get(self.served) else {
+                return Ok(0); // past the last chunk: EOF
+            };
+            self.served += 1;
+            let n = chunk.len().min(buf.len());
+            buf[..n].copy_from_slice(&chunk[..n]);
+            Ok(n)
+        }
+    }
+
+    /// Fails with `ErrorKind::Interrupted` on the first read (a signal landed
+    /// mid-`read`), serves its data on the second, then EOF.
+    struct InterruptedOnce {
+        data: Vec<u8>,
+        calls: usize,
+    }
+
+    impl io::Read for InterruptedOnce {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.calls += 1;
+            match self.calls {
+                1 => Err(io::Error::from(io::ErrorKind::Interrupted)),
+                2 => {
+                    let n = self.data.len().min(buf.len());
+                    buf[..n].copy_from_slice(&self.data[..n]);
+                    Ok(n)
+                }
+                _ => Ok(0),
+            }
+        }
+    }
+
+    #[test]
+    fn empty_input_reads_nothing_and_is_not_truncated() {
+        let (out, truncated) = read_capped(io::Cursor::new(Vec::new()), 10);
+        assert!(out.is_empty());
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn output_landing_exactly_at_the_cap_is_not_truncated() {
+        // Nothing was dropped, so the cell must not gain a `…` marker.
+        let (out, truncated) = read_capped(io::Cursor::new(vec![b'a'; 10]), 10);
+        assert_eq!(out, vec![b'a'; 10]);
+        assert!(!truncated);
+    }
+
+    #[test]
+    fn one_byte_over_the_cap_truncates_to_exactly_the_cap() {
+        let (out, truncated) = read_capped(io::Cursor::new(vec![b'a'; 11]), 10);
+        assert_eq!(out.len(), 10);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn a_mid_chunk_cut_keeps_the_head_and_marks_truncation() {
+        // One read serves 8 bytes but only 5 fit under the cap: the head is
+        // retained byte-for-byte and the cut inside the chunk flags truncated.
+        let (out, truncated) = read_capped(io::Cursor::new(b"abcdefgh".to_vec()), 5);
+        assert_eq!(out, b"abcde");
+        assert!(truncated);
+    }
+
+    #[test]
+    fn chunks_past_the_cap_are_drained_but_retain_nothing() {
+        // The first chunk lands exactly at the cap (no mid-chunk cut), so only
+        // the keep-draining loop can flag the later chunks as dropped.
+        let mut reader = ChunkedReader::new(&[b"abcd", b"efgh", b"ijkl"]);
+        let (out, truncated) = read_capped(&mut reader, 4);
+        assert_eq!(out, b"abcd");
+        assert!(truncated);
+        // … and the reader really was drained to EOF (so the child can't block
+        // on a full pipe), not abandoned once the cap filled.
+        assert_eq!(reader.served, 3);
+    }
+
+    #[test]
+    fn input_larger_than_the_read_buffer_drains_across_reads() {
+        // Bigger than read_capped's 64 KiB chunk, so the drain spans several
+        // real reads; only the first `cap` bytes are retained.
+        let (out, truncated) = read_capped(io::Cursor::new(vec![b'x'; 200_000]), 100);
+        assert_eq!(out, vec![b'x'; 100]);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn an_interrupted_read_is_retried_not_treated_as_eof() {
+        let reader = InterruptedOnce {
+            data: b"abc".to_vec(),
+            calls: 0,
+        };
+        let (out, truncated) = read_capped(reader, 10);
+        assert_eq!(out, b"abc");
+        assert!(!truncated);
     }
 }
