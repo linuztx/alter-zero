@@ -53,14 +53,21 @@ offsets the cursor needs. The textarea instead wraps to **byte ranges**
 - Greedy word-wrap, same shape as `ui::wrap_text`: explicit `'\n'`s are honoured
   (and a blank logical line is an empty range), a soft break consumes the run of
   spaces at the break point, and a word longer than the width is hard-broken on
-  grapheme boundaries.
+  grapheme boundaries. Leading indentation and trailing space runs are *shown*
+  (so the cursor after a trailing space is visible) and wrap exactly like words,
+  so no row — and no cursor column — ever grows wider than the field.
 - Consecutive rows may have a byte *gap* between them — the whitespace consumed
   at a soft break — so the ranges are display ranges, not a strict tiling.
+- When the last row ends **exactly full** at the very end of the text, an empty
+  trailing range (`len..len`) follows it — the row the end-of-text cursor sits
+  on (and the box reserves), keeping the cursor inside the field instead of one
+  column past it.
 
 codex's own `wrap_ranges` is built on the `textwrap` crate (Cow/​pointer math and
 a `+1` sentinel byte). We don't depend on `textwrap`, so this is a clean
 re-derivation of the same idea on top of our existing greedy algorithm; it is
-unit-tested from scratch rather than mirroring codex's sentinel arithmetic.
+unit-tested from scratch rather than mirroring codex's sentinel arithmetic —
+the empty trailing range above is the sentinel's *effect*, re-derived.
 
 ### Cursor ↔ (row, col)
 
