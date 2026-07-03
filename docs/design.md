@@ -341,8 +341,10 @@ itself and never queries the cursor.)
 Rendering is **tick-driven**: every state change calls `frame.schedule_frame()`,
 and the scheduler coalesces a burst of those into a single draw, rate-limited to
 120 fps (`MIN_FRAME_INTERVAL` = 8.33 ms). A paste / fast-type run is recognised by
-`PasteBurst`, so its redraw is *deferred to the burst's tail* (`schedule_frame_in`)
-— one repaint for the run instead of one per keystroke. `insert_before` only
+`PasteBurst`, so its characters request *relaxed* frames (`schedule_frame_in` — no
+immediate demand per key); the rate-limit floor is what coalesces the run into a
+few repaints (the scheduler keeps the soonest pending deadline, codex's
+earliest-wins fold). `insert_before` only
 **queues** its lines (codex's `pending_history_lines`): the draw tick writes them
 above the viewport and repaints the live region in **one synchronized frame**, so a
 scrollback commit can never flash a boxless state — the streaming-flicker fix, see

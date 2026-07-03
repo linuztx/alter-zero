@@ -193,11 +193,11 @@ pub const WORKING_VERBS: &[&str] = &[
 pub const DONE_VERBS: &[&str] = &["Done", "Finished", "Completed", "Wrapped up", "Ready"];
 
 /// The live-status verb for a `!` shell command (fixed, not cycled like the AI
-/// [`WORKING_VERBS`]): the status line reads `Running…`. See
+/// [`WORKING_VERBS`]): the status line reads `Running…`. It doubles as the
+/// status's (never rendered) done verb — a shell turn ends **without** a
+/// summary, [`App::end_turn`] returning `None` for it. See
 /// `docs/shell-command.md`.
 pub const SHELL_VERB: &str = "Running";
-/// The done verb for a finished shell command's summary: `Ran for Ns`.
-pub const SHELL_DONE_VERB: &str = "Ran";
 
 /// The notice shown when Enter is pressed on a bare `!` (no command) — codex's
 /// `Prefix a command with ! to run it locally`.
@@ -756,10 +756,17 @@ pub struct App {
     /// `docs/shortcuts.md`.
     pub shortcuts_open: bool,
     /// `Some(buffer)` while the AI reply is streaming, accumulating chunks.
-    pub streaming: Option<String>,
+    /// Private: read through [`streaming_text`]/[`is_streaming`] — the turn
+    /// invariants (an open buffer implies a live status, a running tool is
+    /// resolved on every turn death) hold only if mutation stays in here.
+    ///
+    /// [`streaming_text`]: App::streaming_text
+    /// [`is_streaming`]: App::is_streaming
+    streaming: Option<String>,
     /// The tool currently executing (status [`ToolStatus::Running`]), shown live
-    /// in the bottom region; `None` when no tool is in flight.
-    pub current_tool: Option<ToolCall>,
+    /// in the bottom region; `None` when no tool is in flight. Private: read
+    /// through [`current_tool`](App::current_tool).
+    current_tool: Option<ToolCall>,
     /// Every finished message and tool call, oldest first — used to repaint after
     /// a resize or on returning from the tool-output view.
     pub history: Vec<HistoryItem>,
@@ -786,7 +793,8 @@ pub struct App {
     /// `docs/status-indicator.md`.
     ///
     /// [`begin_stream`]: App::begin_stream
-    pub status: Option<TurnStatus>,
+    /// Private: read through [`status`](App::status).
+    status: Option<TurnStatus>,
     /// How many turns have started — drives the deterministic per-turn verb pick
     /// ([`WORKING_VERBS`]/[`DONE_VERBS`]). Incremented by [`begin_stream`].
     ///
@@ -877,6 +885,19 @@ impl App {
     /// (the unit-test default — so equality tests on recorded items still hold).
     fn now_stamp(&self) -> String {
         self.clock.map_or_else(String::new, |clock| clock())
+    }
+
+    /// Record a message of `role` in the history, stamped with the injected
+    /// clock — the one place a [`HistoryItem::Message`] is built, so every
+    /// recording path (user echo, assistant text, notices, shell headers)
+    /// stays in one shape.
+    fn record_message(&mut self, role: Role, text: impl Into<String>) {
+        let timestamp = self.now_stamp();
+        self.history.push(HistoryItem::Message(Message {
+            role,
+            text: text.into(),
+            timestamp,
+        }));
     }
 
     /// Handle one key press and report what the event loop should do.
@@ -1920,12 +1941,7 @@ impl App {
 
     /// Record a finished user message in the history.
     pub fn record_user_message(&mut self, text: &str) {
-        let timestamp = self.now_stamp();
-        self.history.push(HistoryItem::Message(Message {
-            role: Role::User,
-            text: text.to_string(),
-            timestamp,
-        }));
+        self.record_message(Role::User, text);
     }
 
     /// Pop the front queued batch — the messages of the next turn — for the loop
@@ -2004,24 +2020,14 @@ impl App {
     /// repaints on resize like any other message. The loop also commits it to
     /// scrollback. Mirrors [`record_user_message`] for [`Action::Notice`].
     pub fn record_system_message(&mut self, text: &str) {
-        let timestamp = self.now_stamp();
-        self.history.push(HistoryItem::Message(Message {
-            role: Role::System,
-            text: text.to_string(),
-            timestamp,
-        }));
+        self.record_message(Role::System, text);
     }
 
     /// Record a red error notice in the history (so a resize repaints it), like
     /// [`record_system_message`] but [`Role::Error`]. Used for a Ctrl+V clipboard
     /// failure — codex's `new_error_event`. See `docs/image-paste.md`.
     pub fn record_error_message(&mut self, text: &str) {
-        let timestamp = self.now_stamp();
-        self.history.push(HistoryItem::Message(Message {
-            role: Role::Error,
-            text: text.to_string(),
-            timestamp,
-        }));
+        self.record_message(Role::Error, text);
     }
 
     /// Begin a tool call: record it as the currently-running tool so the bottom
@@ -2090,12 +2096,7 @@ impl App {
             return None;
         }
         let text = std::mem::take(buf); // leaves Some("") — the stream stays open
-        let timestamp = self.now_stamp();
-        self.history.push(HistoryItem::Message(Message {
-            role: Role::Assistant,
-            text: text.clone(),
-            timestamp,
-        }));
+        self.record_message(Role::Assistant, text.clone());
         Some(text)
     }
 
@@ -2141,16 +2142,13 @@ impl App {
     /// [`finish_stream`]: App::finish_stream
     /// [`end_turn`]: App::end_turn
     pub fn begin_shell(&mut self, command: &str) {
-        let timestamp = self.now_stamp();
-        self.history.push(HistoryItem::Message(Message {
-            role: Role::Shell,
-            text: command.to_string(),
-            timestamp,
-        }));
+        self.record_message(Role::Shell, command);
         self.streaming = Some(String::new());
         self.status = Some(TurnStatus {
             verb: SHELL_VERB,
-            done_verb: SHELL_DONE_VERB,
+            // Never rendered: a shell turn ends without a summary (end_turn
+            // returns None for it), so no dedicated done verb exists.
+            done_verb: SHELL_VERB,
             tokens: 0,
             arrow: TokenArrow::Down,
             elapsed: Duration::ZERO,
@@ -2249,12 +2247,7 @@ impl App {
         if text.is_empty() {
             return None;
         }
-        let timestamp = self.now_stamp();
-        self.history.push(HistoryItem::Message(Message {
-            role: Role::Assistant,
-            text: text.clone(),
-            timestamp,
-        }));
+        self.record_message(Role::Assistant, text.clone());
         Some(text)
     }
 
@@ -2294,23 +2287,14 @@ impl App {
     /// mirror of [`App::interrupt_turn`].
     pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
         let streamed = self.streaming.take()?;
-        let timestamp = self.now_stamp();
         let partial = if streamed.is_empty() {
             None
         } else {
-            self.history.push(HistoryItem::Message(Message {
-                role: Role::Assistant,
-                text: streamed.clone(),
-                timestamp: timestamp.clone(),
-            }));
+            self.record_message(Role::Assistant, streamed.clone());
             Some(streamed)
         };
         let tool = self.end_tool(ERROR_TOOL_OUTPUT, false);
-        self.history.push(HistoryItem::Message(Message {
-            role: Role::Error,
-            text: error.to_string(),
-            timestamp,
-        }));
+        self.record_message(Role::Error, error);
         // An error is the turn's terminal state — clear the live status without a
         // "Done" summary; the red error notice is the summary.
         self.status = None;
@@ -2340,20 +2324,10 @@ impl App {
         // two are never both non-empty — but the order holds regardless).
         let partial = self.streaming.take().filter(|text| !text.is_empty());
         if let Some(text) = &partial {
-            let timestamp = self.now_stamp();
-            self.history.push(HistoryItem::Message(Message {
-                role: Role::Assistant,
-                text: text.clone(),
-                timestamp,
-            }));
+            self.record_message(Role::Assistant, text.clone());
         }
         let tool = self.end_tool(INTERRUPT_TOOL_OUTPUT, false);
-        let timestamp = self.now_stamp();
-        self.history.push(HistoryItem::Message(Message {
-            role: Role::Error,
-            text: INTERRUPT_NOTICE.to_string(),
-            timestamp,
-        }));
+        self.record_message(Role::Error, INTERRUPT_NOTICE);
         self.status = None;
         Some(InterruptedTurn { partial, tool })
     }
@@ -4219,11 +4193,22 @@ mod tests {
 
     #[test]
     fn typing_filters_and_clamps_the_selection() {
+        // Seat the highlight on a NON-zero row first, then narrow the filter
+        // past it — the refresh must pull the selection back in bounds, or
+        // the highlight (and Enter) lands on nothing.
         let mut app = App::new();
-        type_str(&mut app, "/cl");
-        assert!(app.command_menu.is_some(), "still a command token");
+        type_str(&mut app, "/c");
+        assert_eq!(matching_commands("c").len(), 2, "/clear and /copy");
+        app.on_key(key(KeyCode::Down)); // highlight /copy (index 1)
+        assert_eq!(app.command_menu.as_ref().unwrap().selected, 1);
+        type_str(&mut app, "l"); // "/cl" — only /clear matches now
         assert_eq!(matching_commands("cl").len(), 1, "only /clear matches");
         assert_eq!(app.command_menu.as_ref().unwrap().selected, 0, "clamped");
+        assert_eq!(
+            app.highlighted_command().map(|c| c.name),
+            Some("clear"),
+            "the highlight lands on a real row, so Enter still runs something"
+        );
     }
 
     #[test]
@@ -5646,6 +5631,42 @@ mod tests {
         assert!(app.file_search.as_ref().unwrap().matches.is_empty());
         app.set_file_matches("ab", vec![fm("abc")]); // results for the live query
         assert_eq!(app.file_search.as_ref().unwrap().matches.len(), 1);
+    }
+
+    #[test]
+    fn a_shrinking_result_refresh_clamps_the_file_selection() {
+        // An async refresh can come back with fewer matches than the row the
+        // highlight sits on — the highlight must be pulled back in bounds or
+        // Tab/Enter accept nothing (and the render highlights no row).
+        let mut app = App::new();
+        type_str(&mut app, "@x");
+        app.set_file_matches("x", vec![fm("x1"), fm("x2"), fm("x3")]);
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down)); // highlight the third match
+        assert_eq!(app.file_search.as_ref().unwrap().selected, 2);
+        app.set_file_matches("x", vec![fm("x9")]); // the list shrank to one
+        assert_eq!(app.file_search.as_ref().unwrap().selected, 0, "clamped");
+        assert_eq!(
+            app.highlighted_file().map(|m| m.path.as_str()),
+            Some("x9"),
+            "the highlight lands on a real row"
+        );
+    }
+
+    #[test]
+    fn an_empty_result_refresh_leaves_a_harmless_selection() {
+        let mut app = App::new();
+        type_str(&mut app, "@x");
+        app.set_file_matches("x", vec![fm("x1"), fm("x2")]);
+        app.on_key(key(KeyCode::Down));
+        app.set_file_matches("x", Vec::new()); // everything filtered away
+        assert_eq!(app.file_search.as_ref().unwrap().selected, 0);
+        assert!(app.highlighted_file().is_none(), "nothing to accept");
+        assert_eq!(
+            app.on_key(key(KeyCode::Tab)),
+            Action::None,
+            "Tab with no match falls through harmlessly"
+        );
     }
 
     #[test]

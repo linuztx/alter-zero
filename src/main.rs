@@ -23,7 +23,8 @@
 //! Rendering is **tick-driven**: every state change calls
 //! [`FrameRequester::schedule_frame`]; the scheduler coalesces a burst of those
 //! into one rate-limited (120 fps) draw. A paste / fast-type run is detected by
-//! [`PasteBurst`] so its redraw defers to the burst's tail. `insert_before`
+//! [`PasteBurst`] so its characters request relaxed (non-immediate) frames,
+//! the rate limiter coalescing the run into a few paints. `insert_before`
 //! only **queues** its lines (codex's pending-history pattern): the draw tick
 //! writes them and repaints the live region in one synchronized frame, so
 //! scrollback growth never flashes a missing box (see `docs/flicker.md`).
@@ -291,29 +292,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 }
                                 while reply_rx.try_recv().is_ok() {}
                                 if let Some(interrupted) = app.interrupt_turn() {
-                                    // The turn is over, so the streaming strip is gone:
-                                    // reseat the viewport to its idle height before
-                                    // committing (same dance as StreamDone) so the box
-                                    // stays flush at the bottom. Interrupt only arises
-                                    // in the conversation view (overlay Esc returns
-                                    // instead), so committing here never touches the
-                                    // alternate screen.
-                                    let width = term.screen().width;
-                                    term.set_view_height(live_region_height(&app, term.screen()));
-                                    if let Some(partial) = interrupted.partial {
-                                        term.insert_before(ui::final_commit(&partial, width, committed));
-                                        term.insert_before(vec![Line::default()]);
-                                    }
-                                    if let Some(tool) = interrupted.tool {
-                                        term.insert_before(ui::tool_lines(&tool, width));
-                                        term.insert_before(vec![Line::default()]);
-                                    }
-                                    term.insert_before(ui::message_lines(
-                                        Role::Error,
+                                    // Interrupt only arises in the conversation view
+                                    // (overlay Esc returns instead), so committing here
+                                    // never touches the alternate screen.
+                                    commit_turn_failure(
+                                        term,
+                                        &app,
+                                        committed,
+                                        interrupted.partial,
+                                        interrupted.tool,
                                         INTERRUPT_NOTICE,
-                                        width,
-                                    ));
-                                    term.insert_before(vec![Line::default()]);
+                                    );
                                 }
                                 committed = 0;
                                 clocks.turn_start = None;
@@ -494,47 +483,92 @@ fn start_turn(
     Ok((cancel, handle))
 }
 
-/// Commit a red error notice to scrollback + history (a Ctrl+V clipboard
-/// failure), finalising any in-flight streamed segment first so it slots in
-/// order — the same flush trick [`Action::Notice`] uses. Only reached in the
-/// conversation view (Ctrl+V is a conversation key), so it never writes the
-/// alternate screen. See `docs/image-paste.md`.
+/// Commit a one-off notice to scrollback + history, finalising any in-flight
+/// streamed segment first so the notice slots in order — the same flush trick
+/// a tool call uses. The shared body of [`commit_error_notice`] and
+/// [`commit_system_notice`] (they differ only in role and recorder). Only
+/// reached in the conversation view, so it never writes the alternate screen.
+fn commit_notice(
+    term: &mut InlineViewport,
+    app: &mut App,
+    committed: &mut usize,
+    role: Role,
+    record: fn(&mut App, &str),
+    text: &str,
+) {
+    let width = term.screen().width;
+    if let Some(segment) = app.flush_streaming_segment() {
+        term.insert_before(ui::final_commit(&segment, width, *committed));
+        term.insert_before(vec![Line::default()]);
+        *committed = 0;
+    }
+    record(app, text);
+    term.insert_before(ui::message_lines(role, text, width));
+    term.insert_before(vec![Line::default()]);
+}
+
+/// Commit a red error notice (a Ctrl+V clipboard failure, a `/copy` error) —
+/// [`commit_notice`] as [`Role::Error`]. See `docs/image-paste.md`.
 fn commit_error_notice(
     term: &mut InlineViewport,
     app: &mut App,
     committed: &mut usize,
     text: &str,
 ) {
-    let width = term.screen().width;
-    if let Some(segment) = app.flush_streaming_segment() {
-        term.insert_before(ui::final_commit(&segment, width, *committed));
-        term.insert_before(vec![Line::default()]);
-        *committed = 0;
-    }
-    app.record_error_message(text);
-    term.insert_before(ui::message_lines(Role::Error, text, width));
-    term.insert_before(vec![Line::default()]);
+    commit_notice(
+        term,
+        app,
+        committed,
+        Role::Error,
+        App::record_error_message,
+        text,
+    );
 }
 
-/// Commit a cyan [`Role::System`] notice to scrollback + history — `/help`'s
-/// command list, or `/copy`'s "Copied last message to clipboard" confirmation.
-/// Like [`commit_error_notice`] but a system (info) message: a mid-flight reply
-/// segment is finalised first so the notice slots after it in scrollback and
-/// history alike (the same ordering trick a tool call uses).
+/// Commit a cyan system notice — `/help`'s command list, `/copy`'s
+/// confirmation — [`commit_notice`] as [`Role::System`].
 fn commit_system_notice(
     term: &mut InlineViewport,
     app: &mut App,
     committed: &mut usize,
     text: &str,
 ) {
+    commit_notice(
+        term,
+        app,
+        committed,
+        Role::System,
+        App::record_system_message,
+        text,
+    );
+}
+
+/// Commit a dead turn's remains to scrollback — the kept partial reply, the
+/// tool the death resolved as failed, then the red notice, each with a
+/// trailing blank spacer — after reseating the viewport to its idle height
+/// (the StreamDone dance, so the box stays flush at the bottom as the
+/// streaming strip clears). The shape shared by the Esc interrupt
+/// ([`App::interrupt_turn`]) and a backend [`StreamEvent::Error`]
+/// ([`App::fail_stream`]); the caller guarantees the conversation view.
+fn commit_turn_failure(
+    term: &mut InlineViewport,
+    app: &App,
+    committed: usize,
+    partial: Option<String>,
+    tool: Option<inline_tui::app::ToolCall>,
+    notice: &str,
+) {
     let width = term.screen().width;
-    if let Some(segment) = app.flush_streaming_segment() {
-        term.insert_before(ui::final_commit(&segment, width, *committed));
+    term.set_view_height(live_region_height(app, term.screen()));
+    if let Some(partial) = partial {
+        term.insert_before(ui::final_commit(&partial, width, committed));
         term.insert_before(vec![Line::default()]);
-        *committed = 0;
     }
-    app.record_system_message(text);
-    term.insert_before(ui::message_lines(Role::System, text, width));
+    if let Some(tool) = tool {
+        term.insert_before(ui::tool_lines(&tool, width));
+        term.insert_before(vec![Line::default()]);
+    }
+    term.insert_before(ui::message_lines(Role::Error, notice, width));
     term.insert_before(vec![Line::default()]);
 }
 
@@ -890,27 +924,20 @@ fn on_stream_event(
             Ok(true)
         }
         StreamEvent::Error(message) => {
-            if let Some(failure) = app.fail_stream(&message) {
+            if let Some(failure) = app.fail_stream(&message)
+                && committing
+            {
                 // Flush whatever streamed before the failure, then the tool the
                 // error killed mid-run (resolved red), then the red error
-                // notice — each with a trailing blank spacer, mirroring how a
-                // resize repaints them from history (the Interrupt arm's shape).
-                if committing {
-                    // The stream ended, so collapse the streaming strip into the
-                    // idle box height before committing (same reason as StreamDone)
-                    // so the box does not rise off the bottom.
-                    term.set_view_height(live_region_height(app, term.screen()));
-                    if let Some(partial) = failure.partial {
-                        term.insert_before(ui::final_commit(&partial, width, *committed));
-                        term.insert_before(vec![Line::default()]);
-                    }
-                    if let Some(tool) = failure.tool {
-                        term.insert_before(ui::tool_lines(&tool, width));
-                        term.insert_before(vec![Line::default()]);
-                    }
-                    term.insert_before(ui::message_lines(Role::Error, &failure.error, width));
-                    term.insert_before(vec![Line::default()]);
-                }
+                // notice — the Esc interrupt's exact commit shape.
+                commit_turn_failure(
+                    term,
+                    app,
+                    *committed,
+                    failure.partial,
+                    failure.tool,
+                    &failure.error,
+                );
             }
             *committed = 0;
             clocks.turn_start = None;
@@ -920,11 +947,12 @@ fn on_stream_event(
     }
 }
 
-/// Schedule the redraw for a just-handled key. A plain typed character that lands
-/// in a [`PasteBurst`] defers its paint to the burst's tail — one coalesced
-/// redraw for the run instead of one per key; every other key (and the first
-/// characters of a run) paints at once. The frame scheduler still rate-limits the
-/// result to 120 fps regardless.
+/// Schedule the redraw for a just-handled key. A plain typed character that
+/// lands in a [`PasteBurst`] asks for a *relaxed* frame a beat out instead of
+/// an immediate one; every other key (and the first characters of a run)
+/// paints at once. The scheduler keeps the soonest pending deadline and its
+/// rate limiter caps everything at 120 fps — that floor, not the burst branch,
+/// is what coalesces a paste run into a few paints (see `crate::paste`).
 fn schedule_for_key(frame: &FrameRequester, burst: &mut PasteBurst, key: &KeyEvent) {
     let plain_char =
         matches!(key.code, KeyCode::Char(_)) && !key.modifiers.contains(KeyModifiers::CONTROL);
@@ -968,7 +996,7 @@ fn local_timestamp() -> String {
 /// the next [`draw`] will use. Shared so a post-stream commit can reserve that same
 /// idle height before flushing the final lines (see [`InlineViewport::set_view_height`]).
 fn live_region_height(app: &App, screen: Rect) -> u16 {
-    let band = ui::menu_rows(app) + ui::shortcuts_rows(app) + ui::file_menu_rows(app);
+    let band = ui::band_rows(app);
     ui::live_height(
         &app.input,
         screen.width,

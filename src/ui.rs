@@ -806,15 +806,11 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 /// than the box, the tail is kept in view (the cursor is always at the end).
 pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let streaming = app.is_streaming();
-    let menu = menu_rows(app);
-    let shortcuts = shortcuts_rows(app);
-    let file = file_menu_rows(app);
     // The band below the box holds the palette, the shortcuts overview, *or* the
-    // `@` file picker (mutually exclusive: the palette needs a `/token`, the
-    // shortcuts an empty composer, the picker an `@token`). Queued messages
-    // render in the strip *above* the box instead; the session-context footer
-    // takes the very last row unless a band displaces it.
-    let band = menu + shortcuts + file;
+    // `@` file picker (band_rows — mutually exclusive). Queued messages render
+    // in the strip *above* the box instead; the session-context footer takes
+    // the very last row unless a band displaces it.
+    let band = band_rows(app);
     let queued = queued_rows(app, area.width);
     let footer = footer_rows(app, band);
     // The preview row + its gap are only reserved when there is something to
@@ -931,12 +927,12 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     Paragraph::new(lines).render(bx.text, buf);
 
     // The palette, the shortcuts overview, or the file picker, pinned in the
-    // band below the box (at most one is open).
-    if menu > 0 {
+    // band below the box (at most one is open — band_rows).
+    if menu_rows(app) > 0 {
         Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
-    } else if shortcuts > 0 {
+    } else if shortcuts_rows(app) > 0 {
         Paragraph::new(shortcuts_lines(app.turn_active())).render(band_area, buf);
-    } else if file > 0 {
+    } else if file_menu_rows(app) > 0 {
         Paragraph::new(file_menu_lines(app, band_area.width)).render(band_area, buf);
     }
 
@@ -1142,6 +1138,17 @@ pub fn shortcuts_rows(app: &App) -> u16 {
     } else {
         0
     }
+}
+
+/// Total rows of the band below the input box: the slash-command palette, the
+/// `?` shortcuts overview, *or* the `@` file picker (mutually exclusive — the
+/// palette needs a `/token`, the shortcuts an empty composer, the picker an
+/// `@token`, so at most one term is non-zero). The **one** band-height sum
+/// shared by [`render_live`], [`cursor_position`], and the boundary's
+/// `live_region_height`, so the three can never drift.
+#[must_use]
+pub fn band_rows(app: &App) -> u16 {
+    menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app)
 }
 
 /// The styled lines for the open shortcuts band: the [`SHORTCUTS`] entries two
@@ -1890,7 +1897,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // and queued rows above, the band and footer below — so the cursor sits on
     // the prompt row even mid-turn (codex keeps the composer focused while a
     // task runs: typing edits the draft, Enter queues it).
-    let band = menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app);
+    let band = band_rows(app);
     let footer = footer_rows(app, band);
     let has_preview = strip_has_preview(app);
     // While a Ctrl+R search is open the hardware cursor tracks the end of the
@@ -4309,7 +4316,7 @@ mod tests {
                 for &h in &heights {
                     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         // mirror main.rs::draw
-                        let band = menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app);
+                        let band = band_rows(app);
                         let lh = live_height(
                             &app.input,
                             w,

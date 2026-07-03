@@ -82,8 +82,12 @@ impl FrameRequester {
         let _ = self.tx.send(Instant::now());
     }
 
-    /// Request a redraw no sooner than `after` from now — used to defer a paint
-    /// to the end of a detected input burst (see [`crate::paste`]).
+    /// Request a redraw no sooner than `after` from now — a *relaxed* request
+    /// (a detected input burst's characters, the status line's next animation
+    /// tick) that doesn't demand an immediate frame. The scheduler still keeps
+    /// the **soonest** pending deadline, so this never postpones a frame someone
+    /// else already asked for — it only avoids piling immediate demands on the
+    /// rate limiter (see [`crate::paste`] and `run_scheduler`).
     pub fn schedule_frame_in(&self, after: Duration) {
         let _ = self.tx.send(Instant::now() + after);
     }

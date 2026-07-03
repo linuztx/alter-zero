@@ -2,10 +2,14 @@
 //!
 //! Characters that keep arriving within [`BURST_CHAR_INTERVAL`] of each other are
 //! a *burst* (a paste, or very fast typing) once [`BURST_MIN_CHARS`] pile up. The
-//! event loop uses this to **defer** the redraw to the tail of the burst — one
-//! coalesced paint instead of one per character — while a lone keystroke still
-//! paints at once. Decisions come from injected `Instant`s, so it is unit-tested
-//! with no clock.
+//! event loop uses this to stop asking for an **immediate** frame per burst
+//! character (`schedule_frame_in` requests one a beat out instead), while a lone
+//! keystroke still paints at once. The actual coalescing — one paint per
+//! [`crate::frame::MIN_FRAME_INTERVAL`] no matter how many requests — is the
+//! frame scheduler's rate limiter; the scheduler keeps the *soonest* pending
+//! deadline, so the burst request never postpones a frame, it only avoids
+//! demanding extra ones (codex's scheduler folds the same way). Decisions come
+//! from injected `Instant`s, so it is unit-tested with no clock.
 
 use std::ops::Range;
 use std::time::{Duration, Instant};

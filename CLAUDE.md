@@ -227,8 +227,9 @@ The loop is an async (`tokio`, current-thread) `select!` over three sources;
 `select!`'s randomized branch order gives input/draw fairness for free. Every state
 change calls `frame.schedule_frame()`; the `frame` scheduler coalesces those into a
 single draw tick, rate-limited to 120 fps (`MIN_FRAME_INTERVAL`). A paste/fast-type
-run is caught by `paste::PasteBurst` so its redraw defers to the burst tail
-(`schedule_frame_in`). *While a turn is active* the draw branch **re-arms** the next
+run is caught by `paste::PasteBurst` so its characters request relaxed frames
+(`schedule_frame_in` — the rate-limit floor does the coalescing; the scheduler
+keeps the soonest pending deadline). *While a turn is active* the draw branch **re-arms** the next
 animation frame (`schedule_frame_in(32ms)`, codex's status-widget cadence) so the
 status line's shimmer sweeps and its timer advances with no events; before each
 draw the loop writes the computed `elapsed`/`thinking` `Duration`s onto the status
