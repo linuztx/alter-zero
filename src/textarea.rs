@@ -410,11 +410,15 @@ fn next_grapheme(text: &str, pos: usize) -> usize {
 /// Greedy word-wrap `text` to `width` columns, returning the **byte range** of the
 /// displayed slice of each visual row. Honours `'\n'` (a blank logical line is an
 /// empty range), preserves the user's exact characters (spaces included), consumes
-/// the run of spaces at a soft break, and hard-breaks an over-long word on
-/// grapheme boundaries. `width == 0` disables wrapping (split on `'\n'` only).
+/// the run of spaces at a soft break, and hard-breaks an over-long word — or a
+/// leading/trailing space run — on grapheme boundaries, so no row grows wider
+/// than `width` (short of a single grapheme wider than the whole field).
+/// `width == 0` disables wrapping (split on `'\n'` only).
 ///
-/// Always returns at least one range (the empty draft is one empty row). The clean
-/// re-derivation of codex's `wrap_ranges` on top of our own greedy algorithm.
+/// Always returns at least one range (the empty draft is one empty row); when the
+/// last row ends exactly full at the end of the text, an empty trailing range
+/// follows it — the row the end-of-text cursor sits on. The clean re-derivation
+/// of codex's `wrap_ranges` on top of our own greedy algorithm.
 fn wrap_rows(text: &str, width: u16) -> Vec<Range<usize>> {
     let mut rows = Vec::new();
     let mut line_start = 0;
@@ -426,6 +430,17 @@ fn wrap_rows(text: &str, width: u16) -> Vec<Range<usize>> {
             Some(i) => line_start += i + 1, // step past the '\n'
             None => break,
         }
+    }
+    // codex's `+1` sentinel byte, re-derived: when the last row ends exactly full
+    // at the very end of the text, an empty trailing row seats the end-of-text
+    // cursor at the start of the next row instead of one column past the field
+    // (the partition_point rule — see `docs/textarea.md`).
+    let last_row_exactly_full = width > 0
+        && rows
+            .last()
+            .is_some_and(|r| r.end == text.len() && cols(&text[r.clone()]) == width as usize);
+    if last_row_exactly_full {
+        rows.push(text.len()..text.len());
     }
     rows
 }
@@ -442,28 +457,36 @@ fn wrap_logical_line(text: &str, seg: Range<usize>, width: u16, rows: &mut Vec<R
     let mut col = 0usize;
     let mut at_head = true; // nothing placed on the current row yet
     let mut first = true; // first token of the whole logical line
-    let mut pending: Option<(usize, usize)> = None; // an inter-word space run (end, width)
+    let mut pending: Option<Range<usize>> = None; // an inter-word space run
 
     for (range, is_space) in tokenize(text, seg.clone()) {
-        let tw = cols(&text[range.clone()]);
         if is_space {
             if at_head && first {
-                // Leading indentation on the first row — show it.
-                cur_end = range.end;
-                col += tw;
-                at_head = false;
+                // Leading indentation on the first row — shown, wrapping like a
+                // word (spaces are 1-col graphemes) so it never overflows a row.
+                place_word(
+                    text,
+                    range,
+                    width,
+                    &mut row_start,
+                    &mut cur_end,
+                    &mut col,
+                    &mut at_head,
+                    rows,
+                );
             } else if at_head {
                 // A break-space at the head of a wrapped row — consume (don't show).
                 row_start = range.end;
                 cur_end = range.end;
             } else {
-                pending = Some((range.end, tw));
+                pending = Some(range);
             }
             first = false;
             continue;
         }
         first = false;
-        let sp_w = pending.map_or(0, |(_, w)| w);
+        let tw = cols(&text[range.clone()]);
+        let sp_w = pending.as_ref().map_or(0, |r| cols(&text[r.clone()]));
         if !at_head && col + sp_w + tw > width {
             // Break before this word; the pending space is consumed at the break.
             rows.push(row_start..cur_end);
@@ -472,9 +495,9 @@ fn wrap_logical_line(text: &str, seg: Range<usize>, width: u16, rows: &mut Vec<R
             col = 0;
             at_head = true;
             pending = None;
-        } else if let Some((sp_end, sp_w)) = pending.take() {
+        } else if let Some(sp) = pending.take() {
             // The space fits — place it before the word.
-            cur_end = sp_end;
+            cur_end = sp.end;
             col += sp_w;
         }
         place_word(
@@ -488,11 +511,19 @@ fn wrap_logical_line(text: &str, seg: Range<usize>, width: u16, rows: &mut Vec<R
             rows,
         );
     }
-    if let Some((sp_end, sp_w)) = pending.take() {
-        // Trailing spaces: show them so the cursor after a trailing space is visible.
-        cur_end = sp_end;
-        col += sp_w;
-        let _ = col;
+    if let Some(sp) = pending.take() {
+        // Trailing spaces: show them (so the cursor after a trailing space is
+        // visible), wrapped like a word so the cursor column stays in the field.
+        place_word(
+            text,
+            sp,
+            width,
+            &mut row_start,
+            &mut cur_end,
+            &mut col,
+            &mut at_head,
+            rows,
+        );
     }
     rows.push(row_start..cur_end);
 }
@@ -701,15 +732,18 @@ mod tests {
     #[test]
     fn wrap_breaks_on_word_boundaries_and_consumes_the_space() {
         let ta = TextArea::from_text("hello world");
-        assert_eq!(rows(&ta, 5), vec!["hello", "world"]);
-        // The space (byte 5) is consumed at the break: rows are [0,5) and [6,11).
-        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11]);
+        assert_eq!(rows(&ta, 5), vec!["hello", "world", ""]);
+        // The space (byte 5) is consumed at the break: rows are [0,5) and [6,11),
+        // plus the empty sentinel row for the end-of-text cursor ("world" is full).
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11, 11..11]);
     }
 
     #[test]
     fn wrap_keeps_text_that_fits_on_one_row() {
+        // Width 12 > the text's 11 columns (an *exactly* full row instead gets
+        // the end-of-text sentinel row — see the sentinel tests below).
         let ta = TextArea::from_text("hello world");
-        assert_eq!(rows(&ta, 11), vec!["hello world"]);
+        assert_eq!(rows(&ta, 12), vec!["hello world"]);
     }
 
     #[test]
@@ -742,13 +776,38 @@ mod tests {
     #[test]
     fn wrap_measures_wide_chars_as_two_columns() {
         let ta = TextArea::from_text("你好世界");
-        assert_eq!(rows(&ta, 4), vec!["你好", "世界"]);
+        // "世界" fills its row, so the end-of-text sentinel row follows.
+        assert_eq!(rows(&ta, 4), vec!["你好", "世界", ""]);
     }
 
     #[test]
     fn wrap_with_zero_width_only_splits_on_newlines() {
         let ta = TextArea::from_text("a b\nc");
         assert_eq!(rows(&ta, 0), vec!["a b", "c"]);
+    }
+
+    #[test]
+    fn trailing_spaces_wrap_instead_of_overflowing_the_row() {
+        // "hi" + 5 trailing spaces at width 5: the run must wrap onto a
+        // continuation row, not pin the cursor past the field edge.
+        let ta = TextArea::from_text("hi     ");
+        assert_eq!(rows(&ta, 5), vec!["hi   ", "  "]);
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 5..7], "every byte covered");
+        assert_eq!(ta.cursor_row_col(5), (1, 2), "col stays within the width");
+    }
+
+    #[test]
+    fn leading_indentation_wider_than_the_width_hard_breaks() {
+        let ta = TextArea::from_text("    a");
+        assert_eq!(rows(&ta, 2), vec!["  ", "  ", "a"]);
+    }
+
+    #[test]
+    fn trailing_spaces_after_wide_chars_wrap_too() {
+        // "世界" fills all 4 columns, so the 2 trailing spaces wrap.
+        let ta = TextArea::from_text("世界  ");
+        assert_eq!(rows(&ta, 4), vec!["世界", "  "]);
+        assert_eq!(ta.cursor_row_col(4), (1, 2));
     }
 
     // ===== cursor <-> (row, col) =====
@@ -763,8 +822,43 @@ mod tests {
 
     #[test]
     fn cursor_row_col_at_the_very_end() {
+        // "world" fills its row exactly, so the end-of-text cursor sits at the
+        // start of the empty sentinel row below — never at col == width.
         let ta = at("hello world", 11);
-        assert_eq!(ta.cursor_row_col(5), (1, 5));
+        assert_eq!(ta.cursor_row_col(5), (2, 0));
+    }
+
+    #[test]
+    fn an_exactly_full_last_row_reserves_an_empty_row_for_the_cursor() {
+        let ta = TextArea::from_text("abcde");
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 5..5]);
+        assert_eq!(ta.row_count(5), 2, "the box reserves the cursor's row");
+        assert_eq!(ta.cursor_row_col(5), (1, 0));
+    }
+
+    #[test]
+    fn a_trailing_space_run_ending_exactly_at_the_width_gets_the_sentinel_row() {
+        let ta = TextArea::from_text("hi   ");
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 5..5]);
+        assert_eq!(ta.cursor_row_col(5), (1, 0));
+    }
+
+    #[test]
+    fn the_sentinel_row_appears_only_for_a_full_row_at_the_very_end() {
+        // An exactly-full row mid-text gets none; a not-full last row either…
+        let ta = TextArea::from_text("abcde\nab");
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..8]);
+        // …and text ending in '\n' already has its empty last row.
+        let ta = TextArea::from_text("abcde\n");
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..6]);
+    }
+
+    #[test]
+    fn cursor_row_col_lands_on_the_sentinel_after_multi_line_text() {
+        // The last logical line exactly fills its row → sentinel after it.
+        let ta = at("ab\nabcde", 8);
+        assert_eq!(ta.wrapped_rows(5), vec![0..2, 3..8, 8..8]);
+        assert_eq!(ta.cursor_row_col(5), (2, 0));
     }
 
     // ===== vertical movement across wrapped rows (warm cache) =====
@@ -809,6 +903,17 @@ mod tests {
     }
 
     #[test]
+    fn vertical_motion_crosses_the_sentinel_row() {
+        let mut ta = at("abcdefghij", 7); // row 1 ("fghij"), col 2
+        let _ = ta.wrapped_rows(5); // warm the cache (as a render would)
+        ta.move_down(); // onto the empty sentinel row
+        assert_eq!(ta.cursor_row_col(5), (2, 0));
+        assert_eq!(ta.cursor(), 10);
+        ta.move_up();
+        assert_eq!(ta.cursor_row_col(5), (1, 2), "preferred column restored");
+    }
+
+    #[test]
     fn a_horizontal_move_resets_the_preferred_column() {
         let mut ta = at("aaaaa\nbb\nccccc", 3); // row 0, col 3
         let _ = ta.wrapped_rows(5);
@@ -834,7 +939,7 @@ mod tests {
     #[test]
     fn an_edit_invalidates_the_wrap_cache() {
         let mut ta = TextArea::from_text("hello world");
-        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11]);
+        assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11, 11..11]);
         ta.set_text("hi");
         assert_eq!(ta.wrapped_rows(5), vec![0..2], "re-wrapped after the edit");
     }
