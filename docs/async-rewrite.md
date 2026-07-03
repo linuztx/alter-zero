@@ -1,8 +1,9 @@
 # Async runtime rewrite (codex-style)
 
-The event loop is built on **tokio** with a `select!` over four sources (input,
-reply, draw ticks, and — since `docs/file-search.md` — `@` file-search results),
-mirroring how openai/codex drives its TUI. This replaces the previous synchronous
+The event loop is built on **tokio** with a `select!` over five sources (input,
+reply, draw ticks, `@` file-search results — `docs/file-search.md` — and
+finished Ctrl+V clipboard reads — `docs/image-paste.md`), mirroring how
+openai/codex drives its TUI. This replaces the previous synchronous
 `event::poll` + drain loop. The *render* path (`term.rs`: diff + synchronized
 update) is unchanged — only how input/stream/redraw are scheduled changed.
 

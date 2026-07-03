@@ -45,3 +45,17 @@ warnings = "deny"
 
 [lints.clippy]
 all = "deny"
+
+# Dependencies are compiled with optimizations even in dev builds: `cargo run`
+# must feel like the shipped binary where it counts — the Ctrl+V image paste
+# PNG-encodes a screenshot through `image`/`png`/`fdeflate` (~65x slower
+# unoptimized: ~1.6s vs ~25ms for 1080p), and ratatui repaints every frame.
+# Our own crate keeps opt-level 0 for fast rebuilds and full debug info.
+[profile.dev]
+# Light optimization for our own crate too: dependency generics (the PNG
+# encoder is generic over the writer) monomorphise INTO this crate, so at
+# opt-level 0 they run unoptimised no matter how the deps were built.
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

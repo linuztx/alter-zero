@@ -349,13 +349,14 @@ logic is unit-testable without a real terminal.
 ### Data flow
 
 The loop is **async** (tokio, single-threaded `current_thread` runtime), built as a
-`select!` over four sources — exactly how openai/codex drives its TUI. Terminal
+`select!` over five sources — exactly how openai/codex drives its TUI. Terminal
 input arrives on a crossterm **`EventStream`**, the reply streams in on a tokio
-channel, **draw ticks** come from the frame scheduler, and the **`@` file-search
-worker** answers on a fourth channel (`docs/file-search.md`). `select!` polls its
-branches in randomized order, so input and draws can't starve each other (codex's
-explicit round-robin fairness, for free). The async-rewrite design lives in
-`docs/async-rewrite.md`.
+channel, **draw ticks** come from the frame scheduler, the **`@` file-search
+worker** answers on a fourth channel (`docs/file-search.md`), and each Ctrl+V
+**image-paste worker** delivers its temp file on a fifth
+(`docs/image-paste.md`). `select!` polls its branches in randomized order, so
+input and draws can't starve each other (codex's explicit round-robin fairness,
+for free). The async-rewrite design lives in `docs/async-rewrite.md`.
 
 The `EventStream` is the **sole** stdin reader, created *after* `InlineViewport::init`
 has queried the cursor position over stdin once, synchronously. The reply backend

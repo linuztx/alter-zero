@@ -10,8 +10,9 @@
 //!    alternate-screen overlay is used *only* for the Ctrl+O tool-output view),
 //! 2. run a codex-style **async** event loop ([`tokio`]): a `select!` over
 //!    terminal input (an [`EventStream`]), streamed reply events (a tokio
-//!    channel), coalesced draw ticks from the [`frame`] scheduler, and `@`
-//!    file-search results (a fourth channel — `docs/file-search.md`),
+//!    channel), coalesced draw ticks from the [`frame`] scheduler, `@`
+//!    file-search results (`docs/file-search.md`), and finished Ctrl+V
+//!    clipboard reads (a fifth channel — `docs/image-paste.md`),
 //! 3. translate the [`App`]'s decisions into `insert_before` / `draw` calls.
 //!
 //! **Invariant 1 (stdin):** [`InlineViewport::init`] queries the cursor position
@@ -68,10 +69,11 @@ async fn main() -> io::Result<()> {
     result.and(restored)
 }
 
-/// The async event loop. A `select!` fans four sources onto one thread: terminal
-/// input, the streamed reply, coalesced draw ticks, and `@` file-search results.
-/// `select!` polls its branches in randomized order, so input and draws can't
-/// starve each other — the round-robin fairness codex builds explicitly.
+/// The async event loop. A `select!` fans five sources onto one thread:
+/// terminal input, the streamed reply, coalesced draw ticks, `@` file-search
+/// results, and finished Ctrl+V clipboard reads. `select!` polls its branches
+/// in randomized order, so input and draws can't starve each other — the
+/// round-robin fairness codex builds explicitly.
 async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // Backend → loop (the streamed reply). A tokio channel so the loop can
     // `select!` on it; the backend thread sends without touching the runtime.
@@ -112,6 +114,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let (file_res_tx, mut file_rx) = tokio::sync::mpsc::unbounded_channel::<FileSearchResult>();
     let _file_worker = spawn_file_search_worker(cwd.clone(), file_req_rx, file_res_tx);
     let mut last_file_query: Option<String> = None;
+    // The Ctrl+V image-paste pipeline (docs/image-paste.md): each paste runs
+    // the clipboard read + decode + encode on its own short-lived worker
+    // thread — a large screenshot's PNG encode takes real time, and doing it
+    // inline would freeze the status animations and the composer. Results
+    // come back on a tokio channel the loop `select!`s on; the worker only
+    // *sends* — it is not a stdin reader (invariant 1).
+    let (img_tx, mut img_rx) = tokio::sync::mpsc::unbounded_channel::<Result<PathBuf, String>>();
     // The in-flight reply's cancel token + thread handle, so a quit mid-stream
     // can stop and reap it cleanly. `None` whenever no reply is streaming.
     let mut inflight: Option<(CancelToken, JoinHandle<()>)> = None;
@@ -180,16 +189,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 )?);
                             }
                             Action::PasteImage => {
-                                // Ctrl+V: do the clipboard I/O here at the boundary
-                                // (on_key stayed pure). On success attach the image
-                                // to the composer; on failure commit a red notice.
-                                match clipboard::read_clipboard_image() {
-                                    Ok(path) => app.attach_image(path),
-                                    Err(reason) => commit_error_notice(
-                                        term, &mut app, &mut committed,
-                                        &format!("Failed to paste image: {reason}"),
-                                    ),
-                                }
+                                // Ctrl+V: the clipboard I/O happens at the boundary
+                                // (on_key stayed pure) but on a worker thread, not
+                                // here — the read + decode + PNG encode of a large
+                                // screenshot takes long enough to freeze the status
+                                // animations and swallow keystrokes if run inline.
+                                // The result arrives on the image channel (branch 5),
+                                // which attaches it or commits the red notice.
+                                spawn_image_paste(img_tx.clone());
                             }
                             Action::RunShell(command) => {
                                 // `!command` from an idle composer: echo it, then
@@ -414,6 +421,30 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             //    `set_file_matches`), then repaint. See docs/file-search.md.
             Some(result) = file_rx.recv() => {
                 app.set_file_matches(&result.query, result.matches);
+                frame.schedule_frame();
+            }
+
+            // 5. A finished Ctrl+V clipboard read from its worker thread:
+            //    attach the temp image to the composer, or surface the red
+            //    failure notice. Committing is view-gated (invariant 4) — the
+            //    result may arrive with the Ctrl+O overlay up, where the
+            //    notice is recorded only and the return repaints it from
+            //    history. See docs/image-paste.md.
+            Some(result) = img_rx.recv() => {
+                match result {
+                    Ok(path) => app.attach_image(path),
+                    Err(reason) => {
+                        let text = format!("Failed to paste image: {reason}");
+                        if app.view == View::Conversation {
+                            commit_error_notice(term, &mut app, &mut committed, &text);
+                        } else {
+                            app.record_error_message(&text);
+                        }
+                    }
+                }
+                // The inserted placeholder may sit in an `@token` — re-derive
+                // the picker like any other composer edit.
+                dispatch_file_search(&app, &file_req_tx, &mut last_file_query);
                 frame.schedule_frame();
             }
         }
@@ -1129,6 +1160,21 @@ fn walk_files(root: &Path, cap: usize) -> Vec<String> {
 /// while it worked (the debounce) — ranks the cache ([`rank_files`]) and sends a
 /// [`FileSearchResult`] back. Exits when the request channel closes (app exit).
 /// It only *sends* on the tokio channel; it never reads stdin (invariant 1).
+/// Run one Ctrl+V clipboard read ([`clipboard::read_clipboard_image`]) on a
+/// short-lived background thread, delivering the result on the loop's image
+/// channel (`select!` branch 5). Detached: at quit a straggler finishes
+/// writing a temp file harmlessly (like the shell pipe readers); it only
+/// *sends* — never a stdin reader (invariant 1). Each Ctrl+V spawns its own
+/// worker, so a double-press attaches two placeholders in completion order —
+/// what codex's synchronous handler does too, minus the UI freeze.
+fn spawn_image_paste(tx: tokio::sync::mpsc::UnboundedSender<Result<PathBuf, String>>) {
+    std::thread::spawn(move || {
+        // The receiver only closes at shutdown — a failed send just means
+        // there is nothing left to attach to.
+        let _ = tx.send(clipboard::read_clipboard_image());
+    });
+}
+
 fn spawn_file_search_worker(
     root: PathBuf,
     req_rx: std::sync::mpsc::Receiver<String>,

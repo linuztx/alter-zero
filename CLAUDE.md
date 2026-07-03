@@ -227,8 +227,10 @@ of bug:
 
 ### Data flow
 
-The loop is an async (`tokio`, current-thread) `select!` over four sources —
-input, reply events, draw ticks, and `@` file-search results;
+The loop is an async (`tokio`, current-thread) `select!` over five sources —
+input, reply events, draw ticks, `@` file-search results, and finished Ctrl+V
+clipboard reads (each paste's read + decode + encode runs on its own worker
+thread so the loop — and the status animations — never block on it);
 `select!`'s randomized branch order gives input/draw fairness for free. Every state
 change calls `frame.schedule_frame()`; the `frame` scheduler coalesces those into a
 single draw tick, rate-limited to 120 fps (`MIN_FRAME_INTERVAL`). A paste/fast-type
@@ -247,9 +249,10 @@ same way, and `restore` flushes any quit-before-tick leftovers; `docs/flicker.md
 
 ```
 keyboard / resize ──► EventStream ─┐
-reply backend ─────► tokio mpsc ───┼─► select! ─► App::on_key / push_chunk / start_tool / set_file_matches / set_status_times / … ─► schedule_frame
+reply backend ─────► tokio mpsc ───┼─► select! ─► App::on_key / push_chunk / start_tool / set_file_matches / attach_image / set_status_times / … ─► schedule_frame
 frame scheduler ───► draw-tick ────┤                                        coalesce + 120fps ─► draw / draw_overlay
-file-search worker ► tokio mpsc ───┘
+file-search worker ► tokio mpsc ───┤
+image-paste worker ► tokio mpsc ───┘
                                         └─ turn active? re-arm a frame in 32ms (status shimmer + timer)
 ```
 

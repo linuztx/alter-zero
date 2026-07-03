@@ -2,9 +2,13 @@
 //! (write).
 //!
 //! The **read** side is a focused port of codex's `clipboard_paste.rs`: pull an
-//! image off the system clipboard (raw bytes, or a copied image *file*),
-//! re-encode it to one consistent PNG, and write it to a kept temp file whose
-//! path the backend reads (the TUI never base64-encodes it — codex parity). The
+//! image off the system clipboard (raw bytes, or a copied image *file*) and
+//! write it to a kept temp file whose path the backend reads (the TUI never
+//! base64-encodes it — codex parity). A file already in an accepted format is
+//! **copied verbatim** (no decode/re-encode — the fast path); anything else is
+//! transcoded to PNG. The event loop calls this on a **background thread**
+//! (`main.rs::spawn_image_paste`): a large screenshot's PNG encode takes real
+//! time, and running it on the loop would freeze the status animations. The
 //! **write** side ([`copy_to_clipboard`]) is codex's `/copy` path: set the
 //! clipboard via arboard, falling back to an OSC 52 terminal escape when there's
 //! no native clipboard (headless / SSH / tmux). See `docs/copy.md`.
@@ -21,54 +25,112 @@ use std::io::Write;
 use std::path::PathBuf;
 
 /// Read an image from the system clipboard, returning the path to a freshly
-/// written temporary PNG (kept on disk for the backend to read by path).
+/// written temporary image file (kept on disk for the backend to read by
+/// path). **Blocking** — the loop runs it on a worker thread
+/// (`main.rs::spawn_image_paste`), never inline.
 ///
 /// On any failure — no clipboard server (headless / unsupported), nothing
 /// image-shaped on the clipboard, or an encode/write error — returns a short
 /// human-readable message for the red `Failed to paste image: {msg}` notice the
 /// loop commits (codex's `new_error_event`).
 ///
-/// Mirrors codex: prefer an image *file* on the clipboard (e.g. one copied in a
-/// GUI file manager) and decode it from disk; otherwise take the raw RGBA image
-/// bytes (e.g. a screenshot). Either source is re-encoded to PNG.
+/// Mirrors codex: prefer an image *file* on the clipboard (e.g. one copied in
+/// a GUI file manager) — copied verbatim when it is already in an accepted
+/// format, transcoded to PNG otherwise ([`temp_image_from_files`]) — falling
+/// back to the raw RGBA image bytes (e.g. a screenshot), which are always
+/// PNG-encoded.
 pub fn read_clipboard_image() -> Result<PathBuf, String> {
     let mut clipboard =
         arboard::Clipboard::new().map_err(|e| format!("clipboard unavailable: {e}"))?;
 
-    let image = clipboard_file_image(&mut clipboard)
-        .or_else(|| clipboard_raw_image(&mut clipboard))
-        .ok_or_else(|| "no image on the clipboard".to_string())?;
+    // An image *file* on the clipboard (codex's `file_list()` path — one copied
+    // in a GUI file manager) is handled without a full decode where possible.
+    if let Ok(files) = clipboard.get().file_list()
+        && let Some(result) = temp_image_from_files(&files)
+    {
+        return result;
+    }
 
-    // Re-encode to PNG so the on-disk format is always the same, whatever the
-    // source codec was.
+    // Raw image bytes (e.g. a screenshot) — rebuild and PNG-encode.
+    let image = clipboard_raw_image(&mut clipboard)
+        .ok_or_else(|| "no image on the clipboard".to_string())?;
+    encode_png_to_temp(&image)
+}
+
+/// Produce the temp file for the first usable image among `files`, or `None`
+/// when no file yields one (the caller falls through to the raw-bytes path).
+///
+/// A file already in a format the backend accepts ([`accepted_image_extension`])
+/// whose header parses (`image::image_dimensions` reads only the header) is
+/// **copied verbatim** — no decode, no re-encode: the fast path that makes a
+/// file paste effectively instant. Anything else `image::open` can read (it
+/// sniffs content, not just the extension) is transcoded to a temp PNG as
+/// before. Either way the result is **our own temp copy**, never the user's
+/// path — the composer's discard cleanup deletes what this returns
+/// (docs/image-paste.md).
+fn temp_image_from_files(files: &[PathBuf]) -> Option<Result<PathBuf, String>> {
+    for path in files {
+        if let Some(ext) = accepted_image_extension(path)
+            && image::image_dimensions(path).is_ok()
+        {
+            return Some(copy_file_to_temp(path, &ext));
+        }
+    }
+    let image = files.iter().find_map(|path| {
+        // Sniff the content, not just the extension (`image::open` trusts the
+        // extension alone) — a mislabelled image file still decodes.
+        image::ImageReader::open(path)
+            .ok()?
+            .with_guessed_format()
+            .ok()?
+            .decode()
+            .ok()
+    })?;
+    Some(encode_png_to_temp(&image))
+}
+
+/// The lowercased extension of `path` when it names a format the backend seam
+/// accepts as-is (the codecs this crate compiles: png/jpg/jpeg/gif/webp) —
+/// `None` sends the file through the decode-and-transcode path. Pure, tested.
+fn accepted_image_extension(path: &std::path::Path) -> Option<String> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp").then_some(ext)
+}
+
+/// Copy `path`'s bytes verbatim into a kept temp file with the same `ext`.
+fn copy_file_to_temp(path: &std::path::Path, ext: &str) -> Result<PathBuf, String> {
+    let tmp = tempfile::Builder::new()
+        .prefix("inline-tui-clipboard-")
+        .suffix(&format!(".{ext}"))
+        .tempfile()
+        .map_err(|e| format!("could not create a temp file: {e}"))?;
+    std::fs::copy(path, tmp.path()).map_err(|e| format!("could not copy the image: {e}"))?;
+    keep_temp(tmp)
+}
+
+/// PNG-encode `image` into a kept temp file — the transcode path for raw
+/// clipboard bytes and for file formats not on the verbatim-copy list.
+fn encode_png_to_temp(image: &image::DynamicImage) -> Result<PathBuf, String> {
     let mut png = Vec::new();
     image
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|e| format!("could not encode the image: {e}"))?;
-
     let tmp = tempfile::Builder::new()
         .prefix("inline-tui-clipboard-")
         .suffix(".png")
         .tempfile()
         .map_err(|e| format!("could not create a temp file: {e}"))?;
     std::fs::write(tmp.path(), &png).map_err(|e| format!("could not write the image: {e}"))?;
-    // Keep the file past this scope — the backend reads it by path, so it must
-    // outlive the `TempfileBuilder` guard (codex `.keep()`s it too).
+    keep_temp(tmp)
+}
+
+/// Keep the temp file past its guard — the backend reads it by path, so it
+/// must outlive the `TempfileBuilder` scope (codex `.keep()`s it too).
+fn keep_temp(tmp: tempfile::NamedTempFile) -> Result<PathBuf, String> {
     let (_file, path) = tmp
         .keep()
         .map_err(|e| format!("could not persist the image: {e}"))?;
     Ok(path)
-}
-
-/// The first decodable image among any files on the clipboard — codex's
-/// `file_list()` path, for an image *file* copied in a GUI file manager.
-fn clipboard_file_image(clipboard: &mut arboard::Clipboard) -> Option<image::DynamicImage> {
-    clipboard
-        .get()
-        .file_list()
-        .ok()?
-        .into_iter()
-        .find_map(|path| image::open(path).ok())
 }
 
 /// Raw RGBA image bytes on the clipboard (e.g. a screenshot), rebuilt into an
@@ -218,6 +280,79 @@ fn osc52_sequence(text: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== Ctrl+V file fast path (docs/image-paste.md) =====
+
+    #[test]
+    fn accepted_image_extension_recognises_the_backend_formats() {
+        use std::path::Path;
+        for ok in ["a.png", "b.PNG", "c.jpg", "d.JPEG", "e.gif", "f.webp"] {
+            assert!(
+                accepted_image_extension(Path::new(ok)).is_some(),
+                "{ok} should copy verbatim"
+            );
+        }
+        assert_eq!(
+            accepted_image_extension(Path::new("shot.PnG")).as_deref(),
+            Some("png"),
+            "the extension is lowercased for the temp suffix"
+        );
+        for bad in ["a.bmp", "b.txt", "c.tiff", "noext", "d.png.zip"] {
+            assert!(
+                accepted_image_extension(Path::new(bad)).is_none(),
+                "{bad} must go through the decode path"
+            );
+        }
+    }
+
+    #[test]
+    fn a_pasted_image_file_is_copied_verbatim_not_transcoded() {
+        // A real (tiny) PNG on disk: the fast path must copy its exact bytes
+        // to a NEW temp file — never hand back the user's own path (the
+        // discard cleanup deletes what we return; see docs/image-paste.md).
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("shot.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
+            .save(&src)
+            .unwrap();
+        let original = std::fs::read(&src).unwrap();
+
+        let result = temp_image_from_files(std::slice::from_ref(&src)).expect("fast path taken");
+        let path = result.expect("copy succeeds");
+        assert_ne!(path, src, "a copy, not the user's file");
+        assert_eq!(path.extension().unwrap(), "png", "extension preserved");
+        assert_eq!(std::fs::read(&path).unwrap(), original, "bytes verbatim");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn a_junk_file_with_an_image_extension_is_rejected() {
+        // The extension says png but the header doesn't parse: neither the
+        // fast copy nor the decode path can use it, so the file list yields
+        // nothing and the caller falls through to the raw-clipboard path.
+        let dir = tempfile::tempdir().unwrap();
+        let fake = dir.path().join("fake.png");
+        std::fs::write(&fake, b"not an image at all").unwrap();
+        assert!(temp_image_from_files(&[fake]).is_none());
+    }
+
+    #[test]
+    fn an_unlisted_extension_still_decodes_and_reencodes_to_png() {
+        // PNG bytes under an extension the fast path doesn't recognise: the
+        // verbatim copy is skipped, but image::open sniffs the content and
+        // the fallback transcodes it to a temp PNG like before.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("shot.img");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 8, 7, 255]))
+            .save_with_format(&src, image::ImageFormat::Png)
+            .unwrap();
+
+        let result = temp_image_from_files(&[src]).expect("decode path taken");
+        let path = result.expect("transcode succeeds");
+        assert_eq!(path.extension().unwrap(), "png");
+        assert!(image::open(&path).is_ok(), "the copy is a valid PNG");
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn base64_encode_matches_the_rfc_vectors() {
