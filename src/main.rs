@@ -10,7 +10,8 @@
 //!    alternate-screen overlay is used *only* for the Ctrl+O tool-output view),
 //! 2. run a codex-style **async** event loop ([`tokio`]): a `select!` over
 //!    terminal input (an [`EventStream`]), streamed reply events (a tokio
-//!    channel), and coalesced draw ticks from the [`frame`] scheduler,
+//!    channel), coalesced draw ticks from the [`frame`] scheduler, and `@`
+//!    file-search results (a fourth channel — `docs/file-search.md`),
 //! 3. translate the [`App`]'s decisions into `insert_before` / `draw` calls.
 //!
 //! **Invariant 1 (stdin):** [`InlineViewport::init`] queries the cursor position
@@ -67,10 +68,10 @@ async fn main() -> io::Result<()> {
     result.and(restored)
 }
 
-/// The async event loop. A `select!` fans three sources onto one thread: terminal
-/// input, the streamed reply, and coalesced draw ticks. `select!` polls its
-/// branches in randomized order, so input and draws can't starve each other —
-/// the round-robin fairness codex builds explicitly.
+/// The async event loop. A `select!` fans four sources onto one thread: terminal
+/// input, the streamed reply, coalesced draw ticks, and `@` file-search results.
+/// `select!` polls its branches in randomized order, so input and draws can't
+/// starve each other — the round-robin fairness codex builds explicitly.
 async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // Backend → loop (the streamed reply). A tokio channel so the loop can
     // `select!` on it; the backend thread sends without touching the runtime.

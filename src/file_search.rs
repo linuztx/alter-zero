@@ -67,11 +67,13 @@ pub fn at_token(text: &str, cursor: usize) -> Option<AtToken> {
     })
 }
 
-/// Case-insensitive **subsequence** fuzzy match of `query` against `candidate`:
-/// `Some((score, indices))` when every character of `query` appears in order
-/// (boundary, contiguous, and basename hits score higher), else `None`. An empty
-/// query matches everything with score 0 (the lone-`@` "list files" case).
-/// `indices` are byte offsets of the matched characters in `candidate`.
+/// ASCII-case-insensitive **subsequence** fuzzy match of `query` against
+/// `candidate`: `Some((score, indices))` when every character of `query` appears
+/// in order (boundary, contiguous, and basename hits score higher), else `None`.
+/// The case fold is ASCII-only (`eq_ignore_ascii_case` — `a` ≡ `A`, but `é` ≢
+/// `É`; non-ASCII characters must match exactly). An empty query matches
+/// everything with score 0 (the lone-`@` "list files" case). `indices` are byte
+/// offsets of the matched characters in `candidate`.
 #[must_use]
 pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
     if query.is_empty() {

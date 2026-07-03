@@ -40,7 +40,11 @@ unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
 `docs/shift-enter.md`); `frame`'s async scheduler **task** is smoke-covered too
 (its rate-limit/coalesce math is unit-tested). Keep logic out of the boundary;
-every geometry decision `term.rs` makes is a pure `ui` helper it calls.
+the geometry *policy* `term.rs` acts on — live-region height, the box's re-pin,
+the cursor seat — comes from pure `ui` helpers it calls (`ui::live_height`,
+`ui::repin`, `ui::cursor_position`, `ui::restore_cursor_row`); only the viewport
+bookkeeping (`init`'s anchor math, `write_above`'s scroll plan, `resized`'s
+re-clamp) is its own, smoke-covered.
 
 The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
@@ -223,7 +227,8 @@ of bug:
 
 ### Data flow
 
-The loop is an async (`tokio`, current-thread) `select!` over three sources;
+The loop is an async (`tokio`, current-thread) `select!` over four sources —
+input, reply events, draw ticks, and `@` file-search results;
 `select!`'s randomized branch order gives input/draw fairness for free. Every state
 change calls `frame.schedule_frame()`; the `frame` scheduler coalesces those into a
 single draw tick, rate-limited to 120 fps (`MIN_FRAME_INTERVAL`). A paste/fast-type
@@ -241,10 +246,11 @@ same way, and `restore` flushes any quit-before-tick leftovers; `docs/flicker.md
 (See `docs/async-rewrite.md`, `docs/status-indicator.md`.)
 
 ```
-keyboard / resize ─► EventStream ─┐
-reply backend ────► tokio mpsc ───┼─► select! ─► App::on_key / push_chunk / start_tool / set_status_times / … ─► schedule_frame
-frame scheduler ──► draw-tick ────┘                                        coalesce + 120fps ─► draw / draw_overlay
-                                       └─ turn active? re-arm a frame in 32ms (status shimmer + timer)
+keyboard / resize ──► EventStream ─┐
+reply backend ─────► tokio mpsc ───┼─► select! ─► App::on_key / push_chunk / start_tool / set_file_matches / set_status_times / … ─► schedule_frame
+frame scheduler ───► draw-tick ────┤                                        coalesce + 120fps ─► draw / draw_overlay
+file-search worker ► tokio mpsc ───┘
+                                        └─ turn active? re-arm a frame in 32ms (status shimmer + timer)
 ```
 
 `Submit(text)` runs `main.rs::start_turn` — a batch of one: it records each
@@ -269,7 +275,7 @@ follow-ups and `!` commands iterate in order (Alt+Up pulls the **last entry**
 (`drain_last_batch`, `pop_back`) back into the composer to edit — a `Messages`
 batch newline-joined, a `Shell` entry as `!command` re-entering shell mode —
 earlier entries stay queued; see `docs/queue.md`). The
-backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok}` pairs
+backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok,truncated}` pairs
 and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
 running (blue) then commits it collapsed (green/red), and flips its `thinking_start`
@@ -458,7 +464,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `UnboundedSender` (its `send` is sync — callable straight from your background
   thread, no runtime needed), poll the `CancelToken` so a quit can stop you, then
   send `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure. For tool calls, send a
-  `StreamEvent::ToolStart{name,args}` then a `ToolEnd{output,ok}`; wrap a reasoning
+  `StreamEvent::ToolStart{name,args}` then a `ToolEnd{output,ok,truncated}`
+  (`truncated: false` from a backend tool — only the `!` shell runner caps); wrap a reasoning
   phase in a `ThinkingStart`/`ThinkingEnd` pair to drive the `Thinking for Ns`
   status, streaming each reasoning delta as a `ThinkingChunk(text)` in between so
   the token tally keeps ticking while the model thinks (the text is never shown —

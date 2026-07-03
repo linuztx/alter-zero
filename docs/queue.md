@@ -256,7 +256,7 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   (batch 1) and `again` with **Tab** (batch 2) mid-stream, press Alt+Up — only
   `again` returns to the box as the draft while the `world` batch stays queued
   (its inset row remains).
-- `scripts/smoke.sh` Phase 18 (Tab follow-up): submit `hello`, queue `world`
+- `scripts/smoke.sh` Phase 21 (Tab follow-up): submit `hello`, queue `world`
   with **Enter** then `later` with **Tab** mid-stream (a blank divides them),
   and watch `world` send as one turn and `later` send as a **separate** turn
   after it — a third turn the all-Enter Phase 12 never produces.

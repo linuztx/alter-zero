@@ -10,8 +10,12 @@
 //! can re-pin it to a new height every frame.
 //!
 //! Like `main.rs`, this is an I/O boundary verified by `scripts/smoke.sh`, not
-//! unit tests; every geometry decision it makes is a pure, tested `ui` helper
-//! ([`ui::live_height`], [`ui::repin`]).
+//! unit tests. The *policy* geometry — how tall the live region is, how the box
+//! re-pins as it grows, where the cursor lands — comes from pure, tested `ui`
+//! helpers ([`ui::live_height`], [`ui::repin`], [`ui::cursor_position`],
+//! [`ui::restore_cursor_row`]); the viewport *bookkeeping* (`init`'s anchor
+//! math, `write_above`'s multi-screenful scroll plan, `resized`'s re-clamp) is
+//! this module's own, smoke-covered like the rest of the boundary.
 //!
 //! Two operations:
 //! - [`InlineViewport::insert_before`] **queues** finished lines for scrollback

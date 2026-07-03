@@ -43,8 +43,12 @@ the **passive status line** — "the configurable contextual row built from
 
 One always-on context row in the live region, **below the box, below where the
 band opens** — present from startup, while idle *and* while a turn streams —
-that yields only to the palette / `?` shortcuts band (our equivalents of
-codex's popup and shortcut overlay).
+that yields to any open band: the palette, the `?` shortcuts band, or the `@`
+file picker (our equivalents of codex's popups and shortcut overlay). Two later
+features **take the slot outright** instead of blanking it, codex's
+footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
+(`docs/history-search.md`) and the `!` shell mode's red `Shell mode` hint
+(`docs/shell-command.md`).
 
 ### State (`app.rs`, `stream.rs`)
 
@@ -61,8 +65,12 @@ codex's popup and shortcut overlay).
 
 ### Geometry & display (`ui.rs`)
 
-- `footer_rows(app, band_rows) -> u16` — `1` when session info is set **and**
-  no band is open (`band_rows == 0`), else `0`. The single place the
+- `footer_rows(app, band_rows) -> u16` — `1` whenever a Ctrl+R search is open
+  or `!` shell mode is on (the search line / `Shell mode` hint own the slot,
+  **even with no session info** — no band can be open in either state);
+  otherwise `1` when session info is set **and** no band is open
+  (`band_rows == 0` — the palette, `?` shortcuts band, and `@` file picker all
+  displace the row), else `0`. The single place the
   band-replaces-footer swap is decided; `live_height` adds it,
   [`render_live`]/`cursor_position` pass it, so reserve and paint can't drift.
 - `footer_line(app, width) -> Line` — `FOOTER_INDENT` (two spaces, codex's
@@ -93,11 +101,12 @@ reseat, resizes) already accounts for the row.
   context %, …) and theme colours; ours is the fixed default pair — model +
   cwd — in the all-dim no-colour style. More items later are new spans in
   `footer_line`.
-- **No instructional footer modes.** Codex multiplexes quit reminders, Esc
-  hints, and queue hints through the same row; our footer is only the context
-  line, and only the palette/shortcuts band displaces it. In particular it
-  stays visible while a turn streams (codex hides it for the queue hint when
-  the composer has a draft mid-run — we have no such hint).
+- **Fewer footer modes.** Codex multiplexes quit reminders, Esc hints, and
+  queue hints through the same row; our slot has exactly three occupants — the
+  context line, the Ctrl+R search line, and the `!` shell-mode hint — plus the
+  bands that displace it. In particular the context line stays visible while a
+  turn streams (codex hides it for the queue hint when the composer has a
+  draft mid-run — we have no such hint).
 - **Plain right-truncation.** Codex center-truncates long paths in some
   surfaces; the footer line is simply cut with a trailing `…` (which is what
   codex's footer does to the assembled line too).
@@ -108,7 +117,9 @@ reseat, resizes) already accounts for the row.
 - `app`: session info is unset by default; `set_session_info` stores the
   display strings.
 - `ui`: `footer_rows` is 0 without session info / 1 with it / 0 when a band is
-  open; `footer_line` renders `  {model} · {cwd}` all-dim with the dim
+  open — and 1 whenever a Ctrl+R search is open or shell mode is on, session
+  info or not (see `docs/history-search.md` / `docs/shell-command.md`, which
+  test the slot's other occupants); `footer_line` renders `  {model} · {cwd}` all-dim with the dim
   separator; it truncates with `…` at narrow widths; `display_cwd` maps home →
   `~`, under-home → `~/sub`, outside/unknown home → absolute; `live_height`
   grows one row with the footer; `render_live` paints the footer on the last

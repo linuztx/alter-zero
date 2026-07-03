@@ -26,15 +26,21 @@ the logic is pure and unit-tested.
 cargo run
 ```
 
-Type a message and press **Enter**. Press **Esc** or **Ctrl+C** to quit.
+Type a message and press **Enter**. Press **Esc** or **Ctrl+C** to quit — `?`
+in an empty composer lists the keyboard shortcuts, `/` the slash commands.
 
 ## How it works
 
-ratatui's **inline viewport** (`Viewport::Inline`) renders a fixed-height region
-at the bottom of the terminal *without* taking over the screen (no alternate
-screen), so your scrollback is preserved. Two ideas make the chat feel live:
+An **inline viewport** renders a live region at the bottom of the terminal
+*without* taking over the screen (no alternate screen), so your scrollback is
+preserved. ratatui's own `Viewport::Inline` fixes its height at startup, so
+`term::InlineViewport` is a custom take on it whose height is **dynamic**: the
+input box (a full multi-line editor — cursor keys, Home/End, newlines) grows as
+your draft wraps, and the streaming strip, the `/`-palette / `?`-shortcuts /
+`@`-file-picker bands, and the session footer come and go around it. Three ideas
+make the chat feel live:
 
-1. **Finished text goes into real scrollback** via `Terminal::insert_before`,
+1. **Finished text goes into real scrollback** via `insert_before`,
    which inserts lines *above* the viewport — so completed messages become part
    of your terminal history.
 2. **Streaming commits line by line.** As the reply grows we re-wrap it to the
@@ -43,22 +49,23 @@ screen), so your scrollback is preserved. Two ideas make the chat feel live:
    more words arrive — so committing "everything but the last line" is always
    safe. The in-progress last line is shown live in the preview row above the
    input box.
+3. **Resize reflows the conversation — both ways.** When the terminal size
+   changes, the visible lines keep their old wrapping until they're redrawn. So
+   `App` keeps a `history` of finished messages, and on any size change we
+   repaint the tail that fits above the input box — re-wrapped to the new
+   width, wider *or* narrower. Older lines remain in the terminal's own
+   scrollback with their original wrapping, exactly like any past terminal
+   output.
 
-**Input is read on the main thread** (`event::poll`), and only the streaming
-reply runs on a background thread — and that thread merely *sends* on a channel,
-it never reads stdin. This matters: terminal init and `insert_before` query the
-cursor position over stdin, so a *second* thread reading stdin would steal the
-reply to that query (the classic "cursor position could not be read" error).
-Keeping all stdin reads on one thread avoids the race entirely.
-
-3. **Resize reflows the conversation — both ways.** When the terminal width
-   changes, the on-screen chat must be re-wrapped. ratatui clears the screen on a
-   width *shrink* but not on a *grow*, and either way the visible lines keep their
-   old wrapping until they're redrawn. So `App` keeps a `history` of finished
-   messages, and on any width change we clear and repaint the tail that fits above
-   the input box — re-wrapped to the new width, wider *or* narrower. Older lines
-   remain in the terminal's own scrollback with their original wrapping, exactly
-   like any past terminal output.
+**The event loop is async** (tokio, current-thread): a `select!` over a
+crossterm `EventStream` (keyboard/resize), the streamed reply (a tokio
+channel), coalesced draw ticks from the frame scheduler, and `@` file-search
+results — the codex-style loop described in `docs/async-rewrite.md`. One
+invariant matters most: the `EventStream` is the **sole stdin reader**, created
+only after terminal init has queried the cursor position over stdin — the reply
+backend merely *sends* on its channel from a background thread. A second stdin
+reader would steal the reply to that cursor query (the classic "cursor position
+could not be read" error).
 
 ### Architecture
 
@@ -67,16 +74,24 @@ without a real terminal.
 
 | File         | Responsibility                                                                 | Tested |
 |--------------|--------------------------------------------------------------------------------|--------|
-| `src/app.rs` | Conversation state + pure update logic (`on_key`, `push_chunk`, `finish_stream`, `fail_stream`, message `history`). | ✅ |
-| `src/ui.rs`  | Pure rendering: display-width word-wrap, styled message lines, the live region, commit bookkeeping. | ✅ |
+| `src/app.rs` | Conversation state + pure update logic: `on_key` → `Action`, streaming, tool calls, the slash palette, input history + Ctrl+R search, the mid-turn queue, `!` shell mode, message `history`. | ✅ |
+| `src/textarea.rs` | The editable multi-line input: a movable grapheme-aware cursor, wrapped ↑/↓, insert/delete anywhere. | ✅ |
+| `src/ui.rs`  | Pure rendering: display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. | ✅ |
 | `src/stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi`, a `CancelToken`, and the `StreamEvent` protocol. | ✅ (pure parts, token & dummy) |
-| `src/main.rs` | Thin glue: terminal init/restore, the single-threaded poll loop, backend cancel/reap on quit. | ⚪ I/O boundary |
+| `src/file_search.rs` | The pure core of the `@` file picker: token detection, fuzzy matching, ranking. | ✅ |
+| `src/frame.rs` | The frame scheduler: coalesces redraw requests into ticks, rate-limited to 120 fps. | ✅ (pure parts) |
+| `src/paste.rs` | Paste handling: burst detection + the `[Pasted Content N chars]` / `[Image #N]` placeholders. | ✅ |
+| `src/clipboard.rs` | Clipboard I/O: the Ctrl+V image read and the `/copy` write (arboard + OSC 52 fallback). | ✅ (pure parts) |
+| `src/term.rs` | The custom dynamic-height inline viewport: scrollback commits, synchronized draws, the Ctrl+O overlay. | ⚪ I/O boundary |
+| `src/main.rs` | Thin glue: the async `select!` loop, backend cancel/reap, the shell-command and file-search workers. | ⚪ I/O boundary |
 
-The loop reads keys directly and drains streamed events from a channel:
+The loop `select!`s over its four sources and redraws on coalesced ticks:
 
 ```
-keyboard / resize ─► event::poll ─► App::on_key ─► Action::{Submit,Quit,None}
-reply backend ─────► mpsc<StreamEvent> ─► try_recv ─► push_chunk / finish_stream / fail_stream
+keyboard / resize ──► EventStream ─┐
+reply backend ─────► tokio mpsc ───┼─► select! ─► App update ─► schedule_frame
+frame scheduler ───► draw-tick ────┤
+file-search worker ► tokio mpsc ───┘      coalesce + 120 fps ─► draw
 ```
 
 ## Tests
@@ -101,36 +116,47 @@ cargo build
 bash scripts/smoke.sh
 ```
 
-It types a message, lets the reply stream, and prints the captured pane.
+It drives the real binary through a series of phases — streaming, resizes, Esc
+interrupts, the palette, the queue, `!` shell commands, pastes — and asserts on
+captured panes.
 
 ## Theming
 
-All styling lives as constants at the top of `src/ui.rs` (bullets, prompt,
-colours, border) — change them in one place to retheme.
+All styling lives as constants at the top of `src/ui.rs` — bullets, prompt,
+colours, border, and the tool / status-line / palette / footer chrome — change
+them in one place to retheme.
 
 ## Plugging in a real AI later
 
 The backend is a `ReplySource` trait in `src/stream.rs`; the demo uses the
 built-in `DummyAi`. To use a real model, implement `ReplySource` (with `DummyAi`
-as a template) and change the single `let backend = DummyAi;` line in `main.rs`.
-Your `spawn` runs on a background thread that sends `StreamEvent::Chunk(..)` per
-token, polls the `CancelToken` so a quit can stop it, then sends
-`StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure, which the app
-shows as a red error notice. Nothing else changes; the loop and rendering treat
-chunks as opaque text.
+as a template) and change the single `let backend = …;` line in `main.rs::run`.
+Your `spawn(prompt, images, tx, cancel)` gets the text prompt plus the paths of
+any Ctrl+V-pasted images, and runs on a background thread that sends
+`StreamEvent::Chunk(..)` per token, polls the `CancelToken` so a quit can stop
+it, then sends `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on
+failure, which the app shows as a red error notice. Tool calls are a
+`ToolStart`/`ToolEnd` pair; a thinking phase is `ThinkingStart`/`ThinkingEnd`
+with `ThinkingChunk`s between; `model_name()` names the backend in the footer
+under the box. Nothing else changes; the loop and rendering treat chunks as
+opaque text.
 
 ## Known limitations (v1)
 
-- Single-line input (it scrolls horizontally to keep the cursor visible).
-- **Resizing the width** (wider or narrower) repaints the on-screen conversation
-  re-wrapped to the new width. One honest caveat: lines that had already scrolled
-  into the terminal's own scrollback keep their original wrapping, so after
-  resizing a *long* chat you may see the boundary messages once in the (old-width)
-  scrollback above and again in the (new-width) repaint — exactly the behaviour of
-  any program that writes to terminal scrollback.
-- **Resizing mid-stream** recovers (the in-progress reply re-commits itself),
-  but the moment of resize may briefly flicker the partial line.
-- The inline viewport height is fixed (ratatui doesn't expose a runtime setter),
-  so the live region is a fixed 4 rows.
-- No spinner, timestamps, markdown rendering, or scrollback-navigation keys yet.
-```
+- **Resizing** repaints the on-screen conversation re-wrapped to the new size.
+  One honest caveat: lines that had already scrolled into the terminal's own
+  scrollback keep their original wrapping, so after resizing a *long* chat you
+  may see the boundary messages once in the (old-width) scrollback above and
+  again in the (new-width) repaint — exactly the behaviour of any program that
+  writes to terminal scrollback.
+- **Resizing mid-stream** recovers, but the partial reply's already-committed
+  lines reappear only when the next chunk re-commits them (the repaint itself
+  is atomic — the box never flashes).
+- Tool output is collapsed inline to a one-line peek; the full transcript (with
+  every tool expanded, and the user messages' timestamps) lives in the Ctrl+O
+  view — by design.
+- The status line's token counts are an app-side estimate (≈ chars/4), not real
+  model usage.
+- No markdown rendering or scrollback-navigation keys yet.
+
+The full list lives in `docs/design.md` under *Known limitations*.

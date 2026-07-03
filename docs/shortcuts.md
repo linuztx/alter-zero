@@ -67,11 +67,17 @@ phrasing and two-column layout, keys cyan and labels dim (`SHORTCUTS_*`
 consts):
 
 ```
-/ for commands            ↑ for input history
+/ for commands            ! for shell command
+↑ for input history       ctrl+r to search history
 alt+enter for newline     ctrl+o for tool output
 esc to quit               ctrl+c to quit
-alt+↑ to edit queue
+alt+↑ to edit queue       tab to queue next turn
+ctrl+v for image paste
 ```
+
+(The `SHORTCUTS` const in `ui.rs` is the single source of truth — entries laid
+out two per row in declaration order, so the band is
+`SHORTCUTS.len().div_ceil(2)` rows tall; currently 11 entries → 6 rows.)
 
 While a turn is in flight the Esc entry reads `esc to interrupt` instead
 (codex's context-sensitive quit entry).
@@ -97,7 +103,8 @@ While a turn is in flight the Esc entry reads `esc to interrupt` instead
   performs its action (typing, ↑ recall, `/` palette); Esc only dismisses —
   idle (no quit) and mid-turn (no interrupt, band closed, turn untouched);
   `?` is ignored in the tool view.
-- `ui`: `shortcuts_rows` is 0 closed / 3 open; the lines list the bindings in
+- `ui`: `shortcuts_rows` is 0 closed / `SHORTCUTS.len().div_ceil(2)` open (6
+  rows for the current 11 entries); the lines list the bindings in
   two aligned columns (keys cyan, labels dim); the Esc entry flips between
   `to quit` and `to interrupt` with the turn; `live_height` grows by the band;
   `render_live` paints it below the box and `cursor_position` stays put when

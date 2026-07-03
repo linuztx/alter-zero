@@ -1,7 +1,8 @@
 # Async runtime rewrite (codex-style)
 
-The event loop is built on **tokio** with a `select!` over three sources, mirroring
-how openai/codex drives its TUI. This replaces the previous synchronous
+The event loop is built on **tokio** with a `select!` over four sources (input,
+reply, draw ticks, and — since `docs/file-search.md` — `@` file-search results),
+mirroring how openai/codex drives its TUI. This replaces the previous synchronous
 `event::poll` + drain loop. The *render* path (`term.rs`: diff + synchronized
 update) is unchanged — only how input/stream/redraw are scheduled changed.
 
@@ -47,8 +48,13 @@ already in this codebase; this change ports the rest.
     Some(Ok(ev)) = events.next()      => on_key / resize → schedule_frame
     Some(se)     = reply_rx.recv()    => stream event   → (commit) + schedule_frame
     Some(())     = draw_rx.recv()     => render current view
+    Some(res)    = file_rx.recv()     => @ file-search results → set_file_matches
   }
   ```
+
+  (The fourth branch arrived with the `@` file picker — its background worker
+  answers ranked matches on a tokio channel the loop can `select!` on; see
+  `docs/file-search.md`.)
 
   `schedule_frame()` after every state change requests a redraw; the scheduler
   emits a coalesced tick that drives the actual paint. `insert_before` queues its

@@ -22,7 +22,7 @@ unit-tested must be unit-tested.
   - and, **only while a turn is in flight**, a strip above the box: a **preview
     row** showing the in-progress AI line (or a running tool's blue header), a
     blank **gap row**, a **status line** —
-    `( ●    ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s · esc
+    `(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s · esc
     to interrupt)`, a
     codex/Claude-Code-style indicator (see *Status indicator* below) — then
     another blank gap row so the status clears the box's top rule. Idle, that
@@ -78,7 +78,8 @@ unit-tested must be unit-tested.
   therefore dynamic: `LIVE_MIN_HEIGHT` (a one-row box, no preview strip) at rest,
   growing one row per wrapped input line up to the terminal height (plus a preview
   + gap row while a reply streams), after which the box scrolls internally to keep
-  the cursor (always at the end) in view. The box is
+  the cursor's wrapped row in view (`ui::input_scroll` follows the cursor,
+  wherever the textarea has it). The box is
   **content-anchored** like Claude Code / codex — its top stays put and it grows
   *downward*, only scrolling the chat up once it reaches the screen bottom (never
   jumping to the bottom). Geometry is pure (`ui::live_height`, `ui::repin`) and
@@ -177,8 +178,9 @@ unit-tested must be unit-tested.
   `docs/shortcuts.md`): pressing `?` (shift-modified or not) in an **empty
   composer** toggles a keyboard-shortcuts overview in the palette's slot below
   the box — two aligned columns of `{key} for {thing}` entries (keys cyan,
-  labels dim) listing `/`, `↑`, `alt+enter`, `ctrl+o`, `esc`, `ctrl+c`, and
-  `alt+↑` (edit queue);
+  labels dim) listing `/`, `!`, `↑`, `ctrl+r`, `alt+enter`, `ctrl+o`, `esc`,
+  `ctrl+c`, `alt+↑` (edit queue), `tab` (queue next turn), and `ctrl+v`
+  (image paste);
   the `esc` entry reads `to interrupt` while a turn runs and `to quit` idle.
   With a draft in the box `?` is just a character. The band is display-only,
   never modal: any other key closes it and still performs its action — except
@@ -278,7 +280,9 @@ unit-tested must be unit-tested.
   Ctrl+O view. Esc interrupts a long one (kills the child; the cell resolves
   `⎿ Interrupted by user`). The full `!command` is recorded for ↑ recall /
   Ctrl+R (recall re-absorbs the bang). A bare `!` posts a help notice; mid-turn
-  a `!command` queues as literal text (a v1 limitation, see below).
+  a `!command` queues as a standalone `QueuedTurn::Shell` entry, run **locally**
+  when its turn comes (codex parity — never merged into a text batch; see
+  `docs/queue.md`).
 - **`@` opens a file picker** (codex's `@` mention popup, Claude-Code-style — see
   `docs/file-search.md`): whenever the cursor sits in an `@token` (an `@` at
   start-of-line or after whitespace, so `email@host` never triggers), a fuzzy
@@ -294,6 +298,26 @@ unit-tested must be unit-tested.
   placeholders cover the in-flight/empty states. Suppressed in `!` shell mode.
   The path is inserted as **plain text** — it just becomes part of the message
   (codex leaves raw file paths literal too; no on-the-wire encoding).
+- **A large paste collapses to a placeholder** (codex's large-paste handling —
+  see `docs/paste.md`): a bracketed paste (`Event::Paste`) longer than
+  `LARGE_PASTE_CHAR_THRESHOLD` (1000 chars) drops a compact
+  `[Pasted Content N chars]` placeholder into the composer instead of the text
+  (same-count collisions get a ` #2`, ` #3`, … suffix — `next_paste_placeholder`);
+  the real text is remembered in `App::pasted` and spliced back in on send
+  (`paste::expand_pastes`), and Backspace/Delete removes a placeholder
+  **atomically** (`placeholder_to_delete`), dropping its stored text. A small
+  paste inserts verbatim, indistinguishable from typing.
+- **Ctrl+V pastes a clipboard image** (codex's clipboard image attach — see
+  `docs/image-paste.md`): Ctrl+V / Ctrl+Alt+V returns the pure
+  `Action::PasteImage`; the boundary reads the system clipboard
+  (`clipboard::read_clipboard_image` — arboard, file-list first, raw RGBA
+  fallback), re-encodes to a kept temp PNG, and `App::attach_image` drops an
+  `[Image #N]` placeholder into the composer. On send the paths travel a
+  separate typed channel to the backend (`ReplySource::spawn`'s
+  `images: Vec<PathBuf>` parameter) — a real vision backend attaches the files,
+  the dummy acknowledges the count. A failed read commits a red
+  `Failed to paste image: {msg}` notice; a discarded attachment's temp PNG is
+  deleted at the boundary (`App::take_discarded_images`).
 - **Quit:** Esc (in the conversation, while **idle** — mid-turn it interrupts
   instead), Ctrl+C, or the `/quit` command. **Ctrl+C first clears a non-empty
   input** (codex's composer-clear step: a first press with a typed draft only
@@ -312,21 +336,23 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer) + built-in `DummyAi` impl (with a configurable `STARTUP_DELAY` pre-stream pause — `with_startup_delay`), a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued` turn-batches/`drain_next_batch`/`drain_last_batch`, Enter-appends + Tab-new-batch + Alt+Up edits the last batch, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch), **the `@` file picker** (`FileSearch` state + `refresh_file_search`/`file_search_query`/`set_file_matches`/`move_file_selection`/`accept_file_selection` — matches arrive asynchronously from the boundary; `docs/file-search.md`). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`FileSearch`/`InputHistory`/`SessionInfo` types. | Yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued` turn-batches/`drain_next_batch`/`drain_last_batch`, Enter-appends + Tab-new-batch + Alt+Up edits the last batch, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch), **the `@` file picker** (`FileSearch` state + `refresh_file_search`/`file_search_query`/`set_file_matches`/`move_file_selection`/`accept_file_selection` — matches arrive asynchronously from the boundary; `docs/file-search.md`). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`QueuedTurn`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`FileSearch`/`InputHistory`/`SessionInfo` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`), and `replace_range` (swap a span — the `@token` for a path). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
-| `file_search.rs` | The **pure core of the `@` file picker** (`docs/file-search.md`): `at_token` (the `@token` under the cursor — byte range + query), `fuzzy_match` (case-insensitive subsequence + score + matched-char indices), `rank_files` (filter/sort/cap), and the `AtToken`/`FileMatch` types. The filesystem walk + async plumbing are the boundary's (`main.rs`); this is all pure. | Yes |
+| `file_search.rs` | The **pure core of the `@` file picker** (`docs/file-search.md`): `at_token` (the `@token` under the cursor — byte range + query), `fuzzy_match` (ASCII-case-insensitive subsequence + score + matched-char indices), `rank_files` (filter/sort/cap), and the `AtToken`/`FileMatch` types. The filesystem walk + async plumbing are the boundary's (`main.rs`); this is all pure. | Yes |
 | `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **`@` file picker** sharing it too (`file_menu_rows`, `file_menu_lines`, `file_menu_row` — selected row cyan, query-matched chars bolded; `docs/file-search.md`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`; the red `SHELL_BULLET` composer prompt; `message_lines(Role::Shell…)` exec-cell headers, headerless shell `tool_lines`, and `conversation_lines`' flush shell cells), `render_live`, and `render_tool_view`. | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
-| `paste.rs`  | Paste-burst detection: `PasteBurst`, a pure state machine — a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop coalesces the run's redraw. | Yes |
+| `paste.rs`  | Two pure paste jobs (`docs/paste.md`): **burst detection** — `PasteBurst`, a pure state machine (a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop relaxes the run's redraws) — and the **paste placeholders** — `LARGE_PASTE_CHAR_THRESHOLD` + `next_paste_placeholder` (`[Pasted Content N chars]`, collision-suffixed), `next_image_placeholder` (`[Image #N]`, `docs/image-paste.md`), `expand_pastes` (splice the real text back on send), and `placeholder_to_delete` (Backspace removes a placeholder atomically). | Yes |
+| `clipboard.rs` | Clipboard I/O — the boundary for **Ctrl+V image paste** (`read_clipboard_image`: clipboard image or copied image file → a kept temp PNG the backend reads by path — `docs/image-paste.md`) and **`/copy`** (`copy_to_clipboard`: arboard with an OSC 52 terminal-escape fallback for headless/SSH/tmux — `docs/copy.md`). The `base64`/OSC 52 framing is a tested pure core; the clipboard/filesystem I/O is smoke-covered like `term.rs`. | Pure parts: yes (I/O: smoke) |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (queues scrollback lines for the next frame — `docs/flicker.md`), `draw` (pending-flush + re-pin + diff + cursor, one synchronized update), `reflow` (tail rebuild + live-region paint, one frame), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore (restore flushes leftovers). | No (I/O boundary) |
 | `main.rs`   | Thin glue: single-threaded **async (tokio) `select!`** loop over input (`EventStream`), reply events (tokio channel), draw ticks, **and `@` file-search results** (a fourth channel); drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit; runs a `!command` locally (`run_shell`/`spawn_shell_command` — `sh -c` on a thread, output back over the reply channel as a tool, `docs/shell-command.md`); runs the **`@` file-search worker** (`spawn_file_search_worker`/`walk_files`/`dispatch_file_search` — a background walk+rank thread, `docs/file-search.md`). | No (tiny I/O boundary) |
 
 ### Data flow
 
 The loop is **async** (tokio, single-threaded `current_thread` runtime), built as a
-`select!` over three sources — exactly how openai/codex drives its TUI. Terminal
+`select!` over four sources — exactly how openai/codex drives its TUI. Terminal
 input arrives on a crossterm **`EventStream`**, the reply streams in on a tokio
-channel, and **draw ticks** come from the frame scheduler. `select!` polls its
+channel, **draw ticks** come from the frame scheduler, and the **`@` file-search
+worker** answers on a fourth channel (`docs/file-search.md`). `select!` polls its
 branches in randomized order, so input and draws can't starve each other (codex's
 explicit round-robin fairness, for free). The async-rewrite design lives in
 `docs/async-rewrite.md`.
@@ -354,23 +380,24 @@ burst must finish rendering near-instantly) and Phase 15 (a raw byte recording o
 streaming turn must show every live-region clear inside a sync block).
 
 ```
-keyboard / resize ─► EventStream ─┐
-reply backend ───► tokio mpsc ────┤─► select! ─► App::on_key / push_chunk / start_tool / … ─► schedule_frame
-frame scheduler ─► draw-tick ─────┘                                                          │
-                                                              draw tick ◄── coalesce + 120fps ┘ ─► draw / draw_overlay
+keyboard / resize ──► EventStream ─┐
+reply backend ─────► tokio mpsc ───┤─► select! ─► App::on_key / push_chunk / start_tool / set_file_matches / … ─► schedule_frame
+frame scheduler ───► draw-tick ────┤                                                          │
+file-search worker ► tokio mpsc ───┘                           draw tick ◄── coalesce + 120fps ┘ ─► draw / draw_overlay
 ```
 
 - On `Submit(text)`: `insert_before` the user message and a blank spacer, then
-  `backend.spawn(text, tx, cancel)` — a thread that sends `Chunk(..)*` with
-  `ToolStart`/`ToolEnd` pairs interleaved, then `StreamDone` (or `Error(msg)`).
-  The loop keeps the thread's `JoinHandle` and `CancelToken` so quitting
-  mid-stream cancels and reaps it cleanly.
+  `backend.spawn(text, images, tx, cancel)` — the Ctrl+V image paths drained
+  from `App::take_submission_images` (`docs/image-paste.md`) — a thread that
+  sends `Chunk(..)*` with `ToolStart`/`ToolEnd` pairs interleaved, then
+  `StreamDone` (or `Error(msg)`). The loop keeps the thread's `JoinHandle` and
+  `CancelToken` so quitting mid-stream cancels and reaps it cleanly.
 - On `Chunk`: append to the streaming buffer; commit any newly-stable lines to
   scrollback; redraw (preview row shows the partial last line).
 - On `ToolStart{name,args}`: `flush_streaming_segment` finalises the run of text
   before the tool (so it slots ahead of the tool in order) and commits its
   remainder; `start_tool` shows the tool running (blue) in the preview row.
-- On `ToolEnd{output,ok}`: `end_tool` records the finished tool; commit it
+- On `ToolEnd{output,ok,truncated}`: `end_tool` records the finished tool; commit it
   *collapsed* (green/red) to scrollback. The full output is kept for the Ctrl+O
   view.
 - On `ThinkingStart`/`ThinkingEnd`: the loop flips its `thinking_start` `Instant`
@@ -420,8 +447,11 @@ frame scheduler ─► draw-tick ─────┘                             
 
 - `Role { User, Assistant, Error, System }` — drives bullet/colour (errors red,
   system notices cyan).
-- `Action { None, Submit(String), ToggleToolView, Notice(String), Clear,
-  Copy(Option<String>), Interrupt, Quit }` — returned by `App::on_key`.
+- `Action { None, Submit(String), PasteImage, ToggleToolView, Notice(String),
+  Clear, Copy(Option<String>), RunShell(String), Interrupt, Quit }` — returned
+  by `App::on_key` (`PasteImage` sends the loop to the clipboard for a Ctrl+V
+  image — `docs/image-paste.md`; `RunShell` carries an idle `!command` to run
+  locally — `docs/shell-command.md`).
 - `View { Conversation, ToolOutput }` — which screen is showing (Ctrl+O toggles).
 - `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Help,
   Copy, Quit }` + the `COMMANDS` registry (`/help`, `/clear`, `/copy`, `/quit`) — the
@@ -432,8 +462,11 @@ frame scheduler ─► draw-tick ─────┘                             
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
   displayed only for **user** messages, in the Ctrl+O transcript).
 - `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (blue/green/red).
-- `ToolCall { name, args, status, output, timestamp }` — one tool invocation;
-  `current_tool` while running, then recorded in history (stamped when it finishes).
+- `ToolCall { name, args, status, output, timestamp, shell, truncated }` — one
+  tool invocation; `current_tool` while running, then recorded in history
+  (stamped when it finishes). `shell` marks a `!` command's headerless exec
+  cell, `truncated` a `!` output cut at the in-memory cap (a dim `…` appended
+  in the expanded view) — `docs/shell-command.md`.
 - `TokenArrow { Down, Up }` + `TurnStatus { verb, done_verb, tokens, arrow,
   elapsed, thinking }` — the live status of the turn in flight (`App::status`);
   the `Duration`s are written by the boundary each frame (one value drives the
@@ -444,6 +477,11 @@ frame scheduler ─► draw-tick ─────┘                             
 - `HistoryItem { Message(Message), Tool(ToolCall), Summary(TurnSummary) }` — one
   ordered history entry; messages, tools, and per-turn summaries share
   `App::history` so they repaint interleaved in order.
+- `QueuedTurn { Messages { texts, images }, Shell(String) }` — one typed entry
+  in the mid-turn queue (`App::queued`, a `VecDeque` drained one entry per
+  turn-end): an Enter-batched text turn (its Ctrl+V attachments riding along as
+  `(placeholder, path)` pairs) dispatched to the model, or a standalone `!`
+  command run locally. See `docs/queue.md`.
 - `StreamError { partial: Option<String>, tool: Option<ToolCall>, error: String }`
   — what `App::fail_stream` hands the loop to flush after a backend failure (the
   `tool` is one the error killed mid-run, resolved as failed —
@@ -451,13 +489,16 @@ frame scheduler ─► draw-tick ─────┘                             
 - `InterruptedTurn { partial: Option<String>, tool: Option<ToolCall> }` — what
   `App::interrupt_turn` hands the loop to flush after an Esc interrupt (the
   `INTERRUPT_NOTICE` const is the committed notice text).
-- `StreamEvent { Chunk(String), ToolStart{name,args}, ToolEnd{output,ok},
+- `StreamEvent { Chunk(String), ToolStart{name,args}, ToolEnd{output,ok,truncated},
   ThinkingStart, ThinkingChunk(String), ThinkingEnd, Error(String), StreamDone }`
   (in `stream.rs`) — what a backend sends to the loop (`ThinkingStart`/`ThinkingEnd`
   drive the live `Thinking for Ns`; the `ThinkingChunk` reasoning deltas between
-  them are counted into the token tally, never rendered).
+  them are counted into the token tally, never rendered; `ToolEnd`'s `truncated`
+  flags a `!` output cut at the in-memory cap — a backend tool sends `false`).
 - `ReplySource` (trait) + `DummyAi` (impl) + `CancelToken` (in `stream.rs`) — the
-  pluggable backend seam. `spawn(prompt, tx, cancel) -> JoinHandle<()>`; a real
+  pluggable backend seam. `spawn(prompt, images, tx, cancel) -> JoinHandle<()>`
+  (`images: Vec<PathBuf>` — the Ctrl+V-pasted image paths, codex's typed
+  `LocalImage` channel; the dummy only acknowledges the count); a real
   model is a drop-in `ReplySource` (emit `ToolStart`/`ToolEnd` for tool calls) and
   the loop never changes.
 
@@ -546,7 +587,9 @@ frame scheduler ─► draw-tick ─────┘                             
   Enter → `RunShell(trimmed)` recording `!cmd` (recall re-enters the mode, a
   plain recall clears it, a Ctrl+R search suspends/restores it, accepting a
   `!entry` re-enters it); an empty bang → the help `Notice`, staying in the
-  mode; mid-turn Enter queues the re-prefixed literal; `begin_shell` records
+  mode; mid-turn Enter queues a standalone `QueuedTurn::Shell` entry (run
+  locally at its turn, never merged into a text batch — `docs/queue.md`);
+  `begin_shell` records
   the `Role::Shell` header and flags the status + tool; `end_turn` returns no
   summary for a shell turn; an interrupt resolves the command failed.
 - `ui` (`!` shell): `message_lines(Role::Shell…)` is the dark user-style line
@@ -698,8 +741,6 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
 
 ## Known limitations (v1 — iterate later)
 
-- Input has no cursor navigation: text is appended/deleted at the end only
-  (Alt+Enter inserts a newline there). Arrow-key editing is future work.
 - The box is content-anchored, so when it grows past the screen bottom the chat
   scrolls into the terminal's real scrollback; shrinking it again can't pull that
   chat back (terminals can't reverse-scroll their own scrollback), so after a
@@ -749,12 +790,12 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   real model usage — the dummy has no tokenizer; a real `ReplySource` could report
   exact counts later. The working/done verbs cycle deterministically (a turn
   counter), not at random. See `docs/status-indicator.md`.
-- `!` shell commands run only from an **idle** composer (`docs/shell-command.md`);
-  mid-turn a `!command` queues as a normal follow-up and is sent to the backend as
-  literal text (codex dispatches queued shell commands locally). They run under
-  `sh -c` with **no sandbox** and no timeout (codex caps at 1 hour); stdout and
-  stderr are concatenated, not interleaved; the interrupt notice is the shared
-  `Conversation interrupted…` text.
+- `!` shell commands (`docs/shell-command.md`) run under `sh -c` with **no
+  sandbox** and no timeout (codex caps at 1 hour); stdout and stderr are
+  concatenated, not interleaved; the interrupt notice is the shared
+  `Conversation interrupted…` text. (Mid-turn `!command`s are no longer a
+  limitation: they queue as standalone `QueuedTurn::Shell` entries and run
+  locally when their turn comes — codex parity, `docs/queue.md`.)
 - The `@` file picker (`docs/file-search.md`) walks the cwd **once per worker
   lifetime** (cached on first use), so files created mid-session don't appear
   until restart; the walk is **dependency-free** — it skips hidden entries and a
@@ -765,4 +806,3 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   the cursor out of an `@token` leaves the band open until the next edit (it
   re-derives on edits only, like the palette).
 - No markdown rendering or scrollback nav keys (YAGNI).
-```

@@ -86,8 +86,10 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stal
   - `FileMatch { path: String, score: i32, indices: Vec<usize> }` — `indices`
     are byte offsets of matched chars (for popup highlighting).
   - `fuzzy_match(query, candidate) -> Option<(i32, Vec<usize>)>` —
-    case-insensitive **subsequence** match; scores boundary/contiguous/basename
-    hits higher. Empty query matches everything (score 0).
+    ASCII-case-insensitive **subsequence** match (the fold is
+    `eq_ignore_ascii_case`, so non-ASCII characters must match exactly); scores
+    boundary/contiguous/basename hits higher. Empty query matches everything
+    (score 0).
   - `rank_files(query, &[String], limit) -> Vec<FileMatch>` — filter+sort
     (score desc, then shorter path, then lexicographic), capped at `limit`.
 - `app.rs`:
@@ -134,7 +136,7 @@ A third band sharing the palette's slot below the box:
 
 - `file_search` (unit): `at_token` triggers after whitespace/start, not inside
   `email@host`, finds the token around the cursor, empty query for a lone `@`;
-  `fuzzy_match` is a case-insensitive subsequence with correct indices and
+  `fuzzy_match` is an ASCII-case-insensitive subsequence with correct indices and
   None on no match; `rank_files` ranks basename/contiguous hits first, sorts
   ties by length then name, caps at the limit, and lists everything for an
   empty query.
