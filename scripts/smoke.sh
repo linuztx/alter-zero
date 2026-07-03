@@ -117,7 +117,19 @@ for _ in $(seq 1 60); do
 done
 tmux send-keys -t "$S" C-o
 sleep 0.4
-overlay="$(tmux capture-pane -t "$S" -p)"
+# The pager opens pinned to the bottom (tail-following the live stream), so the
+# user turn near the top has already scrolled off — jump Home, like Phase 29
+# does, to check it's actually in the transcript. Poll rather than a fixed
+# sleep (this file's own rule): the redraw races the still-streaming reply.
+tmux send-keys -t "$S" Home
+overlay=""
+for _ in $(seq 1 20); do # up to ~3s
+	overlay="$(tmux capture-pane -t "$S" -p)"
+	if printf '%s' "$overlay" | grep -qF "$USER_MSG"; then
+		break
+	fi
+	sleep 0.15
+done
 echo "==== captured pane (Ctrl+O tool-output view) ===="
 printf '%s\n' "$overlay"
 tmux send-keys -t "$S" C-o # back to the conversation
