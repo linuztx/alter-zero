@@ -215,10 +215,13 @@ The `?` shortcuts band gains a `! for shell command` entry.
   block of up to `TOOL_PEEK_LINES` lines (continuation lines aligned under the
   corner) with a `… +N lines (ctrl+o to expand)` hint when more is hidden,
   `⎿ Running…` while running; the Ctrl+O `tool_full_lines` is headerless too
-  (no `● ls` bullet) and shows the retained output uncapped under `⎿`; a
+  (no `● ls` bullet) and shows the retained output uncapped under `⎿`,
+  whitespace preserved verbatim (`wrap_verbatim` — `ls -l`/`tree` alignment
+  survives; `wrap_text` stays for messages); a
   truncated output (`tool.truncated` set) appends a dim `…`
   (`TOOL_TRUNCATED_MARKER`) line after the last retained line in the expanded
-  view, while a complete output appends nothing; `conversation_lines` keeps the
+  view, while a complete output appends nothing; `conversation_lines` and
+  `transcript_lines` keep the
   cell flush (no spacer after the Shell header); shell mode swaps the
   composer prompt to a red `! `; `footer_rows` is 1 in the mode without session
   info; the footer slot shows the red `Shell mode`, displacing

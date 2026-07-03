@@ -15,6 +15,7 @@ use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
+use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
@@ -90,6 +91,14 @@ const TOOL_PEEK_LINES: usize = 4;
 /// (`tool_full_lines`) when it was cut at the in-memory cap (`tool.truncated`),
 /// to show that more output was dropped. See `docs/shell-command.md`.
 const TOOL_TRUNCATED_MARKER: &str = "…";
+/// Placeholder body for a finished tool that produced no output.
+const TOOL_NO_OUTPUT: &str = "(no output)";
+/// Placeholder body for a still-executing `!` shell command — sentence case,
+/// since the `⎿ Running…` row *opens* the headerless cell.
+const TOOL_RUNNING: &str = "Running…";
+/// Placeholder peek for a still-executing backend tool — lowercase, sitting
+/// *under* its `● name(args)` header.
+const TOOL_RUNNING_LOWER: &str = "running…";
 
 /// Blue — a tool that is still executing.
 const TOOL_RUNNING_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
@@ -102,6 +111,17 @@ const TOOL_NAME_COLOR: Color = AI_COLOR;
 /// Dim grey — a tool's argument summary and its collapsed peek/hint.
 const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
 
+/// The running placeholder for a tool — the shell-vs-backend casing rule
+/// ([`TOOL_RUNNING`] / [`TOOL_RUNNING_LOWER`]) in one place, so `tool_lines`
+/// and `tool_full_lines` can never drift apart.
+fn tool_running_marker(shell: bool) -> &'static str {
+    if shell {
+        TOOL_RUNNING
+    } else {
+        TOOL_RUNNING_LOWER
+    }
+}
+
 // --- Tool-output view (the Ctrl+O full-screen overlay). A one-row title above a
 // scrolling body: the full conversation transcript — every message plus every
 // tool call's *complete* (expanded) output. ---
@@ -112,6 +132,8 @@ const TOOL_VIEW_TITLE: &str = "Conversation";
 const TOOL_VIEW_HINT: &str = "  ↑/↓ PgUp/PgDn scroll · ctrl+o / esc return";
 /// Rows of chrome above the scrolling body (just the title row).
 const TOOL_VIEW_TITLE_ROWS: u16 = 1;
+/// The dim placeholder shown when the transcript has nothing to list yet.
+const TOOL_VIEW_EMPTY: &str = "Nothing here yet.";
 
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
 // its wall-clock stamp: dim, right-aligned on its own line below the message
@@ -227,6 +249,8 @@ const MENU_DESC_COL: usize = 25;
 const MENU_SELECTED_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
 /// Dim grey — an unselected row (name and description alike).
 const MENU_DIM_COLOR: Color = TOOL_DIM_COLOR;
+/// The palette's single placeholder row when the `/token` matches no command.
+const MENU_NO_MATCH: &str = "No matching commands";
 
 // --- The `@` file picker. A file list pinned **below the input box** (the
 // palette's slot — the bands never show together), opened by an `@token` under
@@ -640,21 +664,23 @@ fn wrap_segment(segment: &str, width: usize) -> Vec<String> {
         let word_w = cols(word);
 
         if word_w > width {
-            // Hard-break a word that can't fit on any line, splitting on column
-            // boundaries (a single wide char that overflows a 1-column line is
-            // placed alone — a char can't be split further).
+            // Hard-break a word that can't fit on any line, splitting on
+            // **grapheme** boundaries (like `textarea::place_word`) so a ZWJ
+            // emoji cluster is never severed mid-joiner; measured in columns —
+            // a single cluster that overflows a narrow line is placed alone (a
+            // grapheme can't be split further).
             if cur_w > 0 {
                 lines.push(std::mem::take(&mut cur));
                 cur_w = 0;
             }
-            for ch in word.chars() {
-                let ch_w = char_cols(ch);
-                if cur_w > 0 && cur_w + ch_w > width {
+            for g in word.graphemes(true) {
+                let g_w = cols(g);
+                if cur_w > 0 && cur_w + g_w > width {
                     lines.push(std::mem::take(&mut cur));
                     cur_w = 0;
                 }
-                cur.push(ch);
-                cur_w += ch_w;
+                cur.push_str(g);
+                cur_w += g_w;
             }
             continue;
         }
@@ -681,6 +707,43 @@ fn wrap_segment(segment: &str, width: usize) -> Vec<String> {
         lines.push(cur);
     }
     lines
+}
+
+/// Wrap `text` to `width` columns **preserving whitespace verbatim** — the
+/// counterpart of [`wrap_text`] for pre-formatted output (a tool's captured
+/// stdout: `ls -l` columns, `tree` guides, indented code), where collapsing
+/// space runs would destroy the alignment. Each `'\n'`-separated line keeps
+/// its bytes exactly; a line wider than `width` is hard-broken on grapheme
+/// boundaries, measured in display columns like [`wrap_segment`]'s hard break
+/// (an overflowing cluster is placed alone — it can't be split further).
+/// `width == 0` disables wrapping, like [`wrap_text`]. Used by
+/// [`tool_full_lines`], so the Ctrl+O expanded output is at least as faithful
+/// as the inline peek's `truncate_cols`; **messages** keep [`wrap_text`].
+fn wrap_verbatim(text: &str, width: u16) -> Vec<String> {
+    if width == 0 {
+        return text.split('\n').map(str::to_string).collect();
+    }
+    let width = width as usize;
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        if line.is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        let mut cur = String::new();
+        let mut cur_w = 0; // display width of `cur` in columns
+        for g in line.graphemes(true) {
+            let g_w = cols(g);
+            if cur_w > 0 && cur_w + g_w > width {
+                out.push(std::mem::take(&mut cur));
+                cur_w = 0;
+            }
+            cur.push_str(g);
+            cur_w += g_w;
+        }
+        out.push(cur);
+    }
+    out
 }
 
 /// Build the styled, wrapped lines for one message.
@@ -972,7 +1035,7 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let matches = matching_commands(query);
     if matches.is_empty() {
         return vec![Line::from(Span::styled(
-            "No matching commands".to_string(),
+            MENU_NO_MATCH.to_string(),
             Style::new().fg(MENU_DIM_COLOR),
         ))];
     }
@@ -1405,8 +1468,8 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         // (Truncation of an over-cap output is marked only in the expanded view;
         // inline, the `… +N lines (ctrl+o to expand)` hint already signals more.)
         return match tool.status {
-            ToolStatus::Running => vec![result_row(0, "Running…".to_string())],
-            _ if out_lines.is_empty() => vec![result_row(0, "(no output)".to_string())],
+            ToolStatus::Running => vec![result_row(0, tool_running_marker(tool.shell).to_string())],
+            _ if out_lines.is_empty() => vec![result_row(0, TOOL_NO_OUTPUT.to_string())],
             _ => {
                 let shown = out_lines.len().min(TOOL_PEEK_LINES);
                 let mut lines: Vec<Line> = out_lines[..shown]
@@ -1428,8 +1491,8 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
 
     // A backend tool: coloured header + a single collapsed peek line.
     let peek = match tool.status {
-        ToolStatus::Running => "running…".to_string(),
-        _ if out_lines.is_empty() => "(no output)".to_string(),
+        ToolStatus::Running => tool_running_marker(tool.shell).to_string(),
+        _ if out_lines.is_empty() => TOOL_NO_OUTPUT.to_string(),
         _ => truncate_cols(out_lines[0], peek_width),
     };
     let mut lines = vec![
@@ -1450,25 +1513,22 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
 }
 
 /// One tool call's full lines for the transcript view: its **complete** output
-/// (wrapped), or `running…` / `(no output)` when there is none yet. The expanded
-/// counterpart of [`tool_lines`]. A `!` shell command stays **headerless** here
-/// too (the `! pwd` dark header is the `Role::Shell` message above it) and its
-/// output renders as the same `⎿` block, uncapped; a backend tool keeps its
-/// coloured `● name(args)` header with the output indented under it. An
-/// over-cap shell output ([`ToolCall::truncated`]) appends a dim
-/// [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
+/// (wrapped **verbatim** — [`wrap_verbatim`], so `ls -l`/`tree` alignment and
+/// indentation survive), or `running…` / `(no output)` when there is none yet.
+/// The expanded counterpart of [`tool_lines`]. A `!` shell command stays
+/// **headerless** here too (the `! pwd` dark header is the `Role::Shell`
+/// message above it) and its output renders as the same `⎿` block, uncapped; a
+/// backend tool keeps its coloured `● name(args)` header with the output
+/// indented under it. An over-cap shell output ([`ToolCall::truncated`])
+/// appends a dim [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
 fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
-    let running_word = if tool.shell {
-        "Running…"
-    } else {
-        "running…"
-    };
+    let running_word = tool_running_marker(tool.shell);
     if tool.shell {
         let body_width = width.saturating_sub(cols(TOOL_RESULT_PREFIX) as u16).max(1);
         let mut body = match (tool.status, tool.output.is_empty()) {
             (ToolStatus::Running, true) => vec![running_word.to_string()],
-            (_, true) => vec!["(no output)".to_string()],
-            _ => wrap_text(&tool.output, body_width),
+            (_, true) => vec![TOOL_NO_OUTPUT.to_string()],
+            _ => wrap_verbatim(&tool.output, body_width),
         };
         // The output was cut at the in-memory cap — mark the end so the user
         // knows more was dropped (it is not recoverable; nothing to expand to).
@@ -1487,8 +1547,8 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![tool_header(tool)];
     let body = match (tool.status, tool.output.is_empty()) {
         (ToolStatus::Running, true) => vec![running_word.to_string()],
-        (_, true) => vec!["(no output)".to_string()],
-        _ => wrap_text(&tool.output, content_width),
+        (_, true) => vec![TOOL_NO_OUTPUT.to_string()],
+        _ => wrap_verbatim(&tool.output, content_width),
     };
     for out in body {
         lines.push(Line::from(vec![
@@ -1674,7 +1734,13 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
         }
-        lines.push(Line::default());
+        // Blank spacer after every item — except a shell command's header
+        // ([`is_shell_header`]): its tool's `⎿` output sits flush below it,
+        // whether the tool is already in history or still the running live
+        // tail, so the overlay renders the same exec cell as the inline view.
+        if !is_shell_header(item) {
+            lines.push(Line::default());
+        }
     }
     // Live tail: the in-progress assistant text, then the running tool (only one
     // is ever active given how a turn streams, but both are handled in order).
@@ -1690,7 +1756,7 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
-            "Nothing here yet.".to_string(),
+            TOOL_VIEW_EMPTY.to_string(),
             Style::new().fg(TOOL_DIM_COLOR),
         )));
     }
@@ -1760,6 +1826,15 @@ pub fn final_commit(text: &str, width: u16, committed: usize) -> Vec<Line<'stati
     lines[start..].to_vec()
 }
 
+/// Whether `item` is a `!` shell command's header message (`Role::Shell`).
+/// Such an item gets **no** blank spacer after it: its tool's `⎿` output (or
+/// the live `⎿ Running…` preview) sits flush below, forming one exec cell
+/// (docs/shell-command.md). Shared by [`conversation_lines`] and
+/// [`transcript_lines`] so the inline view and the Ctrl+O overlay agree.
+fn is_shell_header(item: &HistoryItem) -> bool {
+    matches!(item, HistoryItem::Message(m) if m.role == Role::Shell)
+}
+
 /// Build the whole conversation as styled lines, mirroring how it was streamed
 /// to scrollback: each message's wrapped lines (or each tool call's collapsed
 /// peek), with a blank spacer after every item. Used to repaint after a resize
@@ -1773,11 +1848,9 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
         }
-        // Blank spacer after every item — except a shell command's header
-        // message: its tool's `⎿` output (or the live `⎿ Running…` preview)
-        // sits flush below it, forming one cell (docs/shell-command.md).
-        let shell_header = matches!(item, HistoryItem::Message(m) if m.role == Role::Shell);
-        if !shell_header {
+        // Blank spacer after every item — except a shell command's header:
+        // its cell stays flush ([`is_shell_header`]).
+        if !is_shell_header(item) {
             lines.push(Line::default());
         }
     }
@@ -1943,6 +2016,93 @@ mod tests {
         // "e" + combining acute is one column wide, so it fits a width-1 line
         // instead of being hard-broken onto two lines like a 2-char count implies.
         assert_eq!(wrap_text("e\u{0301}", 1), vec!["e\u{0301}"]);
+    }
+
+    #[test]
+    fn wrap_text_hard_break_keeps_zwj_emoji_clusters_whole() {
+        // A family emoji is one grapheme cluster (four emoji joined by U+200D
+        // zero-width joiners). The hard-break must split the over-long "word"
+        // only on grapheme boundaries — never inside a cluster, which would
+        // leave a bare ZWJ at a line end and render broken glyphs.
+        const FAMILY: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+        let text = FAMILY.repeat(50);
+        let lines = wrap_text(&text, 78);
+        assert!(lines.len() > 1, "the run is hard-broken across lines");
+        for line in &lines {
+            assert!(
+                !line.ends_with('\u{200D}'),
+                "no line ends mid-cluster on a joiner: {line:?}"
+            );
+            assert!(
+                line.len() % FAMILY.len() == 0
+                    && line.matches(FAMILY).count() * FAMILY.len() == line.len(),
+                "every line is whole clusters only: {line:?}"
+            );
+        }
+        assert_eq!(lines.concat(), text, "no text lost by the break");
+    }
+
+    // --- wrap_verbatim (the whitespace-preserving wrap for tool output) ---
+
+    #[test]
+    fn wrap_verbatim_preserves_leading_indentation() {
+        assert_eq!(
+            wrap_verbatim("    fn main() {", 40),
+            vec!["    fn main() {"]
+        );
+    }
+
+    #[test]
+    fn wrap_verbatim_preserves_internal_space_runs() {
+        // `ls -l` / `tree` output is column-aligned by space runs; every byte
+        // of a line that fits must survive verbatim.
+        assert_eq!(
+            wrap_verbatim("-rw-r--r--  1 user   42 a.txt\n│   ├── b", 60),
+            vec!["-rw-r--r--  1 user   42 a.txt", "│   ├── b"]
+        );
+    }
+
+    #[test]
+    fn wrap_verbatim_preserves_empty_lines() {
+        assert_eq!(wrap_verbatim("a\n\nb", 10), vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn wrap_verbatim_hard_breaks_wide_chars_on_column_boundaries() {
+        // CJK glyphs are two columns each, so only two fit in width 4 — the
+        // break is display-width-aware like wrap_text's.
+        assert_eq!(wrap_verbatim("你好世界", 4), vec!["你好", "世界"]);
+    }
+
+    #[test]
+    fn wrap_verbatim_hard_breaks_on_grapheme_boundaries() {
+        // A ZWJ family-emoji cluster is never severed mid-joiner.
+        const FAMILY: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}\u{200D}\u{1F466}";
+        let text = FAMILY.repeat(10);
+        let lines = wrap_verbatim(&text, 8);
+        assert!(lines.len() > 1, "hard-broken across lines");
+        for line in &lines {
+            assert!(
+                !line.ends_with('\u{200D}'),
+                "no line ends mid-cluster: {line:?}"
+            );
+        }
+        assert_eq!(lines.concat(), text, "no text lost by the break");
+    }
+
+    #[test]
+    fn wrap_verbatim_keeps_spaces_at_a_hard_break() {
+        // Unlike wrap_text, the break invents no word boundaries and drops no
+        // whitespace: the wrapped pieces re-concatenate to the original line.
+        let line = "  indented   with  runs  and  more  padding  ";
+        let lines = wrap_verbatim(line, 10);
+        assert!(lines.len() > 1);
+        assert_eq!(lines.concat(), line);
+    }
+
+    #[test]
+    fn wrap_verbatim_with_zero_width_does_not_wrap() {
+        assert_eq!(wrap_verbatim("a  b", 0), vec!["a  b"]);
     }
 
     // --- message_lines ---
@@ -2173,6 +2333,48 @@ mod tests {
     fn tool_full_lines_colours_the_header_by_status() {
         let lines = tool_full_lines(&tool("Read", "f", ToolStatus::Ok, "x"), 80);
         assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_OK_COLOR));
+    }
+
+    #[test]
+    fn a_shell_tools_full_output_keeps_its_whitespace_verbatim() {
+        // `ls -l` columns / `tree` guides / indented code must survive the
+        // expanded (Ctrl+O) view byte-for-byte: the collapsed inline peek shows
+        // these lines verbatim (`truncate_cols`), so the "full output" view
+        // must never be *less* faithful by collapsing the space runs.
+        let mut t = tool(
+            "tree",
+            "",
+            ToolStatus::Ok,
+            "/home/me\n│   ├── a\n    indented   run",
+        );
+        t.shell = true;
+        let lines: Vec<String> = tool_full_lines(&t, 80).iter().map(plain).collect();
+        assert_eq!(
+            lines,
+            vec!["  ⎿ /home/me", "    │   ├── a", "        indented   run",],
+            "every output line verbatim under the corner"
+        );
+    }
+
+    #[test]
+    fn a_backend_tools_full_output_keeps_its_whitespace_verbatim() {
+        let lines: Vec<String> = tool_full_lines(
+            &tool(
+                "Bash",
+                "ls -l",
+                ToolStatus::Ok,
+                "total 8\n-rw-  1 user   42 a",
+            ),
+            80,
+        )
+        .iter()
+        .map(plain)
+        .collect();
+        assert_eq!(
+            lines,
+            vec!["● Bash(ls -l)", "  total 8", "  -rw-  1 user   42 a"],
+            "the indented body preserves the output's space runs"
+        );
     }
 
     #[test]
@@ -4052,6 +4254,34 @@ mod tests {
             app.input = TextArea::from_text(&format!("{SWEEP_TEXT}\n{SWEEP_TEXT}"));
             app
         };
+        let file_picker = {
+            // An open `@` picker with match indices deep enough in a long
+            // mixed-width path that tiny widths truncate past them, so
+            // `file_menu_row`'s truncate + match-span grouping is swept too.
+            let long = "src/some/deeply/nested/世界 with spaces/🎉emoji/averylongfilename.rs";
+            let mut app = base();
+            app.input = TextArea::from_text("@src");
+            app.file_search = Some(FileSearch {
+                selected: 0,
+                query: "src".into(),
+                matches: vec![
+                    FileMatch {
+                        path: "src/app.rs".into(),
+                        score: 10,
+                        indices: vec![0, 1, 2],
+                    },
+                    FileMatch {
+                        path: long.into(),
+                        // Byte offsets of `s`, `r`, `c`, `世`, `界`, `🎉`, `a`,
+                        // and `l` — the last five land past a narrow truncation.
+                        score: 5,
+                        indices: vec![0, 1, 2, 23, 26, 42, 52, 57],
+                    },
+                ],
+                waiting: false,
+            });
+            app
+        };
         vec![
             ("idle", base()),
             ("streaming", streaming()),
@@ -4060,6 +4290,7 @@ mod tests {
             ("menu", menu),
             ("shortcuts", shortcuts),
             ("draft", draft),
+            ("file_picker", file_picker),
         ]
     }
 
@@ -4078,7 +4309,7 @@ mod tests {
                 for &h in &heights {
                     let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                         // mirror main.rs::draw
-                        let band = menu_rows(app) + shortcuts_rows(app);
+                        let band = menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app);
                         let lh = live_height(
                             &app.input,
                             w,
@@ -4527,6 +4758,64 @@ mod tests {
             .map(|l| plain(l).trim_end().to_string())
             .collect();
         assert_eq!(texts, vec!["! pwd", "  ⎿ /home", ""]);
+    }
+
+    #[test]
+    fn transcript_lines_keep_the_shell_cell_flush() {
+        // The Ctrl+O transcript renders the same shell cell as the inline view
+        // (docs/shell-command.md): no blank spacer between the `! pwd` header
+        // and its `⎿` output either.
+        let mut t = tool("pwd", "", ToolStatus::Ok, "/home");
+        t.shell = true;
+        let mut app = App::new();
+        app.history = vec![
+            HistoryItem::Message(Message {
+                role: Role::Shell,
+                text: "pwd".to_string(),
+                timestamp: String::new(),
+            }),
+            HistoryItem::Tool(t),
+        ];
+        let texts: Vec<String> = transcript_lines(&app, 40)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(texts, vec!["! pwd", "  ⎿ /home", ""]);
+    }
+
+    #[test]
+    fn the_running_shell_transcript_sits_flush_under_its_header() {
+        // The live tail too: while a `!` command runs, its committed header is
+        // the last history item and the running tool renders flush below it.
+        let mut app = App::new();
+        app.begin_shell("sleep 5");
+        let texts: Vec<String> = transcript_lines(&app, 40)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        let header = texts
+            .iter()
+            .position(|t| t == "! sleep 5")
+            .expect("the shell header is in the transcript");
+        assert_eq!(
+            texts[header + 1],
+            "  ⎿ Running…",
+            "no blank between the header and the running peek: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn a_backend_tool_keeps_its_transcript_spacing() {
+        // Only the shell cell is flush — a backend tool still gets the blank
+        // spacer after the preceding message, as today.
+        let app = transcript_fixture();
+        let texts: Vec<String> = transcript_lines(&app, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        let msg = texts.iter().position(|t| t == "● let me check").unwrap();
+        assert_eq!(texts[msg + 1], "", "blank spacer after the message");
+        assert_eq!(texts[msg + 2], "● Read(f)", "then the tool header");
     }
 
     #[test]
