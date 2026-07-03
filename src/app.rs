@@ -218,12 +218,19 @@ fn estimate_tokens(text: &str) -> usize {
 const IMAGE_INPUT_TOKENS: usize = 256;
 
 /// What a backend error leaves behind, handed to the event loop to flush to
-/// scrollback. The partial reply (if any) and the error are also recorded in
-/// [`App::history`] so a later resize repaints them.
+/// scrollback. The partial reply (if any), the tool that died mid-run (if one
+/// was), and the error are also recorded in [`App::history`] so a later resize
+/// repaints them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamError {
     /// The reply text streamed before the error, if any non-empty text arrived.
     pub partial: Option<String>,
+    /// The tool that was mid-run when the backend died, now resolved as
+    /// [`ToolStatus::Failed`] with [`ERROR_TOOL_OUTPUT`], if one was running —
+    /// the stream contract allows `Error` in place of `StreamDone` at any
+    /// point, `ToolEnd` still owed (the interrupt's [`InterruptedTurn::tool`]
+    /// twin).
+    pub tool: Option<ToolCall>,
     /// The error message to show the user.
     pub error: String,
 }
@@ -249,6 +256,12 @@ pub const COPY_EMPTY_NOTICE: &str = "No agent response to copy";
 /// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
 /// (codex: an aborted tool "may have partially executed").
 pub const INTERRUPT_TOOL_OUTPUT: &str = "Interrupted by user";
+
+/// The output recorded on a tool that was still running when the backend
+/// reported a [`crate::stream::StreamEvent::Error`] — the turn died before the
+/// tool's `ToolEnd` could arrive, so it resolves as [`ToolStatus::Failed`]
+/// with this explanation ([`INTERRUPT_TOOL_OUTPUT`]'s error-path twin).
+pub const ERROR_TOOL_OUTPUT: &str = "Interrupted by a backend error";
 
 /// What interrupting a turn leaves behind ([`App::interrupt_turn`]), handed to
 /// the event loop to flush to scrollback — the kept partial reply and the
@@ -328,8 +341,17 @@ pub enum View {
 pub enum QueuedTurn {
     /// One or more Enter-batched text messages — sent to the backend as a
     /// single turn (newline-joined). Consecutive Enters append to the last such
-    /// batch; **Tab** opens a new one (a separate follow-up turn).
-    Messages(Vec<String>),
+    /// batch; **Tab** opens a new one (a separate follow-up turn). The Ctrl+V
+    /// images attached to the queued drafts ride along as their
+    /// `(placeholder, path)` pairs, in attach order: the paths travel the typed
+    /// image channel when the batch dispatches, and an Alt+Up pull-back
+    /// re-attaches them to the composer. See `docs/image-paste.md`.
+    Messages {
+        /// The batch's messages, oldest first.
+        texts: Vec<String>,
+        /// The attachments of those messages, oldest first.
+        images: Vec<(String, PathBuf)>,
+    },
     /// A standalone `!` shell command, run locally as its own turn (via
     /// [`App::begin_shell`]). **Never merged** with a neighbouring entry — the
     /// next Enter-text starts a fresh [`Messages`] batch — matching codex's
@@ -873,6 +895,19 @@ impl App {
     /// [`pasted`]: App::pasted
     /// [`take_input`]: App::take_input
     pub fn on_paste(&mut self, pasted: &str) {
+        // An open Ctrl+R search owns *every* key ([`on_key`] routes them all to
+        // on_key_search) — a bracketed paste is input too, so it extends the
+        // query (readline's paste-into-isearch) instead of editing the doomed
+        // preview underneath (the next rerun/cancel set_texts over the
+        // composer). Control characters would corrupt the single-row search
+        // line, so they flatten to spaces. See `docs/history-search.md`.
+        //
+        // [`on_key`]: App::on_key
+        if self.history_search.is_some() {
+            let sanitised = pasted.replace(|c: char| c.is_control(), " ");
+            self.edit_search_query(|query| query.push_str(&sanitised));
+            return;
+        }
         // Terminals such as iTerm2 send CR (or CRLF) for newlines in a paste;
         // normalise to LF so the char count and stored text match the display.
         let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
@@ -885,7 +920,14 @@ impl App {
             self.input.insert_str(&placeholder);
             self.pasted.push((placeholder, pasted));
         } else {
-            self.input.insert_str(&pasted);
+            // Control characters other than '\n' (tabs above all) reach us only
+            // via a paste, and they break the cursor math: unicode-width counts
+            // '\t' as one column while ratatui renders zero cells, drifting the
+            // hardware cursor right of the text. Sanitise what the composer will
+            // actually render; the large-paste branch above keeps its payload
+            // verbatim since only the placeholder is displayed.
+            self.input
+                .insert_str(&pasted.replace(|c: char| c.is_control() && c != '\n', " "));
         }
         self.refresh_command_menu(had_query);
         self.sync_shell_mode();
@@ -1271,8 +1313,13 @@ impl App {
                     && !self.queued.is_empty() =>
             {
                 match self.drain_last_batch() {
-                    // A text batch returns newline-joined (oldest first).
-                    Some(QueuedTurn::Messages(msgs)) => self.recall_input(&msgs.join("\n")),
+                    // A text batch returns newline-joined (oldest first), its
+                    // image attachments re-attached so the placeholders in the
+                    // restored draft are backed again (docs/image-paste.md).
+                    Some(QueuedTurn::Messages { texts, images }) => {
+                        self.recall_input(&texts.join("\n"));
+                        self.images = images;
+                    }
                     // A shell entry re-enters shell mode: recalling `!command`
                     // re-absorbs the bang (sync_shell_mode), so the composer
                     // shows the red `! command` prompt again, ready to edit/re-run.
@@ -1381,7 +1428,11 @@ impl App {
         if let Some(rest) = shell_query(self.input.text()) {
             let rest = rest.to_string();
             self.shell_mode = true;
-            self.input.set_text(&rest);
+            // Only the 1-byte bang leaves the text — keep the cursor where the
+            // user had it (shifted back past the removed prefix) instead of
+            // letting a plain set_text teleport it to the end.
+            let cursor = self.input.cursor().saturating_sub(1);
+            self.input.set_text_with_cursor(&rest, cursor);
             self.command_menu = None; // the draft is a literal command now
         }
     }
@@ -1840,7 +1891,10 @@ impl App {
 
     /// Flip between the conversation and the tool-output view. Entering the view
     /// pins it to the bottom (tail-follow) so it opens on the latest content.
+    /// Ctrl+O is "activity" like any other key, so an open `?` shortcuts band
+    /// closes rather than re-showing after the round-trip (docs/shortcuts.md).
     fn toggle_tool_view(&mut self) {
+        self.shortcuts_open = false;
         self.view = match self.view {
             View::Conversation => View::ToolOutput,
             View::ToolOutput => View::Conversation,
@@ -1909,12 +1963,25 @@ impl App {
         if self.shell_mode {
             return self.queue_shell();
         }
+        // The draft's image attachments ride with the batch — staged before
+        // take_input clears the composer, exactly like the idle submit path
+        // (docs/image-paste.md).
+        let images = std::mem::take(&mut self.images);
         let text = self.take_input();
         self.file_search = None; // the composer is consumed into the queue
         self.input_history.record(&text);
         match self.queued.back_mut() {
-            Some(QueuedTurn::Messages(batch)) if !new_batch => batch.push(text),
-            _ => self.queued.push_back(QueuedTurn::Messages(vec![text])),
+            Some(QueuedTurn::Messages {
+                texts,
+                images: batch_images,
+            }) if !new_batch => {
+                texts.push(text);
+                batch_images.extend(images);
+            }
+            _ => self.queued.push_back(QueuedTurn::Messages {
+                texts: vec![text],
+                images,
+            }),
         }
     }
 
@@ -2216,15 +2283,17 @@ impl App {
 
     /// End the in-progress stream because the backend reported an error.
     ///
-    /// Records any non-empty partial reply as an assistant message, then records
-    /// the error as a [`Role::Error`] message, and clears the streaming state.
-    /// Returns the [`StreamError`] for the event loop to flush to scrollback, or
-    /// `None` if no reply was in progress.
+    /// Records any non-empty partial reply as an assistant message, resolves a
+    /// still-running tool as [`ToolStatus::Failed`] with [`ERROR_TOOL_OUTPUT`]
+    /// (the contract allows `Error` in place of `StreamDone` with a `ToolEnd`
+    /// still owed — leaving it Running would wedge a phantom in the preview
+    /// strip, the transcript, and a later turn's interrupt record), then
+    /// records the error as a [`Role::Error`] message and clears the streaming
+    /// state. Returns the [`StreamError`] for the event loop to flush to
+    /// scrollback, or `None` if no reply was in progress. The stream-order
+    /// mirror of [`App::interrupt_turn`].
     pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
         let streamed = self.streaming.take()?;
-        // An error is the turn's terminal state — clear the live status without a
-        // "Done" summary; the red error notice is the summary.
-        self.status = None;
         let timestamp = self.now_stamp();
         let partial = if streamed.is_empty() {
             None
@@ -2236,13 +2305,18 @@ impl App {
             }));
             Some(streamed)
         };
+        let tool = self.end_tool(ERROR_TOOL_OUTPUT, false);
         self.history.push(HistoryItem::Message(Message {
             role: Role::Error,
             text: error.to_string(),
             timestamp,
         }));
+        // An error is the turn's terminal state — clear the live status without a
+        // "Done" summary; the red error notice is the summary.
+        self.status = None;
         Some(StreamError {
             partial,
+            tool,
             error: error.to_string(),
         })
     }
@@ -2392,6 +2466,46 @@ mod tests {
         let mut app = App::new();
         app.on_paste("a\r\nb");
         assert_eq!(app.input.text(), "a\nb", "CRLF becomes LF");
+    }
+
+    #[test]
+    fn paste_sanitises_tabs_to_spaces_in_the_composer() {
+        // unicode-width counts '\t' as one column but ratatui renders zero
+        // cells, so a tab in the composer drifts the hardware cursor one
+        // column right of the text. Pastes are the only way a tab can get in
+        // (the Tab key is intercepted); sanitise them to a space.
+        let mut app = App::new();
+        app.on_paste("ab\tcd");
+        assert_eq!(app.input.text(), "ab cd");
+    }
+
+    #[test]
+    fn paste_sanitises_other_control_characters_too() {
+        let mut app = App::new();
+        app.on_paste("a\u{7f}b\u{1b}c");
+        assert_eq!(app.input.text(), "a b c", "DEL and ESC become spaces");
+    }
+
+    #[test]
+    fn paste_keeps_newlines_while_sanitising() {
+        let mut app = App::new();
+        app.on_paste("a\t\nb");
+        assert_eq!(app.input.text(), "a \nb", "'\\n' is the one control kept");
+    }
+
+    #[test]
+    fn large_paste_stores_the_raw_text_but_sends_it_verbatim() {
+        // The placeholder path never renders the payload in the composer, so
+        // the stored text keeps its tabs for send fidelity.
+        let mut app = App::new();
+        let big = format!(
+            "x\t{}",
+            "y".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD)
+        );
+        app.on_paste(&big);
+        assert_eq!(app.pasted[0].1, big, "the remembered text is untouched");
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(action, Action::Submit(big), "expanded with the tab intact");
     }
 
     #[test]
@@ -2600,10 +2714,7 @@ mod tests {
             "",
             "the composer is consumed into the queue"
         );
-        assert_eq!(
-            app.queued.front(),
-            Some(&QueuedTurn::Messages(vec!["hello".to_string()]))
-        );
+        assert_eq!(app.queued.front(), Some(&batch(&["hello"])));
     }
 
     #[test]
@@ -3069,6 +3180,23 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_o_dismisses_the_band_like_any_other_key() {
+        // The band's rule is "any key but Esc closes it, then acts normally"
+        // (docs/shortcuts.md) — the global Ctrl+O arm is no exception, so the
+        // band must not re-show under the box after the overlay round-trip.
+        let mut app = App::new();
+        app.on_key(key(KeyCode::Char('?')));
+        assert!(app.shortcuts_open);
+        app.on_key(ctrl('o')); // into the overlay
+        assert!(!app.shortcuts_open, "opening the overlay closes the band");
+        app.on_key(ctrl('o')); // and back
+        assert!(
+            !app.shortcuts_open,
+            "the band stays closed after the round-trip"
+        );
+    }
+
+    #[test]
     fn begin_stream_starts_empty_streaming_buffer() {
         let mut app = App::new();
         assert!(!app.is_streaming());
@@ -3172,6 +3300,57 @@ mod tests {
         let mut app = App::new();
         assert!(app.fail_stream("ignored").is_none());
         assert!(app.history.is_empty());
+    }
+
+    #[test]
+    fn fail_stream_resolves_a_running_tool_as_failed() {
+        // The stream contract allows Error in place of StreamDone with a tool
+        // still running (a real backend's mid-tool network failure). Like an
+        // Esc interrupt, the turn's death must resolve the tool — leaving it
+        // Running would wedge a phantom in the preview strip, the transcript,
+        // and a later turn's interrupt record.
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Read", "src/app.rs");
+        let failure = app.fail_stream("network down").expect("was streaming");
+        assert!(app.current_tool().is_none(), "no phantom running tool");
+        let tool = failure.tool.expect("the failed tool rides the failure");
+        assert_eq!(tool.status, ToolStatus::Failed);
+        assert_eq!(tool.output, ERROR_TOOL_OUTPUT);
+        // History order: the failed tool slots before the error notice, the
+        // same shape a resize repaint (and the scrollback commit) renders.
+        assert!(matches!(
+            (&app.history[0], &app.history[1]),
+            (HistoryItem::Tool(t), HistoryItem::Message(m))
+                if t.status == ToolStatus::Failed && m.role == Role::Error
+        ));
+    }
+
+    #[test]
+    fn fail_stream_orders_partial_then_tool_then_notice() {
+        // Buffered text streamed before the tool started (in practice a
+        // ToolStart flushes it, but the order holds regardless) — mirror
+        // interrupt_turn's stream-order: partial, tool, error notice.
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("half a rep");
+        app.start_tool("Bash", "ls");
+        let failure = app.fail_stream("boom").expect("was streaming");
+        assert_eq!(failure.partial.as_deref(), Some("half a rep"));
+        assert!(failure.tool.is_some());
+        assert!(matches!(
+            (&app.history[0], &app.history[1], &app.history[2]),
+            (HistoryItem::Message(p), HistoryItem::Tool(_), HistoryItem::Message(e))
+                if p.role == Role::Assistant && e.role == Role::Error
+        ));
+    }
+
+    #[test]
+    fn fail_stream_without_a_tool_carries_none() {
+        let mut app = App::new();
+        app.begin_stream();
+        let failure = app.fail_stream("died early").expect("was streaming");
+        assert!(failure.tool.is_none());
     }
 
     // --- Esc interrupts the in-flight turn, codex-style (docs/interrupt.md) ---
@@ -3661,6 +3840,98 @@ mod tests {
         );
     }
 
+    /// A queued text batch with no attachments — most queue tests' shape.
+    fn batch(texts: &[&str]) -> QueuedTurn {
+        QueuedTurn::Messages {
+            texts: texts.iter().map(|s| (*s).to_string()).collect(),
+            images: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn queueing_a_draft_mid_turn_carries_its_image_attachments() {
+        // A mid-turn Enter must not silently drop a Ctrl+V attachment: the
+        // (placeholder, path) pairs ride with the batch and dispatch when its
+        // turn comes (docs/image-paste.md).
+        let mut app = App::new();
+        app.begin_stream();
+        app.attach_image(PathBuf::from("/tmp/img1.png"));
+        for c in " describe".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.images.is_empty(), "the attachment left the composer");
+        assert_eq!(
+            app.drain_next_batch(),
+            Some(QueuedTurn::Messages {
+                texts: vec!["[Image #1] describe".to_string()],
+                images: vec![("[Image #1]".to_string(), PathBuf::from("/tmp/img1.png"))],
+            })
+        );
+    }
+
+    #[test]
+    fn a_tab_follow_up_batch_carries_its_images_too() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.attach_image(PathBuf::from("/tmp/pic.png"));
+        app.on_key(key(KeyCode::Tab));
+        assert_eq!(
+            app.drain_next_batch(),
+            Some(QueuedTurn::Messages {
+                texts: vec!["[Image #1]".to_string()],
+                images: vec![("[Image #1]".to_string(), PathBuf::from("/tmp/pic.png"))],
+            })
+        );
+    }
+
+    #[test]
+    fn merging_enters_merges_their_images_in_order() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.attach_image(PathBuf::from("/a.png"));
+        app.on_key(key(KeyCode::Enter)); // batch 1, first message
+        app.attach_image(PathBuf::from("/b.png"));
+        app.on_key(key(KeyCode::Enter)); // appends to batch 1
+        match app.drain_next_batch() {
+            Some(QueuedTurn::Messages { texts, images }) => {
+                assert_eq!(texts.len(), 2, "one merged batch");
+                let paths: Vec<_> = images.into_iter().map(|(_, p)| p).collect();
+                assert_eq!(
+                    paths,
+                    vec![PathBuf::from("/a.png"), PathBuf::from("/b.png")]
+                );
+            }
+            other => panic!("expected the merged batch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn alt_up_restores_a_queued_batchs_images_to_the_composer() {
+        // The pull-back re-attaches the batch's images so the placeholders in
+        // the restored draft are backed again — an idle re-submit stages them.
+        let mut app = App::new();
+        app.begin_stream();
+        app.attach_image(PathBuf::from("/tmp/pic.png"));
+        app.on_key(key(KeyCode::Enter)); // queue it
+        app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(app.input.text(), "[Image #1]");
+        assert_eq!(
+            app.images,
+            vec![("[Image #1]".to_string(), PathBuf::from("/tmp/pic.png"))]
+        );
+        app.finish_stream();
+        app.end_turn(1); // the turn ends; the composer is idle again
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Submit("[Image #1]".to_string())
+        );
+        assert_eq!(
+            app.take_submission_images(),
+            vec![PathBuf::from("/tmp/pic.png")]
+        );
+    }
+
     #[test]
     fn enter_mid_turn_appends_to_one_batch_in_order() {
         // Consecutive Enters share a single turn-batch, oldest first — they
@@ -3674,7 +3945,7 @@ mod tests {
         assert_eq!(app.queued.len(), 1, "both Enters land in one batch");
         assert_eq!(
             app.queued[0],
-            QueuedTurn::Messages(vec!["first".to_string(), "second".to_string()]),
+            batch(&["first", "second"]),
             "FIFO, oldest first"
         );
     }
@@ -3692,11 +3963,7 @@ mod tests {
         app.on_key(key(KeyCode::Enter));
         assert_eq!(
             app.drain_next_batch(),
-            Some(QueuedTurn::Messages(vec![
-                "a".to_string(),
-                "b".to_string(),
-                "c".to_string()
-            ])),
+            Some(batch(&["a", "b", "c"])),
             "the whole front batch, FIFO"
         );
         assert!(app.queued.is_empty(), "the queue is emptied");
@@ -3715,14 +3982,8 @@ mod tests {
         assert_eq!(app.on_key(key(KeyCode::Tab)), Action::None);
         assert_eq!(app.input.text(), "", "Tab consumes the composer like Enter");
         assert_eq!(app.queued.len(), 2, "Tab opened a second batch");
-        assert_eq!(
-            app.queued[0],
-            QueuedTurn::Messages(vec!["first".to_string()])
-        );
-        assert_eq!(
-            app.queued[1],
-            QueuedTurn::Messages(vec!["follow".to_string()])
-        );
+        assert_eq!(app.queued[0], batch(&["first"]));
+        assert_eq!(app.queued[1], batch(&["follow"]));
     }
 
     #[test]
@@ -3738,11 +3999,8 @@ mod tests {
         app.input = TextArea::from_text("c");
         app.on_key(key(KeyCode::Enter)); // batch 2 = [b, c]
         assert_eq!(app.queued.len(), 2);
-        assert_eq!(app.queued[0], QueuedTurn::Messages(vec!["a".to_string()]));
-        assert_eq!(
-            app.queued[1],
-            QueuedTurn::Messages(vec!["b".to_string(), "c".to_string()])
-        );
+        assert_eq!(app.queued[0], batch(&["a"]));
+        assert_eq!(app.queued[1], batch(&["b", "c"]));
     }
 
     #[test]
@@ -3757,12 +4015,12 @@ mod tests {
         app.on_key(key(KeyCode::Tab));
         assert_eq!(
             app.drain_next_batch(),
-            Some(QueuedTurn::Messages(vec!["first".to_string()])),
+            Some(batch(&["first"])),
             "the first queue goes first"
         );
         assert_eq!(
             app.drain_next_batch(),
-            Some(QueuedTurn::Messages(vec!["later".to_string()])),
+            Some(batch(&["later"])),
             "the Tab follow-up next"
         );
         assert!(app.drain_next_batch().is_none());
@@ -3842,7 +4100,7 @@ mod tests {
         assert_eq!(app.queued.len(), 1, "the earlier batch stays queued");
         assert_eq!(
             app.queued[0],
-            QueuedTurn::Messages(vec!["hello".to_string(), "world".to_string()]),
+            batch(&["hello", "world"]),
             "and is left untouched"
         );
     }
@@ -4643,6 +4901,66 @@ mod tests {
     }
 
     #[test]
+    fn a_paste_mid_search_extends_the_query_not_the_preview() {
+        // The search owns *every* key — a bracketed paste is input too, so it
+        // extends the query (readline's paste-into-isearch) instead of editing
+        // the previewed match, whose text the next rerun/cancel would discard.
+        let mut app = searchable_app(&["git status", "git push"]);
+        app.on_key(ctrl('r'));
+        app.on_paste("git st");
+        let search = app.history_search.as_ref().expect("search stays open");
+        assert_eq!(search.query, "git st");
+        assert_eq!(search.state, SearchState::Match { selected: 0 });
+        assert_eq!(app.input.text(), "git status", "the match previews");
+    }
+
+    #[test]
+    fn a_paste_mid_search_never_flips_shell_mode() {
+        // begin_history_search suspends shell mode; a pasted `!` must not
+        // re-enter it through on_paste's sync_shell_mode while the search owns
+        // the composer.
+        let mut app = searchable_app(&["!ls"]);
+        app.on_key(ctrl('r'));
+        app.on_paste("!ls");
+        assert!(!app.shell_mode, "the search owns the composer");
+        let search = app.history_search.as_ref().expect("search open");
+        assert_eq!(search.query, "!ls");
+        assert_eq!(app.input.text(), "!ls", "previewed raw, bang and all");
+    }
+
+    #[test]
+    fn a_paste_mid_search_never_opens_the_file_picker() {
+        let mut app = searchable_app(&["look at @src/app.rs please"]);
+        app.on_key(ctrl('r'));
+        app.on_paste("@src");
+        assert!(app.file_search.is_none(), "the search owns the band slot");
+    }
+
+    #[test]
+    fn a_large_paste_mid_search_leaves_no_orphaned_placeholder() {
+        let mut app = searchable_app(&["hello"]);
+        app.on_key(ctrl('r'));
+        let big = "z".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 1);
+        app.on_paste(&big);
+        assert!(app.pasted.is_empty(), "no placeholder pair is recorded");
+        assert!(
+            !app.input.text().starts_with("[Pasted Content"),
+            "no placeholder lands in the preview"
+        );
+    }
+
+    #[test]
+    fn a_paste_mid_search_flattens_control_characters_into_the_query() {
+        // The query renders on a single footer row — a pasted newline or tab
+        // would corrupt it (and '\t' breaks the cursor math, like the composer).
+        let mut app = searchable_app(&["a b"]);
+        app.on_key(ctrl('r'));
+        app.on_paste("a\tb\nc");
+        let search = app.history_search.as_ref().expect("search open");
+        assert_eq!(search.query, "a b c");
+    }
+
+    #[test]
     fn ctrl_r_steps_older_and_clamps_at_the_oldest_match() {
         let mut app = searchable_app(&["git status", "cargo build", "git push"]);
         app.on_key(ctrl('r'));
@@ -4932,6 +5250,36 @@ mod tests {
     }
 
     #[test]
+    fn absorbing_a_typed_bang_keeps_the_cursor_where_it_was() {
+        // Only the bang leaves the text — the cursor must not teleport to the
+        // end: type "ls", Home, "!" (cursor now before the "l"), then "x"
+        // continues typing there, not after the "s".
+        let mut app = App::new();
+        type_query(&mut app, "ls");
+        app.on_key(key(KeyCode::Home));
+        type_query(&mut app, "!");
+        assert_eq!(app.input.cursor(), 0, "the cursor stays before the command");
+        type_query(&mut app, "x");
+        assert_eq!(app.input.text(), "xls");
+    }
+
+    #[test]
+    fn absorbing_a_bang_exposed_by_backspace_keeps_the_cursor_at_the_front() {
+        // Draft "x!ls" with the cursor after the "x": Backspace exposes the
+        // leading bang, which is absorbed — the cursor stays at the front of
+        // the remaining command rather than jumping past "ls".
+        let mut app = App::new();
+        type_query(&mut app, "x!ls");
+        for _ in 0..3 {
+            app.on_key(key(KeyCode::Left));
+        }
+        app.on_key(key(KeyCode::Backspace));
+        assert!(app.shell_mode);
+        assert_eq!(app.input.text(), "ls");
+        assert_eq!(app.input.cursor(), 0);
+    }
+
+    #[test]
     fn backspace_on_an_empty_shell_composer_exits_shell_mode() {
         let mut app = App::new();
         type_query(&mut app, "!");
@@ -5090,9 +5438,9 @@ mod tests {
         assert_eq!(
             app.queued,
             VecDeque::from(vec![
-                QueuedTurn::Messages(vec!["hello".to_string()]),
+                batch(&["hello"]),
                 QueuedTurn::Shell("ls".to_string()),
-                QueuedTurn::Messages(vec!["world".to_string()]),
+                batch(&["world"]),
             ]),
             "the shell entry stands alone between the two text batches"
         );

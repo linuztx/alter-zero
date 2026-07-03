@@ -580,16 +580,16 @@ fn flush_next_queued(
     clocks: &mut StatusClocks,
 ) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
     match app.drain_next_batch() {
-        // Queued text batches carry no images in v1 (idle-submit scope; see
-        // docs/image-paste.md) — an empty image list.
-        Some(QueuedTurn::Messages(texts)) => Ok(Some(start_turn(
+        // The batch's Ctrl+V attachments dispatch with it: their paths ride the
+        // typed image channel like an idle submit's (docs/image-paste.md).
+        Some(QueuedTurn::Messages { texts, images }) => Ok(Some(start_turn(
             term,
             app,
             tx,
             backend,
             TurnInput {
                 texts,
-                images: Vec::new(),
+                images: images.into_iter().map(|(_, path)| path).collect(),
             },
             committed,
             clocks,
@@ -886,9 +886,10 @@ fn on_stream_event(
         }
         StreamEvent::Error(message) => {
             if let Some(failure) = app.fail_stream(&message) {
-                // Flush whatever streamed before the failure, then the red error
+                // Flush whatever streamed before the failure, then the tool the
+                // error killed mid-run (resolved red), then the red error
                 // notice — each with a trailing blank spacer, mirroring how a
-                // resize repaints them from history.
+                // resize repaints them from history (the Interrupt arm's shape).
                 if committing {
                     // The stream ended, so collapse the streaming strip into the
                     // idle box height before committing (same reason as StreamDone)
@@ -896,6 +897,10 @@ fn on_stream_event(
                     term.set_view_height(live_region_height(app, term.screen()));
                     if let Some(partial) = failure.partial {
                         term.insert_before(ui::final_commit(&partial, width, *committed));
+                        term.insert_before(vec![Line::default()]);
+                    }
+                    if let Some(tool) = failure.tool {
+                        term.insert_before(ui::tool_lines(&tool, width));
                         term.insert_before(vec![Line::default()]);
                     }
                     term.insert_before(ui::message_lines(Role::Error, &failure.error, width));

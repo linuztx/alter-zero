@@ -99,6 +99,28 @@ impl TextArea {
         self.dirty();
     }
 
+    /// Replace the whole draft, seating the cursor at byte `cursor` — clamped
+    /// to the text's end and snapped back to a grapheme boundary if it lands
+    /// inside a cluster. For rewrites that must not teleport the cursor to the
+    /// end like [`set_text`] does (e.g. `App::sync_shell_mode` absorbing a
+    /// leading `!`: the text shrinks by one byte, the cursor stays put).
+    ///
+    /// [`set_text`]: TextArea::set_text
+    pub fn set_text_with_cursor(&mut self, text: &str, cursor: usize) {
+        self.text.clear();
+        self.text.push_str(text);
+        let mut pos = cursor.min(self.text.len());
+        while pos > 0 && !self.text.is_char_boundary(pos) {
+            pos -= 1;
+        }
+        let mut gc = GraphemeCursor::new(pos, self.text.len(), true);
+        if !matches!(gc.is_boundary(&self.text, 0), Ok(true)) {
+            pos = prev_grapheme(&self.text, pos);
+        }
+        self.cursor = pos;
+        self.dirty();
+    }
+
     /// Empty the draft (e.g. after a slash command consumes the input).
     pub fn clear(&mut self) {
         self.text.clear();
@@ -554,6 +576,30 @@ mod tests {
         ta.insert_char('b');
         assert_eq!(ta.text(), "abc");
         assert_eq!(ta.cursor(), 2, "cursor advances past the inserted char");
+    }
+
+    #[test]
+    fn set_text_with_cursor_seats_the_cursor_where_asked() {
+        let mut ta = TextArea::from_text("old");
+        ta.set_text_with_cursor("hello", 2);
+        assert_eq!(ta.text(), "hello");
+        assert_eq!(ta.cursor(), 2);
+    }
+
+    #[test]
+    fn set_text_with_cursor_clamps_past_the_end() {
+        let mut ta = TextArea::new();
+        ta.set_text_with_cursor("hi", 99);
+        assert_eq!(ta.cursor(), 2);
+    }
+
+    #[test]
+    fn set_text_with_cursor_snaps_inside_a_grapheme_to_its_start() {
+        // Byte 1 is inside the 4-byte emoji — the cursor must land on a
+        // grapheme boundary, so it snaps back to the cluster's start.
+        let mut ta = TextArea::new();
+        ta.set_text_with_cursor("🦀ab", 1);
+        assert_eq!(ta.cursor(), 0);
     }
 
     #[test]

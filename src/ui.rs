@@ -1144,8 +1144,8 @@ pub fn queued_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             lines.push(Line::default());
         }
         match entry {
-            QueuedTurn::Messages(batch) => {
-                for msg in batch {
+            QueuedTurn::Messages { texts, .. } => {
+                for msg in texts {
                     lines.extend(
                         message_lines(Role::User, msg, inner)
                             .into_iter()
@@ -1865,6 +1865,14 @@ mod tests {
     /// Read row `y` of a buffer back as a string.
     fn row(buf: &Buffer, y: u16, width: u16) -> String {
         (0..width).map(|x| buf[(x, y)].symbol()).collect()
+    }
+
+    /// A queued text batch with no attachments — the queue tests' usual shape.
+    fn batch(texts: &[&str]) -> QueuedTurn {
+        QueuedTurn::Messages {
+            texts: texts.iter().map(|s| (*s).to_string()).collect(),
+            images: Vec::new(),
+        }
     }
 
     // --- wrap_text ---
@@ -3119,8 +3127,7 @@ mod tests {
         // message stacked above it, not on a strip row.
         let mut app = App::new();
         app.begin_stream();
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["world".into()]));
+        app.queued.push_back(batch(&["world"]));
         app.input = TextArea::from_text("x");
         let q = queued_rows(&app, 40);
         let h = live_height(&app.input, 40, 24, true, true, q, 0, 0);
@@ -3601,8 +3608,7 @@ mod tests {
     fn queued_rows_is_zero_empty_and_counts_the_queue() {
         let mut app = App::new();
         assert_eq!(queued_rows(&app, 40), 0);
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["a".into(), "b".into()]));
+        app.queued.push_back(batch(&["a", "b"]));
         assert_eq!(queued_rows(&app, 40), 2, "one short message per row");
     }
 
@@ -3610,8 +3616,8 @@ mod tests {
     fn queued_rows_counts_the_blank_between_batches() {
         // Two single-message batches occupy three rows — a blank divides them.
         let mut app = App::new();
-        app.queued.push_back(QueuedTurn::Messages(vec!["a".into()]));
-        app.queued.push_back(QueuedTurn::Messages(vec!["b".into()]));
+        app.queued.push_back(batch(&["a"]));
+        app.queued.push_back(batch(&["b"]));
         assert_eq!(queued_rows(&app, 40), 3);
     }
 
@@ -3620,10 +3626,8 @@ mod tests {
         // Tab-opened batches read as separate turns: a blank row sits between
         // each batch, grouping the follow-ups apart from the first queue.
         let mut app = App::new();
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["first".into()]));
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["later".into()]));
+        app.queued.push_back(batch(&["first"]));
+        app.queued.push_back(batch(&["later"]));
         let lines = queued_lines(&app, 40);
         assert_eq!(lines.len(), 3, "two single-message batches + one separator");
         assert!(
@@ -3669,8 +3673,7 @@ mod tests {
         // A text batch and a shell entry are separate turns: a blank row divides
         // them, the text keeping its ❯ bullet and the command its red `! `.
         let mut app = App::new();
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["hello".into()]));
+        app.queued.push_back(batch(&["hello"]));
         app.queued.push_back(QueuedTurn::Shell("ls".into()));
         let lines = queued_lines(&app, 40);
         assert_eq!(lines.len(), 3, "message + blank divider + shell");
@@ -3687,9 +3690,8 @@ mod tests {
     fn queued_rows_count_wrapped_lines() {
         // A queued message wraps like a user message, so a long one is >1 row.
         let mut app = App::new();
-        app.queued.push_back(QueuedTurn::Messages(vec![
-            "one two three four five six seven eight".into(),
-        ]));
+        app.queued
+            .push_back(batch(&["one two three four five six seven eight"]));
         assert!(queued_rows(&app, 16) >= 2, "a long queued message wraps");
     }
 
@@ -3698,9 +3700,10 @@ mod tests {
         // No display cap (codex shows the whole backlog): ten queued messages
         // are ten rows.
         let mut app = App::new();
-        app.queued.push_back(QueuedTurn::Messages(
-            (0..10).map(|i| format!("m{i}")).collect(),
-        ));
+        app.queued.push_back(QueuedTurn::Messages {
+            texts: (0..10).map(|i| format!("m{i}")).collect(),
+            images: Vec::new(),
+        });
         assert_eq!(queued_rows(&app, 40), 10);
     }
 
@@ -3711,8 +3714,7 @@ mod tests {
         // background) wrapped to the remaining width — and the indent itself
         // stays *outside* the dark block.
         let mut app = App::new();
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["world".into()]));
+        app.queued.push_back(batch(&["world"]));
         let lines = queued_lines(&app, 40);
         let expected = message_lines(Role::User, "world", 38); // 40 minus the indent
         assert_eq!(lines.len(), expected.len());
@@ -3732,8 +3734,7 @@ mod tests {
     #[test]
     fn queued_lines_list_every_message_with_the_user_bullet() {
         let mut app = App::new();
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["world".into(), "again".into()]));
+        app.queued.push_back(batch(&["world", "again"]));
         let all: String = queued_lines(&app, 40)
             .iter()
             .map(plain)
@@ -3746,9 +3747,8 @@ mod tests {
     #[test]
     fn queued_lines_wrap_a_long_message_across_rows() {
         let mut app = App::new();
-        app.queued.push_back(QueuedTurn::Messages(vec![
-            "alpha beta gamma delta epsilon".into(),
-        ]));
+        app.queued
+            .push_back(batch(&["alpha beta gamma delta epsilon"]));
         let lines = queued_lines(&app, 18);
         assert!(lines.len() >= 2, "a long queued message wraps: {lines:?}");
         assert!(
@@ -3760,9 +3760,10 @@ mod tests {
     #[test]
     fn queued_lines_list_the_whole_backlog_uncapped() {
         let mut app = App::new();
-        app.queued.push_back(QueuedTurn::Messages(
-            (0..10).map(|i| format!("m{i}")).collect(),
-        ));
+        app.queued.push_back(QueuedTurn::Messages {
+            texts: (0..10).map(|i| format!("m{i}")).collect(),
+            images: Vec::new(),
+        });
         let lines = queued_lines(&app, 40);
         assert_eq!(lines.len(), 10, "every queued message shows");
         assert!(plain(&lines[9]).contains("❯ m9"), "{:?}", plain(&lines[9]));
@@ -3773,8 +3774,7 @@ mod tests {
         let mut app = App::new();
         app.begin_stream();
         let without = live_height(&app.input, 40, 24, true, true, 0, 0, 0);
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["world".into()]));
+        app.queued.push_back(batch(&["world"]));
         let q = queued_rows(&app, 40);
         let with = live_height(&app.input, 40, 24, true, true, q, 0, 0);
         assert_eq!(with, without + q, "the queue grows the region by its rows");
@@ -3785,8 +3785,7 @@ mod tests {
     fn render_live_draws_the_queue_above_the_box_as_a_user_message() {
         let mut app = App::new();
         app.begin_stream();
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["world".into()]));
+        app.queued.push_back(batch(&["world"]));
         let q = queued_rows(&app, 40);
         let h = live_height(&app.input, 40, 24, true, true, q, 0, 0);
         let mut buf = buffer(40, h);
@@ -3819,8 +3818,7 @@ mod tests {
         let mut app = App::new();
         app.begin_stream();
         app.shortcuts_open = true;
-        app.queued
-            .push_back(QueuedTurn::Messages(vec!["world".into()]));
+        app.queued.push_back(batch(&["world"]));
         let q = queued_rows(&app, 40);
         let h = live_height(&app.input, 40, 24, true, true, q, shortcuts_rows(&app), 0);
         let mut buf = buffer(40, h);
@@ -4033,10 +4031,7 @@ mod tests {
         };
         let queued = {
             let mut app = streaming();
-            app.queued.push_back(QueuedTurn::Messages(vec![
-                "queued one with CJK 世界".into(),
-                SWEEP_TEXT.into(),
-            ]));
+            app.queued.push_back(batch(&["queued one with CJK 世界"]));
             app
         };
         let menu = {

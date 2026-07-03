@@ -109,15 +109,20 @@ the placeholder drops the image too, so there is no "image with no text" state.
 `UserInput::LocalImage { path }` as a typed side channel, distinct from the text
 `prompt`. This is the documented "swap in a real AI" seam: a real vision backend
 reads each path and attaches it to its request. `start_turn` passes
-`app.take_submission_images()` through; `count_user_input` bumps the `↑` token
-tally per attached image so the status reflects them.
+`app.take_submission_images()` through; `count_input_images` (the image-count
+sibling of `count_user_input`, which sizes the text) bumps the `↑` token tally
+per attached image so the status reflects them.
 
 `DummyAi` has no vision, so it **acknowledges** the images instead: `turn_events`
 takes the image count and, when non-zero, prepends a short
 `Looking at your N image(s). ` chunk to the reply — visible proof the channel
-carried the attachments end to end. The mid-turn message **queue** does *not*
-carry images in v1 (scope: idle submit only); queued text still works, attached
-images stay in the composer until an idle submit.
+carried the attachments end to end. The mid-turn message **queue carries the
+attachments with the batch**: `queue_draft` stages the `(placeholder, path)`
+pairs into the `QueuedTurn::Messages` entry (an Enter merging into a batch
+merges its images too, in attach order), the queue flush dispatches the paths
+through the same typed channel as an idle submit, and an Alt+Up pull-back
+re-attaches them to the composer so the placeholders in the restored draft are
+backed again — a mid-turn Enter never silently drops an attachment.
 
 ## Rendering
 
@@ -148,10 +153,16 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
 
 ## What is intentionally *not* here (scope)
 
-- **Mid-turn queue / Alt+Up recall of images** — text still queues; images attach
-  on an idle submit only (deferred follow-up).
 - **WSL PowerShell fallback** and the **Android** `cfg` stub.
 - **Inline image display** in the terminal (sixel/kitty) — the marker is text.
 - The composer does not guard the cursor from stepping *into* `[Image #N]` (same
   limitation as the text placeholder — `docs/paste.md`); atomic Backspace/Delete
   covers the common case.
+- **Placeholder numbering restarts per draft**, so two separately queued
+  messages can each carry an `[Image #1]`; a batch merging both restores two
+  pairs keyed by the same string on Alt+Up, and an atomic Backspace over one
+  occurrence then drops both pairs (the string-keyed scheme's known edge).
+- A **Ctrl+C-cleared** draft drops its attachments (the recorded ↑-recall text
+  keeps the now-unbacked placeholder as plain text — codex renders the marker
+  as text in sent messages anyway); a **shell-mode** draft never carries images
+  (`!` commands run locally; both the idle and the queued path drop them).

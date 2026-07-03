@@ -284,8 +284,9 @@ gap only, no stray empty line, like codex). Then `Chunk`s,
 output grow the cumulative token tally on `App::status` (`↓` while replying or
 thinking, `↑` for the input and right after a tool — never reset); on `StreamDone` `App::end_turn`
 records the `Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` instead of
-`StreamDone`; the loop turns that into a red `Role::Error` notice via
-`App::fail_stream` (which also clears the status). **Esc while the turn is in
+`StreamDone` — even mid-tool; the loop turns that into a red `Role::Error` notice via
+`App::fail_stream` (which also resolves a still-running tool as failed —
+`Interrupted by a backend error` — and clears the status). **Esc while the turn is in
 flight returns `Action::Interrupt`** (palette-dismiss still wins; Esc only quits
 when idle): the loop cancels + joins the backend, **drains the channel** (a stale
 `ToolStart` would wedge a phantom running tool), and `App::interrupt_turn` keeps

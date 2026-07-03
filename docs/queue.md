@@ -53,10 +53,11 @@ we don't have). The mechanics that matter:
 We have no steering, so we map codex's two-key intent onto the queue itself: the
 queue is a `VecDeque<QueuedTurn>` of **typed entries** — codex's action-tagged
 queued messages (`QueuedInputAction`), drained FIFO one entry per turn-end. A
-`QueuedTurn::Messages(Vec<String>)` is a text batch (sent to the model); a
-`QueuedTurn::Shell(String)` is a standalone `!` command (**run locally**). The
-variant is the dispatch discriminator, so submission order is preserved across
-mixed entries.
+`QueuedTurn::Messages { texts, images }` is a text batch (sent to the model,
+its Ctrl+V attachments riding along as `(placeholder, path)` pairs — see
+`docs/image-paste.md`); a `QueuedTurn::Shell(String)` is a standalone `!`
+command (**run locally**). The variant is the dispatch discriminator, so
+submission order is preserved across mixed entries.
 
 **Enter** appends to the last `Messages` batch (the Claude-Code merge — those
 messages share one turn); **Tab** opens a new `Messages` batch (codex's
@@ -78,9 +79,9 @@ one); a `Shell` entry runs through `run_shell` exactly like an idle `!command`
 ### State (`app.rs`)
 
 - `App.queued: VecDeque<QueuedTurn>` — the typed entries awaiting their turns
-  (`Messages(Vec<String>)` text batches and `Shell(String)` commands). We never
-  push an empty entry, so `is_empty()`/`len()` count entries and `queued[0]` is
-  the next turn.
+  (`Messages { texts, images }` text batches and `Shell(String)` commands). We
+  never push an empty entry, so `is_empty()`/`len()` count entries and
+  `queued[0]` is the next turn.
 - `App::queue_draft(new_batch: bool)` — the shared mid-turn **text**-queue path.
   Consumes the composer and records the text in `input_history` (so ↑ recalls it
   like a submit). `new_batch` picks the semantics: `false` (Enter) appends to the

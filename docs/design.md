@@ -191,9 +191,11 @@ unit-tested must be unit-tested.
   recall) and shows **above the box**, in the streaming strip under the status
   line, inset two columns and styled exactly like a sent user message (`❯`
   bullet, dark background, wrapped) — every queued entry, uncapped. The queue is
-  a sequence of **turn-batches** (`VecDeque<Vec<String>>`): **Enter appends to
-  the current batch** (consecutive Enters share one next turn — Claude-Code
-  batching) while **Tab opens a new batch** (codex's Tab-to-queue — its message
+  a sequence of **typed turn-entries** (`VecDeque<QueuedTurn>` — text
+  `Messages { texts, images }` batches and standalone `Shell` commands, see
+  `docs/queue.md`): **Enter appends to the current batch** (consecutive Enters
+  share one next turn — Claude-Code batching) while **Tab opens a new batch**
+  (codex's Tab-to-queue — its message
   runs as a *separate follow-up turn* after the ones already queued, a blank row
   dividing the batches in the strip). When the turn ends the loop pops the
   **front batch** as the next turn (`App::drain_next_batch`, FIFO —
@@ -382,9 +384,12 @@ frame scheduler ─► draw-tick ─────┘                             
   bottom rather than rising and leaving blank rows beneath it (see the
   streaming-strip note under *Known limitations*).
 - On `Error(msg)`: `App::fail_stream` records any non-empty partial reply, flushes
-  it, then commits a red `Role::Error` notice (and records it in `history` so it
-  repaints on resize); clears streaming state. Like `StreamDone` it reseats the
-  viewport height first so the box doesn't rise as the strip clears.
+  it, resolves a still-running tool as failed (`Interrupted by a backend error` —
+  the contract allows an error mid-tool, `ToolEnd` still owed) and flushes it
+  collapsed, then commits a red `Role::Error` notice (and records it all in
+  `history` so it repaints on resize); clears streaming state. Like `StreamDone`
+  it reseats the viewport height first so the box doesn't rise as the strip
+  clears.
 - On `ToggleToolView` (Ctrl+O / Esc): enter or leave the alternate-screen overlay;
   on leaving, `repaint_conversation` reflows the inline view to catch up.
 - On `Notice(text)` (a slash command's output — `/help`): if a reply is mid-flight,
@@ -437,8 +442,10 @@ frame scheduler ─► draw-tick ─────┘                             
 - `HistoryItem { Message(Message), Tool(ToolCall), Summary(TurnSummary) }` — one
   ordered history entry; messages, tools, and per-turn summaries share
   `App::history` so they repaint interleaved in order.
-- `StreamError { partial: Option<String>, error: String }` — what `App::fail_stream`
-  hands the loop to flush after a backend failure.
+- `StreamError { partial: Option<String>, tool: Option<ToolCall>, error: String }`
+  — what `App::fail_stream` hands the loop to flush after a backend failure (the
+  `tool` is one the error killed mid-run, resolved as failed —
+  `InterruptedTurn`'s error-path twin).
 - `InterruptedTurn { partial: Option<String>, tool: Option<ToolCall> }` — what
   `App::interrupt_turn` hands the loop to flush after an Esc interrupt (the
   `INTERRUPT_NOTICE` const is the committed notice text).

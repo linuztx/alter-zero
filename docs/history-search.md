@@ -28,6 +28,10 @@ what was there before. A port of openai/codex's Ctrl+R search — the piece
   newer**; **Enter accepts only on Match** (the session closes, the previewed
   text stays as an ordinary editable draft, cursor at the end); **Esc and
   Ctrl+C cancel**, restoring the snapshotted draft *including its cursor*;
+  a **bracketed paste appends to the query too** (readline's paste-into-isearch
+  — `App::on_paste` guards on the open search): it never edits the doomed
+  preview underneath, never flips shell mode or opens the `@` picker, and
+  control characters flatten to spaces so the single-row query line survives;
   anything else is swallowed.
 - **Matching** is a **case-insensitive substring** test (`to_lowercase()
   .contains`), traversed **newest → oldest**, with **duplicate texts skipped**
