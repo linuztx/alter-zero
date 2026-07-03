@@ -208,9 +208,16 @@ of bug:
    tool slots *after* it in order (the scrollback and the resize/return repaint
    must agree). Inline a tool is collapsed (`ui::tool_lines` — coloured bullet +
    one-line peek). The Ctrl+O overlay (`ui::render_tool_view` on the alternate
-   screen) shows the **full conversation transcript** — `ui::transcript_lines`
+   screen) is codex's **Ctrl+T transcript pager** — a slash-tiled dim
+   `/ T R A N S C R I P T` title row, the scrolling transcript body with
+   vi-style `~` filler past its end, a `─` separator carrying the scroll
+   percentage right-aligned, and two dim key-hint rows (↑/↓, pgup/pgdn,
+   home/end jump; q/esc/ctrl+o close) — showing the **full conversation
+   transcript**: `ui::transcript_lines`
    walks `history` (messages + each tool's *expanded* output) plus the live tail
-   (in-progress reply / running tool). Only the **user** message shows its
+   (in-progress reply / running tool) plus the still-queued backlog
+   (`ui::queued_lines`' inset rows, so Ctrl+O never hides a queued message —
+   `docs/queue.md`). Only the **user** message shows its
    wall-clock `timestamp` (`hh:mm AM/PM`, no seconds): dim, **right-aligned on
    its own line below the message** — the *only* stamp displayed anywhere
    (AI/tool/summary stamps are recorded but never shown; never inline; the
@@ -305,8 +312,11 @@ the red `INTERRUPT_NOTICE`, and clears the status with no summary
 (`docs/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc
 interrupt — the loop pops the front queued batch (`App::drain_next_batch`) and
 `start_turn`s it as the next turn (the remaining batches iterate at the
-following turn-ends), so **Esc sends the front batch right away**; a turn that
-ends under the Ctrl+O overlay defers its flush to the return (invariant 4).
+following turn-ends), so **Esc sends the front batch right away**; the drain
+runs **under the Ctrl+O overlay too** (codex's queue dispatches at turn end
+regardless of its Ctrl+T view, the transcript following the new turn live) —
+dispatching only records history and *queues* the user bubbles, which the
+return's reflow drops + regenerates, so invariant 4 holds.
 `App` (`app.rs`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,

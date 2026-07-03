@@ -125,24 +125,25 @@ through `run_shell` (`begin_shell` + `spawn_shell_command`, the same path an idl
 is empty. **Every** turn-end drain site calls it, so they can't drift:
 
 - **`StreamDone` / `Error`** (after `on_stream_event` returns "ended"): flush the
-  next entry — *only in the conversation view* (committing under the Ctrl+O
-  overlay would violate invariant 4). The **next** turn-end flushes the **next**
-  entry, so the queue iterates one turn at a time.
+  next entry — **under the Ctrl+O overlay too** (codex's queue drains at turn
+  end regardless of its Ctrl+T view, the open transcript following the new turn
+  live). Dispatching there doesn't violate invariant 4: it only records history
+  and *queues* the user bubbles — `term` never flushes pending lines into the
+  alternate screen, and the overlay return's `repaint_conversation`/`reflow`
+  drops + regenerates them from history. The **next** turn-end flushes the
+  **next** entry, so the queue iterates one turn at a time.
 - **Esc interrupt** (`Action::Interrupt`): after committing the partial + the red
   `Conversation interrupted` notice, flush the **front** entry (the first queue)
   right away; later entries iterate at the following turn-ends.
-- **Returning from the Ctrl+O overlay**: if a turn *ended while the overlay was
-  up* (`inflight` is now `None`), the deferred flush runs after
-  `repaint_conversation`.
 
 (The Submit arm still calls `start_turn` directly with the just-typed text, and
 the idle `Action::RunShell` arm calls `run_shell` — `flush_next_queued` is only
 the *queue* drain.)
 
 Because a message can only be queued *while streaming*, and a non-empty queue
-always starts a fresh turn the instant the current one ends, the invariant holds:
-**the queue is non-empty only while a turn is active** (no draw ever shows a
-queued band at idle).
+always starts a fresh turn the instant the current one ends — in whichever view —
+the invariant holds: **the queue is non-empty only while a turn is active** (no
+draw ever shows a queued band at idle).
 
 ### Display (`ui.rs`)
 
@@ -181,6 +182,12 @@ streaming, so the queued rows live naturally in the strip. `queued_rows` /
 - `queued_rows(app, width)` — `queued_lines(...).len()`, so the strip reserves
   exactly what `render_live` paints (they can't drift). `live_height`'s
   terminal-height clamp still bounds the region.
+
+The **Ctrl+O transcript view shows the backlog too**: `ui::transcript_lines`
+appends `queued_lines` after the live tail — the same inset rows, reading as
+"pending, not yet sent" below the in-progress reply — so opening the overlay
+never hides a queued message, and when the turn ends the drain (above) turns
+the front entry into a real transcript user entry before the viewer's eyes.
 
 The `tab to queue next turn` binding is listed in the `?` shortcuts band
 (alongside `alt+↑ to edit queue`, `docs/shortcuts.md`).
@@ -245,7 +252,9 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   like a user message and **divides batches with a blank row**, and renders a
   `Shell` entry with the red `! ` `Role::Shell` header (a text batch + a shell
   entry are three lines: message, blank divider, command); `live_height` grows
-  with the queue; `render_live` draws the queue above the box.
+  with the queue; `render_live` draws the queue above the box;
+  `transcript_lines` lists the backlog after the live tail in the same inset
+  style (the Ctrl+O view never hides a queued message).
 - `scripts/smoke.sh` Phase 12 (batch-send): submit `hello`, queue `world` and
   `again` mid-stream **with Enter** (both inset rows show), then the backlog
   batch-sends as ONE turn.
@@ -265,3 +274,9 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   both show inset (`  ❯ world`, `  ! echo smoke_queue_ok`); then `world` runs as a
   model turn and the command runs **locally** as its own turn, committing the exec
   cell (`! echo …` header + `⎿ smoke_queue_ok`), never a `❯ !echo …` user message.
+- `scripts/smoke.sh` Phase 29 (queue under the overlay): submit `hello there`,
+  queue `world` mid-stream, press Ctrl+O — the inset `  ❯ world` row shows in
+  the transcript view; when turn 1 ends *under the overlay* the queue
+  dispatches right there (the column-0 `❯ world` user entry appears and turn 2
+  runs to its `Finished for` summary, the overlay still open), and the Ctrl+O
+  return repaints the inline view with both turns.

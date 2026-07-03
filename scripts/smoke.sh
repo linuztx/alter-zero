@@ -895,7 +895,7 @@ tmux send-keys -t "$S19" C-o
 bigoutput_overlay=""
 for _ in $(seq 1 30); do
 	bigoutput_overlay="$(tmux capture-pane -t "$S19" -p)"
-	if printf '%s' "$bigoutput_overlay" | grep -qF "PgUp/PgDn"; then
+	if printf '%s' "$bigoutput_overlay" | grep -qF "T R A N S C R I P T"; then
 		break
 	fi
 	sleep 0.1
@@ -1148,6 +1148,75 @@ echo "==== tmux clipboard buffer (the OSC 52 fallback landed here) ===="
 printf '%s\n' "$copy_clip"
 tmux kill-session -t "$S25" 2>/dev/null
 
+# --- Phase 29: the QUEUE follows into the Ctrl+O overlay (docs/queue.md). While
+# turn 1 streams, a message queued mid-turn shows in the transcript view as the
+# inline strip's inset "  ❯ world" row; when turn 1 ends UNDER the overlay the
+# queue auto-dispatches (codex's turn-end drain runs regardless of its Ctrl+T
+# view): the overlay gains the real column-0 "❯ world" user entry and turn 2
+# runs to its "Finished for" summary — all without leaving the overlay. The
+# Ctrl+O return then repaints the inline conversation with both turns. ---
+S29="${S}_queueoverlay"
+tmux new-session -d -s "$S29" -x 80 -y 24 "$APP"
+sleep 0.4
+tmux send-keys -t "$S29" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S29" Enter
+for _ in $(seq 1 40); do # up to ~4s: wait until turn 1 is visibly streaming
+	if tmux capture-pane -t "$S29" -p | grep -qF "Happy"; then
+		break
+	fi
+	sleep 0.1
+done
+tmux send-keys -t "$S29" -l "world"
+sleep 0.2
+tmux send-keys -t "$S29" Enter # streaming → queued, not submitted
+tmux send-keys -t "$S29" C-o   # open the transcript view mid-stream
+queued_overlay=""
+for _ in $(seq 1 20); do # up to ~3s: the queued row shows inside the overlay
+	queued_overlay="$(tmux capture-pane -t "$S29" -p)"
+	if printf '%s' "$queued_overlay" | grep -qF "T R A N S C R I P T" &&
+		printf '%s' "$queued_overlay" | grep -qF "  ❯ world"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured overlay (queued message shown while turn 1 streams) ===="
+printf '%s\n' "$queued_overlay"
+# Turn 1 ends under the overlay → the queue dispatches right there: "world"
+# becomes a real transcript user entry and turn 2 streams to its summary.
+overlay_advanced=""
+for _ in $(seq 1 150); do # up to ~22s: turn 1 finishes, then turn 2 completes
+	overlay_advanced="$(tmux capture-pane -t "$S29" -p)"
+	if printf '%s' "$overlay_advanced" | grep -qF "Finished for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured overlay (queued turn dispatched under the overlay) ===="
+printf '%s\n' "$overlay_advanced"
+# The view is pinned to the bottom, so the dispatched "❯ world" user entry has
+# scrolled off the visible pane; jump Home and page down (the pager's jump/page
+# keys) until it scrolls into view.
+tmux send-keys -t "$S29" Home
+sleep 0.2
+overlay_world=""
+for _ in $(seq 1 12); do
+	overlay_world="$(tmux capture-pane -t "$S29" -p)"
+	if printf '%s' "$overlay_world" | grep -qE '^❯ world'; then
+		break
+	fi
+	tmux send-keys -t "$S29" PageDown
+	sleep 0.2
+done
+echo "==== captured overlay (scrolled to the dispatched user entry) ===="
+printf '%s\n' "$overlay_world"
+tmux send-keys -t "$S29" C-o # return: the inline view repaints from history
+sleep 0.6
+queue_overlay_returned="$(tmux capture-pane -t "$S29" -p -S -80)"
+echo "==== captured pane (inline view after returning from the overlay) ===="
+printf '%s\n' "$queue_overlay_returned"
+tmux kill-session -t "$S29" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -1219,9 +1288,9 @@ if ! printf '%s' "$grown" | grep -qF "  BBB"; then
 	echo "FAIL: input box did not grow — indented continuation '  BBB' missing" >&2
 	status=1
 fi
-# "PgUp/PgDn" is unique to the overlay's title bar (it never appears in the
-# conversation), so it's a clean marker for "the view is open / closed".
-if ! printf '%s' "$overlay" | grep -qF "PgUp/PgDn"; then
+# "T R A N S C R I P T" is unique to the overlay's pager title row (it never
+# appears in the conversation), so it's a clean marker for "open / closed".
+if ! printf '%s' "$overlay" | grep -qF "T R A N S C R I P T"; then
 	echo "FAIL: Ctrl+O did not open the tool-output view" >&2
 	status=1
 fi
@@ -1243,7 +1312,7 @@ if printf '%s' "$overlay" | grep -qE '[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{2}:[0-9]{
 	echo "FAIL: a dated/seconds timestamp is still shown in the tool view (stamps are hh:mm AM/PM, user messages only)" >&2
 	status=1
 fi
-if printf '%s' "$returned" | grep -qF "PgUp/PgDn"; then
+if printf '%s' "$returned" | grep -qF "T R A N S C R I P T"; then
 	echo "FAIL: Ctrl+O did not return to the conversation" >&2
 	status=1
 fi
@@ -1808,7 +1877,34 @@ if ! printf '%s' "$copy_clip" | grep -qF "changes size"; then
 	status=1
 fi
 
+# Phase 29: the queued message follows into the Ctrl+O overlay and dispatches
+# there when turn 1 ends — the overlay never hides (or freezes) the queue.
+if ! printf '%s' "$queued_overlay" | grep -qF "  ❯ world"; then
+	echo "FAIL: the queued message row ('  ❯ world') was missing from the Ctrl+O transcript view" >&2
+	status=1
+fi
+if ! printf '%s' "$overlay_advanced" | grep -qF "T R A N S C R I P T"; then
+	echo "FAIL: the overlay was not still open when the queued turn dispatched" >&2
+	status=1
+fi
+if ! printf '%s' "$overlay_world" | grep -qE '^❯ world'; then
+	echo "FAIL: the queued message was not dispatched under the overlay (no column-0 '❯ world' user entry found via Home/PageDown)" >&2
+	status=1
+fi
+if ! printf '%s' "$overlay_advanced" | grep -qF "Finished for"; then
+	echo "FAIL: the queued turn never ran to its 'Finished for' summary under the overlay" >&2
+	status=1
+fi
+if ! printf '%s' "$queue_overlay_returned" | grep -qE '^❯ world'; then
+	echo "FAIL: after returning from the overlay the dispatched 'world' turn is missing from the inline view" >&2
+	status=1
+fi
+if ! printf '%s' "$queue_overlay_returned" | grep -qF "Finished for"; then
+	echo "FAIL: after returning from the overlay turn 2's summary is missing from the inline view" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer)"
 fi
 exit "$status"

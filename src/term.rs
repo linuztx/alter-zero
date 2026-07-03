@@ -76,11 +76,12 @@ pub struct InlineViewport {
     /// `pending_history_lines`): [`draw`] writes them above the viewport inside
     /// the same synchronized update as the live-region repaint, so scrollback
     /// growth and the box land atomically — never a flushed frame without the
-    /// box (`docs/flicker.md`). Only ever non-empty in the conversation view
-    /// (the overlay defers commits), and only [`draw`]/[`reflow`]/[`restore`]
-    /// flush it — never [`draw_overlay`] — so queued lines can't be written
-    /// into the alternate screen. [`reflow`] *drops* the queue instead: its
-    /// rebuilt tail regenerates everything pending from history.
+    /// box (`docs/flicker.md`). Only [`draw`]/[`reflow`]/[`restore`] flush it —
+    /// never [`draw_overlay`] — so queued lines can't be written into the
+    /// alternate screen even when a turn dispatched under the Ctrl+O overlay
+    /// queues its user bubbles here. [`reflow`] (the overlay's return repaint)
+    /// *drops* the queue instead: its rebuilt tail regenerates everything
+    /// pending from history.
     ///
     /// [`insert_before`]: InlineViewport::insert_before
     /// [`draw`]: InlineViewport::draw

@@ -112,16 +112,27 @@ unit-tested must be unit-tested.
   runs a `Read` (green) then a `Bash` (red) per turn so all three colours show.
 - **The Ctrl+O tool-output view.** Ctrl+O (from either screen, even mid-stream)
   opens a **separate full-screen overlay** — on the terminal's *alternate screen*,
-  so the inline conversation is preserved — showing the **full conversation
-  transcript**: every user/AI message **and** every tool call's **complete**
-  (expanded) output, interleaved in the exact order they happened, plus the live
-  tail (in-progress reply / running tool), scrollable (↑/↓ PgUp/PgDn). It **opens
+  so the inline conversation is preserved — styled as **codex's Ctrl+T
+  transcript pager**: a dim slash-tiled `/ T R A N S C R I P T` title row, the
+  scrolling body with vi-style `~` filler rows past its end, a dim `─`
+  separator carrying the **scroll percentage** right-aligned (0% top, 100%
+  bottom), and two dim key-hint rows above a final blank row. The body is the
+  **full conversation transcript**: every user/AI message **and** every tool
+  call's **complete** (expanded) output, interleaved in the exact order they
+  happened, plus the live tail (in-progress reply / running tool) **plus the
+  still-queued backlog** (the inline strip's inset `  ❯ …` rows, so a queued
+  message is never hidden — `docs/queue.md`), scrollable (↑/↓ PgUp/PgDn,
+  Home/End jump). It **opens
   pinned to the bottom** and tail-follows new content as it streams in (scroll up
   to read back; scrolling to the bottom re-engages following). It is the
   expanded counterpart of the inline view (where tools are collapsed). The
   conversation **keeps streaming and updating underneath**: while the overlay is up
   the event loop still drains reply events into `App` (so the view updates live)
-  but holds off committing to scrollback; Ctrl+O (or Esc) returns, and the inline
+  but holds off committing to scrollback — and a turn that ends there still
+  **dispatches the next queued entry immediately** (codex parity: the open
+  transcript gains the new user entry and follows the new turn live, the
+  deferred user bubbles regenerated from history on return); Ctrl+O (Esc or
+  `q`) returns, and the inline
   view is repainted from `history` to catch up — and **so does quitting** (Ctrl+C)
   from the overlay, which repaints before exiting so a turn that finished while the
   overlay was up restores its `Done for Ns` summary rather than the stale streaming
@@ -324,9 +335,9 @@ unit-tested must be unit-tested.
   empties the box — recording the draft so ↑ can bring it back — and closes
   the palette, since the emptied input is no longer a `/token`; the overlay
   has no input box, so Ctrl+C there always quits); with an empty input it
-  quits from anywhere, even mid-stream. In the tool-output view Esc returns to
-  the chat instead of quitting. Sending is disabled while a reply is
-  streaming.
+  quits from anywhere, even mid-stream. In the tool-output view Esc (or `q`,
+  codex's pager close key) returns to the chat instead of quitting. Sending is
+  disabled while a reply is streaming.
 
 ## Architecture
 
@@ -441,8 +452,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `Conversation interrupted` notice. No `Done for Ns` summary.
 - **In the tool-output view** every reply event still updates `App` (so the view
   shows tools live), but the commit-to-scrollback steps above are **skipped** —
-  they would write into the alternate screen. The inline view is rebuilt from
-  `history` on return.
+  they would write into the alternate screen. The turn-end queue drain still
+  runs (its user bubbles only *queue* in `term`, dropped + regenerated from
+  history by the return's reflow), so the open transcript follows the next
+  queued turn live. The inline view is rebuilt from `history` on return.
 
 ### Key types
 
@@ -534,10 +547,11 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   ok/failed and into history; `flush_streaming_segment` records the text before a
   tool and reopens an empty buffer; `finish_stream` records nothing for an empty
   final segment; a turn interleaves text/tool/text in order. Ctrl+O toggles the
-  view (even mid-stream, stream keeps running); Esc closes the overlay (vs quits
-  in the chat); the viewer scrolls and ignores typing; it opens pinned to the
-  bottom and `settle_tool_scroll` tail-follows (scrolling up disengages, reaching
-  the bottom re-engages). With an injected stub clock (`set_clock`), every recorded
+  view (even mid-stream, stream keeps running); Esc and `q` close the overlay
+  (vs quit in the chat); the viewer scrolls and ignores typing; Home jumps to
+  the top and End back to the bottom (re-engaging tail-follow); it opens pinned
+  to the bottom and `settle_tool_scroll` tail-follows (scrolling up disengages,
+  reaching the bottom re-engages). With an injected stub clock (`set_clock`), every recorded
   message/tool is stamped with the clock's value; with no clock the stamp is empty.
 - `app` (status): `begin_stream` opens a `TurnStatus` (a per-turn verb, 0 tokens,
   `↓`); the verb differs turn-to-turn; `push_chunk` grows the tally (`↓`); a tool
@@ -641,8 +655,11 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   width; error lines get a red bullet; system notices a cyan one); `tool_lines`
   (status-coloured bullet header, collapsed peek + `(ctrl+o to expand)` hint,
   width-truncated); `transcript_lines`/`render_tool_view` (full conversation —
-  messages interleaved with each tool's complete output, plus the live tail —
-  status colour, scroll; the **user** message's **timestamp right-aligned on its
+  messages interleaved with each tool's complete output, plus the live tail,
+  plus the queued backlog's inset rows — status colour, scroll, wrapped in
+  codex's pager chrome: the slash-tiled title row via `tool_view_header`, `~`
+  filler, the percentage separator via `tool_view_separator`, the dim hint
+  rows; the **user** message's **timestamp right-aligned on its
   own line below it** in a dim colour — no stamp on assistant/tool/summary items,
   and **never** any in the inline `conversation_lines`); the
   **status indicator** — `status_line` formats each phase (`(0s)` with the token

@@ -1911,11 +1911,12 @@ impl App {
     }
 
     /// Keys while the full-screen tool-output view is showing: it is a read-only
-    /// scroller, so typing is ignored; Esc (like Ctrl+O) returns to the chat.
+    /// scroller (codex's transcript pager), so typing is ignored; Esc and `q`
+    /// (like Ctrl+O) return to the chat, Home/End jump to the transcript's edges.
     fn on_key_tool_view(&mut self, key: KeyEvent) -> Action {
         match key.code {
-            KeyCode::Esc => {
-                self.toggle_tool_view(); // Esc closes the overlay, back to chat
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.toggle_tool_view(); // close the overlay, back to chat
                 Action::ToggleToolView
             }
             KeyCode::Up => {
@@ -1936,6 +1937,17 @@ impl App {
             }
             KeyCode::PageDown => {
                 self.tool_scroll = self.tool_scroll.saturating_add(TOOL_VIEW_PAGE);
+                Action::None
+            }
+            KeyCode::Home => {
+                self.tool_follow = false;
+                self.tool_scroll = 0;
+                Action::None
+            }
+            KeyCode::End => {
+                // Past any end — `settle_tool_scroll` pins it to the bottom
+                // and re-engages tail-follow (codex's jump_bottom).
+                self.tool_scroll = usize::MAX;
                 Action::None
             }
             _ => Action::None,
@@ -3803,6 +3815,33 @@ mod tests {
         app.on_key(key(KeyCode::Up)); // saturating, never underflows below 0
         app.on_key(key(KeyCode::PageUp));
         assert_eq!(app.tool_scroll, 5 + TOOL_VIEW_PAGE - 1 - TOOL_VIEW_PAGE);
+    }
+
+    #[test]
+    fn home_and_end_jump_the_tool_view_to_the_edges() {
+        // codex's pager jump keys: Home to the very top (leaving tail-follow),
+        // End back to the bottom (re-engaging it).
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        app.settle_tool_scroll(20); // pinned to the bottom
+        app.on_key(key(KeyCode::Home));
+        assert!(!app.tool_follow, "home stops tailing");
+        app.settle_tool_scroll(20);
+        assert_eq!(app.tool_scroll, 0, "home jumps to the top");
+
+        app.on_key(key(KeyCode::End));
+        app.settle_tool_scroll(20);
+        assert!(app.tool_follow, "end re-engages tailing");
+        assert_eq!(app.tool_scroll, 20, "end jumps to the bottom");
+    }
+
+    #[test]
+    fn q_closes_the_tool_view_like_esc() {
+        // codex's pager close key: q quits the overlay, back to the chat.
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        assert_eq!(app.on_key(key(KeyCode::Char('q'))), Action::ToggleToolView);
+        assert_eq!(app.view, View::Conversation);
     }
 
     #[test]

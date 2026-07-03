@@ -220,19 +220,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 } else {
                                     term.exit_overlay()?;
                                     // Catch the inline view up on whatever streamed
-                                    // while the overlay was showing.
+                                    // — or was dispatched off the queue — while the
+                                    // overlay was showing (the reflow regenerates
+                                    // any pending user bubbles from history).
                                     repaint_conversation(term, &app, &mut committed)?;
-                                    // A turn may have ended while the overlay was up
-                                    // (its queue flush was deferred — invariant 4);
-                                    // now that we commit inline again, send the next
-                                    // queued batch (later batches flush at each
-                                    // following turn-end, see the StreamDone arm).
-                                    if inflight.is_none() {
-                                        inflight = flush_next_queued(
-                                            term, &mut app, &tx, &backend,
-                                            &mut committed, &mut clocks,
-                                        )?;
-                                    }
                                 }
                             }
                             Action::Notice(text) => {
@@ -381,19 +372,20 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 if on_stream_event(
                     term, &mut app, &mut committed, &mut clocks, stream_event,
                 )? {
-                    inflight = None; // the stream ended
-                    // Send the next queued batch as the following turn — Enter
+                    // The stream ended. Send the next queued batch as the
+                    // following turn (`None` when nothing is queued) — Enter
                     // messages batch into one turn, while Tab-opened follow-up
                     // batches each flush at their own turn-end, so they iterate in
-                    // order. Only in the conversation view; committing under the
-                    // Ctrl+O overlay would violate the no-scrollback-in-overlay
-                    // invariant. A turn that ends in the overlay flushes on return
-                    // instead (see ToggleToolView).
-                    if app.view == View::Conversation {
-                        inflight = flush_next_queued(
-                            term, &mut app, &tx, &backend, &mut committed, &mut clocks,
-                        )?;
-                    }
+                    // order. This runs under the Ctrl+O overlay too (codex's
+                    // queue drains at turn end regardless of its Ctrl+T view, the
+                    // transcript following along): dispatching only records
+                    // history and *queues* the user bubbles — `term` never
+                    // flushes pending lines into the alternate screen, and the
+                    // return's reflow drops + regenerates them from history —
+                    // so invariant 4 holds.
+                    inflight = flush_next_queued(
+                        term, &mut app, &tx, &backend, &mut committed, &mut clocks,
+                    )?;
                 }
                 frame.schedule_frame();
             }
@@ -484,9 +476,9 @@ struct TurnInput {
 /// bullet to scrollback, open the stream, reset the per-turn clocks and commit
 /// counter, and spawn the backend on the joined prompt. Returns the in-flight
 /// cancel token + thread handle. Shared by the `Submit` key arm *and* every
-/// queue flush (`StreamDone`/`Error`, an Esc interrupt, or a Ctrl+O return), so
-/// the paths can never drift. Empty batches are the caller's job to
-/// skip. See `docs/queue.md`.
+/// queue flush (`StreamDone`/`Error` — under the Ctrl+O overlay too — and an
+/// Esc interrupt), so the paths can never drift. Empty batches are the
+/// caller's job to skip. See `docs/queue.md`.
 fn start_turn(
     term: &mut InlineViewport,
     app: &mut App,
@@ -647,8 +639,8 @@ fn run_shell(
 /// goes to the model ([`start_turn`]) and a `!` command runs locally
 /// ([`run_shell`]) — codex's action-tagged drain (`maybe_send_next_queued_input`).
 /// Returns the new in-flight handle, or `None` when the queue is empty. Shared
-/// by every turn-end drain site (`StreamDone`/`Error`, an Esc interrupt, and a
-/// Ctrl+O return) so they can't drift. See `docs/queue.md`.
+/// by every turn-end drain site (`StreamDone`/`Error` — in the overlay too —
+/// and an Esc interrupt) so they can't drift. See `docs/queue.md`.
 fn flush_next_queued(
     term: &mut InlineViewport,
     app: &mut App,

@@ -122,16 +122,27 @@ fn tool_running_marker(shell: bool) -> &'static str {
     }
 }
 
-// --- Tool-output view (the Ctrl+O full-screen overlay). A one-row title above a
-// scrolling body: the full conversation transcript — every message plus every
-// tool call's *complete* (expanded) output. ---
+// --- Tool-output view (the Ctrl+O full-screen overlay) — codex's Ctrl+T
+// transcript pager: a slash-tiled dim title row over a scrolling body (the
+// full conversation transcript — every message plus every tool call's
+// *complete* (expanded) output — with vi-style `~` filler rows past its end),
+// closed by a `─` separator carrying the scroll percentage and two dim
+// key-hint rows above a final blank row. ---
 
-/// Title shown at the top of the tool-output view.
-const TOOL_VIEW_TITLE: &str = "Conversation";
-/// Key hint shown beside the title.
-const TOOL_VIEW_HINT: &str = "  ↑/↓ PgUp/PgDn scroll · ctrl+o / esc return";
-/// Rows of chrome above the scrolling body (just the title row).
+/// The pager's spaced-caps title, overlaid on the slash tiling as
+/// `/ T R A N S C R I P T` (codex's transcript overlay header).
+const TOOL_VIEW_TITLE: &str = "T R A N S C R I P T";
+/// Rows of chrome above the scrolling body (the slash-tiled title row).
 const TOOL_VIEW_TITLE_ROWS: u16 = 1;
+/// Rows of chrome below the body: the `─` separator carrying the scroll
+/// percentage, two key-hint rows, and the final blank row (codex's pager).
+const TOOL_VIEW_FOOTER_ROWS: u16 = 4;
+/// First key-hint row under the separator (codex's pager hints, all dim).
+const TOOL_VIEW_HINT_KEYS: &str = " ↑/↓ to scroll   pgup/pgdn to page   home/end to jump";
+/// Second key-hint row: every key that closes the overlay.
+const TOOL_VIEW_HINT_QUIT: &str = " q/esc/ctrl+o to quit";
+/// The vi-style filler marking body rows below the transcript's end.
+const TOOL_VIEW_FILL: &str = "~";
 /// The dim placeholder shown when the transcript has nothing to list yet.
 const TOOL_VIEW_EMPTY: &str = "Nothing here yet.";
 
@@ -1762,6 +1773,15 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         lines.extend(tool_full_lines(tool, width));
         lines.push(Line::default());
     }
+    // Entries still waiting in the queue come last — after the live tail, in
+    // dispatch order, styled exactly like the inline strip's queued rows
+    // ([`queued_lines`] — the two-space inset user-/shell-style lines, a blank
+    // dividing entries), so the overlay shows the full live picture and a
+    // queued message is never invisible under Ctrl+O (docs/queue.md).
+    if !app.queued.is_empty() {
+        lines.extend(queued_lines(app, width));
+        lines.push(Line::default());
+    }
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             TOOL_VIEW_EMPTY.to_string(),
@@ -1772,42 +1792,91 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The largest the transcript scroll offset can be on a `screen_height`-row
-/// screen — the total content height minus the scrolling body — so the last
-/// line can reach the bottom but not scroll past it. The loop clamps
-/// `App::tool_scroll` to this each draw.
+/// screen — the total content height minus the scrolling body (the screen less
+/// the pager's title and footer chrome) — so the last line can reach the
+/// bottom but not scroll past it. The loop clamps `App::tool_scroll` to this
+/// each draw.
 #[must_use]
 pub fn tool_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize {
-    let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS) as usize;
+    let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS + TOOL_VIEW_FOOTER_ROWS) as usize;
     transcript_lines(app, width).len().saturating_sub(body)
 }
 
-/// Render the full-screen tool-output view: a title row, then the scrolling
-/// conversation transcript (messages + every tool call's full output), windowed
-/// by `App::tool_scroll` (clamped so it can't run past the end). Pure — `term.rs`
-/// paints this onto the overlay.
-pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
-    let [title_area, body_area] =
-        Layout::vertical([Constraint::Length(TOOL_VIEW_TITLE_ROWS), Constraint::Min(0)])
-            .areas(area);
+/// The pager's title row: `/ ` tiled across the width (a `/` on every even
+/// column) with the spaced-caps `/ T R A N S C R I P T` overlaid from the left
+/// edge, all dim — codex's transcript overlay header.
+fn tool_view_header(width: u16) -> Line<'static> {
+    let title = format!("/ {TOOL_VIEW_TITLE}");
+    let mut text: String = title.chars().take(width as usize).collect();
+    for col in cols(&text)..width as usize {
+        text.push(if col.is_multiple_of(2) { '/' } else { ' ' });
+    }
+    Line::from(Span::styled(text, Style::new().fg(TOOL_DIM_COLOR)))
+}
 
-    let title = Line::from(vec![
-        Span::styled(
-            TOOL_VIEW_TITLE.to_string(),
-            Style::new().fg(AI_COLOR).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(TOOL_VIEW_HINT.to_string(), Style::new().fg(TOOL_DIM_COLOR)),
-    ]);
-    Paragraph::new(title).render(title_area, buf);
+/// The pager's bottom rule: a dim `─` separator carrying the scroll position
+/// as a right-aligned ` {pct}% ` one dash in from the right edge — 0% at the
+/// top, 100% at the bottom (or whenever everything fits) — codex's transcript
+/// overlay bottom bar.
+fn tool_view_separator(width: u16, scroll: usize, max: usize) -> Line<'static> {
+    let pct = if max == 0 {
+        100
+    } else {
+        (scroll.min(max) * 100 + max / 2) / max
+    };
+    let text = format!(" {pct}% ");
+    let width = width as usize;
+    let mut rule = vec!['─'; width];
+    let start = width.saturating_sub(cols(&text) + 1);
+    for (i, ch) in text.chars().enumerate() {
+        if let Some(cell) = rule.get_mut(start + i) {
+            *cell = ch;
+        }
+    }
+    Line::from(Span::styled(
+        rule.into_iter().collect::<String>(),
+        Style::new().fg(TOOL_DIM_COLOR),
+    ))
+}
+
+/// Render the full-screen tool-output view — codex's Ctrl+T transcript pager:
+/// the slash-tiled title row, then the scrolling conversation transcript
+/// (messages + every tool call's full output), windowed by `App::tool_scroll`
+/// (clamped so it can't run past the end) with `~` filler on the body rows
+/// past its end, then the percentage separator and the dim key-hint rows.
+/// Pure — `term.rs` paints this onto the overlay.
+pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
+    let [title_area, body_area, sep_area, hints_area] = Layout::vertical([
+        Constraint::Length(TOOL_VIEW_TITLE_ROWS),
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(TOOL_VIEW_FOOTER_ROWS - 1),
+    ])
+    .areas(area);
+
+    Paragraph::new(tool_view_header(area.width)).render(title_area, buf);
 
     let lines = transcript_lines(app, body_area.width);
     let max = lines.len().saturating_sub(body_area.height as usize);
     let scroll = app.tool_scroll.min(max);
-    let visible: Vec<Line> = lines
+    let mut visible: Vec<Line> = lines
         .into_iter()
         .skip(scroll)
         .take(body_area.height as usize)
         .collect();
+    while (visible.len() as u16) < body_area.height {
+        visible.push(Line::from(TOOL_VIEW_FILL));
+    }
     Paragraph::new(visible).render(body_area, buf);
+
+    Paragraph::new(tool_view_separator(area.width, scroll, max)).render(sep_area, buf);
+
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    Paragraph::new(vec![
+        Line::from(Span::styled(TOOL_VIEW_HINT_KEYS.to_string(), dim)),
+        Line::from(Span::styled(TOOL_VIEW_HINT_QUIT.to_string(), dim)),
+    ])
+    .render(hints_area, buf);
 }
 
 /// Decide which assistant lines are now safe to flush to scrollback as a reply
@@ -2338,6 +2407,46 @@ mod tests {
     }
 
     #[test]
+    fn transcript_lines_list_the_queued_backlog_after_the_live_tail() {
+        // The overlay shows the full live picture: entries still waiting in
+        // the queue render after the live tail, styled exactly like the inline
+        // strip's queued rows (two-space inset, ❯ user / red ! shell, a blank
+        // dividing entries), so Ctrl+O never hides a queued message
+        // (docs/queue.md).
+        let mut app = App::new();
+        app.record_user_message("q");
+        app.begin_stream();
+        app.push_chunk("partial");
+        app.queued.push_back(batch(&["world"]));
+        app.queued.push_back(QueuedTurn::Shell("ls".into()));
+        let texts: Vec<String> = transcript_lines(&app, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        let pos = |needle: &str| {
+            texts
+                .iter()
+                .position(|t| t.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle}: {texts:?}"))
+        };
+        assert!(
+            pos("partial") < pos("❯ world"),
+            "queued after the live tail"
+        );
+        assert!(pos("❯ world") < pos("! ls"), "entries in queue order");
+        assert_eq!(
+            texts[pos("❯ world")],
+            format!("{QUEUED_INDENT}❯ world"),
+            "the inline strip's two-space inset user style"
+        );
+        assert_eq!(
+            texts[pos("❯ world") + 1].trim(),
+            "",
+            "a blank divides the entries"
+        );
+    }
+
+    #[test]
     fn tool_full_lines_colours_the_header_by_status() {
         let lines = tool_full_lines(&tool("Read", "f", ToolStatus::Ok, "x"), 80);
         assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_OK_COLOR));
@@ -2398,13 +2507,13 @@ mod tests {
     #[test]
     fn render_tool_view_shows_the_title_messages_and_full_output() {
         let app = transcript_fixture();
-        let mut buf = buffer(40, 14);
+        let mut buf = buffer(40, 16);
         render_tool_view(buf.area, &mut buf, &app);
-        let all: String = (0..14)
+        let all: String = (0..16)
             .map(|y| row(&buf, y, 40))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(all.contains("Conversation"), "title present: {all:?}");
+        assert!(all.contains(TOOL_VIEW_TITLE), "title present: {all:?}");
         assert!(all.contains("hello"), "user message shown: {all:?}");
         assert!(
             all.contains("let me check") && all.contains("all done"),
@@ -2414,6 +2523,80 @@ mod tests {
         assert!(
             all.contains("L1") && all.contains("L2"),
             "full output: {all:?}"
+        );
+    }
+
+    #[test]
+    fn render_tool_view_paints_the_codex_pager_chrome() {
+        // The overlay is codex's Ctrl+T transcript pager: a slash-tiled dim
+        // title row, the scrolling body, a `─` separator carrying the scroll
+        // percentage right-aligned one dash in from the edge, two dim key-hint
+        // rows, and a final blank row.
+        let app = transcript_fixture();
+        let mut buf = buffer(40, 16);
+        render_tool_view(buf.area, &mut buf, &app);
+        let header = row(&buf, 0, 40);
+        assert!(
+            header.starts_with("/ T R A N S C R I P T / / "),
+            "the title overlays the slash tiling: {header:?}"
+        );
+        // body rows 1..=11, then the separator at 16 - 4.
+        let sep = row(&buf, 12, 40);
+        assert!(sep.starts_with('─'), "{sep:?}");
+        assert!(
+            sep.contains(" 100% "),
+            "everything fits → pinned at 100%: {sep:?}"
+        );
+        assert!(sep.ends_with('─'), "one dash right of the percent: {sep:?}");
+        let hints = row(&buf, 13, 40);
+        assert!(
+            hints.contains("to scroll") && hints.contains("pgup/pgdn"),
+            "{hints:?}"
+        );
+        assert!(
+            row(&buf, 14, 40).contains("q/esc/ctrl+o to quit"),
+            "{:?}",
+            row(&buf, 14, 40)
+        );
+        assert_eq!(row(&buf, 15, 40).trim(), "", "a blank final row");
+    }
+
+    #[test]
+    fn render_tool_view_fills_rows_below_the_content_with_tildes() {
+        // Body rows past the transcript's end read `~` (codex's pager, vi-style).
+        let mut app = App::new();
+        app.record_user_message("hi");
+        let mut buf = buffer(40, 12);
+        render_tool_view(buf.area, &mut buf, &app);
+        // Content is two lines (message + spacer) in a 7-row body: rows 3..=7
+        // are filler.
+        assert!(row(&buf, 1, 40).contains("❯ hi"), "{:?}", row(&buf, 1, 40));
+        for y in 3..=7 {
+            assert_eq!(row(&buf, y, 40).trim_end(), "~", "row {y} is filler");
+        }
+    }
+
+    #[test]
+    fn render_tool_view_separator_tracks_the_scroll_position() {
+        // 0% at the top, 100% at the bottom — codex's pager percentage.
+        let mut app = App::new();
+        app.start_tool("Read", "f");
+        let output = (0..20)
+            .map(|i| format!("line{i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.end_tool(&output, true);
+        let mut buf = buffer(40, 12);
+        render_tool_view(buf.area, &mut buf, &app);
+        assert!(row(&buf, 8, 40).contains(" 0% "), "{:?}", row(&buf, 8, 40));
+
+        app.tool_scroll = usize::MAX; // pinned to the bottom (clamped)
+        let mut buf = buffer(40, 12);
+        render_tool_view(buf.area, &mut buf, &app);
+        assert!(
+            row(&buf, 8, 40).contains(" 100% "),
+            "{:?}",
+            row(&buf, 8, 40)
         );
     }
 
@@ -2446,7 +2629,7 @@ mod tests {
         let app = transcript_fixture();
         let total = transcript_lines(&app, 40).len();
         let screen_h = 10u16;
-        let body = (screen_h - TOOL_VIEW_TITLE_ROWS) as usize;
+        let body = (screen_h - TOOL_VIEW_TITLE_ROWS - TOOL_VIEW_FOOTER_ROWS) as usize;
         assert_eq!(
             tool_view_max_scroll(&app, 40, screen_h),
             total.saturating_sub(body)
