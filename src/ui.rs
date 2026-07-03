@@ -2967,7 +2967,9 @@ mod tests {
     #[test]
     fn live_height_grows_when_a_long_line_soft_wraps() {
         // No explicit newline: a line longer than the field width wraps and the
-        // box still grows. field width = 10 - 2 = 8, so 16 columns → 2 rows → 4.
+        // box still grows. field width = 10 - 2 = 8, so 16 columns fill two rows
+        // exactly and the wrap reserves the sentinel row for the end-of-text
+        // cursor (docs/textarea.md) → 3 rows → 5.
         assert_eq!(
             live_height(
                 &TextArea::from_text("abcdefghijklmnop"),
@@ -2979,7 +2981,7 @@ mod tests {
                 0,
                 0
             ),
-            4
+            5
         );
     }
 
