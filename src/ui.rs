@@ -803,7 +803,8 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 /// strip collapses and the box sits at the top of the region. The input wraps
 /// across as many rows as `area` allows; the prompt marks its first line and
 /// continuation lines are indented to align under it. When the input is taller
-/// than the box, the tail is kept in view (the cursor is always at the end).
+/// than the box, it scrolls internally to keep the **cursor's wrapped row** in
+/// view (`input_scroll` follows the cursor wherever the user has moved it).
 pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     let streaming = app.is_streaming();
     // The band below the box holds the palette, the shortcuts overview, *or* the
