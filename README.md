@@ -26,8 +26,13 @@ the logic is pure and unit-tested.
 cargo run
 ```
 
-Type a message and press **Enter**. Press **Esc** or **Ctrl+C** to quit — `?`
-in an empty composer lists the keyboard shortcuts, `/` the slash commands.
+Type a message and press **Enter**. Press **Ctrl+C** (or **Esc** before you've
+sent anything) to quit — `?` in an empty composer lists the keyboard
+shortcuts, `/` the slash commands. Once you've chatted, **Esc Esc** steps back
+to edit a previous message, codex-style (see `docs/backtrack.md`): the first
+Esc arms it, the second previews the conversation with the last user message
+highlighted, Esc/←/→ pick an older/newer one, and Enter rewinds the
+conversation to that point with the message back in the composer.
 
 ## How it works
 

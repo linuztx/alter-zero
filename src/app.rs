@@ -332,6 +332,29 @@ pub enum View {
     ToolOutput,
 }
 
+/// The Esc-Esc backtrack gesture's state — codex's `BacktrackState`
+/// (`tui/src/app_backtrack.rs`): Esc from an idle, empty composer *primes* the
+/// gesture, a second Esc previews previous user messages highlighted in the
+/// transcript overlay, Esc/← / → step the highlight, and Enter rewinds the
+/// conversation to the highlighted message and puts its text back in the
+/// composer to edit. See `docs/backtrack.md`.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Backtrack {
+    /// The first Esc armed the gesture (codex's `primed` — no timeout); any
+    /// non-Esc key disarms it. While armed the footer slot shows the
+    /// `esc again to edit previous message` hint.
+    pub primed: bool,
+    /// `Some(i)` while the overlay preview is active: the highlighted user
+    /// message, as an index into the conversation's user messages (oldest =
+    /// 0 — codex's `nth_user_message`). `None` when not previewing.
+    pub selected: Option<usize>,
+    /// Set when the preview opens or the highlight moves; the next overlay
+    /// draw scrolls the highlight into view and consumes it
+    /// ([`App::take_backtrack_scroll`] — codex's `scroll_chunk_into_view`),
+    /// so it never fights the user's own scrolling afterwards.
+    pub scroll_pending: bool,
+}
+
 /// One queued turn awaiting its slot while a turn streams — codex's
 /// action-tagged queued message (`QueuedInputAction`). The queue is a
 /// `VecDeque<QueuedTurn>` drained FIFO, one entry per turn-end; the variant is
@@ -778,6 +801,11 @@ pub struct App {
     /// opens this way and re-streams keep the latest content in view, until you
     /// scroll up to read back (and re-engages when you scroll to the bottom).
     pub tool_follow: bool,
+    /// The Esc-Esc backtrack gesture (edit a previous message): primed by Esc
+    /// from an idle empty composer when a previous user message exists,
+    /// previewing in the transcript overlay, confirmed with Enter. Reset by
+    /// any view toggle and by any non-Esc key. See `docs/backtrack.md`.
+    pub backtrack: Backtrack,
     /// The open slash-command palette (when the input is a bare command token);
     /// `None` when closed. Esc dismisses it (and it stays dismissed within the
     /// same token); see [`App::refresh_command_menu`].
@@ -1143,6 +1171,12 @@ impl App {
     /// (which filters the palette). With no palette open every key behaves as it
     /// always has.
     fn on_key_conversation(&mut self, key: KeyEvent) -> Action {
+        // Any non-Esc key disarms a primed backtrack — codex resets its
+        // priming on any other keypress, no timeout (docs/backtrack.md). The
+        // key still does its normal job below.
+        if self.backtrack.primed && key.code != KeyCode::Esc {
+            self.backtrack.primed = false;
+        }
         // The `?` shortcuts band (docs/shortcuts.md): `?` from an *empty*
         // composer toggles it (SHIFT allowed — terminals differ in reporting
         // Shift+/; with a draft `?` falls through and types). Any other key
@@ -1194,6 +1228,19 @@ impl App {
                 Action::None
             }
             KeyCode::Esc if self.turn_active() => Action::Interrupt,
+            // Esc-Esc backtrack (docs/backtrack.md): a primed second Esc opens
+            // the transcript overlay previewing the newest user message; the
+            // first Esc primes when the composer is empty and a previous user
+            // message exists. Only with *nothing* to backtrack to does idle
+            // Esc keep its historical meaning — quit.
+            KeyCode::Esc if self.backtrack.primed && self.input.is_empty() => {
+                self.open_backtrack_preview();
+                Action::ToggleToolView
+            }
+            KeyCode::Esc if self.input.is_empty() && self.has_backtrack_target() => {
+                self.backtrack.primed = true;
+                Action::None
+            }
             KeyCode::Esc => Action::Quit,
             // Palette navigation / selection (only while it's open).
             KeyCode::Up if menu_open => {
@@ -1915,6 +1962,31 @@ impl App {
     /// (like Ctrl+O) return to the chat, Home/End jump to the transcript's edges.
     fn on_key_tool_view(&mut self, key: KeyEvent) -> Action {
         match key.code {
+            // Backtrack preview keys (docs/backtrack.md): Esc/← step the
+            // highlight to the next-older user message, → back toward the
+            // newest, Enter confirms the rewind (truncate + prefill — the
+            // view flips back inside, so the ToggleToolView lands on the
+            // loop's normal return-from-overlay path). The scroll keys below
+            // keep working; q (or Ctrl+O) still closes, cancelling.
+            KeyCode::Esc | KeyCode::Left if self.backtrack.selected.is_some() => {
+                self.step_backtrack(-1);
+                Action::None
+            }
+            KeyCode::Right if self.backtrack.selected.is_some() => {
+                self.step_backtrack(1);
+                Action::None
+            }
+            KeyCode::Enter if self.backtrack.selected.is_some() => {
+                self.confirm_backtrack();
+                Action::ToggleToolView
+            }
+            // Esc in a plain Ctrl+O view *begins* the preview in place when
+            // idle with a target — codex's Ctrl+T → Esc path; without one
+            // (or mid-turn) it keeps closing the overlay below.
+            KeyCode::Esc if !self.turn_active() && self.has_backtrack_target() => {
+                self.begin_backtrack_preview();
+                Action::None
+            }
             KeyCode::Esc | KeyCode::Char('q') => {
                 self.toggle_tool_view(); // close the overlay, back to chat
                 Action::ToggleToolView
@@ -1960,12 +2032,125 @@ impl App {
     /// closes rather than re-showing after the round-trip (docs/shortcuts.md).
     fn toggle_tool_view(&mut self) {
         self.shortcuts_open = false;
+        // Any toggle abandons an in-flight backtrack gesture — Ctrl+O/q close
+        // a preview without truncating, and Ctrl+O over a primed composer is
+        // "any other key" activity (codex resets its BacktrackState on
+        // overlay close the same way; docs/backtrack.md).
+        self.backtrack = Backtrack::default();
         self.view = match self.view {
             View::Conversation => View::ToolOutput,
             View::ToolOutput => View::Conversation,
         };
         self.tool_scroll = 0;
         self.tool_follow = self.view == View::ToolOutput;
+    }
+
+    /// The history indices of the conversation's user messages ([`Role::User`]
+    /// prompts, oldest first) — the backtrack gesture's target list (codex's
+    /// `user_positions_iter`). A `!` shell header is user-*typed* but not a
+    /// user *prompt*, so it is never a target (codex only walks user cells).
+    fn user_message_positions(&self) -> Vec<usize> {
+        self.history
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| matches!(item, HistoryItem::Message(m) if m.role == Role::User))
+            .map(|(index, _)| index)
+            .collect()
+    }
+
+    /// Is there a previous user message for Esc-Esc to edit? Gates priming
+    /// (codex's `has_backtrack_target`) — with no target, idle Esc keeps its
+    /// historical meaning here: quit. See `docs/backtrack.md`.
+    #[must_use]
+    pub fn has_backtrack_target(&self) -> bool {
+        self.history
+            .iter()
+            .any(|item| matches!(item, HistoryItem::Message(m) if m.role == Role::User))
+    }
+
+    /// Start previewing with the newest user message highlighted, requesting
+    /// a scroll to bring it into view. No-op with no target (the key arms
+    /// guard, but a stale call must not underflow).
+    fn begin_backtrack_preview(&mut self) {
+        let count = self.user_message_positions().len();
+        if count == 0 {
+            return;
+        }
+        self.backtrack.selected = Some(count - 1);
+        self.backtrack.scroll_pending = true;
+        self.tool_follow = false; // pin to the highlight, not the tail
+    }
+
+    /// The primed second Esc: open the transcript overlay as a backtrack
+    /// preview (codex's `open_backtrack_preview`). The caller returns
+    /// [`Action::ToggleToolView`] so the loop enters the overlay screen.
+    fn open_backtrack_preview(&mut self) {
+        self.view = View::ToolOutput;
+        self.tool_scroll = 0;
+        self.begin_backtrack_preview();
+    }
+
+    /// Step the preview highlight (`-1` older, `+1` newer), clamped at both
+    /// ends (codex saturates the same way). A move requests a scroll-into-view.
+    fn step_backtrack(&mut self, delta: isize) {
+        let count = self.user_message_positions().len();
+        if let Some(selected) = self.backtrack.selected
+            && count > 0
+        {
+            let stepped = selected.saturating_add_signed(delta).min(count - 1);
+            if stepped != selected {
+                self.backtrack.selected = Some(stepped);
+                self.backtrack.scroll_pending = true;
+            }
+        }
+    }
+
+    /// Confirm the preview (Enter): drop the highlighted user message and
+    /// everything after it from the history, reset the gesture, return to the
+    /// conversation view, and put the message's text back in the composer to
+    /// edit — codex's rollback + `set_composer_text`, except there is no
+    /// backend session to fork: one prompt per turn means truncating
+    /// [`history`] *is* the whole rewind. The loop's return-from-overlay
+    /// repaint rebuilds the inline view from the truncated history. See
+    /// `docs/backtrack.md`.
+    ///
+    /// [`history`]: App::history
+    fn confirm_backtrack(&mut self) {
+        let positions = self.user_message_positions();
+        let Some(&position) = self.backtrack.selected.and_then(|i| positions.get(i)) else {
+            return;
+        };
+        let HistoryItem::Message(message) = &self.history[position] else {
+            return;
+        };
+        let text = message.text.clone();
+        self.history.truncate(position);
+        self.backtrack = Backtrack::default();
+        self.view = View::Conversation;
+        self.recall_input(&text);
+    }
+
+    /// Take the pending scroll-into-view request, if any. The overlay draw
+    /// calls this once per frame and, when it returns true, applies
+    /// `ui::backtrack_scroll`'s decision via [`apply_backtrack_scroll`] —
+    /// consumed so it runs once per selection change, like codex's
+    /// `scroll_chunk_into_view`, never fighting manual scrolling.
+    ///
+    /// [`apply_backtrack_scroll`]: App::apply_backtrack_scroll
+    #[must_use]
+    pub fn take_backtrack_scroll(&mut self) -> bool {
+        std::mem::take(&mut self.backtrack.scroll_pending)
+    }
+
+    /// Seat the overlay scroll on the previewed highlight, releasing the
+    /// tail-follow pin: previewing the last message parks the scroll at max,
+    /// which re-engages following ([`settle_tool_scroll`]) — left set, it
+    /// would yank the next step-older's scroll straight back to the bottom.
+    ///
+    /// [`settle_tool_scroll`]: App::settle_tool_scroll
+    pub fn apply_backtrack_scroll(&mut self, scroll: usize) {
+        self.tool_scroll = scroll;
+        self.tool_follow = false;
     }
 
     /// Settle the tool-view scroll for a draw given the largest offset the current
@@ -5831,5 +6016,275 @@ mod tests {
         let action = app.on_key(key(KeyCode::Enter));
         assert_eq!(action, Action::Submit("hi @zzz".to_string()));
         assert!(app.file_search.is_none());
+    }
+
+    // --- Esc-Esc backtrack: edit a previous message (docs/backtrack.md) ---
+
+    /// Run one full finished exchange (user → assistant → summary) so the app
+    /// ends idle again, exactly as a real completed turn leaves it.
+    fn exchange(app: &mut App, user: &str, reply: &str) {
+        app.record_user_message(user);
+        app.begin_stream();
+        app.push_chunk(reply);
+        app.finish_stream();
+        app.end_turn(1);
+    }
+
+    #[test]
+    fn esc_with_a_previous_user_message_primes_instead_of_quitting() {
+        let mut app = App::new();
+        exchange(&mut app, "hello", "hi");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(app.backtrack.primed, "first Esc arms the gesture (codex)");
+    }
+
+    #[test]
+    fn esc_with_only_non_user_history_still_quits() {
+        // Nothing to backtrack to — a summary/error/system-only history has no
+        // user prompt to edit, so Esc keeps its old idle meaning: quit.
+        let mut app = App::new();
+        app.begin_stream();
+        app.finish_stream();
+        app.end_turn(1); // history holds just the turn summary
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
+        assert!(!app.backtrack.primed);
+    }
+
+    #[test]
+    fn esc_with_a_draft_never_primes() {
+        // Priming requires an empty composer (codex's composer_is_empty guard);
+        // with a draft the idle fall-through keeps its old meaning.
+        let mut app = App::new();
+        exchange(&mut app, "hello", "hi");
+        app.input = TextArea::from_text("draft");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
+        assert!(!app.backtrack.primed);
+    }
+
+    #[test]
+    fn any_other_key_unprimes() {
+        // Codex resets priming on any non-Esc key — no timeout, no sticky arm.
+        let mut app = App::new();
+        exchange(&mut app, "hello", "hi");
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.backtrack.primed);
+        app.on_key(key(KeyCode::Char('x')));
+        assert!(!app.backtrack.primed, "typing disarms");
+        assert_eq!(app.input.text(), "x", "and the key still does its job");
+    }
+
+    #[test]
+    fn esc_mid_turn_still_interrupts_not_primes() {
+        let mut app = App::new();
+        exchange(&mut app, "hello", "hi");
+        app.begin_stream();
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Interrupt);
+        assert!(!app.backtrack.primed, "interrupt wins while a turn runs");
+    }
+
+    #[test]
+    fn second_esc_opens_the_transcript_preview_on_the_last_user_message() {
+        let mut app = App::new();
+        exchange(&mut app, "first", "a");
+        exchange(&mut app, "second", "b");
+        app.on_key(key(KeyCode::Esc)); // prime
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::ToggleToolView);
+        assert_eq!(app.view, View::ToolOutput, "the transcript overlay opens");
+        assert_eq!(
+            app.backtrack.selected,
+            Some(1),
+            "the newest user message is highlighted first"
+        );
+        assert!(
+            !app.tool_follow,
+            "previewing pins to the highlight, not the tail"
+        );
+    }
+
+    #[test]
+    fn esc_and_left_step_the_preview_older_saturating() {
+        let mut app = App::new();
+        exchange(&mut app, "one", "a");
+        exchange(&mut app, "two", "b");
+        exchange(&mut app, "three", "c");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.backtrack.selected, Some(2));
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.backtrack.selected, Some(1), "Esc steps older");
+        app.on_key(key(KeyCode::Left));
+        assert_eq!(app.backtrack.selected, Some(0), "← steps older too");
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(
+            app.backtrack.selected,
+            Some(0),
+            "stepping stops at the oldest (codex saturates)"
+        );
+    }
+
+    #[test]
+    fn right_steps_the_preview_newer_clamped() {
+        let mut app = App::new();
+        exchange(&mut app, "one", "a");
+        exchange(&mut app, "two", "b");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc)); // step older → 0
+        app.on_key(key(KeyCode::Right));
+        assert_eq!(app.backtrack.selected, Some(1), "→ steps newer");
+        app.on_key(key(KeyCode::Right));
+        assert_eq!(app.backtrack.selected, Some(1), "…clamped at the newest");
+    }
+
+    #[test]
+    fn enter_confirms_truncating_history_and_prefilling_the_composer() {
+        let mut app = App::new();
+        exchange(&mut app, "first", "a");
+        exchange(&mut app, "second", "b");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc)); // preview on "second"
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::ToggleToolView);
+        assert_eq!(app.view, View::Conversation, "back to the inline view");
+        assert_eq!(app.input.text(), "second", "the message is back to edit");
+        assert_eq!(app.input.cursor(), "second".len(), "cursor at the end");
+        // The selected message and everything after it are gone; the first
+        // exchange (user + assistant + summary) survives untouched.
+        assert_eq!(app.history.len(), 3);
+        assert_eq!(message_at(&app, 0).text, "first");
+        assert_eq!(
+            app.backtrack,
+            Backtrack::default(),
+            "the gesture state fully resets"
+        );
+    }
+
+    #[test]
+    fn confirming_the_oldest_message_empties_the_history() {
+        let mut app = App::new();
+        exchange(&mut app, "first", "a");
+        exchange(&mut app, "second", "b");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc)); // step to "first"
+        app.on_key(key(KeyCode::Enter));
+        assert!(
+            app.history.is_empty(),
+            "everything from `first` on is dropped"
+        );
+        assert_eq!(app.input.text(), "first");
+    }
+
+    #[test]
+    fn q_cancels_the_preview_without_truncating() {
+        let mut app = App::new();
+        exchange(&mut app, "first", "a");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.on_key(key(KeyCode::Char('q'))), Action::ToggleToolView);
+        assert_eq!(app.view, View::Conversation);
+        assert_eq!(app.history.len(), 3, "nothing was dropped");
+        assert!(app.input.is_empty(), "nothing was prefilled");
+        assert_eq!(app.backtrack, Backtrack::default());
+    }
+
+    #[test]
+    fn ctrl_o_cancels_the_preview_too() {
+        let mut app = App::new();
+        exchange(&mut app, "first", "a");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+        assert_eq!(app.view, View::Conversation);
+        assert_eq!(app.history.len(), 3);
+        assert_eq!(app.backtrack, Backtrack::default());
+    }
+
+    #[test]
+    fn esc_in_the_overlay_begins_the_preview_when_idle_with_a_target() {
+        // Codex's Ctrl+T → Esc path: Esc inside an already-open transcript
+        // view starts backtracking in place instead of closing the view.
+        let mut app = App::new();
+        exchange(&mut app, "hello", "hi");
+        app.on_key(ctrl('o'));
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.view, View::ToolOutput, "the overlay stays up");
+        assert_eq!(app.backtrack.selected, Some(0));
+    }
+
+    #[test]
+    fn esc_in_the_overlay_still_closes_it_with_no_target() {
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::ToggleToolView);
+        assert_eq!(app.view, View::Conversation);
+    }
+
+    #[test]
+    fn esc_in_the_overlay_still_closes_it_mid_turn() {
+        // While a turn streams the transcript can't be rewound mid-flight;
+        // Esc keeps meaning "back to the chat" (interrupting stays a
+        // conversation-view gesture).
+        let mut app = App::new();
+        exchange(&mut app, "hello", "hi");
+        app.begin_stream();
+        app.on_key(ctrl('o'));
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::ToggleToolView);
+        assert_eq!(app.view, View::Conversation);
+        assert_eq!(app.backtrack.selected, None);
+    }
+
+    #[test]
+    fn scroll_keys_keep_scrolling_while_previewing() {
+        let mut app = App::new();
+        exchange(&mut app, "one", "a");
+        exchange(&mut app, "two", "b");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc));
+        app.tool_scroll = 5;
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.tool_scroll, 4, "↑ still scrolls the transcript");
+        assert_eq!(app.backtrack.selected, Some(1), "the highlight stays put");
+    }
+
+    #[test]
+    fn shell_headers_are_not_backtrack_targets() {
+        // A `!` command is user-typed but not a user *prompt* (codex only
+        // targets user messages); with nothing else in history Esc still quits.
+        let mut app = App::new();
+        app.begin_shell("pwd");
+        app.start_tool("shell", "pwd");
+        app.end_tool("/home", true);
+        app.end_turn(1);
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
+    }
+
+    #[test]
+    fn the_preview_requests_a_scroll_to_the_highlight_once_per_step() {
+        let mut app = App::new();
+        exchange(&mut app, "one", "a");
+        exchange(&mut app, "two", "b");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.take_backtrack_scroll(), "opening requests a scroll");
+        assert!(!app.take_backtrack_scroll(), "…consumed by the draw");
+        app.on_key(key(KeyCode::Esc)); // step older
+        assert!(app.take_backtrack_scroll(), "stepping requests another");
+    }
+
+    #[test]
+    fn applying_a_backtrack_scroll_disengages_tail_follow() {
+        // Previewing the *last* message can leave the scroll at max, which
+        // re-engages tail-follow (`settle_tool_scroll`); a step older must
+        // not have its scroll-into-view yanked back to the bottom by it.
+        let mut app = App::new();
+        exchange(&mut app, "one", "a");
+        exchange(&mut app, "two", "b");
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc));
+        app.tool_follow = true; // the open landed at the bottom
+        app.apply_backtrack_scroll(3);
+        app.settle_tool_scroll(10);
+        assert!(!app.tool_follow, "the follow pin is released");
+        assert_eq!(app.tool_scroll, 3, "the highlight's scroll survives");
     }
 }

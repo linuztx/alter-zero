@@ -45,8 +45,9 @@ One flag — our footer has exactly two modes (closed/open), so codex's
 - **Any other key while the band is open closes it first** (codex's
   reset-after-activity), then acts normally — typing types, ↑ recalls, `/`
   opens the palette. The exception is **Esc, which only dismisses** (returns
-  `Action::None`): our idle Esc means *quit*, and quitting someone who is
-  reading the help would be hostile — the same "popup wins" precedence the
+  `Action::None`): our idle Esc quits (with nothing to backtrack to) or arms
+  the Esc-Esc backtrack (`docs/backtrack.md`), and doing either to someone who
+  is reading the help would be hostile — the same "popup wins" precedence the
   command palette already has.
 
 The band and the palette are mutually exclusive by construction: the palette
@@ -62,9 +63,9 @@ band is now `menu_rows(app) + shortcuts_rows(app)` (one is always 0);
 rows (the cursor never moves when the band opens), and `main.rs`'s
 `live_region_height` passes the same sum to `ui::live_height`.
 
-`shortcuts_lines(turn_active)` lists this app's actual bindings, codex's
-phrasing and two-column layout, keys cyan and labels dim (`SHORTCUTS_*`
-consts):
+`shortcuts_lines(turn_active, can_backtrack)` lists this app's actual
+bindings, codex's phrasing and two-column layout, keys cyan and labels dim
+(`SHORTCUTS_*` consts):
 
 ```
 / for commands            ! for shell command
@@ -79,8 +80,10 @@ ctrl+v for image paste
 out two per row in declaration order, so the band is
 `SHORTCUTS.len().div_ceil(2)` rows tall; currently 11 entries → 6 rows.)
 
-While a turn is in flight the Esc entry reads `esc to interrupt` instead
-(codex's context-sensitive quit entry).
+The Esc entry is three-way context-sensitive (codex's quit entry): `esc to
+interrupt` while a turn is in flight, `esc esc to edit previous`
+(`SHORTCUTS_BACKTRACK`) when idle with a previous user message to edit
+(`docs/backtrack.md`), and `esc to quit` only with nothing to backtrack to.
 
 ### Known divergences
 

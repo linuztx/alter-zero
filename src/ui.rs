@@ -141,6 +141,11 @@ const TOOL_VIEW_FOOTER_ROWS: u16 = 4;
 const TOOL_VIEW_HINT_KEYS: &str = " ↑/↓ to scroll   pgup/pgdn to page   home/end to jump";
 /// Second key-hint row: every key that closes the overlay.
 const TOOL_VIEW_HINT_QUIT: &str = " q/esc/ctrl+o to quit";
+/// Second key-hint row while a backtrack preview highlights a user message —
+/// codex's highlighted-pager footer (`docs/backtrack.md`); it replaces
+/// [`TOOL_VIEW_HINT_QUIT`], whose Esc meaning the preview takes over.
+const TOOL_VIEW_HINT_BACKTRACK: &str =
+    " esc/← to edit prev   → to edit next   enter to edit message   q to cancel";
 /// The vi-style filler marking body rows below the transcript's end.
 const TOOL_VIEW_FILL: &str = "~";
 /// The dim placeholder shown when the transcript has nothing to list yet.
@@ -284,9 +289,10 @@ const FILE_MENU_NO_MATCH: &str = "No matching files";
 // `{key} for {thing}` entries, keys cyan, labels dim. See docs/shortcuts.md. ---
 
 /// The bindings listed in the band, as `(key, label)` pairs laid out two per
-/// row in declaration order. The `esc` entry's label is context-sensitive —
+/// row in declaration order. The `esc` entry is context-sensitive —
 /// [`shortcuts_lines`] swaps it for ` to interrupt` while a turn runs (codex's
-/// quit entry does the same).
+/// quit entry does the same) and for the [`SHORTCUTS_BACKTRACK`] edit hint
+/// when idle with a previous user message to edit (docs/backtrack.md).
 const SHORTCUTS: &[(&str, &str)] = &[
     ("/", " for commands"),
     ("!", " for shell command"),
@@ -307,6 +313,20 @@ const SHORTCUTS_COL: usize = 25;
 const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;
 /// Dim grey — an entry's label (codex dims the whole overlay).
 const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
+
+// --- Esc-Esc backtrack (docs/backtrack.md). A primed first Esc takes the
+// footer slot with a hint naming the second (codex's `esc_backtrack_hint`
+// footer); the transcript overlay then highlights the selected user message
+// by *reversing* its rows (codex's `user_message_style().reversed()`). ---
+
+/// The primed hint's key, bold-cyan like the search-line hint keys.
+const BACKTRACK_HINT_KEY: &str = "esc";
+/// The primed hint's dim label — codex's "esc again to edit previous message"
+/// wording, minus the key it highlights separately.
+const BACKTRACK_HINT_LABEL: &str = " again to edit previous message";
+/// The shortcuts-band `esc` entry while idle with a backtrack target: the
+/// gesture replaces quit as Esc's idle meaning (see [`shortcuts_lines`]).
+const SHORTCUTS_BACKTRACK: (&str, &str) = ("esc esc", " to edit previous");
 
 // --- Queued messages. While a turn streams, messages submitted with Enter (or
 // Tab) join `App::queued` and are shown **above the box** (in the strip, just
@@ -943,20 +963,27 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     if menu_rows(app) > 0 {
         Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
     } else if shortcuts_rows(app) > 0 {
-        Paragraph::new(shortcuts_lines(app.turn_active())).render(band_area, buf);
+        Paragraph::new(shortcuts_lines(
+            app.turn_active(),
+            app.has_backtrack_target(),
+        ))
+        .render(band_area, buf);
     } else if file_menu_rows(app) > 0 {
         Paragraph::new(file_menu_lines(app, band_area.width)).render(band_area, buf);
     }
 
     // The session-context footer on the region's last row — only when no band
     // is open (the band takes its place; see docs/footer.md). An open Ctrl+R
-    // search (docs/history-search.md) or a `!command` shell mode
-    // (docs/shell-command.md) takes the same slot with its own line.
+    // search (docs/history-search.md), a `!command` shell mode
+    // (docs/shell-command.md), or a primed backtrack (docs/backtrack.md)
+    // takes the same slot with its own line.
     if footer > 0 {
         let line = if let Some(search) = app.history_search.as_ref() {
             search_line(search)
         } else if app.shell_mode {
             shell_mode_line()
+        } else if app.backtrack.primed {
+            backtrack_hint_line()
         } else {
             footer_line(app, footer_area.width)
         };
@@ -1165,16 +1192,20 @@ pub fn band_rows(app: &App) -> u16 {
 
 /// The styled lines for the open shortcuts band: the [`SHORTCUTS`] entries two
 /// per row — the second column starting at [`SHORTCUTS_COL`] — with keys cyan
-/// and labels dim. While a turn is in flight the `esc` entry reads
-/// ` to interrupt` (it would quit only when idle), codex's context-sensitive
-/// quit entry.
+/// and labels dim. The `esc` entry is three-way context-sensitive (codex's
+/// quit entry): ` to interrupt` while a turn is in flight, the
+/// [`SHORTCUTS_BACKTRACK`] `esc esc` edit hint when idle with a previous user
+/// message to edit, and ` to quit` only with nothing to backtrack to
+/// (docs/backtrack.md).
 #[must_use]
-pub fn shortcuts_lines(turn_active: bool) -> Vec<Line<'static>> {
+pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'static>> {
     let entry = |key: &'static str, label: &'static str| {
-        let label = if key == "esc" && turn_active {
-            " to interrupt"
+        let (key, label) = if key == "esc" && turn_active {
+            (key, " to interrupt")
+        } else if key == "esc" && can_backtrack {
+            SHORTCUTS_BACKTRACK
         } else {
-            label
+            (key, label)
         };
         [
             Span::styled(key, Style::new().fg(SHORTCUTS_KEY_COLOR)),
@@ -1187,7 +1218,9 @@ pub fn shortcuts_lines(turn_active: bool) -> Vec<Line<'static>> {
             let [key, label] = entry(pair[0].0, pair[0].1);
             let mut spans = vec![key, label];
             if let Some(&(key2, label2)) = pair.get(1) {
-                let used = cols(pair[0].0) + cols(spans[1].content.as_ref());
+                // Pad from the *displayed* widths — a context swap can change
+                // the key text too (`esc` → `esc esc`).
+                let used = cols(spans[0].content.as_ref()) + cols(spans[1].content.as_ref());
                 spans.push(Span::raw(
                     " ".repeat(SHORTCUTS_COL.saturating_sub(used).max(1)),
                 ));
@@ -1281,7 +1314,31 @@ pub fn footer_rows(app: &App, band_rows: u16) -> u16 {
     if app.shell_mode {
         return 1;
     }
+    // A primed backtrack's "esc again…" hint likewise (priming requires an
+    // empty composer, so no band/search/shell can be open with it; see
+    // docs/backtrack.md).
+    if app.backtrack.primed {
+        return 1;
+    }
     u16::from(app.session.is_some() && band_rows == 0)
+}
+
+/// The primed-backtrack footer line (codex's `esc_backtrack_hint`): the
+/// [`FOOTER_INDENT`], the `esc` key bold-cyan like the search-line hint keys,
+/// then the dim ` again to edit previous message` label. Takes the footer
+/// slot while [`crate::app::Backtrack::primed`]. See `docs/backtrack.md`.
+#[must_use]
+pub fn backtrack_hint_line() -> Line<'static> {
+    Line::from(vec![
+        Span::raw(FOOTER_INDENT),
+        Span::styled(
+            BACKTRACK_HINT_KEY,
+            Style::new()
+                .fg(SEARCH_QUERY_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(BACKTRACK_HINT_LABEL, Style::new().fg(FOOTER_COLOR)),
+    ])
 }
 
 /// The footer's single line: the [`FOOTER_INDENT`], then `{model} · {cwd}` —
@@ -1741,11 +1798,42 @@ fn user_stamp_lines(timestamp: &str, width: u16) -> Vec<Line<'static>> {
 /// `docs/timestamps.md`).
 #[must_use]
 pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    transcript_build(app, width).0
+}
+
+/// The line range the backtrack preview's highlighted user message occupies
+/// in [`transcript_lines`]'s output — the scroll-into-view target
+/// ([`backtrack_scroll`]); `None` when no preview is active. Computed by the
+/// same walk that styles the highlight ([`transcript_build`]), so the two can
+/// never drift. See `docs/backtrack.md`.
+#[must_use]
+pub fn transcript_selection(app: &App, width: u16) -> Option<Range<usize>> {
+    transcript_build(app, width).1
+}
+
+/// The single transcript walk behind [`transcript_lines`] and
+/// [`transcript_selection`]: builds every row and, when a backtrack preview
+/// has a user message selected, reverses that message's rows (codex's
+/// `user_message_style().reversed()` highlight — the timestamp line under it
+/// stays normal) and reports the row range it occupies.
+fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<usize>>) {
     let mut lines = Vec::new();
+    let mut selection = None;
+    let mut user_ordinal = 0usize;
     for item in &app.history {
         match item {
             HistoryItem::Message(m) => {
-                lines.extend(message_lines(m.role, &m.text, width));
+                let mut message = message_lines(m.role, &m.text, width);
+                if m.role == Role::User {
+                    if app.backtrack.selected == Some(user_ordinal) {
+                        for line in &mut message {
+                            line.style = line.style.add_modifier(Modifier::REVERSED);
+                        }
+                        selection = Some(lines.len()..lines.len() + message.len());
+                    }
+                    user_ordinal += 1;
+                }
+                lines.extend(message);
                 if m.role == Role::User {
                     lines.extend(user_stamp_lines(&m.timestamp, width));
                 }
@@ -1788,7 +1876,7 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             Style::new().fg(TOOL_DIM_COLOR),
         )));
     }
-    lines
+    (lines, selection)
 }
 
 /// The largest the transcript scroll offset can be on a `screen_height`-row
@@ -1800,6 +1888,32 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 pub fn tool_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize {
     let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS + TOOL_VIEW_FOOTER_ROWS) as usize;
     transcript_lines(app, width).len().saturating_sub(body)
+}
+
+/// Where the transcript scroll must sit to show `target` in a `viewport`-row
+/// window: up to its top when it is above, down just enough when it is below,
+/// unmoved when already visible — and its top when it is taller than the
+/// window (codex's `scroll_chunk_into_view`).
+fn scroll_into_view(current: usize, target: &Range<usize>, viewport: usize) -> usize {
+    if target.start < current {
+        target.start
+    } else if target.end > current + viewport {
+        target.end.saturating_sub(viewport).min(target.start)
+    } else {
+        current
+    }
+}
+
+/// The overlay draw's scroll decision while a backtrack preview is active:
+/// the `tool_scroll` that brings the highlighted user message into the
+/// pager's body window, or `None` with no selection. Pure —
+/// `main.rs::draw_tool_view` applies it (once per selection change, gated by
+/// [`App::take_backtrack_scroll`]). See `docs/backtrack.md`.
+#[must_use]
+pub fn backtrack_scroll(app: &App, width: u16, screen_height: u16) -> Option<usize> {
+    let range = transcript_selection(app, width)?;
+    let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS + TOOL_VIEW_FOOTER_ROWS) as usize;
+    Some(scroll_into_view(app.tool_scroll, &range, body))
 }
 
 /// The pager's title row: `/ ` tiled across the width (a `/` on every even
@@ -1872,9 +1986,17 @@ pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
     Paragraph::new(tool_view_separator(area.width, scroll, max)).render(sep_area, buf);
 
     let dim = Style::new().fg(TOOL_DIM_COLOR);
+    // While a backtrack preview highlights a message, the close-hint row
+    // shows the preview's keys instead (codex's highlighted-pager footer —
+    // docs/backtrack.md); the scroll keys above keep working either way.
+    let closing = if app.backtrack.selected.is_some() {
+        TOOL_VIEW_HINT_BACKTRACK
+    } else {
+        TOOL_VIEW_HINT_QUIT
+    };
     Paragraph::new(vec![
         Line::from(Span::styled(TOOL_VIEW_HINT_KEYS.to_string(), dim)),
-        Line::from(Span::styled(TOOL_VIEW_HINT_QUIT.to_string(), dim)),
+        Line::from(Span::styled(closing.to_string(), dim)),
     ])
     .render(hints_area, buf);
 }
@@ -3867,7 +3989,7 @@ mod tests {
     #[test]
     fn shortcuts_band_advertises_ctrl_v_image_paste() {
         // The `?` overlay lists Ctrl+V image paste (docs/image-paste.md).
-        let texts: Vec<String> = shortcuts_lines(false)
+        let texts: Vec<String> = shortcuts_lines(false, false)
             .iter()
             .map(|l| plain(l).trim_end().to_string())
             .collect();
@@ -3879,7 +4001,7 @@ mod tests {
 
     #[test]
     fn shortcuts_lines_list_the_bindings_in_two_columns() {
-        let texts: Vec<String> = shortcuts_lines(false)
+        let texts: Vec<String> = shortcuts_lines(false, false)
             .iter()
             .map(|l| plain(l).trim_end().to_string())
             .collect();
@@ -3918,7 +4040,7 @@ mod tests {
         // Alt+Up (pull the last queued batch back into the composer,
         // docs/queue.md) is discoverable in the `?` band like every other
         // binding.
-        let all: String = shortcuts_lines(false)
+        let all: String = shortcuts_lines(false, false)
             .iter()
             .map(plain)
             .collect::<Vec<_>>()
@@ -3930,8 +4052,14 @@ mod tests {
     fn shortcuts_lines_flip_the_esc_entry_while_a_turn_runs() {
         // codex's quit entry is context-sensitive: "to interrupt" while a task
         // runs. Our Esc entry flips the same way.
-        let idle: Vec<String> = shortcuts_lines(false).iter().map(|l| plain(l)).collect();
-        let busy: Vec<String> = shortcuts_lines(true).iter().map(|l| plain(l)).collect();
+        let idle: Vec<String> = shortcuts_lines(false, false)
+            .iter()
+            .map(|l| plain(l))
+            .collect();
+        let busy: Vec<String> = shortcuts_lines(true, false)
+            .iter()
+            .map(|l| plain(l))
+            .collect();
         assert!(idle.iter().any(|t| t.contains("esc to quit")), "{idle:?}");
         assert!(
             busy.iter().any(|t| t.contains("esc to interrupt")),
@@ -3942,7 +4070,7 @@ mod tests {
 
     #[test]
     fn shortcuts_lines_style_keys_cyan_and_labels_dim() {
-        for line in shortcuts_lines(false) {
+        for line in shortcuts_lines(false, false) {
             // spans = [key, label, pad, key, label] — keys cyan, labels dim.
             assert_eq!(line.spans[0].style.fg, Some(SHORTCUTS_KEY_COLOR));
             assert_eq!(line.spans[1].style.fg, Some(SHORTCUTS_TEXT_COLOR));
@@ -4680,7 +4808,7 @@ mod tests {
 
     #[test]
     fn the_shortcuts_band_lists_ctrl_r() {
-        let texts: Vec<String> = shortcuts_lines(false).iter().map(plain).collect();
+        let texts: Vec<String> = shortcuts_lines(false, false).iter().map(plain).collect();
         assert!(
             texts.iter().any(|t| t.contains("ctrl+r to search history")),
             "band lists the search binding: {texts:?}"
@@ -4760,7 +4888,7 @@ mod tests {
 
     #[test]
     fn the_shortcuts_band_lists_the_bang() {
-        let texts: Vec<String> = shortcuts_lines(false).iter().map(plain).collect();
+        let texts: Vec<String> = shortcuts_lines(false, false).iter().map(plain).collect();
         assert!(
             texts.iter().any(|t| t.contains("! for shell command")),
             "band lists the shell binding: {texts:?}"
@@ -5143,5 +5271,161 @@ mod tests {
         let open = file_picker("m", vec![fmatch("main.rs")], 0);
         let after = cursor_position(area, &open);
         assert_eq!(after, before, "cursor unchanged when the picker opens");
+    }
+
+    // --- Esc-Esc backtrack rendering (docs/backtrack.md) ---
+
+    /// An app holding two finished exchanges, ready to preview.
+    fn backtrack_app() -> App {
+        let mut app = App::new();
+        for (user, reply) in [("first", "a"), ("second", "b")] {
+            app.record_user_message(user);
+            app.begin_stream();
+            app.push_chunk(reply);
+            app.finish_stream();
+            app.end_turn(1);
+        }
+        app
+    }
+
+    #[test]
+    fn transcript_reverses_the_selected_user_message() {
+        let mut app = backtrack_app();
+        app.backtrack.selected = Some(0);
+        let lines = transcript_lines(&app, 40);
+        let range = transcript_selection(&app, 40).expect("a selection range");
+        assert!(
+            plain(&lines[range.start]).contains("first"),
+            "the range points at the selected message"
+        );
+        for (i, line) in lines.iter().enumerate() {
+            let reversed = line.style.add_modifier.contains(Modifier::REVERSED);
+            assert_eq!(
+                reversed,
+                range.contains(&i),
+                "only the highlighted rows are reversed (row {i})"
+            );
+        }
+    }
+
+    #[test]
+    fn transcript_selection_follows_the_stepped_ordinal() {
+        let mut app = backtrack_app();
+        app.backtrack.selected = Some(1);
+        let lines = transcript_lines(&app, 40);
+        let range = transcript_selection(&app, 40).expect("a selection range");
+        assert!(plain(&lines[range.start]).contains("second"));
+    }
+
+    #[test]
+    fn transcript_without_a_selection_reverses_nothing() {
+        let app = backtrack_app();
+        assert!(transcript_selection(&app, 40).is_none());
+        for line in transcript_lines(&app, 40) {
+            assert!(!line.style.add_modifier.contains(Modifier::REVERSED));
+        }
+    }
+
+    #[test]
+    fn scroll_into_view_moves_only_when_the_target_is_off_screen() {
+        // Above the window: scroll up to its top. Below: down just enough.
+        // Visible: stay put. Taller than the window: show its top.
+        assert_eq!(scroll_into_view(10, &(2..4), 5), 2, "above → its top");
+        assert_eq!(scroll_into_view(0, &(8..10), 5), 5, "below → just enough");
+        assert_eq!(scroll_into_view(2, &(3..6), 5), 2, "visible → unchanged");
+        assert_eq!(scroll_into_view(0, &(4..20), 5), 4, "tall → its top");
+    }
+
+    #[test]
+    fn backtrack_scroll_targets_the_highlight() {
+        let mut app = backtrack_app();
+        app.backtrack.selected = Some(0);
+        app.tool_scroll = 50; // scrolled far past the first message
+        let scroll = backtrack_scroll(&app, 40, 24).expect("a scroll decision");
+        let range = transcript_selection(&app, 40).unwrap();
+        assert_eq!(scroll, range.start, "scrolls back up to the highlight");
+        assert!(
+            backtrack_scroll(&App::new(), 40, 24).is_none(),
+            "no selection, no decision"
+        );
+    }
+
+    #[test]
+    fn tool_view_hints_swap_while_previewing() {
+        let mut app = backtrack_app();
+        let mut buf = buffer(80, 16);
+        render_tool_view(buf.area, &mut buf, &app);
+        let idle: String = (0..16).map(|y| row(&buf, y, 80)).collect();
+        assert!(idle.contains("q/esc/ctrl+o to quit"), "normal pager hints");
+
+        app.backtrack.selected = Some(1);
+        let mut buf = buffer(80, 16);
+        render_tool_view(buf.area, &mut buf, &app);
+        let preview: String = (0..16)
+            .map(|y| row(&buf, y, 80))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            preview.contains("enter to edit message"),
+            "backtrack hints while previewing: {preview:?}"
+        );
+        assert!(
+            !preview.contains("q/esc/ctrl+o to quit"),
+            "the quit hint made way: {preview:?}"
+        );
+    }
+
+    #[test]
+    fn footer_rows_reserves_the_slot_while_primed() {
+        // Like the Ctrl+R search line, the hint shows even with no session
+        // info injected — the slot exists whenever the gesture is armed.
+        let mut app = App::new();
+        assert_eq!(footer_rows(&app, 0), 0);
+        app.backtrack.primed = true;
+        assert_eq!(footer_rows(&app, 0), 1);
+    }
+
+    #[test]
+    fn backtrack_hint_line_names_the_second_esc() {
+        let line = backtrack_hint_line();
+        assert_eq!(
+            plain(&line),
+            format!("{FOOTER_INDENT}esc again to edit previous message"),
+        );
+        // Spans: indent, the bold-cyan key, the dim label (the search-hint
+        // styling).
+        assert_eq!(line.spans[1].style.fg, Some(SEARCH_QUERY_COLOR));
+        assert!(line.spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(line.spans[2].style.fg, Some(FOOTER_COLOR));
+    }
+
+    #[test]
+    fn render_live_paints_the_hint_in_the_footer_slot() {
+        let mut app = backtrack_app();
+        app.set_session_info("model", "~/repo");
+        app.backtrack.primed = true;
+        let footer = footer_rows(&app, 0);
+        let h = live_height(&app.input, 60, 24, false, false, 0, 0, footer);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        let last = row(&buf, h - 1, 60);
+        assert!(
+            last.contains("esc again to edit previous message"),
+            "the hint takes the footer slot: {last:?}"
+        );
+        assert!(!last.contains("model"), "the session footer made way");
+    }
+
+    #[test]
+    fn shortcuts_esc_entry_is_three_way_context_sensitive() {
+        // Interrupt while a turn runs (as before); the Esc-Esc edit hint when
+        // idle with a previous user message; quit only with nothing to edit.
+        let idle: String = shortcuts_lines(false, false).iter().map(plain).collect();
+        assert!(idle.contains("esc to quit"), "{idle:?}");
+        let busy: String = shortcuts_lines(true, true).iter().map(plain).collect();
+        assert!(busy.contains("esc to interrupt"), "{busy:?}");
+        let target: String = shortcuts_lines(false, true).iter().map(plain).collect();
+        assert!(target.contains("esc esc to edit previous"), "{target:?}");
+        assert!(!target.contains("esc to quit"), "{target:?}");
     }
 }

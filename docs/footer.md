@@ -102,8 +102,10 @@ reseat, resizes) already accounts for the row.
   cwd — in the all-dim no-colour style. More items later are new spans in
   `footer_line`.
 - **Fewer footer modes.** Codex multiplexes quit reminders, Esc hints, and
-  queue hints through the same row; our slot has exactly three occupants — the
-  context line, the Ctrl+R search line, and the `!` shell-mode hint — plus the
+  queue hints through the same row; our slot has exactly four occupants — the
+  context line, the Ctrl+R search line, the `!` shell-mode hint, and the
+  primed backtrack's `esc again to edit previous message` hint
+  (`backtrack_hint_line`, `docs/backtrack.md`) — plus the
   bands that displace it. In particular the context line stays visible while a
   turn streams (codex hides it for the queue hint when the composer has a
   draft mid-run — we have no such hint).

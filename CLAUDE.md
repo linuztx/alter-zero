@@ -61,7 +61,9 @@ the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
 placeholder (bracketed paste → a compact placeholder, expanded back on send) in
 `docs/paste.md`; the **Ctrl+V image paste** (clipboard image → temp PNG → an
 `[Image #N]` composer placeholder whose path rides a separate typed channel to
-the backend) in `docs/image-paste.md`.
+the backend) in `docs/image-paste.md`; the **Esc-Esc backtrack** (edit a
+previous user message: prime → transcript preview → rewind + prefill) in
+`docs/backtrack.md`.
 
 ### The runtime model and its invariants
 
@@ -90,7 +92,11 @@ codex's `shimmer_spans`; on finish a dim `{done verb} for {n}s` summary commits 
 scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
 the backend, drain the channel, keep the partial, resolve a running tool as
 failed, commit the red `Conversation interrupted` notice, **no** summary; see
-`docs/interrupt.md`; Esc only quits when idle) — see `docs/status-indicator.md`),
+`docs/interrupt.md`; **idle Esc instead arms the Esc-Esc backtrack** — a second
+Esc previews previous user messages in the transcript overlay and Enter rewinds
+the conversation to the highlighted one, its text back in the composer
+(`App::backtrack`, codex's `BacktrackState`; see `docs/backtrack.md`) — Esc
+quits only with no user message to backtrack to) — see `docs/status-indicator.md`),
 then another blank gap row so the
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
@@ -212,7 +218,10 @@ of bug:
    `/ T R A N S C R I P T` title row, the scrolling transcript body with
    vi-style `~` filler past its end, a `─` separator carrying the scroll
    percentage right-aligned, and two dim key-hint rows (↑/↓, pgup/pgdn,
-   home/end jump; q/esc/ctrl+o close) — showing the **full conversation
+   home/end jump; q/esc/ctrl+o close — though Esc when idle with a previous
+   user message instead *begins the backtrack preview* in place, and while one
+   highlights a message the second hint row swaps to the backtrack keys;
+   `docs/backtrack.md`) — showing the **full conversation
    transcript**: `ui::transcript_lines`
    walks `history` (messages + each tool's *expanded* output) plus the live tail
    (in-progress reply / running tool) plus the still-queued backlog
@@ -304,8 +313,9 @@ records the `Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` 
 `StreamDone` — even mid-tool; the loop turns that into a red `Role::Error` notice via
 `App::fail_stream` (which also resolves a still-running tool as failed —
 `Interrupted by a backend error` — and clears the status). **Esc while the turn is in
-flight returns `Action::Interrupt`** (palette-dismiss still wins; Esc only quits
-when idle): the loop cancels + joins the backend, **drains the channel** (a stale
+flight returns `Action::Interrupt`** (palette-dismiss still wins; when idle Esc
+arms the Esc-Esc backtrack instead, quitting only with no user message to edit —
+`docs/backtrack.md`): the loop cancels + joins the backend, **drains the channel** (a stale
 `ToolStart` would wedge a phantom running tool), and `App::interrupt_turn` keeps
 the partial, resolves a running tool as failed (`Interrupted by user`), records
 the red `INTERRUPT_NOTICE`, and clears the status with no summary
@@ -426,7 +436,13 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `SEARCH_QUERY_COLOR` shared by the bold accept/cancel hint keys, the red
   `SEARCH_NO_MATCH` notice, and `SEARCH_HIGHLIGHT` — the reversed+bold styling
   of the query occurrences in the previewed match; `search_line`, the
-  query-end cursor in `cursor_position`, `highlight_row_spans`), the `!`
+  query-end cursor in `cursor_position`, `highlight_row_spans`), the Esc-Esc
+  backtrack (`BACKTRACK_*`/`SHORTCUTS_BACKTRACK`/`TOOL_VIEW_HINT_BACKTRACK` —
+  the primed `esc again to edit previous message` hint that takes the same
+  footer slot (`backtrack_hint_line`), the preview's reversed user-message
+  highlight + scroll target from the single `transcript_build` walk
+  (`transcript_selection`/`backtrack_scroll`), and the overlay's swapped
+  key-hint row; see `docs/backtrack.md`), the `!`
   shell mode (`SHELL_MODE_*`/`SHELL_BULLET` — the red `Shell mode` footer
   hint (`shell_mode_line`) and the red `! ` that doubles as the composer
   prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell

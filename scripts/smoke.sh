@@ -41,6 +41,7 @@ cleanup() {
 	tmux kill-session -t "${S}_paste" 2>/dev/null
 	tmux kill-session -t "${S}_imagepaste" 2>/dev/null
 	tmux kill-session -t "${S}_copy" 2>/dev/null
+	tmux kill-session -t "${S}_backtrack" 2>/dev/null
 	rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 	rm -f /tmp/inline-tui-clipboard-*.png 2>/dev/null
 }
@@ -159,7 +160,9 @@ help_ran="$(tmux capture-pane -t "$S" -p -S -20)"
 echo "==== captured pane (after running /help) ===="
 printf '%s\n' "$help_ran"
 
-tmux send-keys -t "$S" Escape # quit
+# Quit with Ctrl+C (empty composer): user messages exist by now, so idle Esc
+# would arm the Esc-Esc backtrack instead of quitting (docs/backtrack.md).
+tmux send-keys -t "$S" C-c
 sleep 0.2
 
 # --- Phase 5: after a reply finishes, the input box stays flush at the BOTTOM —
@@ -273,8 +276,8 @@ tmux kill-session -t "$S4" 2>/dev/null
 # screen, the red "Conversation interrupted" notice commits, the live status
 # strip clears (no "tokens" line), and NO "Done for Ns" summary appears. The app
 # keeps running — a follow-up message must stream and finish normally
-# ("Finished for", turn 2's done verb). Esc when *idle* still quits — Phase 4's
-# Escape (sent long after the turn ended) relies on exactly that. ---
+# ("Finished for", turn 2's done verb). Esc when idle now arms the Esc-Esc
+# backtrack once user messages exist (Phase 30; quitting is Ctrl+C — Phase 4). ---
 S5="${S}_interrupt"
 tmux new-session -d -s "$S5" -x 80 -y 24 "$APP"
 sleep 0.4
@@ -552,7 +555,7 @@ for _ in $(seq 1 80); do # up to ~12s: the whole turn (text + thinking + tools)
 done
 tmux pipe-pane -t "$S12" # close the recording before quitting
 sleep 0.2
-tmux send-keys -t "$S12" Escape
+tmux send-keys -t "$S12" C-c # quit (idle Esc would arm the backtrack instead)
 sleep 0.2
 tmux kill-session -t "$S12" 2>/dev/null
 # Tokenise the stream: each sync begin/end and each ESC[J / ESC[0J clear onto
@@ -1228,6 +1231,66 @@ queue_overlay_returned="$(tmux capture-pane -t "$S29" -p -S -80)"
 echo "==== captured pane (inline view after returning from the overlay) ===="
 printf '%s\n' "$queue_overlay_returned"
 tmux kill-session -t "$S29" 2>/dev/null
+
+# --- Phase 30: Esc-Esc BACKTRACK (docs/backtrack.md). After two finished
+# exchanges, the first idle Esc ARMS the gesture (the footer slot shows the
+# "esc again to edit previous message" hint instead of quitting), the second
+# opens the transcript overlay as a preview (backtrack key hints replace the
+# quit hint), a further Esc steps the highlight to the OLDER user message, and
+# Enter REWINDS: back inline, the conversation truncated from that message on
+# (here: everything — it was the first), its text back in the composer to
+# edit. Resubmitting it must stream a fresh turn to its summary ("Completed
+# for" — turn 3's done verb), proving the loop survived the rewind. ---
+S30="${S}_backtrack"
+tmux new-session -d -s "$S30" -x 80 -y 24 "$APP"
+sleep 0.4
+tmux send-keys -t "$S30" -l "alpha question"
+sleep 0.2
+tmux send-keys -t "$S30" Enter
+for _ in $(seq 1 80); do # up to ~12s: turn 1 runs to its "Done for" summary
+	if tmux capture-pane -t "$S30" -p -S -40 | grep -qF "Done for"; then
+		break
+	fi
+	sleep 0.15
+done
+tmux send-keys -t "$S30" -l "beta question"
+sleep 0.2
+tmux send-keys -t "$S30" Enter
+for _ in $(seq 1 80); do # turn 2 → "Finished for"
+	if tmux capture-pane -t "$S30" -p -S -40 | grep -qF "Finished for"; then
+		break
+	fi
+	sleep 0.15
+done
+tmux send-keys -t "$S30" Escape # arm the gesture
+sleep 0.3
+backtrack_armed="$(tmux capture-pane -t "$S30" -p)"
+echo "==== captured pane (first Esc — backtrack armed, hint in the footer slot) ===="
+printf '%s\n' "$backtrack_armed"
+tmux send-keys -t "$S30" Escape # open the transcript preview
+sleep 0.4
+backtrack_preview="$(tmux capture-pane -t "$S30" -p)"
+echo "==== captured pane (second Esc — transcript preview with backtrack hints) ===="
+printf '%s\n' "$backtrack_preview"
+tmux send-keys -t "$S30" Escape # step older: "beta question" → "alpha question"
+sleep 0.3
+tmux send-keys -t "$S30" Enter # confirm the rewind
+sleep 0.6
+backtrack_rewound="$(tmux capture-pane -t "$S30" -p)"
+echo "==== captured pane (Enter — rewound, the first message back in the composer) ===="
+printf '%s\n' "$backtrack_rewound"
+tmux send-keys -t "$S30" Enter # resubmit the recalled draft
+backtrack_resent=""
+for _ in $(seq 1 80); do # turn 3 → "Completed for"
+	backtrack_resent="$(tmux capture-pane -t "$S30" -p -S -40)"
+	if printf '%s' "$backtrack_resent" | grep -qF "Completed for"; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (rewound message resubmitted — a fresh turn streamed) ===="
+printf '%s\n' "$backtrack_resent"
+tmux kill-session -t "$S30" 2>/dev/null
 
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
@@ -1916,7 +1979,33 @@ if ! printf '%s' "$queue_overlay_returned" | grep -qF "Finished for"; then
 	status=1
 fi
 
+# Phase 30: Esc-Esc backtrack — arm, preview, step, rewind, resubmit.
+if ! printf '%s' "$backtrack_armed" | grep -qF "esc again to edit previous message"; then
+	echo "FAIL: the first idle Esc did not show the backtrack hint in the footer slot (did the app quit?)" >&2
+	status=1
+fi
+if ! printf '%s' "$backtrack_preview" | grep -qF "T R A N S C R I P T"; then
+	echo "FAIL: the second Esc did not open the transcript overlay as the backtrack preview" >&2
+	status=1
+fi
+if ! printf '%s' "$backtrack_preview" | grep -qF "enter to edit message"; then
+	echo "FAIL: the preview's key-hint row does not show the backtrack hints" >&2
+	status=1
+fi
+if ! printf '%s' "$backtrack_rewound" | grep -qF "❯ alpha question"; then
+	echo "FAIL: after Enter the composer does not hold the rewound first message" >&2
+	status=1
+fi
+if printf '%s' "$backtrack_rewound" | grep -qF "beta question"; then
+	echo "FAIL: the second exchange survived the rewind on the repainted screen" >&2
+	status=1
+fi
+if ! printf '%s' "$backtrack_resent" | grep -qF "Completed for"; then
+	echo "FAIL: resubmitting the rewound message never streamed to turn 3's 'Completed for' summary" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary)"
 fi
 exit "$status"

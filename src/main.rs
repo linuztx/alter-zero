@@ -1084,6 +1084,14 @@ fn draw(term: &mut InlineViewport, app: &App) -> io::Result<()> {
 /// then paints the view onto the alternate screen.
 fn draw_tool_view(term: &mut InlineViewport, app: &mut App) -> io::Result<()> {
     let screen = term.screen();
+    // A backtrack preview open/step requested a scroll to its highlighted
+    // message (docs/backtrack.md): apply the pure decision once — consumed,
+    // so it never fights the user's own scrolling — before the normal clamp.
+    if app.take_backtrack_scroll()
+        && let Some(scroll) = ui::backtrack_scroll(app, screen.width, screen.height)
+    {
+        app.apply_backtrack_scroll(scroll);
+    }
     let max = ui::tool_view_max_scroll(app, screen.width, screen.height);
     app.settle_tool_scroll(max);
     term.draw_overlay(|area, buf| ui::render_tool_view(area, buf, app))

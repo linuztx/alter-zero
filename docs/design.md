@@ -131,8 +131,9 @@ unit-tested must be unit-tested.
   but holds off committing to scrollback — and a turn that ends there still
   **dispatches the next queued entry immediately** (codex parity: the open
   transcript gains the new user entry and follows the new turn live, the
-  deferred user bubbles regenerated from history on return); Ctrl+O (Esc or
-  `q`) returns, and the inline
+  deferred user bubbles regenerated from history on return); Ctrl+O (`q`, or
+  Esc — unless idle with a previous user message, when Esc instead begins the
+  backtrack preview in place, `docs/backtrack.md`) returns, and the inline
   view is repainted from `history` to catch up — and **so does quitting** (Ctrl+C)
   from the overlay, which repaints before exiting so a turn that finished while the
   overlay was up restores its `Done for Ns` summary rather than the stale streaming
@@ -247,6 +248,18 @@ unit-tested must be unit-tested.
   with **no** `Done for Ns` summary (the notice is the turn's terminal state).
   The palette still wins: Esc with the palette open only dismisses it, even
   mid-turn. The status line's `esc to interrupt` hint advertises this.
+- **Esc Esc edits a previous message** (codex's backtrack — see
+  `docs/backtrack.md`): from an idle, empty composer with a previous user
+  message, the first Esc **arms** the gesture (the footer slot shows
+  `esc again to edit previous message`; any other key disarms), the second
+  opens the Ctrl+O transcript overlay as a **preview** with the newest user
+  message highlighted (reversed video, scrolled into view), Esc/← step
+  older / → newer (clamped), and **Enter rewinds**: the highlighted message
+  and everything after it leave the history, the overlay closes, the truncated
+  conversation repaints, and the message's text lands back in the composer to
+  edit and resend. `q`/Ctrl+O cancel. Esc quits only when there is nothing to
+  backtrack to (a fresh session, or right after `/clear`) — quitting otherwise
+  is Ctrl+C or `/quit`.
 - **↑/↓ recall submitted messages** (shell-style, ported from codex's
   `ChatComposerHistory` — see `docs/input-history.md`): with an **empty
   composer**, ↑ recalls the last submitted message (older with further
@@ -329,15 +342,19 @@ unit-tested must be unit-tested.
   the dummy acknowledges the count. A failed read commits a red
   `Failed to paste image: {msg}` notice; a discarded attachment's temp PNG is
   deleted at the boundary (`App::take_discarded_images`).
-- **Quit:** Esc (in the conversation, while **idle** — mid-turn it interrupts
-  instead), Ctrl+C, or the `/quit` command. **Ctrl+C first clears a non-empty
+- **Quit:** Ctrl+C, the `/quit` command, or Esc in the conversation while
+  **idle with no previous user message to edit** — mid-turn Esc interrupts,
+  and once a user message exists idle Esc arms the **Esc-Esc backtrack**
+  (edit a previous message; `docs/backtrack.md`) instead of quitting.
+  **Ctrl+C first clears a non-empty
   input** (codex's composer-clear step: a first press with a typed draft only
   empties the box — recording the draft so ↑ can bring it back — and closes
   the palette, since the emptied input is no longer a `/token`; the overlay
   has no input box, so Ctrl+C there always quits); with an empty input it
   quits from anywhere, even mid-stream. In the tool-output view Esc (or `q`,
-  codex's pager close key) returns to the chat instead of quitting. Sending is
-  disabled while a reply is streaming.
+  codex's pager close key) returns to the chat instead of quitting — unless
+  idle with a backtrack target, when Esc begins the preview in place. Sending
+  is disabled while a reply is streaming.
 
 ## Architecture
 
@@ -535,7 +552,9 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - `app`: typing appends; backspace; Enter with text → `Submit` + clears input;
   Ctrl+J / Alt+Enter / Shift+Enter insert a newline (box grows) without submitting
   (`docs/shift-enter.md`); Enter
-  while empty / while streaming → `None`; Esc/Ctrl+C → `Quit` when idle, while
+  while empty / while streaming → `None`; Ctrl+C → `Quit` when idle, and Esc
+  too but only with no previous user message to edit (otherwise idle Esc arms
+  the Esc-Esc backtrack — `docs/backtrack.md`), while
   Esc mid-turn → `Interrupt` (palette-dismiss still wins); Ctrl+C with a
   non-empty input clears the draft instead (closing the palette, leaving a
   streaming turn untouched; from the tool view it still quits), and the next
@@ -548,7 +567,9 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   tool and reopens an empty buffer; `finish_stream` records nothing for an empty
   final segment; a turn interleaves text/tool/text in order. Ctrl+O toggles the
   view (even mid-stream, stream keeps running); Esc and `q` close the overlay
-  (vs quit in the chat); the viewer scrolls and ignores typing; Home jumps to
+  (vs quit in the chat) — except Esc idle with a previous user message, which
+  begins the backtrack preview in place (`docs/backtrack.md`); the viewer
+  scrolls and ignores typing; Home jumps to
   the top and End back to the bottom (re-engaging tail-follow); it opens pinned
   to the bottom and `settle_tool_scroll` tail-follows (scrolling up disengages,
   reaching the bottom re-engages). With an injected stub clock (`set_clock`), every recorded

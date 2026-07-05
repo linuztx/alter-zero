@@ -23,8 +23,12 @@ happened, and the input box is ready for the next message at once.
   "done" summary for an interrupted turn — the notice is its terminal state.
 - The live status row carries the hint while a task runs:
   `(0m 00s • Esc to interrupt)` (`status_indicator_widget.rs`).
-- Esc when idle is codex's backtrack ("edit previous message") — a feature we
-  don't have; our idle Esc keeps meaning quit.
+- Esc when idle is codex's backtrack ("edit previous message") — now ported
+  (`docs/backtrack.md`): idle Esc arms the Esc-Esc gesture whenever a previous
+  user message exists, and quits only with nothing to backtrack to. The
+  interrupt keeps strict precedence: `turn_active()` Esc always interrupts,
+  and only the *next* Esc (now idle) arms — codex's interrupt → prime →
+  preview chain.
 
 ## The mapping onto this codebase
 
