@@ -343,9 +343,11 @@ unit-tested must be unit-tested.
   `Failed to paste image: {msg}` notice; a discarded attachment's temp PNG is
   deleted at the boundary (`App::take_discarded_images`).
 - **Quit:** Ctrl+C, the `/quit` command, or Esc in the conversation while
-  **idle with no previous user message to edit** — mid-turn Esc interrupts,
-  and once a user message exists idle Esc arms the **Esc-Esc backtrack**
-  (edit a previous message; `docs/backtrack.md`) instead of quitting.
+  **idle, with an empty composer and no previous user message to edit** —
+  mid-turn Esc interrupts, once a user message exists idle Esc arms the
+  **Esc-Esc backtrack** (edit a previous message; `docs/backtrack.md`)
+  instead of quitting, and with a typed draft Esc is a no-op like codex's
+  composer (it never throws typed work away — Ctrl+C is the composer-clear).
   **Ctrl+C first clears a non-empty
   input** (codex's composer-clear step: a first press with a typed draft only
   empties the box — recording the draft so ↑ can bring it back — and closes
@@ -553,8 +555,9 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   Ctrl+J / Alt+Enter / Shift+Enter insert a newline (box grows) without submitting
   (`docs/shift-enter.md`); Enter
   while empty / while streaming → `None`; Ctrl+C → `Quit` when idle, and Esc
-  too but only with no previous user message to edit (otherwise idle Esc arms
-  the Esc-Esc backtrack — `docs/backtrack.md`), while
+  too but only on an empty composer with no previous user message to edit
+  (otherwise idle Esc arms the Esc-Esc backtrack — `docs/backtrack.md` — and
+  with a typed draft it is a no-op, codex-style), while
   Esc mid-turn → `Interrupt` (palette-dismiss still wins); Ctrl+C with a
   non-empty input clears the draft instead (closing the palette, leaving a
   streaming turn untouched; from the tool view it still quits), and the next

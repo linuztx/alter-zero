@@ -38,16 +38,18 @@ between "interrupt" and "quit":
 1. an open `?` shortcuts band / slash palette / `@` file picker → dismiss it
 2. empty `!` shell-mode composer → exit shell mode
 3. a turn in flight → interrupt it (`docs/interrupt.md`)
-4. **primed → open the backtrack preview; unprimed with a previous user
-   message → prime**
-5. otherwise → quit (unchanged)
+4. **primed → open the backtrack preview; unprimed, empty composer with a
+   previous user message → prime**
+5. a typed draft → nothing (codex's composer only acts on Esc when empty;
+   Ctrl+C is the composer-clear)
+6. otherwise — empty composer, nothing to backtrack to → quit
 
 The one deliberate divergence from codex: codex never quits on Esc, while our
-idle Esc historically did. Esc still quits **while there is nothing to
-backtrack to** — a fresh session, or right after `/clear` — so the
+idle Esc historically did. Esc still quits **on an empty composer with
+nothing to backtrack to** — a fresh session, or right after `/clear` — so the
 startup-screen behavior survives; once a user message exists, idle Esc means
-"edit previous message" and quitting is **Ctrl+C** (empty composer) or
-`/quit`, both long documented. The `?` shortcuts band reflects whichever is
+"edit previous message", with a typed draft it does nothing, and quitting is
+**Ctrl+C** (empty composer) or `/quit`, both long documented. The `?` shortcuts band reflects whichever is
 true (`esc to quit` ↔ `esc esc to edit previous`).
 
 ## State
@@ -132,7 +134,8 @@ All the new styling lives in the `ui.rs` consts block (`BACKTRACK_*`,
 ## Edge cases
 
 - **Non-empty composer**: Esc never primes (codex requires
-  `composer_is_empty`); the idle fall-through keeps its old meaning.
+  `composer_is_empty`) — and never quits either: with a typed draft idle Esc
+  is a no-op, codex-style, so it can't throw typed work away.
 - **Mid-turn**: `turn_active()` Esc still interrupts — priming requires idle
   (codex's `!is_task_running`). After the interrupt lands, the next Esc
   primes: Esc-Esc-Esc from a streaming turn is interrupt → prime → preview,

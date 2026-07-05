@@ -96,7 +96,8 @@ failed, commit the red `Conversation interrupted` notice, **no** summary; see
 Esc previews previous user messages in the transcript overlay and Enter rewinds
 the conversation to the highlighted one, its text back in the composer
 (`App::backtrack`, codex's `BacktrackState`; see `docs/backtrack.md`) — Esc
-quits only with no user message to backtrack to) — see `docs/status-indicator.md`),
+quits only with an empty composer and no user message to backtrack to, a
+typed draft making it a codex-style no-op) — see `docs/status-indicator.md`),
 then another blank gap row so the
 status clears the box's top rule — plus a
 scrollable **slash-command palette** band *below* the box when the input is a bare
@@ -314,7 +315,8 @@ records the `Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` 
 `App::fail_stream` (which also resolves a still-running tool as failed —
 `Interrupted by a backend error` — and clears the status). **Esc while the turn is in
 flight returns `Action::Interrupt`** (palette-dismiss still wins; when idle Esc
-arms the Esc-Esc backtrack instead, quitting only with no user message to edit —
+arms the Esc-Esc backtrack instead, is a no-op over a typed draft, and quits
+only with an empty composer and no user message to edit —
 `docs/backtrack.md`): the loop cancels + joins the backend, **drains the channel** (a stale
 `ToolStart` would wedge a phantom running tool), and `App::interrupt_turn` keeps
 the partial, resolves a running tool as failed (`Interrupted by user`), records

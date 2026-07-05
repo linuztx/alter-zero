@@ -1241,6 +1241,11 @@ impl App {
                 self.backtrack.primed = true;
                 Action::None
             }
+            // Esc with a typed draft is a no-op, like codex (its composer
+            // only acts on Esc when empty): never a quit that throws typed
+            // work away — Ctrl+C is the composer-clear, Ctrl+C/`/quit` the
+            // exits. Quit below needs an *empty* composer with no target.
+            KeyCode::Esc if !self.input.is_empty() => Action::None,
             KeyCode::Esc => Action::Quit,
             // Palette navigation / selection (only while it's open).
             KeyCode::Up if menu_open => {
@@ -6051,14 +6056,27 @@ mod tests {
     }
 
     #[test]
-    fn esc_with_a_draft_never_primes() {
-        // Priming requires an empty composer (codex's composer_is_empty guard);
-        // with a draft the idle fall-through keeps its old meaning.
+    fn esc_with_a_draft_neither_primes_nor_quits() {
+        // Priming requires an empty composer (codex's composer_is_empty
+        // guard) — and idle Esc with a draft is a no-op like codex's, never
+        // a quit that throws typed work away (Ctrl+C is the composer-clear).
         let mut app = App::new();
         exchange(&mut app, "hello", "hi");
         app.input = TextArea::from_text("draft");
-        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
         assert!(!app.backtrack.primed);
+        assert_eq!(app.input.text(), "draft", "the draft is untouched");
+    }
+
+    #[test]
+    fn esc_with_a_draft_and_no_history_does_not_quit_either() {
+        // The no-op holds regardless of whether a backtrack target exists:
+        // quitting on Esc requires an *empty* composer (codex never quits on
+        // Esc at all; ours only does with nothing typed and nothing to edit).
+        let mut app = App::new();
+        app.input = TextArea::from_text("draft");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.input.text(), "draft");
     }
 
     #[test]
