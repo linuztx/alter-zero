@@ -107,18 +107,27 @@ fn truncate_chars(s: &str, max: usize) -> String {
     format!("{head}…")
 }
 
-/// Build the shared blocking HTTP client: env proxies (`HTTPS_PROXY`) are picked
-/// up automatically; the agent proxy's custom CA is added from `SSL_CERT_FILE` /
-/// `INLINE_TUI_CA_FILE` so `rustls` trusts it. A generous total timeout and a
-/// short connect timeout bound a hung endpoint.
+/// Build a blocking HTTP client: env proxies (`HTTPS_PROXY`) are picked up
+/// automatically; the agent proxy's custom CA is added from `SSL_CERT_FILE` /
+/// `INLINE_TUI_CA_FILE` so `rustls` trusts it. A short connect timeout bounds a
+/// hung connect.
+///
+/// `op_timeout` is applied via [`reqwest::blocking::ClientBuilder::timeout`],
+/// which in the blocking client is a **per-operation** deadline — it bounds the
+/// send/header exchange *and* each individual body `read()` (a fresh deadline
+/// per read), **not** the total request. The streaming client relies on that:
+/// each body read wakes after `op_timeout` so the SSE drain can poll the
+/// `CancelToken` and reap promptly on interrupt, while a legitimately long
+/// stream keeps going (a read that times out is retried, not fatal — see
+/// `openai::stream_chat`). So it doubles as the worst-case interrupt latency.
 ///
 /// # Errors
 /// Returns [`LlmError::Http`] if the client can't be built.
-pub(crate) fn http_client() -> Result<reqwest::blocking::Client> {
+pub(crate) fn http_client(op_timeout: Duration) -> Result<reqwest::blocking::Client> {
     let mut builder = reqwest::blocking::Client::builder()
         .pool_idle_timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(30))
-        .timeout(Duration::from_secs(900));
+        .timeout(op_timeout);
     for cert in extra_root_certificates() {
         builder = builder.add_root_certificate(cert);
     }

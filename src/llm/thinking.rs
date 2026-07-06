@@ -154,6 +154,29 @@ impl ThinkingSplitter {
         false
     }
 
+    /// Surface whatever is still buffered mid-tag as a final delta, draining the
+    /// pending buffer into the accumulators — so a stream that ends inside a
+    /// partial `<think>`/`</think>` fragment doesn't drop its tail. Returns the
+    /// `(response_delta, reasoning_delta)` the caller should emit (empty when
+    /// nothing was buffered). Call this at end-of-stream *before* [`finish`];
+    /// [`finish`] itself also drains the buffer, so a caller that skips `flush`
+    /// still loses nothing (it just never surfaces the tail as a streamed delta).
+    ///
+    /// [`finish`]: ThinkingSplitter::finish
+    pub fn flush(&mut self) -> (String, String) {
+        if self.pending.is_empty() {
+            return (String::new(), String::new());
+        }
+        let pending = std::mem::take(&mut self.pending);
+        if self.thinking {
+            self.reasoning.push_str(&pending);
+            (String::new(), pending)
+        } else {
+            self.response.push_str(&pending);
+            (pending, String::new())
+        }
+    }
+
     /// Flush whatever is still buffered as its current kind, returning the final
     /// accumulated split.
     #[must_use]
@@ -269,6 +292,38 @@ mod tests {
         let res = s.finish();
         assert_eq!(res.reasoning, "still going");
         assert!(res.response.is_empty());
+    }
+
+    #[test]
+    fn flush_surfaces_a_dangling_partial_open_tag() {
+        // A stream that ends mid-open-tag buffered "<thi" and surfaced nothing;
+        // flush must emit it as a final response delta so it isn't dropped.
+        let mut s = ThinkingSplitter::new();
+        let (r, _t) = s.feed("<thi", "");
+        assert!(r.is_empty(), "buffered, nothing surfaced yet");
+        let (r, t) = s.flush();
+        assert_eq!(r, "<thi");
+        assert!(t.is_empty());
+        assert_eq!(s.response(), "<thi");
+    }
+
+    #[test]
+    fn flush_of_an_empty_buffer_is_empty() {
+        let mut s = ThinkingSplitter::new();
+        s.feed("plain text", "");
+        assert_eq!(s.flush(), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn flush_surfaces_buffered_reasoning_while_thinking() {
+        // Inside a <think> block, a chunk ending on a partial "</thi" buffers as
+        // reasoning; flush emits the reasoning delta, not response.
+        let mut s = ThinkingSplitter::new();
+        s.feed("<think>plan", "");
+        s.feed("more</thi", ""); // tail could be a closing tag → buffered
+        let (r, t) = s.flush();
+        assert!(r.is_empty());
+        assert_eq!(t, "more</thi");
     }
 
     #[test]

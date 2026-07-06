@@ -126,3 +126,19 @@ marker, the `✓` active mark, and `MODEL_MENU_MAX_ROWS`. Retheme there.
   dummy's scripted tools are unaffected.
 - The picker fetches models when opened (no cache); a slow provider shows
   `Loading models…` until the response lands.
+- **Interrupt latency during a network stall.** The SSE drain runs on a blocking
+  thread that the event loop `join()`s on interrupt/quit. Blocking `reqwest`
+  applies its `timeout` per read, so the thread wakes every `STREAM_OP_TIMEOUT`
+  (3s) to poll the `CancelToken` — meaning Esc/quit reaps within ~3s *even if the
+  connection stalls with no bytes arriving*. During normal streaming (bytes
+  flowing) a read returns immediately, so interrupt is effectively instant; the
+  3s cap only bites while genuinely waiting on a silent socket. The same 3s also
+  bounds the initial send/header exchange (blocking `reqwest` couples the two),
+  so it's kept above a normal connect-plus-headers latency rather than tuned as
+  low as possible.
+- The `ThinkingSplitter`'s inline-tag path and a provider's *native* `reasoning`
+  field are handled independently; a single completion that mixed inline
+  `<think>` tags **and** native reasoning deltas could misorder a buffered tag
+  fragment. No real OpenAI-compatible provider does both in one response, so
+  there's no realistic trigger; `flush()` still guarantees the text is never
+  lost, only (in that impossible case) reordered.

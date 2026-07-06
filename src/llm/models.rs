@@ -84,7 +84,9 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
     if cancel.is_cancelled() {
         return Err(LlmError::Cancelled);
     }
-    let client = super::http_client()?;
+    // A one-shot GET: a generous per-operation timeout (the /models body can be
+    // a few hundred KB across several reads, each bounded by this).
+    let client = super::http_client(std::time::Duration::from_secs(30))?;
     let url = models_endpoint(cfg);
     let mut req = client.get(&url).header("accept", "application/json");
     if let Some(key) = &cfg.api_key {

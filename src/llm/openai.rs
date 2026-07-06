@@ -5,7 +5,8 @@
 //! SSE frame parse are pure and unit-tested; [`OpenAiClient::stream_chat`] is the
 //! boundary that opens the blocking request and drains it. See `docs/llm.md`.
 
-use std::io::{BufRead, BufReader};
+use std::io::{BufReader, Read};
+use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::json;
@@ -14,6 +15,14 @@ use super::config::ModelConfig;
 use super::thinking::ThinkingSplitter;
 use super::{ChatMessage, LlmError, Result};
 use crate::stream::CancelToken;
+
+/// The streaming client's per-operation timeout (see [`super::http_client`]):
+/// each body read wakes after this so the SSE drain can poll the [`CancelToken`]
+/// (a timed-out read is retried, never fatal), which also caps how long an
+/// Esc-interrupt / quit waits to reap the backend thread. It bounds the initial
+/// send/header exchange too, so it's kept comfortably above a normal
+/// connect-plus-headers latency rather than as short as possible.
+const STREAM_OP_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A split delta surfaced to the caller each SSE frame: the visible response
 /// text and the (hidden) reasoning text, already peeled apart by the
@@ -86,7 +95,7 @@ impl OpenAiClient {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
-        let client = super::http_client()?;
+        let client = super::http_client(STREAM_OP_TIMEOUT)?;
         let mut req = client
             .post(self.endpoint())
             .header("accept", "text/event-stream")
@@ -106,40 +115,96 @@ impl OpenAiClient {
             return Err(LlmError::Api { status, body });
         }
 
+        // Drain the SSE body a byte at a time, accumulating a line across the
+        // read-timeout wakeups. Reading manually (not `read_line`) is what makes
+        // cancellation prompt *without* losing a partial line: on a timeout the
+        // `line` buffer is preserved and we just loop back to poll `cancel`.
         let mut splitter = ThinkingSplitter::new();
         let mut reader = BufReader::new(resp);
-        let mut line = String::new();
+        let mut line: Vec<u8> = Vec::new();
+        let mut byte = [0u8; 1];
         loop {
             if cancel.is_cancelled() {
                 return Err(LlmError::Cancelled);
             }
-            line.clear();
-            let read = reader
-                .read_line(&mut line)
-                .map_err(|e| LlmError::Http(e.to_string()))?;
-            if read == 0 {
-                break; // stream closed
+            match reader.read(&mut byte) {
+                Ok(0) => {
+                    // EOF: flush any final line that had no trailing newline.
+                    if !line.is_empty() {
+                        process_sse_line(&line, &mut splitter, &mut on_delta);
+                    }
+                    break;
+                }
+                Ok(_) => match byte[0] {
+                    b'\n' => {
+                        let done = process_sse_line(&line, &mut splitter, &mut on_delta);
+                        line.clear();
+                        if done {
+                            break; // saw `data: [DONE]`
+                        }
+                    }
+                    b'\r' => {} // SSE line ending — ignore the CR
+                    b => line.push(b),
+                },
+                // A per-read timeout (the cancel-poll wake) isn't a failure — the
+                // partial `line` is intact, so loop back and re-check `cancel`.
+                Err(e) if is_read_timeout(&e) => continue,
+                Err(e) => return Err(LlmError::Http(e.to_string())),
             }
-            let Some(data) = sse_data(&line) else {
-                continue;
-            };
-            if data == "[DONE]" {
-                break;
-            }
-            let (content, reasoning) = parse_sse_data(data);
-            if content.is_empty() && reasoning.is_empty() {
-                continue;
-            }
-            let (resp_delta, reason_delta) = splitter.feed(&content, &reasoning);
-            if !resp_delta.is_empty() || !reason_delta.is_empty() {
-                on_delta(Delta {
-                    response: resp_delta,
-                    reasoning: reason_delta,
-                });
-            }
+        }
+        // Surface any tail buffered mid-tag so an EOF inside a partial
+        // `<think>`/`</think>` fragment doesn't drop it.
+        let (resp_tail, reason_tail) = splitter.flush();
+        if !resp_tail.is_empty() || !reason_tail.is_empty() {
+            on_delta(Delta {
+                response: resp_tail,
+                reasoning: reason_tail,
+            });
         }
         Ok(splitter.finish())
     }
+}
+
+/// Is this read error the streaming client's per-read timeout (the cancel-poll
+/// wake), rather than a real transport failure? `reqwest` surfaces the timeout
+/// as an `ErrorKind::Other` wrapping a `reqwest::Error` whose `is_timeout()` is
+/// true.
+fn is_read_timeout(e: &std::io::Error) -> bool {
+    e.get_ref()
+        .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
+        .is_some_and(reqwest::Error::is_timeout)
+}
+
+/// Parse and dispatch one SSE line's bytes: skip non-`data:` lines and empty
+/// deltas, feed the rest through `splitter`, and emit a non-empty split via
+/// `on_delta`. Returns `true` when the line was the `[DONE]` sentinel (the
+/// caller stops). Invalid UTF-8 is skipped, never fatal.
+fn process_sse_line(
+    line: &[u8],
+    splitter: &mut ThinkingSplitter,
+    on_delta: &mut impl FnMut(Delta),
+) -> bool {
+    let Ok(text) = std::str::from_utf8(line) else {
+        return false;
+    };
+    let Some(data) = sse_data(text) else {
+        return false;
+    };
+    if data == "[DONE]" {
+        return true;
+    }
+    let (content, reasoning) = parse_sse_data(data);
+    if content.is_empty() && reasoning.is_empty() {
+        return false;
+    }
+    let (resp_delta, reason_delta) = splitter.feed(&content, &reasoning);
+    if !resp_delta.is_empty() || !reason_delta.is_empty() {
+        on_delta(Delta {
+            response: resp_delta,
+            reasoning: reason_delta,
+        });
+    }
+    false
 }
 
 /// Extract the `data:` payload from one SSE line, or `None` for comments/blank
@@ -307,5 +372,60 @@ mod tests {
     fn parse_sse_data_of_garbage_is_empty_not_a_panic() {
         assert_eq!(parse_sse_data("not json"), (String::new(), String::new()));
         assert_eq!(parse_sse_data("{}"), (String::new(), String::new()));
+    }
+
+    /// Run a line's bytes through `process_sse_line`, collecting emitted deltas.
+    fn drive_line(line: &str) -> (bool, Vec<Delta>) {
+        let mut splitter = ThinkingSplitter::new();
+        let mut out = Vec::new();
+        let done = process_sse_line(line.as_bytes(), &mut splitter, &mut |d| out.push(d));
+        (done, out)
+    }
+
+    #[test]
+    fn process_sse_line_emits_a_content_delta() {
+        let (done, deltas) = drive_line(r#"data: {"choices":[{"delta":{"content":"Hi"}}]}"#);
+        assert!(!done);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].response, "Hi");
+    }
+
+    #[test]
+    fn process_sse_line_reports_the_done_sentinel() {
+        let (done, deltas) = drive_line("data: [DONE]");
+        assert!(done, "the caller stops on [DONE]");
+        assert!(deltas.is_empty());
+    }
+
+    #[test]
+    fn process_sse_line_skips_non_data_and_empty_lines() {
+        assert_eq!(drive_line(": keep-alive").1.len(), 0);
+        assert_eq!(drive_line("").1.len(), 0);
+        assert_eq!(drive_line(r#"data: {"choices":[]}"#).1.len(), 0);
+    }
+
+    #[test]
+    fn process_sse_line_ignores_invalid_utf8() {
+        let mut splitter = ThinkingSplitter::new();
+        let mut emitted = false;
+        // A lone 0xFF byte after the prefix isn't valid UTF-8.
+        let done = process_sse_line(
+            &[b'd', b'a', b't', b'a', b':', 0xFF],
+            &mut splitter,
+            &mut |_| {
+                emitted = true;
+            },
+        );
+        assert!(!done);
+        assert!(!emitted);
+    }
+
+    #[test]
+    fn process_sse_line_routes_reasoning_through_the_splitter() {
+        let (_done, deltas) =
+            drive_line(r#"data: {"choices":[{"delta":{"reasoning_content":"why"}}]}"#);
+        assert_eq!(deltas.len(), 1);
+        assert!(deltas[0].response.is_empty());
+        assert_eq!(deltas[0].reasoning, "why");
     }
 }
