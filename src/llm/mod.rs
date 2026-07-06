@@ -15,6 +15,7 @@
 
 pub mod backend;
 pub mod config;
+pub mod keystore;
 pub mod models;
 pub mod openai;
 pub mod thinking;
@@ -23,6 +24,7 @@ use std::time::Duration;
 
 pub use backend::LlmBackend;
 pub use config::{ModelConfig, ProvidersFile, Selection};
+pub use keystore::EnvFile;
 pub use models::ModelEntry;
 
 /// One message in a chat-completion request.

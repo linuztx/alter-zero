@@ -1,2 +1,4 @@
 /target
 .claude/
+# The /login flow writes API keys here — never commit secrets (docs/llm.md).
+.env

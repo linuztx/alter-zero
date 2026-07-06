@@ -49,13 +49,15 @@ use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
 use inline_tui::app::{
-    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, INTERRUPT_NOTICE, QueuedTurn,
-    Role, View,
+    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, INTERRUPT_NOTICE, ProviderChoice,
+    QueuedTurn, Role, View,
 };
 use inline_tui::clipboard;
 use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
-use inline_tui::llm::{self, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, Selection};
+use inline_tui::llm::{
+    self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, Selection,
+};
 use inline_tui::paste::{self, PasteBurst};
 use inline_tui::session::{self, SessionMeta, SessionSummary};
 use inline_tui::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
@@ -110,6 +112,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // forcing the dummy (see `build_backend` / docs/llm.md). `/model` rebuilds
     // it live, so it — plus the config it needs — is kept around.
     let providers = load_providers();
+    // The persistent API-key store: `.env` in the cwd (or `INLINE_TUI_ENV_FILE`),
+    // written by the `/login` flow and consulted during key resolution (a real
+    // process env var still wins). `set_var` is `unsafe` (forbidden here), so the
+    // loaded keys live in this in-memory map rather than the process env; the
+    // path is kept so `/login` can rewrite it. See `docs/llm.md`.
+    let env_file_path = env_file_path();
+    let mut env_file = load_env_file(&env_file_path);
     let temperature = std::env::var("INLINE_TUI_TEMPERATURE")
         .ok()
         .and_then(|t| t.trim().parse::<f32>().ok());
@@ -126,6 +135,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         .filter(|s| !s.is_empty());
     let mut backend: Box<dyn ReplySource> = build_backend(
         &providers,
+        &env_file,
         active_provider.as_deref(),
         env_model.as_deref(),
         temperature,
@@ -448,7 +458,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 let cancel = CancelToken::new();
                                 model_fetch_cancel = Some(cancel.clone());
                                 let cfg = active_provider.as_deref().and_then(|p| {
-                                    model_config_for(&providers, p, &active_model, temperature)
+                                    model_config_for(
+                                        &providers, &env_file, p, &active_model, temperature,
+                                    )
                                 });
                                 spawn_model_fetch(cfg, cancel, model_tx.clone());
                             }
@@ -469,7 +481,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 if let Some(c) = model_fetch_cancel.take() {
                                     c.cancel();
                                 }
-                                match model_config_for(&providers, &provider, &id, temperature) {
+                                match model_config_for(
+                                    &providers, &env_file, &provider, &id, temperature,
+                                ) {
                                     Some(cfg) if cfg.is_usable() => {
                                         backend = Box::new(LlmBackend::with_system_prompt(
                                             cfg,
@@ -495,7 +509,57 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                             &mut app,
                                             &mut committed,
                                             &format!(
-                                                "Can't switch to {id}: set {env} to use {provider}"
+                                                "Can't switch to {id}: run /login to set {env}"
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                            Action::OpenKeyOnboarding => {
+                                // /login from an idle composer (docs/llm.md): open
+                                // the inline onboarding, its provider choices built
+                                // from the file with the ✓ reflecting real env /
+                                // .env key resolution.
+                                app.open_key_onboarding(provider_choices(&providers, &env_file));
+                            }
+                            Action::CloseKeyOnboarding => {
+                                // Esc/Ctrl+C dismissed the flow: nothing to reap; the
+                                // region collapses back to the composer on next draw.
+                            }
+                            Action::SaveApiKey {
+                                provider,
+                                env_var,
+                                key,
+                            } => {
+                                // Persist the key to the .env store, refresh the
+                                // in-memory copy (so the next /model fetch/switch
+                                // resolves it immediately), and confirm. `set_var`
+                                // is forbidden here, so the value never enters the
+                                // process env — only the map. See docs/llm.md.
+                                let current = std::fs::read_to_string(&env_file_path)
+                                    .unwrap_or_default();
+                                let updated = EnvFile::upsert(&current, &env_var, &key);
+                                match std::fs::write(&env_file_path, &updated) {
+                                    Ok(()) => {
+                                        env_file = EnvFile::parse(&updated);
+                                        commit_system_notice(
+                                            term,
+                                            &mut app,
+                                            &mut committed,
+                                            &format!(
+                                                "Saved {env_var} to {} — run /model to use {provider}",
+                                                env_file_path.display()
+                                            ),
+                                        );
+                                    }
+                                    Err(e) => {
+                                        commit_error_notice(
+                                            term,
+                                            &mut app,
+                                            &mut committed,
+                                            &format!(
+                                                "Couldn't write {}: {e}",
+                                                env_file_path.display()
                                             ),
                                         );
                                     }
@@ -538,6 +602,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     // overlay ignores them, like typing there.
                     Event::Paste(pasted) => {
                         match app.view {
+                            // The `/login` flow takes pastes (an API key is always
+                            // pasted); the `/model` picker's filter is typed, so a
+                            // paste there is swallowed rather than editing the
+                            // hidden composer draft underneath it.
+                            View::Conversation if app.key_onboarding.is_some() => {
+                                app.paste_into_key_onboarding(&pasted);
+                            }
+                            View::Conversation if app.model_picker.is_some() => {}
                             View::Conversation => {
                                 app.on_paste(&pasted);
                                 // The paste may have changed the active `@token`.
@@ -706,23 +778,36 @@ fn key_env_name(providers: &ProvidersFile, provider: &str) -> String {
     )
 }
 
-/// Resolve a provider's API key: its own env var, else the generic
-/// `INLINE_TUI_API_KEY`. Empty values count as unset.
-fn resolve_api_key(providers: &ProvidersFile, provider: &str) -> Option<String> {
-    let own = std::env::var(key_env_name(providers, provider))
+/// A value from the real process environment (which wins, dotenv-style) or the
+/// loaded `.env` store, ignoring empty values.
+fn resolve_env(env_file: &EnvFile, name: &str) -> Option<String> {
+    std::env::var(name)
         .ok()
-        .filter(|k| !k.is_empty());
-    own.or_else(|| {
-        std::env::var("INLINE_TUI_API_KEY")
-            .ok()
-            .filter(|k| !k.is_empty())
-    })
+        .filter(|v| !v.is_empty())
+        .or_else(|| {
+            env_file
+                .get(name)
+                .filter(|v| !v.is_empty())
+                .map(str::to_string)
+        })
 }
 
-/// Build the resolved [`ModelConfig`] for a provider/model (with the env key +
-/// temperature merged in), or `None` when the provider isn't in the file.
+/// Resolve a provider's API key: its own env var (process env then `.env`), else
+/// the generic `INLINE_TUI_API_KEY`. Empty values count as unset.
+fn resolve_api_key(
+    providers: &ProvidersFile,
+    env_file: &EnvFile,
+    provider: &str,
+) -> Option<String> {
+    resolve_env(env_file, &key_env_name(providers, provider))
+        .or_else(|| resolve_env(env_file, "INLINE_TUI_API_KEY"))
+}
+
+/// Build the resolved [`ModelConfig`] for a provider/model (with the resolved key
+/// + temperature merged in), or `None` when the provider isn't in the file.
 fn model_config_for(
     providers: &ProvidersFile,
+    env_file: &EnvFile,
     provider: &str,
     model: &str,
     temperature: Option<f32>,
@@ -730,10 +815,47 @@ fn model_config_for(
     let sel = Selection {
         provider_id: provider.to_string(),
         model: model.to_string(),
-        api_key: resolve_api_key(providers, provider),
+        api_key: resolve_api_key(providers, env_file, provider),
         temperature,
     };
     providers.model_config(&sel)
+}
+
+/// The provider rows the `/login` flow shows: every provider in the file, tagged
+/// with its key env var and whether a key already resolves (the ✓). See
+/// `docs/llm.md`.
+fn provider_choices(providers: &ProvidersFile, env_file: &EnvFile) -> Vec<ProviderChoice> {
+    providers
+        .ids()
+        .into_iter()
+        .map(|id| {
+            let name = providers
+                .get(&id)
+                .map_or_else(|| id.clone(), |p| p.name.clone());
+            let env_var = key_env_name(providers, &id);
+            let configured = resolve_api_key(providers, env_file, &id).is_some();
+            ProviderChoice {
+                id,
+                name,
+                env_var,
+                configured,
+            }
+        })
+        .collect()
+}
+
+/// The `.env` key store path: `INLINE_TUI_ENV_FILE`, else `.env` in the cwd.
+fn env_file_path() -> PathBuf {
+    std::env::var_os("INLINE_TUI_ENV_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(".env"))
+}
+
+/// Load the `.env` key store; an absent or unreadable file yields an empty one.
+fn load_env_file(path: &Path) -> EnvFile {
+    std::fs::read_to_string(path)
+        .map(|text| EnvFile::parse(&text))
+        .unwrap_or_default()
 }
 
 /// Pick the reply backend: the dummy unless a real provider/model/key all
@@ -741,6 +863,7 @@ fn model_config_for(
 /// safe fallback so the app always runs offline. See `docs/llm.md`.
 fn build_backend(
     providers: &ProvidersFile,
+    env_file: &EnvFile,
     provider: Option<&str>,
     model: Option<&str>,
     temperature: Option<f32>,
@@ -749,7 +872,7 @@ fn build_backend(
 ) -> Box<dyn ReplySource> {
     if !dummy_forced()
         && let (Some(provider), Some(model)) = (provider, model)
-        && let Some(cfg) = model_config_for(providers, provider, model, temperature)
+        && let Some(cfg) = model_config_for(providers, env_file, provider, model, temperature)
         && cfg.is_usable()
     {
         return Box::new(LlmBackend::with_system_prompt(cfg, system_prompt));
@@ -1354,9 +1477,13 @@ fn local_timestamp() -> String {
 /// the next [`draw`] will use. Shared so a post-stream commit can reserve that same
 /// idle height before flushing the final lines (see [`InlineViewport::set_view_height`]).
 fn live_region_height(app: &App, screen: Rect) -> u16 {
-    // The inline `/model` picker replaces the whole region with its own framed
-    // body (see docs/llm.md); its height stands in for the composer's.
+    // The inline `/model` picker and `/login` flow each replace the whole region
+    // with their own framed body (see docs/llm.md); the open one's height stands
+    // in for the composer's.
     if let Some(height) = ui::model_picker_height(app, screen.height) {
+        return height;
+    }
+    if let Some(height) = ui::key_onboarding_height(app, screen.height) {
         return height;
     }
     let band = ui::band_rows(app);

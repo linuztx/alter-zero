@@ -265,6 +265,11 @@ pub const RESUME_BUSY_NOTICE: &str = "/resume is disabled while a task is in pro
 /// `/resume`. Recorded as a [`Role::Error`] message. See `docs/llm.md`.
 pub const MODEL_BUSY_NOTICE: &str = "/model is disabled while a task is in progress";
 
+/// The notice committed when `/login` is run while a turn is active — saving a
+/// key for the active provider rebuilds the backend, which would race the
+/// reply, so the onboarding flow is blocked like `/model`. See `docs/llm.md`.
+pub const LOGIN_BUSY_NOTICE: &str = "/login is disabled while a task is in progress";
+
 /// The output recorded on a tool that was still running when the user
 /// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
 /// (codex: an aborted tool "may have partially executed").
@@ -360,6 +365,25 @@ pub enum Action {
     /// provider/model. The loop rebuilds the backend, updates the footer
     /// ([`App::set_session_info`]), and collapses the picker. See `docs/llm.md`.
     SelectModel { provider: String, id: String },
+    /// `/login` from an idle composer: open the inline API-key onboarding flow.
+    /// The *loop* builds the provider choices (which need boundary key
+    /// resolution to mark the already-configured ones) and hands them to
+    /// [`App::open_key_onboarding`]. See `docs/llm.md`.
+    OpenKeyOnboarding,
+    /// The onboarding flow was dismissed (Esc/Ctrl+C): [`App::key_onboarding`]
+    /// is already cleared; the loop just repaints the collapsed region.
+    CloseKeyOnboarding,
+    /// Enter on the key-entry step: persist `key` to `env_var` in the `.env`
+    /// file. The loop writes the file, updates its in-memory secrets, and
+    /// commits a system notice. See `docs/llm.md`.
+    SaveApiKey {
+        /// The provider id the key belongs to (for the confirmation notice).
+        provider: String,
+        /// The environment variable to store it under (e.g. `OPENROUTER_API_KEY`).
+        env_var: String,
+        /// The API key the user entered.
+        key: String,
+    },
     /// The user asked to quit.
     Quit,
 }
@@ -455,6 +479,9 @@ pub enum CommandEffect {
     /// while a turn is active (a model switch mid-stream would race it). See
     /// `docs/llm.md`.
     Model,
+    /// Open the inline `/login` API-key onboarding flow — or reject with
+    /// [`LOGIN_BUSY_NOTICE`] while a turn is active. See `docs/llm.md`.
+    Login,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
 }
@@ -500,6 +527,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "model",
         description: "Switch the active model",
         effect: CommandEffect::Model,
+    },
+    SlashCommand {
+        name: "login",
+        description: "Add or update a provider API key",
+        effect: CommandEffect::Login,
     },
     SlashCommand {
         name: "quit",
@@ -678,6 +710,89 @@ impl ModelPicker {
     pub fn highlighted(&self) -> Option<&ModelEntry> {
         let matches = self.matches();
         matches.get(self.selected).copied()
+    }
+}
+
+/// How many rows PageUp/PageDown move the `/login` provider list.
+const LOGIN_PAGE: usize = TOOL_VIEW_PAGE;
+
+/// Which step of the inline `/login` onboarding flow is showing (docs/llm.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum KeyStep {
+    /// Choosing which provider to set a key for (a filterable list).
+    #[default]
+    Provider,
+    /// Entering (pasting) the API key for the chosen provider.
+    Key,
+}
+
+/// One selectable provider row in the `/login` flow — plain data injected by the
+/// boundary (the `configured` flag needs boundary key resolution, like the
+/// `/model` list). See `docs/llm.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderChoice {
+    /// The provider id (e.g. `openrouter`).
+    pub id: String,
+    /// The human-readable label (the `providers.toml` `name`).
+    pub name: String,
+    /// The environment variable its key is stored under (e.g. `OPENROUTER_API_KEY`).
+    pub env_var: String,
+    /// Whether a key already resolves for it (shown with a ✓).
+    pub configured: bool,
+}
+
+/// The inline `/login` onboarding flow's state (`None` on [`App`] when closed).
+/// Like the `/model` picker it **replaces the composer** in the bottom live
+/// region; unlike it, it's a two-step flow — pick a provider
+/// ([`KeyStep::Provider`]), then enter its API key masked ([`KeyStep::Key`]).
+/// The chosen key is persisted to `.env` by the boundary
+/// ([`Action::SaveApiKey`]). See `docs/llm.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KeyOnboarding {
+    /// The providers to choose from, injected at open
+    /// ([`App::open_key_onboarding`]).
+    pub providers: Vec<ProviderChoice>,
+    /// Which step is showing.
+    pub step: KeyStep,
+    /// Index of the highlighted provider within the current filtered matches.
+    pub selected: usize,
+    /// The provider filter query (step 1).
+    pub query: String,
+    /// The provider being keyed (an index into `providers`), set when step 2
+    /// opens so the key entry keeps its provider even as the (unused) filter
+    /// would otherwise reorder matches.
+    pub chosen: Option<usize>,
+    /// The API key being typed / pasted (step 2). Rendered masked.
+    pub key_input: String,
+}
+
+impl KeyOnboarding {
+    /// Providers whose id or name contains the query (case-insensitive
+    /// substring; every provider for an empty query), keeping the injected
+    /// order.
+    #[must_use]
+    pub fn matches(&self) -> Vec<&ProviderChoice> {
+        let query = self.query.to_lowercase();
+        self.providers
+            .iter()
+            .filter(|p| {
+                query.is_empty()
+                    || p.id.to_lowercase().contains(&query)
+                    || p.name.to_lowercase().contains(&query)
+            })
+            .collect()
+    }
+
+    /// The highlighted provider in the current filtered view (step 1).
+    #[must_use]
+    pub fn highlighted(&self) -> Option<&ProviderChoice> {
+        self.matches().get(self.selected).copied()
+    }
+
+    /// The provider chosen for key entry (step 2), if any.
+    #[must_use]
+    pub fn chosen_provider(&self) -> Option<&ProviderChoice> {
+        self.chosen.and_then(|i| self.providers.get(i))
     }
 }
 
@@ -1055,6 +1170,11 @@ pub struct App {
     /// composer in the bottom region, and owns every key while open (like the
     /// Ctrl+R search). See `docs/llm.md`.
     pub model_picker: Option<ModelPicker>,
+    /// The open inline `/login` API-key onboarding flow; `None` when closed.
+    /// Like [`model_picker`](Self::model_picker) it renders inline and owns
+    /// every key while open. Mutually exclusive with the picker. See
+    /// `docs/llm.md`.
+    pub key_onboarding: Option<KeyOnboarding>,
     /// The live status of the turn in flight (verb, token tally, arrow, and the
     /// boundary-supplied seconds), shown in the strip above the box. `Some` from
     /// [`begin_stream`] until the turn ends; `None` when idle. See
@@ -1378,6 +1498,11 @@ impl App {
         // this is the whole of its key handling. See `docs/llm.md`.
         if self.view == View::Conversation && self.model_picker.is_some() {
             return self.on_key_model_picker(key);
+        }
+        // The inline `/login` onboarding flow owns every key while open too, the
+        // same way the `/model` picker does. See `docs/llm.md`.
+        if self.view == View::Conversation && self.key_onboarding.is_some() {
+            return self.on_key_key_onboarding(key);
         }
         // Ctrl+C: in the conversation, a first press with text in the input
         // clears the draft instead of quitting (codex's composer-clear step —
@@ -1887,6 +2012,16 @@ impl App {
                     Action::ErrorNotice(MODEL_BUSY_NOTICE.to_string())
                 } else {
                     Action::OpenModelPicker
+                }
+            }
+            CommandEffect::Login => {
+                // Saving a key for the active provider rebuilds the backend, so
+                // `/login` is blocked mid-task like `/model`; idle, the *loop*
+                // builds the provider choices and the onboarding opens inline.
+                if self.turn_active() {
+                    Action::ErrorNotice(LOGIN_BUSY_NOTICE.to_string())
+                } else {
+                    Action::OpenKeyOnboarding
                 }
             }
             CommandEffect::Quit => Action::Quit,
@@ -2589,6 +2724,178 @@ impl App {
             _ => {}
         }
         Action::None
+    }
+
+    /// Open the inline `/login` onboarding flow with the given provider choices
+    /// (built at the boundary so the `configured` ✓ reflects the real env / `.env`
+    /// key resolution). Starts on the provider step; abandons any band / palette /
+    /// file picker / model picker it shares the composer with, staying in
+    /// [`View::Conversation`]. See `docs/llm.md`.
+    pub fn open_key_onboarding(&mut self, providers: Vec<ProviderChoice>) {
+        self.shortcuts_open = false;
+        self.command_menu = None;
+        self.file_search = None;
+        self.model_picker = None;
+        self.backtrack = Backtrack::default();
+        self.key_onboarding = Some(KeyOnboarding {
+            providers,
+            ..KeyOnboarding::default()
+        });
+    }
+
+    /// Dismiss the inline `/login` flow (Esc on the empty provider filter,
+    /// Ctrl+C, or right after saving a key): the composer returns. No view
+    /// change — it was never an overlay.
+    pub fn close_key_onboarding(&mut self) {
+        self.key_onboarding = None;
+    }
+
+    /// Keys while the inline `/login` flow is open. The two steps have distinct
+    /// grammars:
+    ///
+    /// - **Provider** (a filterable list): ↑/↓/PageUp/PageDown/Home/End move,
+    ///   Enter advances to key entry for the highlighted provider, type-to-filter
+    ///   with Backspace, Esc clears a non-empty filter then closes, Ctrl+C closes.
+    /// - **Key** (masked entry): printable keys and Backspace edit the key, Enter
+    ///   saves a non-empty key ([`Action::SaveApiKey`]) and closes, Esc steps
+    ///   *back* to the provider list, Ctrl+C closes.
+    ///
+    /// Owns **every** key while open (routed at the top of [`on_key`]).
+    ///
+    /// [`on_key`]: App::on_key
+    fn on_key_key_onboarding(&mut self, key: KeyEvent) -> Action {
+        // Ctrl+C closes the whole flow (like the /model picker), from either step.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.close_key_onboarding();
+            return Action::CloseKeyOnboarding;
+        }
+        let Some(onboarding) = self.key_onboarding.as_mut() else {
+            return Action::None;
+        };
+        match onboarding.step {
+            KeyStep::Provider => {
+                let last = onboarding.matches().len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Up => onboarding.selected = onboarding.selected.saturating_sub(1),
+                    KeyCode::Down => onboarding.selected = (onboarding.selected + 1).min(last),
+                    KeyCode::PageUp => {
+                        onboarding.selected = onboarding.selected.saturating_sub(LOGIN_PAGE);
+                    }
+                    KeyCode::PageDown => {
+                        onboarding.selected = (onboarding.selected + LOGIN_PAGE).min(last);
+                    }
+                    KeyCode::Home => onboarding.selected = 0,
+                    KeyCode::End => onboarding.selected = last,
+                    KeyCode::Enter => {
+                        // Pin the highlighted provider's index in the *unfiltered*
+                        // list (the filter can reorder/shrink the matches), then
+                        // switch to masked key entry for it.
+                        let chosen = onboarding
+                            .highlighted()
+                            .map(|c| c.id.clone())
+                            .and_then(|id| onboarding.providers.iter().position(|p| p.id == id));
+                        if let Some(idx) = chosen {
+                            onboarding.chosen = Some(idx);
+                            onboarding.step = KeyStep::Key;
+                            onboarding.key_input.clear();
+                        }
+                    }
+                    KeyCode::Esc => {
+                        if onboarding.query.is_empty() {
+                            self.close_key_onboarding();
+                            return Action::CloseKeyOnboarding;
+                        }
+                        onboarding.query.clear();
+                        onboarding.selected = 0;
+                    }
+                    KeyCode::Backspace => {
+                        onboarding.query.pop();
+                        onboarding.selected = 0;
+                    }
+                    KeyCode::Char(c)
+                        if !key
+                            .modifiers
+                            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    {
+                        onboarding.query.push(c);
+                        onboarding.selected = 0;
+                    }
+                    _ => {}
+                }
+                Action::None
+            }
+            KeyStep::Key => match key.code {
+                KeyCode::Enter => {
+                    let entered = onboarding.key_input.trim().to_string();
+                    if entered.is_empty() {
+                        return Action::None;
+                    }
+                    let Some(choice) = onboarding.chosen_provider() else {
+                        return Action::None;
+                    };
+                    let action = Action::SaveApiKey {
+                        provider: choice.id.clone(),
+                        env_var: choice.env_var.clone(),
+                        key: entered,
+                    };
+                    self.close_key_onboarding();
+                    action
+                }
+                KeyCode::Esc => {
+                    // Step back to the provider list rather than closing outright.
+                    onboarding.step = KeyStep::Provider;
+                    onboarding.key_input.clear();
+                    onboarding.chosen = None;
+                    Action::None
+                }
+                KeyCode::Backspace => {
+                    onboarding.key_input.pop();
+                    Action::None
+                }
+                KeyCode::Char(c)
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    onboarding.key_input.push(c);
+                    Action::None
+                }
+                _ => Action::None,
+            },
+        }
+    }
+
+    /// A bracketed paste while the `/login` flow is open. On the key step the
+    /// pasted text is the API key — interior whitespace and control characters
+    /// (a trailing newline from the paste, say) are dropped and the rest
+    /// appended. On the provider step it extends the filter query like a
+    /// [`paste_into_resume_search`], whitespace collapsed.
+    ///
+    /// [`paste_into_resume_search`]: App::paste_into_resume_search
+    pub fn paste_into_key_onboarding(&mut self, pasted: &str) {
+        let Some(onboarding) = self.key_onboarding.as_mut() else {
+            return;
+        };
+        match onboarding.step {
+            KeyStep::Key => {
+                let cleaned: String = pasted
+                    .chars()
+                    .filter(|c| !c.is_whitespace() && !c.is_control())
+                    .collect();
+                onboarding.key_input.push_str(&cleaned);
+            }
+            KeyStep::Provider => {
+                let flat = pasted.split_whitespace().collect::<Vec<_>>().join(" ");
+                if flat.is_empty() {
+                    return;
+                }
+                if !onboarding.query.is_empty() {
+                    onboarding.query.push(' ');
+                }
+                onboarding.query.push_str(&flat);
+                onboarding.selected = 0;
+            }
+        }
     }
 
     /// The history indices of the conversation's user messages ([`Role::User`]
@@ -7361,5 +7668,217 @@ mod tests {
         app.model_picker.as_mut().unwrap().selected = 2;
         type_chars(&mut app, "anthropic");
         assert_eq!(app.model_picker.as_ref().unwrap().selected, 0);
+    }
+
+    // --- The `/login` API-key onboarding flow (docs/llm.md). ---
+
+    fn sample_choices() -> Vec<ProviderChoice> {
+        vec![
+            ProviderChoice {
+                id: "a0_venice".into(),
+                name: "Agent Zero API".into(),
+                env_var: "A0_VENICE_API_KEY".into(),
+                configured: false,
+            },
+            ProviderChoice {
+                id: "openrouter".into(),
+                name: "OpenRouter".into(),
+                env_var: "OPENROUTER_API_KEY".into(),
+                configured: true,
+            },
+            ProviderChoice {
+                id: "sambanova".into(),
+                name: "Sambanova".into(),
+                env_var: "SAMBANOVA_API_KEY".into(),
+                configured: false,
+            },
+        ]
+    }
+
+    fn login_app() -> App {
+        let mut app = App::new();
+        app.open_key_onboarding(sample_choices());
+        app
+    }
+
+    /// Drive the flow to the key-entry step for the given provider id.
+    fn key_app(provider_id: &str) -> App {
+        let mut app = login_app();
+        let idx = sample_choices()
+            .iter()
+            .position(|p| p.id == provider_id)
+            .unwrap();
+        {
+            let onboarding = app.key_onboarding.as_mut().unwrap();
+            onboarding.selected = onboarding
+                .matches()
+                .iter()
+                .position(|p| p.id == provider_id)
+                .unwrap();
+        }
+        app.on_key(key(KeyCode::Enter));
+        let onboarding = app.key_onboarding.as_ref().unwrap();
+        assert_eq!(onboarding.step, KeyStep::Key);
+        assert_eq!(onboarding.chosen, Some(idx));
+        app
+    }
+
+    #[test]
+    fn slash_login_opens_the_onboarding_when_idle() {
+        let mut app = App::new();
+        type_chars(&mut app, "/login");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::OpenKeyOnboarding);
+        assert!(app.input.is_empty(), "running a command clears the draft");
+    }
+
+    #[test]
+    fn slash_login_mid_turn_is_rejected_with_an_error_notice() {
+        let mut app = App::new();
+        app.begin_stream();
+        type_chars(&mut app, "/login");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::ErrorNotice(LOGIN_BUSY_NOTICE.to_string()),
+        );
+        assert!(app.key_onboarding.is_none());
+    }
+
+    #[test]
+    fn open_key_onboarding_starts_on_the_provider_step() {
+        let app = login_app();
+        let onboarding = app.key_onboarding.as_ref().expect("open");
+        assert_eq!(onboarding.step, KeyStep::Provider);
+        assert_eq!(onboarding.providers.len(), 3);
+        assert_eq!(app.view, View::Conversation, "inline, not an overlay");
+    }
+
+    #[test]
+    fn opening_onboarding_abandons_other_bands_and_the_model_picker() {
+        let mut app = App::new();
+        app.shortcuts_open = true;
+        app.open_model_picker("m");
+        app.open_key_onboarding(sample_choices());
+        assert!(!app.shortcuts_open);
+        assert!(app.command_menu.is_none());
+        assert!(app.model_picker.is_none(), "the model picker is dismissed");
+    }
+
+    #[test]
+    fn typing_filters_providers_case_insensitively() {
+        let mut app = login_app();
+        type_chars(&mut app, "OPEN");
+        let onboarding = app.key_onboarding.as_ref().unwrap();
+        assert_eq!(onboarding.matches().len(), 1);
+        assert_eq!(onboarding.matches()[0].id, "openrouter");
+    }
+
+    #[test]
+    fn enter_advances_to_the_key_step_for_the_highlighted_provider() {
+        let mut app = login_app();
+        app.key_onboarding.as_mut().unwrap().selected = 1; // openrouter
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        let onboarding = app.key_onboarding.as_ref().unwrap();
+        assert_eq!(onboarding.step, KeyStep::Key);
+        assert_eq!(onboarding.chosen_provider().unwrap().id, "openrouter");
+    }
+
+    #[test]
+    fn enter_pins_the_index_from_the_filtered_matches() {
+        let mut app = login_app();
+        // Filter to a single match whose *unfiltered* index is 2 (sambanova).
+        type_chars(&mut app, "samba");
+        assert_eq!(app.key_onboarding.as_ref().unwrap().matches().len(), 1);
+        app.on_key(key(KeyCode::Enter));
+        let onboarding = app.key_onboarding.as_ref().unwrap();
+        assert_eq!(onboarding.chosen, Some(2));
+        assert_eq!(onboarding.chosen_provider().unwrap().id, "sambanova");
+    }
+
+    #[test]
+    fn arrows_move_the_provider_selection_clamped() {
+        let mut app = login_app();
+        app.on_key(key(KeyCode::Up)); // clamp at top
+        assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 0);
+        app.on_key(key(KeyCode::End));
+        assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 2);
+        app.on_key(key(KeyCode::Down)); // clamp at bottom
+        assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 2);
+        app.on_key(key(KeyCode::Home));
+        assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn key_step_types_and_backspaces_the_key() {
+        let mut app = key_app("openrouter");
+        type_chars(&mut app, "sk-abc");
+        assert_eq!(app.key_onboarding.as_ref().unwrap().key_input, "sk-abc");
+        app.on_key(key(KeyCode::Backspace));
+        assert_eq!(app.key_onboarding.as_ref().unwrap().key_input, "sk-ab");
+    }
+
+    #[test]
+    fn enter_on_the_key_step_saves_and_closes() {
+        let mut app = key_app("openrouter");
+        type_chars(&mut app, "sk-secret");
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::SaveApiKey {
+                provider: "openrouter".into(),
+                env_var: "OPENROUTER_API_KEY".into(),
+                key: "sk-secret".into(),
+            }
+        );
+        assert!(app.key_onboarding.is_none(), "saving closes the flow");
+    }
+
+    #[test]
+    fn empty_key_enter_is_a_noop() {
+        let mut app = key_app("openrouter");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(app.key_onboarding.is_some(), "still waiting for a key");
+    }
+
+    #[test]
+    fn esc_on_the_key_step_steps_back_to_the_provider_list() {
+        let mut app = key_app("openrouter");
+        type_chars(&mut app, "half-typed");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        let onboarding = app.key_onboarding.as_ref().unwrap();
+        assert_eq!(onboarding.step, KeyStep::Provider, "back to the list");
+        assert!(onboarding.key_input.is_empty(), "the draft key is dropped");
+        assert!(onboarding.chosen.is_none());
+    }
+
+    #[test]
+    fn esc_on_the_provider_step_clears_the_query_then_closes() {
+        let mut app = login_app();
+        type_chars(&mut app, "open");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(app.key_onboarding.as_ref().unwrap().query.is_empty());
+        assert!(app.key_onboarding.is_some(), "first Esc only clears");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CloseKeyOnboarding);
+        assert!(app.key_onboarding.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_closes_the_onboarding_not_the_app() {
+        let mut app = key_app("openrouter"); // even mid-key-entry
+        assert_eq!(app.on_key(ctrl('c')), Action::CloseKeyOnboarding);
+        assert!(app.key_onboarding.is_none());
+    }
+
+    #[test]
+    fn paste_into_the_key_step_strips_whitespace_and_newlines() {
+        let mut app = key_app("openrouter");
+        app.paste_into_key_onboarding("sk-abc\n  def\t");
+        assert_eq!(app.key_onboarding.as_ref().unwrap().key_input, "sk-abcdef");
+    }
+
+    #[test]
+    fn paste_into_the_provider_step_extends_the_filter() {
+        let mut app = login_app();
+        app.paste_into_key_onboarding("open router");
+        assert_eq!(app.key_onboarding.as_ref().unwrap().query, "open router");
     }
 }

@@ -83,7 +83,7 @@ without a real terminal.
 | `src/textarea.rs` | The editable multi-line input: a movable grapheme-aware cursor, wrapped ↑/↓, insert/delete anywhere. | ✅ |
 | `src/ui.rs`  | Pure rendering: display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. | ✅ |
 | `src/stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi`, a `CancelToken`, and the `StreamEvent` protocol. | ✅ (pure parts, token & dummy) |
-| `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, and the `ReplySource` bridge. | ✅ (pure cores) |
+| `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), and the `ReplySource` bridge. | ✅ (pure cores) |
 | `src/file_search.rs` | The pure core of the `@` file picker: token detection, fuzzy matching, ranking. | ✅ |
 | `src/frame.rs` | The frame scheduler: coalesces redraw requests into ticks, rate-limited to 120 fps. | ✅ (pure parts) |
 | `src/paste.rs` | Paste handling: burst detection + the `[Pasted Content N chars]` / `[Image #N]` placeholders. | ✅ |
@@ -150,6 +150,8 @@ export INLINE_TUI_MODEL=anthropic/claude-3.5-haiku
 cargo run
 ```
 
+Or add the key in-app with **`/login`** — an inline flow to pick a provider and
+paste its API key; it saves to `.env` (git-ignored) so it persists across runs.
 The dummy stays the default and the fallback — the real backend activates only
 when a provider, model, and key all resolve and `INLINE_TUI_DUMMY` isn't set, so
 the app always runs offline out of the box. Switch models live with the **`/model`**
