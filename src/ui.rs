@@ -19,8 +19,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, HistoryItem, HistorySearch, QueuedTurn, Role, SearchState, SlashCommand, TokenArrow,
-    ToolCall, ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
+    App, HistoryItem, HistorySearch, QueuedTurn, ResumeControl, ResumeFilter, ResumePicker,
+    ResumeSort, Role, SearchState, SlashCommand, TokenArrow, ToolCall, ToolStatus, TurnStatus,
+    TurnSummary, command_query, matching_commands,
 };
 use crate::file_search::FileMatch;
 use crate::textarea::TextArea;
@@ -163,8 +164,9 @@ const RESUME_TITLE: &str = "R E S U M E";
 const RESUME_SEARCH_PLACEHOLDER: &str = "Type to search";
 /// The search line's prefix once a query is typed.
 const RESUME_SEARCH_PROMPT: &str = "Search: ";
-/// The picker's key-hint row (dim, under the separator).
-const RESUME_HINTS: &str = " ↑/↓ select   enter resume   esc cancel   type to search";
+/// The picker's key-hint row (dim, under the separator). The search line's
+/// own placeholder carries the type-to-search hint.
+const RESUME_HINTS: &str = " ↑/↓ select   enter resume   esc cancel   tab + ←/→ filter/sort";
 /// The dim list placeholder when nothing was ever saved (codex's).
 const RESUME_NO_SESSIONS: &str = "No sessions yet";
 /// The dim list placeholder when the query matches nothing (codex's).
@@ -176,6 +178,17 @@ const RESUME_AGE_WIDTH: usize = 12;
 const RESUME_INDENT: &str = "  ";
 /// The selected row's marker; unselected rows get spaces (codex's `❯ `).
 const RESUME_MARKER: &str = "❯ ";
+/// The selected row's full-width background tint — codex blends white over
+/// the terminal background; a grey lift noticeably lighter than the
+/// user-message block plays that role here.
+const RESUME_SELECTED_BG: Color = Color::Rgb(0x3A, 0x40, 0x46);
+/// The Tab-focused toolbar control's active value — codex's magenta.
+const RESUME_FOCUS_COLOR: Color = Color::Magenta;
+/// The gap between the toolbar's Filter and Sort tab pairs (codex's).
+const RESUME_TOOLBAR_GAP: &str = "   ";
+/// The smallest gap kept between the search text and the toolbar before the
+/// toolbar compacts (and then drops).
+const RESUME_TOOLBAR_MIN_GAP: usize = 2;
 
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
 // its wall-clock stamp: dim, right-aligned on its own line below the message
@@ -2046,6 +2059,7 @@ pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
 /// dimmed (the selection-by-colour convention). Codex's dense picker row.
 fn resume_row(
     session: &crate::session::SessionSummary,
+    sort: ResumeSort,
     selected: bool,
     width: u16,
 ) -> Line<'static> {
@@ -2054,21 +2068,107 @@ fn resume_row(
     } else {
         RESUME_INDENT
     };
-    let mut age = truncate_cols(&session.age, RESUME_AGE_WIDTH);
+    let secs = match sort {
+        ResumeSort::Updated => session.updated_secs,
+        ResumeSort::Created => session.created_secs,
+    };
+    let mut age = truncate_cols(&crate::session::relative_age(secs), RESUME_AGE_WIDTH);
     while cols(&age) < RESUME_AGE_WIDTH {
         age.push(' ');
     }
     let room = (width as usize).saturating_sub(cols(marker) + RESUME_AGE_WIDTH);
     let preview = truncate_cols(&session.preview, room);
-    let colour = if selected {
-        MENU_SELECTED_COLOR
+    let mut text = format!("{marker}{age}{preview}");
+    let style = if selected {
+        // Pad to the full width in *columns* so the tint spans the row even
+        // with wide CJK/emoji in the preview.
+        let pad = (width as usize).saturating_sub(cols(&text));
+        text.push_str(&" ".repeat(pad));
+        Style::new().fg(MENU_SELECTED_COLOR).bg(RESUME_SELECTED_BG)
     } else {
-        MENU_DIM_COLOR
+        Style::new().fg(MENU_DIM_COLOR)
     };
-    Line::from(Span::styled(
-        format!("{marker}{age}{preview}"),
-        Style::new().fg(colour),
-    ))
+    Line::from(Span::styled(text, style))
+}
+
+/// The toolbar's tab label for a filter mode.
+const fn resume_filter_label(filter: ResumeFilter) -> &'static str {
+    match filter {
+        ResumeFilter::Cwd => "Cwd",
+        ResumeFilter::All => "All",
+    }
+}
+
+/// The toolbar's tab label for a sort key.
+const fn resume_sort_label(sort: ResumeSort) -> &'static str {
+    match sort {
+        ResumeSort::Updated => "Updated",
+        ResumeSort::Created => "Created",
+    }
+}
+
+/// One toolbar tab value — codex's `toolbar_value`: the active one bracketed
+/// (`[Cwd]`, magenta when its control holds the Tab focus, plain otherwise),
+/// an inactive one space-padded and dim.
+fn resume_toolbar_value(label: &'static str, active: bool, focused: bool) -> Span<'static> {
+    if active {
+        let text = format!("[{label}]");
+        if focused {
+            Span::styled(text, Style::new().fg(RESUME_FOCUS_COLOR))
+        } else {
+            Span::from(text)
+        }
+    } else {
+        Span::styled(format!(" {label} "), Style::new().fg(MENU_DIM_COLOR))
+    }
+}
+
+/// The Filter/Sort toolbar spans — codex's `toolbar_line`: dim `Filter:` /
+/// `Sort:` labels with their tab pairs (`[Cwd] All`, `[Updated] Created`),
+/// or — `compact` — each label with just its active value (`Filter:[Cwd]`).
+fn resume_toolbar_spans(picker: &ResumePicker, compact: bool) -> Vec<Span<'static>> {
+    let dim = Style::new().fg(MENU_DIM_COLOR);
+    let filter_focused = picker.focus == ResumeControl::Filter;
+    let sort_focused = picker.focus == ResumeControl::Sort;
+    if compact {
+        return vec![
+            Span::styled("Filter:", dim),
+            resume_toolbar_value(resume_filter_label(picker.filter), true, filter_focused),
+            Span::styled(RESUME_TOOLBAR_GAP, dim),
+            Span::styled("Sort:", dim),
+            resume_toolbar_value(resume_sort_label(picker.sort), true, sort_focused),
+        ];
+    }
+    vec![
+        Span::styled("Filter: ", dim),
+        resume_toolbar_value(
+            resume_filter_label(ResumeFilter::Cwd),
+            picker.filter == ResumeFilter::Cwd,
+            filter_focused,
+        ),
+        resume_toolbar_value(
+            resume_filter_label(ResumeFilter::All),
+            picker.filter == ResumeFilter::All,
+            filter_focused,
+        ),
+        Span::styled(RESUME_TOOLBAR_GAP, dim),
+        Span::styled("Sort: ", dim),
+        resume_toolbar_value(
+            resume_sort_label(ResumeSort::Updated),
+            picker.sort == ResumeSort::Updated,
+            sort_focused,
+        ),
+        resume_toolbar_value(
+            resume_sort_label(ResumeSort::Created),
+            picker.sort == ResumeSort::Created,
+            sort_focused,
+        ),
+    ]
+}
+
+/// Display columns a span list occupies.
+fn spans_cols(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|span| cols(&span.content)).sum()
 }
 
 /// Render the full-screen `/resume` session picker — codex's resume picker,
@@ -2103,29 +2203,46 @@ pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
 
     let picker = app.resume_picker.as_ref();
     let query = picker.map_or("", |p| p.query.as_str());
-    let search = if query.is_empty() {
-        Line::from(Span::styled(
+    let mut search_spans = if query.is_empty() {
+        vec![Span::styled(
             format!("{RESUME_INDENT}{RESUME_SEARCH_PLACEHOLDER}"),
             Style::new().fg(MENU_DIM_COLOR),
-        ))
+        )]
     } else {
-        Line::from(vec![
+        vec![
             Span::styled(
                 format!("{RESUME_INDENT}{RESUME_SEARCH_PROMPT}"),
                 Style::new().fg(MENU_DIM_COLOR),
             ),
             Span::styled(query.to_string(), Style::new().fg(SEARCH_QUERY_COLOR)),
-        ])
+        ]
     };
-    Paragraph::new(search).render(search_area, buf);
+    // The Filter/Sort toolbar rides the search row's right edge (codex's):
+    // the full tab pairs when they fit, the compact active-value form next,
+    // dropped entirely on the narrowest screens.
+    if let Some(picker) = picker {
+        let left = spans_cols(&search_spans);
+        let width = area.width as usize;
+        let toolbar = [false, true].into_iter().find_map(|compact| {
+            let spans = resume_toolbar_spans(picker, compact);
+            let cols = spans_cols(&spans);
+            (left + RESUME_TOOLBAR_MIN_GAP + cols <= width).then_some((spans, cols))
+        });
+        if let Some((spans, cols)) = toolbar {
+            search_spans.push(Span::from(" ".repeat(width - left - cols)));
+            search_spans.extend(spans);
+        }
+    }
+    Paragraph::new(Line::from(search_spans)).render(search_area, buf);
 
     let matches = picker.map_or_else(Vec::new, |p| p.matches());
+    let sort = picker.map_or(ResumeSort::Updated, |p| p.sort);
     let selected = picker
         .map_or(0, |p| p.selected)
         .min(matches.len().saturating_sub(1));
     let rows: Vec<Line> = if matches.is_empty() {
-        // Two empty states (codex's): never saved anything, vs a query that
-        // filtered everything out.
+        // Two empty states (codex's): never saved anything, vs a query (or
+        // the Cwd filter) leaving nothing to show.
         let placeholder = if picker.is_none_or(|p| p.sessions.is_empty()) {
             RESUME_NO_SESSIONS
         } else {
@@ -2143,7 +2260,7 @@ pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
             .enumerate()
             .skip(start)
             .take(height)
-            .map(|(index, session)| resume_row(session, index == selected, area.width))
+            .map(|(index, session)| resume_row(session, sort, index == selected, area.width))
             .collect()
     };
     Paragraph::new(rows).render(body_area, buf);
@@ -5593,7 +5710,8 @@ mod tests {
     // ===== /resume session picker (docs/resume.md) =====
 
     /// An app with the picker open over one session per preview, all aged
-    /// `5m ago` at paths `s0`, `s1`, ….
+    /// `5m ago` (updated) / `2h ago` (created), recorded in the picker's own
+    /// cwd, at paths `s0`, `s1`, ….
     fn resume_app(previews: &[&str]) -> App {
         let mut app = App::new();
         app.open_resume_picker(
@@ -5602,10 +5720,13 @@ mod tests {
                 .enumerate()
                 .map(|(i, preview)| crate::session::SessionSummary {
                     path: std::path::PathBuf::from(format!("s{i}")),
-                    age: "5m ago".into(),
+                    updated_secs: 300,
+                    created_secs: 7_200,
+                    cwd: "/repo".into(),
                     preview: (*preview).into(),
                 })
                 .collect(),
+            "/repo".into(),
         );
         app
     }
@@ -5700,6 +5821,87 @@ mod tests {
         let line = row(&buf, 4, 24);
         assert!(line.starts_with("❯ 5m ago"), "{line:?}");
         assert!(!line.contains("possibly"), "truncated: {line:?}");
+    }
+
+    #[test]
+    fn resume_search_row_carries_the_filter_sort_toolbar_right_aligned() {
+        let app = resume_app(&["hello"]);
+        let mut buf = buffer(80, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        let search = row(&buf, 2, 80);
+        assert!(search.contains("Type to search"), "{search:?}");
+        // Codex's toolbar: active values bracketed, both tab pairs shown.
+        assert!(search.contains("Filter: [Cwd] All"), "{search:?}");
+        assert!(search.contains("Sort: [Updated] Created"), "{search:?}");
+        assert!(search.trim_end().ends_with("Created"), "right-aligned");
+    }
+
+    #[test]
+    fn resume_toolbar_brackets_follow_the_toggles() {
+        let mut app = resume_app(&["hello"]);
+        {
+            let picker = app.resume_picker.as_mut().unwrap();
+            picker.filter = crate::app::ResumeFilter::All;
+            picker.sort = crate::app::ResumeSort::Created;
+        }
+        let mut buf = buffer(80, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        let search = row(&buf, 2, 80);
+        assert!(search.contains("Filter:  Cwd [All]"), "{search:?}");
+        assert!(search.contains("Sort:  Updated [Created]"), "{search:?}");
+    }
+
+    #[test]
+    fn resume_toolbar_compacts_to_the_active_values_when_narrow() {
+        let app = resume_app(&["hello"]);
+        let mut buf = buffer(50, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        let search = row(&buf, 2, 50);
+        // Codex's compact form: label + active value only.
+        assert!(search.contains("Filter:[Cwd]"), "{search:?}");
+        assert!(search.contains("Sort:[Updated]"), "{search:?}");
+        // Too narrow for even the compact form: the toolbar drops, the
+        // search line stays.
+        let mut buf = buffer(30, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        let search = row(&buf, 2, 30);
+        assert!(search.contains("Type to search"), "{search:?}");
+        assert!(!search.contains("Filter:"), "{search:?}");
+    }
+
+    #[test]
+    fn resume_selected_row_gets_a_full_width_background_tint() {
+        let mut app = resume_app(&["first message", "second message"]);
+        app.resume_picker.as_mut().unwrap().selected = 1;
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        // The tint spans the whole selected row — marker cell through the
+        // padding past the text (codex's full-width background blend)…
+        assert_eq!(buf[(0, 5)].bg, RESUME_SELECTED_BG);
+        assert_eq!(buf[(20, 5)].bg, RESUME_SELECTED_BG);
+        assert_eq!(buf[(39, 5)].bg, RESUME_SELECTED_BG);
+        // …and the unselected row keeps the plain background.
+        assert_ne!(buf[(0, 4)].bg, RESUME_SELECTED_BG);
+    }
+
+    #[test]
+    fn resume_rows_show_the_age_of_the_active_sort_key() {
+        // Codex shows only the active sort key's timestamp per row: the
+        // fixture's rows are updated 5m ago but created 2h ago.
+        let mut app = resume_app(&["hello"]);
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        assert!(
+            row(&buf, 4, 40).contains("5m ago"),
+            "Updated sort: mtime age"
+        );
+        app.resume_picker.as_mut().unwrap().sort = crate::app::ResumeSort::Created;
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        assert!(
+            row(&buf, 4, 40).contains("2h ago"),
+            "Created sort: start age"
+        );
     }
 
     #[test]

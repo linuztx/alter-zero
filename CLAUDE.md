@@ -362,7 +362,10 @@ see `docs/copy.md`, **and `/resume`→`OpenResumePicker`** — codex's `/resume`
 every conversation records to a rollout JSONL file (the recorder + dir scan at
 the boundary, the format/parse in the pure `session` module) and the command
 opens a full-screen alt-screen picker (`View::ResumePicker`,
-`ui::render_resume_picker` — dense `❯ {age:12}{preview}` rows, type-to-search,
+`ui::render_resume_picker` — dense `❯ {age:12}{preview}` rows with the
+selection lit on a full-width background tint, type-to-search, and codex's
+Filter/Sort toolbar on the search row (`Filter: [Cwd] All   Sort: [Updated]
+Created` — Tab moves the focus, ←/→ toggle, `Cwd`/`Updated` default),
 Enter → `ResumeSession(path)` loading the file's history via
 `App::load_session` and appending later turns to the same file; Esc clears the
 query first then closes, Ctrl+C closes, mid-turn `/resume` is rejected with a

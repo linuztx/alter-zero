@@ -47,18 +47,29 @@ pub struct SessionMeta {
     pub version: String,
 }
 
-/// One row of the `/resume` picker: the rollout file to load, its humanized
-/// age (frozen when the picker opens — codex's `relative_time_reference`), and
-/// the first-user-message preview. Built at the boundary from the head scan;
-/// held on [`App`] while the picker is up.
+/// One row of the `/resume` picker: the rollout file to load, its two sort
+/// keys as seconds-ago values (frozen when the picker opens — codex's
+/// `relative_time_reference`; the displayed age is [`relative_age`] of the
+/// active sort key's value), the cwd its meta recorded (the `Cwd` filter
+/// compares it to the picker's own), and the first-user-message preview.
+/// Built at the boundary from the head scan; held on [`App`] while the picker
+/// is up.
 ///
 /// [`App`]: crate::app::App
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
     /// The rollout file this row resumes.
     pub path: PathBuf,
-    /// Humanized mtime age ([`relative_age`]), e.g. `5m ago`.
-    pub age: String,
+    /// Seconds since the file was last modified — the `Updated` sort key
+    /// (codex's default sort) and its displayed age.
+    pub updated_secs: u64,
+    /// Seconds since the session started (the meta line's timestamp) — the
+    /// `Created` sort key and its displayed age.
+    pub created_secs: u64,
+    /// The working directory the session's meta line recorded — matched
+    /// verbatim against the picker's cwd by the `Cwd` filter (both sides are
+    /// the same `Path::display` formatting; no normalization).
+    pub cwd: String,
     /// The session's first user (or `!` shell) message, whitespace-flattened.
     pub preview: String,
 }

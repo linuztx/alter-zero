@@ -337,7 +337,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // once (the Ctrl+O no-black-flash pattern).
                                 let sessions =
                                     list_sessions(recorder.root(), recorder.active_path());
-                                app.open_resume_picker(sessions);
+                                // The picker's cwd seeds its default Cwd filter —
+                                // the same display formatting the recorder writes
+                                // into each session's meta line.
+                                app.open_resume_picker(sessions, cwd.display().to_string());
                                 term.enter_overlay()?;
                                 draw_resume_picker(term, &app)?;
                             }
@@ -1471,16 +1474,27 @@ fn list_sessions(root: Option<&Path>, exclude: Option<&Path>) -> Vec<SessionSumm
         };
         // Eligibility (codex's): a parseable meta line AND a user message to
         // preview, both within the head window.
-        let Some((_meta, items)) = session::parse_session(&head) else {
+        let Some((meta, items)) = session::parse_session(&head) else {
             continue;
         };
         let Some(preview) = session::preview_of(&items) else {
             continue;
         };
-        let secs = now.duration_since(modified).map_or(0, |age| age.as_secs());
+        let updated_secs = now.duration_since(modified).map_or(0, |age| age.as_secs());
+        // The Created sort key comes from the meta line's session-start
+        // stamp; a foreign/unparseable stamp falls back to the mtime so the
+        // row still sorts sanely under either key.
+        let created_secs = chrono::DateTime::parse_from_rfc3339(&meta.timestamp)
+            .ok()
+            .map_or(updated_secs, |created| {
+                let age = chrono::Utc::now() - created.with_timezone(&chrono::Utc);
+                u64::try_from(age.num_seconds()).unwrap_or(0)
+            });
         sessions.push(SessionSummary {
             path,
-            age: session::relative_age(secs),
+            updated_secs,
+            created_secs,
+            cwd: meta.cwd,
             preview,
         });
     }

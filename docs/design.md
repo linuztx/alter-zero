@@ -355,8 +355,13 @@ unit-tested must be unit-tested.
   rewrites it, and `/clear` starts a fresh one (codex's `/new`). `/resume`
   (rejected mid-task with a red notice, like codex) opens a **full-screen
   picker** on the alternate screen — the transcript pager's chrome with dense
-  `❯ {age:12}{first-user-message}` rows, newest-modified first, type-to-search
-  filtering, `{selected+1}/{total}` on the bottom rule — and Enter loads the
+  `❯ {age:12}{first-user-message}` rows (the selected one lit on a full-width
+  background tint, codex's blend), newest first by the active sort key,
+  type-to-search filtering, codex's **Filter/Sort toolbar** on the search
+  row's right edge (`Filter: [Cwd] All   Sort: [Updated] Created` — Tab moves
+  the focus, ←/→ toggle; `Cwd`/`Updated` default, the toolbar compacting then
+  dropping at narrow widths), `{selected+1}/{total}` on the bottom rule — and
+  Enter loads the
   chosen file's history into `App`, repaints it inline (the resize path), and
   **appends the turns that follow to the same file**; Esc clears the query
   first and cancels second, Ctrl+C cancels too (codex's from-a-session
@@ -514,10 +519,13 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `/resume`, `/quit`) — the
   slash-command palette's data; adding a command is one registry entry (+ an
   effect arm).
-- `ResumePicker { sessions, selected, query }` — the open `/resume` picker
-  (`App::resume_picker`, `None` when closed); the filtered rows derive on
-  demand (`matches`). `session::SessionMeta`/`session::SessionSummary` are the
-  file meta and the picker-row data (`docs/resume.md`).
+- `ResumePicker { sessions, selected, query, cwd, filter, sort, focus }` —
+  the open `/resume` picker (`App::resume_picker`, `None` when closed); the
+  rows derive on demand (`matches` — filter, query, then the active sort).
+  `ResumeFilter { Cwd, All }` / `ResumeSort { Updated, Created }` /
+  `ResumeControl { Filter, Sort }` are the toolbar's enums;
+  `session::SessionMeta`/`session::SessionSummary` are the file meta and the
+  picker-row data (`docs/resume.md`).
 - `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
   `None` when closed); the matches are derived from the input on demand.
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
@@ -758,16 +766,23 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `relative_age` matches codex's buckets; `rollout_rel_path` pads and
   dashes the stamp. See `docs/resume.md`.
 - `app` (`/resume` picker): the palette runs `/resume` to `OpenResumePicker`
-  idle and the red busy notice mid-turn; opening disarms a primed backtrack;
+  idle and the red busy notice mid-turn; opening disarms a primed backtrack
+  and seats codex's defaults (filter `Cwd`, sort `Updated`, focus `Filter`);
   ↑/↓/PageUp/PageDown/Home/End move with clamping; typing filters
-  (case-insensitive) and reseats the selection, Backspace pops, Esc clears
-  the query first and closes second, Ctrl+C closes (never quits), Ctrl+O is
-  inert; Enter yields `ResumeSession` with the selected *filtered* row's path
-  (nothing on an empty list); `load_session` installs the history, returns to
-  the conversation, and wipes dead-turn leftovers.
+  (case-insensitive) and reseats the selection, Backspace pops, a paste
+  joins the query flattened, Esc clears the query first and closes second,
+  Ctrl+C closes (never quits), Ctrl+O is inert; the `Cwd` filter hides other
+  directories until → toggles `All`; Tab/BackTab swap the toolbar focus and
+  ←/→ toggle the focused control (`Created` re-orders by the start stamp),
+  reseating the selection; Enter yields `ResumeSession` with the selected
+  *filtered* row's path (nothing on an empty list); `load_session` installs
+  the history, returns to the conversation, and wipes dead-turn leftovers.
 - `ui` (`/resume` picker): the slash-tiled `R E S U M E` title; the search
-  placeholder vs the `Search: {query}` echo; dense marker + padded-age +
-  preview rows with the whole selected row lit (the palette convention); the
+  placeholder vs the `Search: {query}` echo; the right-aligned Filter/Sort
+  toolbar (active values bracketed and following the toggles, compact at
+  narrow widths, dropped at the narrowest); dense marker + padded-age +
+  preview rows — the age following the active sort key — with the whole
+  selected row lit on the full-width `RESUME_SELECTED_BG` tint; the
   `{selected+1}/{total}` count on the bottom rule; both empty states;
   narrow-width truncation; the row window following the selection.
 

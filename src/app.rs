@@ -488,37 +488,97 @@ pub struct CommandMenu {
     pub selected: usize,
 }
 
+/// The `/resume` picker's sort key — codex's `Sort: [Updated] Created`
+/// toolbar tab. `Updated` (the default) orders by file mtime, so a resumed
+/// old session floats back up; `Created` by session start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResumeSort {
+    /// Newest-modified first (codex's default).
+    #[default]
+    Updated,
+    /// Newest-started first.
+    Created,
+}
+
+/// The `/resume` picker's directory filter — codex's `Filter: [Cwd] All`
+/// toolbar tab. `Cwd` (the default) lists only sessions whose meta recorded
+/// the picker's own working directory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResumeFilter {
+    /// Only sessions recorded in this working directory (codex's default).
+    #[default]
+    Cwd,
+    /// Every saved session.
+    All,
+}
+
+/// Which toolbar control ←/→ act on — codex's Tab-cycled `ToolbarControl`.
+/// Two controls, so Tab and BackTab both just swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ResumeControl {
+    /// The `Filter: [Cwd] All` tab pair (the initial focus, codex's).
+    #[default]
+    Filter,
+    /// The `Sort: [Updated] Created` tab pair.
+    Sort,
+}
+
 /// The open `/resume` session picker ([`View::ResumePicker`]): the saved
-/// sessions the boundary scanned when it opened (newest first), the
-/// highlighted row, and the type-to-search query — codex's `resume_picker.rs`
-/// picker state, sized down (see `docs/resume.md`). The filtered rows derive
-/// on demand ([`matches`], the palette's `matching_commands` pattern);
-/// `selected` indexes that filtered list.
+/// sessions the boundary scanned when it opened, the highlighted row, the
+/// type-to-search query, and the Filter/Sort toolbar — codex's
+/// `resume_picker.rs` picker state, sized down (see `docs/resume.md`). The
+/// filtered rows derive on demand ([`matches`], the palette's
+/// `matching_commands` pattern); `selected` indexes that filtered list.
 ///
 /// [`matches`]: ResumePicker::matches
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ResumePicker {
-    /// Every eligible saved session, newest first (mtime order — codex's
-    /// Updated sort), as scanned at open. Ages are frozen from that scan.
+    /// Every eligible saved session, as scanned at open (mtime order; the
+    /// active [`sort`] re-orders the derived rows). The seconds-ago values
+    /// are frozen from that scan.
+    ///
+    /// [`sort`]: ResumePicker::sort
     pub sessions: Vec<SessionSummary>,
     /// Index of the highlighted row within the current filtered matches.
     pub selected: usize,
     /// The type-to-search query — any plain printable key appends, Backspace
     /// pops, Esc clears (codex's always-on picker search).
     pub query: String,
+    /// The picker's own working directory, in the meta-line format — what
+    /// the `Cwd` filter compares each session's recorded cwd against.
+    pub cwd: String,
+    /// The active directory filter (`Cwd` default — codex's).
+    pub filter: ResumeFilter,
+    /// The active sort key (`Updated` default — codex's).
+    pub sort: ResumeSort,
+    /// The toolbar control Tab focus is on (←/→ toggle its value).
+    pub focus: ResumeControl,
 }
 
 impl ResumePicker {
-    /// The rows matching the current query, in scan order — a
-    /// case-insensitive substring test on the preview (codex's client-side
-    /// `Row::matches_query`); every session for an empty query.
+    /// The rows the picker shows: the [`filter`]-passing sessions matching
+    /// the query (a case-insensitive substring test on the preview — codex's
+    /// client-side `Row::matches_query`; every session for an empty query),
+    /// ordered by the active [`sort`] key, newest first.
+    ///
+    /// [`filter`]: ResumePicker::filter
+    /// [`sort`]: ResumePicker::sort
     #[must_use]
     pub fn matches(&self) -> Vec<&SessionSummary> {
         let query = self.query.to_lowercase();
-        self.sessions
+        let mut rows: Vec<&SessionSummary> = self
+            .sessions
             .iter()
+            .filter(|session| self.filter == ResumeFilter::All || session.cwd == self.cwd)
             .filter(|session| session.preview.to_lowercase().contains(&query))
-            .collect()
+            .collect();
+        // Seconds-ago ascending = newest first; the sort is stable, so
+        // same-second ties keep the scan's mtime order.
+        match self.sort {
+            ResumeSort::Updated => rows.sort_by_key(|session| session.updated_secs),
+            ResumeSort::Created => rows.sort_by_key(|session| session.created_secs),
+        }
+        rows
     }
 }
 
@@ -2157,13 +2217,15 @@ impl App {
 
     /// Open the `/resume` picker over `sessions` (the boundary's scan of the
     /// sessions dir, newest first) — swaps to [`View::ResumePicker`] on the
-    /// alternate screen. Any `?` band or in-flight backtrack gesture is
-    /// abandoned, like the Ctrl+O toggle. See `docs/resume.md`.
-    pub fn open_resume_picker(&mut self, sessions: Vec<SessionSummary>) {
+    /// alternate screen. `cwd` (the meta-line format) seeds the default `Cwd`
+    /// filter. Any `?` band or in-flight backtrack gesture is abandoned, like
+    /// the Ctrl+O toggle. See `docs/resume.md`.
+    pub fn open_resume_picker(&mut self, sessions: Vec<SessionSummary>, cwd: String) {
         self.shortcuts_open = false;
         self.backtrack = Backtrack::default();
         self.resume_picker = Some(ResumePicker {
             sessions,
+            cwd,
             ..ResumePicker::default()
         });
         self.view = View::ResumePicker;
@@ -2232,6 +2294,33 @@ impl App {
             }
             KeyCode::Backspace => {
                 picker.query.pop();
+                picker.selected = 0;
+            }
+            // The Filter/Sort toolbar (codex's): Tab moves the focus between
+            // the two controls (BackTab too — prev == next with two), and
+            // ←/→ toggle the focused control's value, reseating the
+            // selection like a query edit (the rows re-derive).
+            KeyCode::Tab | KeyCode::BackTab => {
+                picker.focus = match picker.focus {
+                    ResumeControl::Filter => ResumeControl::Sort,
+                    ResumeControl::Sort => ResumeControl::Filter,
+                };
+            }
+            KeyCode::Left | KeyCode::Right => {
+                match picker.focus {
+                    ResumeControl::Filter => {
+                        picker.filter = match picker.filter {
+                            ResumeFilter::Cwd => ResumeFilter::All,
+                            ResumeFilter::All => ResumeFilter::Cwd,
+                        };
+                    }
+                    ResumeControl::Sort => {
+                        picker.sort = match picker.sort {
+                            ResumeSort::Updated => ResumeSort::Created,
+                            ResumeSort::Created => ResumeSort::Updated,
+                        };
+                    }
+                }
                 picker.selected = 0;
             }
             // Plain printable characters are search input, never navigation
@@ -6530,12 +6619,15 @@ mod tests {
     fn summary(path: &str, preview: &str) -> crate::session::SessionSummary {
         crate::session::SessionSummary {
             path: PathBuf::from(path),
-            age: "5m ago".into(),
+            updated_secs: 300,
+            created_secs: 300,
+            cwd: "/repo".into(),
             preview: preview.into(),
         }
     }
 
-    /// An app with the picker open over one session per `(path, preview)`.
+    /// An app with the picker open over one session per `(path, preview)`,
+    /// all recorded in the picker's own cwd (`/repo`).
     fn picker_app(sessions: &[(&str, &str)]) -> App {
         let mut app = App::new();
         app.open_resume_picker(
@@ -6543,6 +6635,7 @@ mod tests {
                 .iter()
                 .map(|(path, preview)| summary(path, preview))
                 .collect(),
+            "/repo".into(),
         );
         app
     }
@@ -6581,12 +6674,90 @@ mod tests {
     fn open_resume_picker_enters_the_view_and_disarms_a_primed_backtrack() {
         let mut app = App::new();
         app.backtrack.primed = true;
-        app.open_resume_picker(vec![summary("a.jsonl", "hello")]);
+        app.open_resume_picker(vec![summary("a.jsonl", "hello")], "/repo".into());
         assert_eq!(app.view, View::ResumePicker);
         assert!(!app.backtrack.primed, "any view swap disarms the gesture");
         let picker = app.resume_picker.as_ref().expect("picker state is open");
         assert_eq!(picker.selected, 0);
         assert!(picker.query.is_empty());
+        // Codex's defaults: filter Cwd, sort Updated, focus on the Filter tab.
+        assert_eq!(picker.filter, ResumeFilter::Cwd);
+        assert_eq!(picker.sort, ResumeSort::Updated);
+        assert_eq!(picker.focus, ResumeControl::Filter);
+    }
+
+    #[test]
+    fn the_cwd_filter_hides_other_directories_until_toggled_to_all() {
+        // Codex's Filter: [Cwd] All — the default mode lists only sessions
+        // recorded in the picker's own cwd; → on the focused Filter control
+        // switches to All (and back), reseating the selection.
+        let mut app = picker_app(&[("a", "here one"), ("b", "here two")]);
+        {
+            let picker = app.resume_picker.as_mut().unwrap();
+            picker.sessions.push(crate::session::SessionSummary {
+                path: PathBuf::from("c"),
+                updated_secs: 10,
+                created_secs: 10,
+                cwd: "/elsewhere".into(),
+                preview: "other repo".into(),
+            });
+        }
+        let picker = app.resume_picker.as_ref().unwrap();
+        assert_eq!(picker.matches().len(), 2, "Cwd default hides /elsewhere");
+        app.on_key(key(KeyCode::Down)); // move off the top
+        app.on_key(key(KeyCode::Right)); // toggle the focused Filter control
+        let picker = app.resume_picker.as_ref().unwrap();
+        assert_eq!(picker.filter, ResumeFilter::All);
+        assert_eq!(picker.matches().len(), 3, "All shows every session");
+        assert_eq!(picker.selected, 0, "a mode change reseats the selection");
+        app.on_key(key(KeyCode::Left)); // toggle back
+        assert_eq!(
+            app.resume_picker.as_ref().unwrap().filter,
+            ResumeFilter::Cwd
+        );
+    }
+
+    #[test]
+    fn tab_moves_the_toolbar_focus_and_arrows_toggle_the_sort() {
+        let mut app = picker_app(&[("a", "old"), ("b", "new")]);
+        {
+            // "a" was modified most recently but created earlier; "b" the
+            // reverse — so the two sort keys order them differently.
+            let picker = app.resume_picker.as_mut().unwrap();
+            picker.sessions[0].updated_secs = 10; // a: touched just now
+            picker.sessions[0].created_secs = 900; // …but started earlier
+            picker.sessions[1].updated_secs = 500;
+            picker.sessions[1].created_secs = 100; // b: the newer session
+        }
+        let updated_order: Vec<&str> = app
+            .resume_picker
+            .as_ref()
+            .unwrap()
+            .matches()
+            .iter()
+            .map(|s| s.preview.as_str())
+            .collect();
+        assert_eq!(updated_order, vec!["old", "new"], "Updated: mtime order");
+        app.on_key(key(KeyCode::Tab)); // focus: Filter → Sort
+        assert_eq!(
+            app.resume_picker.as_ref().unwrap().focus,
+            ResumeControl::Sort
+        );
+        app.on_key(key(KeyCode::Right)); // Sort: Updated → Created
+        let picker = app.resume_picker.as_ref().unwrap();
+        assert_eq!(picker.sort, ResumeSort::Created);
+        let created_order: Vec<&str> = picker
+            .matches()
+            .iter()
+            .map(|s| s.preview.as_str())
+            .collect();
+        assert_eq!(created_order, vec!["new", "old"], "Created: start order");
+        assert_eq!(picker.filter, ResumeFilter::Cwd, "filter untouched");
+        app.on_key(key(KeyCode::BackTab)); // two controls: prev == next
+        assert_eq!(
+            app.resume_picker.as_ref().unwrap().focus,
+            ResumeControl::Filter
+        );
     }
 
     #[test]
