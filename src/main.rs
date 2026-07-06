@@ -49,12 +49,14 @@ use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
 use inline_tui::app::{
-    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, INTERRUPT_NOTICE, QueuedTurn, Role, View,
+    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, INTERRUPT_NOTICE, QueuedTurn,
+    Role, View,
 };
 use inline_tui::clipboard;
 use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::paste::{self, PasteBurst};
+use inline_tui::session::{self, SessionMeta, SessionSummary};
 use inline_tui::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
 use inline_tui::term::InlineViewport;
 use inline_tui::ui;
@@ -105,6 +107,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let home = std::env::var_os("HOME").map(PathBuf::from);
     app.set_session_info(backend.model_name(), ui::display_cwd(&cwd, home.as_deref()));
+    // The /resume session recorder (docs/resume.md): mirrors App::history to a
+    // rollout file, lazily created on the first recorded item so empty
+    // sessions never touch disk. `sync` runs once per loop iteration below.
+    let mut recorder = SessionRecorder::new(&backend.model_name(), &cwd);
     // The `@` file-search pipeline (docs/file-search.md): a background worker
     // walks the cwd once and ranks it per query off the UI thread. The loop sends
     // queries on a std channel and receives results on a tokio channel it can
@@ -161,7 +167,8 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         match app.on_key(key) {
                             Action::Quit => {
                                 // Drop back to the main screen before the loop exits
-                                // if the overlay is up, so restore() lands on the chat.
+                                // if an overlay (the Ctrl+O transcript or the /resume
+                                // picker) is up, so restore() lands on the chat.
                                 // A turn may have finished while the overlay was
                                 // showing — its scrollback commits were deferred
                                 // (invariant 4) — so repaint the inline view from
@@ -170,7 +177,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // otherwise restore() lands on the stale live status
                                 // strip ("Working… (… tokens)") instead of the
                                 // committed "Done for Ns" summary.
-                                if app.view == View::ToolOutput {
+                                if app.view != View::Conversation {
                                     term.exit_overlay()?;
                                     repaint_conversation(term, &app, &mut committed)?;
                                 }
@@ -276,6 +283,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 clocks.turn_start = None;
                                 clocks.thinking_start = None;
                                 committed = 0;
+                                // A cleared conversation starts a fresh session
+                                // file (codex's /new); the old one keeps what it
+                                // had (docs/resume.md).
+                                recorder.start_new();
                                 repaint_conversation(term, &app, &mut committed)?;
                             }
                             Action::Interrupt => {
@@ -318,6 +329,70 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     term, &mut app, &tx, &backend, &mut committed, &mut clocks,
                                 )?;
                             }
+                            Action::OpenResumePicker => {
+                                // /resume from an idle composer (docs/resume.md):
+                                // scan the sessions dir here at the boundary —
+                                // excluding the file being written — then swap to
+                                // the picker on the alternate screen, painted at
+                                // once (the Ctrl+O no-black-flash pattern).
+                                let sessions =
+                                    list_sessions(recorder.root(), recorder.active_path());
+                                app.open_resume_picker(sessions);
+                                term.enter_overlay()?;
+                                draw_resume_picker(term, &app)?;
+                            }
+                            Action::CloseResumePicker => {
+                                // Esc/Ctrl+C dismissed the picker: the view is
+                                // already back on the conversation — leave the
+                                // overlay and repaint, the Ctrl+O return.
+                                term.exit_overlay()?;
+                                repaint_conversation(term, &app, &mut committed)?;
+                            }
+                            Action::ResumeSession(path) => {
+                                // Enter on a picker row: read + parse the rollout
+                                // here (the I/O). Success swaps the conversation
+                                // and adopts the file for further recording;
+                                // failure leaves the current conversation unharmed
+                                // under a red notice (codex). Either way the
+                                // overlay closes and the inline view repaints
+                                // from the (new or unchanged) history.
+                                let loaded =
+                                    std::fs::read_to_string(&path).ok().and_then(|text| {
+                                        session::parse_session(&text)
+                                            .map(|(meta, items)| (text, meta, items))
+                                    });
+                                match loaded {
+                                    Some((text, meta, items)) => {
+                                        let count = items.len();
+                                        app.load_session(items);
+                                        // A file whose last line lost its newline
+                                        // (a torn write) must not have the next
+                                        // append glued onto it — the recorder
+                                        // prefixes the repair.
+                                        let torn = !text.is_empty() && !text.ends_with('\n');
+                                        recorder.adopt(path, meta, count, torn);
+                                        term.exit_overlay()?;
+                                        repaint_conversation(term, &app, &mut committed)?;
+                                    }
+                                    None => {
+                                        app.close_resume_picker();
+                                        term.exit_overlay()?;
+                                        repaint_conversation(term, &app, &mut committed)?;
+                                        commit_error_notice(
+                                            term, &mut app, &mut committed,
+                                            &format!(
+                                                "Failed to load session: {}",
+                                                path.display()
+                                            ),
+                                        );
+                                    }
+                                }
+                            }
+                            Action::ErrorNotice(text) => {
+                                // A slash command's one-off red notice (e.g.
+                                // /resume rejected mid-task) — Notice's error twin.
+                                commit_error_notice(term, &mut app, &mut committed, &text);
+                            }
                         }
                         schedule_for_key(&frame, &mut burst, &key);
                         // The edit may have changed the active `@token`; kick off
@@ -350,13 +425,18 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     // A real bracketed paste (term::init enables it). A large
                     // paste collapses to a `[Pasted Content N chars]` placeholder
                     // in the composer, expanded back on send — docs/paste.md.
-                    // Only the conversation view has a composer; the Ctrl+O
-                    // overlay ignores it, like typing there.
+                    // The /resume picker's type-to-search accepts pastes too
+                    // (codex normalizes them into the query); only the Ctrl+O
+                    // overlay ignores them, like typing there.
                     Event::Paste(pasted) => {
-                        if app.view == View::Conversation {
-                            app.on_paste(&pasted);
-                            // The paste may have changed the active `@token`.
-                            dispatch_file_search(&app, &file_req_tx, &mut last_file_query);
+                        match app.view {
+                            View::Conversation => {
+                                app.on_paste(&pasted);
+                                // The paste may have changed the active `@token`.
+                                dispatch_file_search(&app, &file_req_tx, &mut last_file_query);
+                            }
+                            View::ResumePicker => app.paste_into_resume_search(&pasted),
+                            View::ToolOutput => {}
                         }
                         burst.reset();
                         frame.schedule_frame();
@@ -402,6 +482,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 match app.view {
                     View::Conversation => draw(term, &app)?,
                     View::ToolOutput => draw_tool_view(term, &mut app)?,
+                    View::ResumePicker => draw_resume_picker(term, &app)?,
                 }
                 if app.turn_active() {
                     frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
@@ -440,8 +521,16 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 frame.schedule_frame();
             }
         }
+
+        // Mirror the finished history to the session file (docs/resume.md):
+        // append what this iteration added, rewrite on a backtrack truncation,
+        // nothing when unchanged — so streaming chunks (which never touch
+        // history) cost no I/O.
+        recorder.sync(&app.history);
     }
 
+    // The quit arms break before the loop-bottom sync — catch the last change.
+    recorder.sync(&app.history);
     // Stop any in-flight reply promptly and reap its thread on the way out.
     if let Some((cancel, handle)) = inflight.take() {
         cancel.cancel();
@@ -1095,6 +1184,349 @@ fn draw_tool_view(term: &mut InlineViewport, app: &mut App) -> io::Result<()> {
     let max = ui::tool_view_max_scroll(app, screen.width, screen.height);
     app.settle_tool_scroll(max);
     term.draw_overlay(|area, buf| ui::render_tool_view(area, buf, app))
+}
+
+/// Render the full-screen `/resume` session picker onto the alternate screen
+/// (the transcript overlay's twin). See `docs/resume.md`.
+fn draw_resume_picker(term: &mut InlineViewport, app: &App) -> io::Result<()> {
+    term.draw_overlay(|area, buf| ui::render_resume_picker(area, buf, app))
+}
+
+// ===== /resume session recording + listing boundary (docs/resume.md) =====
+
+/// How many candidate paths the `/resume` walk will collect before stopping —
+/// codex's `MAX_SCAN_FILES` runaway bound (readdir only; cheap).
+const RESUME_WALK_CAP: usize = 10_000;
+
+/// How many of the newest-modified candidates get their heads read per
+/// `/resume` open — the expensive per-file work (codex pages at 25 with the
+/// same 10k scan bound; ours loads one capped page).
+const RESUME_SCAN_CAP: usize = 200;
+
+/// How many lines of a rollout file's head the scan reads while hunting for
+/// the meta line + first-user-message preview — codex's 10-line head extended
+/// by a 200-line user-message hunt.
+const RESUME_HEAD_LINES: usize = 210;
+
+/// A byte ceiling on the head read so a pathological no-newline file stays
+/// bounded — generous, so a large pasted first message (expanded back to its
+/// full text on send) still yields its preview. A line cut at the ceiling
+/// fails to parse and is skipped — safe by construction.
+const RESUME_HEAD_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Records the conversation to a rollout file as it happens — codex's
+/// `RolloutRecorder`, sized down to this loop (see `docs/resume.md`).
+///
+/// The pure format lives in [`session`]; this owns the impurities: the root
+/// dir from the environment, the local clock for the dated path, the UTC
+/// write stamps, and the file appends. `recorded` is the on-disk watermark
+/// (the scrollback `committed` pattern): [`sync`] appends history growth,
+/// rewrites on a truncation (the Esc-Esc backtrack rewind), and does nothing
+/// when the length is unchanged. Every failure is swallowed — recording must
+/// never kill the TUI (codex logs and carries on the same way).
+///
+/// [`sync`]: SessionRecorder::sync
+struct SessionRecorder {
+    /// The sessions root (`~/.inline-tui/sessions`, or
+    /// `INLINE_TUI_SESSIONS_DIR` — the smoke test points it at a temp dir);
+    /// `None` disables recording (no HOME and no override).
+    root: Option<PathBuf>,
+    /// The active session's file + meta, once anything was recorded — created
+    /// lazily on the first item so empty sessions never touch disk (codex's
+    /// deferred create). The meta is kept for rewrites.
+    active: Option<(PathBuf, SessionMeta)>,
+    /// How many history items are already on disk.
+    recorded: usize,
+    /// An adopted file's last line lost its newline (a torn write): the next
+    /// append prefixes one so the first new item isn't glued onto it.
+    repair_newline: bool,
+    /// The meta context of a *new* session file, captured once at startup.
+    cwd: String,
+    model: String,
+}
+
+impl SessionRecorder {
+    fn new(model: &str, cwd: &Path) -> Self {
+        let root = std::env::var_os("INLINE_TUI_SESSIONS_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| PathBuf::from(home).join(".inline-tui").join("sessions"))
+            });
+        Self {
+            root,
+            active: None,
+            recorded: 0,
+            repair_newline: false,
+            cwd: cwd.display().to_string(),
+            model: model.to_string(),
+        }
+    }
+
+    /// The sessions root, for the `/resume` scan.
+    fn root(&self) -> Option<&Path> {
+        self.root.as_deref()
+    }
+
+    /// The file currently being written, if any — excluded from the picker
+    /// (the session you're in is not something to "return" to).
+    fn active_path(&self) -> Option<&Path> {
+        self.active.as_ref().map(|(path, _)| path.as_path())
+    }
+
+    /// Mirror the file to `history`: append newly finished items (creating
+    /// the file + meta line first on the very first one), rewrite the whole
+    /// file when history shrank (the backtrack rewind), no-op when unchanged.
+    /// History is append-or-truncate only, so the watermark compare is sound.
+    fn sync(&mut self, history: &[HistoryItem]) {
+        if history.len() == self.recorded {
+            return;
+        }
+        if history.len() < self.recorded {
+            self.rewrite(history);
+            return;
+        }
+        let fresh = &history[self.recorded..];
+        // Advance the watermark whether or not the write lands: a failed
+        // append drops those lines (a later rewrite restores them, since it
+        // writes the full history) instead of retrying every event.
+        self.recorded = history.len();
+        self.append(fresh);
+    }
+
+    /// `/clear` starts a fresh session (codex's `/new`): the next recorded
+    /// item creates a new file; the old file keeps what it had.
+    fn start_new(&mut self) {
+        self.active = None;
+        self.recorded = 0;
+        self.repair_newline = false;
+    }
+
+    /// Adopt a resumed session's file: further items append there (codex's
+    /// resume-mode open), and a rewrite re-serializes its own meta. `torn`
+    /// flags a file whose last line lost its newline — the next append
+    /// repairs it first.
+    fn adopt(&mut self, path: PathBuf, meta: SessionMeta, recorded: usize, torn: bool) {
+        self.active = Some((path, meta));
+        self.recorded = recorded;
+        self.repair_newline = torn;
+    }
+
+    /// Append `items` as rollout lines, materializing the file (date dirs +
+    /// meta line) on the first-ever append. Failures are dropped.
+    fn append(&mut self, items: &[HistoryItem]) {
+        use std::io::Write;
+        if self.active.is_none() {
+            self.active = self.create_session();
+        }
+        let Some((path, _)) = self.active.as_ref() else {
+            return; // recording disabled, or the create failed
+        };
+        let Ok(mut file) = std::fs::OpenOptions::new().append(true).open(path) else {
+            return;
+        };
+        let stamp = utc_stamp();
+        let mut text = String::new();
+        // Terminate an adopted file's torn last line so the first new item
+        // starts a line of its own (the junk stays, skipped by the reader).
+        if std::mem::take(&mut self.repair_newline) {
+            text.push('\n');
+        }
+        for item in items {
+            text.push_str(&session::item_line(item, &stamp));
+            text.push('\n');
+        }
+        let _ = file.write_all(text.as_bytes());
+    }
+
+    /// Create the session file lazily: derive the dated path from the local
+    /// clock (codex's layout), create the date dirs, and write the meta line.
+    /// `None` when recording is disabled or any I/O fails.
+    fn create_session(&self) -> Option<(PathBuf, SessionMeta)> {
+        use chrono::{Datelike, Timelike};
+        let root = self.root.as_ref()?;
+        let now = chrono::Local::now();
+        let id = session_id();
+        let rel = session::rollout_rel_path(
+            (now.year(), now.month(), now.day()),
+            (now.hour(), now.minute(), now.second()),
+            &id,
+        );
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent()?).ok()?;
+        let meta = SessionMeta {
+            id,
+            timestamp: utc_stamp(),
+            cwd: self.cwd.clone(),
+            model: self.model.clone(),
+            originator: "inline-tui".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        let first_line = format!("{}\n", session::meta_line(&meta, &meta.timestamp));
+        std::fs::write(&path, first_line).ok()?;
+        Some((path, meta))
+    }
+
+    /// Rewrite the whole file (meta + every item) — the truncation path: the
+    /// Esc-Esc backtrack rewound history, and the file must follow. (This
+    /// normalizes the file to what this build parsed — lines a future build
+    /// wrote and this one skipped are dropped; see `docs/resume.md`.)
+    fn rewrite(&mut self, history: &[HistoryItem]) {
+        self.recorded = history.len();
+        self.repair_newline = false;
+        let Some((path, meta)) = self.active.as_ref() else {
+            return;
+        };
+        let stamp = utc_stamp();
+        let mut text = format!("{}\n", session::meta_line(meta, &meta.timestamp));
+        for item in history {
+            text.push_str(&session::item_line(item, &stamp));
+            text.push('\n');
+        }
+        let _ = std::fs::write(path, text);
+    }
+}
+
+/// UTC write-time stamp for rollout lines — codex's
+/// `YYYY-MM-DDTHH:MM:SS.mmmZ` shape.
+fn utc_stamp() -> String {
+    chrono::Utc::now()
+        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+        .to_string()
+}
+
+/// A unique-enough session id: nanos since the epoch plus the pid, in hex.
+/// No uuid dependency — the id is never parsed back (resume goes by path);
+/// it only has to keep concurrent instances off each other's files.
+fn session_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    format!("{nanos:x}-{:x}", std::process::id())
+}
+
+/// Scan the sessions root for resumable rollout files, newest-modified first
+/// (codex's Updated sort): walk the `YYYY/MM/DD` date dirs newest-first,
+/// head-read each `rollout-*.jsonl` for its meta line and first-user-message
+/// preview — files without both never list (codex's eligibility) — and stop
+/// considering files past [`RESUME_SCAN_CAP`]. `exclude` is the recorder's
+/// active file. Ages are humanized here and frozen (codex freezes its
+/// reference when the picker opens).
+fn list_sessions(root: Option<&Path>, exclude: Option<&Path>) -> Vec<SessionSummary> {
+    let Some(root) = root else {
+        return Vec::new();
+    };
+    // Collect candidate paths newest-first by the date layout (year desc /
+    // month desc / day desc / filename desc — the name embeds the stamp), so
+    // the runaway walk bound keeps the newest files if it ever bites.
+    let mut files = Vec::new();
+    'walk: for year in numeric_dirs_desc(root) {
+        for month in numeric_dirs_desc(&year) {
+            for day in numeric_dirs_desc(&month) {
+                let mut names: Vec<PathBuf> = std::fs::read_dir(&day)
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .map(|entry| entry.path())
+                            .filter(|path| {
+                                path.file_name().and_then(|name| name.to_str()).is_some_and(
+                                    |name| name.starts_with("rollout-") && name.ends_with(".jsonl"),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                names.sort();
+                names.reverse();
+                files.extend(names);
+                if files.len() >= RESUME_WALK_CAP {
+                    files.truncate(RESUME_WALK_CAP);
+                    break 'walk;
+                }
+            }
+        }
+    }
+
+    // Order by mtime (newest-modified first — a resumed old session floats
+    // back to the top, codex's Updated sort) BEFORE capping the expensive
+    // head reads, so the cap can't cut a recently-touched old file.
+    let mut stamped: Vec<(std::time::SystemTime, PathBuf)> = files
+        .into_iter()
+        .filter(|path| exclude.is_none_or(|active| active != path))
+        .map(|path| {
+            let modified = std::fs::metadata(&path)
+                .and_then(|meta| meta.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (modified, path)
+        })
+        .collect();
+    stamped.sort_by(|a, b| b.0.cmp(&a.0));
+    stamped.truncate(RESUME_SCAN_CAP);
+
+    let now = std::time::SystemTime::now();
+    let mut sessions = Vec::new();
+    for (modified, path) in stamped {
+        let Some(head) = read_head(&path, RESUME_HEAD_LINES, RESUME_HEAD_BYTES) else {
+            continue;
+        };
+        // Eligibility (codex's): a parseable meta line AND a user message to
+        // preview, both within the head window.
+        let Some((_meta, items)) = session::parse_session(&head) else {
+            continue;
+        };
+        let Some(preview) = session::preview_of(&items) else {
+            continue;
+        };
+        let secs = now.duration_since(modified).map_or(0, |age| age.as_secs());
+        sessions.push(SessionSummary {
+            path,
+            age: session::relative_age(secs),
+            preview,
+        });
+    }
+    sessions
+}
+
+/// The numerically-named subdirectories of `dir`, sorted descending — the
+/// `YYYY`/`MM`/`DD` walk visits newest first (codex's listing walk).
+fn numeric_dirs_desc(dir: &Path) -> Vec<PathBuf> {
+    let mut dirs: Vec<(u32, PathBuf)> = std::fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|entry| {
+                    let number: u32 = entry.file_name().to_str()?.parse().ok()?;
+                    entry
+                        .file_type()
+                        .ok()?
+                        .is_dir()
+                        .then(|| (number, entry.path()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    dirs.sort_by(|a, b| b.0.cmp(&a.0));
+    dirs.into_iter().map(|(_, path)| path).collect()
+}
+
+/// Read up to `max_lines` lines of `path`'s head, stopping past the `cap`
+/// byte ceiling (so a pathological no-newline file stays bounded). Line-based
+/// like codex's head scan, so a long line — a large pasted first message —
+/// is read whole; a line cut by the ceiling fails to parse and is skipped by
+/// the caller. `None` when the file can't be opened or isn't UTF-8.
+fn read_head(path: &Path, max_lines: usize, cap: u64) -> Option<String> {
+    use std::io::{BufRead, Read};
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = std::io::BufReader::new(file).take(cap);
+    let mut head = String::new();
+    for _ in 0..max_lines {
+        match reader.read_line(&mut head) {
+            Ok(0) => break, // EOF (or the ceiling exhausted)
+            Ok(_) => {}
+            Err(_) => return None,
+        }
+    }
+    Some(head)
 }
 
 // ===== `@` file-search boundary (docs/file-search.md) =====

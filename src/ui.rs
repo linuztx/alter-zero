@@ -151,6 +151,32 @@ const TOOL_VIEW_FILL: &str = "~";
 /// The dim placeholder shown when the transcript has nothing to list yet.
 const TOOL_VIEW_EMPTY: &str = "Nothing here yet.";
 
+// --- /resume session picker (the other alternate-screen overlay) — codex's
+// resume picker, sized down (docs/resume.md): the same slash-tiled title
+// chrome as the transcript pager, a type-to-search line, dense one-line
+// session rows (`❯ {age:12}{preview}`, the palette's selection-by-colour),
+// and a bottom rule carrying `{selected+1}/{total}` over a dim key-hint row. ---
+
+/// The picker's spaced-caps title, overlaid on the slash tiling.
+const RESUME_TITLE: &str = "R E S U M E";
+/// The dim search-line placeholder while the query is empty (codex's).
+const RESUME_SEARCH_PLACEHOLDER: &str = "Type to search";
+/// The search line's prefix once a query is typed.
+const RESUME_SEARCH_PROMPT: &str = "Search: ";
+/// The picker's key-hint row (dim, under the separator).
+const RESUME_HINTS: &str = " ↑/↓ select   enter resume   esc cancel   type to search";
+/// The dim list placeholder when nothing was ever saved (codex's).
+const RESUME_NO_SESSIONS: &str = "No sessions yet";
+/// The dim list placeholder when the query matches nothing (codex's).
+const RESUME_NO_MATCH: &str = "No results for your search";
+/// The age column's width in the dense rows — codex's 12-col relative date.
+const RESUME_AGE_WIDTH: usize = 12;
+/// The two-space inset shared by the search line and the placeholder rows
+/// (the row marker is the same width, so everything lines up).
+const RESUME_INDENT: &str = "  ";
+/// The selected row's marker; unselected rows get spaces (codex's `❯ `).
+const RESUME_MARKER: &str = "❯ ";
+
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
 // its wall-clock stamp: dim, right-aligned on its own line below the message
 // (`hh:mm AM/PM`). AI replies, tools, and turn summaries record a stamp too but
@@ -1920,7 +1946,14 @@ pub fn backtrack_scroll(app: &App, width: u16, screen_height: u16) -> Option<usi
 /// column) with the spaced-caps `/ T R A N S C R I P T` overlaid from the left
 /// edge, all dim — codex's transcript overlay header.
 fn tool_view_header(width: u16) -> Line<'static> {
-    let title = format!("/ {TOOL_VIEW_TITLE}");
+    overlay_header(TOOL_VIEW_TITLE, width)
+}
+
+/// A full-screen overlay's title row: the slash tiling with the spaced-caps
+/// `title` overlaid from the left edge, all dim — shared by the transcript
+/// pager and the `/resume` picker.
+fn overlay_header(title: &str, width: u16) -> Line<'static> {
+    let title = format!("/ {title}");
     let mut text: String = title.chars().take(width as usize).collect();
     for col in cols(&text)..width as usize {
         text.push(if col.is_multiple_of(2) { '/' } else { ' ' });
@@ -1938,11 +1971,17 @@ fn tool_view_separator(width: u16, scroll: usize, max: usize) -> Line<'static> {
     } else {
         (scroll.min(max) * 100 + max / 2) / max
     };
-    let text = format!(" {pct}% ");
+    rule_with_label(width, &format!(" {pct}% "))
+}
+
+/// A dim full-width `─` rule with `label` embedded right-aligned one dash in
+/// from the edge — the bottom bar shared by the transcript pager (its scroll
+/// percentage) and the `/resume` picker (its selection count).
+fn rule_with_label(width: u16, label: &str) -> Line<'static> {
     let width = width as usize;
     let mut rule = vec!['─'; width];
-    let start = width.saturating_sub(cols(&text) + 1);
-    for (i, ch) in text.chars().enumerate() {
+    let start = width.saturating_sub(cols(label) + 1);
+    for (i, ch) in label.chars().enumerate() {
         if let Some(cell) = rule.get_mut(start + i) {
             *cell = ch;
         }
@@ -1999,6 +2038,128 @@ pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
         Line::from(Span::styled(closing.to_string(), dim)),
     ])
     .render(hints_area, buf);
+}
+
+/// One dense session row: the `❯ ` marker (spaces when unselected), the age
+/// padded to [`RESUME_AGE_WIDTH`] columns, and the preview truncated to the
+/// rest of the width — the whole row lit in the palette's selected colour or
+/// dimmed (the selection-by-colour convention). Codex's dense picker row.
+fn resume_row(
+    session: &crate::session::SessionSummary,
+    selected: bool,
+    width: u16,
+) -> Line<'static> {
+    let marker = if selected {
+        RESUME_MARKER
+    } else {
+        RESUME_INDENT
+    };
+    let mut age = truncate_cols(&session.age, RESUME_AGE_WIDTH);
+    while cols(&age) < RESUME_AGE_WIDTH {
+        age.push(' ');
+    }
+    let room = (width as usize).saturating_sub(cols(marker) + RESUME_AGE_WIDTH);
+    let preview = truncate_cols(&session.preview, room);
+    let colour = if selected {
+        MENU_SELECTED_COLOR
+    } else {
+        MENU_DIM_COLOR
+    };
+    Line::from(Span::styled(
+        format!("{marker}{age}{preview}"),
+        Style::new().fg(colour),
+    ))
+}
+
+/// Render the full-screen `/resume` session picker — codex's resume picker,
+/// sized down (docs/resume.md): the slash-tiled title, the type-to-search
+/// line, the dense session rows (windowed to keep the selection visible, the
+/// palette's [`menu_window`]), and the bottom rule carrying
+/// `{selected+1}/{total}` over the dim key hints. Pure — `term.rs` paints
+/// this onto the alternate screen, like the transcript pager.
+pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
+    let [
+        title_area,
+        _,
+        search_area,
+        _,
+        body_area,
+        sep_area,
+        hint_area,
+        _,
+    ] = Layout::vertical([
+        Constraint::Length(1), // slash-tiled title
+        Constraint::Length(1), // gap
+        Constraint::Length(1), // search line
+        Constraint::Length(1), // gap
+        Constraint::Min(0),    // session rows
+        Constraint::Length(1), // ─ rule + count
+        Constraint::Length(1), // key hints
+        Constraint::Length(1), // final blank
+    ])
+    .areas(area);
+
+    Paragraph::new(overlay_header(RESUME_TITLE, area.width)).render(title_area, buf);
+
+    let picker = app.resume_picker.as_ref();
+    let query = picker.map_or("", |p| p.query.as_str());
+    let search = if query.is_empty() {
+        Line::from(Span::styled(
+            format!("{RESUME_INDENT}{RESUME_SEARCH_PLACEHOLDER}"),
+            Style::new().fg(MENU_DIM_COLOR),
+        ))
+    } else {
+        Line::from(vec![
+            Span::styled(
+                format!("{RESUME_INDENT}{RESUME_SEARCH_PROMPT}"),
+                Style::new().fg(MENU_DIM_COLOR),
+            ),
+            Span::styled(query.to_string(), Style::new().fg(SEARCH_QUERY_COLOR)),
+        ])
+    };
+    Paragraph::new(search).render(search_area, buf);
+
+    let matches = picker.map_or_else(Vec::new, |p| p.matches());
+    let selected = picker
+        .map_or(0, |p| p.selected)
+        .min(matches.len().saturating_sub(1));
+    let rows: Vec<Line> = if matches.is_empty() {
+        // Two empty states (codex's): never saved anything, vs a query that
+        // filtered everything out.
+        let placeholder = if picker.is_none_or(|p| p.sessions.is_empty()) {
+            RESUME_NO_SESSIONS
+        } else {
+            RESUME_NO_MATCH
+        };
+        vec![Line::from(Span::styled(
+            format!("{RESUME_INDENT}{placeholder}"),
+            Style::new().fg(MENU_DIM_COLOR),
+        ))]
+    } else {
+        let height = (body_area.height as usize).max(1);
+        let start = menu_window(matches.len(), selected, height);
+        matches
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(height)
+            .map(|(index, session)| resume_row(session, index == selected, area.width))
+            .collect()
+    };
+    Paragraph::new(rows).render(body_area, buf);
+
+    // An empty list has no selection to count — the rule stays bare.
+    let label = if matches.is_empty() {
+        String::new()
+    } else {
+        format!(" {}/{} ", selected + 1, matches.len())
+    };
+    Paragraph::new(rule_with_label(area.width, &label)).render(sep_area, buf);
+    Paragraph::new(Line::from(Span::styled(
+        RESUME_HINTS.to_string(),
+        Style::new().fg(TOOL_DIM_COLOR),
+    )))
+    .render(hint_area, buf);
 }
 
 /// Decide which assistant lines are now safe to flush to scrollback as a reply
@@ -5427,5 +5588,132 @@ mod tests {
         let target: String = shortcuts_lines(false, true).iter().map(plain).collect();
         assert!(target.contains("esc esc to edit previous"), "{target:?}");
         assert!(!target.contains("esc to quit"), "{target:?}");
+    }
+
+    // ===== /resume session picker (docs/resume.md) =====
+
+    /// An app with the picker open over one session per preview, all aged
+    /// `5m ago` at paths `s0`, `s1`, ….
+    fn resume_app(previews: &[&str]) -> App {
+        let mut app = App::new();
+        app.open_resume_picker(
+            previews
+                .iter()
+                .enumerate()
+                .map(|(i, preview)| crate::session::SessionSummary {
+                    path: std::path::PathBuf::from(format!("s{i}")),
+                    age: "5m ago".into(),
+                    preview: (*preview).into(),
+                })
+                .collect(),
+        );
+        app
+    }
+
+    #[test]
+    fn resume_picker_titles_with_the_slash_tiled_resume_header() {
+        let app = resume_app(&["hello"]);
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        let title = row(&buf, 0, 40);
+        assert!(title.starts_with("/ R E S U M E"), "{title:?}");
+        // The tiling continues to the right edge (the transcript pager's
+        // slash-tiled header pattern).
+        assert!(title.trim_end().ends_with('/'), "{title:?}");
+    }
+
+    #[test]
+    fn resume_picker_shows_the_search_placeholder_then_the_query_echo() {
+        let mut app = resume_app(&["hello"]);
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        assert!(row(&buf, 2, 40).contains("Type to search"));
+        app.resume_picker.as_mut().unwrap().query = "wrap".into();
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        assert!(row(&buf, 2, 40).contains("Search: wrap"));
+    }
+
+    #[test]
+    fn resume_rows_show_marker_age_and_preview_with_the_selection_lit() {
+        let mut app = resume_app(&["first message", "second message"]);
+        app.resume_picker.as_mut().unwrap().selected = 1;
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        let first = row(&buf, 4, 40);
+        let second = row(&buf, 5, 40);
+        assert!(first.starts_with("  5m ago"), "{first:?}");
+        assert!(first.contains("first message"), "{first:?}");
+        assert!(second.starts_with("❯ 5m ago"), "{second:?}");
+        assert!(second.contains("second message"), "{second:?}");
+        // The age column pads to a fixed width (codex's dense 12-col date) —
+        // measured on the ASCII-marker row (`find` is byte-indexed; `❯` is
+        // multi-byte).
+        assert_eq!(first.find("first message"), Some(2 + RESUME_AGE_WIDTH));
+        // The whole selected row lights up; the others dim — the palette's
+        // selection-by-colour convention.
+        assert_eq!(buf[(0, 5)].fg, MENU_SELECTED_COLOR);
+        assert_eq!(buf[(4, 5)].fg, MENU_SELECTED_COLOR, "age too");
+        assert_eq!(buf[(4, 4)].fg, MENU_DIM_COLOR, "unselected rows dim");
+    }
+
+    #[test]
+    fn resume_picker_counts_the_selection_in_the_separator() {
+        let mut app = resume_app(&["one", "two", "three"]);
+        app.resume_picker.as_mut().unwrap().selected = 1;
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        // Bottom chrome: separator + hints + blank ⇒ separator at h-3.
+        let sep = row(&buf, 9, 40);
+        assert!(sep.contains("─"), "{sep:?}");
+        assert!(sep.contains(" 2/3 "), "{sep:?}");
+        assert!(row(&buf, 10, 40).contains("enter resume"));
+    }
+
+    #[test]
+    fn resume_picker_shows_no_sessions_yet_when_nothing_is_saved() {
+        let app = resume_app(&[]);
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        assert!(row(&buf, 4, 40).contains("No sessions yet"));
+    }
+
+    #[test]
+    fn resume_picker_shows_no_results_for_a_query_matching_nothing() {
+        let mut app = resume_app(&["hello"]);
+        app.resume_picker.as_mut().unwrap().query = "zzz".into();
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        assert!(row(&buf, 4, 40).contains("No results for your search"));
+        let sep = row(&buf, 9, 40);
+        assert!(
+            !sep.contains('/') || !sep.contains("1/"),
+            "no count: {sep:?}"
+        );
+    }
+
+    #[test]
+    fn resume_rows_truncate_to_the_width() {
+        let app = resume_app(&["a very long preview that cannot possibly fit"]);
+        let mut buf = buffer(24, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        let line = row(&buf, 4, 24);
+        assert!(line.starts_with("❯ 5m ago"), "{line:?}");
+        assert!(!line.contains("possibly"), "truncated: {line:?}");
+    }
+
+    #[test]
+    fn resume_picker_scrolls_to_keep_the_selection_visible() {
+        let previews: Vec<String> = (0..30).map(|i| format!("message number {i}")).collect();
+        let refs: Vec<&str> = previews.iter().map(String::as_str).collect();
+        let mut app = resume_app(&refs);
+        app.resume_picker.as_mut().unwrap().selected = 29;
+        let mut buf = buffer(40, 12);
+        render_resume_picker(buf.area, &mut buf, &app);
+        let body: String = (4..9).map(|y| row(&buf, y, 40)).collect();
+        assert!(
+            body.contains("message number 29"),
+            "the window follows the selection: {body:?}"
+        );
     }
 }

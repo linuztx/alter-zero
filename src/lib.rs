@@ -11,6 +11,8 @@
 //! - [`frame`]       — frame scheduling: coalesce redraw requests, 120 fps cap.
 //! - [`paste`]       — paste-burst detection and the large-paste/image
 //!   placeholder helpers.
+//! - [`session`]     — the `/resume` rollout-file format: serialize/parse the
+//!   JSONL session record, the picker preview + humanized age.
 //! - [`stream`]      — the dummy AI: canned responses and chunked streaming.
 //! - [`term`]        — the custom inline viewport (dynamic-height live region;
 //!   I/O).
@@ -23,6 +25,7 @@ pub mod clipboard;
 pub mod file_search;
 pub mod frame;
 pub mod paste;
+pub mod session;
 pub mod stream;
 pub mod term;
 pub mod textarea;

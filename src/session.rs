@@ -1,0 +1,541 @@
+//! `/resume` session files — the pure core (see `docs/resume.md`).
+//!
+//! Every conversation is recorded to a codex-style JSONL "rollout" file:
+//! line 1 is a `session_meta` record, then one line per finished
+//! [`HistoryItem`] as it lands in [`App::history`] — completed items only,
+//! never streaming deltas (codex's persistence policy, `rollout/src/policy.rs`).
+//! The `/resume` picker lists those files and loads one back.
+//!
+//! This module owns the on-disk format (serde on its **own** record types —
+//! the app types stay serde-free), the parse-back (malformed/unknown lines are
+//! skipped, codex's forward-compatible reader), and the picker's pure
+//! ingredients: the first-user-message preview and the humanized age. All the
+//! file/clock/pid I/O lives at the boundary in `main.rs` (`SessionRecorder`),
+//! which injects timestamps and ids into these pure functions — the
+//! `set_clock` pattern.
+//!
+//! [`App::history`]: crate::app::App::history
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+
+use crate::app::{DONE_VERBS, HistoryItem, Message, Role, ToolCall, ToolStatus, TurnSummary};
+
+/// The `session_meta` payload — the first line of every rollout file (codex's
+/// `SessionMeta`: identity plus enough context to label the session later).
+/// `timestamp` is the session start (UTC, boundary-supplied); `cwd`/`model`
+/// mirror the footer's [`SessionInfo`] strings at recording time.
+///
+/// [`SessionInfo`]: crate::app::SessionInfo
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionMeta {
+    /// Unique session id — also embedded in the filename. Never parsed back
+    /// (resume goes by *path*); uniqueness is all that matters.
+    pub id: String,
+    /// Session-start stamp (UTC `YYYY-MM-DDTHH:MM:SS.mmmZ`, codex's shape).
+    pub timestamp: String,
+    /// The working directory the session was recorded in.
+    pub cwd: String,
+    /// The backend's model id ([`ReplySource::model_name`]).
+    ///
+    /// [`ReplySource::model_name`]: crate::stream::ReplySource::model_name
+    pub model: String,
+    /// Who wrote the file (`"inline-tui"`) — codex records an `originator`.
+    pub originator: String,
+    /// The recording crate version (`CARGO_PKG_VERSION`).
+    pub version: String,
+}
+
+/// One row of the `/resume` picker: the rollout file to load, its humanized
+/// age (frozen when the picker opens — codex's `relative_time_reference`), and
+/// the first-user-message preview. Built at the boundary from the head scan;
+/// held on [`App`] while the picker is up.
+///
+/// [`App`]: crate::app::App
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSummary {
+    /// The rollout file this row resumes.
+    pub path: PathBuf,
+    /// Humanized mtime age ([`relative_age`]), e.g. `5m ago`.
+    pub age: String,
+    /// The session's first user (or `!` shell) message, whitespace-flattened.
+    pub preview: String,
+}
+
+/// One JSONL line: the write-time stamp plus the tagged record — codex's
+/// `RolloutLine { timestamp, type, payload }` shape.
+#[derive(Serialize, Deserialize)]
+struct LineRecord {
+    timestamp: String,
+    #[serde(flatten)]
+    item: ItemRecord,
+}
+
+/// The tagged per-line payload (codex's `RolloutItem`): a session-meta line or
+/// one finished history item. Unknown `type`s fail to parse and are skipped by
+/// the reader — the forward-compatibility contract.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
+enum ItemRecord {
+    SessionMeta(SessionMeta),
+    Message(MessageRecord),
+    Tool(ToolRecord),
+    Summary(SummaryRecord),
+}
+
+/// A [`Message`] on disk. `role` is the lowercase role name; an unknown role
+/// (a future variant) skips the line on parse instead of failing the file.
+#[derive(Serialize, Deserialize)]
+struct MessageRecord {
+    role: String,
+    text: String,
+    /// The display stamp the item carried (`hh:mm AM/PM`, possibly empty) —
+    /// round-tripped verbatim; see `docs/timestamps.md`.
+    timestamp: String,
+}
+
+/// A finished [`ToolCall`] on disk. Only finished statuses exist in history,
+/// so the status collapses to `ok: bool`.
+#[derive(Serialize, Deserialize)]
+struct ToolRecord {
+    name: String,
+    args: String,
+    ok: bool,
+    output: String,
+    timestamp: String,
+    shell: bool,
+    truncated: bool,
+}
+
+/// A [`TurnSummary`] on disk. `verb` maps back to its [`DONE_VERBS`] static on
+/// load (falling back to `Done` for a verb this build doesn't know) because
+/// `TurnSummary::verb` is `&'static str`.
+#[derive(Serialize, Deserialize)]
+struct SummaryRecord {
+    verb: String,
+    secs: u64,
+    timestamp: String,
+}
+
+/// One serialized JSONL line for `item`, stamped `stamp`. Serializing these
+/// record types cannot fail (strings, bools, integers — no fallible impls, no
+/// non-string map keys), hence the `expect`.
+fn line(stamp: &str, item: ItemRecord) -> String {
+    serde_json::to_string(&LineRecord {
+        timestamp: stamp.to_string(),
+        item,
+    })
+    .expect("session record types serialize infallibly")
+}
+
+/// The lowercase on-disk name of `role`.
+const fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Error => "error",
+        Role::System => "system",
+        Role::Shell => "shell",
+    }
+}
+
+/// The role a recorded name maps back to; `None` for a name this build
+/// doesn't know (the line is skipped — forward compatibility).
+fn role_from(name: &str) -> Option<Role> {
+    match name {
+        "user" => Some(Role::User),
+        "assistant" => Some(Role::Assistant),
+        "error" => Some(Role::Error),
+        "system" => Some(Role::System),
+        "shell" => Some(Role::Shell),
+        _ => None,
+    }
+}
+
+/// The [`DONE_VERBS`] static matching a recorded verb, or `Done` (the first)
+/// for one this build doesn't know — [`TurnSummary::verb`] is `&'static str`.
+fn done_verb(name: &str) -> &'static str {
+    DONE_VERBS
+        .iter()
+        .copied()
+        .find(|verb| *verb == name)
+        .unwrap_or(DONE_VERBS[0])
+}
+
+/// Serialize the `session_meta` line (the first line of a new rollout file).
+/// `stamp` is the write-time line stamp, boundary-supplied like the meta's own
+/// session-start timestamp.
+#[must_use]
+pub fn meta_line(meta: &SessionMeta, stamp: &str) -> String {
+    line(stamp, ItemRecord::SessionMeta(meta.clone()))
+}
+
+/// Serialize one finished history item as a rollout line. `stamp` is the
+/// write-time line stamp (UTC, boundary-supplied).
+#[must_use]
+pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
+    let record = match item {
+        HistoryItem::Message(message) => ItemRecord::Message(MessageRecord {
+            role: role_name(message.role).to_string(),
+            text: message.text.clone(),
+            timestamp: message.timestamp.clone(),
+        }),
+        // Only finished tools reach history, so status collapses to ok/failed
+        // (a Running status — impossible here — would record as failed).
+        HistoryItem::Tool(tool) => ItemRecord::Tool(ToolRecord {
+            name: tool.name.clone(),
+            args: tool.args.clone(),
+            ok: matches!(tool.status, ToolStatus::Ok),
+            output: tool.output.clone(),
+            timestamp: tool.timestamp.clone(),
+            shell: tool.shell,
+            truncated: tool.truncated,
+        }),
+        HistoryItem::Summary(summary) => ItemRecord::Summary(SummaryRecord {
+            verb: summary.verb.to_string(),
+            secs: summary.secs,
+            timestamp: summary.timestamp.clone(),
+        }),
+    };
+    line(stamp, record)
+}
+
+/// Parse a rollout file's text back into its meta + history items, in file
+/// order. Malformed lines, unknown record types, and unknown roles are
+/// **skipped** (codex's forward-compatible reader); `None` when no valid
+/// `session_meta` line exists (an empty or foreign file). Items are collected
+/// whether they precede or follow the meta line — in practice the meta is
+/// line 1, but the reader doesn't insist.
+#[must_use]
+pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
+    let mut meta: Option<SessionMeta> = None;
+    let mut items = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<LineRecord>(line) else {
+            continue; // malformed or unknown-type line: skip, don't fail
+        };
+        match record.item {
+            // The first meta wins (codex: the file's own meta is line 1).
+            ItemRecord::SessionMeta(parsed) => {
+                meta.get_or_insert(parsed);
+            }
+            ItemRecord::Message(message) => {
+                if let Some(role) = role_from(&message.role) {
+                    items.push(HistoryItem::Message(Message {
+                        role,
+                        text: message.text,
+                        timestamp: message.timestamp,
+                    }));
+                }
+            }
+            ItemRecord::Tool(tool) => items.push(HistoryItem::Tool(ToolCall {
+                name: tool.name,
+                args: tool.args,
+                status: if tool.ok {
+                    ToolStatus::Ok
+                } else {
+                    ToolStatus::Failed
+                },
+                output: tool.output,
+                timestamp: tool.timestamp,
+                shell: tool.shell,
+                truncated: tool.truncated,
+            })),
+            ItemRecord::Summary(summary) => items.push(HistoryItem::Summary(TurnSummary {
+                verb: done_verb(&summary.verb),
+                secs: summary.secs,
+                timestamp: summary.timestamp,
+            })),
+        }
+    }
+    meta.map(|meta| (meta, items))
+}
+
+/// The picker preview: the first user input in `items` — a [`Role::User`]
+/// message, or a [`Role::Shell`] header shown as `! {command}` (our `!` cells
+/// are user input too; see `docs/resume.md`'s divergences) — with all
+/// whitespace runs flattened to single spaces so a multiline message stays one
+/// row. `None` when the session has no user input (such files never list).
+#[must_use]
+pub fn preview_of(items: &[HistoryItem]) -> Option<String> {
+    items.iter().find_map(|item| {
+        let HistoryItem::Message(message) = item else {
+            return None;
+        };
+        let flat = message
+            .text
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        match message.role {
+            Role::User => Some(flat),
+            Role::Shell => Some(format!("! {flat}")),
+            Role::Assistant | Role::Error | Role::System => None,
+        }
+    })
+}
+
+/// Humanize how long ago something happened — codex's single-unit
+/// `format_relative_time`: `now`, `{N}s ago`, `{N}m ago`, `{N}h ago`,
+/// `{N}d ago` (integer division at each step).
+#[must_use]
+pub fn relative_age(secs: u64) -> String {
+    if secs == 0 {
+        return "now".to_string();
+    }
+    if secs < 60 {
+        return format!("{secs}s ago");
+    }
+    let minutes = secs / 60;
+    if minutes < 60 {
+        return format!("{minutes}m ago");
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        return format!("{hours}h ago");
+    }
+    format!("{}d ago", hours / 24)
+}
+
+/// The rollout file's path relative to the sessions root:
+/// `YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-{id}.jsonl` — codex's layout, with
+/// `-` for `:` in the time so the name stays filesystem-safe. `date`/`time`
+/// come from the boundary's clock (local time, like codex).
+#[must_use]
+pub fn rollout_rel_path(date: (i32, u32, u32), time: (u32, u32, u32), id: &str) -> PathBuf {
+    let (year, month, day) = date;
+    let (hour, minute, second) = time;
+    PathBuf::from(format!("{year:04}"))
+        .join(format!("{month:02}"))
+        .join(format!("{day:02}"))
+        .join(format!(
+            "rollout-{year:04}-{month:02}-{day:02}T{hour:02}-{minute:02}-{second:02}-{id}.jsonl"
+        ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta() -> SessionMeta {
+        SessionMeta {
+            id: "abc123".into(),
+            timestamp: "2026-07-06T10:00:00.000Z".into(),
+            cwd: "/home/user/repo".into(),
+            model: "dummy_model_name".into(),
+            originator: "inline-tui".into(),
+            version: "0.1.0".into(),
+        }
+    }
+
+    fn message(role: Role, text: &str) -> HistoryItem {
+        HistoryItem::Message(Message {
+            role,
+            text: text.into(),
+            timestamp: "03:20 PM".into(),
+        })
+    }
+
+    // ===== the line format (docs/resume.md) =====
+
+    #[test]
+    fn meta_line_is_a_tagged_session_meta_json_line() {
+        let line = meta_line(&meta(), "2026-07-06T10:00:00.000Z");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "session_meta");
+        assert_eq!(value["timestamp"], "2026-07-06T10:00:00.000Z");
+        assert_eq!(value["payload"]["id"], "abc123");
+        assert_eq!(value["payload"]["cwd"], "/home/user/repo");
+        assert_eq!(value["payload"]["model"], "dummy_model_name");
+        // One line of JSONL: no embedded newline.
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn message_line_records_role_text_and_stamp() {
+        let line = item_line(&message(Role::User, "hello there"), "t1");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "message");
+        assert_eq!(value["timestamp"], "t1");
+        assert_eq!(value["payload"]["role"], "user");
+        assert_eq!(value["payload"]["text"], "hello there");
+        assert_eq!(value["payload"]["timestamp"], "03:20 PM");
+    }
+
+    #[test]
+    fn multiline_and_quoted_text_stays_one_jsonl_line() {
+        // The whole reason serde_json is here: arbitrary user text — quotes,
+        // newlines, unicode — must survive without hand-rolled escaping.
+        let tricky = "line one\nline \"two\" — emoji 🎉, CJK 汉字";
+        let line = item_line(&message(Role::Assistant, tricky), "t");
+        assert!(!line.contains('\n'), "JSONL lines never embed newlines");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["payload"]["text"], tricky);
+    }
+
+    // ===== round-trip through parse_session =====
+
+    /// A session file built from `items` the way the recorder writes one.
+    fn file_of(items: &[HistoryItem]) -> String {
+        let mut text = meta_line(&meta(), "t0");
+        text.push('\n');
+        for item in items {
+            text.push_str(&item_line(item, "t"));
+            text.push('\n');
+        }
+        text
+    }
+
+    #[test]
+    fn every_role_round_trips() {
+        let items = vec![
+            message(Role::User, "hi"),
+            message(Role::Assistant, "hello"),
+            message(Role::System, "notice"),
+            message(Role::Error, "boom"),
+            message(Role::Shell, "pwd"),
+        ];
+        let (parsed_meta, parsed) = parse_session(&file_of(&items)).expect("parses");
+        assert_eq!(parsed_meta, meta());
+        assert_eq!(parsed, items);
+    }
+
+    #[test]
+    fn finished_tools_round_trip_ok_failed_and_truncated() {
+        let ok_tool = HistoryItem::Tool(ToolCall {
+            name: "search".into(),
+            args: "query".into(),
+            status: ToolStatus::Ok,
+            output: "row one\nrow two".into(),
+            timestamp: "03:21 PM".into(),
+            shell: false,
+            truncated: false,
+        });
+        let failed_shell = HistoryItem::Tool(ToolCall {
+            name: "tree ~/".into(),
+            args: String::new(),
+            status: ToolStatus::Failed,
+            output: "huge\u{2026}".into(),
+            timestamp: String::new(),
+            shell: true,
+            truncated: true,
+        });
+        let (_, parsed) =
+            parse_session(&file_of(&[ok_tool.clone(), failed_shell.clone()])).expect("parses");
+        assert_eq!(parsed, vec![ok_tool, failed_shell]);
+    }
+
+    #[test]
+    fn summary_verb_maps_back_to_the_done_verbs_static() {
+        let summary = HistoryItem::Summary(TurnSummary {
+            verb: DONE_VERBS[2],
+            secs: 7,
+            timestamp: "03:22 PM".into(),
+        });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
+        assert_eq!(parsed, vec![summary]);
+        // The parsed verb is one of the known statics, restored by value
+        // (DONE_VERBS is a `const`, so pointer identity can't be asserted).
+        let HistoryItem::Summary(s) = &parsed[0] else {
+            panic!("expected a summary");
+        };
+        assert!(DONE_VERBS.contains(&s.verb));
+    }
+
+    #[test]
+    fn an_unknown_summary_verb_falls_back_to_done() {
+        // A file written by a build with different verbs still loads.
+        let file = format!(
+            "{}\n{}\n",
+            meta_line(&meta(), "t0"),
+            r#"{"timestamp":"t","type":"summary","payload":{"verb":"Vanished","secs":3,"timestamp":""}}"#,
+        );
+        let (_, parsed) = parse_session(&file).expect("parses");
+        let HistoryItem::Summary(s) = &parsed[0] else {
+            panic!("expected a summary");
+        };
+        assert_eq!(s.verb, "Done");
+        assert_eq!(s.secs, 3);
+    }
+
+    #[test]
+    fn malformed_and_unknown_lines_are_skipped_not_fatal() {
+        // Codex's forward-compatible reader: garbage, blank lines, unknown
+        // record types, and unknown roles all skip; the good items survive.
+        let file = format!(
+            "{}\n{{\n\n{}\nnot json at all\n{}\n{}\n",
+            meta_line(&meta(), "t0"),
+            r#"{"timestamp":"t","type":"world_state","payload":{"future":true}}"#,
+            r#"{"timestamp":"t","type":"message","payload":{"role":"overseer","text":"?","timestamp":""}}"#,
+            item_line(&message(Role::User, "kept"), "t"),
+        );
+        let (_, parsed) = parse_session(&file).expect("parses");
+        assert_eq!(parsed, vec![message(Role::User, "kept")]);
+    }
+
+    #[test]
+    fn a_file_without_a_meta_line_is_none() {
+        let file = format!("{}\n", item_line(&message(Role::User, "hi"), "t"));
+        assert_eq!(parse_session(&file), None);
+        assert_eq!(parse_session(""), None);
+        assert_eq!(parse_session("garbage\n"), None);
+    }
+
+    // ===== the picker preview (docs/resume.md) =====
+
+    #[test]
+    fn preview_is_the_first_user_message_flattened() {
+        let items = vec![
+            message(Role::System, "notice first"),
+            message(Role::User, "fix the\n  wrap   bug"),
+            message(Role::User, "second question"),
+        ];
+        assert_eq!(preview_of(&items).as_deref(), Some("fix the wrap bug"));
+    }
+
+    #[test]
+    fn a_shell_header_previews_with_its_bang() {
+        let items = vec![message(Role::Shell, "cargo test")];
+        assert_eq!(preview_of(&items).as_deref(), Some("! cargo test"));
+    }
+
+    #[test]
+    fn a_session_with_no_user_input_has_no_preview() {
+        let items = vec![
+            message(Role::Assistant, "unprompted?"),
+            message(Role::Error, "boom"),
+        ];
+        assert_eq!(preview_of(&items), None);
+        assert_eq!(preview_of(&[]), None);
+    }
+
+    // ===== relative_age (codex's format_relative_time) =====
+
+    #[test]
+    fn relative_age_buckets_match_codex() {
+        assert_eq!(relative_age(0), "now");
+        assert_eq!(relative_age(1), "1s ago");
+        assert_eq!(relative_age(59), "59s ago");
+        assert_eq!(relative_age(60), "1m ago");
+        assert_eq!(relative_age(3_599), "59m ago");
+        assert_eq!(relative_age(3_600), "1h ago");
+        assert_eq!(relative_age(86_399), "23h ago");
+        assert_eq!(relative_age(86_400), "1d ago");
+        assert_eq!(relative_age(864_000), "10d ago");
+    }
+
+    // ===== the file path (codex's layout) =====
+
+    #[test]
+    fn rollout_rel_path_pads_and_dashes_the_stamp() {
+        assert_eq!(
+            rollout_rel_path((2026, 7, 6), (3, 4, 5), "1a2b-3c"),
+            PathBuf::from("2026/07/06/rollout-2026-07-06T03-04-05-1a2b-3c.jsonl"),
+        );
+    }
+}

@@ -42,8 +42,10 @@ cleanup() {
 	tmux kill-session -t "${S}_imagepaste" 2>/dev/null
 	tmux kill-session -t "${S}_copy" 2>/dev/null
 	tmux kill-session -t "${S}_backtrack" 2>/dev/null
+	tmux kill-session -t "${S}_resume" 2>/dev/null
 	rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 	rm -f /tmp/inline-tui-clipboard-*.png 2>/dev/null
+	[ -n "${RESUME_DIR:-}" ] && rm -rf "$RESUME_DIR" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -1292,6 +1294,83 @@ echo "==== captured pane (rewound message resubmitted — a fresh turn streamed)
 printf '%s\n' "$backtrack_resent"
 tmux kill-session -t "$S30" 2>/dev/null
 
+# --- Phase 31: /resume SESSION RECORDING + PICKER (docs/resume.md). Every
+# conversation records to a rollout JSONL file under INLINE_TUI_SESSIONS_DIR
+# (created lazily on the first user message — the session_meta line first). A
+# second launch's /resume opens the full-screen session picker (the
+# slash-tiled R E S U M E title, a "Type to search" line, the saved session's
+# `❯ {age} {preview}` row); Enter loads the conversation back inline — the old
+# exchange repainted from the file — and a follow-up turn APPENDS to the SAME
+# file (still exactly one rollout). /clear then starts a FRESH file: the next
+# message must land in a second rollout, the resumed one untouched. ---
+S31="${S}_resume"
+RESUME_DIR="$(mktemp -d /tmp/inline-tui-smoke-sessions-XXXXXX)"
+RAPP="env INLINE_TUI_SESSIONS_DIR=$RESUME_DIR INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+tmux new-session -d -s "$S31" -x 80 -y 24 "$RAPP"
+sleep 0.4
+tmux send-keys -t "$S31" -l "$USER_MSG"
+sleep 0.2
+tmux send-keys -t "$S31" Enter
+for _ in $(seq 1 80); do # instance 1, turn 1 → "Done for"
+	if tmux capture-pane -t "$S31" -p -S -40 | grep -qF "Done for"; then
+		break
+	fi
+	sleep 0.15
+done
+tmux send-keys -t "$S31" C-c # quit instance 1 (empty composer)
+sleep 0.4
+tmux kill-session -t "$S31" 2>/dev/null
+resume_files_after_one="$(find "$RESUME_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
+resume_first_file="$(find "$RESUME_DIR" -type f -name 'rollout-*.jsonl' | head -1)"
+resume_file_head="$(head -c 300 "$resume_first_file" 2>/dev/null)"
+echo "==== recorded rollout head (instance 1's session file) ===="
+printf '%s\n' "$resume_file_head"
+tmux new-session -d -s "$S31" -x 80 -y 24 "$RAPP"
+sleep 0.4
+tmux send-keys -t "$S31" -l "/resume"
+sleep 0.3
+tmux send-keys -t "$S31" Enter # run the palette's highlighted /resume
+sleep 0.6
+resume_picker="$(tmux capture-pane -t "$S31" -p)"
+echo "==== captured pane (/resume — the session picker on the alt screen) ===="
+printf '%s\n' "$resume_picker"
+tmux send-keys -t "$S31" Enter # resume the highlighted session
+sleep 0.8
+resume_loaded="$(tmux capture-pane -t "$S31" -p)"
+echo "==== captured pane (Enter — the saved conversation repainted inline) ===="
+printf '%s\n' "$resume_loaded"
+tmux send-keys -t "$S31" -l "again please"
+sleep 0.2
+tmux send-keys -t "$S31" Enter
+resume_appended=""
+for _ in $(seq 1 80); do # the follow-up turn (this process's turn 1 → "Done for" #2)
+	resume_appended="$(tmux capture-pane -t "$S31" -p -S -40)"
+	if [ "$(printf '%s' "$resume_appended" | grep -cF "Done for")" -ge 2 ]; then
+		break
+	fi
+	sleep 0.15
+done
+echo "==== captured pane (follow-up turn on the resumed session) ===="
+printf '%s\n' "$resume_appended"
+resume_files_after_append="$(find "$RESUME_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
+resume_appended_tail="$(tail -c 2000 "$resume_first_file" 2>/dev/null)"
+tmux send-keys -t "$S31" -l "/clear"
+sleep 0.3
+tmux send-keys -t "$S31" Enter
+sleep 0.4
+tmux send-keys -t "$S31" -l "fresh session"
+sleep 0.2
+tmux send-keys -t "$S31" Enter
+for _ in $(seq 1 80); do # post-/clear turn (this process's turn 2 → "Finished for")
+	if tmux capture-pane -t "$S31" -p -S -40 | grep -qF "Finished for"; then
+		break
+	fi
+	sleep 0.15
+done
+sleep 0.3
+resume_files_after_clear="$(find "$RESUME_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
+tmux kill-session -t "$S31" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -2005,7 +2084,57 @@ if ! printf '%s' "$backtrack_resent" | grep -qF "Completed for"; then
 	status=1
 fi
 
+# Phase 31: /resume — record a session, pick it, load it, append to it.
+if [ "$resume_files_after_one" != "1" ]; then
+	echo "FAIL: instance 1 should have recorded exactly one rollout file, found $resume_files_after_one" >&2
+	status=1
+fi
+if ! printf '%s' "$resume_file_head" | grep -qF '"type":"session_meta"'; then
+	echo "FAIL: the rollout file does not open with a session_meta line" >&2
+	status=1
+fi
+if ! printf '%s' "$resume_picker" | grep -qF "R E S U M E"; then
+	echo "FAIL: /resume did not open the session picker (no slash-tiled R E S U M E title)" >&2
+	status=1
+fi
+if ! printf '%s' "$resume_picker" | grep -qF "Type to search"; then
+	echo "FAIL: the picker's search line placeholder is missing" >&2
+	status=1
+fi
+if ! printf '%s' "$resume_picker" | grep -qF "ago"; then
+	echo "FAIL: the picker shows no humanized session age" >&2
+	status=1
+fi
+if ! printf '%s' "$resume_picker" | grep -qF "❯" || ! printf '%s' "$resume_picker" | grep -qF "$USER_MSG"; then
+	echo "FAIL: the saved session's preview row ('❯ {age} $USER_MSG') is not listed" >&2
+	status=1
+fi
+if ! printf '%s' "$resume_loaded" | grep -qF "❯ $USER_MSG"; then
+	echo "FAIL: resuming did not repaint the saved user message inline" >&2
+	status=1
+fi
+if ! printf '%s' "$resume_loaded" | grep -qF "$EXPECT_REPLY"; then
+	echo "FAIL: resuming did not repaint the saved assistant reply inline" >&2
+	status=1
+fi
+if ! printf '%s' "$resume_appended" | grep -qF "❯ again please"; then
+	echo "FAIL: the follow-up turn on the resumed session never ran" >&2
+	status=1
+fi
+if [ "$resume_files_after_append" != "1" ]; then
+	echo "FAIL: the follow-up turn should append to the SAME rollout file, found $resume_files_after_append files" >&2
+	status=1
+fi
+if ! printf '%s' "$resume_appended_tail" | grep -qF "again please"; then
+	echo "FAIL: the resumed rollout file did not gain the follow-up message" >&2
+	status=1
+fi
+if [ "$resume_files_after_clear" != "2" ]; then
+	echo "FAIL: /clear should start a fresh rollout file (expected 2 files, found $resume_files_after_clear)" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary), and /resume picks up a saved session (every conversation records to a rollout JSONL file — session_meta line first, created lazily on the first user message — a later launch's /resume lists it in a full-screen picker with a humanized age and the first-user-message preview, Enter repaints the whole saved conversation inline and appends the turns that follow to the same file, and /clear starts a fresh rollout so the next message lands in a new one)"
 fi
 exit "$status"

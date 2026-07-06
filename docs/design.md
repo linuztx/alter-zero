@@ -151,7 +151,7 @@ unit-tested must be unit-tested.
   space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
   (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
-  `/copy`, and `/quit`),
+  `/copy`, `/resume`, and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone lists everything.
   ↑/↓ move the highlight (the window scrolls, capped at `MENU_MAX_ROWS`, to keep it
   visible); descriptions line up in a column (names padded to `MENU_DESC_COL`), and
@@ -167,7 +167,10 @@ unit-tested must be unit-tested.
   (exits — codex's `/quit`/`/exit`, "exit Codex"), and `/copy` →
   `Copy(Option<String>)` (codex's `/copy` — the last assistant response to the
   system clipboard; the loop does the arboard/OSC 52 write at the boundary and
-  commits a system or red error notice, see `docs/copy.md`). A `Notice` is recorded as
+  commits a system or red error notice, see `docs/copy.md`), and `/resume` →
+  `OpenResumePicker` idle or `ErrorNotice(RESUME_BUSY_NOTICE)` mid-turn
+  (codex blocks it while a task runs — see `docs/resume.md` and the /resume
+  bullet below). A `Notice` is recorded as
   a `Role::System` message and committed to scrollback like any other. Adding a
   command later is a one-line registry edit + an effect arm in
   `run_selected_command` — the palette, filtering, scrolling, and dispatch don't
@@ -342,6 +345,23 @@ unit-tested must be unit-tested.
   the dummy acknowledges the count. A failed read commits a red
   `Failed to paste image: {msg}` notice; a discarded attachment's temp PNG is
   deleted at the boundary (`App::take_discarded_images`).
+- **`/resume` picks up a saved session** (codex's `/resume` — see
+  `docs/resume.md`). Every conversation records to a rollout JSONL file
+  (`~/.inline-tui/sessions/YYYY/MM/DD/rollout-…-{id}.jsonl`, overridable via
+  `INLINE_TUI_SESSIONS_DIR`): a `session_meta` line, then one line per
+  finished `HistoryItem` — completed items only, never streaming deltas
+  (codex's persistence policy). The file is created lazily on the first
+  recorded item (empty sessions never touch disk), a backtrack rewind
+  rewrites it, and `/clear` starts a fresh one (codex's `/new`). `/resume`
+  (rejected mid-task with a red notice, like codex) opens a **full-screen
+  picker** on the alternate screen — the transcript pager's chrome with dense
+  `❯ {age:12}{first-user-message}` rows, newest-modified first, type-to-search
+  filtering, `{selected+1}/{total}` on the bottom rule — and Enter loads the
+  chosen file's history into `App`, repaints it inline (the resize path), and
+  **appends the turns that follow to the same file**; Esc clears the query
+  first and cancels second, Ctrl+C cancels too (codex's from-a-session
+  picker). The pure format/parse/preview logic is `session.rs`; the recorder
+  and dir scan live at the boundary (`main.rs::SessionRecorder`).
 - **Quit:** Ctrl+C, the `/quit` command, or Esc in the conversation while
   **idle, with an empty composer and no previous user message to edit** —
   mid-turn Esc interrupts, once a user message exists idle Esc arms the
@@ -366,13 +386,14 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer) + built-in `DummyAi` impl (with a configurable `STARTUP_DELAY` pre-stream pause — `with_startup_delay`), a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued` turn-batches/`drain_next_batch`/`drain_last_batch`, Enter-appends + Tab-new-batch + Alt+Up edits the last batch, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch), **the `@` file picker** (`FileSearch` state + `refresh_file_search`/`file_search_query`/`set_file_matches`/`move_file_selection`/`accept_file_selection` — matches arrive asynchronously from the boundary; `docs/file-search.md`). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`QueuedTurn`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`FileSearch`/`InputHistory`/`SessionInfo` types. | Yes |
+| `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, `docs/input-history.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued` turn-batches/`drain_next_batch`/`drain_last_batch`, Enter-appends + Tab-new-batch + Alt+Up edits the last batch, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch), **the `@` file picker** (`FileSearch` state + `refresh_file_search`/`file_search_query`/`set_file_matches`/`move_file_selection`/`accept_file_selection` — matches arrive asynchronously from the boundary; `docs/file-search.md`), **the `/resume` picker** (`ResumePicker` state + `open_resume_picker`/`close_resume_picker`/`on_key_resume_picker`/`load_session` — the sessions arrive from the boundary's scan; `docs/resume.md`). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`QueuedTurn`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`FileSearch`/`ResumePicker`/`InputHistory`/`SessionInfo` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`), and `replace_range` (swap a span — the `@token` for a path). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
 | `file_search.rs` | The **pure core of the `@` file picker** (`docs/file-search.md`): `at_token` (the `@token` under the cursor — byte range + query), `fuzzy_match` (ASCII-case-insensitive subsequence + score + matched-char indices), `rank_files` (filter/sort/cap), and the `AtToken`/`FileMatch` types. The filesystem walk + async plumbing are the boundary's (`main.rs`); this is all pure. | Yes |
-| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **`@` file picker** sharing it too (`file_menu_rows`, `file_menu_lines`, `file_menu_row` — selected row cyan, query-matched chars bolded; `docs/file-search.md`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`; the red `SHELL_BULLET` composer prompt; `message_lines(Role::Shell…)` exec-cell headers, headerless shell `tool_lines`, and `conversation_lines`' flush shell cells), `render_live`, and `render_tool_view`. | Yes |
+| `ui.rs`     | Pure rendering: `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **`@` file picker** sharing it too (`file_menu_rows`, `file_menu_lines`, `file_menu_row` — selected row cyan, query-matched chars bolded; `docs/file-search.md`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`; the red `SHELL_BULLET` composer prompt; `message_lines(Role::Shell…)` exec-cell headers, headerless shell `tool_lines`, and `conversation_lines`' flush shell cells), `render_live`, `render_tool_view`, and the **`/resume` picker overlay** (`render_resume_picker` + `resume_row` — dense `❯ {age:12}{preview}` rows, the shared `overlay_header`/`rule_with_label` chrome; `docs/resume.md`). | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
 | `paste.rs`  | Two pure paste jobs (`docs/paste.md`): **burst detection** — `PasteBurst`, a pure state machine (a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop relaxes the run's redraws) — and the **paste placeholders** — `LARGE_PASTE_CHAR_THRESHOLD` + `next_paste_placeholder` (`[Pasted Content N chars]`, collision-suffixed), `next_image_placeholder` (`[Image #N]`, `docs/image-paste.md`), `expand_pastes` (splice the real text back on send), and `placeholder_to_delete` (Backspace removes a placeholder atomically). | Yes |
 | `clipboard.rs` | Clipboard I/O — the boundary for **Ctrl+V image paste** (`read_clipboard_image`: clipboard image or copied image file → a kept temp PNG the backend reads by path — `docs/image-paste.md`) and **`/copy`** (`copy_to_clipboard`: arboard with an OSC 52 terminal-escape fallback for headless/SSH/tmux — `docs/copy.md`). The `base64`/OSC 52 framing is a tested pure core; the clipboard/filesystem I/O is smoke-covered like `term.rs`. | Pure parts: yes (I/O: smoke) |
+| `session.rs` | The **pure core of `/resume`** (`docs/resume.md`): the rollout JSONL format (`meta_line`/`item_line` on serde'd module-local record types — the app types stay serde-free), the forward-compatible `parse_session` (malformed/unknown lines skip), the picker's `preview_of` (first user/shell message, flattened) and `relative_age` (codex's `now`/`Ns`/`Nm`/`Nh`/`Nd ago`), `rollout_rel_path` (the dated layout), and the `SessionMeta`/`SessionSummary` types. The recorder + dir scan are the boundary's (`main.rs::SessionRecorder`/`list_sessions`). | Yes |
 | `term.rs`   | The custom inline viewport over `CrosstermBackend`: dynamic content-anchored height, `insert_before` (queues scrollback lines for the next frame — `docs/flicker.md`), `draw` (pending-flush + re-pin + diff + cursor, one synchronized update), `reflow` (tail rebuild + live-region paint, one frame), the alternate-screen overlay (`enter_overlay`/`exit_overlay`/`draw_overlay`), init/restore (restore flushes leftovers). | No (I/O boundary) |
 | `main.rs`   | Thin glue: single-threaded **async (tokio) `select!`** loop over input (`EventStream`), reply events (tokio channel), draw ticks, **and `@` file-search results** (a fourth channel); drives `term` (commits, draw, resize/return repaint, overlay), branches rendering on `View`, backend cancel/reap on quit; runs a `!command` locally (`run_shell`/`spawn_shell_command` — `sh -c` on a thread, output back over the reply channel as a tool, `docs/shell-command.md`); runs the **`@` file-search worker** (`spawn_file_search_worker`/`walk_files`/`dispatch_file_search` — a background walk+rank thread, `docs/file-search.md`). | No (tiny I/O boundary) |
 
@@ -485,11 +506,18 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   by `App::on_key` (`PasteImage` sends the loop to the clipboard for a Ctrl+V
   image — `docs/image-paste.md`; `RunShell` carries an idle `!command` to run
   locally — `docs/shell-command.md`).
-- `View { Conversation, ToolOutput }` — which screen is showing (Ctrl+O toggles).
+- `View { Conversation, ToolOutput, ResumePicker }` — which screen is showing
+  (Ctrl+O toggles the transcript; `/resume` opens the picker —
+  `docs/resume.md`).
 - `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Help,
-  Copy, Quit }` + the `COMMANDS` registry (`/help`, `/clear`, `/copy`, `/quit`) — the
+  Copy, Resume, Quit }` + the `COMMANDS` registry (`/help`, `/clear`, `/copy`,
+  `/resume`, `/quit`) — the
   slash-command palette's data; adding a command is one registry entry (+ an
   effect arm).
+- `ResumePicker { sessions, selected, query }` — the open `/resume` picker
+  (`App::resume_picker`, `None` when closed); the filtered rows derive on
+  demand (`matches`). `session::SessionMeta`/`session::SessionSummary` are the
+  file meta and the picker-row data (`docs/resume.md`).
 - `CommandMenu { selected }` — the open palette's highlight (`App::command_menu`,
   `None` when closed); the matches are derived from the input on demand.
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
@@ -721,6 +749,27 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   single-source-of-truth invariants; and `stable_commit`/`final_commit` proven to
   reconstruct a whole streamed reply with no gaps or duplicates, and to clamp
   safely under a mid-stream resize.
+- `session` (`/resume`): every role/tool/summary round-trips through
+  `parse_session` (multiline + quoted + unicode text; the summary verb
+  restored to its `DONE_VERBS` static, unknown verbs falling back to `Done`);
+  malformed, blank, unknown-type, and unknown-role lines skip without failing
+  the file; no meta line parses to `None`; `preview_of` finds the first
+  user/shell message (flattened, `! ` for shell) and `None` without one;
+  `relative_age` matches codex's buckets; `rollout_rel_path` pads and
+  dashes the stamp. See `docs/resume.md`.
+- `app` (`/resume` picker): the palette runs `/resume` to `OpenResumePicker`
+  idle and the red busy notice mid-turn; opening disarms a primed backtrack;
+  ↑/↓/PageUp/PageDown/Home/End move with clamping; typing filters
+  (case-insensitive) and reseats the selection, Backspace pops, Esc clears
+  the query first and closes second, Ctrl+C closes (never quits), Ctrl+O is
+  inert; Enter yields `ResumeSession` with the selected *filtered* row's path
+  (nothing on an empty list); `load_session` installs the history, returns to
+  the conversation, and wipes dead-turn leftovers.
+- `ui` (`/resume` picker): the slash-tiled `R E S U M E` title; the search
+  placeholder vs the `Search: {query}` echo; dense marker + padded-age +
+  preview rows with the whole selected row lit (the palette convention); the
+  `{selected+1}/{total}` count on the bottom rule; both empty states;
+  narrow-width truncation; the row window following the selection.
 
 ## The custom inline viewport (`term.rs`)
 
@@ -818,7 +867,7 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   with every tool expanded (by design — keeps the inline chat compact).
 - The slash-command palette only matches a **bare** `/token` (a leading slash, no
   whitespace); there's no argument parsing yet. The registry is intentionally small
-  for now (`/help`, `/clear`, `/copy`, `/quit`) — adding a command is a one-line `COMMANDS`
+  for now (`/help`, `/clear`, `/copy`, `/resume`, `/quit`) — adding a command is a one-line `COMMANDS`
   entry plus an effect arm in `run_selected_command`. Esc's dismissal reopens on
   the next keystroke only if you leave and re-enter command mode; and running
   `/help` mid-stream finalises the reply's current segment first (so the notice
@@ -847,4 +896,11 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   (no tool/skill mentions, no image attachment, no on-the-wire encoding). Moving
   the cursor out of an `@token` leaves the band open until the next edit (it
   re-derives on edits only, like the palette).
+- `/resume` (`docs/resume.md`) has no pagination, sort/filter toolbar, density
+  toggle, or per-row transcript preview (the scan is capped and loaded whole
+  at open, always mtime-descending, always dense rows); no `/resume <id>`
+  args or CLI subcommands; no cwd prompt on a cross-directory resume; and
+  resuming the *same* saved session from two instances interleaves appends
+  unguarded (each new session's file is unique per pid, but there is no
+  codex-style state-db arbitration).
 - No markdown rendering or scrollback nav keys (YAGNI).

@@ -30,12 +30,14 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`textarea`, `file_search`, `clipboard`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `textarea`, `file_search`, `clipboard`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
-`app`/`stream`/`ui`/`textarea`/`file_search` (plus the pure cores of `frame`/`paste`) so behavior
+`app`/`stream`/`ui`/`textarea`/`file_search`/`session` (plus the pure cores of `frame`/`paste`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
-**and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read) — verified via `scripts/smoke.sh`, not
+**and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read, and the
+`/resume` session recording + dir scan — `main.rs::SessionRecorder`/`list_sessions`,
+whose JSONL format/parse core is the pure `session` module) — verified via `scripts/smoke.sh`, not
 unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
 `docs/shift-enter.md`); `frame`'s async scheduler **task** is smoke-covered too
@@ -63,7 +65,10 @@ placeholder (bracketed paste → a compact placeholder, expanded back on send) i
 `[Image #N]` composer placeholder whose path rides a separate typed channel to
 the backend) in `docs/image-paste.md`; the **Esc-Esc backtrack** (edit a
 previous user message: prime → transcript preview → rewind + prefill) in
-`docs/backtrack.md`.
+`docs/backtrack.md`; the **`/resume` session picker** (every conversation
+recorded to a rollout JSONL file, listed in a full-screen picker whose Enter
+loads it back and appends the turns that follow to the same file) in
+`docs/resume.md`.
 
 ### The runtime model and its invariants
 
@@ -332,14 +337,16 @@ return's reflow drops + regenerates, so invariant 4 holds.
 `App` (`app.rs`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,
-`TurnSummary`, `HistoryItem`, `QueuedTurn`, `FileSearch`, `View` live there too
+`TurnSummary`, `HistoryItem`, `QueuedTurn`, `FileSearch`, `ResumePicker`, `View` live there too
 (the `@`-picker primitives `AtToken`/`FileMatch`/`at_token`/`fuzzy_match`/`rank_files`
-live in the pure `file_search` module).
+live in the pure `file_search` module, and the `/resume` primitives
+`SessionMeta`/`SessionSummary`/`meta_line`/`item_line`/`parse_session`/`preview_of`/
+`relative_age`/`rollout_rel_path` in the pure `session` module — `docs/resume.md`).
 
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/resume`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
@@ -351,7 +358,16 @@ the loop writes it to the system clipboard, arboard with an OSC 52 fallback for
 headless/SSH/tmux, committing a `Copied last message to clipboard` system notice
 or a red `No agent response to copy`/`Copy failed` error; the clipboard write is
 the I/O boundary, the `base64`/OSC 52 framing a tested pure core in `clipboard`;
-see `docs/copy.md`). **`/clear` mid-turn is a kill**, not codex's
+see `docs/copy.md`, **and `/resume`→`OpenResumePicker`** — codex's `/resume`:
+every conversation records to a rollout JSONL file (the recorder + dir scan at
+the boundary, the format/parse in the pure `session` module) and the command
+opens a full-screen alt-screen picker (`View::ResumePicker`,
+`ui::render_resume_picker` — dense `❯ {age:12}{preview}` rows, type-to-search,
+Enter → `ResumeSession(path)` loading the file's history via
+`App::load_session` and appending later turns to the same file; Esc clears the
+query first then closes, Ctrl+C closes, mid-turn `/resume` is rejected with a
+red `ErrorNotice` like codex; see `docs/resume.md`, `smoke.sh` Phase 31).
+**`/clear` mid-turn is a kill**, not codex's
 "disabled while a task is in progress" rejection: `App::clear_conversation`
 wipes history, the streaming buffer, the running tool, the status, and the
 queued backlog (recording no partial/notice/summary; ↑-recall survives), and

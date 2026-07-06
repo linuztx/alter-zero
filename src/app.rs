@@ -12,6 +12,7 @@ use std::time::Duration;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::file_search::{FileMatch, at_token};
+use crate::session::SessionSummary;
 use crate::textarea::TextArea;
 
 /// Who authored a message — selects its bullet and colour when rendered.
@@ -252,6 +253,12 @@ pub const COPY_OK_NOTICE: &str = "Copied last message to clipboard";
 /// `docs/copy.md`.
 pub const COPY_EMPTY_NOTICE: &str = "No agent response to copy";
 
+/// The notice committed when `/resume` is run while a turn is active — codex
+/// blocks the command mid-task (`slash_command_blocked_by_active_task`)
+/// instead of racing the stream. Recorded as a [`Role::Error`] message. See
+/// `docs/resume.md`.
+pub const RESUME_BUSY_NOTICE: &str = "/resume is disabled while a task is in progress";
+
 /// The output recorded on a tool that was still running when the user
 /// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
 /// (codex: an aborted tool "may have partially executed").
@@ -315,6 +322,24 @@ pub enum Action {
     /// The user pressed Esc while a turn was in flight: stop the generation
     /// (cancel + reap the backend, then [`App::interrupt_turn`]) — codex-style.
     Interrupt,
+    /// `/resume` from an idle composer: open the session picker. The *loop*
+    /// scans the sessions dir (the fs I/O stays at the boundary) and hands the
+    /// result to [`App::open_resume_picker`]. See `docs/resume.md`.
+    OpenResumePicker,
+    /// The `/resume` picker was dismissed (Esc on an empty query, or Ctrl+C —
+    /// codex's from-a-session picker closes rather than quits): [`App::view`]
+    /// is already back on the conversation; the loop leaves the alternate
+    /// screen and repaints, the Ctrl+O return.
+    CloseResumePicker,
+    /// Enter in the `/resume` picker: swap the conversation to the rollout
+    /// file at this path. The loop reads + parses it (the I/O), calls
+    /// [`App::load_session`], and adopts the file for further recording —
+    /// or commits a red notice if the read fails, the current conversation
+    /// unharmed (codex). See `docs/resume.md`.
+    ResumeSession(PathBuf),
+    /// A one-off red error notice — [`Action::Notice`]'s [`Role::Error`] twin
+    /// (e.g. `/resume` rejected while a turn is active).
+    ErrorNotice(String),
     /// The user asked to quit.
     Quit,
 }
@@ -330,6 +355,9 @@ pub enum View {
     Conversation,
     /// The full-screen tool-output viewer.
     ToolOutput,
+    /// The full-screen `/resume` session picker — the other alternate-screen
+    /// overlay (codex's `resume_picker`). See `docs/resume.md`.
+    ResumePicker,
 }
 
 /// The Esc-Esc backtrack gesture's state — codex's `BacktrackState`
@@ -399,6 +427,10 @@ pub enum CommandEffect {
     /// Copy the last assistant response to the clipboard (`/copy`). See
     /// `docs/copy.md`.
     Copy,
+    /// Open the `/resume` session picker — or reject with
+    /// [`RESUME_BUSY_NOTICE`] while a turn is active (codex blocks it
+    /// mid-task). See `docs/resume.md`.
+    Resume,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
 }
@@ -436,6 +468,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         effect: CommandEffect::Copy,
     },
     SlashCommand {
+        name: "resume",
+        description: "Resume a saved chat",
+        effect: CommandEffect::Resume,
+    },
+    SlashCommand {
         name: "quit",
         description: "Exit inline-tui",
         effect: CommandEffect::Quit,
@@ -450,6 +487,44 @@ pub struct CommandMenu {
     /// Index of the highlighted command within the current filtered matches.
     pub selected: usize,
 }
+
+/// The open `/resume` session picker ([`View::ResumePicker`]): the saved
+/// sessions the boundary scanned when it opened (newest first), the
+/// highlighted row, and the type-to-search query — codex's `resume_picker.rs`
+/// picker state, sized down (see `docs/resume.md`). The filtered rows derive
+/// on demand ([`matches`], the palette's `matching_commands` pattern);
+/// `selected` indexes that filtered list.
+///
+/// [`matches`]: ResumePicker::matches
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ResumePicker {
+    /// Every eligible saved session, newest first (mtime order — codex's
+    /// Updated sort), as scanned at open. Ages are frozen from that scan.
+    pub sessions: Vec<SessionSummary>,
+    /// Index of the highlighted row within the current filtered matches.
+    pub selected: usize,
+    /// The type-to-search query — any plain printable key appends, Backspace
+    /// pops, Esc clears (codex's always-on picker search).
+    pub query: String,
+}
+
+impl ResumePicker {
+    /// The rows matching the current query, in scan order — a
+    /// case-insensitive substring test on the preview (codex's client-side
+    /// `Row::matches_query`); every session for an empty query.
+    #[must_use]
+    pub fn matches(&self) -> Vec<&SessionSummary> {
+        let query = self.query.to_lowercase();
+        self.sessions
+            .iter()
+            .filter(|session| session.preview.to_lowercase().contains(&query))
+            .collect()
+    }
+}
+
+/// How many rows PageUp/PageDown move the `/resume` picker (the tool view's
+/// page stride).
+const RESUME_PAGE: usize = TOOL_VIEW_PAGE;
 
 /// The open `@` file picker (when the cursor is in an `@token`); `None` when
 /// closed. Unlike the slash palette — whose matches derive from the input —
@@ -815,6 +890,11 @@ pub struct App {
     /// its matches asynchronously. See [`App::refresh_file_search`] and
     /// `docs/file-search.md`.
     pub file_search: Option<FileSearch>,
+    /// The open `/resume` session picker; `Some` exactly while
+    /// [`View::ResumePicker`] is showing ([`App::open_resume_picker`] /
+    /// [`App::close_resume_picker`] keep the two in step). See
+    /// `docs/resume.md`.
+    pub resume_picker: Option<ResumePicker>,
     /// The live status of the turn in flight (verb, token tally, arrow, and the
     /// boundary-supplied seconds), shown in the strip above the box. `Some` from
     /// [`begin_stream`] until the turn ends; `None` when idle. See
@@ -1136,6 +1216,13 @@ impl App {
         // see docs/design.md); otherwise it quits, from either screen. The
         // overlay never shows the input box, so there is nothing to clear there.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            // The /resume picker closes on Ctrl+C — codex's from-a-session
+            // picker "exit" leaves the picker, never the app (only its
+            // startup picker quits). See docs/resume.md.
+            if self.view == View::ResumePicker {
+                self.close_resume_picker();
+                return Action::CloseResumePicker;
+            }
             if self.view == View::Conversation && !self.input.is_empty() {
                 // Record the cleared draft so ↑ can bring it back (codex's
                 // clear_for_ctrl_c does the same). A shell-mode draft re-gains
@@ -1154,13 +1241,19 @@ impl App {
         }
         // Ctrl+O toggles the full-screen tool-output view from either screen —
         // even mid-stream, so the conversation keeps updating underneath it.
+        // (Not from the /resume picker: both overlays share the alternate
+        // screen, so the transcript view can't stack on top of it.)
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+            if self.view == View::ResumePicker {
+                return Action::None;
+            }
             self.toggle_tool_view();
             return Action::ToggleToolView;
         }
         match self.view {
             View::Conversation => self.on_key_conversation(key),
             View::ToolOutput => self.on_key_tool_view(key),
+            View::ResumePicker => self.on_key_resume_picker(key),
         }
     }
 
@@ -1608,6 +1701,16 @@ impl App {
             }
             CommandEffect::Help => Action::Notice(help_text()),
             CommandEffect::Copy => Action::Copy(self.last_assistant_text()),
+            CommandEffect::Resume => {
+                // Codex blocks /resume while a task runs (an error cell)
+                // rather than racing the stream; idle, the *loop* scans the
+                // sessions dir and opens the picker. See docs/resume.md.
+                if self.turn_active() {
+                    Action::ErrorNotice(RESUME_BUSY_NOTICE.to_string())
+                } else {
+                    Action::OpenResumePicker
+                }
+            }
             CommandEffect::Quit => Action::Quit,
         }
     }
@@ -2044,10 +2147,126 @@ impl App {
         self.backtrack = Backtrack::default();
         self.view = match self.view {
             View::Conversation => View::ToolOutput,
-            View::ToolOutput => View::Conversation,
+            // The Ctrl+O guard in on_key keeps the picker out of here; the
+            // arm is only exhaustiveness.
+            View::ToolOutput | View::ResumePicker => View::Conversation,
         };
         self.tool_scroll = 0;
         self.tool_follow = self.view == View::ToolOutput;
+    }
+
+    /// Open the `/resume` picker over `sessions` (the boundary's scan of the
+    /// sessions dir, newest first) — swaps to [`View::ResumePicker`] on the
+    /// alternate screen. Any `?` band or in-flight backtrack gesture is
+    /// abandoned, like the Ctrl+O toggle. See `docs/resume.md`.
+    pub fn open_resume_picker(&mut self, sessions: Vec<SessionSummary>) {
+        self.shortcuts_open = false;
+        self.backtrack = Backtrack::default();
+        self.resume_picker = Some(ResumePicker {
+            sessions,
+            ..ResumePicker::default()
+        });
+        self.view = View::ResumePicker;
+    }
+
+    /// Dismiss the `/resume` picker (Esc/Ctrl+C, a failed load, or right
+    /// after a successful one): back to the conversation view. The loop
+    /// leaves the alternate screen and repaints, the Ctrl+O return.
+    pub fn close_resume_picker(&mut self) {
+        self.resume_picker = None;
+        self.view = View::Conversation;
+    }
+
+    /// Install a loaded session as the conversation — the `/resume` swap.
+    /// The `/clear` reset shape ([`clear_conversation`]: wipe the streaming
+    /// buffer/tool/status, drain the queue into discarded images) with
+    /// `items` as the new history, and the picker closed. A turn can't be
+    /// *active* here (`/resume` is rejected mid-task) — the wipes are
+    /// belt-and-braces. The composer draft, its attachments, and the ↑-recall
+    /// history survive, like `/clear`. See `docs/resume.md`.
+    ///
+    /// [`clear_conversation`]: App::clear_conversation
+    pub fn load_session(&mut self, items: Vec<HistoryItem>) {
+        self.clear_conversation();
+        self.history = items;
+        self.close_resume_picker();
+    }
+
+    /// Keys while the `/resume` session picker is showing — codex's picker
+    /// key handling, sized down: ↑/↓ move the highlight (clamped),
+    /// PageUp/PageDown jump by [`RESUME_PAGE`], Home/End jump to the ends,
+    /// Enter resumes the highlighted session, and Esc clears a non-empty
+    /// search before it closes anything. Any plain printable character types
+    /// into the search (Backspace pops) — navigation lives on the
+    /// non-printable keys, codex's `allow_plain_char_navigation`. Ctrl+C and
+    /// Ctrl+O are handled globally in [`on_key`] (close / inert).
+    ///
+    /// [`on_key`]: App::on_key
+    fn on_key_resume_picker(&mut self, key: KeyEvent) -> Action {
+        let Some(picker) = self.resume_picker.as_mut() else {
+            return Action::None;
+        };
+        let last = picker.matches().len().saturating_sub(1);
+        match key.code {
+            KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
+            KeyCode::Down => picker.selected = (picker.selected + 1).min(last),
+            KeyCode::PageUp => picker.selected = picker.selected.saturating_sub(RESUME_PAGE),
+            KeyCode::PageDown => picker.selected = (picker.selected + RESUME_PAGE).min(last),
+            KeyCode::Home => picker.selected = 0,
+            KeyCode::End => picker.selected = last,
+            KeyCode::Enter => {
+                // Resume the highlighted (filtered) row; an empty list has
+                // nothing to resume and the picker stays up.
+                if let Some(selected) = picker.matches().get(picker.selected) {
+                    return Action::ResumeSession(selected.path.clone());
+                }
+            }
+            KeyCode::Esc => {
+                if picker.query.is_empty() {
+                    self.close_resume_picker();
+                    return Action::CloseResumePicker;
+                }
+                // Esc clears the search first (codex); the next Esc closes.
+                picker.query.clear();
+                picker.selected = 0;
+            }
+            KeyCode::Backspace => {
+                picker.query.pop();
+                picker.selected = 0;
+            }
+            // Plain printable characters are search input, never navigation
+            // (so `q`/`j`/`k` filter instead of closing/moving — codex).
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                picker.query.push(c);
+                picker.selected = 0;
+            }
+            _ => {}
+        }
+        Action::None
+    }
+
+    /// A bracketed paste while the `/resume` picker is up: the text joins the
+    /// type-to-search query — codex's `normalize_pasted_search_query` —
+    /// whitespace runs collapsed to single spaces (so a multiline paste stays
+    /// one query), a non-empty query gaining a separating space, and a
+    /// whitespace-only paste ignored. Reseats the selection like typed input.
+    pub fn paste_into_resume_search(&mut self, pasted: &str) {
+        let flat = pasted.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.is_empty() {
+            return;
+        }
+        let Some(picker) = self.resume_picker.as_mut() else {
+            return;
+        };
+        if !picker.query.is_empty() {
+            picker.query.push(' ');
+        }
+        picker.query.push_str(&flat);
+        picker.selected = 0;
     }
 
     /// The history indices of the conversation's user messages ([`Role::User`]
@@ -6304,5 +6523,219 @@ mod tests {
         app.settle_tool_scroll(10);
         assert!(!app.tool_follow, "the follow pin is released");
         assert_eq!(app.tool_scroll, 3, "the highlight's scroll survives");
+    }
+
+    // ===== /resume session picker (docs/resume.md) =====
+
+    fn summary(path: &str, preview: &str) -> crate::session::SessionSummary {
+        crate::session::SessionSummary {
+            path: PathBuf::from(path),
+            age: "5m ago".into(),
+            preview: preview.into(),
+        }
+    }
+
+    /// An app with the picker open over one session per `(path, preview)`.
+    fn picker_app(sessions: &[(&str, &str)]) -> App {
+        let mut app = App::new();
+        app.open_resume_picker(
+            sessions
+                .iter()
+                .map(|(path, preview)| summary(path, preview))
+                .collect(),
+        );
+        app
+    }
+
+    /// Type `text` into the composer key by key.
+    fn type_chars(app: &mut App, text: &str) {
+        for c in text.chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn slash_resume_runs_to_open_the_picker_when_idle() {
+        let mut app = App::new();
+        type_chars(&mut app, "/resume");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::OpenResumePicker);
+        assert!(app.input.is_empty(), "running a command clears the draft");
+    }
+
+    #[test]
+    fn slash_resume_mid_turn_is_rejected_with_an_error_notice() {
+        // Codex blocks /resume while a task runs (an error cell) instead of
+        // racing the stream — the picker never opens over an active turn.
+        let mut app = App::new();
+        app.begin_stream();
+        type_chars(&mut app, "/resume");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::ErrorNotice(RESUME_BUSY_NOTICE.to_string()),
+        );
+        assert_eq!(app.view, View::Conversation);
+        assert!(app.resume_picker.is_none());
+    }
+
+    #[test]
+    fn open_resume_picker_enters_the_view_and_disarms_a_primed_backtrack() {
+        let mut app = App::new();
+        app.backtrack.primed = true;
+        app.open_resume_picker(vec![summary("a.jsonl", "hello")]);
+        assert_eq!(app.view, View::ResumePicker);
+        assert!(!app.backtrack.primed, "any view swap disarms the gesture");
+        let picker = app.resume_picker.as_ref().expect("picker state is open");
+        assert_eq!(picker.selected, 0);
+        assert!(picker.query.is_empty());
+    }
+
+    #[test]
+    fn picker_up_down_moves_clamp_at_both_ends() {
+        let mut app = picker_app(&[("a", "one"), ("b", "two"), ("c", "three")]);
+        for _ in 0..4 {
+            app.on_key(key(KeyCode::Down));
+        }
+        assert_eq!(app.resume_picker.as_ref().unwrap().selected, 2);
+        for _ in 0..5 {
+            app.on_key(key(KeyCode::Up));
+        }
+        assert_eq!(app.resume_picker.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn picker_page_home_and_end_jump() {
+        let sessions: Vec<(String, String)> = (0..25)
+            .map(|i| (format!("s{i}"), format!("message {i}")))
+            .collect();
+        let refs: Vec<(&str, &str)> = sessions
+            .iter()
+            .map(|(p, v)| (p.as_str(), v.as_str()))
+            .collect();
+        let mut app = picker_app(&refs);
+        app.on_key(key(KeyCode::PageDown));
+        assert_eq!(app.resume_picker.as_ref().unwrap().selected, 10);
+        app.on_key(key(KeyCode::End));
+        assert_eq!(app.resume_picker.as_ref().unwrap().selected, 24);
+        app.on_key(key(KeyCode::Home));
+        assert_eq!(app.resume_picker.as_ref().unwrap().selected, 0);
+        app.on_key(key(KeyCode::PageUp));
+        assert_eq!(app.resume_picker.as_ref().unwrap().selected, 0, "clamped");
+    }
+
+    #[test]
+    fn typing_filters_the_rows_and_reseats_the_selection() {
+        let mut app = picker_app(&[("a", "wrap bug"), ("b", "shell fun"), ("c", "WRAP fix")]);
+        app.on_key(key(KeyCode::Down)); // move off the top first
+        type_chars(&mut app, "wrap");
+        let picker = app.resume_picker.as_ref().unwrap();
+        assert_eq!(picker.query, "wrap");
+        assert_eq!(picker.selected, 0, "a query edit reseats the selection");
+        // Case-insensitive substring over the preview (codex's matches_query).
+        let matches = picker.matches();
+        assert_eq!(matches.len(), 2);
+        assert_eq!(matches[0].preview, "wrap bug");
+        assert_eq!(matches[1].preview, "WRAP fix");
+    }
+
+    #[test]
+    fn enter_resumes_the_selected_filtered_row() {
+        let mut app = picker_app(&[("a", "wrap bug"), ("b", "shell fun"), ("c", "wrap fix")]);
+        type_chars(&mut app, "wrap");
+        app.on_key(key(KeyCode::Down)); // second match = "wrap fix" at path c
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::ResumeSession(PathBuf::from("c")),
+        );
+    }
+
+    #[test]
+    fn enter_on_an_empty_picker_does_nothing() {
+        let mut app = picker_app(&[]);
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert_eq!(app.view, View::ResumePicker, "the picker stays up");
+    }
+
+    #[test]
+    fn backspace_pops_the_query() {
+        let mut app = picker_app(&[("a", "wrap bug")]);
+        type_chars(&mut app, "wx");
+        app.on_key(key(KeyCode::Backspace));
+        let picker = app.resume_picker.as_ref().unwrap();
+        assert_eq!(picker.query, "w");
+        assert_eq!(picker.matches().len(), 1, "the widened query matches again");
+    }
+
+    #[test]
+    fn esc_clears_the_query_first_and_closes_second() {
+        let mut app = picker_app(&[("a", "hello")]);
+        type_chars(&mut app, "zzz");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.view, View::ResumePicker, "first Esc only clears");
+        assert!(app.resume_picker.as_ref().unwrap().query.is_empty());
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CloseResumePicker);
+        assert_eq!(app.view, View::Conversation);
+        assert!(app.resume_picker.is_none());
+    }
+
+    #[test]
+    fn a_paste_joins_the_picker_search_query_flattened() {
+        // Codex normalizes a pasted search query: whitespace runs collapse to
+        // single spaces, a non-empty query gains a separating space, and a
+        // whitespace-only paste is ignored.
+        let mut app = picker_app(&[("a", "wrap bug"), ("b", "other")]);
+        app.on_key(key(KeyCode::Down));
+        app.paste_into_resume_search("wrap\n   bug");
+        let picker = app.resume_picker.as_ref().unwrap();
+        assert_eq!(picker.query, "wrap bug");
+        assert_eq!(picker.selected, 0, "a query edit reseats the selection");
+        app.paste_into_resume_search("  \n ");
+        assert_eq!(app.resume_picker.as_ref().unwrap().query, "wrap bug");
+        app.paste_into_resume_search("fix");
+        assert_eq!(app.resume_picker.as_ref().unwrap().query, "wrap bug fix");
+    }
+
+    #[test]
+    fn ctrl_c_closes_the_picker_not_the_app() {
+        // Codex's from-a-session picker: Ctrl+C leaves the picker, never the
+        // app (the startup picker's quit has no equivalent here).
+        let mut app = picker_app(&[("a", "hello")]);
+        assert_eq!(app.on_key(ctrl('c')), Action::CloseResumePicker);
+        assert_eq!(app.view, View::Conversation);
+    }
+
+    #[test]
+    fn ctrl_o_is_inert_while_the_picker_is_up() {
+        // Both overlays share the alternate screen — the transcript view must
+        // not open on top of the picker.
+        let mut app = picker_app(&[("a", "hello")]);
+        assert_eq!(app.on_key(ctrl('o')), Action::None);
+        assert_eq!(app.view, View::ResumePicker);
+    }
+
+    #[test]
+    fn load_session_installs_history_and_returns_to_the_conversation() {
+        let mut app = picker_app(&[("a", "hello")]);
+        // Belt-and-braces: leftovers from a dead turn must not survive the
+        // swap (a turn can't be *active* — /resume is rejected mid-task).
+        app.begin_stream();
+        app.push_chunk("partial");
+        let items = vec![
+            HistoryItem::Message(Message {
+                role: Role::User,
+                text: "hello".into(),
+                timestamp: String::new(),
+            }),
+            HistoryItem::Message(Message {
+                role: Role::Assistant,
+                text: "hi".into(),
+                timestamp: String::new(),
+            }),
+        ];
+        app.load_session(items.clone());
+        assert_eq!(app.history, items);
+        assert_eq!(app.view, View::Conversation);
+        assert!(app.resume_picker.is_none());
+        assert!(!app.is_streaming(), "no stream survives the swap");
+        assert!(app.status().is_none(), "no status survives the swap");
     }
 }
