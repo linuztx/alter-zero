@@ -1,0 +1,41 @@
+# LLM provider definitions (docs/llm.md).
+#
+# Add a new provider by adding a [providers.<id>] block below.
+#   - `name` is required — the human-readable label.
+#   - `api_model_base` is optional — the endpoint the /model picker lists models
+#     from (its `/models` is queried). Falls back to `kwargs.api_base` when unset.
+#   - Everything under `kwargs` is passed through to the client as-is, so nested
+#     tables (like `venice_parameters`) round-trip fine. `kwargs.api_base` is the
+#     chat-completions endpoint; other keys are forwarded in the request body.
+#   - `api_key_env` (optional) names the environment variable the API key is read
+#     from; it defaults to `<ID_UPPERCASE>_API_KEY` (e.g. `OPENROUTER_API_KEY`).
+#
+# The active provider/model is chosen with `INLINE_TUI_PROVIDER` /
+# `INLINE_TUI_MODEL`, or interactively with the `/model` picker. With no API key
+# configured — or with `INLINE_TUI_DUMMY=1` — the app falls back to the built-in
+# dummy backend, so it always runs offline.
+
+[providers.a0_venice]
+name = "Agent Zero API"
+api_model_base = "https://api.venice.ai/api/v1"
+
+[providers.a0_venice.kwargs]
+api_base = "https://api.agent-zero.ai/venice/v1"
+
+[providers.a0_venice.kwargs.venice_parameters]
+include_venice_system_prompt = false
+disable_thinking = true
+
+[providers.openrouter]
+name = "OpenRouter"
+api_model_base = "https://openrouter.ai/api/v1"
+
+[providers.openrouter.kwargs]
+api_base = "https://openrouter.ai/api/v1"
+
+[providers.sambanova]
+name = "Sambanova"
+api_model_base = "https://api.sambanova.ai/v1"
+
+[providers.sambanova.kwargs]
+api_base = "https://api.sambanova.ai/v1"

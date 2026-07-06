@@ -9,6 +9,9 @@
 //! - [`file_search`] — the `@` picker's pure primitives (token detection,
 //!   fuzzy match, ranking).
 //! - [`frame`]       — frame scheduling: coalesce redraw requests, 120 fps cap.
+//! - [`llm`]         — the real OpenAI-compatible backend: provider config, the
+//!   streaming client, the `/v1/models` listing, and the `ReplySource` bridge
+//!   (the I/O boundary for a real model; pure cores unit-tested).
 //! - [`paste`]       — paste-burst detection and the large-paste/image
 //!   placeholder helpers.
 //! - [`session`]     — the `/resume` rollout-file format: serialize/parse the
@@ -24,6 +27,7 @@ pub mod app;
 pub mod clipboard;
 pub mod file_search;
 pub mod frame;
+pub mod llm;
 pub mod paste;
 pub mod session;
 pub mod stream;

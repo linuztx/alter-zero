@@ -83,6 +83,7 @@ without a real terminal.
 | `src/textarea.rs` | The editable multi-line input: a movable grapheme-aware cursor, wrapped ↑/↓, insert/delete anywhere. | ✅ |
 | `src/ui.rs`  | Pure rendering: display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. | ✅ |
 | `src/stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi`, a `CancelToken`, and the `StreamEvent` protocol. | ✅ (pure parts, token & dummy) |
+| `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, and the `ReplySource` bridge. | ✅ (pure cores) |
 | `src/file_search.rs` | The pure core of the `@` file picker: token detection, fuzzy matching, ranking. | ✅ |
 | `src/frame.rs` | The frame scheduler: coalesces redraw requests into ticks, rate-limited to 120 fps. | ✅ (pure parts) |
 | `src/paste.rs` | Paste handling: burst detection + the `[Pasted Content N chars]` / `[Image #N]` placeholders. | ✅ |
@@ -131,20 +132,36 @@ All styling lives as constants at the top of `src/ui.rs` — bullets, prompt,
 colours, border, and the tool / status-line / palette / footer chrome — change
 them in one place to retheme.
 
-## Plugging in a real AI later
+## Using a real model
 
-The backend is a `ReplySource` trait in `src/stream.rs`; the demo uses the
-built-in `DummyAi`. To use a real model, implement `ReplySource` (with `DummyAi`
-as a template) and change the single `let backend = …;` line in `main.rs::run`.
-Your `spawn(prompt, images, tx, cancel)` gets the text prompt plus the paths of
-any Ctrl+V-pasted images, and runs on a background thread that sends
-`StreamEvent::Chunk(..)` per token, polls the `CancelToken` so a quit can stop
-it, then sends `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on
-failure, which the app shows as a red error notice. Tool calls are a
-`ToolStart`/`ToolEnd` pair; a thinking phase is `ThinkingStart`/`ThinkingEnd`
-with `ThinkingChunk`s between; `model_name()` names the backend in the footer
-under the box. Nothing else changes; the loop and rendering treat chunks as
-opaque text.
+The backend is a `ReplySource` trait in `src/stream.rs`. By default the app runs
+the built-in `DummyAi` (canned, offline), but a real **OpenAI-compatible** model
+is built in — the `llm` module (`src/llm/`, see `docs/llm.md`). It streams
+`/chat/completions` over SSE, splits `<think>`/native reasoning into the
+*Thinking* status, and reports its model id in the footer.
+
+Point it at a provider with environment variables (or `providers.toml`), and the
+real backend takes over automatically:
+
+```bash
+export OPENROUTER_API_KEY=sk-...              # or <PROVIDER>_API_KEY / INLINE_TUI_API_KEY
+export INLINE_TUI_PROVIDER=openrouter          # a provider from providers.toml
+export INLINE_TUI_MODEL=anthropic/claude-3.5-haiku
+cargo run
+```
+
+The dummy stays the default and the fallback — the real backend activates only
+when a provider, model, and key all resolve and `INLINE_TUI_DUMMY` isn't set, so
+the app always runs offline out of the box. Switch models live with the **`/model`**
+picker: an inline search-and-select list of the provider's `/v1/models`.
+
+Providers live in `providers.toml` (repo root; OpenRouter, Sambanova, and an
+Agent-Zero/Venice example ship by default). To plug in a *non*-OpenAI-shaped
+backend instead, implement `ReplySource` (with `DummyAi`/`LlmBackend` as
+templates) — `spawn(prompt, images, tx, cancel)` streams `StreamEvent::Chunk(..)`
+per token, polls the `CancelToken`, then sends `StreamDone` (or `Error(msg)`);
+tool calls are a `ToolStart`/`ToolEnd` pair, a thinking phase is
+`ThinkingStart`/`ThinkingEnd` with `ThinkingChunk`s between.
 
 ## Known limitations (v1)
 
@@ -161,7 +178,10 @@ opaque text.
   every tool expanded, and the user messages' timestamps) lives in the Ctrl+O
   view — by design.
 - The status line's token counts are an app-side estimate (≈ chars/4), not real
-  model usage.
+  model usage — even with a real backend (the streaming protocol's `usage` block
+  isn't surfaced).
+- The real LLM backend is single-turn (the seam passes one turn's text, no prior
+  history) and has no vision or model-side tool calls yet — see `docs/llm.md`.
 - No markdown rendering or scrollback-navigation keys yet.
 
 The full list lives in `docs/design.md` under *Known limitations*.

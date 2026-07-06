@@ -40,9 +40,26 @@ tempfile = "3"
 # a codex-style JSONL "rollout" file and parsed back on resume. serde/serde_json
 # serialize the `session` module's OWN record types (the on-disk format) — the
 # app types stay serde-free, and arbitrary user text (quotes, newlines, unicode)
-# round-trips without hand-rolled escaping.
+# round-trips without hand-rolled escaping. serde also derives the `llm` module's
+# provider config and the wire types for the OpenAI-compatible client.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The real LLM backend (docs/llm.md). Used ONLY at the I/O boundary — the `llm`
+# module's HTTP client (src/llm/openai.rs, src/llm/models.rs) and the backend
+# bridge (src/llm/backend.rs) — so the pure cores (config parse, the reasoning
+# `ThinkingSplitter`, the /v1/models response shape, the `/model` picker state)
+# stay reqwest-free and unit-testable.
+#
+# `blocking` so the backend streams on the same plain OS thread as `DummyAi`
+# (the `ReplySource::spawn` seam hands out a `std::thread::JoinHandle`, and a
+# blocking `reqwest::Response` is a `std::io::Read` we drain line-by-line for
+# SSE while polling the `CancelToken` — no nested tokio runtime). `rustls-tls`
+# keeps the build pure-Rust (no system OpenSSL, matching arboard's stance); the
+# agent proxy's custom CA is loaded at runtime from `SSL_CERT_FILE`. `json`
+# serializes request bodies; default features off to stay lean.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+# Parse `providers.toml` (docs/llm.md) into the `llm::config` provider table.
+toml = "0.8"
 
 # Bake the project's pre-commit gate into every build so it can't silently
 # regress (there is no CI yet). Mirrors `clippy --all-targets -- -D warnings`.

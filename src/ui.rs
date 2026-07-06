@@ -19,11 +19,12 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::app::{
-    App, HistoryItem, HistorySearch, QueuedTurn, ResumeControl, ResumeFilter, ResumePicker,
-    ResumeSort, Role, SearchState, SlashCommand, TokenArrow, ToolCall, ToolStatus, TurnStatus,
-    TurnSummary, command_query, matching_commands,
+    App, HistoryItem, HistorySearch, ModelLoad, ModelPicker, QueuedTurn, ResumeControl,
+    ResumeFilter, ResumePicker, ResumeSort, Role, SearchState, SlashCommand, TokenArrow, ToolCall,
+    ToolStatus, TurnStatus, TurnSummary, command_query, matching_commands,
 };
 use crate::file_search::FileMatch;
+use crate::llm::ModelEntry;
 use crate::textarea::TextArea;
 
 /// Display width of `s` in terminal columns.
@@ -190,6 +191,48 @@ const RESUME_TOOLBAR_GAP: &str = "   ";
 /// toolbar compacts (and then drops).
 const RESUME_TOOLBAR_MIN_GAP: usize = 2;
 
+// --- Inline `/model` picker (docs/llm.md). Unlike `/resume`, this one is
+// **inline** — it replaces the composer in the bottom live region with its own
+// `>` search prompt over a scrolling model list, framed by top/bottom rules
+// like the input box. A gold header, the palette's cyan selection accent, a
+// dim `[provider]` tag, a green ✓ on the active model, then a `(n/total)`
+// counter and a `Model Name:` line — the shape of the user's mock. ---
+
+/// The picker's gold header line (codex-ish "only showing…" banner). Truncated
+/// to the terminal width.
+const MODEL_HEADER: &str =
+    "Showing models from configured providers. Type to filter, Enter to switch.";
+/// Gold — the header banner.
+const MODEL_HEADER_COLOR: Color = Color::Rgb(0xD7, 0xAF, 0x5F);
+/// The two-space inset shared by every picker row (header, search, list rows,
+/// counter, name) so the content sits off the frame's left edge.
+const MODEL_INDENT: &str = "  ";
+/// The search line's prompt glyph (cyan), the `>` the query types after.
+const MODEL_PROMPT: &str = "> ";
+/// Cyan — the `>` prompt and the selected row (the palette-selection accent).
+const MODEL_SELECTED_COLOR: Color = MENU_SELECTED_COLOR;
+/// The selected row's marker; unselected rows get spaces the same width.
+const MODEL_MARKER: &str = "→ ";
+/// Light grey — an unselected model id (readable but quieter than the selection).
+const MODEL_ID_COLOR: Color = Color::Rgb(0xC8, 0xC8, 0xC8);
+/// Dim — the `[provider]` tag, the counter, and the `Model Name:` line.
+const MODEL_META_COLOR: Color = TOOL_DIM_COLOR;
+/// Green — the ✓ marking the currently-active model (shares the tool-ok green).
+const MODEL_ACTIVE_COLOR: Color = TOOL_OK_COLOR;
+/// The mark appended to the active model's row.
+const MODEL_ACTIVE_MARK: &str = " ✓";
+/// The label opening the friendly-name line under the list.
+const MODEL_NAME_LABEL: &str = "Model Name: ";
+/// The most model rows shown at once; longer lists scroll to keep the selection
+/// visible (`menu_window`), like the palette.
+const MODEL_MENU_MAX_ROWS: u16 = 10;
+/// The list placeholder while the fetch is in flight.
+const MODEL_LOADING: &str = "Loading models…";
+/// The list placeholder when the provider returned no models.
+const MODEL_NONE: &str = "No models available";
+/// The list placeholder when the query matches nothing.
+const MODEL_NO_MATCH: &str = "No matching models";
+
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
 // its wall-clock stamp: dim, right-aligned on its own line below the message
 // (`hh:mm AM/PM`). AI replies, tools, and turn summaries record a stamp too but
@@ -295,7 +338,9 @@ const SHIMMER_MAX_BLEND: f32 = 0.9;
 // to keep the selection visible (`menu_window`). ---
 
 /// The most command rows shown at once; longer match lists scroll within this.
-const MENU_MAX_ROWS: u16 = 5;
+/// Sized to hold the whole [`crate::app::COMMANDS`] registry so a bare `/`
+/// lists every command without scrolling.
+const MENU_MAX_ROWS: u16 = 6;
 /// The column descriptions start at — names are padded out to here so the
 /// descriptions line up in a tidy column regardless of command-name length.
 const MENU_DESC_COL: usize = 25;
@@ -511,6 +556,43 @@ pub fn live_height(
         + band_rows
         + footer_rows)
         .min(term_height.max(1))
+}
+
+/// The fixed rows framing the inline `/model` picker's list: the top rule,
+/// header, a gap, the search line, a gap, then below the list a counter, a gap,
+/// the model-name line, and the bottom rule. The list rows sit between them
+/// (see [`model_list_rows`]).
+const MODEL_CHROME_ROWS: u16 = 9;
+
+/// How many rows the inline `/model` picker's **list** occupies: one placeholder
+/// row while loading / errored / empty, else the match count capped at
+/// [`MODEL_MENU_MAX_ROWS`]. Must equal `model_list_lines(..).len()` so the
+/// reserved height and the painted rows agree.
+fn model_list_rows(picker: &ModelPicker) -> u16 {
+    match &picker.status {
+        ModelLoad::Ready => {
+            let n = picker.matches().len();
+            if n == 0 {
+                1
+            } else {
+                (n as u16).min(MODEL_MENU_MAX_ROWS)
+            }
+        }
+        // Loading / Error → a single placeholder row.
+        _ => 1,
+    }
+}
+
+/// The inline live-region height when the `/model` picker is open, or `None`
+/// when it isn't (the caller then falls back to [`live_height`]). The picker
+/// **replaces** the composer, so this is the whole region — the chrome plus the
+/// (possibly scrolled) list — clamped to the terminal height. Shared by
+/// `main.rs`'s `live_region_height`, [`render_live`], and [`cursor_position`]
+/// so all three agree.
+#[must_use]
+pub fn model_picker_height(app: &App, term_height: u16) -> Option<u16> {
+    let picker = app.model_picker.as_ref()?;
+    Some((MODEL_CHROME_ROWS + model_list_rows(picker)).min(term_height.max(1)))
 }
 
 /// How to re-pin the live region when its height changes between draws, keeping
@@ -876,6 +958,13 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 /// than the box, it scrolls internally to keep the **cursor's wrapped row** in
 /// view (`input_scroll` follows the cursor wherever the user has moved it).
 pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
+    // The inline `/model` picker replaces the whole live region — the composer,
+    // strip, band, and footer all give way to its own framed body. See
+    // `docs/llm.md`.
+    if let Some(picker) = &app.model_picker {
+        render_model_picker(area, buf, picker);
+        return;
+    }
     let streaming = app.is_streaming();
     // The band below the box holds the palette, the shortcuts overview, *or* the
     // `@` file picker (band_rows — mutually exclusive). Queued messages render
@@ -2171,6 +2260,196 @@ fn spans_cols(spans: &[Span<'_>]) -> usize {
     spans.iter().map(|span| cols(&span.content)).sum()
 }
 
+/// The row (within the picker's framed area) the `>` search line sits on — top
+/// rule (0), header (1), gap (2), search (3). Shared by [`render_model_picker`]
+/// and [`cursor_position`] so the cursor lands on the query.
+const MODEL_SEARCH_ROW: u16 = 3;
+
+/// A dim two-space-inset placeholder row (loading / empty / error) in the
+/// picker's list area, truncated to `width`.
+fn model_placeholder_row(text: &str, color: Color, width: u16) -> Line<'static> {
+    let room = (width as usize).saturating_sub(cols(MODEL_INDENT));
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(truncate_cols(text, room), Style::new().fg(color)),
+    ])
+}
+
+/// One model row: `{marker}{id} [{provider}]{✓}` — the selected row's marker and
+/// id light up cyan (the palette accent), the `[provider]` tag is dim, and the
+/// active model carries a green ✓. The id is truncated so the tag stays visible.
+fn model_row(entry: &ModelEntry, selected: bool, active: bool, width: u16) -> Line<'static> {
+    let marker = if selected { MODEL_MARKER } else { "  " };
+    let tag = format!(" [{}]", entry.provider);
+    let active_mark = if active { MODEL_ACTIVE_MARK } else { "" };
+    let reserved = cols(marker) + cols(&tag) + cols(active_mark);
+    let id_room = (width as usize).saturating_sub(reserved).max(1);
+    let id = truncate_cols(&entry.id, id_room);
+
+    let (marker_style, id_style) = if selected {
+        (
+            Style::new().fg(MODEL_SELECTED_COLOR),
+            Style::new()
+                .fg(MODEL_SELECTED_COLOR)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (Style::default(), Style::new().fg(MODEL_ID_COLOR))
+    };
+    Line::from(vec![
+        Span::styled(marker.to_string(), marker_style),
+        Span::styled(id, id_style),
+        Span::styled(tag, Style::new().fg(MODEL_META_COLOR)),
+        Span::styled(active_mark.to_string(), Style::new().fg(MODEL_ACTIVE_COLOR)),
+    ])
+}
+
+/// The picker's list lines: a single placeholder while loading / errored /
+/// empty, else the model rows windowed ([`menu_window`]) to keep the selection
+/// visible and capped at [`MODEL_MENU_MAX_ROWS`]. Its length equals
+/// [`model_list_rows`] so the reserved height and painted rows agree.
+fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
+    match &picker.status {
+        ModelLoad::Loading => vec![model_placeholder_row(
+            MODEL_LOADING,
+            MODEL_META_COLOR,
+            width,
+        )],
+        ModelLoad::Error(msg) => vec![model_placeholder_row(
+            &format!("Error: {msg}"),
+            ERROR_COLOR,
+            width,
+        )],
+        ModelLoad::Ready => {
+            let matches = picker.matches();
+            if matches.is_empty() {
+                let text = if picker.models.is_empty() {
+                    MODEL_NONE
+                } else {
+                    MODEL_NO_MATCH
+                };
+                return vec![model_placeholder_row(text, MODEL_META_COLOR, width)];
+            }
+            let max = MODEL_MENU_MAX_ROWS as usize;
+            let selected = picker.selected.min(matches.len() - 1);
+            let offset = menu_window(matches.len(), selected, max);
+            matches
+                .iter()
+                .enumerate()
+                .skip(offset)
+                .take(max)
+                .map(|(i, m)| model_row(m, i == selected, m.id == picker.active_id, width))
+                .collect()
+        }
+    }
+}
+
+/// The `(selected+1/total)` counter line under the list, or a blank line when
+/// there's nothing selectable (loading / error / empty).
+fn model_counter_line(picker: &ModelPicker) -> Line<'static> {
+    if picker.status != ModelLoad::Ready {
+        return Line::default();
+    }
+    let matches = picker.matches();
+    if matches.is_empty() {
+        return Line::default();
+    }
+    let selected = picker.selected.min(matches.len() - 1);
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(
+            format!("({}/{})", selected + 1, matches.len()),
+            Style::new().fg(MODEL_META_COLOR),
+        ),
+    ])
+}
+
+/// The `Model Name: {friendly}` line under the counter, naming the highlighted
+/// model, or a blank line when nothing is highlighted.
+fn model_name_line(picker: &ModelPicker, width: u16) -> Line<'static> {
+    let Some(entry) = picker.highlighted() else {
+        return Line::default();
+    };
+    let room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + cols(MODEL_NAME_LABEL))
+        .max(1);
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(MODEL_NAME_LABEL, Style::new().fg(MODEL_META_COLOR)),
+        Span::styled(
+            truncate_cols(&entry.display_name, room),
+            Style::new().fg(MODEL_META_COLOR),
+        ),
+    ])
+}
+
+/// A full-width `─` rule in the box's border colour (the picker's top/bottom
+/// frame, matching the input box's rules).
+fn model_rule(width: u16) -> Line<'static> {
+    Line::from(Span::styled(
+        "─".repeat(width as usize),
+        Style::new().fg(BORDER_COLOR),
+    ))
+}
+
+/// Render the **inline** `/model` picker into the live region — the shape of the
+/// user's mock: a top rule, a gold header, the `>` search line, the scrolling
+/// model list (each row `→ id [provider] ✓`), a `(n/total)` counter, the
+/// `Model Name:` line, and a bottom rule. Pure — `render_live` paints this in
+/// place of the composer. See `docs/llm.md`.
+pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
+    let [
+        top_rule,
+        header,
+        _gap1,
+        search,
+        _gap2,
+        list,
+        counter,
+        _gap3,
+        name,
+        bottom_rule,
+    ] = Layout::vertical([
+        Constraint::Length(1), // top rule
+        Constraint::Length(1), // header
+        Constraint::Length(1), // gap
+        Constraint::Length(1), // search
+        Constraint::Length(1), // gap
+        Constraint::Min(0),    // model list
+        Constraint::Length(1), // counter
+        Constraint::Length(1), // gap
+        Constraint::Length(1), // model name
+        Constraint::Length(1), // bottom rule
+    ])
+    .areas(area);
+
+    Paragraph::new(model_rule(area.width)).render(top_rule, buf);
+
+    // Gold header banner, two-space inset, truncated to width.
+    let header_room = (area.width as usize).saturating_sub(cols(MODEL_INDENT));
+    Paragraph::new(Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(
+            truncate_cols(MODEL_HEADER, header_room),
+            Style::new().fg(MODEL_HEADER_COLOR),
+        ),
+    ]))
+    .render(header, buf);
+
+    // The `>` search line — the cyan prompt then the query.
+    Paragraph::new(Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
+        Span::raw(picker.query.clone()),
+    ]))
+    .render(search, buf);
+
+    Paragraph::new(model_list_lines(picker, area.width)).render(list, buf);
+    Paragraph::new(model_counter_line(picker)).render(counter, buf);
+    Paragraph::new(model_name_line(picker, area.width)).render(name, buf);
+    Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
+}
+
 /// Render the full-screen `/resume` session picker — codex's resume picker,
 /// sized down (docs/resume.md): the slash-tiled title, the type-to-search
 /// line, the dense session rows (windowed to keep the selection visible, the
@@ -2363,6 +2642,14 @@ pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
 /// wherever the user has moved it, not just at the end.
 #[must_use]
 pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
+    // The inline `/model` picker parks the cursor at the end of its `>` search
+    // line (see `render_model_picker`'s layout: top rule, header, gap, search).
+    if let Some(picker) = &app.model_picker {
+        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
+        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
+        let y = area.y + MODEL_SEARCH_ROW.min(area.height.saturating_sub(1));
+        return (x, y);
+    }
     // Laid out exactly as render_live lays the box out — the streaming strip
     // and queued rows above, the band and footer below — so the cursor sits on
     // the prompt row even mid-turn (codex keeps the composer focused while a
@@ -5917,5 +6204,182 @@ mod tests {
             body.contains("message number 29"),
             "the window follows the selection: {body:?}"
         );
+    }
+
+    // ===== inline /model picker (docs/llm.md) =====
+
+    fn model_entry(id: &str, provider: &str, name: &str) -> ModelEntry {
+        ModelEntry {
+            id: id.into(),
+            provider: provider.into(),
+            display_name: name.into(),
+        }
+    }
+
+    /// A ready picker over the given models, with `selected`/`active` set.
+    fn model_picker(models: Vec<ModelEntry>, selected: usize, active: &str) -> ModelPicker {
+        ModelPicker {
+            models,
+            status: ModelLoad::Ready,
+            selected,
+            query: String::new(),
+            active_id: active.into(),
+        }
+    }
+
+    fn three_models() -> Vec<ModelEntry> {
+        vec![
+            model_entry(
+                "anthropic/claude-3-haiku",
+                "openrouter",
+                "Anthropic: Claude 3 Haiku",
+            ),
+            model_entry(
+                "anthropic/claude-fable-5",
+                "openrouter",
+                "Anthropic: Claude Fable 5",
+            ),
+            model_entry(
+                "moonshotai/kimi-k2.6",
+                "openrouter",
+                "MoonshotAI: Kimi K2.6",
+            ),
+        ]
+    }
+
+    #[test]
+    fn model_picker_frames_with_rules_and_a_gold_header() {
+        let picker = model_picker(three_models(), 0, "anthropic/claude-3-haiku");
+        let mut buf = buffer(60, 20);
+        render_model_picker(buf.area, &mut buf, &picker);
+        // Top rule.
+        assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
+        // Header banner in gold.
+        let header = row(&buf, 1, 60);
+        assert!(header.contains("Showing models"), "{header:?}");
+        assert_eq!(buf[(2, 1)].fg, MODEL_HEADER_COLOR, "header is gold");
+    }
+
+    #[test]
+    fn model_picker_shows_the_search_prompt_and_query() {
+        let mut picker = model_picker(three_models(), 0, "x");
+        picker.query = "haiku".into();
+        let mut buf = buffer(60, 20);
+        render_model_picker(buf.area, &mut buf, &picker);
+        let search = row(&buf, MODEL_SEARCH_ROW, 60);
+        assert!(search.contains("> haiku"), "{search:?}");
+        // The `>` prompt is cyan.
+        assert_eq!(buf[(2, MODEL_SEARCH_ROW)].fg, MODEL_SELECTED_COLOR);
+    }
+
+    #[test]
+    fn model_rows_show_marker_provider_tag_and_active_check() {
+        // Selected = row 0, active = row 1 (claude-fable-5).
+        let picker = model_picker(three_models(), 0, "anthropic/claude-fable-5");
+        let mut buf = buffer(60, 20);
+        render_model_picker(buf.area, &mut buf, &picker);
+        // First list row (y = MODEL_SEARCH_ROW + 2 = 5).
+        let first = row(&buf, 5, 60);
+        assert!(first.starts_with("→ anthropic/claude-3-haiku"), "{first:?}");
+        assert!(first.contains("[openrouter]"), "provider tag: {first:?}");
+        // The selected marker is cyan.
+        assert_eq!(buf[(0, 5)].fg, MODEL_SELECTED_COLOR);
+        // The active model (row 1, y=6) carries the ✓.
+        let second = row(&buf, 6, 60);
+        assert!(second.contains('✓'), "active model has a check: {second:?}");
+    }
+
+    #[test]
+    fn model_picker_counter_and_name_reflect_the_selection() {
+        let picker = model_picker(three_models(), 2, "x");
+        // Size the buffer to the picker's natural height (9 chrome + 3 list),
+        // like the boundary does — otherwise the Min(0) list would expand and
+        // push the counter/name rows down.
+        let mut buf = buffer(60, 12);
+        render_model_picker(buf.area, &mut buf, &picker);
+        // Counter row = top(0) header(1) gap(2) search(3) gap(4) list(5,6,7) → 8.
+        let counter = row(&buf, 8, 60);
+        assert!(counter.contains("(3/3)"), "{counter:?}");
+        // Model-name row = counter(8) + gap(9) + 1 = 10.
+        let name = row(&buf, 10, 60);
+        assert!(
+            name.contains("Model Name: MoonshotAI: Kimi K2.6"),
+            "{name:?}"
+        );
+        // Bottom rule on the last row.
+        assert!(row(&buf, 11, 60).starts_with('─'), "bottom rule");
+    }
+
+    #[test]
+    fn model_picker_shows_a_loading_placeholder() {
+        let picker = ModelPicker {
+            active_id: "x".into(),
+            ..ModelPicker::default()
+        };
+        assert_eq!(picker.status, ModelLoad::Loading);
+        let mut buf = buffer(60, 20);
+        render_model_picker(buf.area, &mut buf, &picker);
+        let list = row(&buf, 5, 60);
+        assert!(list.contains("Loading models…"), "{list:?}");
+    }
+
+    #[test]
+    fn model_picker_shows_an_error_placeholder_in_red() {
+        let picker = ModelPicker {
+            status: ModelLoad::Error("401 bad key".into()),
+            active_id: "x".into(),
+            ..ModelPicker::default()
+        };
+        let mut buf = buffer(60, 20);
+        render_model_picker(buf.area, &mut buf, &picker);
+        let list = row(&buf, 5, 60);
+        assert!(list.contains("Error: 401 bad key"), "{list:?}");
+        assert_eq!(buf[(2, 5)].fg, ERROR_COLOR);
+    }
+
+    #[test]
+    fn model_picker_shows_no_match_when_the_query_filters_everything() {
+        let mut picker = model_picker(three_models(), 0, "x");
+        picker.query = "zzzz".into();
+        let mut buf = buffer(60, 20);
+        render_model_picker(buf.area, &mut buf, &picker);
+        assert!(row(&buf, 5, 60).contains("No matching models"));
+    }
+
+    #[test]
+    fn model_picker_height_covers_the_chrome_plus_list() {
+        let mut app = App::new();
+        app.open_model_picker("a");
+        app.set_models(three_models());
+        // 9 chrome rows + 3 list rows.
+        assert_eq!(model_picker_height(&app, 40), Some(12));
+        // Clamped to the terminal height.
+        assert_eq!(model_picker_height(&app, 8), Some(8));
+        // None when the picker is closed.
+        app.close_model_picker();
+        assert_eq!(model_picker_height(&app, 40), None);
+    }
+
+    #[test]
+    fn render_live_shows_the_model_picker_when_open() {
+        let mut app = App::new();
+        app.open_model_picker("anthropic/claude-3-haiku");
+        app.set_models(three_models());
+        let mut buf = buffer(60, 14);
+        render_live(buf.area, &mut buf, &app);
+        // The picker's header stands in for the composer.
+        assert!(row(&buf, 1, 60).contains("Showing models"));
+    }
+
+    #[test]
+    fn cursor_sits_at_the_end_of_the_model_search_query() {
+        let mut app = App::new();
+        app.open_model_picker("x");
+        app.set_models(three_models());
+        app.model_picker.as_mut().unwrap().query = "hai".into();
+        let area = Rect::new(0, 0, 60, 14);
+        let (x, y) = cursor_position(area, &app);
+        // indent(2) + prompt("> " = 2) + "hai"(3) = 7.
+        assert_eq!((x, y), (7, MODEL_SEARCH_ROW));
     }
 }

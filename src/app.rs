@@ -12,6 +12,7 @@ use std::time::Duration;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::file_search::{FileMatch, at_token};
+use crate::llm::ModelEntry;
 use crate::session::SessionSummary;
 use crate::textarea::TextArea;
 
@@ -259,6 +260,11 @@ pub const COPY_EMPTY_NOTICE: &str = "No agent response to copy";
 /// `docs/resume.md`.
 pub const RESUME_BUSY_NOTICE: &str = "/resume is disabled while a task is in progress";
 
+/// The notice committed when `/model` is run while a turn is active — switching
+/// the backend mid-stream would race the reply, so the command is blocked like
+/// `/resume`. Recorded as a [`Role::Error`] message. See `docs/llm.md`.
+pub const MODEL_BUSY_NOTICE: &str = "/model is disabled while a task is in progress";
+
 /// The output recorded on a tool that was still running when the user
 /// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
 /// (codex: an aborted tool "may have partially executed").
@@ -340,6 +346,20 @@ pub enum Action {
     /// A one-off red error notice — [`Action::Notice`]'s [`Role::Error`] twin
     /// (e.g. `/resume` rejected while a turn is active).
     ErrorNotice(String),
+    /// `/model` from an idle composer: open the inline model picker. The *loop*
+    /// spawns a worker to fetch the provider's model list (the HTTP stays at the
+    /// boundary) and feeds it back via [`App::set_models`]. Unlike `/resume`,
+    /// the picker is **inline** (it grows the bottom region in place), not an
+    /// alternate-screen overlay. See `docs/llm.md`.
+    OpenModelPicker,
+    /// The inline model picker was dismissed (Esc on an empty query, or Ctrl+C):
+    /// [`App::model_picker`] is already cleared; the loop just repaints the
+    /// collapsed region.
+    CloseModelPicker,
+    /// Enter in the model picker: switch the active backend to this
+    /// provider/model. The loop rebuilds the backend, updates the footer
+    /// ([`App::set_session_info`]), and collapses the picker. See `docs/llm.md`.
+    SelectModel { provider: String, id: String },
     /// The user asked to quit.
     Quit,
 }
@@ -431,6 +451,10 @@ pub enum CommandEffect {
     /// [`RESUME_BUSY_NOTICE`] while a turn is active (codex blocks it
     /// mid-task). See `docs/resume.md`.
     Resume,
+    /// Open the inline `/model` picker — or reject with [`MODEL_BUSY_NOTICE`]
+    /// while a turn is active (a model switch mid-stream would race it). See
+    /// `docs/llm.md`.
+    Model,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
 }
@@ -471,6 +495,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "resume",
         description: "Resume a saved chat",
         effect: CommandEffect::Resume,
+    },
+    SlashCommand {
+        name: "model",
+        description: "Switch the active model",
+        effect: CommandEffect::Model,
     },
     SlashCommand {
         name: "quit",
@@ -585,6 +614,72 @@ impl ResumePicker {
 /// How many rows PageUp/PageDown move the `/resume` picker (the tool view's
 /// page stride).
 const RESUME_PAGE: usize = TOOL_VIEW_PAGE;
+
+/// How many rows PageUp/PageDown move the inline `/model` picker.
+const MODEL_PAGE: usize = TOOL_VIEW_PAGE;
+
+/// The load state of the inline `/model` picker's list: the boundary spawns a
+/// worker that fetches the provider's models, so the picker shows a placeholder
+/// until the result lands. See `docs/llm.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ModelLoad {
+    /// The fetch is in flight — the picker shows `Loading models…`.
+    #[default]
+    Loading,
+    /// The models arrived (possibly an empty list).
+    Ready,
+    /// The fetch failed — the picker shows the message in red.
+    Error(String),
+}
+
+/// The inline `/model` picker's state (`None` on [`App`] when closed). Unlike
+/// the alternate-screen `/resume` picker, this one **replaces the composer**
+/// in the bottom live region with its own `>` search prompt and a scrolling
+/// model list. Its rows come from the boundary's `/v1/models` fetch
+/// ([`App::set_models`]); the filtered view derives on demand ([`matches`]).
+///
+/// [`matches`]: ModelPicker::matches
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ModelPicker {
+    /// Every fetched model, provider-tagged and sorted (empty while loading).
+    pub models: Vec<ModelEntry>,
+    /// Whether the list is still loading, ready, or errored.
+    pub status: ModelLoad,
+    /// Index of the highlighted row within the current filtered matches.
+    pub selected: usize,
+    /// The type-to-search query — any plain printable key appends, Backspace
+    /// pops, Esc clears (the `/resume` picker's search grammar).
+    pub query: String,
+    /// The currently active model id, marked with a ✓ in the list.
+    pub active_id: String,
+}
+
+impl ModelPicker {
+    /// The rows the picker shows: models whose id, provider, or friendly name
+    /// contains the query (case-insensitive substring; every model for an empty
+    /// query), keeping the fetched (alphabetical) order.
+    #[must_use]
+    pub fn matches(&self) -> Vec<&ModelEntry> {
+        let query = self.query.to_lowercase();
+        self.models
+            .iter()
+            .filter(|m| {
+                query.is_empty()
+                    || m.id.to_lowercase().contains(&query)
+                    || m.provider.to_lowercase().contains(&query)
+                    || m.display_name.to_lowercase().contains(&query)
+            })
+            .collect()
+    }
+
+    /// The highlighted model in the current filtered view, if any (an empty
+    /// list — loading, error, or no match — has none).
+    #[must_use]
+    pub fn highlighted(&self) -> Option<&ModelEntry> {
+        let matches = self.matches();
+        matches.get(self.selected).copied()
+    }
+}
 
 /// The open `@` file picker (when the cursor is in an `@token`); `None` when
 /// closed. Unlike the slash palette — whose matches derive from the input —
@@ -955,6 +1050,11 @@ pub struct App {
     /// [`App::close_resume_picker`] keep the two in step). See
     /// `docs/resume.md`.
     pub resume_picker: Option<ResumePicker>,
+    /// The open inline `/model` picker; `None` when closed. Unlike the resume
+    /// picker it is **not** a [`View`] — it renders inline, replacing the
+    /// composer in the bottom region, and owns every key while open (like the
+    /// Ctrl+R search). See `docs/llm.md`.
+    pub model_picker: Option<ModelPicker>,
     /// The live status of the turn in flight (verb, token tally, arrow, and the
     /// boundary-supplied seconds), shown in the strip above the box. `Some` from
     /// [`begin_stream`] until the turn ends; `None` when idle. See
@@ -1270,6 +1370,14 @@ impl App {
         // overlay opens so no search state leaks into it.
         if self.view == View::Conversation && self.history_search.is_some() {
             return self.on_key_search(key);
+        }
+        // The inline `/model` picker likewise owns every key while it's open —
+        // including the global Ctrl+C/Ctrl+O below, which it redefines (Ctrl+C
+        // closes the picker instead of clearing the draft or quitting). It only
+        // opens from the conversation view and blocks a turn from starting, so
+        // this is the whole of its key handling. See `docs/llm.md`.
+        if self.view == View::Conversation && self.model_picker.is_some() {
+            return self.on_key_model_picker(key);
         }
         // Ctrl+C: in the conversation, a first press with text in the input
         // clears the draft instead of quitting (codex's composer-clear step —
@@ -1769,6 +1877,16 @@ impl App {
                     Action::ErrorNotice(RESUME_BUSY_NOTICE.to_string())
                 } else {
                     Action::OpenResumePicker
+                }
+            }
+            CommandEffect::Model => {
+                // Switching the backend mid-stream would race the reply, so
+                // `/model` is blocked while a task runs (like `/resume`); idle,
+                // the *loop* fetches the model list and the picker opens inline.
+                if self.turn_active() {
+                    Action::ErrorNotice(MODEL_BUSY_NOTICE.to_string())
+                } else {
+                    Action::OpenModelPicker
                 }
             }
             CommandEffect::Quit => Action::Quit,
@@ -2356,6 +2474,121 @@ impl App {
         }
         picker.query.push_str(&flat);
         picker.selected = 0;
+    }
+
+    /// Open the inline `/model` picker, marking `active_id` as the current
+    /// model. The list starts empty in the [`ModelLoad::Loading`] state; the
+    /// boundary's fetch fills it via [`set_models`]. Abandons any `?` band /
+    /// palette / file picker (they share the composer the picker takes over),
+    /// but stays in [`View::Conversation`] — the picker is inline, not an
+    /// overlay. See `docs/llm.md`.
+    ///
+    /// [`set_models`]: App::set_models
+    pub fn open_model_picker(&mut self, active_id: impl Into<String>) {
+        self.shortcuts_open = false;
+        self.command_menu = None;
+        self.file_search = None;
+        self.backtrack = Backtrack::default();
+        self.model_picker = Some(ModelPicker {
+            active_id: active_id.into(),
+            ..ModelPicker::default()
+        });
+    }
+
+    /// Dismiss the inline `/model` picker (Esc/Ctrl+C, or right after a
+    /// selection): the composer returns. No view change — it was never an
+    /// overlay.
+    pub fn close_model_picker(&mut self) {
+        self.model_picker = None;
+    }
+
+    /// Install the fetched model list into the open picker (the boundary's
+    /// worker result), marking it [`ModelLoad::Ready`]. The highlight seats on
+    /// the currently-active model when present, else the top — so the picker
+    /// opens focused on what's in use. No-op if the picker was closed meanwhile.
+    pub fn set_models(&mut self, models: Vec<ModelEntry>) {
+        let Some(picker) = self.model_picker.as_mut() else {
+            return;
+        };
+        picker.models = models;
+        picker.status = ModelLoad::Ready;
+        // Seat the highlight on the active model if it's in the (unfiltered)
+        // list, so the picker opens focused on the current choice.
+        picker.selected = picker
+            .matches()
+            .iter()
+            .position(|m| m.id == picker.active_id)
+            .unwrap_or(0);
+    }
+
+    /// Record that the model fetch failed — the picker shows `message` in red.
+    /// No-op if the picker was closed meanwhile.
+    pub fn set_models_error(&mut self, message: impl Into<String>) {
+        if let Some(picker) = self.model_picker.as_mut() {
+            picker.status = ModelLoad::Error(message.into());
+            picker.selected = 0;
+        }
+    }
+
+    /// Keys while the inline `/model` picker is open. Mirrors the `/resume`
+    /// picker's grammar: ↑/↓ move (clamped), PageUp/PageDown jump by
+    /// [`MODEL_PAGE`], Home/End to the ends, Enter selects the highlighted
+    /// model, Esc clears a non-empty search before it closes, Backspace pops,
+    /// Ctrl+C closes, and any plain printable character types into the search.
+    /// Owns **every** key while open (routed at the top of [`on_key`]).
+    ///
+    /// [`on_key`]: App::on_key
+    fn on_key_model_picker(&mut self, key: KeyEvent) -> Action {
+        // Ctrl+C closes the picker (never quits — the composer-clear/quit rules
+        // don't apply while the picker owns the keys), like the /resume picker.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.close_model_picker();
+            return Action::CloseModelPicker;
+        }
+        let Some(picker) = self.model_picker.as_mut() else {
+            return Action::None;
+        };
+        let last = picker.matches().len().saturating_sub(1);
+        match key.code {
+            KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
+            KeyCode::Down => picker.selected = (picker.selected + 1).min(last),
+            KeyCode::PageUp => picker.selected = picker.selected.saturating_sub(MODEL_PAGE),
+            KeyCode::PageDown => picker.selected = (picker.selected + MODEL_PAGE).min(last),
+            KeyCode::Home => picker.selected = 0,
+            KeyCode::End => picker.selected = last,
+            KeyCode::Enter => {
+                if let Some(model) = picker.matches().get(picker.selected) {
+                    let action = Action::SelectModel {
+                        provider: model.provider.clone(),
+                        id: model.id.clone(),
+                    };
+                    self.close_model_picker();
+                    return action;
+                }
+            }
+            KeyCode::Esc => {
+                if picker.query.is_empty() {
+                    self.close_model_picker();
+                    return Action::CloseModelPicker;
+                }
+                picker.query.clear();
+                picker.selected = 0;
+            }
+            KeyCode::Backspace => {
+                picker.query.pop();
+                picker.selected = 0;
+            }
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                picker.query.push(c);
+                picker.selected = 0;
+            }
+            _ => {}
+        }
+        Action::None
     }
 
     /// The history indices of the conversation's user messages ([`Role::User`]
@@ -6908,5 +7141,225 @@ mod tests {
         assert!(app.resume_picker.is_none());
         assert!(!app.is_streaming(), "no stream survives the swap");
         assert!(app.status().is_none(), "no status survives the swap");
+    }
+
+    // ===== /model picker (docs/llm.md) =====
+
+    fn model(id: &str, provider: &str, name: &str) -> ModelEntry {
+        ModelEntry {
+            id: id.into(),
+            provider: provider.into(),
+            display_name: name.into(),
+        }
+    }
+
+    /// An app with the model picker open (loaded) over the given models, the
+    /// first marked active.
+    fn model_app(models: &[ModelEntry]) -> App {
+        let mut app = App::new();
+        let active = models.first().map(|m| m.id.clone()).unwrap_or_default();
+        app.open_model_picker(active);
+        app.set_models(models.to_vec());
+        app
+    }
+
+    fn sample_models() -> Vec<ModelEntry> {
+        vec![
+            model(
+                "anthropic/claude-3.5-haiku",
+                "openrouter",
+                "Anthropic: Claude 3.5 Haiku",
+            ),
+            model(
+                "anthropic/claude-fable-5",
+                "openrouter",
+                "Anthropic: Claude Fable 5",
+            ),
+            model(
+                "moonshotai/kimi-k2.6",
+                "openrouter",
+                "MoonshotAI: Kimi K2.6",
+            ),
+        ]
+    }
+
+    #[test]
+    fn slash_model_runs_to_open_the_picker_when_idle() {
+        let mut app = App::new();
+        type_chars(&mut app, "/model");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::OpenModelPicker);
+        assert!(app.input.is_empty(), "running a command clears the draft");
+    }
+
+    #[test]
+    fn slash_model_mid_turn_is_rejected_with_an_error_notice() {
+        let mut app = App::new();
+        app.begin_stream();
+        type_chars(&mut app, "/model");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::ErrorNotice(MODEL_BUSY_NOTICE.to_string()),
+        );
+        assert!(
+            app.model_picker.is_none(),
+            "the picker never opens over a turn"
+        );
+    }
+
+    #[test]
+    fn open_model_picker_starts_loading_and_stays_in_the_conversation() {
+        let mut app = App::new();
+        app.open_model_picker("m1");
+        let picker = app.model_picker.as_ref().expect("picker open");
+        assert_eq!(picker.status, ModelLoad::Loading);
+        assert_eq!(picker.active_id, "m1");
+        assert_eq!(
+            app.view,
+            View::Conversation,
+            "the picker is inline, not an overlay"
+        );
+    }
+
+    #[test]
+    fn opening_the_picker_abandons_the_palette_and_shortcuts() {
+        let mut app = App::new();
+        app.shortcuts_open = true;
+        app.open_model_picker("m1");
+        assert!(!app.shortcuts_open);
+        assert!(app.command_menu.is_none());
+    }
+
+    #[test]
+    fn set_models_marks_ready_and_seats_on_the_active_model() {
+        let mut app = App::new();
+        app.open_model_picker("anthropic/claude-fable-5");
+        app.set_models(sample_models());
+        let picker = app.model_picker.as_ref().unwrap();
+        assert_eq!(picker.status, ModelLoad::Ready);
+        // claude-fable-5 is index 1 in the alphabetical list.
+        assert_eq!(picker.selected, 1);
+        assert_eq!(picker.highlighted().unwrap().id, "anthropic/claude-fable-5");
+    }
+
+    #[test]
+    fn set_models_seats_on_top_when_active_is_absent() {
+        let mut app = App::new();
+        app.open_model_picker("not/present");
+        app.set_models(sample_models());
+        assert_eq!(app.model_picker.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn set_models_error_shows_the_message() {
+        let mut app = App::new();
+        app.open_model_picker("m");
+        app.set_models_error("boom");
+        assert_eq!(
+            app.model_picker.as_ref().unwrap().status,
+            ModelLoad::Error("boom".into())
+        );
+    }
+
+    #[test]
+    fn set_models_is_a_noop_when_the_picker_is_closed() {
+        let mut app = App::new();
+        app.set_models(sample_models()); // no panic, no state
+        assert!(app.model_picker.is_none());
+    }
+
+    #[test]
+    fn typing_filters_the_models_case_insensitively() {
+        let mut app = model_app(&sample_models());
+        type_chars(&mut app, "KIMI");
+        let picker = app.model_picker.as_ref().unwrap();
+        assert_eq!(picker.matches().len(), 1);
+        assert_eq!(picker.matches()[0].id, "moonshotai/kimi-k2.6");
+    }
+
+    #[test]
+    fn filtering_matches_provider_and_display_name_too() {
+        let mut app = model_app(&sample_models());
+        type_chars(&mut app, "openrouter");
+        assert_eq!(app.model_picker.as_ref().unwrap().matches().len(), 3);
+        app.model_picker.as_mut().unwrap().query.clear();
+        type_chars(&mut app, "MoonshotAI");
+        assert_eq!(app.model_picker.as_ref().unwrap().matches().len(), 1);
+    }
+
+    #[test]
+    fn arrows_move_the_selection_clamped() {
+        let mut app = model_app(&sample_models());
+        app.model_picker.as_mut().unwrap().selected = 0;
+        app.on_key(key(KeyCode::Up)); // clamps at top
+        assert_eq!(app.model_picker.as_ref().unwrap().selected, 0);
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.model_picker.as_ref().unwrap().selected, 1);
+        app.on_key(key(KeyCode::End));
+        assert_eq!(app.model_picker.as_ref().unwrap().selected, 2);
+        app.on_key(key(KeyCode::Down)); // clamps at bottom
+        assert_eq!(app.model_picker.as_ref().unwrap().selected, 2);
+        app.on_key(key(KeyCode::Home));
+        assert_eq!(app.model_picker.as_ref().unwrap().selected, 0);
+    }
+
+    #[test]
+    fn enter_selects_the_highlighted_model_and_closes() {
+        let mut app = model_app(&sample_models());
+        app.model_picker.as_mut().unwrap().selected = 2;
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            action,
+            Action::SelectModel {
+                provider: "openrouter".into(),
+                id: "moonshotai/kimi-k2.6".into(),
+            }
+        );
+        assert!(app.model_picker.is_none(), "selecting closes the picker");
+    }
+
+    #[test]
+    fn enter_on_an_empty_list_keeps_the_picker_open() {
+        let mut app = App::new();
+        app.open_model_picker("m");
+        app.set_models(vec![]);
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(app.model_picker.is_some());
+    }
+
+    #[test]
+    fn esc_clears_the_query_first_then_closes() {
+        let mut app = model_app(&sample_models());
+        type_chars(&mut app, "kimi");
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert!(app.model_picker.as_ref().unwrap().query.is_empty());
+        assert!(
+            app.model_picker.is_some(),
+            "first Esc only clears the query"
+        );
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::CloseModelPicker);
+        assert!(app.model_picker.is_none());
+    }
+
+    #[test]
+    fn ctrl_c_closes_the_model_picker_not_the_app() {
+        let mut app = model_app(&sample_models());
+        assert_eq!(app.on_key(ctrl('c')), Action::CloseModelPicker);
+        assert!(app.model_picker.is_none());
+    }
+
+    #[test]
+    fn backspace_pops_the_model_query() {
+        let mut app = model_app(&sample_models());
+        type_chars(&mut app, "kim");
+        app.on_key(key(KeyCode::Backspace));
+        assert_eq!(app.model_picker.as_ref().unwrap().query, "ki");
+    }
+
+    #[test]
+    fn typing_reseats_the_selection_to_the_top() {
+        let mut app = model_app(&sample_models());
+        app.model_picker.as_mut().unwrap().selected = 2;
+        type_chars(&mut app, "anthropic");
+        assert_eq!(app.model_picker.as_ref().unwrap().selected, 0);
     }
 }

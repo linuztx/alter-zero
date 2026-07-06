@@ -55,11 +55,16 @@ use inline_tui::app::{
 use inline_tui::clipboard;
 use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
+use inline_tui::llm::{self, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, Selection};
 use inline_tui::paste::{self, PasteBurst};
 use inline_tui::session::{self, SessionMeta, SessionSummary};
 use inline_tui::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
 use inline_tui::term::InlineViewport;
 use inline_tui::ui;
+
+/// A finished `/model` fetch: the provider's models, or a message to show in the
+/// picker. Carried on the model-fetch worker's channel. See `docs/llm.md`.
+type ModelFetch = Result<Vec<ModelEntry>, String>;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
@@ -91,22 +96,50 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // sees a clock. Recorded items are stamped with the local time; the stamp is
     // shown only in the Ctrl+O transcript (see docs/timestamps.md).
     app.set_clock(local_timestamp);
-    // The reply backend. Swap this single line for a real model (any
-    // `ReplySource`) and nothing else in the loop has to change. The dummy
-    // pauses before streaming so the status indicator shows first; the pause is
-    // `STARTUP_DELAY` unless `INLINE_TUI_STARTUP_DELAY_MS` overrides it (the
-    // smoke test runs with a short delay; one phase uses a longer one).
+    // The dummy's pre-stream pause so the status indicator shows first; the
+    // pause is `STARTUP_DELAY` unless `INLINE_TUI_STARTUP_DELAY_MS` overrides it
+    // (the smoke test runs with a short delay; one phase uses a longer one). A
+    // real backend's own first-token latency replaces it.
     let startup_delay = std::env::var("INLINE_TUI_STARTUP_DELAY_MS")
         .ok()
         .and_then(|ms| ms.parse::<u64>().ok())
         .map_or(stream::STARTUP_DELAY, Duration::from_millis);
-    let backend = DummyAi::with_startup_delay(startup_delay);
+    // The reply backend. The dummy is the default (and the fallback) so the app
+    // always runs offline; a real OpenAI-compatible model activates only when a
+    // provider, a model, and an API key all resolve and `INLINE_TUI_DUMMY` isn't
+    // forcing the dummy (see `build_backend` / docs/llm.md). `/model` rebuilds
+    // it live, so it — plus the config it needs — is kept around.
+    let providers = load_providers();
+    let temperature = std::env::var("INLINE_TUI_TEMPERATURE")
+        .ok()
+        .and_then(|t| t.trim().parse::<f32>().ok());
+    let system_prompt = std::env::var("INLINE_TUI_SYSTEM_PROMPT").ok();
+    // The provider the /model picker lists from and switches within: env, else
+    // the file's default. The active model starts from env, then tracks what the
+    // backend actually answers as (so a dummy fallback shows `dummy_model_name`).
+    let mut active_provider = std::env::var("INLINE_TUI_PROVIDER")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| providers.default_provider());
+    let env_model = std::env::var("INLINE_TUI_MODEL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let mut backend: Box<dyn ReplySource> = build_backend(
+        &providers,
+        active_provider.as_deref(),
+        env_model.as_deref(),
+        temperature,
+        system_prompt.clone(),
+        startup_delay,
+    );
+    let mut active_model = backend.model_name();
     // Session context for the footer under the box — the backend's model name
     // and the cwd — formatted here at the boundary (the set_clock pattern: the
     // pure core never reads the environment). See docs/footer.md.
     let cwd = std::env::current_dir().unwrap_or_default();
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    app.set_session_info(backend.model_name(), ui::display_cwd(&cwd, home.as_deref()));
+    let cwd_display = ui::display_cwd(&cwd, home.as_deref());
+    app.set_session_info(backend.model_name(), cwd_display.clone());
     // The /resume session recorder (docs/resume.md): mirrors App::history to a
     // rollout file, lazily created on the first recorded item so empty
     // sessions never touch disk. `sync` runs once per loop iteration below.
@@ -127,6 +160,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // come back on a tokio channel the loop `select!`s on; the worker only
     // *sends* — it is not a stdin reader (invariant 1).
     let (img_tx, mut img_rx) = tokio::sync::mpsc::unbounded_channel::<Result<PathBuf, String>>();
+    // The `/model` picker's model-list fetch (docs/llm.md): opening the picker
+    // spawns a worker that GETs the provider's `/models` off the UI thread and
+    // sends the parsed list back here. Its `CancelToken` is held so closing the
+    // picker (or selecting) cancels an in-flight fetch. The worker only *sends*
+    // — not a stdin reader (invariant 1).
+    let (model_tx, mut model_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
+    let mut model_fetch_cancel: Option<CancelToken> = None;
     // The in-flight reply's cancel token + thread handle, so a quit mid-stream
     // can stop and reap it cleanly. `None` whenever no reply is streaming.
     let mut inflight: Option<(CancelToken, JoinHandle<()>)> = None;
@@ -190,7 +230,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // the turn's typed image channel.
                                 let images = app.take_submission_images();
                                 inflight = Some(start_turn(
-                                    term, &mut app, &tx, &backend,
+                                    term, &mut app, &tx, backend.as_ref(),
                                     TurnInput { texts: vec![text], images },
                                     &mut committed, &mut clocks,
                                 )?);
@@ -326,7 +366,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // following turn-ends. Interrupt only arises in the
                                 // conversation view, so committing here is safe.
                                 inflight = flush_next_queued(
-                                    term, &mut app, &tx, &backend, &mut committed, &mut clocks,
+                                    term, &mut app, &tx, backend.as_ref(), &mut committed, &mut clocks,
                                 )?;
                             }
                             Action::OpenResumePicker => {
@@ -395,6 +435,71 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // A slash command's one-off red notice (e.g.
                                 // /resume rejected mid-task) — Notice's error twin.
                                 commit_error_notice(term, &mut app, &mut committed, &text);
+                            }
+                            Action::OpenModelPicker => {
+                                // /model from an idle composer (docs/llm.md): open
+                                // the inline picker (it replaces the composer — no
+                                // alternate screen) and kick off the model-list
+                                // fetch off-thread. The list lands on branch 6.
+                                app.open_model_picker(backend.model_name());
+                                if let Some(c) = model_fetch_cancel.take() {
+                                    c.cancel();
+                                }
+                                let cancel = CancelToken::new();
+                                model_fetch_cancel = Some(cancel.clone());
+                                let cfg = active_provider.as_deref().and_then(|p| {
+                                    model_config_for(&providers, p, &active_model, temperature)
+                                });
+                                spawn_model_fetch(cfg, cancel, model_tx.clone());
+                            }
+                            Action::CloseModelPicker => {
+                                // Esc/Ctrl+C dismissed the inline picker: cancel a
+                                // pending fetch and let the region collapse back to
+                                // the composer on the next draw.
+                                if let Some(c) = model_fetch_cancel.take() {
+                                    c.cancel();
+                                }
+                            }
+                            Action::SelectModel { provider, id } => {
+                                // Enter on a picker row: rebuild the backend for the
+                                // chosen provider/model (docs/llm.md). The picker is
+                                // already closed (on_key did it); cancel any pending
+                                // fetch, then switch if the config is usable (has a
+                                // key), else keep the current backend under a notice.
+                                if let Some(c) = model_fetch_cancel.take() {
+                                    c.cancel();
+                                }
+                                match model_config_for(&providers, &provider, &id, temperature) {
+                                    Some(cfg) if cfg.is_usable() => {
+                                        backend = Box::new(LlmBackend::with_system_prompt(
+                                            cfg,
+                                            system_prompt.clone(),
+                                        ));
+                                        active_provider = Some(provider);
+                                        active_model = id.clone();
+                                        app.set_session_info(
+                                            backend.model_name(),
+                                            cwd_display.clone(),
+                                        );
+                                        commit_system_notice(
+                                            term,
+                                            &mut app,
+                                            &mut committed,
+                                            &format!("Switched model to {id}"),
+                                        );
+                                    }
+                                    _ => {
+                                        let env = key_env_name(&providers, &provider);
+                                        commit_error_notice(
+                                            term,
+                                            &mut app,
+                                            &mut committed,
+                                            &format!(
+                                                "Can't switch to {id}: set {env} to use {provider}"
+                                            ),
+                                        );
+                                    }
+                                }
                             }
                         }
                         schedule_for_key(&frame, &mut burst, &key);
@@ -467,7 +572,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     // return's reflow drops + regenerates them from history —
                     // so invariant 4 holds.
                     inflight = flush_next_queued(
-                        term, &mut app, &tx, &backend, &mut committed, &mut clocks,
+                        term, &mut app, &tx, backend.as_ref(), &mut committed, &mut clocks,
                     )?;
                 }
                 frame.schedule_frame();
@@ -523,6 +628,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 dispatch_file_search(&app, &file_req_tx, &mut last_file_query);
                 frame.schedule_frame();
             }
+
+            // 6. A finished `/model` fetch from its worker thread: fill the open
+            //    picker with the models, or show the error. Both are no-ops if
+            //    the picker was already dismissed. See docs/llm.md.
+            Some(result) = model_rx.recv() => {
+                match result {
+                    Ok(models) => app.set_models(models),
+                    Err(reason) => app.set_models_error(reason),
+                }
+                frame.schedule_frame();
+            }
         }
 
         // Mirror the finished history to the session file (docs/resume.md):
@@ -539,7 +655,126 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         cancel.cancel();
         let _ = handle.join();
     }
+    // Cancel a dangling /model fetch (its detached worker exits on the cancel).
+    if let Some(cancel) = model_fetch_cancel.take() {
+        cancel.cancel();
+    }
     Ok(())
+}
+
+/// Is the built-in dummy backend forced on? (`INLINE_TUI_DUMMY` set to a truthy
+/// value). Keeps `smoke.sh` — which sets nothing — on the dummy, and lets a
+/// developer force it even with a key configured. See `docs/llm.md`.
+fn dummy_forced() -> bool {
+    std::env::var("INLINE_TUI_DUMMY").ok().is_some_and(|v| {
+        matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+/// Load the provider table: `INLINE_TUI_PROVIDERS_FILE`, then `./providers.toml`,
+/// then `~/.inline-tui/providers.toml`, else the built-in default. The first that
+/// reads and parses wins; a malformed file falls through to the next. Boundary
+/// code — env + filesystem. See `docs/llm.md`.
+fn load_providers() -> ProvidersFile {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(path) = std::env::var_os("INLINE_TUI_PROVIDERS_FILE") {
+        candidates.push(PathBuf::from(path));
+    }
+    candidates.push(PathBuf::from("providers.toml"));
+    if let Some(home) = std::env::var_os("HOME") {
+        candidates.push(PathBuf::from(home).join(".inline-tui/providers.toml"));
+    }
+    for path in candidates {
+        if let Ok(text) = std::fs::read_to_string(&path)
+            && let Ok(file) = ProvidersFile::parse(&text)
+        {
+            return file;
+        }
+    }
+    ProvidersFile::builtin()
+}
+
+/// The environment variable a provider's API key is read from (its `api_key_env`
+/// or `<ID>_API_KEY`), for both the key lookup and the "set X" hint.
+fn key_env_name(providers: &ProvidersFile, provider: &str) -> String {
+    providers.get(provider).map_or_else(
+        || format!("{}_API_KEY", provider.to_uppercase()),
+        |p| p.key_env(provider),
+    )
+}
+
+/// Resolve a provider's API key: its own env var, else the generic
+/// `INLINE_TUI_API_KEY`. Empty values count as unset.
+fn resolve_api_key(providers: &ProvidersFile, provider: &str) -> Option<String> {
+    let own = std::env::var(key_env_name(providers, provider))
+        .ok()
+        .filter(|k| !k.is_empty());
+    own.or_else(|| {
+        std::env::var("INLINE_TUI_API_KEY")
+            .ok()
+            .filter(|k| !k.is_empty())
+    })
+}
+
+/// Build the resolved [`ModelConfig`] for a provider/model (with the env key +
+/// temperature merged in), or `None` when the provider isn't in the file.
+fn model_config_for(
+    providers: &ProvidersFile,
+    provider: &str,
+    model: &str,
+    temperature: Option<f32>,
+) -> Option<ModelConfig> {
+    let sel = Selection {
+        provider_id: provider.to_string(),
+        model: model.to_string(),
+        api_key: resolve_api_key(providers, provider),
+        temperature,
+    };
+    providers.model_config(&sel)
+}
+
+/// Pick the reply backend: the dummy unless a real provider/model/key all
+/// resolve (and `INLINE_TUI_DUMMY` isn't forcing the dummy). The dummy is the
+/// safe fallback so the app always runs offline. See `docs/llm.md`.
+fn build_backend(
+    providers: &ProvidersFile,
+    provider: Option<&str>,
+    model: Option<&str>,
+    temperature: Option<f32>,
+    system_prompt: Option<String>,
+    startup_delay: Duration,
+) -> Box<dyn ReplySource> {
+    if !dummy_forced()
+        && let (Some(provider), Some(model)) = (provider, model)
+        && let Some(cfg) = model_config_for(providers, provider, model, temperature)
+        && cfg.is_usable()
+    {
+        return Box::new(LlmBackend::with_system_prompt(cfg, system_prompt));
+    }
+    Box::new(DummyAi::with_startup_delay(startup_delay))
+}
+
+/// Fetch the `/models` list on a background thread (the image-paste pattern),
+/// sending the result to the loop. A `None` config (no provider) yields a hint;
+/// a cancelled fetch (the picker closed) is dropped. See `docs/llm.md`.
+fn spawn_model_fetch(
+    cfg: Option<ModelConfig>,
+    cancel: CancelToken,
+    tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
+) {
+    std::thread::spawn(move || {
+        let result: ModelFetch = match cfg {
+            Some(cfg) => llm::models::fetch_models(&cfg, &cancel).map_err(|e| e.to_string()),
+            None => Err("No provider configured — set providers.toml / INLINE_TUI_PROVIDER".into()),
+        };
+        // Don't deliver a result the picker no longer wants.
+        if !cancel.is_cancelled() {
+            let _ = tx.send(result);
+        }
+    });
 }
 
 /// The live status indicator's clocks, bundled (the impurity kept at the
@@ -575,7 +810,7 @@ fn start_turn(
     term: &mut InlineViewport,
     app: &mut App,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
-    backend: &impl ReplySource,
+    backend: &dyn ReplySource,
     input: TurnInput,
     committed: &mut usize,
     clocks: &mut StatusClocks,
@@ -737,7 +972,7 @@ fn flush_next_queued(
     term: &mut InlineViewport,
     app: &mut App,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
-    backend: &impl ReplySource,
+    backend: &dyn ReplySource,
     committed: &mut usize,
     clocks: &mut StatusClocks,
 ) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
@@ -1119,6 +1354,11 @@ fn local_timestamp() -> String {
 /// the next [`draw`] will use. Shared so a post-stream commit can reserve that same
 /// idle height before flushing the final lines (see [`InlineViewport::set_view_height`]).
 fn live_region_height(app: &App, screen: Rect) -> u16 {
+    // The inline `/model` picker replaces the whole region with its own framed
+    // body (see docs/llm.md); its height stands in for the composer's.
+    if let Some(height) = ui::model_picker_height(app, screen.height) {
+        return height;
+    }
     let band = ui::band_rows(app);
     ui::live_height(
         &app.input,
