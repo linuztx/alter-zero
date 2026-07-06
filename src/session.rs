@@ -260,7 +260,10 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
 /// message, or a [`Role::Shell`] header shown as `! {command}` (our `!` cells
 /// are user input too; see `docs/resume.md`'s divergences) — with all
 /// whitespace runs flattened to single spaces so a multiline message stays one
-/// row. `None` when the session has no user input (such files never list).
+/// row. A whitespace-only message (a pasted blank can reach the record) is
+/// skipped rather than claiming the preview as an empty — and unsearchable —
+/// string. `None` when the session has no non-blank user input (such files
+/// never list).
 #[must_use]
 pub fn preview_of(items: &[HistoryItem]) -> Option<String> {
     items.iter().find_map(|item| {
@@ -272,6 +275,9 @@ pub fn preview_of(items: &[HistoryItem]) -> Option<String> {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        if flat.is_empty() {
+            return None; // blank input: keep hunting for a real message
+        }
         match message.role {
             Role::User => Some(flat),
             Role::Shell => Some(format!("! {flat}")),
@@ -512,6 +518,22 @@ mod tests {
         ];
         assert_eq!(preview_of(&items), None);
         assert_eq!(preview_of(&[]), None);
+    }
+
+    #[test]
+    fn a_whitespace_only_user_message_is_skipped_for_the_preview() {
+        // A pure-whitespace first message (a whitespace paste can reach the
+        // record) must not claim the preview as an empty — and unsearchable —
+        // string; the hunt continues to the next real user input.
+        let items = vec![
+            message(Role::User, " \n \t "),
+            message(Role::User, "real question"),
+        ];
+        assert_eq!(preview_of(&items).as_deref(), Some("real question"));
+        // Only whitespace input in the whole session ⇒ no preview at all
+        // (the session never lists, same as no user input).
+        assert_eq!(preview_of(&[message(Role::User, "  ")]), None);
+        assert_eq!(preview_of(&[message(Role::Shell, " \n")]), None);
     }
 
     // ===== relative_age (codex's format_relative_time) =====

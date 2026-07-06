@@ -114,8 +114,8 @@ overlay machinery.
   serde-free. Parsing skips malformed/unknown lines (forward compatibility);
   `parse_session` yields the meta + items and `None` for a file with no valid
   meta line.
-- Listing helpers: `head_preview` (the first `user` — or `shell`, see
-  divergences — message's text, newlines flattened, `! ` prefix for shell)
+- Listing helpers: `preview_of` (the first non-blank `user` — or `shell`, see
+  divergences — message's text, whitespace flattened, `! ` prefix for shell)
   and `relative_age(secs)` (codex's `now`/`Ns ago`/`Nm ago`/`Nh ago`/`Nd ago`
   buckets). `SessionSummary { path, age, preview }` is what the picker holds.
 
@@ -153,7 +153,7 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
 
 - `View::ResumePicker` — a third view. `ResumePicker { sessions, selected,
   query }` state on `App` (`Some` while open); the filtered rows derive on
-  demand (`filtered_sessions()` — case-insensitive substring over the
+  demand (`ResumePicker::matches()` — case-insensitive substring over the
   preview, codex's client-side `Row::matches_query`), like the palette's
   `matching_commands`.
 - `COMMANDS` gains `resume` ("Resume a saved chat") →
@@ -268,8 +268,9 @@ list height; no stored scroll offset).
   quote + unicode text, every role, ok/failed/truncated tools, summary verb
   restored to the `DONE_VERBS` static — unknown verb falls back to `Done`);
   malformed and unknown lines are skipped; a file without a meta line (or
-  empty) parses to `None`; `head_preview` finds the first user/shell message
-  (flattening newlines, `! ` for shell) and `None` without one;
+  empty) parses to `None`; `preview_of` finds the first non-blank user/shell
+  message (flattening whitespace, `! ` for shell, whitespace-only messages
+  skipped) and `None` without one;
   `relative_age` buckets (`now`, `59s ago`, `1m`, `59m`, `1h`, `23h`, `1d`);
   `rollout_rel_path` zero-pads and swaps `:` for `-`.
 - `app`: the `/resume` palette entry runs to `OpenResumePicker` idle and

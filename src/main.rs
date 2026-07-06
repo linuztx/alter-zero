@@ -1523,7 +1523,11 @@ fn read_head(path: &Path, max_lines: usize, cap: u64) -> Option<String> {
         match reader.read_line(&mut head) {
             Ok(0) => break, // EOF (or the ceiling exhausted)
             Ok(_) => {}
-            Err(_) => return None,
+            // A ceiling cut inside a multi-byte character makes read_line
+            // report InvalidData — keep the (valid) lines already read
+            // instead of discarding the whole head, so a session whose
+            // preview was already in the buffer still lists.
+            Err(_) => break,
         }
     }
     Some(head)
