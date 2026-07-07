@@ -360,6 +360,17 @@ fn push(out: &mut Vec<Seg>, text: &str, kind: Kind) {
     });
 }
 
+/// Whether `word` is a keyword — an O(1) hash lookup over [`KEYWORDS`] built once
+/// (a linear scan ran per identifier, ~90 comparisons each, which dominated the
+/// highlight cost on code-dense replies).
+fn is_keyword(word: &str) -> bool {
+    use std::collections::HashSet;
+    use std::sync::OnceLock;
+    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
+    SET.get_or_init(|| KEYWORDS.iter().copied().collect())
+        .contains(word)
+}
+
 fn is_ident_start(c: char) -> bool {
     c.is_alphabetic() || c == '_'
 }
@@ -488,7 +499,7 @@ fn highlight_line(line: &str, syntax: &Syntax, carry: &mut Carry) -> Vec<Seg> {
                 j += 1;
             }
             let word = collect(&chars, i, j);
-            let kind = if KEYWORDS.contains(&word.as_str()) {
+            let kind = if is_keyword(&word) {
                 Kind::Keyword
             } else if j < n && chars[j] == '(' {
                 Kind::Function
