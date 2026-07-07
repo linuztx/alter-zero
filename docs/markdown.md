@@ -23,11 +23,19 @@ do inline emphasis, lists, or tables (see *Scope* below).
   ▏         sh, sw = stdscr.getmaxyx()           ← 8-space indent preserved
 ````
 
-Code sits under the assistant bullet behind a dim left **gutter** (`▏ `). We
-skip syntax highlighting (codex uses `syntect`; we take no new dependency), so
-the gutter plus a slightly-dim code colour carry the "this is code" signal
-instead of per-token colour. The opening ` ``` ` fence becomes the dim language
-label; the closing fence is hidden.
+Code sits under the assistant bullet behind a dim left **gutter** (`▏ `) and is
+**syntax-highlighted** (One Dark palette — keywords magenta, strings green,
+comments dim, numbers orange, calls blue). The opening ` ``` ` fence becomes the
+dim language label; the closing fence is hidden.
+
+Highlighting is hand-rolled (`highlight.rs`) — codex uses `syntect` (~250
+TextMate grammars); this codebase takes no such dependency, so a **generic**
+tokenizer classifies the token shapes common to mainstream languages (comments,
+strings, numbers, control/declaration keywords, and function calls). It is
+precise for the languages people paste (Python, JS/TS, Rust, Go, C/C++, Java,
+Ruby, shell) and degrades to plain text for anything it doesn't recognise. The
+tokenizer is colour-agnostic; `ui` maps each `highlight::Kind` to a colour, so
+all styling stays centralized in `ui.rs`.
 
 ## Architecture
 
@@ -36,6 +44,11 @@ label; the closing fence is hidden.
   `Block::Prose(String)` runs and `Block::Code { lang, lines }` blocks;
   `fence_lang` extracts the info-string language (first token); `heading_level`
   classifies a single prose line as an ATX heading. No terminal, no styling.
+- **`src/highlight.rs`** — the pure, unit-tested syntax tokenizer.
+  `highlight(lines, lang) -> Vec<Vec<Seg>>` classifies each code line's runs into
+  `Kind`s (keyword / string / comment / number / function / plain), threading
+  multi-line string/comment state left-to-right. Colour-agnostic — `ui` owns the
+  palette.
 - **`ui::message_lines`** — the single funnel every render path already goes
   through (streamed scrollback, resize repaint, Ctrl+O transcript, preview). It
   now routes `Role::Assistant` through `ui::assistant_lines`, which walks the
@@ -61,8 +74,9 @@ scrollback as the reply streams, keeping only the **last** rendered line back
 *prefix-stable*: appending to `text` may change only the last produced line;
 every earlier line is frozen forever.
 
-Code blocks and headings preserve this because their rendering is a pure
-left-to-right function of the text *before* each line:
+Code blocks (including their **syntax colours**) and headings preserve this
+because their rendering is a pure left-to-right function of the text *before*
+each line:
 
 - A line's prose/code **mode** is fixed by the fence state entering it — a scan
   of the lines before it, no lookahead. Appending never reclassifies an earlier
@@ -73,6 +87,19 @@ left-to-right function of the text *before* each line:
   extends or starts only the *last* row — exactly like `wrap_text`.
 - A heading's style trigger (`#…` at the line start) is seen before any of that
   line's output rows are committed.
+- Syntax colours are per-line: a line's tokens are a pure function of its own
+  text plus the multi-line `Carry` (open triple-string / block-comment) entering
+  it — itself a left-to-right scan of the prior lines. An unterminated triple
+  string or `/* … */` colours the rest as string/comment, identically to a closed
+  one, so a committed code line never recolours.
+- **But highlighting uses one-char lookahead *within* a line** (an identifier
+  becomes a call at the `(`, `/` a comment at the next `/`). A code line longer
+  than the width wraps into several rows, and committing an early row before the
+  lookahead char streams in would recolour it. So `stable_commit` withholds an
+  **in-progress code line** entirely (`markdown::ends_inside_code` → render only
+  the complete source up to the last newline); prose has no such lookahead and
+  still streams per wrapped row. This is the one place code needs source-line
+  gating — the same mechanism inline emphasis would need everywhere.
 
 `markdown::tests::prefix_stability_no_committed_line_ever_changes` models
 `stable_commit` exactly (commit all-but-last, monotonic high-water) and proves no
@@ -95,6 +122,15 @@ newline), which this codebase does not do. Adding inline emphasis therefore mean
 first reworking the streaming commit; it is a separate change.
 
 **Out — lists / blockquotes.** Prefix-stable but not the reported bug; deferred.
+
+**Syntax highlighting is generic, not per-grammar.** No `syntect`/TextMate
+grammars, so a few shapes are approximate: multi-line backtick strings (Go raw
+strings, JS template literals) only colour their opening line — they don't carry
+across lines like `"""` does (a low-severity cosmetic limitation, still
+prefix-stable); string interpolation (`f"{x}"`, `${x}`) isn't parsed; and an
+unknown/`text` language renders plain. An in-progress code line is withheld from
+scrollback until it completes, because highlighting uses one-char lookahead
+within a line (a call's `(`) — see the *streaming* note below.
 
 **Out — tables.** A new table row rewrites the column widths of *already-emitted*
 rows, so tables are inherently non-prefix-stable. Codex quarantines them in a

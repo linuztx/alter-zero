@@ -9,6 +9,8 @@
 //! - [`file_search`] — the `@` picker's pure primitives (token detection,
 //!   fuzzy match, ranking).
 //! - [`frame`]       — frame scheduling: coalesce redraw requests, 120 fps cap.
+//! - [`highlight`]   — dependency-free syntax highlighting for code blocks: a
+//!   generic tokenizer (keywords/strings/comments/numbers/calls), prefix-stable.
 //! - [`llm`]         — the real OpenAI-compatible backend: provider config, the
 //!   streaming client, the `/v1/models` listing, and the `ReplySource` bridge
 //!   (the I/O boundary for a real model; pure cores unit-tested).
@@ -29,6 +31,7 @@ pub mod app;
 pub mod clipboard;
 pub mod file_search;
 pub mod frame;
+pub mod highlight;
 pub mod llm;
 pub mod markdown;
 pub mod paste;

@@ -25,6 +25,7 @@ use crate::app::{
     command_query, matching_commands,
 };
 use crate::file_search::FileMatch;
+use crate::highlight;
 use crate::llm::ModelEntry;
 use crate::markdown;
 use crate::textarea::TextArea;
@@ -63,23 +64,48 @@ const INDENT: &str = "  ";
 const BULLET_WIDTH: u16 = 2;
 
 // --- Assistant markdown rendering (fenced code blocks + ATX headings;
-// `docs/markdown.md`). Code sits under the bullet behind a dim left gutter and
-// is rendered VERBATIM (indentation preserved, no word-wrap) — the fix for code
-// losing its indentation. We skip syntax highlighting (no deps), so the gutter +
-// a slightly-dim text carry the "this is code" signal. Headings drop their `#`s
-// and render bold. ---
+// `docs/markdown.md`). Code sits under the bullet behind a dim left gutter,
+// rendered VERBATIM (indentation preserved, no word-wrap) — the fix for code
+// losing its indentation — and **syntax-highlighted** by the hand-rolled
+// `highlight` tokenizer (One Dark palette below). Headings drop their `#`s and
+// render bold. ---
 /// The dim left bar (+ trailing space) prefixing every code-block row.
 const CODE_GUTTER: &str = "▏ ";
 /// Display columns [`CODE_GUTTER`] occupies (subtracted from the code width).
 const CODE_GUTTER_WIDTH: u16 = 2;
 /// The gutter bar's colour — dim, so it frames without shouting.
 const CODE_GUTTER_COLOR: Color = Color::Rgb(0x5A, 0x5A, 0x5A);
-/// Code text — a neutral light grey, distinct from the pure-white prose.
+/// Code text — a neutral light grey, the default (unhighlighted) code colour.
 const CODE_TEXT_COLOR: Color = Color::Rgb(0xAB, 0xB2, 0xBF);
 /// The dim language label capping a code block (`` ```python `` → `python`).
 const CODE_LABEL_COLOR: Color = TOOL_DIM_COLOR;
 /// ATX headings render in this colour, bold, with the `#` markers stripped.
 const HEADING_COLOR: Color = AI_COLOR;
+
+// Syntax-highlight palette (One Dark) — `highlight::Kind` → colour, mapped here
+// so all styling stays centralized in `ui.rs` (the tokenizer is colour-agnostic).
+/// Keywords — magenta.
+const CODE_KEYWORD_COLOR: Color = Color::Rgb(0xC6, 0x78, 0xDD);
+/// String / char literals — green.
+const CODE_STRING_COLOR: Color = Color::Rgb(0x98, 0xC3, 0x79);
+/// Comments — dim slate.
+const CODE_COMMENT_COLOR: Color = Color::Rgb(0x5C, 0x63, 0x70);
+/// Numbers — orange.
+const CODE_NUMBER_COLOR: Color = Color::Rgb(0xD1, 0x9A, 0x66);
+/// Names in call position — blue.
+const CODE_FUNCTION_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+
+/// Map a highlighter [`highlight::Kind`] to its code colour.
+fn code_kind_color(kind: highlight::Kind) -> Color {
+    match kind {
+        highlight::Kind::Plain => CODE_TEXT_COLOR,
+        highlight::Kind::Keyword => CODE_KEYWORD_COLOR,
+        highlight::Kind::Str => CODE_STRING_COLOR,
+        highlight::Kind::Comment => CODE_COMMENT_COLOR,
+        highlight::Kind::Number => CODE_NUMBER_COLOR,
+        highlight::Kind::Function => CODE_FUNCTION_COLOR,
+    }
+}
 
 const USER_COLOR: Color = Color::Rgb(0x6E, 0x6E, 0x6E);
 const USER_BG_COLOR: Color = Color::Rgb(0x2D, 0x2D, 0x2D);
@@ -1072,8 +1098,8 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The content spans of one code-block row: the dim gutter bar then `text` in
-/// `text_color` (the code text, or the dim language label). The leading
-/// bullet/indent is stamped on later by [`assistant_lines`].
+/// `text_color` (used for the language label). The leading bullet/indent is
+/// stamped on later by [`assistant_lines`].
 fn code_row(text: String, text_color: Color) -> Vec<Span<'static>> {
     vec![
         Span::styled(CODE_GUTTER.to_string(), Style::new().fg(CODE_GUTTER_COLOR)),
@@ -1081,18 +1107,61 @@ fn code_row(text: String, text_color: Color) -> Vec<Span<'static>> {
     ]
 }
 
+/// Hard-break a code line's **coloured** segments into display rows of at most
+/// `width` columns, preserving each run's colour across the break — the verbatim,
+/// whitespace-preserving counterpart of [`wrap_verbatim`] that keeps syntax
+/// colours. Breaks on grapheme boundaries measured in display columns (an
+/// overflowing cluster is placed alone); adjacent same-colour graphemes coalesce
+/// into one span. An empty line yields a single empty row (just the gutter, once
+/// stamped). Prefix-stable — appending only extends the last row.
+fn code_content_rows(segments: &[(String, Color)], width: u16) -> Vec<Vec<Span<'static>>> {
+    let width = (width as usize).max(1);
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut row: Vec<Span<'static>> = Vec::new();
+    let mut run = String::new();
+    let mut run_color = CODE_TEXT_COLOR;
+    let mut w = 0usize;
+    let flush = |row: &mut Vec<Span<'static>>, run: &mut String, color: Color| {
+        if !run.is_empty() {
+            row.push(Span::styled(std::mem::take(run), Style::new().fg(color)));
+        }
+    };
+    for (text, color) in segments {
+        for g in text.graphemes(true) {
+            let gw = cols(g);
+            if w > 0 && w + gw > width {
+                flush(&mut row, &mut run, run_color);
+                rows.push(std::mem::take(&mut row));
+                w = 0;
+            }
+            if *color != run_color {
+                flush(&mut row, &mut run, run_color);
+                run_color = *color;
+            }
+            run.push_str(g);
+            w += gw;
+        }
+    }
+    flush(&mut row, &mut run, run_color);
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    rows
+}
+
 /// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`):
 /// [`markdown::parse_blocks`] splits prose from fenced code; prose word-wraps via
 /// [`wrap_text`] (ATX headings render bold with their `#`s dropped) while **code
 /// blocks render verbatim** — each source line kept byte-for-byte behind a dim
-/// gutter, hard-broken only on width via [`wrap_verbatim`], the fences hidden and
-/// the language shown as a dim label. The bullet lands on row 0 and `INDENT` on
-/// the rest, exactly like the plain path — so fence/heading-free text is
-/// byte-identical to before.
+/// gutter, **syntax-highlighted** ([`highlight::highlight`]) and hard-broken only
+/// on width via [`code_content_rows`], the fences hidden and the language shown as
+/// a dim label. The bullet lands on row 0 and `INDENT` on the rest, exactly like
+/// the plain path — so fence/heading-free text is byte-identical to before.
 ///
-/// **Prefix-stable:** a line's prose/code mode is fixed by the text before it and
-/// verbatim hard-break only grows the last row, so [`stable_commit`] can keep
-/// flushing completed rows to scrollback (CLAUDE.md invariant 2).
+/// **Prefix-stable at the line level:** a line's prose/code mode and its highlight
+/// are fixed by the text before it. (Highlighting uses one-char lookahead within a
+/// line — a call's `(` — so an in-progress code *line* isn't safe to commit until
+/// it completes; [`stable_commit`] withholds it, see there.)
 fn assistant_lines(text: &str, width: u16, bullet: &str, color: Color) -> Vec<Line<'static>> {
     let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
     let code_width = width
@@ -1119,10 +1188,23 @@ fn assistant_lines(text: &str, width: u16, bullet: &str, color: Color) -> Vec<Li
             }
             markdown::Block::Code { lang, lines } => {
                 // A dim label caps the block (the hidden fence's language).
-                rows.push(code_row(lang.unwrap_or_default(), CODE_LABEL_COLOR));
-                for line in &lines {
-                    for wrapped in wrap_verbatim(line, code_width) {
-                        rows.push(code_row(wrapped, CODE_TEXT_COLOR));
+                rows.push(code_row(lang.clone().unwrap_or_default(), CODE_LABEL_COLOR));
+                // Syntax-highlight the whole block (threads multi-line
+                // string/comment state), then hard-break each source line's
+                // coloured spans to the code width behind the gutter.
+                let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+                for line_segs in highlight::highlight(&refs, lang.as_deref()) {
+                    let colored: Vec<(String, Color)> = line_segs
+                        .into_iter()
+                        .map(|s| (s.text, code_kind_color(s.kind)))
+                        .collect();
+                    for mut spans in code_content_rows(&colored, code_width) {
+                        let mut row = vec![Span::styled(
+                            CODE_GUTTER.to_string(),
+                            Style::new().fg(CODE_GUTTER_COLOR),
+                        )];
+                        row.append(&mut spans);
+                        rows.push(row);
                     }
                 }
             }
@@ -3057,9 +3139,24 @@ pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
 /// many lines were `committed` already, returns the new lines to commit and the
 /// updated committed count. `committed` is clamped so a mid-stream resize (which
 /// re-wraps to a different line count) can't panic.
+///
+/// **Code exception.** Syntax highlighting classifies a token with one-char
+/// lookahead *within its line* (an identifier becomes a call at the `(`, `/`
+/// becomes a comment at the next `/`). A code line longer than the width wraps
+/// into several rows, so committing all-but-the-last row could flush an early row
+/// that then *recolours* once the lookahead char streams in — corrupting immutable
+/// scrollback. So while the reply's trailing line is inside a code block
+/// ([`markdown::ends_inside_code`]) we render only the **complete** source (up to
+/// the last newline) and withhold the in-progress code line entirely. Prose has no
+/// such lookahead and still streams per wrapped row.
 #[must_use]
 pub fn stable_commit(text: &str, width: u16, committed: usize) -> (Vec<Line<'static>>, usize) {
-    let lines = message_lines(Role::Assistant, text, width);
+    let render = if markdown::ends_inside_code(text) {
+        &text[..text.rfind('\n').map_or(0, |i| i + 1)]
+    } else {
+        text
+    };
+    let lines = message_lines(Role::Assistant, render, width);
     let stable = lines.len().saturating_sub(1);
     let start = committed.min(stable);
     (lines[start..stable].to_vec(), stable.max(committed))
@@ -3556,6 +3653,61 @@ mod tests {
             }),
             "heading text is bold"
         );
+    }
+
+    #[test]
+    fn assistant_code_is_syntax_highlighted() {
+        let lines = message_lines(
+            Role::Assistant,
+            "```python\ndef f():\n    x = \"hi\"  # note\n```",
+            80,
+        );
+        let color_of = |needle: &str, want: Color| {
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .any(|s| s.content.contains(needle) && s.style.fg == Some(want))
+        };
+        assert!(color_of("def", CODE_KEYWORD_COLOR), "keyword magenta");
+        assert!(color_of("f", CODE_FUNCTION_COLOR), "call blue");
+        assert!(color_of("\"hi\"", CODE_STRING_COLOR), "string green");
+        assert!(color_of("# note", CODE_COMMENT_COLOR), "comment dim");
+    }
+
+    #[test]
+    fn streamed_code_never_recolours_a_committed_row() {
+        // A code line LONGER than the code width wraps into several rows; the
+        // highlighter's one-char lookahead (a call's `(`) must not recolour an
+        // already-committed row when it finally streams in. Compare the streamed
+        // commits' SPAN COLOURS (not just text) to the final render.
+        let full = "```py\nsome_really_long_function_name_here()\n```";
+        let width = 22; // code_width 18 → the long name wraps
+        let styled = |l: &Line| -> Vec<(String, Option<Color>)> {
+            l.spans
+                .iter()
+                .map(|s| (s.content.to_string(), s.style.fg))
+                .collect()
+        };
+        let expected: Vec<Vec<(String, Option<Color>)>> =
+            message_lines(Role::Assistant, full, width)
+                .iter()
+                .map(styled)
+                .collect();
+
+        // Stream char-by-char so a commit boundary lands mid-identifier.
+        let mut committed = 0usize;
+        let mut got: Vec<Vec<(String, Option<Color>)>> = Vec::new();
+        for end in 1..=full.len() {
+            if !full.is_char_boundary(end) {
+                continue;
+            }
+            let (lines, nc) = stable_commit(&full[..end], width, committed);
+            got.extend(lines.iter().map(styled));
+            committed = nc;
+        }
+        got.extend(final_commit(full, width, committed).iter().map(styled));
+
+        assert_eq!(got, expected, "a committed code row must never recolour");
     }
 
     #[test]

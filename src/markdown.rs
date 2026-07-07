@@ -68,11 +68,7 @@ pub fn parse_blocks(text: &str) -> Vec<Block> {
             Some((ch, len)) => {
                 // A closing fence matches the opening char, is at least as long,
                 // and carries no info string; otherwise it's a code line.
-                let closes = matches!(
-                    fence_marker(line),
-                    Some((c, l, info)) if c == ch && l >= len && info.trim().is_empty()
-                );
-                if closes {
+                if is_closing_fence(line, ch, len) {
                     blocks.push(Block::Code {
                         lang: lang.take(),
                         lines: std::mem::take(&mut code),
@@ -95,6 +91,46 @@ pub fn parse_blocks(text: &str) -> Vec<Block> {
         flush_prose(&mut prose, &mut blocks);
     }
     blocks
+}
+
+/// Whether `line` closes an open fence of char `ch` and length `len` — the same
+/// family, at least as long, and no info string.
+fn is_closing_fence(line: &str, ch: char, len: usize) -> bool {
+    matches!(
+        fence_marker(line),
+        Some((c, l, info)) if c == ch && l >= len && info.trim().is_empty()
+    )
+}
+
+/// Whether the **trailing (unterminated) line** of `text` sits inside an open
+/// fenced code block — i.e. streaming more of that line extends code, not prose.
+/// Only the complete (newline-terminated) lines are scanned; the trailing partial
+/// line's membership is the fence state entering it. The renderer uses this to
+/// withhold an in-progress code line from scrollback until it completes, since a
+/// code line's syntax highlight isn't final until the whole line is seen (a call's
+/// `(`, a `//` comment); prose has no such lookahead. See `ui::stable_commit`.
+#[must_use]
+pub fn ends_inside_code(text: &str) -> bool {
+    let mut open: Option<(char, usize)> = None;
+    let mut lines = text.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        if lines.peek().is_none() {
+            break; // the trailing partial line — its membership is `open`
+        }
+        match open {
+            None => {
+                if let Some((ch, len, _)) = fence_marker(line) {
+                    open = Some((ch, len));
+                }
+            }
+            Some((ch, len)) => {
+                if is_closing_fence(line, ch, len) {
+                    open = None;
+                }
+            }
+        }
+    }
+    open.is_some()
 }
 
 /// If `line` is a fence delimiter — after ≤3 leading spaces, 3+ of `` ` `` or
@@ -259,6 +295,21 @@ mod tests {
         assert_eq!(heading_level("  ## Indented"), Some((2, "Indented")));
         // Four leading spaces is indented code, not a heading.
         assert_eq!(heading_level("    # Not a heading"), None);
+    }
+
+    #[test]
+    fn ends_inside_code_tracks_the_trailing_line() {
+        // Trailing line inside an open fence → true.
+        assert!(ends_inside_code("```py\nx = 1"));
+        assert!(ends_inside_code("intro\n```py\nlong_line_still_streaming"));
+        // Trailing newline after code (next line is still code) → true.
+        assert!(ends_inside_code("```py\nx = 1\n"));
+        // Closed block, trailing prose → false.
+        assert!(!ends_inside_code("```py\nx = 1\n```\ndone"));
+        // No fences at all → false (prose streams per row).
+        assert!(!ends_inside_code("just some prose here"));
+        // A partial fence-opener with no newline yet is not yet code.
+        assert!(!ends_inside_code("intro\n```py"));
     }
 
     #[test]
