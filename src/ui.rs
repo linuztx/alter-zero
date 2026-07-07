@@ -375,6 +375,10 @@ const SPINNER_TAIL_COLOR: Color = Color::Rgb(0xC8, 0xC8, 0xC8);
 const SPINNER_SPAN_COUNT: usize = 8;
 /// Dim grey — the parenthesised metrics (`elapsed · tokens · thinking`).
 const STATUS_DETAIL_COLOR: Color = TOOL_DIM_COLOR;
+/// Amber — the `retrying {n}/{max}` clause. A warning hue (One-Dark yellow),
+/// distinct from the dim metrics and the error red: the request hasn't failed,
+/// it's recovering. See `docs/llm.md`.
+const STATUS_RETRY_COLOR: Color = Color::Rgb(0xE5, 0xC0, 0x7B);
 /// Trailing ellipsis after the working verb (`Working…`).
 const STATUS_ELLIPSIS: &str = "…";
 /// Arrow for output tokens while the reply streams.
@@ -2254,27 +2258,42 @@ fn spinner_spans(elapsed: Duration) -> Vec<Span<'static>> {
 /// boundary-stamped) [`TurnStatus`], so it is unit-tested with explicit values.
 #[must_use]
 pub fn status_line(status: &TurnStatus) -> Line<'static> {
-    let mut detail = format!("{}s", status.elapsed.as_secs());
-    if status.tokens > 0 {
-        let arrow = match status.arrow {
-            TokenArrow::Down => STATUS_ARROW_DOWN,
-            TokenArrow::Up => STATUS_ARROW_UP,
-        };
-        detail.push_str(&format!(" · {arrow} {} tokens", status.tokens));
-    }
-    if let Some(thinking) = status.thinking {
-        detail.push_str(&format!(" · Thinking for {}s", thinking.as_secs()));
-    }
-    detail.push_str(&format!(" · {STATUS_INTERRUPT_HINT}"));
+    let dim = Style::new().fg(STATUS_DETAIL_COLOR);
     let mut spans = spinner_spans(status.elapsed);
     spans.extend(shimmer_spans(
         &format!("{}{STATUS_ELLIPSIS}", status.verb),
         status.elapsed,
     ));
+    // The parenthesised metrics are dim, except the retry clause, which carries
+    // its own warning colour — so it is built as its own span between the
+    // (dim) token and hint clauses.
     spans.push(Span::styled(
-        format!(" ({detail})"),
-        Style::new().fg(STATUS_DETAIL_COLOR),
+        format!(" ({}s", status.elapsed.as_secs()),
+        dim,
     ));
+    if status.tokens > 0 {
+        let arrow = match status.arrow {
+            TokenArrow::Down => STATUS_ARROW_DOWN,
+            TokenArrow::Up => STATUS_ARROW_UP,
+        };
+        spans.push(Span::styled(
+            format!(" · {arrow} {} tokens", status.tokens),
+            dim,
+        ));
+    }
+    if let Some(retry) = status.retry {
+        spans.push(Span::styled(
+            format!(" · retrying {}/{}", retry.attempt, retry.max),
+            Style::new().fg(STATUS_RETRY_COLOR),
+        ));
+    }
+    if let Some(thinking) = status.thinking {
+        spans.push(Span::styled(
+            format!(" · Thinking for {}s", thinking.as_secs()),
+            dim,
+        ));
+    }
+    spans.push(Span::styled(format!(" · {STATUS_INTERRUPT_HINT})"), dim));
     Line::from(spans)
 }
 
@@ -3524,7 +3543,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{FileSearch, Message, ModelFetchError};
+    use crate::app::{FileSearch, Message, ModelFetchError, RetryInfo};
 
     /// Concatenate a line's span contents into its plain text.
     fn plain(line: &Line) -> String {
@@ -4498,6 +4517,7 @@ mod tests {
             elapsed: Duration::from_secs(elapsed),
             thinking: thinking.map(Duration::from_secs),
             shell: false,
+            retry: None,
         }
     }
 
@@ -4558,6 +4578,55 @@ mod tests {
         assert!(
             !not.contains("Thinking"),
             "dropped once thinking ends: {not:?}"
+        );
+    }
+
+    /// A live status carrying a retry indicator (verb fixed to "Working").
+    fn status_retrying(attempt: u32, max: u32, tokens: usize) -> TurnStatus {
+        let mut s = status(tokens, TokenArrow::Up, 5, None);
+        s.retry = Some(RetryInfo { attempt, max });
+        s
+    }
+
+    #[test]
+    fn status_line_shows_the_retry_count_between_tokens_and_the_hint() {
+        let text = plain(&status_line(&status_retrying(2, 3, 42)));
+        assert!(
+            text.ends_with("Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)"),
+            "the retry clause sits after the tokens and before the hint: {text:?}"
+        );
+    }
+
+    #[test]
+    fn status_line_shows_the_retry_count_even_with_no_tokens_yet() {
+        // A connection that fails before the first byte has only the input
+        // counted; the clause still shows.
+        let text = plain(&status_line(&status_retrying(1, 3, 0)));
+        assert!(text.contains("· retrying 1/3 ·"), "{text:?}");
+    }
+
+    #[test]
+    fn status_line_has_no_retry_clause_when_not_retrying() {
+        let text = plain(&status_line(&status(42, TokenArrow::Down, 5, None)));
+        assert!(!text.contains("retrying"), "{text:?}");
+    }
+
+    #[test]
+    fn the_retry_clause_stands_out_in_its_own_colour() {
+        let line = status_line(&status_retrying(1, 3, 0));
+        let retry = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("retrying"))
+            .expect("a span carrying the retry clause");
+        assert_eq!(
+            retry.style.fg,
+            Some(STATUS_RETRY_COLOR),
+            "the retry clause uses the warning colour, not the dim metric grey"
+        );
+        assert_ne!(
+            STATUS_RETRY_COLOR, STATUS_DETAIL_COLOR,
+            "the retry colour is distinct from the dim metrics"
         );
     }
 

@@ -41,6 +41,39 @@ agent proxy's custom CA is loaded at runtime from `SSL_CERT_FILE` (or
 `INLINE_TUI_CA_FILE`) and added as an extra trust root, so `rustls` keeps the
 build free of system OpenSSL.
 
+### Retrying a failed request (`llm::retry`)
+
+A network hiccup — DNS, TLS, proxy, a dropped connection, or a transient `429`/`5xx`
+— otherwise surfaced the raw `request failed: error sending request for url …`
+straight to the user and killed the turn. The backend now **retries up to
+[`MAX_RETRIES`](../src/llm/retry.rs) (3) times** before giving up, and shows the
+attempt live in the status line (`… · retrying 2/3 · …`, in amber).
+
+The policy lives in the pure, unit-tested [`llm::retry`](../src/llm/retry.rs):
+
+- **`is_retryable`** — transport failures (`LlmError::Http`) and the transient
+  server statuses (`408`, `429`, `500`, `502`, `503`, `504`) retry; a client
+  error (`4xx` auth/not-found/bad-request), a decode failure, and a cancellation
+  do not (retrying those just fails the same way).
+- **`retry_backoff`** — exponential from 500 ms, doubling each retry and capped at
+  8 s, so the three retries wait **500 ms → 1 s → 2 s**. Interruptible
+  (`sleep_cancellable`), so an Esc/quit during a backoff still reaps within ~50 ms.
+- **`next_step`** — retry only a retryable failure that **emitted no content yet**
+  (`emitted == false`) and still has budget (`attempt < max`). This is the
+  correctness gate: once any byte has streamed, restarting the request would
+  **duplicate** it, so a mid-stream drop is surfaced rather than retried.
+- **`run_stream`** — the generic driver `backend.rs::spawn` wraps its one
+  streaming attempt in: it announces each retry as a
+  [`StreamEvent::Retrying { attempt, max }`](../src/stream.rs), backs off, and
+  re-runs the attempt, then sends the terminal `StreamDone` / `Error` (or nothing
+  on a cancel). It is generic over the attempt and the sleep, so the whole loop is
+  unit-tested with fakes and **no network**.
+
+The loop turns `Retrying` into `App::set_retry`, which sets `TurnStatus::retry`;
+the next streamed `Chunk`/`ThinkingChunk` clears it (the request recovered). The
+turn stays alive throughout — nothing commits to scrollback during the retries,
+so a resize/Ctrl+O repaint is unaffected.
+
 ### Reasoning (`ThinkingSplitter`)
 
 Some providers stream reasoning as a native `reasoning`/`reasoning_content` delta;

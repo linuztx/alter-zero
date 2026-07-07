@@ -28,7 +28,7 @@ Done for 20s                       (NEW: committed turn summary)
 ## What shows, and when
 
 The live line is
-`(●•·   ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s] · esc to interrupt)`:
+`(●•·   ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · retrying {a}/{max}][ · Thinking for {m}s] · esc to interrupt)`:
 
 | phase                | line                                                                          |
 |----------------------|-------------------------------------------------------------------------------|
@@ -36,6 +36,7 @@ The live line is
 | streaming text       | `(•●    ) Working… (3s · ↓ 100 tokens · esc to interrupt)`                     |
 | streaming + thinking | `(·•●   ) Working… (3s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)`   |
 | after a tool result  | `( ·•●  ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
+| retrying a failure   | `( ·•●  ) Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`       |
 | finished (committed) | `Done for 20s`                                                                 |
 | interrupted (Esc)    | *no summary* — the red `Conversation interrupted` notice (see `docs/interrupt.md`) |
 
@@ -80,6 +81,12 @@ real backend's own latency plays the same role.
   So a turn opens `↑` (the counted input during the pre-stream pause), flips `↓`
   on the first chunk, and back to `↑` after each tool; the count keeps growing
   either way.
+- **retrying {a}/{max}** — shown in **amber** (`STATUS_RETRY_COLOR`, the only
+  non-dim clause) *only while a failed request is being retried*: the
+  connection/send failed (or a transient `429`/`5xx` came back) before any
+  content streamed, so the real backend is reconnecting (`llm::retry`, see
+  `docs/llm.md`). `App::set_retry` sets it from a `StreamEvent::Retrying`; the
+  next streamed chunk clears it (the request recovered). The dummy never retries.
 - **Thinking for {m}s** — shown *only while actively thinking*; dropped once
   thinking ends.
 - **esc to interrupt** — the closing clause, always present while the line
@@ -108,19 +115,23 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
 ## State (App)
 
 - `TokenArrow { Down, Up }`.
-- `TurnStatus { verb, done_verb, tokens, arrow, elapsed, thinking }`
+- `RetryInfo { attempt, max }` — a live retry indicator (see `docs/llm.md`).
+- `TurnStatus { verb, done_verb, tokens, arrow, elapsed, thinking, shell, retry }`
   (`elapsed: Duration` / `thinking: Option<Duration>` are written by the boundary
   each frame; `thinking` is `Some` only while thinking. A `Duration` rather than
   whole seconds so one value drives both the displayed seconds and the shimmer's
-  sub-second phase).
+  sub-second phase. `retry: Option<RetryInfo>` is `Some` only while a failed
+  request is being retried).
 - `App.status: Option<TurnStatus>` — `Some` from `begin_stream` to turn end
   (`turn_active()` == `status.is_some()`).
 - `App.turn_count: usize` — drives verb selection.
 - `begin_stream` creates the status (picks verbs, increments the counter);
   `count_user_input(text)` adds the user message's tokens (`↑`) right after, so
   the pre-stream pause shows the input count uploaded; `push_chunk` adds tokens
-  (`↓`); `push_thinking` adds tokens (`↓`, the reply
-  buffer untouched — reasoning text is opaque); `end_tool` adds tokens (`↑`); `fail_stream`
+  (`↓`, and clears any `retry`); `push_thinking` adds tokens (`↓`, the reply
+  buffer untouched — reasoning text is opaque, and clears any `retry`);
+  `set_retry(a, max)` sets the amber `retrying a/max` clause (from a
+  `StreamEvent::Retrying`); `end_tool` adds tokens (`↑`); `fail_stream`
   clears the status (an error is the summary — no "Done" line); `interrupt_turn`
   clears it the same way (the `Conversation interrupted` notice is the summary);
   `end_turn(secs)` records the summary and clears the status.

@@ -12,6 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::config::ModelConfig;
 use super::openai::OpenAiClient;
+use super::retry::{self, AttemptResult, MAX_RETRIES};
 use super::{ChatMessage, LlmError};
 use crate::stream::{CancelToken, ReplySource, StreamEvent};
 
@@ -89,42 +90,53 @@ impl ReplySource for LlmBackend {
         let image_count = images.len();
         thread::spawn(move || {
             let messages = build_messages(system.as_deref(), &prompt, image_count);
-            // Track the thinking phase so a reasoning burst opens exactly one
-            // ThinkingStart and the first response text after it closes with a
-            // ThinkingEnd — the pairing the status line expects.
-            let mut thinking = false;
-            let result = client.stream_chat(messages, &cancel, |delta| {
-                if !delta.reasoning.is_empty() {
-                    if !thinking {
-                        thinking = true;
-                        let _ = tx.send(StreamEvent::ThinkingStart);
+            // One streaming attempt: stream the deltas as events and report the
+            // outcome plus whether it emitted any content. The retry driver
+            // (`retry::run_stream`) calls this again — after announcing a
+            // `Retrying` event and backing off — only for a retryable failure
+            // that emitted nothing (a connection/send failure before the first
+            // byte), so a retry can never duplicate streamed text. See
+            // `docs/llm.md`.
+            let attempt = || {
+                let mut emitted = false;
+                // Track the thinking phase so a reasoning burst opens exactly one
+                // ThinkingStart and the first response text after it closes with a
+                // ThinkingEnd — the pairing the status line expects.
+                let mut thinking = false;
+                let result = client.stream_chat(messages.clone(), &cancel, |delta| {
+                    if !delta.reasoning.is_empty() {
+                        emitted = true;
+                        if !thinking {
+                            thinking = true;
+                            let _ = tx.send(StreamEvent::ThinkingStart);
+                        }
+                        let _ = tx.send(StreamEvent::ThinkingChunk(delta.reasoning));
                     }
-                    let _ = tx.send(StreamEvent::ThinkingChunk(delta.reasoning));
-                }
-                if !delta.response.is_empty() {
-                    if thinking {
-                        thinking = false;
-                        let _ = tx.send(StreamEvent::ThinkingEnd);
+                    if !delta.response.is_empty() {
+                        emitted = true;
+                        if thinking {
+                            thinking = false;
+                            let _ = tx.send(StreamEvent::ThinkingEnd);
+                        }
+                        let _ = tx.send(StreamEvent::Chunk(delta.response));
                     }
-                    let _ = tx.send(StreamEvent::Chunk(delta.response));
+                });
+                // A stream that ends while still "thinking" (reasoning only, no
+                // response) must still close the phase. Thinking implies content
+                // was emitted, so this only ever fires on the final attempt.
+                if thinking {
+                    let _ = tx.send(StreamEvent::ThinkingEnd);
                 }
-            });
-            // A stream that ends while still "thinking" (reasoning only, no
-            // response) must still close the phase.
-            if thinking {
-                let _ = tx.send(StreamEvent::ThinkingEnd);
-            }
-            match result {
-                Ok(_) => {
-                    let _ = tx.send(StreamEvent::StreamDone);
-                }
-                // A cancel is a silent stop, like the dummy — the loop's
-                // interrupt path commits the notice, not the backend.
-                Err(LlmError::Cancelled) => {}
-                Err(e) => {
-                    let _ = tx.send(StreamEvent::Error(e.to_string()));
-                }
-            }
+                let outcome = match result {
+                    Ok(_) => AttemptResult::Ok,
+                    Err(LlmError::Cancelled) => AttemptResult::Cancelled,
+                    Err(e) => AttemptResult::Failed(e),
+                };
+                (outcome, emitted)
+            };
+            // The driver sends the terminal StreamDone/Error (or nothing on a
+            // cancel) and every Retrying announcement itself.
+            retry::run_stream(&tx, &cancel, MAX_RETRIES, attempt, retry::sleep_cancellable);
         })
     }
 

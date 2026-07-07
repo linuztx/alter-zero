@@ -147,6 +147,23 @@ pub struct TurnStatus {
     /// is its own record ([`App::end_turn`] returns `None`). See
     /// `docs/shell-command.md`.
     pub shell: bool,
+    /// Set while a failed request is being retried — the connection/send failed
+    /// (or a transient status came back) before any content streamed, so the
+    /// backend is reconnecting. Rendered as a `retrying {attempt}/{max}` clause
+    /// in the status line and cleared the moment content arrives ([`App::push_chunk`]
+    /// / [`App::push_thinking`]). Set by [`App::set_retry`] from the backend's
+    /// [`crate::stream::StreamEvent::Retrying`]. See `docs/llm.md`.
+    pub retry: Option<RetryInfo>,
+}
+
+/// A live retry indicator for the status line: the 1-based retry number and the
+/// ceiling (`retrying {attempt}/{max}`). See [`TurnStatus::retry`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetryInfo {
+    /// Which retry this is (1-based — the first retry is `1`).
+    pub attempt: u32,
+    /// The maximum number of retries ([`crate::llm::retry::MAX_RETRIES`]).
+    pub max: u32,
 }
 
 /// A finished turn's summary, committed to scrollback as a dim `"{verb} for
@@ -3373,6 +3390,7 @@ impl App {
             elapsed: Duration::ZERO,
             thinking: None,
             shell: false,
+            retry: None,
         });
     }
 
@@ -3411,6 +3429,7 @@ impl App {
             elapsed: Duration::ZERO,
             thinking: None,
             shell: true,
+            retry: None,
         });
         self.start_tool(command, "");
         if let Some(tool) = self.current_tool.as_mut() {
@@ -3445,6 +3464,9 @@ impl App {
         if let Some(status) = self.status.as_mut() {
             status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
+            // Content arrived, so the retrying request just succeeded — drop the
+            // live retry indicator.
+            status.retry = None;
         }
     }
 
@@ -3457,6 +3479,20 @@ impl App {
         if let Some(status) = self.status.as_mut() {
             status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
+            // Reasoning is content too — the retrying request recovered.
+            status.retry = None;
+        }
+    }
+
+    /// Record that a failed request is being retried, so the status line shows
+    /// `retrying {attempt}/{max}` while the backend reconnects. The 1-based
+    /// `attempt` and the ceiling `max` come straight from the backend's
+    /// [`crate::stream::StreamEvent::Retrying`]. Cleared by the next
+    /// [`push_chunk`](App::push_chunk)/[`push_thinking`](App::push_thinking) once
+    /// content arrives. No-op when no turn is in flight. See `docs/llm.md`.
+    pub fn set_retry(&mut self, attempt: u32, max: u32) {
+        if let Some(status) = self.status.as_mut() {
+            status.retry = Some(RetryInfo { attempt, max });
         }
     }
 
@@ -6056,6 +6092,50 @@ mod tests {
         // No turn → nothing to write.
         app.set_status_times(Duration::from_secs(5), Some(Duration::from_secs(1)));
         assert!(app.status().is_none());
+    }
+
+    #[test]
+    fn a_fresh_turn_has_no_retry() {
+        let mut app = App::new();
+        app.begin_stream();
+        assert_eq!(app.status().unwrap().retry, None);
+    }
+
+    #[test]
+    fn set_retry_records_the_attempt_on_the_status() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.set_retry(2, 3);
+        assert_eq!(
+            app.status().unwrap().retry,
+            Some(RetryInfo { attempt: 2, max: 3 })
+        );
+    }
+
+    #[test]
+    fn set_retry_is_a_no_op_when_idle() {
+        let mut app = App::new();
+        app.set_retry(1, 3);
+        assert!(app.status().is_none());
+    }
+
+    #[test]
+    fn streamed_content_clears_the_retry_indicator() {
+        // A retry means a request failed before any byte; once content flows the
+        // attempt has succeeded, so the live "retrying" indicator must clear.
+        let mut app = App::new();
+        app.begin_stream();
+        app.set_retry(1, 3);
+        app.push_chunk("hello");
+        assert_eq!(app.status().unwrap().retry, None, "a chunk clears it");
+
+        app.set_retry(2, 3);
+        app.push_thinking("hmm");
+        assert_eq!(
+            app.status().unwrap().retry,
+            None,
+            "a reasoning delta clears it too"
+        );
     }
 
     #[test]

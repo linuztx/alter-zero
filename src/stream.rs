@@ -51,6 +51,12 @@ pub enum StreamEvent {
     /// The model's thinking phase ended. Always follows a
     /// [`StreamEvent::ThinkingStart`]; drops the `Thinking for Ns` suffix.
     ThinkingEnd,
+    /// A failed request is being retried (the connection/send failed before any
+    /// content streamed, or the server returned a transient status). Carries the
+    /// 1-based retry number and the ceiling, shown live in the status line as
+    /// `retrying {attempt}/{max}`. Only a real backend sends this (see
+    /// `llm::retry`); the loop shows it in the status and keeps the turn alive.
+    Retrying { attempt: u32, max: u32 },
     /// The backend failed; carries a human-readable message to show the user.
     Error(String),
     /// The reply is complete.
@@ -670,6 +676,7 @@ mod tests {
                     saw_done = true;
                     break;
                 }
+                StreamEvent::Retrying { .. } => panic!("the dummy never retries"),
                 StreamEvent::Error(e) => panic!("dummy never errors, got {e:?}"),
             }
         }

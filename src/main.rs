@@ -1506,6 +1506,13 @@ fn on_stream_event(
             clocks.thinking_start = None;
             Ok(true)
         }
+        StreamEvent::Retrying { attempt, max } => {
+            // A failed request is being retried (the connection/send failed
+            // before any content streamed). Show it live in the status line;
+            // nothing commits to scrollback — the turn is still in flight.
+            app.set_retry(attempt, max);
+            Ok(false)
+        }
         StreamEvent::Error(message) => {
             if let Some(failure) = app.fail_stream(&message)
                 && committing
