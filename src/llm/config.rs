@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 /// The default `providers.toml` shipped in the repo root, embedded so the app
-/// always has the three reference providers even when no file is found.
+/// always has the reference providers even when no file is found.
 const DEFAULT_PROVIDERS_TOML: &str = include_str!("../../providers.toml");
 
 /// One `[providers.<id>]` block. Unknown keys are ignored so the file can carry
@@ -219,7 +219,6 @@ mod tests {
         let file = ProvidersFile::builtin();
         let ids = file.ids();
         assert!(ids.contains(&"openrouter".to_string()));
-        assert!(ids.contains(&"sambanova".to_string()));
         assert!(ids.contains(&"a0_venice".to_string()));
     }
 
@@ -254,15 +253,30 @@ api_base = "https://x/v1"
     }
 
     #[test]
-    fn models_base_prefers_api_model_base() {
-        let file = ProvidersFile::builtin();
-        // a0_venice has a distinct api_model_base from its chat api_base.
-        let venice = file.get("a0_venice").unwrap();
+    fn models_base_prefers_api_model_base_then_falls_back() {
+        // a0_venice has a distinct api_model_base (model listing goes to Venice
+        // directly) from its chat api_base (the Agent Zero proxy, which doesn't
+        // serve /models) — the two must not be conflated.
+        let builtin = ProvidersFile::builtin();
+        let venice = builtin.get("a0_venice").unwrap();
         assert_eq!(venice.models_base(), "https://api.venice.ai/api/v1");
         assert_eq!(
             venice.kwargs.api_base,
             "https://api.agent-zero.ai/venice/v1"
         );
+
+        // A provider with no api_model_base falls back to its chat api_base
+        // (slash trimmed).
+        let text = r#"
+[providers.single]
+name = "Single"
+[providers.single.kwargs]
+api_base = "https://one.example/v1/"
+"#;
+        let file = ProvidersFile::parse(text).unwrap();
+        let single = file.get("single").unwrap();
+        assert!(single.api_model_base.is_none());
+        assert_eq!(single.models_base(), "https://one.example/v1");
     }
 
     #[test]

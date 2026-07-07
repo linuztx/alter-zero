@@ -11,12 +11,16 @@
 #     from; it defaults to `<ID_UPPERCASE>_API_KEY` (e.g. `OPENROUTER_API_KEY`).
 #
 # The active provider/model is chosen with `INLINE_TUI_PROVIDER` /
-# `INLINE_TUI_MODEL`, or interactively with the `/model` picker. With no API key
-# configured — or with `INLINE_TUI_DUMMY=1` — the app falls back to the built-in
-# dummy backend, so it always runs offline.
+# `INLINE_TUI_MODEL`, or interactively with the `/model` picker, and persists to
+# ~/.inline-tui/config.json between runs. With no API key configured — or with
+# `INLINE_TUI_DUMMY=1` — the app falls back to the built-in dummy backend, so it
+# always runs offline. Add a key in-app with `/login` (saved to ~/.inline-tui/.env).
 
 [providers.a0_venice]
 name = "Agent Zero API"
+# Chat completions go through the Agent Zero proxy (kwargs.api_base below), but
+# its `/models` isn't served there — the model list comes from Venice directly,
+# which the `sk-a0-…` key is also valid against. So the two bases differ.
 api_model_base = "https://api.venice.ai/api/v1"
 
 [providers.a0_venice.kwargs]
@@ -32,10 +36,3 @@ api_model_base = "https://openrouter.ai/api/v1"
 
 [providers.openrouter.kwargs]
 api_base = "https://openrouter.ai/api/v1"
-
-[providers.sambanova]
-name = "Sambanova"
-api_model_base = "https://api.sambanova.ai/v1"
-
-[providers.sambanova.kwargs]
-api_base = "https://api.sambanova.ai/v1"

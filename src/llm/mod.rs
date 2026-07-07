@@ -18,6 +18,7 @@ pub mod config;
 pub mod keystore;
 pub mod models;
 pub mod openai;
+pub mod settings;
 pub mod thinking;
 
 use std::time::Duration;
@@ -26,6 +27,7 @@ pub use backend::LlmBackend;
 pub use config::{ModelConfig, ProvidersFile, Selection};
 pub use keystore::EnvFile;
 pub use models::ModelEntry;
+pub use settings::Settings;
 
 /// One message in a chat-completion request.
 #[derive(Debug, Clone, serde::Serialize)]

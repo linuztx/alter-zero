@@ -199,18 +199,15 @@ const RESUME_TOOLBAR_MIN_GAP: usize = 2;
 // dim `[provider]` tag, a green ✓ on the active model, then a `(n/total)`
 // counter and a `Model Name:` line — the shape of the user's mock. ---
 
-/// Gold — the onboarding header banner (the `/model` picker is headerless; the
-/// `/login` flow reuses this for its step prompt). See `docs/llm.md`.
-const MODEL_HEADER_COLOR: Color = Color::Rgb(0xD7, 0xAF, 0x5F);
-/// The two-space inset shared by every picker row (header, search, list rows,
+/// The two-space inset shared by every picker row (search, list rows,
 /// counter, name) so the content sits off the frame's left edge.
 const MODEL_INDENT: &str = "  ";
-/// The search line's prompt glyph (cyan), the `>` the query types after.
-const MODEL_PROMPT: &str = "> ";
-/// Cyan — the `>` prompt and the selected row (the palette-selection accent).
+/// The search line's prompt glyph (cyan), the `❯` the query types after.
+const MODEL_PROMPT: &str = "❯ ";
+/// Cyan — the `❯` prompt and the selected row (the palette-selection accent).
 const MODEL_SELECTED_COLOR: Color = MENU_SELECTED_COLOR;
 /// The selected row's marker; unselected rows get spaces the same width.
-const MODEL_MARKER: &str = "❯ ";
+const MODEL_MARKER: &str = "→ ";
 /// Light grey — an unselected model id (readable but quieter than the selection).
 const MODEL_ID_COLOR: Color = Color::Rgb(0xC8, 0xC8, 0xC8);
 /// Dim — the `[provider]` tag, the counter, and the `Model Name:` line.
@@ -230,17 +227,23 @@ const MODEL_LOADING: &str = "Loading models…";
 const MODEL_NONE: &str = "No models available";
 /// The list placeholder when the query matches nothing.
 const MODEL_NO_MATCH: &str = "No matching models";
+/// The list placeholder when no provider has a key yet ([`ModelLoad::NeedsLogin`]) —
+/// shown cyan (an actionable hint, not a red error) pointing at `/login`.
+const MODEL_LOGIN_HINT: &str = "No API key yet — run /login to add one";
 
 // --- The `/login` API-key onboarding flow (docs/llm.md). A two-step inline
 // picker sharing the model picker's framed look and colours: step 1 lists the
-// providers to choose from, step 2 collects the key masked. All styling reuses
-// the `MODEL_*` consts (indent, prompt, cyan selection, dim meta, green ✓,
-// `❯` marker, gold header) plus the `LOGIN_*` strings/geometry below. ---
+// providers to choose from (headerless, like `/model`), step 2 collects the key
+// masked under a periwinkle prompt. All styling reuses the `MODEL_*` consts
+// (indent, `❯` prompt, cyan selection, dim meta, green ✓, `→` marker) plus the
+// `LOGIN_*` strings/geometry below. ---
 
-/// The gold header on the provider-selection step.
-const LOGIN_PROVIDER_HEADER: &str = "Add a provider API key";
-/// The dim hint under the provider list — where the key lands.
-const LOGIN_PROVIDER_HINT: &str = "Keys are saved to .env in the working directory";
+/// Periwinkle (Claude Code's accent, `#96a0d5`) — the `Enter your … API key`
+/// prompt on the key-entry step.
+const LOGIN_KEY_PROMPT_COLOR: Color = Color::Rgb(0x96, 0xA0, 0xD5);
+/// The dim hint under the provider list, prefixing the real `.env` path
+/// (`onboarding.env_path`) so it names where the key actually lands.
+const LOGIN_PROVIDER_HINT_PREFIX: &str = "Keys are saved to ";
 /// The dim hint under the key-entry field.
 const LOGIN_KEY_HINT: &str = "Enter to save · Esc to go back";
 /// The dim placeholder shown in the key field before anything is entered.
@@ -251,17 +254,17 @@ const LOGIN_MASK_CHAR: char = '•';
 const LOGIN_NO_MATCH: &str = "No matching providers";
 /// The most provider rows shown at once (longer lists scroll, like the palette).
 const LOGIN_MENU_MAX_ROWS: u16 = 8;
-/// Fixed rows framing the **provider** step: top rule, header, gap, search, gap,
-/// (list), counter, hint, bottom rule.
-const LOGIN_PROVIDER_CHROME_ROWS: u16 = 8;
-/// The row the provider-step `>` filter sits on — top(0) header(1) gap(2)
-/// search(3). Shared by [`render_key_onboarding`] and [`cursor_position`].
-const LOGIN_SEARCH_ROW: u16 = 3;
-/// Total rows of the **key** step (no list): top rule, header, gap, sub-label,
-/// input, gap, hint, bottom rule.
-const LOGIN_KEY_ROWS: u16 = 8;
-/// The row the key-entry `>` field sits on — top(0) header(1) gap(2)
-/// sub-label(3) input(4).
+/// Fixed rows framing the **provider** step (headerless): top rule, gap, search,
+/// gap, (list), counter, gap, hint, gap, bottom rule.
+const LOGIN_PROVIDER_CHROME_ROWS: u16 = 9;
+/// The row the provider-step `❯` filter sits on — top(0) gap(1) search(2).
+/// Shared by [`render_key_onboarding`] and [`cursor_position`].
+const LOGIN_SEARCH_ROW: u16 = 2;
+/// Total rows of the **key** step (no list): top rule, gap, prompt, gap, input,
+/// gap, hint, gap, bottom rule.
+const LOGIN_KEY_ROWS: u16 = 9;
+/// The row the key-entry `❯` field sits on — top(0) gap(1) prompt(2) gap(3)
+/// input(4).
 const LOGIN_KEY_INPUT_ROW: u16 = 4;
 
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
@@ -591,9 +594,9 @@ pub fn live_height(
 
 /// The fixed rows framing the inline `/model` picker's list: the top rule, a
 /// gap, the search line, a gap, then below the list a counter, a gap, the
-/// model-name line, and the bottom rule (headerless — the "Showing models…"
+/// model-name line, a gap, and the bottom rule (headerless — the "Showing models…"
 /// banner was dropped). The list rows sit between them (see [`model_list_rows`]).
-const MODEL_CHROME_ROWS: u16 = 8;
+const MODEL_CHROME_ROWS: u16 = 9;
 
 /// How many rows the inline `/model` picker's **list** occupies: one placeholder
 /// row while loading / errored / empty, else the match count capped at
@@ -609,7 +612,7 @@ fn model_list_rows(picker: &ModelPicker) -> u16 {
                 (n as u16).min(MODEL_MENU_MAX_ROWS)
             }
         }
-        // Loading / Error → a single placeholder row.
+        // Loading / Error / NeedsLogin → a single placeholder row.
         _ => 1,
     }
 }
@@ -2384,6 +2387,12 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
             ERROR_COLOR,
             width,
         )],
+        // No key configured yet — an inviting cyan hint, not a red error.
+        ModelLoad::NeedsLogin => vec![model_placeholder_row(
+            MODEL_LOGIN_HINT,
+            MODEL_SELECTED_COLOR,
+            width,
+        )],
         ModelLoad::Ready => {
             let matches = picker.matches();
             if matches.is_empty() {
@@ -2457,8 +2466,8 @@ fn model_rule(width: u16) -> Line<'static> {
 }
 
 /// Render the **inline** `/model` picker into the live region — the shape of the
-/// user's mock: a top rule, the `>` search line, the scrolling model list (each
-/// row `❯ id [provider] ✓`), a `(n/total)` counter, the `Model Name:` line, and
+/// user's mock: a top rule, the `❯` search line, the scrolling model list (each
+/// row `→ id [provider] ✓`), a `(n/total)` counter, the `Model Name:` line, and
 /// a bottom rule. Headerless (the "Showing models…" banner was dropped). Pure —
 /// `render_live` paints this in place of the composer. See `docs/llm.md`.
 pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
@@ -2471,6 +2480,7 @@ pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
         counter,
         _gap3,
         name,
+        _gap4,
         bottom_rule,
     ] = Layout::vertical([
         Constraint::Length(1), // top rule
@@ -2481,13 +2491,14 @@ pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
         Constraint::Length(1), // counter
         Constraint::Length(1), // gap
         Constraint::Length(1), // model name
+        Constraint::Length(1), // gap
         Constraint::Length(1), // bottom rule
     ])
     .areas(area);
 
     Paragraph::new(model_rule(area.width)).render(top_rule, buf);
 
-    // The `>` search line — the cyan prompt then the query.
+    // The `❯` search line — the cyan prompt then the query.
     Paragraph::new(Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
@@ -2589,6 +2600,17 @@ fn login_counter_line(onboarding: &KeyOnboarding) -> Line<'static> {
     ])
 }
 
+/// The key-step prompt naming the provider — `Enter your {name} API key`, but
+/// avoiding a doubled "API" when the name already ends in it (so "Agent Zero
+/// API" reads `Enter your Agent Zero API key`, not `… API API key`).
+fn login_key_prompt(name: &str) -> String {
+    if name.trim_end().to_ascii_lowercase().ends_with("api") {
+        format!("Enter your {name} key")
+    } else {
+        format!("Enter your {name} API key")
+    }
+}
+
 /// The `/login` masked key field: the entered key rendered as [`LOGIN_MASK_CHAR`]
 /// dots (one per character, truncated to width), or a dim placeholder when empty.
 fn login_key_field(onboarding: &KeyOnboarding, width: u16) -> Line<'static> {
@@ -2620,44 +2642,41 @@ pub fn render_key_onboarding(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboa
     }
 }
 
-/// The provider-selection step: top rule, gold header, `>` filter, the provider
-/// list, a `(n/total)` counter, a dim `saved to .env` hint, bottom rule.
+/// The provider-selection step (headerless, like `/model`): top rule, gap, `❯`
+/// filter, gap, the provider list, a `(n/total)` counter, gap, a dim
+/// `Keys are saved to {.env path}` hint, gap, bottom rule.
 fn render_login_provider_step(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {
     let [
         top_rule,
-        header,
         _gap1,
         search,
         _gap2,
         list,
         counter,
+        _gap3,
         hint,
+        _gap4,
         bottom_rule,
     ] = Layout::vertical([
         Constraint::Length(1), // top rule
-        Constraint::Length(1), // header
         Constraint::Length(1), // gap
         Constraint::Length(1), // search
         Constraint::Length(1), // gap
         Constraint::Min(0),    // provider list
         Constraint::Length(1), // counter
+        Constraint::Length(1), // gap
         Constraint::Length(1), // hint
+        Constraint::Length(1), // gap
         Constraint::Length(1), // bottom rule
     ])
     .areas(area);
 
     Paragraph::new(model_rule(area.width)).render(top_rule, buf);
-    Paragraph::new(model_placeholder_row(
-        LOGIN_PROVIDER_HEADER,
-        MODEL_HEADER_COLOR,
-        area.width,
-    ))
-    .render(header, buf);
     Paragraph::new(login_prompt_line(Line::from(onboarding.query.clone()))).render(search, buf);
     Paragraph::new(login_provider_list_lines(onboarding, area.width)).render(list, buf);
     Paragraph::new(login_counter_line(onboarding)).render(counter, buf);
     Paragraph::new(model_placeholder_row(
-        LOGIN_PROVIDER_HINT,
+        &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),
         MODEL_META_COLOR,
         area.width,
     ))
@@ -2665,27 +2684,29 @@ fn render_login_provider_step(area: Rect, buf: &mut Buffer, onboarding: &KeyOnbo
     Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
 }
 
-/// The key-entry step: top rule, gold `Enter your {provider} API key` header, a
-/// dim `Saved to {ENV} in .env` sub-label, the masked `>` field, a dim
-/// `Enter to save · Esc to go back` hint, bottom rule.
+/// The key-entry step: top rule, gap, a periwinkle `Enter your {provider} API
+/// key` prompt, gap, the masked `❯` field, gap, a dim
+/// `Enter to save · Esc to go back` hint, gap, bottom rule.
 fn render_login_key_step(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {
     let [
         top_rule,
-        header,
         _gap1,
-        sub_label,
-        field,
+        prompt,
         _gap2,
+        field,
+        _gap3,
         hint,
+        _gap4,
         bottom_rule,
     ] = Layout::vertical([
         Constraint::Length(1), // top rule
-        Constraint::Length(1), // header
         Constraint::Length(1), // gap
-        Constraint::Length(1), // sub-label
+        Constraint::Length(1), // prompt
+        Constraint::Length(1), // gap
         Constraint::Length(1), // masked field
         Constraint::Length(1), // gap
         Constraint::Length(1), // hint
+        Constraint::Length(1), // gap
         Constraint::Length(1), // bottom rule
     ])
     .areas(area);
@@ -2693,23 +2714,14 @@ fn render_login_key_step(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboardin
     let name = onboarding
         .chosen_provider()
         .map_or("the provider", |c| c.name.as_str());
-    let env_var = onboarding
-        .chosen_provider()
-        .map_or("", |c| c.env_var.as_str());
 
     Paragraph::new(model_rule(area.width)).render(top_rule, buf);
     Paragraph::new(model_placeholder_row(
-        &format!("Enter your {name} API key"),
-        MODEL_HEADER_COLOR,
+        &login_key_prompt(name),
+        LOGIN_KEY_PROMPT_COLOR,
         area.width,
     ))
-    .render(header, buf);
-    Paragraph::new(model_placeholder_row(
-        &format!("Saved to {env_var} in .env"),
-        MODEL_META_COLOR,
-        area.width,
-    ))
-    .render(sub_label, buf);
+    .render(prompt, buf);
     Paragraph::new(login_key_field(onboarding, area.width)).render(field, buf);
     Paragraph::new(model_placeholder_row(
         LOGIN_KEY_HINT,
@@ -6539,7 +6551,7 @@ mod tests {
         assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
         assert!(row(&buf, 1, 60).trim().is_empty(), "no header banner");
         // The search line moved up to row 2.
-        assert!(row(&buf, MODEL_SEARCH_ROW, 60).contains('>'), "search line");
+        assert!(row(&buf, MODEL_SEARCH_ROW, 60).contains('❯'), "search line");
     }
 
     #[test]
@@ -6549,8 +6561,8 @@ mod tests {
         let mut buf = buffer(60, 20);
         render_model_picker(buf.area, &mut buf, &picker);
         let search = row(&buf, MODEL_SEARCH_ROW, 60);
-        assert!(search.contains("> haiku"), "{search:?}");
-        // The `>` prompt is cyan.
+        assert!(search.contains("❯ haiku"), "{search:?}");
+        // The `❯` prompt is cyan.
         assert_eq!(buf[(2, MODEL_SEARCH_ROW)].fg, MODEL_SELECTED_COLOR);
     }
 
@@ -6562,7 +6574,7 @@ mod tests {
         render_model_picker(buf.area, &mut buf, &picker);
         // First list row (y = MODEL_SEARCH_ROW + 2 = 4).
         let first = row(&buf, 4, 60);
-        assert!(first.starts_with("❯ anthropic/claude-3-haiku"), "{first:?}");
+        assert!(first.starts_with("→ anthropic/claude-3-haiku"), "{first:?}");
         assert!(first.contains("[openrouter]"), "provider tag: {first:?}");
         // The selected marker is cyan.
         assert_eq!(buf[(0, 4)].fg, MODEL_SELECTED_COLOR);
@@ -6574,10 +6586,10 @@ mod tests {
     #[test]
     fn model_picker_counter_and_name_reflect_the_selection() {
         let picker = model_picker(three_models(), 2, "x");
-        // Size the buffer to the picker's natural height (8 chrome + 3 list),
+        // Size the buffer to the picker's natural height (9 chrome + 3 list),
         // like the boundary does — otherwise the Min(0) list would expand and
         // push the counter/name rows down.
-        let mut buf = buffer(60, 11);
+        let mut buf = buffer(60, 12);
         render_model_picker(buf.area, &mut buf, &picker);
         // Counter row = top(0) gap(1) search(2) gap(3) list(4,5,6) → 7.
         let counter = row(&buf, 7, 60);
@@ -6588,8 +6600,9 @@ mod tests {
             name.contains("Model Name: MoonshotAI: Kimi K2.6"),
             "{name:?}"
         );
-        // Bottom rule on the last row.
-        assert!(row(&buf, 10, 60).starts_with('─'), "bottom rule");
+        // A trailing blank gap (the user's mock), then the bottom rule last.
+        assert!(row(&buf, 10, 60).trim().is_empty(), "trailing gap");
+        assert!(row(&buf, 11, 60).starts_with('─'), "bottom rule");
     }
 
     #[test]
@@ -6633,8 +6646,8 @@ mod tests {
         let mut app = App::new();
         app.open_model_picker("a");
         app.set_models(three_models());
-        // 8 chrome rows + 3 list rows.
-        assert_eq!(model_picker_height(&app, 40), Some(11));
+        // 9 chrome rows + 3 list rows.
+        assert_eq!(model_picker_height(&app, 40), Some(12));
         // Clamped to the terminal height.
         assert_eq!(model_picker_height(&app, 8), Some(8));
         // None when the picker is closed.
@@ -6649,10 +6662,10 @@ mod tests {
         app.set_models(three_models());
         let mut buf = buffer(60, 14);
         render_live(buf.area, &mut buf, &app);
-        // The picker stands in for the composer: top rule, then the `>` search
+        // The picker stands in for the composer: top rule, then the `❯` search
         // line (headerless), then the model rows.
         assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
-        assert!(row(&buf, MODEL_SEARCH_ROW, 60).contains('>'), "search line");
+        assert!(row(&buf, MODEL_SEARCH_ROW, 60).contains('❯'), "search line");
         assert!(
             row(&buf, 4, 60).contains("anthropic/claude-3-haiku"),
             "a model row"
@@ -6667,7 +6680,7 @@ mod tests {
         app.model_picker.as_mut().unwrap().query = "hai".into();
         let area = Rect::new(0, 0, 60, 14);
         let (x, y) = cursor_position(area, &app);
-        // indent(2) + prompt("> " = 2) + "hai"(3) = 7.
+        // indent(2) + prompt("❯ " = 2) + "hai"(3) = 7.
         assert_eq!((x, y), (7, MODEL_SEARCH_ROW));
     }
 
@@ -6682,9 +6695,9 @@ mod tests {
                 configured: true,
             },
             ProviderChoice {
-                id: "sambanova".into(),
-                name: "Sambanova".into(),
-                env_var: "SAMBANOVA_API_KEY".into(),
+                id: "together".into(),
+                name: "Together AI".into(),
+                env_var: "TOGETHER_API_KEY".into(),
                 configured: false,
             },
         ]
@@ -6692,7 +6705,7 @@ mod tests {
 
     fn login_app_provider() -> App {
         let mut app = App::new();
-        app.open_key_onboarding(login_choices());
+        app.open_key_onboarding(login_choices(), "~/.inline-tui/.env");
         app
     }
 
@@ -6709,25 +6722,31 @@ mod tests {
     fn render_login_provider_step_frames_lists_and_marks_configured() {
         let app = login_app_provider();
         let onboarding = app.key_onboarding.as_ref().unwrap();
-        let mut buf = buffer(60, 12);
+        // Natural height: 9 chrome + 2 provider rows = 11.
+        let mut buf = buffer(60, 11);
         render_key_onboarding(buf.area, &mut buf, onboarding);
         assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
-        // Gold header.
-        assert!(row(&buf, 1, 60).contains("Add a provider API key"));
-        assert_eq!(buf[(2, 1)].fg, MODEL_HEADER_COLOR, "header is gold");
-        // The `>` filter line.
-        assert!(row(&buf, LOGIN_SEARCH_ROW, 60).contains('>'));
-        // First provider row (y = LOGIN_SEARCH_ROW + 2 = 5): selected ❯, env tag,
+        // Headerless (like /model): row 1 is a blank gap, not a banner.
+        assert!(row(&buf, 1, 60).trim().is_empty(), "no header banner");
+        // The `❯` filter line.
+        assert!(row(&buf, LOGIN_SEARCH_ROW, 60).contains('❯'));
+        // First provider row (y = LOGIN_SEARCH_ROW + 2 = 4): selected →, env tag,
         // and a green ✓ because OpenRouter is configured.
-        let first = row(&buf, 5, 60);
-        assert!(first.starts_with("❯ OpenRouter"), "{first:?}");
+        let first = row(&buf, 4, 60);
+        assert!(first.starts_with("→ OpenRouter"), "{first:?}");
         assert!(first.contains("[OPENROUTER_API_KEY]"), "{first:?}");
         assert!(
             first.contains('✓'),
             "configured provider has a check: {first:?}"
         );
-        // Sambanova (row 1, y=6) is not configured → no check.
-        assert!(!row(&buf, 6, 60).contains('✓'));
+        // Together AI (row 1, y=5) is not configured → no check.
+        assert!(!row(&buf, 5, 60).contains('✓'));
+        // The hint (row 8: counter(6) gap(7) hint(8)) names the real .env path.
+        assert!(
+            row(&buf, 8, 60).contains("Keys are saved to ~/.inline-tui/.env"),
+            "hint: {:?}",
+            row(&buf, 8, 60)
+        );
     }
 
     #[test]
@@ -6739,16 +6758,33 @@ mod tests {
         assert_eq!(onboarding.step, KeyStep::Key);
         let mut buf = buffer(60, LOGIN_KEY_ROWS);
         render_key_onboarding(buf.area, &mut buf, onboarding);
-        // Gold header names the provider.
-        assert!(row(&buf, 1, 60).contains("Enter your OpenRouter API key"));
-        // Sub-label names the env var.
-        assert!(row(&buf, 3, 60).contains("Saved to OPENROUTER_API_KEY in .env"));
+        // Periwinkle prompt (row 2, after the top rule + gap) names the provider.
+        assert!(row(&buf, 2, 60).contains("Enter your OpenRouter API key"));
+        assert_eq!(
+            buf[(2, 2)].fg,
+            LOGIN_KEY_PROMPT_COLOR,
+            "prompt is periwinkle"
+        );
         // The field is masked: dots, never the plaintext key.
         let field = row(&buf, LOGIN_KEY_INPUT_ROW, 60);
         assert!(field.contains('•'), "masked: {field:?}");
         assert!(
             !field.contains("sk-secret"),
             "no plaintext leaks: {field:?}"
+        );
+    }
+
+    #[test]
+    fn login_key_prompt_avoids_a_doubled_api() {
+        // A provider whose name already ends in "API" doesn't gain a second one.
+        assert_eq!(
+            login_key_prompt("Agent Zero API"),
+            "Enter your Agent Zero API key"
+        );
+        // A normal name still gets the "API key" suffix.
+        assert_eq!(
+            login_key_prompt("OpenRouter"),
+            "Enter your OpenRouter API key"
         );
     }
 
@@ -6764,8 +6800,8 @@ mod tests {
     #[test]
     fn key_onboarding_height_covers_both_steps() {
         let mut app = login_app_provider();
-        // Provider step: 8 chrome + 2 provider rows.
-        assert_eq!(key_onboarding_height(&app, 40), Some(10));
+        // Provider step: 9 chrome + 2 provider rows.
+        assert_eq!(key_onboarding_height(&app, 40), Some(11));
         // Clamped to the terminal height.
         assert_eq!(key_onboarding_height(&app, 6), Some(6));
         // Key step: a fixed height.
@@ -6781,16 +6817,20 @@ mod tests {
         let app = login_app_provider();
         let mut buf = buffer(60, 12);
         render_live(buf.area, &mut buf, &app);
-        assert!(row(&buf, 1, 60).contains("Add a provider API key"));
+        // The onboarding stands in for the composer: top rule, `❯` filter, and
+        // the provider list (headerless — no banner on row 1).
+        assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
+        assert!(row(&buf, LOGIN_SEARCH_ROW, 60).contains('❯'), "filter line");
+        assert!(row(&buf, 4, 60).contains("OpenRouter"), "a provider row");
     }
 
     #[test]
     fn cursor_tracks_the_login_filter_then_the_masked_key() {
         let mut app = login_app_provider();
-        app.key_onboarding.as_mut().unwrap().query = "sam".into();
+        app.key_onboarding.as_mut().unwrap().query = "tog".into();
         let area = Rect::new(0, 0, 60, 12);
         let (x, y) = cursor_position(area, &app);
-        // indent(2) + "> "(2) + "sam"(3) = 7 on the filter row.
+        // indent(2) + "❯ "(2) + "tog"(3) = 7 on the filter row.
         assert_eq!((x, y), (7, LOGIN_SEARCH_ROW));
         // Advance to the key step and type: the cursor tracks the mask length.
         {
@@ -6800,7 +6840,24 @@ mod tests {
             onboarding.key_input = "abcd".into();
         }
         let (x, y) = cursor_position(area, &app);
-        // indent(2) + "> "(2) + 4 mask glyphs = 8 on the key row.
+        // indent(2) + "❯ "(2) + 4 mask glyphs = 8 on the key row.
         assert_eq!((x, y), (8, LOGIN_KEY_INPUT_ROW));
+    }
+
+    #[test]
+    fn model_picker_shows_a_login_hint_when_no_provider_is_configured() {
+        let mut app = App::new();
+        app.open_model_picker("x");
+        app.set_models_needs_login();
+        let picker = app.model_picker.as_ref().unwrap();
+        let mut buf = buffer(60, 12);
+        render_model_picker(buf.area, &mut buf, picker);
+        // The list area (row 4) points at /login, in cyan (not a red error).
+        let list = row(&buf, 4, 60);
+        assert!(list.contains("run /login"), "{list:?}");
+        assert_eq!(buf[(2, 4)].fg, MODEL_SELECTED_COLOR);
+        // No counter or model-name line when there's nothing selectable.
+        assert!(row(&buf, 7, 60).trim().is_empty(), "no counter");
+        assert!(row(&buf, 9, 60).trim().is_empty(), "no model name");
     }
 }

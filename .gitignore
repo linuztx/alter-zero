@@ -1,4 +1,6 @@
 /target
 .claude/
-# The /login flow writes API keys here — never commit secrets (docs/llm.md).
+# The /login flow writes API keys to ~/.inline-tui/.env by default (outside the
+# repo); this guards a local ./.env (INLINE_TUI_ENV_FILE / no-HOME fallback) too —
+# never commit secrets (docs/llm.md).
 .env

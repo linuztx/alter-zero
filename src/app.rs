@@ -662,6 +662,10 @@ pub enum ModelLoad {
     Ready,
     /// The fetch failed — the picker shows the message in red.
     Error(String),
+    /// No provider has a resolvable API key yet, so no list is fetched — the
+    /// picker points the user at `/login` instead of showing models they can't
+    /// use. See `docs/llm.md`.
+    NeedsLogin,
 }
 
 /// The inline `/model` picker's state (`None` on [`App`] when closed). Unlike
@@ -764,6 +768,10 @@ pub struct KeyOnboarding {
     pub chosen: Option<usize>,
     /// The API key being typed / pasted (step 2). Rendered masked.
     pub key_input: String,
+    /// Where saved keys land (the `~`-relative `.env` path), injected at open by
+    /// the boundary so the provider-step hint names the real file even under an
+    /// `INLINE_TUI_ENV_FILE` override. See `docs/llm.md`.
+    pub env_path: String,
 }
 
 impl KeyOnboarding {
@@ -2665,6 +2673,18 @@ impl App {
         }
     }
 
+    /// Record that no provider is configured yet — the picker shows a `/login`
+    /// hint in place of a model list (the boundary skips the fetch entirely, so
+    /// the user isn't offered models they have no key for). No-op if the picker
+    /// was closed meanwhile. See `docs/llm.md`.
+    pub fn set_models_needs_login(&mut self) {
+        if let Some(picker) = self.model_picker.as_mut() {
+            picker.status = ModelLoad::NeedsLogin;
+            picker.models.clear();
+            picker.selected = 0;
+        }
+    }
+
     /// Keys while the inline `/model` picker is open. Mirrors the `/resume`
     /// picker's grammar: ↑/↓ move (clamped), PageUp/PageDown jump by
     /// [`MODEL_PAGE`], Home/End to the ends, Enter selects the highlighted
@@ -2728,10 +2748,15 @@ impl App {
 
     /// Open the inline `/login` onboarding flow with the given provider choices
     /// (built at the boundary so the `configured` ✓ reflects the real env / `.env`
-    /// key resolution). Starts on the provider step; abandons any band / palette /
-    /// file picker / model picker it shares the composer with, staying in
+    /// key resolution) and the `~`-relative `.env` path the provider-step hint
+    /// names. Starts on the provider step; abandons any band / palette / file
+    /// picker / model picker it shares the composer with, staying in
     /// [`View::Conversation`]. See `docs/llm.md`.
-    pub fn open_key_onboarding(&mut self, providers: Vec<ProviderChoice>) {
+    pub fn open_key_onboarding(
+        &mut self,
+        providers: Vec<ProviderChoice>,
+        env_path: impl Into<String>,
+    ) {
         self.shortcuts_open = false;
         self.command_menu = None;
         self.file_search = None;
@@ -2739,6 +2764,7 @@ impl App {
         self.backtrack = Backtrack::default();
         self.key_onboarding = Some(KeyOnboarding {
             providers,
+            env_path: env_path.into(),
             ..KeyOnboarding::default()
         });
     }
@@ -7575,6 +7601,29 @@ mod tests {
     }
 
     #[test]
+    fn set_models_needs_login_clears_the_list_and_points_at_login() {
+        let mut app = App::new();
+        app.open_model_picker("m");
+        app.set_models(sample_models()); // pretend a stale list was there
+        app.set_models_needs_login();
+        let picker = app.model_picker.as_ref().unwrap();
+        assert_eq!(picker.status, ModelLoad::NeedsLogin);
+        assert!(picker.models.is_empty(), "no models offered without a key");
+        assert!(picker.matches().is_empty());
+        assert_eq!(picker.selected, 0);
+    }
+
+    #[test]
+    fn enter_does_nothing_when_no_provider_is_configured() {
+        let mut app = App::new();
+        app.open_model_picker("m");
+        app.set_models_needs_login();
+        // Enter has nothing to select — it must not emit a SelectModel action.
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(app.model_picker.is_some(), "picker stays open");
+    }
+
+    #[test]
     fn typing_filters_the_models_case_insensitively() {
         let mut app = model_app(&sample_models());
         type_chars(&mut app, "KIMI");
@@ -7687,9 +7736,9 @@ mod tests {
                 configured: true,
             },
             ProviderChoice {
-                id: "sambanova".into(),
-                name: "Sambanova".into(),
-                env_var: "SAMBANOVA_API_KEY".into(),
+                id: "together".into(),
+                name: "Together AI".into(),
+                env_var: "TOGETHER_API_KEY".into(),
                 configured: false,
             },
         ]
@@ -7697,7 +7746,7 @@ mod tests {
 
     fn login_app() -> App {
         let mut app = App::new();
-        app.open_key_onboarding(sample_choices());
+        app.open_key_onboarding(sample_choices(), "~/.inline-tui/.env");
         app
     }
 
@@ -7757,7 +7806,7 @@ mod tests {
         let mut app = App::new();
         app.shortcuts_open = true;
         app.open_model_picker("m");
-        app.open_key_onboarding(sample_choices());
+        app.open_key_onboarding(sample_choices(), "~/.inline-tui/.env");
         assert!(!app.shortcuts_open);
         assert!(app.command_menu.is_none());
         assert!(app.model_picker.is_none(), "the model picker is dismissed");
@@ -7785,13 +7834,13 @@ mod tests {
     #[test]
     fn enter_pins_the_index_from_the_filtered_matches() {
         let mut app = login_app();
-        // Filter to a single match whose *unfiltered* index is 2 (sambanova).
-        type_chars(&mut app, "samba");
+        // Filter to a single match whose *unfiltered* index is 2 (together).
+        type_chars(&mut app, "toget");
         assert_eq!(app.key_onboarding.as_ref().unwrap().matches().len(), 1);
         app.on_key(key(KeyCode::Enter));
         let onboarding = app.key_onboarding.as_ref().unwrap();
         assert_eq!(onboarding.chosen, Some(2));
-        assert_eq!(onboarding.chosen_provider().unwrap().id, "sambanova");
+        assert_eq!(onboarding.chosen_provider().unwrap().id, "together");
     }
 
     #[test]

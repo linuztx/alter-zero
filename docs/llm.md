@@ -24,6 +24,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/mod.rs` | `ChatMessage`, module glue, `LlmError`/`Result` | mostly |
 | `llm/config.rs` | `providers.toml` → `Provider`/`ProvidersConfig`, `ModelConfig`, key/model resolution | **pure** |
 | `llm/keystore.rs` | `EnvFile` — the `.env` reader/writer the `/login` flow persists keys through | **pure** |
+| `llm/settings.rs` | `Settings` — the `config.json` reader/writer persisting the `/model` selection across runs | **pure** |
 | `llm/thinking.rs` | `ThinkingSplitter` — peels `<think>`/`<reasoning>` tags (and native `reasoning` deltas) out of the stream | **pure** |
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary) | split |
 | `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary) | split |
@@ -54,18 +55,21 @@ stream + `ThinkingEnd` (when the response text resumes), driving the existing
 `providers.toml` (repo root by default) declares the providers; see the file's own
 comments for the block shape. Resolution order for the file: `INLINE_TUI_PROVIDERS_FILE`
 → `./providers.toml` → `~/.inline-tui/providers.toml` → a built-in default with the
-three shipped providers.
+two shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `openrouter`).
 
-The active backend is chosen at startup and can be switched live by `/model`:
+The active backend is chosen at startup — from env, then the **persisted
+selection** (`~/.inline-tui/config.json`, written by `/model`), then the file's
+default — and can be switched live by `/model`:
 
 | env var | meaning | default |
 | --- | --- | --- |
 | `INLINE_TUI_DUMMY` | truthy (`1`/`true`/`yes`) forces the dummy backend | unset |
-| `INLINE_TUI_PROVIDER` | active provider id | first in the file |
-| `INLINE_TUI_MODEL` | active model id | `INLINE_TUI_MODEL` or unset → dummy |
+| `INLINE_TUI_PROVIDER` | active provider id | saved selection, then first in the file |
+| `INLINE_TUI_MODEL` | active model id | saved selection, then unset → dummy |
 | `INLINE_TUI_API_KEY` | generic API key (fallback) | unset |
 | `<PROVIDER>_API_KEY` | per-provider key, e.g. `OPENROUTER_API_KEY` | unset |
-| `INLINE_TUI_ENV_FILE` | the `.env` key store `/login` reads and writes | `./.env` |
+| `INLINE_TUI_CONFIG_DIR` | the config home (holds `.env` + `config.json`) | `~/.inline-tui` |
+| `INLINE_TUI_ENV_FILE` | the `.env` key store `/login` reads and writes | `{config_home}/.env` |
 | `INLINE_TUI_TEMPERATURE` | sampling temperature | provider/omit |
 | `SSL_CERT_FILE` / `INLINE_TUI_CA_FILE` | extra CA bundle for the proxy | unset |
 
@@ -75,20 +79,42 @@ resolve. Otherwise the app uses `DummyAi`. `smoke.sh` sets none of these, so it
 always gets the dummy — the canned replies, the `dummy_model_name` footer, and the
 scripted tool calls its assertions depend on are untouched.
 
+### The config home: `~/.inline-tui`
+
+The app keeps its per-user state under a **config home** — `INLINE_TUI_CONFIG_DIR`,
+else `~/.inline-tui` (the same base `providers.toml` and the sessions dir already
+use), else `None` when there's no `HOME` (persistence then disabled, falling back
+to `./.env`). It holds two files, both written best-effort (a failure is swallowed
+so it can never kill the TUI) and created on first write:
+
+- **`.env`** — the API-key store the `/login` flow writes (`main.rs::env_file_path`,
+  overridable with `INLINE_TUI_ENV_FILE`). Git-ignored so keys are never committed.
+- **`config.json`** — the last `/model` selection (`{ "provider", "model" }`), so
+  the choice is the default next run (`llm::settings::Settings`).
+
 ### Where a key comes from: `.env` persistence
 
 Because `std::env::set_var` is `unsafe` (this crate `forbid`s unsafe), the app
-never mutates the process environment. Instead a `.env` file (`./.env` by default,
-or `INLINE_TUI_ENV_FILE`) is loaded once at startup into an in-memory
-`llm::keystore::EnvFile` map. Key resolution (`main.rs::resolve_api_key`) checks
-the **real process env first** (dotenv precedence — an exported `OPENROUTER_API_KEY`
-still wins) and falls back to the `.env` map, so a key set either way is found.
+never mutates the process environment. Instead the `.env` file is loaded once at
+startup into an in-memory `llm::keystore::EnvFile` map. Key resolution
+(`main.rs::resolve_api_key`) checks the **real process env first** (dotenv
+precedence — an exported `OPENROUTER_API_KEY` still wins) and falls back to the
+`.env` map, so a key set either way is found.
 
 `EnvFile` is a small **pure, tested** `.env` reader/writer: `parse` reads
 `KEY=VALUE` pairs (comments, blanks, `export ` prefix, and quotes handled), and
 `upsert` rewrites one key **in place** — every other line, comments and all,
-preserved — which is what the `/login` flow writes back. `.env` is git-ignored so
-keys are never committed.
+preserved — which is what the `/login` flow writes back.
+
+### Persisting the model: `config.json`
+
+`llm::settings::Settings` is the pure, tested `config.json` reader/writer
+(`{ "provider", "model" }`, all fields optional so an old or partial file still
+loads). At startup the saved provider/model seed the active selection (env vars
+still win); on a successful `/model` switch the boundary writes the new choice
+back (`main.rs::save_settings`). So a model picked once is the default on every
+later run — and if its key still resolves, the real backend activates
+automatically at startup.
 
 ## The inline `/model` picker
 
@@ -98,41 +124,51 @@ prompt — the shape the user asked for. It is `App::model_picker: Option<ModelP
 (not a `View`), owned in `on_key` like the Ctrl+R search, and special-cased in
 `ui::render_live` / `ui::live_height` / `ui::cursor_position`.
 
-Layout (headerless — top rule, then the airy codex-style body, then bottom rule):
+Layout (headerless — top rule, a blank, the airy codex-style body, a blank, then
+the bottom rule — the shape of the user's mock):
 
 ```
 ────────────────────────────────────────────────
-  > cla                                                  (search prompt, cyan '>')
-  ❯ anthropic/claude-3-haiku    [openrouter]             (selected: '❯', active: ✓)
-    anthropic/claude-3.5-haiku  [openrouter]
-    anthropic/claude-fable-5    [openrouter] ✓
+
+  ❯ cla                                                  (search prompt, cyan '❯')
+
+→ anthropic/claude-3-haiku    [openrouter]               (selected: '→', active: ✓)
+  anthropic/claude-3.5-haiku  [openrouter]
+  anthropic/claude-fable-5    [openrouter] ✓
   (3/12)                                                 (position/total, dim)
+
   Model Name: Anthropic: Claude 3.5 Haiku                (friendly name, dim)
+
 ────────────────────────────────────────────────
 ```
 
 - Opened by `/model` from an idle composer (`Action::OpenModelPicker`; rejected
   mid-turn with a red notice, like `/resume`).
-- The boundary spawns a worker thread that fetches `/models` from the configured
-  provider(s), parses it (`llm::models`), and sends `ModelListResult` on a
-  dedicated channel (the image-paste worker pattern). The picker shows
-  `Loading models…` until it arrives, then the list (or a red error row).
+- **A configured provider is required.** If no provider has a resolvable key, the
+  boundary skips the fetch and the list area shows a cyan
+  `No API key yet — run /login to add one` (`ModelLoad::NeedsLogin`) instead of
+  offering models the user can't use.
+- Otherwise the boundary spawns a worker thread that fetches `/models` from a
+  provider whose key resolves — the active one if it's configured, else the first
+  configured one — parses it (`llm::models`), and sends the result on a dedicated
+  channel (the image-paste worker pattern). The picker shows `Loading models…`
+  until it arrives, then the list (or a red error row).
 - Type to filter (case-insensitive substring over `id` and provider), `↑/↓`/PgUp/
   PgDn/Home/End move, `Enter` selects → `Action::SelectModel { provider, id }`,
   `Esc` clears the query then closes, `Ctrl+C` closes.
 - On select, the loop rebuilds the backend for the new provider/model, updates the
-  footer (`App::set_session_info`), and collapses the picker.
+  footer (`App::set_session_info`), and **persists the choice to `config.json`**
+  (so it's the default next run), then collapses the picker.
 
 - The picker is **headerless** — the old "Showing models…" banner was dropped, so
-  the `>` search line sits directly under the top rule.
+  the `❯` search line sits directly under the top rule; the selection marker is `→`.
 
 ### Styling
 
-All picker styling is centralized in `ui.rs`'s `MODEL_*` consts: the cyan `>`
+All picker styling is centralized in `ui.rs`'s `MODEL_*` consts: the cyan `❯`
 prompt and selection accent (reusing `MENU_SELECTED_COLOR`), the dim provider tag /
-counter / model-name, the `❯` marker, the `✓` active mark, and
-`MODEL_MENU_MAX_ROWS`. The gold `MODEL_HEADER_COLOR` now heads the `/login` flow
-below rather than the `/model` picker. Retheme there.
+counter / model-name, the `→` marker, the `✓` active mark, the cyan
+`MODEL_LOGIN_HINT`, and `MODEL_MENU_MAX_ROWS`. Retheme there.
 
 ## The inline `/login` onboarding flow
 
@@ -141,16 +177,20 @@ runs — the "onboarding" the user asked for. Like `/model` it is **inline**
 (`App::key_onboarding: Option<KeyOnboarding>`, not a `View`), replacing the composer
 in place; unlike it, it is a **two-step** flow.
 
-**Step 1 — pick a provider** (a filterable list; `KeyStep::Provider`):
+**Step 1 — pick a provider** (a filterable list, headerless like `/model`;
+`KeyStep::Provider`):
 
 ```
 ────────────────────────────────────────────────
-  Add a provider API key                                 (gold header)
-  > open                                                 (filter, cyan '>')
-  ❯ OpenRouter        [OPENROUTER_API_KEY] ✓             (selected '❯'; ✓ = configured)
-    Sambanova         [SAMBANOVA_API_KEY]
-  (1/1)                                                  (position/total, dim)
-  Keys are saved to .env in the working directory        (dim hint)
+
+  ❯ agent                                                (filter, cyan '❯')
+
+→ Agent Zero API   [A0_VENICE_API_KEY] ✓                 (selected '→'; ✓ = configured)
+  OpenRouter       [OPENROUTER_API_KEY]
+  (1/2)                                                  (position/total, dim)
+
+  Keys are saved to ~/.inline-tui/.env                   (dim hint — the real path)
+
 ────────────────────────────────────────────────
 ```
 
@@ -158,16 +198,20 @@ in place; unlike it, it is a **two-step** flow.
 
 ```
 ────────────────────────────────────────────────
-  Enter your OpenRouter API key                          (gold header, names the provider)
-  Saved to OPENROUTER_API_KEY in .env                    (dim sub-label)
-  > ••••••••••••••••••••                                 (masked field, cyan '>')
+
+  Enter your Agent Zero API key                          (periwinkle #96a0d5, names the provider)
+
+  ❯ ••••••••••••••••••••                                 (masked field, cyan '❯')
+
   Enter to save · Esc to go back                         (dim hint)
+
 ────────────────────────────────────────────────
 ```
 
 - Opened by `/login` from an idle composer (`Action::OpenKeyOnboarding`; rejected
   mid-turn with a red notice, like `/model`). The boundary builds the provider
-  rows so the ✓ reflects real env / `.env` key resolution (`provider_choices`).
+  rows so the ✓ reflects real env / `.env` key resolution (`provider_choices`) and
+  injects the `~`-relative `.env` path the provider-step hint names.
 - **Provider step**: type-to-filter (id/name substring), `↑/↓`/PgUp/PgDn/Home/End
   move, `Enter` advances to key entry for the highlighted provider (its index is
   pinned so the filter can't reorder it out from under you), `Esc` clears the
@@ -177,17 +221,21 @@ in place; unlike it, it is a **two-step** flow.
   (API keys are always pasted), `Enter` saves a non-empty key
   (`Action::SaveApiKey { provider, env_var, key }`) and closes, `Esc` steps *back*
   to the provider list, `Ctrl+C` closes. The field is masked to `•` glyphs — the
-  plaintext key never touches the screen.
-- On save, the loop `EnvFile::upsert`s the key into `.env`, refreshes its in-memory
-  copy (so the next `/model` fetch/switch resolves it immediately), and commits a
-  `Saved {ENV} to .env — run /model to use {provider}` system notice. It does **not**
-  auto-switch the model: the user picks one with `/model`, which now finds the key.
+  plaintext key never touches the screen. The prompt names the provider, avoiding
+  a doubled "API" when its name already ends in it (`login_key_prompt`).
+- On save, the loop `EnvFile::upsert`s the key into `~/.inline-tui/.env` (creating
+  the config home first), refreshes its in-memory copy (so the next `/model`
+  fetch/switch resolves it immediately), and commits a
+  `Saved {ENV} to {path} — run /model to use {provider}` system notice. It does
+  **not** auto-switch the model: the user picks one with `/model`, which now finds
+  the key.
 
 ### Styling
 
-The `/login` flow reuses the `/model` picker's colours (indent, cyan prompt /
-selection, dim meta, green ✓, `❯` marker, gold `MODEL_HEADER_COLOR`) plus the
-`LOGIN_*` strings and geometry consts in `ui.rs`. Retheme there.
+The `/login` flow reuses the `/model` picker's colours (indent, cyan `❯` prompt /
+selection, dim meta, green ✓, `→` marker) plus the `LOGIN_*` strings and geometry
+consts in `ui.rs` — including the periwinkle `LOGIN_KEY_PROMPT_COLOR` (`#96a0d5`)
+that names the provider on the key step. Retheme there.
 
 ## Known limitations (v1)
 

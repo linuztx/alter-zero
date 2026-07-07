@@ -56,7 +56,7 @@ use inline_tui::clipboard;
 use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::llm::{
-    self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, Selection,
+    self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, Selection, Settings,
 };
 use inline_tui::paste::{self, PasteBurst};
 use inline_tui::session::{self, SessionMeta, SessionSummary};
@@ -119,20 +119,28 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // path is kept so `/login` can rewrite it. See `docs/llm.md`.
     let env_file_path = env_file_path();
     let mut env_file = load_env_file(&env_file_path);
+    // The persisted `/model` selection (`~/.inline-tui/config.json`): the
+    // provider + model chosen last run, so it survives a restart. Written on
+    // each successful switch; real env vars still win over it. See `docs/llm.md`.
+    let settings_path = settings_file_path();
+    let saved = load_settings(settings_path.as_deref());
     let temperature = std::env::var("INLINE_TUI_TEMPERATURE")
         .ok()
         .and_then(|t| t.trim().parse::<f32>().ok());
     let system_prompt = std::env::var("INLINE_TUI_SYSTEM_PROMPT").ok();
     // The provider the /model picker lists from and switches within: env, else
-    // the file's default. The active model starts from env, then tracks what the
-    // backend actually answers as (so a dummy fallback shows `dummy_model_name`).
+    // the saved selection, else the file's default. The active model starts from
+    // env, then the saved selection, then tracks what the backend actually
+    // answers as (so a dummy fallback shows `dummy_model_name`).
     let mut active_provider = std::env::var("INLINE_TUI_PROVIDER")
         .ok()
         .filter(|s| !s.is_empty())
+        .or_else(|| saved.provider.clone())
         .or_else(|| providers.default_provider());
     let env_model = std::env::var("INLINE_TUI_MODEL")
         .ok()
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .or_else(|| saved.model.clone());
     let mut backend: Box<dyn ReplySource> = build_backend(
         &providers,
         &env_file,
@@ -149,6 +157,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let cwd = std::env::current_dir().unwrap_or_default();
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let cwd_display = ui::display_cwd(&cwd, home.as_deref());
+    // The `~`-relative `.env` path shown in the `/login` provider-step hint, so
+    // it names the real file even under an `INLINE_TUI_ENV_FILE` override.
+    let env_path_display = ui::display_cwd(&env_file_path, home.as_deref());
     app.set_session_info(backend.model_name(), cwd_display.clone());
     // The /resume session recorder (docs/resume.md): mirrors App::history to a
     // rollout file, lazily created on the first recorded item so empty
@@ -449,20 +460,39 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             Action::OpenModelPicker => {
                                 // /model from an idle composer (docs/llm.md): open
                                 // the inline picker (it replaces the composer — no
-                                // alternate screen) and kick off the model-list
-                                // fetch off-thread. The list lands on branch 6.
-                                app.open_model_picker(backend.model_name());
+                                // alternate screen). Fetch the list off-thread from
+                                // a provider whose key resolves — the active one if
+                                // it's configured, else the first configured one.
+                                // With none configured, skip the fetch and point the
+                                // user at /login instead (the list lands on branch 6).
+                                app.open_model_picker(active_model.clone());
                                 if let Some(c) = model_fetch_cancel.take() {
                                     c.cancel();
                                 }
-                                let cancel = CancelToken::new();
-                                model_fetch_cancel = Some(cancel.clone());
-                                let cfg = active_provider.as_deref().and_then(|p| {
-                                    model_config_for(
-                                        &providers, &env_file, p, &active_model, temperature,
-                                    )
-                                });
-                                spawn_model_fetch(cfg, cancel, model_tx.clone());
+                                let choices = provider_choices(&providers, &env_file);
+                                let list_provider = active_provider
+                                    .as_deref()
+                                    .filter(|p| {
+                                        choices.iter().any(|c| c.id.as_str() == *p && c.configured)
+                                    })
+                                    .or_else(|| {
+                                        choices
+                                            .iter()
+                                            .find(|c| c.configured)
+                                            .map(|c| c.id.as_str())
+                                    });
+                                match list_provider {
+                                    None => app.set_models_needs_login(),
+                                    Some(provider) => {
+                                        let cancel = CancelToken::new();
+                                        model_fetch_cancel = Some(cancel.clone());
+                                        let cfg = model_config_for(
+                                            &providers, &env_file, provider, &active_model,
+                                            temperature,
+                                        );
+                                        spawn_model_fetch(cfg, cancel, model_tx.clone());
+                                    }
+                                }
                             }
                             Action::CloseModelPicker => {
                                 // Esc/Ctrl+C dismissed the inline picker: cancel a
@@ -489,12 +519,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                             cfg,
                                             system_prompt.clone(),
                                         ));
-                                        active_provider = Some(provider);
+                                        active_provider = Some(provider.clone());
                                         active_model = id.clone();
                                         app.set_session_info(
                                             backend.model_name(),
                                             cwd_display.clone(),
                                         );
+                                        // Persist the choice so it's the default
+                                        // next run (docs/llm.md).
+                                        save_settings(settings_path.as_deref(), &provider, &id);
                                         commit_system_notice(
                                             term,
                                             &mut app,
@@ -519,8 +552,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // /login from an idle composer (docs/llm.md): open
                                 // the inline onboarding, its provider choices built
                                 // from the file with the ✓ reflecting real env /
-                                // .env key resolution.
-                                app.open_key_onboarding(provider_choices(&providers, &env_file));
+                                // .env key resolution. The hint names the real .env
+                                // path (env_path_display).
+                                app.open_key_onboarding(
+                                    provider_choices(&providers, &env_file),
+                                    env_path_display.clone(),
+                                );
                             }
                             Action::CloseKeyOnboarding => {
                                 // Esc/Ctrl+C dismissed the flow: nothing to reap; the
@@ -539,6 +576,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 let current = std::fs::read_to_string(&env_file_path)
                                     .unwrap_or_default();
                                 let updated = EnvFile::upsert(&current, &env_var, &key);
+                                // The config home (`~/.inline-tui`) may not exist
+                                // yet — create it before the first write.
+                                if let Some(parent) = env_file_path.parent() {
+                                    let _ = std::fs::create_dir_all(parent);
+                                }
                                 match std::fs::write(&env_file_path, &updated) {
                                     Ok(()) => {
                                         env_file = EnvFile::parse(&updated);
@@ -844,11 +886,24 @@ fn provider_choices(providers: &ProvidersFile, env_file: &EnvFile) -> Vec<Provid
         .collect()
 }
 
-/// The `.env` key store path: `INLINE_TUI_ENV_FILE`, else `.env` in the cwd.
+/// The app's config home — where the `.env` key store and `config.json` live:
+/// `INLINE_TUI_CONFIG_DIR`, else `~/.inline-tui`, else `None` (no HOME and no
+/// override, so file persistence is disabled). Matches where `providers.toml`
+/// and the sessions dir already resolve. See `docs/llm.md`.
+fn config_home() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("INLINE_TUI_CONFIG_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".inline-tui"))
+}
+
+/// The `.env` key store path: `INLINE_TUI_ENV_FILE`, else `{config_home}/.env`,
+/// else `./.env` when there's no config home. Written by the `/login` flow.
 fn env_file_path() -> PathBuf {
-    std::env::var_os("INLINE_TUI_ENV_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(".env"))
+    if let Some(path) = std::env::var_os("INLINE_TUI_ENV_FILE") {
+        return PathBuf::from(path);
+    }
+    config_home().map_or_else(|| PathBuf::from(".env"), |dir| dir.join(".env"))
 }
 
 /// Load the `.env` key store; an absent or unreadable file yields an empty one.
@@ -856,6 +911,34 @@ fn load_env_file(path: &Path) -> EnvFile {
     std::fs::read_to_string(path)
         .map(|text| EnvFile::parse(&text))
         .unwrap_or_default()
+}
+
+/// The persisted-settings path (`{config_home}/config.json`), or `None` when
+/// there's no config home — persistence is then disabled. See `docs/llm.md`.
+fn settings_file_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("config.json"))
+}
+
+/// Load the persisted `/model` selection; an absent, unreadable, or corrupt
+/// file yields the default (all-unset) settings.
+fn load_settings(path: Option<&Path>) -> Settings {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| Settings::parse(&text))
+        .unwrap_or_default()
+}
+
+/// Persist the chosen provider/model to `config.json`, creating the config home
+/// first. Best-effort — a write failure is swallowed (like the session
+/// recorder) so it can never kill the TUI; a `None` path (no config home)
+/// no-ops. See `docs/llm.md`.
+fn save_settings(path: Option<&Path>, provider: &str, model: &str) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, Settings::for_selection(provider, model).to_json());
 }
 
 /// Pick the reply backend: the dummy unless a real provider/model/key all

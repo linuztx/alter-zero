@@ -46,6 +46,7 @@ cleanup() {
 	rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 	rm -f /tmp/inline-tui-clipboard-*.png 2>/dev/null
 	[ -n "${RESUME_DIR:-}" ] && rm -rf "$RESUME_DIR" 2>/dev/null
+	[ -n "${SMOKE_CFG:-}" ] && rm -rf "$SMOKE_CFG" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -61,7 +62,13 @@ fi
 # wrapper is robust even when a tmux server is already running (an exported
 # var would not reach its panes).
 SMOKE_STARTUP_MS="${SMOKE_STARTUP_MS:-200}"
-APP="env INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+# Isolate the config home (~/.inline-tui by default) to a throwaway dir so the
+# dummy stays the backend regardless of any real key/model a developer has saved
+# there (a saved config.json + .env key would otherwise activate a real backend
+# and break the dummy-based assertions). Cleaned up on exit.
+SMOKE_CFG="$(mktemp -d)"
+CFG_ENV="INLINE_TUI_CONFIG_DIR=$SMOKE_CFG"
+APP="env $CFG_ENV INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 
 tmux new-session -d -s "$S" -x 80 -y 24 "$APP"
 sleep 0.4
@@ -237,7 +244,7 @@ S4="${S}_overlayquit"
 BIN_ABS="$(realpath "$BIN" 2>/dev/null || echo "$BIN")"
 tmux new-session -d -s "$S4" -x 80 -y 24
 sleep 0.3
-tmux send-keys -t "$S4" -l "INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
+tmux send-keys -t "$S4" -l "$CFG_ENV INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
 tmux send-keys -t "$S4" Enter
 sleep 0.6
 tmux send-keys -t "$S4" -l "hello there"
@@ -806,7 +813,7 @@ S17="${S}_delay"
 DELAY_MSG="count my input tokens"
 # 21 chars → responses[0] ("Sure! This is a streaming demo …").
 DELAY_REPLY="Sure! This is a streaming demo"
-tmux new-session -d -s "$S17" -x 80 -y 24 "env INLINE_TUI_STARTUP_DELAY_MS=2000 $BIN"
+tmux new-session -d -s "$S17" -x 80 -y 24 "env $CFG_ENV INLINE_TUI_STARTUP_DELAY_MS=2000 $BIN"
 sleep 0.5
 tmux send-keys -t "$S17" -l "$DELAY_MSG"
 sleep 0.2
@@ -1016,7 +1023,7 @@ mkdir -p "$ATDIR/subdir"
 : >"$ATDIR/subdir/beta_smoke.txt"
 # The session starts in $ATDIR, so the binary needs an ABSOLUTE path ($APP's is
 # relative to the project dir); the app then walks $ATDIR for the @ picker.
-APP_ABS="env INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $(realpath "$BIN")"
+APP_ABS="env $CFG_ENV INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $(realpath "$BIN")"
 tmux new-session -d -s "$S22" -x 80 -y 24 -c "$ATDIR" "$APP_ABS"
 sleep 0.4
 tmux send-keys -t "$S22" -l "see @alpha"
@@ -1305,7 +1312,7 @@ tmux kill-session -t "$S30" 2>/dev/null
 # message must land in a second rollout, the resumed one untouched. ---
 S31="${S}_resume"
 RESUME_DIR="$(mktemp -d /tmp/inline-tui-smoke-sessions-XXXXXX)"
-RAPP="env INLINE_TUI_SESSIONS_DIR=$RESUME_DIR INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+RAPP="env $CFG_ENV INLINE_TUI_SESSIONS_DIR=$RESUME_DIR INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S31" -x 80 -y 24 "$RAPP"
 sleep 0.4
 tmux send-keys -t "$S31" -l "$USER_MSG"

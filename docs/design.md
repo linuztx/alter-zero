@@ -255,17 +255,20 @@ unit-tested must be unit-tested.
   offline and `smoke.sh` (which configures none of that) stays on the dummy.
 - **`/model` picker** (`docs/llm.md`). An **inline** picker (it replaces the
   composer in the bottom region, unlike the alternate-screen `/resume`): `/model`
-  fetches the provider's `/v1/models` on a worker thread, lists them with
-  type-to-search (`❯` marks the selection, headerless), and `Enter` rebuilds the
-  backend for the chosen model and updates the footer. Rejected mid-turn like
-  `/resume`.
+  fetches a configured provider's `/v1/models` on a worker thread, lists them with
+  type-to-search (`→` marks the selection, `❯` the search prompt, headerless), and
+  `Enter` rebuilds the backend for the chosen model, updates the footer, and
+  **persists the choice** to `~/.inline-tui/config.json` (`llm::settings::Settings`)
+  so it's the default next run. With no provider configured it shows a cyan
+  `run /login` hint instead of a list. Rejected mid-turn like `/resume`.
 - **`/login` API-key onboarding** (`docs/llm.md`). A second **inline** flow,
-  two-step: pick a provider, then paste its API key (masked). On save the key is
-  written to `.env` (`llm::keystore::EnvFile`, a pure `.env` reader/writer) so it
-  **persists across runs** — key resolution consults the real process env first,
-  then this file. Because `std::env::set_var` is `unsafe` (forbidden here), the
-  loaded keys live in an in-memory map, never the process env. Rejected mid-turn
-  like `/model`.
+  two-step: pick a provider (headerless list), then paste its API key (masked,
+  under a periwinkle `Enter your … API key` prompt). On save the key is written to
+  `~/.inline-tui/.env` (`llm::keystore::EnvFile`, a pure `.env` reader/writer) so
+  it **persists across runs** — key resolution consults the real process env
+  first, then this file. Because `std::env::set_var` is `unsafe` (forbidden here),
+  the loaded keys live in an in-memory map, never the process env. Rejected
+  mid-turn like `/model`.
 - **Esc interrupts a streaming turn** (ported from openai/codex — see
   `docs/interrupt.md`): a single Esc while a turn is in flight cancels + reaps
   the backend, keeps the partial reply, resolves a still-running tool as failed
