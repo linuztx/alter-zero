@@ -12,6 +12,8 @@
 //! - [`llm`]         — the real OpenAI-compatible backend: provider config, the
 //!   streaming client, the `/v1/models` listing, and the `ReplySource` bridge
 //!   (the I/O boundary for a real model; pure cores unit-tested).
+//! - [`markdown`]    — the pure block parser for assistant replies: split prose
+//!   from fenced code blocks and detect ATX headings (see `docs/markdown.md`).
 //! - [`paste`]       — paste-burst detection and the large-paste/image
 //!   placeholder helpers.
 //! - [`session`]     — the `/resume` rollout-file format: serialize/parse the
@@ -28,6 +30,7 @@ pub mod clipboard;
 pub mod file_search;
 pub mod frame;
 pub mod llm;
+pub mod markdown;
 pub mod paste;
 pub mod session;
 pub mod stream;

@@ -26,6 +26,7 @@ use crate::app::{
 };
 use crate::file_search::FileMatch;
 use crate::llm::ModelEntry;
+use crate::markdown;
 use crate::textarea::TextArea;
 
 /// Display width of `s` in terminal columns.
@@ -60,6 +61,25 @@ const SYSTEM_BULLET: &str = "● ";
 const INDENT: &str = "  ";
 /// Columns a bullet/indent occupies, subtracted from the content width.
 const BULLET_WIDTH: u16 = 2;
+
+// --- Assistant markdown rendering (fenced code blocks + ATX headings;
+// `docs/markdown.md`). Code sits under the bullet behind a dim left gutter and
+// is rendered VERBATIM (indentation preserved, no word-wrap) — the fix for code
+// losing its indentation. We skip syntax highlighting (no deps), so the gutter +
+// a slightly-dim text carry the "this is code" signal. Headings drop their `#`s
+// and render bold. ---
+/// The dim left bar (+ trailing space) prefixing every code-block row.
+const CODE_GUTTER: &str = "▏ ";
+/// Display columns [`CODE_GUTTER`] occupies (subtracted from the code width).
+const CODE_GUTTER_WIDTH: u16 = 2;
+/// The gutter bar's colour — dim, so it frames without shouting.
+const CODE_GUTTER_COLOR: Color = Color::Rgb(0x5A, 0x5A, 0x5A);
+/// Code text — a neutral light grey, distinct from the pure-white prose.
+const CODE_TEXT_COLOR: Color = Color::Rgb(0xAB, 0xB2, 0xBF);
+/// The dim language label capping a code block (`` ```python `` → `python`).
+const CODE_LABEL_COLOR: Color = TOOL_DIM_COLOR;
+/// ATX headings render in this colour, bold, with the `#` markers stripped.
+const HEADING_COLOR: Color = AI_COLOR;
 
 const USER_COLOR: Color = Color::Rgb(0x6E, 0x6E, 0x6E);
 const USER_BG_COLOR: Color = Color::Rgb(0x2D, 0x2D, 0x2D);
@@ -1008,6 +1028,12 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         Role::System => (SYSTEM_BULLET, SYSTEM_COLOR),
         Role::Shell => (SHELL_BULLET, SHELL_MODE_COLOR),
     };
+    // Only the assistant's replies are markdown; user/shell/notice text stays
+    // literal (a user pasting ``` must not be code-blocked, and the dark-bg
+    // padding math below assumes plain wrapped lines). See `docs/markdown.md`.
+    if role == Role::Assistant {
+        return assistant_lines(text, width, bullet, color);
+    }
     let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
     let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
 
@@ -1041,6 +1067,83 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
             } else {
                 Line::from(vec![Span::raw(INDENT.to_string()), Span::raw(padded)]).style(bg)
             }
+        })
+        .collect()
+}
+
+/// The content spans of one code-block row: the dim gutter bar then `text` in
+/// `text_color` (the code text, or the dim language label). The leading
+/// bullet/indent is stamped on later by [`assistant_lines`].
+fn code_row(text: String, text_color: Color) -> Vec<Span<'static>> {
+    vec![
+        Span::styled(CODE_GUTTER.to_string(), Style::new().fg(CODE_GUTTER_COLOR)),
+        Span::styled(text, Style::new().fg(text_color)),
+    ]
+}
+
+/// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`):
+/// [`markdown::parse_blocks`] splits prose from fenced code; prose word-wraps via
+/// [`wrap_text`] (ATX headings render bold with their `#`s dropped) while **code
+/// blocks render verbatim** — each source line kept byte-for-byte behind a dim
+/// gutter, hard-broken only on width via [`wrap_verbatim`], the fences hidden and
+/// the language shown as a dim label. The bullet lands on row 0 and `INDENT` on
+/// the rest, exactly like the plain path — so fence/heading-free text is
+/// byte-identical to before.
+///
+/// **Prefix-stable:** a line's prose/code mode is fixed by the text before it and
+/// verbatim hard-break only grows the last row, so [`stable_commit`] can keep
+/// flushing completed rows to scrollback (CLAUDE.md invariant 2).
+fn assistant_lines(text: &str, width: u16, bullet: &str, color: Color) -> Vec<Line<'static>> {
+    let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
+    let code_width = width
+        .saturating_sub(BULLET_WIDTH + CODE_GUTTER_WIDTH)
+        .max(1);
+    let heading_style = Style::new().fg(HEADING_COLOR).add_modifier(Modifier::BOLD);
+
+    // Row content spans (the bullet/indent prefix is stamped on afterwards).
+    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
+    for block in markdown::parse_blocks(text) {
+        match block {
+            markdown::Block::Prose(run) => {
+                for segment in run.split('\n') {
+                    if let Some((_level, htext)) = markdown::heading_level(segment) {
+                        for line in wrap_text(htext, content_width) {
+                            rows.push(vec![Span::styled(line, heading_style)]);
+                        }
+                    } else {
+                        for line in wrap_text(segment, content_width) {
+                            rows.push(vec![Span::raw(line)]);
+                        }
+                    }
+                }
+            }
+            markdown::Block::Code { lang, lines } => {
+                // A dim label caps the block (the hidden fence's language).
+                rows.push(code_row(lang.unwrap_or_default(), CODE_LABEL_COLOR));
+                for line in &lines {
+                    for wrapped in wrap_verbatim(line, code_width) {
+                        rows.push(code_row(wrapped, CODE_TEXT_COLOR));
+                    }
+                }
+            }
+        }
+    }
+    // An empty reply is still one (blank) row, so the bullet always has a home.
+    if rows.is_empty() {
+        rows.push(vec![Span::raw(String::new())]);
+    }
+    let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, mut spans)| {
+            let prefix = if i == 0 {
+                Span::styled(bullet.to_string(), bullet_style)
+            } else {
+                Span::raw(INDENT.to_string())
+            };
+            let mut all = vec![prefix];
+            all.append(&mut spans);
+            Line::from(all)
         })
         .collect()
 }
@@ -3348,6 +3451,151 @@ mod tests {
             let total: usize = line.spans.iter().map(|s| cols(s.content.as_ref())).sum();
             assert_eq!(total as u16, width, "user line fills full display width");
         }
+    }
+
+    // --- assistant markdown: fenced code blocks + headings (docs/markdown.md) ---
+
+    #[test]
+    fn assistant_prose_is_byte_identical_to_the_plain_path() {
+        // Fence/heading-free assistant text must render exactly as before — the
+        // markdown path is transparent to ordinary prose (regression guard).
+        let text = "the quick brown fox jumps over the lazy dog and then more";
+        let width = 20u16;
+        let expected = wrap_text(text, width - BULLET_WIDTH);
+        let got: Vec<String> = message_lines(Role::Assistant, text, width)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(got.len(), expected.len());
+        assert_eq!(got[0], format!("● {}", expected[0]));
+        for (g, e) in got.iter().zip(expected.iter()).skip(1) {
+            assert_eq!(g, &format!("  {e}"));
+        }
+    }
+
+    #[test]
+    fn assistant_code_block_preserves_indentation() {
+        // THE BUG: fenced code keeps its leading whitespace — not collapsed the
+        // way prose word-wrap would.
+        let src = "```py\ndef f():\n    return 1\n```";
+        let joined: Vec<String> = message_lines(Role::Assistant, src, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            joined.iter().any(|l| l.contains("    return 1")),
+            "4-space indent kept: {joined:?}"
+        );
+        assert!(joined.iter().any(|l| l.contains("def f():")), "{joined:?}");
+    }
+
+    #[test]
+    fn assistant_code_hides_the_fences_and_labels_the_language() {
+        let joined: Vec<String> = message_lines(Role::Assistant, "```python\nx = 1\n```", 80)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            !joined.iter().any(|l| l.contains("```")),
+            "fences hidden: {joined:?}"
+        );
+        assert!(
+            joined.iter().any(|l| l.contains("python")),
+            "language label shown: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_code_rows_carry_the_dim_gutter_and_code_colour() {
+        let lines = message_lines(Role::Assistant, "```\nx=1\n```", 80);
+        let code = lines
+            .iter()
+            .find(|l| plain(l).contains("x=1"))
+            .expect("a code row");
+        assert!(plain(code).contains('▏'), "gutter bar: {:?}", plain(code));
+        assert!(
+            code.spans
+                .iter()
+                .any(|s| s.style.fg == Some(CODE_TEXT_COLOR)),
+            "code text uses the code colour"
+        );
+        assert!(
+            code.spans
+                .iter()
+                .any(|s| s.style.fg == Some(CODE_GUTTER_COLOR)),
+            "gutter uses the gutter colour"
+        );
+    }
+
+    #[test]
+    fn assistant_over_width_code_hard_breaks_keeping_whitespace() {
+        // A code line wider than the code area hard-breaks (no word-collapse); the
+        // first row keeps the leading indentation.
+        let src = "```\n        eight_spaces_then_a_very_long_token_here\n```";
+        let lines = message_lines(Role::Assistant, src, 22);
+        let code: Vec<String> = lines
+            .iter()
+            .map(plain)
+            .filter(|l| l.contains('▏'))
+            .collect();
+        // Label row + at least two wrapped code rows.
+        assert!(code.len() >= 3, "hard-broke into rows: {code:?}");
+        assert!(
+            code.iter().any(|l| l.contains("        eight")),
+            "leading spaces survive on the first code row: {code:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_headings_drop_the_hashes_and_render_bold() {
+        let lines = message_lines(Role::Assistant, "## The Code", 80);
+        assert_eq!(plain(&lines[0]), "● The Code", "hashes stripped");
+        assert!(
+            lines[0].spans.iter().any(|s| {
+                s.content.contains("The Code") && s.style.add_modifier.contains(Modifier::BOLD)
+            }),
+            "heading text is bold"
+        );
+    }
+
+    #[test]
+    fn code_fences_stay_literal_for_non_assistant_roles() {
+        // A user pasting triple-backticks must not be markdown-processed.
+        let joined: Vec<String> = message_lines(Role::User, "```\ncode\n```", 80)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            joined.iter().any(|l| l.contains("```")),
+            "user fences stay literal: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn incremental_commits_reconstruct_a_fenced_code_reply() {
+        // The critical prefix-stability integration test: stream a reply that
+        // contains a fenced code block chunk-by-chunk; the committed lines plus
+        // the final flush must exactly equal the fully-rendered message, so
+        // scrollback never disagrees with a resize/Ctrl+O repaint.
+        let full = "Here is code:\n```python\ndef f():\n    return 1\n\n    x = 2\n```\nDone.";
+        let width = 24;
+        let expected: Vec<String> = message_lines(Role::Assistant, full, width)
+            .iter()
+            .map(plain)
+            .collect();
+
+        let mut committed = 0;
+        let mut got: Vec<String> = Vec::new();
+        let mut acc = String::new();
+        for chunk in crate::stream::chunks(full) {
+            acc.push_str(&chunk);
+            let (lines, new_committed) = stable_commit(&acc, width, committed);
+            got.extend(lines.iter().map(plain));
+            committed = new_committed;
+        }
+        got.extend(final_commit(&acc, width, committed).iter().map(plain));
+
+        assert_eq!(got, expected, "streamed commits reconstruct the code reply");
     }
 
     // --- tool_lines (collapsed, colour-by-status) ---
