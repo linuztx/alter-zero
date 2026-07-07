@@ -65,10 +65,16 @@ real backend's own latency plays the same role.
   events arrive (the draw branch re-arms an animation frame while a turn is
   active — see the shimmer section).
 - **tokens** — a single cumulative tally for the whole turn (the **user's input**
-  message, the reply text, **reasoning deltas**, and tool output), estimated
-  app-side (≈ `chars / 4`). It is **never reset** mid-turn. Omitted only while it
-  is 0 — which, now that the input is counted up front, is just the very first
-  frame before `count_user_input` runs.
+  message, the reply text, **reasoning deltas**, and tool output), counted
+  app-side by a real `tiktoken` tokenizer (`o200k_base` — the count seam is
+  `app::count_tokens` → [`tokenizer::count`], see `src/tokenizer.rs`). Exact for
+  current OpenAI models and close for the other models the providers serve. Each
+  input/chunk/tool-output is tokenized as it arrives and **added** to the tally
+  (`↑`/`↓` per source); a token straddling a chunk boundary can nudge the live
+  total a hair above a whole-buffer re-encode — fine for a status estimate, and
+  it keeps counting O(text), non-blocking. It is **never reset** mid-turn.
+  Omitted only while it is 0 — which, now that the input is counted up front, is
+  just the very first frame before `count_user_input` runs.
 - **arrow** — `↑` for **uploaded** tokens (the user's input at turn start, and a
   tool result folded back in), `↓` while the reply (or its reasoning) streams.
   So a turn opens `↑` (the counted input during the pre-stream pause), flips `↓`

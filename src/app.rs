@@ -205,12 +205,15 @@ pub const SHELL_VERB: &str = "Running";
 /// `Prefix a command with ! to run it locally`.
 pub const SHELL_EMPTY_NOTICE: &str = "Type a command after ! to run it locally (e.g. !ls)";
 
-/// A rough token estimate for `text` (≈ 4 characters per token, the usual
-/// heuristic). The dummy has no real tokenizer, so the status line's counts are
-/// approximate — but accumulate faithfully as text and tool output arrive.
+/// The number of tokens in `text`, via the real `tiktoken` `o200k_base`
+/// tokenizer ([`crate::tokenizer::count`]) — the single seam every status-line
+/// tally funnels through (input, reply, reasoning, and tool output). Exact for
+/// current OpenAI models and a close approximation for the other models the
+/// configured providers serve; the running total still accumulates faithfully
+/// as text and tool output arrive. See `docs/status-indicator.md`.
 #[must_use]
-fn estimate_tokens(text: &str) -> usize {
-    text.chars().count().div_ceil(4)
+fn count_tokens(text: &str) -> usize {
+    crate::tokenizer::count(text)
 }
 
 /// A flat token estimate charged per Ctrl+V-attached image
@@ -3332,7 +3335,7 @@ impl App {
         // Fold the tool's output into the cumulative tally (arrow up — uploaded
         // back); the count is *added to*, never reset (see docs/status-indicator.md).
         if let Some(status) = self.status.as_mut() {
-            status.tokens += estimate_tokens(output);
+            status.tokens += count_tokens(output);
             status.arrow = TokenArrow::Up;
         }
         self.history.push(HistoryItem::Tool(tool.clone()));
@@ -3428,7 +3431,7 @@ impl App {
     /// [`push_chunk`]: App::push_chunk
     pub fn count_user_input(&mut self, text: &str) {
         if let Some(status) = self.status.as_mut() {
-            status.tokens += estimate_tokens(text);
+            status.tokens += count_tokens(text);
             status.arrow = TokenArrow::Up;
         }
     }
@@ -3440,7 +3443,7 @@ impl App {
             buf.push_str(chunk);
         }
         if let Some(status) = self.status.as_mut() {
-            status.tokens += estimate_tokens(chunk);
+            status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
         }
     }
@@ -3452,7 +3455,7 @@ impl App {
     /// no turn is in flight.
     pub fn push_thinking(&mut self, chunk: &str) {
         if let Some(status) = self.status.as_mut() {
-            status.tokens += estimate_tokens(chunk);
+            status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
         }
     }
@@ -6128,10 +6131,10 @@ mod tests {
     }
 
     #[test]
-    fn estimate_tokens_is_zero_for_empty_and_grows_with_length() {
-        assert_eq!(estimate_tokens(""), 0);
-        assert!(estimate_tokens("a") >= 1);
-        assert!(estimate_tokens("a much longer string") > estimate_tokens("a"));
+    fn count_tokens_is_zero_for_empty_and_grows_with_length() {
+        assert_eq!(count_tokens(""), 0);
+        assert!(count_tokens("a") >= 1);
+        assert!(count_tokens("a much longer string") > count_tokens("a"));
     }
 
     // --- Ctrl+R history search: InputHistory::search / entry / resume_at

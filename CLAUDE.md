@@ -526,5 +526,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   status indicator); the loop already counts the user's input into the tally
   (`↑`) at turn start, so the status reads `↑ N tokens` until your first chunk.
   The loop and
-  rendering treat chunks and tool output as opaque text, and estimate the status
-  token counts app-side (no usage reporting in the protocol); nothing else changes.
+  rendering treat chunks and tool output as opaque text, and count the status
+  tokens app-side with a real `tiktoken` `o200k_base` tokenizer (no usage
+  reporting in the protocol) via the `app::count_tokens` → `tokenizer::count`
+  seam — exact for OpenAI models, close for the rest; nothing else changes.

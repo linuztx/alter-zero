@@ -654,7 +654,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   *adds* its output to the tally and flips the arrow `↑` without resetting, and
   resuming text flips it back `↓`; `set_status_times` writes the boundary
   durations (no-op when idle); `end_turn` records a `Summary` and clears the status;
-  `fail_stream` clears it with no summary; `estimate_tokens` grows with length.
+  `fail_stream` clears it with no summary; `count_tokens` (→ `tokenizer::count`,
+  the real `tiktoken` `o200k_base` count) grows with length.
 - `app` (slash palette): `command_query` recognises a bare `/token` (rejecting
   past-a-space/newline and mid-line slashes); `matching_commands` prefix-filters
   case-insensitively; the registry has unique lowercase names. Typing `/` opens

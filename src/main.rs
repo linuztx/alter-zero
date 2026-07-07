@@ -72,6 +72,11 @@ type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
+    // Build the tiktoken tokenizer (~125 ms of one-time rank parsing) off the
+    // interactive path, concurrently with terminal init, so the first turn's
+    // `count_tokens` doesn't freeze the loop. Detached; it never touches stdin
+    // or the terminal (invariant 1 safe), and `tokenizer::warm` is idempotent.
+    std::thread::spawn(inline_tui::tokenizer::warm);
     let mut term = InlineViewport::init(ui::LIVE_MIN_HEIGHT)?;
     let result = run(&mut term).await;
     // Always restore the terminal (raw mode off, cursor below the box), even if

@@ -24,6 +24,8 @@
 //! - [`term`]        — the custom inline viewport (dynamic-height live region;
 //!   I/O).
 //! - [`textarea`]    — the grapheme-aware editable composer.
+//! - [`tokenizer`]   — accurate token counting for the status tally (tiktoken
+//!   `o200k_base`, ranks embedded; the count seam behind `app::count_tokens`).
 //! - [`ui`]          — pure rendering helpers (word-wrap, message lines, live
 //!   region).
 
@@ -39,4 +41,5 @@ pub mod session;
 pub mod stream;
 pub mod term;
 pub mod textarea;
+pub mod tokenizer;
 pub mod ui;
