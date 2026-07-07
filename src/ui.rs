@@ -230,6 +230,11 @@ const MODEL_NO_MATCH: &str = "No matching models";
 /// The list placeholder when no provider has a key yet ([`ModelLoad::NeedsLogin`]) —
 /// shown cyan (an actionable hint, not a red error) pointing at `/login`.
 const MODEL_LOGIN_HINT: &str = "No API key yet — run /login to add one";
+/// The separator between the `(n/total)` counter and its trailing load status.
+const MODEL_STATUS_SEP: &str = "   ·   ";
+/// The counter's dim suffix while other providers are still being fetched (the
+/// list shows what's landed so far and keeps growing). See `docs/llm.md`.
+const MODEL_LOADING_MORE: &str = "loading more…";
 
 // --- The `/login` API-key onboarding flow (docs/llm.md). A two-step inline
 // picker sharing the model picker's framed look and colours: step 1 lists the
@@ -638,7 +643,10 @@ fn model_list_rows(picker: &ModelPicker) -> u16 {
                 (n as u16).min(MODEL_MENU_MAX_ROWS)
             }
         }
-        // Loading / Error / NeedsLogin → a single placeholder row.
+        // All providers failed → one row per failed provider (else a single
+        // placeholder for the legacy single-message error).
+        ModelLoad::Error(_) => (picker.errors.len() as u16).max(1),
+        // Loading / NeedsLogin → a single placeholder row.
         _ => 1,
     }
 }
@@ -2408,11 +2416,29 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
             MODEL_META_COLOR,
             width,
         )],
-        ModelLoad::Error(msg) => vec![model_placeholder_row(
-            &format!("Error: {msg}"),
-            ERROR_COLOR,
-            width,
-        )],
+        // Every provider failed: one red row each (`{provider}: {reason}`), or a
+        // single legacy message when there are no per-provider errors.
+        ModelLoad::Error(msg) => {
+            if picker.errors.is_empty() {
+                vec![model_placeholder_row(
+                    &format!("Error: {msg}"),
+                    ERROR_COLOR,
+                    width,
+                )]
+            } else {
+                picker
+                    .errors
+                    .iter()
+                    .map(|e| {
+                        model_placeholder_row(
+                            &format!("{}: {}", e.provider, e.message),
+                            ERROR_COLOR,
+                            width,
+                        )
+                    })
+                    .collect()
+            }
+        }
         // No key configured yet — an inviting cyan hint, not a red error.
         ModelLoad::NeedsLogin => vec![model_placeholder_row(
             MODEL_LOGIN_HINT,
@@ -2437,7 +2463,7 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
                 .enumerate()
                 .skip(offset)
                 .take(max)
-                .map(|(i, m)| model_row(m, i == selected, m.id == picker.active_id, width))
+                .map(|(i, m)| model_row(m, i == selected, picker.is_active(m), width))
                 .collect()
         }
     }
@@ -2454,13 +2480,44 @@ fn model_counter_line(picker: &ModelPicker) -> Line<'static> {
         return Line::default();
     }
     let selected = picker.selected.min(matches.len() - 1);
-    Line::from(vec![
+    let mut spans = vec![
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("({}/{})", selected + 1, matches.len()),
             Style::new().fg(MODEL_META_COLOR),
         ),
-    ])
+    ];
+    // Beside the counter, the multi-provider load status: dim while more
+    // providers are still fetching, red when one finished but failed.
+    if let Some((text, color)) = model_load_status_suffix(picker) {
+        spans.push(Span::styled(
+            format!("{MODEL_STATUS_SEP}{text}"),
+            Style::new().fg(color),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// The trailing status shown beside the `(n/total)` counter during a
+/// multi-provider load: `loading more…` (dim) while fetches are still out, then
+/// a red `{provider} unavailable` / `N providers unavailable` note if any
+/// failed. `None` once every provider succeeded. See `docs/llm.md`.
+fn model_load_status_suffix(picker: &ModelPicker) -> Option<(String, Color)> {
+    if picker.pending > 0 {
+        Some((MODEL_LOADING_MORE.to_string(), MODEL_META_COLOR))
+    } else if picker.errors.len() == 1 {
+        Some((
+            format!("{} unavailable", picker.errors[0].provider),
+            ERROR_COLOR,
+        ))
+    } else if !picker.errors.is_empty() {
+        Some((
+            format!("{} providers unavailable", picker.errors.len()),
+            ERROR_COLOR,
+        ))
+    } else {
+        None
+    }
 }
 
 /// The `Model Name: {friendly}` line under the counter, naming the highlighted
@@ -3036,7 +3093,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::{FileSearch, Message};
+    use crate::app::{FileSearch, Message, ModelFetchError};
 
     /// Concatenate a line's span contents into its plain text.
     fn plain(line: &Line) -> String {
@@ -6568,6 +6625,7 @@ mod tests {
             selected,
             query: String::new(),
             active_id: active.into(),
+            ..ModelPicker::default()
         }
     }
 
@@ -6652,6 +6710,69 @@ mod tests {
         // A trailing blank gap (the user's mock), then the bottom rule last.
         assert!(row(&buf, 10, 60).trim().is_empty(), "trailing gap");
         assert!(row(&buf, 11, 60).starts_with('─'), "bottom rule");
+    }
+
+    #[test]
+    fn counter_notes_more_providers_still_loading() {
+        // A partial list (one provider in, another still fetching) shows the
+        // list now with a dim "loading more…" hint beside the counter.
+        let mut picker = model_picker(three_models(), 0, "x");
+        picker.pending = 1;
+        let mut buf = buffer(60, 12);
+        render_model_picker(buf.area, &mut buf, &picker);
+        let counter = row(&buf, 7, 60);
+        assert!(counter.contains("(1/3)"), "{counter:?}");
+        assert!(counter.contains("loading more"), "{counter:?}");
+    }
+
+    #[test]
+    fn counter_notes_a_provider_that_failed() {
+        let mut picker = model_picker(three_models(), 0, "x");
+        picker.errors.push(ModelFetchError {
+            provider: "Agent Zero API".into(),
+            message: "HTTP 401".into(),
+        });
+        let mut buf = buffer(60, 12);
+        render_model_picker(buf.area, &mut buf, &picker);
+        let counter = row(&buf, 7, 60);
+        assert!(counter.contains("Agent Zero API"), "{counter:?}");
+        assert!(counter.contains("unavailable"), "{counter:?}");
+    }
+
+    #[test]
+    fn all_failed_picker_shows_one_red_row_per_provider() {
+        let mut picker = model_picker(vec![], 0, "x");
+        picker.status = ModelLoad::Error(String::new());
+        picker.errors = vec![
+            ModelFetchError {
+                provider: "OpenRouter".into(),
+                message: "HTTP 500".into(),
+            },
+            ModelFetchError {
+                provider: "Agent Zero API".into(),
+                message: "HTTP 401".into(),
+            },
+        ];
+        // Natural height: collapsed chrome (6) + 2 error rows = 8.
+        let mut buf = buffer(60, 8);
+        render_model_picker(buf.area, &mut buf, &picker);
+        let r0 = row(&buf, 4, 60);
+        let r1 = row(&buf, 5, 60);
+        assert!(r0.contains("OpenRouter"), "{r0:?}");
+        assert!(r0.contains("HTTP 500"), "{r0:?}");
+        assert!(r1.contains("Agent Zero API"), "{r1:?}");
+        assert_eq!(buf[(2, 4)].fg, ERROR_COLOR, "error rows are red");
+    }
+
+    #[test]
+    fn all_failed_picker_height_covers_each_error_row() {
+        let mut app = App::new();
+        app.open_model_picker("x");
+        app.begin_model_load(2);
+        app.add_model_error("OpenRouter", "HTTP 500");
+        app.add_model_error("Agent Zero API", "HTTP 401");
+        // Collapsed chrome (6) + 2 error rows = 8.
+        assert_eq!(model_picker_height(&app, 40), Some(8));
     }
 
     #[test]

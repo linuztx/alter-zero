@@ -678,6 +678,7 @@ pub enum ModelLoad {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ModelPicker {
     /// Every fetched model, provider-tagged and sorted (empty while loading).
+    /// Grows as each provider's fetch lands ([`App::add_models`]).
     pub models: Vec<ModelEntry>,
     /// Whether the list is still loading, ready, or errored.
     pub status: ModelLoad,
@@ -688,6 +689,28 @@ pub struct ModelPicker {
     pub query: String,
     /// The currently active model id, marked with a ✓ in the list.
     pub active_id: String,
+    /// The provider the active model belongs to, so the ✓ marks the exact active
+    /// row (a merged multi-provider list can carry the same id twice). Empty when
+    /// unknown — the ✓ then falls back to matching the id alone.
+    pub active_provider: String,
+    /// Provider fetches still outstanding — the `/model` picker fetches **every**
+    /// configured provider in parallel and merges their lists as they arrive
+    /// (docs/llm.md). Drives the `loading more…` counter hint, and at zero with
+    /// no models it settles the all-failed error.
+    pub pending: usize,
+    /// Providers whose model fetch failed, kept so the picker can show which
+    /// lists are missing (a `⚠ … unavailable` note beside a partial list, or
+    /// one red row per provider when they all fail).
+    pub errors: Vec<ModelFetchError>,
+}
+
+/// A provider whose `/model` fetch failed, with the concise reason to surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelFetchError {
+    /// The provider's human label (its `name`, e.g. `OpenRouter`).
+    pub provider: String,
+    /// The one-line failure reason (an [`crate::llm::LlmError`] rendering).
+    pub message: String,
 }
 
 impl ModelPicker {
@@ -714,6 +737,34 @@ impl ModelPicker {
     pub fn highlighted(&self) -> Option<&ModelEntry> {
         let matches = self.matches();
         matches.get(self.selected).copied()
+    }
+
+    /// Whether `m` is the active model (the ✓ row): the id matches and — when the
+    /// active provider is known — so does the provider, so a shared id in the
+    /// merged multi-provider list marks only the row actually in use.
+    #[must_use]
+    pub fn is_active(&self, m: &ModelEntry) -> bool {
+        m.id == self.active_id
+            && (self.active_provider.is_empty() || m.provider == self.active_provider)
+    }
+
+    /// Recompute the display status from the merge so far: `Ready` the moment any
+    /// model is present (shown while the rest still load), else `Loading` while
+    /// fetches are outstanding, else `Error` when every provider failed with no
+    /// models, else `Ready` (all done, genuinely empty). The `Error` string is
+    /// left empty — the picker renders the per-provider [`errors`] instead.
+    ///
+    /// [`errors`]: ModelPicker::errors
+    fn recompute_status(&mut self) {
+        self.status = if !self.models.is_empty() {
+            ModelLoad::Ready
+        } else if self.pending > 0 {
+            ModelLoad::Loading
+        } else if !self.errors.is_empty() {
+            ModelLoad::Error(String::new())
+        } else {
+            ModelLoad::Ready
+        };
     }
 }
 
@@ -2638,6 +2689,15 @@ impl App {
         });
     }
 
+    /// Record which provider the active model belongs to (the boundary knows it,
+    /// the pure open call only has the id) so the picker's ✓ marks the exact
+    /// active row in the merged multi-provider list. No-op if the picker closed.
+    pub fn set_active_provider(&mut self, provider: impl Into<String>) {
+        if let Some(picker) = self.model_picker.as_mut() {
+            picker.active_provider = provider.into();
+        }
+    }
+
     /// Dismiss the inline `/model` picker (Esc/Ctrl+C, or right after a
     /// selection): the composer returns. No view change — it was never an
     /// overlay.
@@ -2655,6 +2715,8 @@ impl App {
         };
         picker.models = models;
         picker.status = ModelLoad::Ready;
+        picker.pending = 0;
+        picker.errors.clear();
         // Seat the highlight on the active model if it's in the (unfiltered)
         // list, so the picker opens focused on the current choice.
         picker.selected = picker
@@ -2662,6 +2724,88 @@ impl App {
             .iter()
             .position(|m| m.id == picker.active_id)
             .unwrap_or(0);
+    }
+
+    /// Begin a multi-provider model load: record how many provider fetches are
+    /// in flight and reset to the empty `Loading` state. The boundary spawns one
+    /// worker per configured provider after this; each result arrives via
+    /// [`add_models`] / [`add_model_error`]. No-op if the picker closed meanwhile.
+    ///
+    /// [`add_models`]: App::add_models
+    /// [`add_model_error`]: App::add_model_error
+    pub fn begin_model_load(&mut self, pending: usize) {
+        if let Some(picker) = self.model_picker.as_mut() {
+            picker.models.clear();
+            picker.errors.clear();
+            picker.selected = 0;
+            picker.pending = pending;
+            picker.status = ModelLoad::Loading;
+        }
+    }
+
+    /// Merge one provider's fetched models into the open picker: append, re-sort
+    /// by id then provider, drop exact `(provider, id)` dupes, and mark one
+    /// outstanding fetch done. The list appears as soon as the first provider
+    /// lands (status → `Ready`) and grows as the rest arrive. The highlight rides
+    /// the same model across the merge, unless the user hasn't touched the picker
+    /// yet — then it re-seats on the active model once its provider loads. No-op
+    /// if the picker closed meanwhile. See `docs/llm.md`.
+    pub fn add_models(&mut self, models: Vec<ModelEntry>) {
+        let Some(picker) = self.model_picker.as_mut() else {
+            return;
+        };
+        picker.pending = picker.pending.saturating_sub(1);
+        // An untouched picker (no search, highlight at the top) re-seats on the
+        // active model when its provider lands; once the user navigates or
+        // filters, the current highlight is preserved across the merge instead.
+        let untouched = picker.query.is_empty() && picker.selected == 0;
+        let keep = picker
+            .highlighted()
+            .map(|m| (m.provider.clone(), m.id.clone()));
+        picker.models.extend(models);
+        picker
+            .models
+            .sort_by(|a, b| a.id.cmp(&b.id).then_with(|| a.provider.cmp(&b.provider)));
+        picker
+            .models
+            .dedup_by(|a, b| a.id == b.id && a.provider == b.provider);
+        picker.recompute_status();
+        picker.selected = if untouched {
+            picker
+                .matches()
+                .iter()
+                .position(|m| m.id == picker.active_id)
+                .unwrap_or(0)
+        } else {
+            let clamped = picker
+                .selected
+                .min(picker.matches().len().saturating_sub(1));
+            keep.and_then(|(p, i)| {
+                picker
+                    .matches()
+                    .iter()
+                    .position(|m| m.provider == p && m.id == i)
+            })
+            .unwrap_or(clamped)
+        };
+    }
+
+    /// Record that one provider's model fetch failed: keep the reason (shown as a
+    /// `⚠ … unavailable` note beside a partial list, or a red row when every
+    /// provider fails) and mark the fetch done. No-op if the picker closed. See
+    /// `docs/llm.md`.
+    pub fn add_model_error(&mut self, provider: impl Into<String>, message: impl Into<String>) {
+        let Some(picker) = self.model_picker.as_mut() else {
+            return;
+        };
+        picker.pending = picker.pending.saturating_sub(1);
+        picker.errors.push(ModelFetchError {
+            provider: provider.into(),
+            message: message.into(),
+        });
+        picker.recompute_status();
+        let last = picker.matches().len().saturating_sub(1);
+        picker.selected = picker.selected.min(last);
     }
 
     /// Record that the model fetch failed — the picker shows `message` in red.
@@ -2681,6 +2825,8 @@ impl App {
         if let Some(picker) = self.model_picker.as_mut() {
             picker.status = ModelLoad::NeedsLogin;
             picker.models.clear();
+            picker.errors.clear();
+            picker.pending = 0;
             picker.selected = 0;
         }
     }
@@ -7621,6 +7767,140 @@ mod tests {
         // Enter has nothing to select — it must not emit a SelectModel action.
         assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
         assert!(app.model_picker.is_some(), "picker stays open");
+    }
+
+    // --- Multi-provider parallel `/model` load (docs/llm.md). ---
+
+    #[test]
+    fn add_models_shows_the_first_provider_and_merges_the_rest() {
+        let mut app = App::new();
+        app.open_model_picker("x");
+        app.begin_model_load(2);
+        assert_eq!(
+            app.model_picker.as_ref().unwrap().status,
+            ModelLoad::Loading
+        );
+        // OpenRouter lands first — its list shows immediately, one fetch still out.
+        app.add_models(vec![
+            model("c/z", "openrouter", "C Z"),
+            model("a/x", "openrouter", "A X"),
+        ]);
+        let picker = app.model_picker.as_ref().unwrap();
+        assert_eq!(
+            picker.status,
+            ModelLoad::Ready,
+            "shown before the rest arrive"
+        );
+        assert_eq!(picker.pending, 1);
+        assert_eq!(picker.models.len(), 2);
+        // Agent Zero lands second — merged into one sorted list, no fetches left.
+        app.add_models(vec![model("b/y", "a0_venice", "B Y")]);
+        let picker = app.model_picker.as_ref().unwrap();
+        assert_eq!(picker.pending, 0);
+        let ids: Vec<&str> = picker.models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["a/x", "b/y", "c/z"],
+            "merged + sorted across providers"
+        );
+    }
+
+    #[test]
+    fn add_model_error_keeps_a_partial_list_and_notes_the_failure() {
+        let mut app = App::new();
+        app.open_model_picker("x");
+        app.begin_model_load(2);
+        app.add_models(vec![model("a/x", "openrouter", "A X")]);
+        app.add_model_error("Agent Zero API", "HTTP 401: unauthorized");
+        let picker = app.model_picker.as_ref().unwrap();
+        // The good provider's list stays; the failure is recorded, not fatal.
+        assert_eq!(picker.status, ModelLoad::Ready);
+        assert_eq!(picker.pending, 0);
+        assert_eq!(picker.models.len(), 1);
+        assert_eq!(picker.errors.len(), 1);
+        assert_eq!(picker.errors[0].provider, "Agent Zero API");
+    }
+
+    #[test]
+    fn all_providers_failing_settles_into_an_error() {
+        let mut app = App::new();
+        app.open_model_picker("x");
+        app.begin_model_load(2);
+        app.add_model_error("OpenRouter", "HTTP 500");
+        // Still loading — one fetch outstanding, nothing to show yet.
+        assert_eq!(
+            app.model_picker.as_ref().unwrap().status,
+            ModelLoad::Loading
+        );
+        app.add_model_error("Agent Zero API", "HTTP 401");
+        let picker = app.model_picker.as_ref().unwrap();
+        assert!(matches!(picker.status, ModelLoad::Error(_)));
+        assert!(picker.models.is_empty());
+        assert_eq!(picker.errors.len(), 2);
+    }
+
+    #[test]
+    fn add_models_reseats_on_the_active_model_once_its_provider_lands() {
+        let mut app = App::new();
+        app.open_model_picker("b/y"); // active lives in the second provider
+        app.begin_model_load(2);
+        app.add_models(vec![model("a/x", "openrouter", "A X")]);
+        // Active isn't here yet — seated on top.
+        assert_eq!(app.model_picker.as_ref().unwrap().selected, 0);
+        app.add_models(vec![model("b/y", "a0_venice", "B Y")]);
+        // Its provider landed and the user hadn't moved — jump to the active row.
+        let picker = app.model_picker.as_ref().unwrap();
+        assert_eq!(picker.highlighted().unwrap().id, "b/y");
+    }
+
+    #[test]
+    fn active_mark_matches_the_provider_not_just_the_id() {
+        // The merged list can carry the same id under two providers; only the
+        // row from the active provider is the ✓ row.
+        let mut app = App::new();
+        app.open_model_picker("shared/id");
+        app.set_active_provider("a0_venice");
+        app.begin_model_load(2);
+        app.add_models(vec![model("shared/id", "openrouter", "OR")]);
+        app.add_models(vec![model("shared/id", "a0_venice", "A0")]);
+        let picker = app.model_picker.as_ref().unwrap();
+        let or = picker
+            .models
+            .iter()
+            .find(|m| m.provider == "openrouter")
+            .unwrap();
+        let a0 = picker
+            .models
+            .iter()
+            .find(|m| m.provider == "a0_venice")
+            .unwrap();
+        assert!(
+            !picker.is_active(or),
+            "same id, other provider is not active"
+        );
+        assert!(picker.is_active(a0), "the active provider's row is marked");
+    }
+
+    #[test]
+    fn add_models_preserves_the_highlight_after_the_user_navigates() {
+        let mut app = App::new();
+        app.open_model_picker("x");
+        app.begin_model_load(2);
+        app.add_models(vec![
+            model("a/x", "openrouter", "A X"),
+            model("c/z", "openrouter", "C Z"),
+        ]);
+        app.on_key(key(KeyCode::Down)); // highlight c/z (index 1)
+        assert_eq!(
+            app.model_picker.as_ref().unwrap().highlighted().unwrap().id,
+            "c/z"
+        );
+        // A merge pushes a row in between — the highlight rides c/z, not the index.
+        app.add_models(vec![model("b/y", "a0_venice", "B Y")]);
+        assert_eq!(
+            app.model_picker.as_ref().unwrap().highlighted().unwrap().id,
+            "c/z"
+        );
     }
 
     #[test]

@@ -64,9 +64,11 @@ use inline_tui::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
 use inline_tui::term::InlineViewport;
 use inline_tui::ui;
 
-/// A finished `/model` fetch: the provider's models, or a message to show in the
-/// picker. Carried on the model-fetch worker's channel. See `docs/llm.md`.
-type ModelFetch = Result<Vec<ModelEntry>, String>;
+/// A finished `/model` fetch from one provider: its human label (for a failure
+/// note) and either the provider's models or a one-line error. The picker
+/// fetches every configured provider in parallel and merges these as they land.
+/// Carried on the model-fetch worker's channel. See `docs/llm.md`.
+type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> io::Result<()> {
@@ -460,37 +462,40 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             Action::OpenModelPicker => {
                                 // /model from an idle composer (docs/llm.md): open
                                 // the inline picker (it replaces the composer — no
-                                // alternate screen). Fetch the list off-thread from
-                                // a provider whose key resolves — the active one if
-                                // it's configured, else the first configured one.
-                                // With none configured, skip the fetch and point the
-                                // user at /login instead (the list lands on branch 6).
+                                // alternate screen). Fetch **every** configured
+                                // provider's list off-thread in parallel; the picker
+                                // shows each as it lands and merges them into one
+                                // list (branch 6). With none configured, skip the
+                                // fetch and point the user at /login instead.
                                 app.open_model_picker(active_model.clone());
+                                if let Some(p) = active_provider.as_deref() {
+                                    app.set_active_provider(p);
+                                }
                                 if let Some(c) = model_fetch_cancel.take() {
                                     c.cancel();
                                 }
-                                let choices = provider_choices(&providers, &env_file);
-                                let list_provider = active_provider
-                                    .as_deref()
-                                    .filter(|p| {
-                                        choices.iter().any(|c| c.id.as_str() == *p && c.configured)
-                                    })
-                                    .or_else(|| {
-                                        choices
-                                            .iter()
-                                            .find(|c| c.configured)
-                                            .map(|c| c.id.as_str())
-                                    });
-                                match list_provider {
-                                    None => app.set_models_needs_login(),
-                                    Some(provider) => {
-                                        let cancel = CancelToken::new();
-                                        model_fetch_cancel = Some(cancel.clone());
+                                let configured: Vec<ProviderChoice> =
+                                    provider_choices(&providers, &env_file)
+                                        .into_iter()
+                                        .filter(|c| c.configured)
+                                        .collect();
+                                if configured.is_empty() {
+                                    app.set_models_needs_login();
+                                } else {
+                                    let cancel = CancelToken::new();
+                                    model_fetch_cancel = Some(cancel.clone());
+                                    app.begin_model_load(configured.len());
+                                    for choice in &configured {
                                         let cfg = model_config_for(
-                                            &providers, &env_file, provider, &active_model,
+                                            &providers, &env_file, &choice.id, &active_model,
                                             temperature,
                                         );
-                                        spawn_model_fetch(cfg, cancel, model_tx.clone());
+                                        spawn_model_fetch(
+                                            choice.name.clone(),
+                                            cfg,
+                                            cancel.clone(),
+                                            model_tx.clone(),
+                                        );
                                     }
                                 }
                             }
@@ -743,13 +748,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 frame.schedule_frame();
             }
 
-            // 6. A finished `/model` fetch from its worker thread: fill the open
-            //    picker with the models, or show the error. Both are no-ops if
-            //    the picker was already dismissed. See docs/llm.md.
-            Some(result) = model_rx.recv() => {
+            // 6. A finished `/model` fetch from one provider's worker thread:
+            //    merge its models into the open picker, or record the failure
+            //    beside the providers that did load. Both are no-ops if the
+            //    picker was already dismissed. See docs/llm.md.
+            Some((label, result)) = model_rx.recv() => {
                 match result {
-                    Ok(models) => app.set_models(models),
-                    Err(reason) => app.set_models_error(reason),
+                    Ok(models) => app.add_models(models),
+                    Err(reason) => app.add_model_error(label, reason),
                 }
                 frame.schedule_frame();
             }
@@ -963,22 +969,24 @@ fn build_backend(
     Box::new(DummyAi::with_startup_delay(startup_delay))
 }
 
-/// Fetch the `/models` list on a background thread (the image-paste pattern),
-/// sending the result to the loop. A `None` config (no provider) yields a hint;
-/// a cancelled fetch (the picker closed) is dropped. See `docs/llm.md`.
+/// Fetch one provider's `/models` list on a background thread (the image-paste
+/// pattern), sending the labelled result to the loop. One of these is spawned
+/// per configured provider so they fetch in parallel; a cancelled fetch (the
+/// picker closed) is dropped. See `docs/llm.md`.
 fn spawn_model_fetch(
+    label: String,
     cfg: Option<ModelConfig>,
     cancel: CancelToken,
     tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
 ) {
     std::thread::spawn(move || {
-        let result: ModelFetch = match cfg {
+        let result: Result<Vec<ModelEntry>, String> = match cfg {
             Some(cfg) => llm::models::fetch_models(&cfg, &cancel).map_err(|e| e.to_string()),
             None => Err("No provider configured — set providers.toml / INLINE_TUI_PROVIDER".into()),
         };
         // Don't deliver a result the picker no longer wants.
         if !cancel.is_cancelled() {
-            let _ = tx.send(result);
+            let _ = tx.send((label, result));
         }
     });
 }

@@ -134,8 +134,8 @@ the bottom rule — the shape of the user's mock):
 
 → anthropic/claude-3-haiku    [openrouter]               (selected: '→', active: ✓)
   anthropic/claude-3.5-haiku  [openrouter]
-  anthropic/claude-fable-5    [openrouter] ✓
-  (3/12)                                                 (position/total, dim)
+  claude-opus-4-8-fast        [a0_venice]  ✓
+  (3/12)   ·   loading more…                             (position/total + load status, dim)
 
   Model Name: Anthropic: Claude 3.5 Haiku                (friendly name, dim)
 
@@ -148,14 +148,27 @@ the bottom rule — the shape of the user's mock):
   boundary skips the fetch and the list area shows a cyan
   `No API key yet — run /login to add one` (`ModelLoad::NeedsLogin`) instead of
   offering models the user can't use.
-- Otherwise the boundary spawns a worker thread that fetches `/models` from a
-  provider whose key resolves — the active one if it's configured, else the first
-  configured one — parses it (`llm::models`), and sends the result on a dedicated
-  channel (the image-paste worker pattern). The picker shows `Loading models…`
-  until it arrives, then the list (or a red error row).
-- Type to filter (case-insensitive substring over `id` and provider), `↑/↓`/PgUp/
-  PgDn/Home/End move, `Enter` selects → `Action::SelectModel { provider, id }`,
-  `Esc` clears the query then closes, `Ctrl+C` closes.
+- Otherwise the boundary fetches **every configured provider in parallel** — one
+  worker thread each (the image-paste pattern), all sharing one cancel token —
+  and merges the results into a single provider-tagged list as they land
+  (`App::begin_model_load` up front, then `App::add_models` / `App::add_model_error`
+  per result on a dedicated channel). The picker shows `Loading models…` until the
+  **first** provider answers, then the list — growing and re-sorting (by id, then
+  provider; exact `(provider, id)` dupes dropped) as the rest arrive. The
+  highlight rides the same model across each merge, or re-seats on the active
+  model once its provider lands (unless the user has already moved/filtered).
+- **Partial results are surfaced, not fatal.** While providers are still fetching
+  the counter carries a dim `· loading more…`; a provider whose fetch fails is
+  recorded (`ModelPicker::errors`) and noted beside the counter as a red
+  `· {provider} unavailable` / `· N providers unavailable`, the successful lists
+  staying put. Only when **every** provider fails (no models at all) does the
+  picker go to `ModelLoad::Error`, showing one red `{provider}: {reason}` row each.
+- Type to filter (case-insensitive substring over `id`, provider, and name),
+  `↑/↓`/PgUp/PgDn/Home/End move, `Enter` selects →
+  `Action::SelectModel { provider, id }`, `Esc` clears the query then closes,
+  `Ctrl+C` closes. The ✓ marks the active `(provider, id)` — the boundary passes
+  the active provider via `App::set_active_provider`, so a shared id across
+  providers marks only the row actually in use.
 - On select, the loop rebuilds the backend for the new provider/model, updates the
   footer (`App::set_session_info`), and **persists the choice to `config.json`**
   (so it's the default next run), then collapses the picker.
