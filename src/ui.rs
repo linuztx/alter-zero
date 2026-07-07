@@ -1161,73 +1161,164 @@ fn code_content_rows(segments: &[(String, Color)], width: u16) -> Vec<Vec<Span<'
 /// **Prefix-stable at the line level:** a line's prose/code mode and its highlight
 /// are fixed by the text before it. (Highlighting uses one-char lookahead within a
 /// line — a call's `(` — so an in-progress code *line* isn't safe to commit until
-/// it completes; [`stable_commit`] withholds it, see there.)
+/// it completes; [`StreamRender`] withholds it, see there.)
 fn assistant_lines(text: &str, width: u16, bullet: &str, color: Color) -> Vec<Line<'static>> {
-    let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
-    let code_width = width
-        .saturating_sub(BULLET_WIDTH + CODE_GUTTER_WIDTH)
-        .max(1);
-    let heading_style = Style::new().fg(HEADING_COLOR).add_modifier(Modifier::BOLD);
+    let mut renderer = AssistantRenderer::new(width, bullet, color);
+    let mut rows: Vec<Line<'static>> = Vec::new();
+    for line in text.split('\n') {
+        rows.extend(renderer.feed_line(line));
+    }
+    // An empty reply is still one (blank) row, so the bullet always has a home.
+    // (Unreachable in practice — a prose line always yields ≥1 row — but kept so
+    // the bullet is guaranteed a home.)
+    if rows.is_empty() {
+        rows.push(Line::from(vec![Span::styled(
+            bullet.to_string(),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        )]));
+    }
+    rows
+}
 
-    // Row content spans (the bullet/indent prefix is stamped on afterwards).
-    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
-    for block in markdown::parse_blocks(text) {
-        match block {
-            markdown::Block::Prose(run) => {
-                for segment in run.split('\n') {
-                    if let Some((_level, htext)) = markdown::heading_level(segment) {
-                        for line in wrap_text(htext, content_width) {
-                            rows.push(vec![Span::styled(line, heading_style)]);
-                        }
-                    } else {
-                        for line in wrap_text(segment, content_width) {
-                            rows.push(vec![Span::raw(line)]);
-                        }
-                    }
-                }
-            }
-            markdown::Block::Code { lang, lines } => {
+/// The incremental, prefix-stable core shared by the batch [`assistant_lines`]
+/// and the streaming [`StreamRender`]: feed an assistant reply's source lines in
+/// order with [`AssistantRenderer::feed_line`] and each returns that line's
+/// finished rows. Fence state ([`markdown::BlockScanner`]) and highlight carry
+/// ([`highlight::Highlighter`]) thread across the calls, so a completed line's
+/// rows never change — which is what lets scrollback commits and the strip
+/// preview cost O(new line) instead of O(whole reply). See `docs/markdown.md`.
+///
+/// The very first row emitted across the whole message carries the coloured
+/// role bullet; every later row is indented under it. `Clone` lets [`StreamRender`]
+/// *peek* an in-progress (not yet newline-terminated) line without advancing the
+/// state it will resume from.
+#[derive(Clone)]
+struct AssistantRenderer {
+    /// Columns available to prose after the bullet.
+    content_width: u16,
+    /// Columns available to code after the bullet + gutter.
+    code_width: u16,
+    /// The role bullet stamped on the first row.
+    bullet: String,
+    /// The bullet's colour.
+    color: Color,
+    /// Fence state entering the next line.
+    scanner: markdown::BlockScanner,
+    /// The open code block's highlighter (`None` outside a fence).
+    highlighter: Option<highlight::Highlighter>,
+    /// Whether any row has been emitted yet (the first gets the bullet).
+    emitted_any: bool,
+}
+
+impl AssistantRenderer {
+    fn new(width: u16, bullet: &str, color: Color) -> Self {
+        Self {
+            content_width: width.saturating_sub(BULLET_WIDTH).max(1),
+            code_width: width
+                .saturating_sub(BULLET_WIDTH + CODE_GUTTER_WIDTH)
+                .max(1),
+            bullet: bullet.to_string(),
+            color,
+            scanner: markdown::BlockScanner::new(),
+            highlighter: None,
+            emitted_any: false,
+        }
+    }
+
+    /// Render the next source `line` into its finished rows, advancing fence +
+    /// highlight state. The first row ever emitted carries the bullet; the rest
+    /// are indented under it.
+    fn feed_line(&mut self, line: &str) -> Vec<Line<'static>> {
+        let rows = self.content_rows(line);
+        self.stamp(rows)
+    }
+
+    /// The row *content* spans for `line` (no bullet/indent prefix yet),
+    /// advancing fence/highlight state. Prose word-wraps (headings bold, `#`s
+    /// dropped); code renders verbatim behind the gutter, syntax-highlighted; a
+    /// fence open becomes the dim language label and a fence close renders
+    /// nothing.
+    fn content_rows(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
+        match self.scanner.classify(line) {
+            markdown::LineKind::CodeStart(lang) => {
+                self.highlighter = Some(highlight::Highlighter::new(lang.as_deref()));
                 // A dim label caps the block (the hidden fence's language).
-                rows.push(code_row(lang.clone().unwrap_or_default(), CODE_LABEL_COLOR));
-                // Syntax-highlight the whole block (threads multi-line
-                // string/comment state), then hard-break each source line's
-                // coloured spans to the code width behind the gutter.
-                let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-                for line_segs in highlight::highlight(&refs, lang.as_deref()) {
-                    let colored: Vec<(String, Color)> = line_segs
-                        .into_iter()
-                        .map(|s| (s.text, code_kind_color(s.kind)))
-                        .collect();
-                    for mut spans in code_content_rows(&colored, code_width) {
+                vec![code_row(lang.unwrap_or_default(), CODE_LABEL_COLOR)]
+            }
+            markdown::LineKind::CodeEnd => {
+                self.highlighter = None;
+                Vec::new()
+            }
+            markdown::LineKind::Code => {
+                let segs = match self.highlighter.as_mut() {
+                    Some(h) => h.line(line),
+                    None => vec![highlight::Seg {
+                        text: line.to_string(),
+                        kind: highlight::Kind::Plain,
+                    }],
+                };
+                let colored: Vec<(String, Color)> = segs
+                    .into_iter()
+                    .map(|s| (s.text, code_kind_color(s.kind)))
+                    .collect();
+                code_content_rows(&colored, self.code_width)
+                    .into_iter()
+                    .map(|mut spans| {
                         let mut row = vec![Span::styled(
                             CODE_GUTTER.to_string(),
                             Style::new().fg(CODE_GUTTER_COLOR),
                         )];
                         row.append(&mut spans);
-                        rows.push(row);
-                    }
+                        row
+                    })
+                    .collect()
+            }
+            markdown::LineKind::Prose => {
+                if let Some((_level, htext)) = markdown::heading_level(line) {
+                    let heading_style = Style::new().fg(HEADING_COLOR).add_modifier(Modifier::BOLD);
+                    wrap_text(htext, self.content_width)
+                        .into_iter()
+                        .map(|l| vec![Span::styled(l, heading_style)])
+                        .collect()
+                } else {
+                    wrap_text(line, self.content_width)
+                        .into_iter()
+                        .map(|l| vec![Span::raw(l)])
+                        .collect()
                 }
             }
         }
     }
-    // An empty reply is still one (blank) row, so the bullet always has a home.
-    if rows.is_empty() {
-        rows.push(vec![Span::raw(String::new())]);
+
+    /// Whether the **next** line to be fed sits inside an open fenced code block.
+    /// Such a line's rows aren't safe to commit until it completes: the
+    /// highlighter's within-line lookahead (a call's `(`, a `//` comment, a
+    /// closing `*/`) can recolour an *earlier* wrapped row of the same line. The
+    /// streaming committer uses this to withhold an in-progress code line whole.
+    fn in_code(&self) -> bool {
+        self.highlighter.is_some()
     }
-    let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
-    rows.into_iter()
-        .enumerate()
-        .map(|(i, mut spans)| {
-            let prefix = if i == 0 {
-                Span::styled(bullet.to_string(), bullet_style)
-            } else {
-                Span::raw(INDENT.to_string())
-            };
-            let mut all = vec![prefix];
-            all.append(&mut spans);
-            Line::from(all)
-        })
-        .collect()
+
+    /// Stamp the bullet (first row of the message) or `INDENT` (every later row)
+    /// onto each content row.
+    fn stamp(&mut self, rows: Vec<Vec<Span<'static>>>) -> Vec<Line<'static>> {
+        rows.into_iter()
+            .map(|mut spans| {
+                let prefix = if self.emitted_any {
+                    Span::raw(INDENT.to_string())
+                } else {
+                    self.emitted_any = true;
+                    Span::styled(
+                        self.bullet.clone(),
+                        Style::new().fg(self.color).add_modifier(Modifier::BOLD),
+                    )
+                };
+                let mut all = vec![prefix];
+                all.append(&mut spans);
+                Line::from(all)
+            })
+            .collect()
+    }
 }
 
 /// Render the bottom live region into `buf`. While a reply streams, the strip's
@@ -1239,6 +1330,22 @@ fn assistant_lines(text: &str, width: u16, bullet: &str, color: Color) -> Vec<Li
 /// than the box, it scrolls internally to keep the **cursor's wrapped row** in
 /// view (`input_scroll` follows the cursor wherever the user has moved it).
 pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
+    render_live_with_preview(area, buf, app, None);
+}
+
+/// [`render_live`], but with the streaming strip's assistant-preview line
+/// supplied by the caller (the boundary's cheap [`StreamRender::preview`], O(one
+/// line)) instead of re-rendering the whole reply here (which was O(reply) *every
+/// animation frame* and starved the status spinner — `docs/markdown.md`). A
+/// `None` `stream_preview` falls back to rendering the last line from the buffer,
+/// so unit tests (which don't thread a `StreamRender`) keep their old behaviour;
+/// production always passes `Some`.
+pub fn render_live_with_preview(
+    area: Rect,
+    buf: &mut Buffer,
+    app: &App,
+    stream_preview: Option<&Line<'static>>,
+) {
     // The inline `/model` picker replaces the whole live region — the composer,
     // strip, band, and footer all give way to its own framed body. See
     // `docs/llm.md`.
@@ -1279,7 +1386,11 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
     // reserved row for it).
     let preview = if let Some(tool) = app.current_tool() {
         tool_lines(tool, strip.width).into_iter().next()
+    } else if let Some(line) = stream_preview {
+        // The boundary already rendered the reply's last line cheaply.
+        Some(line.clone())
     } else {
+        // Fallback (unit tests): render the last line from the buffer.
         app.streaming_text().filter(|t| !t.is_empty()).map(|text| {
             message_lines(Role::Assistant, text, strip.width)
                 .pop()
@@ -3131,43 +3242,163 @@ pub fn render_resume_picker(area: Rect, buf: &mut Buffer, app: &App) {
     .render(hint_area, buf);
 }
 
-/// Decide which assistant lines are now safe to flush to scrollback as a reply
-/// streams in.
+/// The **incremental**, stateful renderer that commits an assistant reply to
+/// scrollback as it streams — the boundary's replacement for the old
+/// re-render-the-whole-reply `stable_commit`/`final_commit` pair (which cost
+/// O(reply) *per chunk*, so a long code reply was O(reply²) and starved the
+/// status animation — see `docs/markdown.md`).
 ///
-/// Greedy word-wrap is *prefix-stable* — only the final wrapped line can still
-/// change as more text arrives — so we commit everything up to it. Given how
-/// many lines were `committed` already, returns the new lines to commit and the
-/// updated committed count. `committed` is clamped so a mid-stream resize (which
-/// re-wraps to a different line count) can't panic.
+/// It drives one [`AssistantRenderer`], caching the rendered rows of every
+/// **complete** source line (`frozen`) and advancing over only the newly-arrived
+/// lines on each call — so [`commit`](Self::commit)/[`preview`](Self::preview)
+/// cost O(new text), and streaming a whole reply is O(reply).
 ///
-/// **Code exception.** Syntax highlighting classifies a token with one-char
-/// lookahead *within its line* (an identifier becomes a call at the `(`, `/`
-/// becomes a comment at the next `/`). A code line longer than the width wraps
-/// into several rows, so committing all-but-the-last row could flush an early row
-/// that then *recolours* once the lookahead char streams in — corrupting immutable
-/// scrollback. So while the reply's trailing line is inside a code block
-/// ([`markdown::ends_inside_code`]) we render only the **complete** source (up to
-/// the last newline) and withhold the in-progress code line entirely. Prose has no
-/// such lookahead and still streams per wrapped row.
-#[must_use]
-pub fn stable_commit(text: &str, width: u16, committed: usize) -> (Vec<Line<'static>>, usize) {
-    let render = if markdown::ends_inside_code(text) {
-        &text[..text.rfind('\n').map_or(0, |i| i + 1)]
-    } else {
-        text
-    };
-    let lines = message_lines(Role::Assistant, render, width);
-    let stable = lines.len().saturating_sub(1);
-    let start = committed.min(stable);
-    (lines[start..stable].to_vec(), stable.max(committed))
+/// Prefix-stability (CLAUDE.md invariant 2) holds by construction: a completed
+/// source line's rows are frozen (markdown fence + highlight carry are threaded
+/// left-to-right, wrapping is prefix-stable), so a row committed to scrollback
+/// never changes. The still-growing trailing line is withheld from
+/// [`commit`](Self::commit) and only peeked for the [`preview`](Self::preview),
+/// then flushed by [`finish`](Self::finish) when the reply ends.
+///
+/// A width change (a resize) invalidates the cached rows; the next call rebuilds
+/// from scratch (the boundary also [`reset`](Self::reset)s and re-commits the
+/// reply, matching the old `committed = 0` behaviour).
+pub struct StreamRender {
+    /// The wrapping width the cache was built at; a change triggers a rebuild.
+    width: u16,
+    /// Renderer state (fence + highlight) entering the trailing partial line.
+    renderer: AssistantRenderer,
+    /// Rendered rows of every complete (newline-terminated) source line so far.
+    frozen: Vec<Line<'static>>,
+    /// Byte offset of the start of the trailing partial line (end of the last
+    /// complete line consumed into `frozen`).
+    consumed: usize,
+    /// Rows already returned to scrollback — an index into `frozen ++ tail`.
+    committed: usize,
 }
 
-/// The remaining (last) lines to flush once the reply is complete.
-#[must_use]
-pub fn final_commit(text: &str, width: u16, committed: usize) -> Vec<Line<'static>> {
-    let lines = message_lines(Role::Assistant, text, width);
-    let start = committed.min(lines.len());
-    lines[start..].to_vec()
+impl Default for StreamRender {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StreamRender {
+    /// A fresh renderer (before any width is known). The first call adopts the
+    /// caller's width.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            width: 0,
+            renderer: AssistantRenderer::new(0, AI_BULLET, AI_COLOR),
+            frozen: Vec::new(),
+            consumed: 0,
+            committed: 0,
+        }
+    }
+
+    /// Discard all cached state — used at every turn boundary (turn end, tool
+    /// split, interrupt, `/clear`, resize) so the next reply starts clean.
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Fold every source line that has become **complete** (is newline-terminated)
+    /// since the last call into `frozen`, advancing the renderer. Cheap: only the
+    /// lines past `consumed`. A width change rebuilds from scratch first.
+    fn advance(&mut self, text: &str, width: u16) {
+        if width != self.width {
+            self.width = width;
+            self.renderer = AssistantRenderer::new(width, AI_BULLET, AI_COLOR);
+            self.frozen.clear();
+            self.consumed = 0;
+            self.committed = 0;
+        }
+        // The last '\n' at or after `consumed` terminates the last complete line;
+        // everything up to it is now frozen. `consumed` always lands right after a
+        // '\n' (or 0), so the slice is on char boundaries.
+        if let Some(rel) = text[self.consumed..].rfind('\n') {
+            let end = self.consumed + rel;
+            for line in text[self.consumed..end].split('\n') {
+                self.frozen.extend(self.renderer.feed_line(line));
+            }
+            self.consumed = end + 1;
+        }
+    }
+
+    /// The rows of the still-growing trailing partial line, rendered without
+    /// disturbing the renderer's state (a cheap clone peek — O(one line)).
+    fn tail_rows(&self, text: &str) -> Vec<Line<'static>> {
+        self.renderer.clone().feed_line(&text[self.consumed..])
+    }
+
+    /// Take rows `[committed, stable)` of the virtual `frozen ++ tail`
+    /// concatenation, advancing `committed`. `committed` never regresses.
+    fn take_rows(&mut self, tail: &[Line<'static>], stable: usize) -> Vec<Line<'static>> {
+        let start = self.committed.min(stable);
+        let frozen_len = self.frozen.len();
+        let out = (start..stable)
+            .map(|i| {
+                if i < frozen_len {
+                    self.frozen[i].clone()
+                } else {
+                    tail[i - frozen_len].clone()
+                }
+            })
+            .collect();
+        self.committed = stable.max(self.committed);
+        out
+    }
+
+    /// The stable rows to append to scrollback for the current buffer `text` —
+    /// every rendered row except the still-growing last one — since the previous
+    /// call. Replaces `stable_commit`; O(text appended since the last call).
+    #[must_use]
+    pub fn commit(&mut self, text: &str, width: u16) -> Vec<Line<'static>> {
+        self.advance(text, width);
+        // Withhold the whole trailing line when its rows aren't final yet:
+        //  - **inside a fenced block**: a code line's colour isn't settled until the
+        //    whole line is seen (a call's `(`, a `//` comment, a closing `*/`), and
+        //    a long code line wraps into several rows — committing an early row
+        //    could recolour it once the lookahead char arrives; and
+        //  - a **partial fence marker** (`` ` ``/`` `` ``): a third marker would
+        //    flip it from prose to a one-row label, so its wrapped prose rows must
+        //    not reach scrollback.
+        // Otherwise it's settled prose — only its still-growing *last* row is held
+        // back. `tail_rows` (an O(one line) render) is computed only in that case,
+        // never in the withhold path where it would be discarded.
+        if self.renderer.in_code() || markdown::is_partial_fence(&text[self.consumed..]) {
+            let stable = self.frozen.len();
+            self.take_rows(&[], stable)
+        } else {
+            let tail = self.tail_rows(text);
+            let stable = (self.frozen.len() + tail.len()).saturating_sub(1);
+            self.take_rows(&tail, stable)
+        }
+    }
+
+    /// The remaining rows once the reply is complete: the withheld last row plus
+    /// the whole trailing partial line, now rendered as a final complete line.
+    /// Replaces `final_commit`.
+    #[must_use]
+    pub fn finish(&mut self, text: &str, width: u16) -> Vec<Line<'static>> {
+        self.advance(text, width);
+        let tail = self.renderer.feed_line(&text[self.consumed..]);
+        self.consumed = text.len();
+        self.frozen.extend(tail);
+        let total = self.frozen.len();
+        self.take_rows(&[], total)
+    }
+
+    /// The last rendered row of the current buffer — the strip's streaming
+    /// preview. O(new complete lines since the last call + the one trailing line),
+    /// so redrawing it every animation frame is cheap.
+    #[must_use]
+    pub fn preview(&mut self, text: &str, width: u16) -> Option<Line<'static>> {
+        self.advance(text, width);
+        let tail = self.tail_rows(text);
+        tail.last().or_else(|| self.frozen.last()).cloned()
+    }
 }
 
 /// Whether `item` is a `!` shell command's header message (`Role::Shell`).
@@ -3695,17 +3926,15 @@ mod tests {
                 .collect();
 
         // Stream char-by-char so a commit boundary lands mid-identifier.
-        let mut committed = 0usize;
+        let mut render = StreamRender::new();
         let mut got: Vec<Vec<(String, Option<Color>)>> = Vec::new();
         for end in 1..=full.len() {
             if !full.is_char_boundary(end) {
                 continue;
             }
-            let (lines, nc) = stable_commit(&full[..end], width, committed);
-            got.extend(lines.iter().map(styled));
-            committed = nc;
+            got.extend(render.commit(&full[..end], width).iter().map(styled));
         }
-        got.extend(final_commit(full, width, committed).iter().map(styled));
+        got.extend(render.finish(full, width).iter().map(styled));
 
         assert_eq!(got, expected, "a committed code row must never recolour");
     }
@@ -3736,16 +3965,14 @@ mod tests {
             .map(plain)
             .collect();
 
-        let mut committed = 0;
+        let mut render = StreamRender::new();
         let mut got: Vec<String> = Vec::new();
         let mut acc = String::new();
         for chunk in crate::stream::chunks(full) {
             acc.push_str(&chunk);
-            let (lines, new_committed) = stable_commit(&acc, width, committed);
-            got.extend(lines.iter().map(plain));
-            committed = new_committed;
+            got.extend(render.commit(&acc, width).iter().map(plain));
         }
-        got.extend(final_commit(&acc, width, committed).iter().map(plain));
+        got.extend(render.finish(&acc, width).iter().map(plain));
 
         assert_eq!(got, expected, "streamed commits reconstruct the code reply");
     }
@@ -4722,6 +4949,90 @@ mod tests {
 
     // --- streaming commit bookkeeping ---
 
+    /// Adversarial differential test: for a corpus of tricky replies at several
+    /// widths, drive [`StreamRender`] over **every character-prefix** and assert
+    /// that (a) the streamed commits + `finish` reconstruct the batch
+    /// [`message_lines`] render exactly (text **and** colour), (b) no committed
+    /// row ever changes, and (c) `preview(prefix)` equals the last row of the
+    /// batch render of that prefix. This is the guard against immutable-scrollback
+    /// corruption — the incremental renderer must never diverge from the batch one.
+    #[test]
+    fn stream_render_matches_batch_render_on_every_prefix() {
+        let styled = |l: &Line| -> Vec<(String, Option<Color>)> {
+            l.spans
+                .iter()
+                .map(|s| (s.content.to_string(), s.style.fg))
+                .collect()
+        };
+        let corpus = [
+            // Prose that wraps several times.
+            "the quick brown fox jumps over the lazy dog and keeps on running along",
+            // Prose, a fenced code block, then prose.
+            "Intro line here.\n```python\ndef f(x):\n    return x + 1\n```\nOutro line.",
+            // A long code line whose call `(` lands past a wrap boundary — the
+            // recolour trap (identifier turns blue only when the `(` arrives).
+            "```rust\nfn some_really_long_function_name_that_wraps(argument: i32) -> i32 {\n    argument\n}\n```",
+            // Python triple-quoted multi-line string (highlight carry across lines).
+            "```python\ndoc = \"\"\"first\nsecond line\nthird\"\"\"\nx = f(1)\n```",
+            // C block comment carried across lines.
+            "```c\nint a; /* open\nstill comment\nclose */ int b;\n```",
+            // Rust lifetimes (a `'a` must not open a string) + a char literal.
+            "```rust\nimpl<'a> Foo<'a> {\n    let c = 'x';\n}\n```",
+            // Tilde fence, indented fence, blank lines inside code.
+            "~~~\nplain code\n\nmore\n~~~",
+            "   ```\nindented fence body\n   ```",
+            // ATX headings interleaved with prose and a bare code block.
+            "# Title\nsome text under it\n## Sub heading here that is quite long and wraps\n```\ncode\n```",
+            // Reply that is exactly a code block; unterminated fence at the end.
+            "```go\npackage main\nfunc main() {}",
+            // Consecutive fences (open immediately closed) and empty prose lines.
+            "a\n\n```\n```\n\nb",
+            // Multi-byte UTF-8: emoji + CJK in prose and inside a string, so the
+            // per-prefix char-boundary handling is exercised.
+            "greeting 🎮 hello 世界 more text to wrap around\n```python\nprint(\"🎮 世界!\")\n```\ndone 🚀",
+        ];
+
+        for full in corpus {
+            // Include pathologically narrow widths (content_width 1–2) where a
+            // partial fence marker wraps into ≥2 rows — the invariant must hold
+            // there too (`markdown::is_partial_fence`), not just at usable widths.
+            for width in [3u16, 4, 5, 10, 16, 24, 40] {
+                let expected: Vec<Vec<(String, Option<Color>)>> =
+                    message_lines(Role::Assistant, full, width)
+                        .iter()
+                        .map(styled)
+                        .collect();
+
+                let mut render = StreamRender::new();
+                let mut committed: Vec<Vec<(String, Option<Color>)>> = Vec::new();
+                for end in 1..=full.len() {
+                    if !full.is_char_boundary(end) {
+                        continue;
+                    }
+                    let prefix = &full[..end];
+                    // (c) preview == last row of the batch render of this prefix.
+                    let want_preview = message_lines(Role::Assistant, prefix, width)
+                        .pop()
+                        .map(|l| styled(&l));
+                    let got_preview = render.preview(prefix, width).map(|l| styled(&l));
+                    assert_eq!(
+                        got_preview, want_preview,
+                        "preview diverged at {prefix:?} (w={width})"
+                    );
+                    // (a)/(b) commit rows extend a stable prefix of the final render.
+                    committed.extend(render.commit(prefix, width).iter().map(styled));
+                    assert_eq!(
+                        committed[..],
+                        expected[..committed.len()],
+                        "a committed row diverged while streaming {full:?} (w={width})"
+                    );
+                }
+                committed.extend(render.finish(full, width).iter().map(styled));
+                assert_eq!(committed, expected, "reconstruct {full:?} (w={width})");
+            }
+        }
+    }
+
     #[test]
     fn incremental_commits_reconstruct_the_whole_reply() {
         // Stream a reply word-by-word, committing stable lines as we go, and
@@ -4735,52 +5046,118 @@ mod tests {
             .map(plain)
             .collect();
 
-        let mut committed = 0;
+        let mut render = StreamRender::new();
         let mut got: Vec<String> = Vec::new();
         let mut acc = String::new();
         for chunk in crate::stream::chunks(full) {
             acc.push_str(&chunk);
-            let (lines, new_committed) = stable_commit(&acc, width, committed);
-            got.extend(lines.iter().map(plain));
-            committed = new_committed;
+            got.extend(render.commit(&acc, width).iter().map(plain));
         }
-        got.extend(final_commit(&acc, width, committed).iter().map(plain));
+        got.extend(render.finish(&acc, width).iter().map(plain));
 
         assert_eq!(got, expected);
     }
 
+    /// Exhaustively drive [`StreamRender`] over **every prefix** of a reply
+    /// (char-by-char) and prove two invariants that keep immutable scrollback
+    /// sound (CLAUDE.md invariant 2): a row, once committed, is **never**
+    /// re-emitted or changed, and committed rows + the final flush reconstruct
+    /// the whole rendered reply exactly. Runs a prose reply and a fenced-code
+    /// reply (the highlight-carry case).
     #[test]
-    fn stable_commit_withholds_the_last_line() {
+    fn stream_render_is_prefix_stable_over_every_prefix() {
+        // Compare full styled rows (text + fg colour of each span), so the scan
+        // catches a recolour — e.g. a code identifier turning blue at its call
+        // `(` after an earlier wrapped row was committed — not just a text change.
+        let styled = |l: &Line| -> Vec<(String, Option<Color>)> {
+            l.spans
+                .iter()
+                .map(|s| (s.content.to_string(), s.style.fg))
+                .collect()
+        };
+        for full in [
+            "a short prose reply that wraps a few times across the width here",
+            "intro line\n```python\ndef long_function_name_here(x):\n    s = \"\"\"multi\n    line\"\"\"\n    return s\n```\nend",
+        ] {
+            let width = 18;
+            let expected: Vec<Vec<(String, Option<Color>)>> =
+                message_lines(Role::Assistant, full, width)
+                    .iter()
+                    .map(styled)
+                    .collect();
+
+            let mut render = StreamRender::new();
+            let mut committed: Vec<Vec<(String, Option<Color>)>> = Vec::new();
+            for end in 1..full.len() {
+                if !full.is_char_boundary(end) {
+                    continue;
+                }
+                committed.extend(render.commit(&full[..end], width).iter().map(styled));
+                // Everything committed so far must be a stable prefix of the
+                // final render — never a row that later changes text or colour.
+                assert_eq!(
+                    committed[..],
+                    expected[..committed.len()],
+                    "a committed row changed while streaming {full:?}"
+                );
+            }
+            committed.extend(render.finish(full, width).iter().map(styled));
+            assert_eq!(committed, expected, "reconstruct {full:?}");
+        }
+    }
+
+    #[test]
+    fn stream_render_withholds_the_last_line() {
         // "hi there" fits one line → nothing is stable yet.
-        let (lines, committed) = stable_commit("hi there", 80, 0);
-        assert!(lines.is_empty());
-        assert_eq!(committed, 0);
+        let mut render = StreamRender::new();
+        assert!(render.commit("hi there", 80).is_empty());
     }
 
     #[test]
-    fn stable_commit_clamps_when_a_resize_shrinks_the_line_count() {
-        // A mid-stream width *grow* re-wraps the same reply to fewer lines, so
-        // the previously-committed count can exceed the new stable count. The
-        // clamps must absorb that: no slice panic, an empty new batch, and a
-        // committed counter that never regresses. (Raw indexing here would
-        // panic with `start > end`.)
+    fn stream_render_preview_is_the_last_rendered_row() {
+        // The strip preview must equal the last row of the full render — but
+        // computed cheaply. Check it across a growing code reply.
+        let full = "Here:\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```";
+        let width = 30;
+        let mut render = StreamRender::new();
+        for end in 1..=full.len() {
+            if !full.is_char_boundary(end) {
+                continue;
+            }
+            let acc = &full[..end];
+            let expected = message_lines(Role::Assistant, acc, width)
+                .pop()
+                .map(|l| plain(&l));
+            let got = render.preview(acc, width).map(|l| plain(&l));
+            assert_eq!(got, expected, "preview mismatch at {acc:?}");
+            // Advancing the preview must not disturb a subsequent commit.
+            let _ = render.commit(acc, width);
+        }
+    }
+
+    #[test]
+    fn stream_render_rebuilds_on_a_width_change() {
+        // A mid-stream width change (resize) must rebuild the cache from scratch
+        // — no stale rows, no panic — matching the boundary's `reset` + re-commit.
         let text = "the quick brown fox jumps over the lazy dog";
-        let (_, committed_narrow) = stable_commit(text, 6, 0);
-        assert!(committed_narrow >= 1, "a narrow wrap commits several lines");
+        let mut render = StreamRender::new();
+        let narrow = render.commit(text, 6);
+        assert!(!narrow.is_empty(), "a narrow wrap commits several lines");
 
-        let (lines, committed_after) = stable_commit(text, 80, committed_narrow);
-        assert!(lines.is_empty(), "re-wrapped wider, nothing new is stable");
-        assert_eq!(
-            committed_after, committed_narrow,
-            "committed never regresses"
-        );
-    }
-
-    #[test]
-    fn final_commit_clamps_an_over_large_committed_count() {
-        // If `committed` outruns the re-wrapped line count (e.g. after a resize),
-        // final_commit returns nothing rather than panicking on `lines[start..]`.
-        assert!(final_commit("a short reply", 80, 999).is_empty());
+        // Re-wrapped wider: the cache rebuilds; committed + finish still equals
+        // the whole reply rendered at the new width.
+        let wide_commit = render.commit(text, 80);
+        let wide_finish = render.finish(text, 80);
+        let got: Vec<String> = wide_commit
+            .iter()
+            .chain(wide_finish.iter())
+            .map(plain)
+            .collect();
+        let expected: Vec<String> = message_lines(Role::Assistant, text, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(got, expected, "rebuilt at the new width");
     }
 
     #[test]
@@ -6014,8 +6391,9 @@ mod tests {
                         let _ = repaint_lines(&app.history, w, budget);
                         // mirror the streaming commit path
                         if let Some(text) = app.streaming_text() {
-                            let (_, c) = stable_commit(text, w, 0);
-                            let _ = final_commit(text, w, c);
+                            let mut render = StreamRender::new();
+                            let _ = render.commit(text, w);
+                            let _ = render.finish(text, w);
                         }
                         // mirror the Ctrl+O overlay
                         let screen = Rect::new(0, 0, w, h);

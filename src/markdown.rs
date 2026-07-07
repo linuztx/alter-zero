@@ -93,6 +93,67 @@ pub fn parse_blocks(text: &str) -> Vec<Block> {
     blocks
 }
 
+/// How the [`BlockScanner`] classifies one source line as a reply streams.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LineKind {
+    /// A non-code line (prose or heading — the renderer decides which).
+    Prose,
+    /// An opening fence: the block's info-string language (first token).
+    /// The renderer emits the dim language label; the fence line itself is
+    /// hidden.
+    CodeStart(Option<String>),
+    /// A verbatim code line inside the open fence.
+    Code,
+    /// A closing fence — rendered as nothing (the fence is hidden).
+    CodeEnd,
+}
+
+/// The **incremental** counterpart of [`parse_blocks`]: a left-to-right fence
+/// state machine that classifies one source line at a time. Feeding the same
+/// lines in order yields exactly the prose/code split [`parse_blocks`] produces,
+/// but without re-scanning the whole reply — which is what lets the streaming
+/// renderer stay O(new line) per chunk (`docs/markdown.md`).
+///
+/// Prefix-stable: a line's [`LineKind`] depends only on the lines before it, so a
+/// classification, once made, never changes.
+///
+/// `Clone` lets the streaming renderer peek the classification of an in-progress
+/// line without advancing the fence state it will resume from.
+#[derive(Debug, Default, Clone)]
+pub struct BlockScanner {
+    /// The open fence's `(marker char, run length)`, or `None` outside a block.
+    open: Option<(char, usize)>,
+}
+
+impl BlockScanner {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Classify the next source `line`, advancing the fence state.
+    pub fn classify(&mut self, line: &str) -> LineKind {
+        match self.open {
+            None => {
+                if let Some((ch, len, info)) = fence_marker(line) {
+                    self.open = Some((ch, len));
+                    LineKind::CodeStart(fence_lang(info))
+                } else {
+                    LineKind::Prose
+                }
+            }
+            Some((ch, len)) => {
+                if is_closing_fence(line, ch, len) {
+                    self.open = None;
+                    LineKind::CodeEnd
+                } else {
+                    LineKind::Code
+                }
+            }
+        }
+    }
+}
+
 /// Whether `line` closes an open fence of char `ch` and length `len` — the same
 /// family, at least as long, and no info string.
 fn is_closing_fence(line: &str, ch: char, len: usize) -> bool {
@@ -149,6 +210,32 @@ fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
     None
 }
 
+/// Whether `line` is a *partial* fence opener — after ≤3 leading spaces, a bare
+/// run of **one or two** `` ` `` or `~` and nothing else — so streaming a third
+/// marker would flip it from prose to a [`LineKind::CodeStart`], collapsing its
+/// wrapped prose row(s) into a single dim label row.
+///
+/// This is the one non-code line whose block classification is *not yet settled*:
+/// the streaming renderer must withhold such a trailing line whole (like an
+/// in-code line), or at a narrow width — where the 1–2 marker chars wrap into ≥2
+/// rows — it could commit a prose row that the third marker then rewrites,
+/// breaking the immutable-scrollback invariant.
+#[must_use]
+pub fn is_partial_fence(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return false; // 4+ spaces of indent is indented code, never a fence
+    }
+    for marker in ['`', '~'] {
+        let run = trimmed.chars().take_while(|&c| c == marker).count();
+        // 1–2 markers *and* nothing after them: a third marker would open a fence.
+        if (1..3).contains(&run) && run == trimmed.chars().count() {
+            return true;
+        }
+    }
+    false
+}
+
 /// The language of a fence info string: the first token before a comma/space/tab
 /// (`"rust,no_run"` → `"rust"`, `"rust title=x"` → `"rust"`), or `None` when
 /// empty.
@@ -194,6 +281,55 @@ mod tests {
         Block::Code {
             lang: lang.map(str::to_string),
             lines: lines.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn block_scanner_classifies_lines_like_parse_blocks() {
+        use LineKind::{Code, CodeEnd, CodeStart, Prose};
+        let text = "before\n```rust\nfn main() {}\n```\nafter";
+        let mut sc = BlockScanner::new();
+        let kinds: Vec<LineKind> = text.split('\n').map(|l| sc.classify(l)).collect();
+        assert_eq!(
+            kinds,
+            vec![Prose, CodeStart(Some("rust".into())), Code, CodeEnd, Prose,]
+        );
+    }
+
+    #[test]
+    fn block_scanner_agrees_with_parse_blocks_on_code_membership() {
+        // For every sample, the scanner's per-line verdict (is this line code
+        // content?) must match what `parse_blocks` puts in a `Code` block — the
+        // two fence state machines cannot disagree, or the renderer would commit
+        // rows `parse_blocks`-based tests never expect.
+        for text in [
+            "plain only",
+            "a\n```\ncode\n```\nb",
+            "```python\nx = 1\ny = 2\n```",
+            "~~~\n```\nnested\n~~~\ntail",
+            "intro\n```py\nunterminated",
+            "   ```\nindented fence\n   ```",
+        ] {
+            // parse_blocks: flatten to (is_code, line) per source line.
+            let expected: Vec<bool> = parse_blocks(text)
+                .into_iter()
+                .flat_map(|b| match b {
+                    Block::Prose(s) => s.split('\n').map(|_| false).collect::<Vec<_>>(),
+                    Block::Code { lines, .. } => lines.iter().map(|_| true).collect(),
+                })
+                .collect();
+            // scanner: a line is "code content" iff it is Code (fence delimiters
+            // are dropped by parse_blocks, so they have no flattened row).
+            let mut sc = BlockScanner::new();
+            let got: Vec<bool> = text
+                .split('\n')
+                .filter_map(|l| match sc.classify(l) {
+                    LineKind::Code => Some(true),
+                    LineKind::Prose => Some(false),
+                    LineKind::CodeStart(_) | LineKind::CodeEnd => None,
+                })
+                .collect();
+            assert_eq!(got, expected, "text={text:?}");
         }
     }
 
@@ -263,6 +399,28 @@ mod tests {
     fn empty_prose_runs_are_omitted() {
         // Text that is exactly a code block yields only the Code block.
         assert_eq!(parse_blocks("```\na\n```"), vec![code(None, &["a"])]);
+    }
+
+    #[test]
+    fn is_partial_fence_detects_unsettled_marker_runs() {
+        // 1–2 bare markers (optionally ≤3-space indented) can still become a fence.
+        assert!(is_partial_fence("`"));
+        assert!(is_partial_fence("``"));
+        assert!(is_partial_fence("~"));
+        assert!(is_partial_fence("~~"));
+        assert!(is_partial_fence("  ``"));
+        // 3+ markers is already a full fence opener (a settled CodeStart).
+        assert!(!is_partial_fence("```"));
+        assert!(!is_partial_fence("~~~"));
+        // Anything after the markers freezes the run below 3 → settled prose.
+        assert!(!is_partial_fence("``x"));
+        assert!(!is_partial_fence("`` "));
+        assert!(!is_partial_fence("x`"));
+        // Plain prose and blank lines are settled.
+        assert!(!is_partial_fence("hello"));
+        assert!(!is_partial_fence(""));
+        // 4+ spaces of indent is indented code, never a fence.
+        assert!(!is_partial_fence("    ``"));
     }
 
     #[test]

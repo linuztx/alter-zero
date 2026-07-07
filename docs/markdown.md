@@ -43,46 +43,95 @@ all styling stays centralized in `ui.rs`.
   `session`). `parse_blocks(text) -> Vec<Block>` walks the text once into
   `Block::Prose(String)` runs and `Block::Code { lang, lines }` blocks;
   `fence_lang` extracts the info-string language (first token); `heading_level`
-  classifies a single prose line as an ATX heading. No terminal, no styling.
+  classifies a single prose line as an ATX heading. `BlockScanner` is the
+  **incremental** counterpart: `classify(line) -> LineKind` runs the same fence
+  state machine one line at a time (for `StreamRender`). No terminal, no styling.
 - **`src/highlight.rs`** — the pure, unit-tested syntax tokenizer.
   `highlight(lines, lang) -> Vec<Vec<Seg>>` classifies each code line's runs into
   `Kind`s (keyword / string / comment / number / function / plain), threading
-  multi-line string/comment state left-to-right. Colour-agnostic — `ui` owns the
-  palette.
-- **`ui::message_lines`** — the single funnel every render path already goes
-  through (streamed scrollback, resize repaint, Ctrl+O transcript, preview). It
-  now routes `Role::Assistant` through `ui::assistant_lines`, which walks the
-  blocks: prose word-wraps via `wrap_text` (headings bold, `#`s stripped), code
-  renders via `wrap_verbatim` (whitespace-preserving hard-break on width) behind
-  the gutter. Every **other** role keeps the old plain path unchanged — a user
-  pasting ` ``` ` is never code-blocked, and the dark-bg padding math is
-  untouched.
+  multi-line string/comment state left-to-right. `Highlighter` is the
+  **incremental** counterpart (`line(text) -> Vec<Seg>`, threading the carry across
+  calls); `highlight` is a thin batch wrapper over it. Colour-agnostic — `ui` owns
+  the palette.
+- **`ui::AssistantRenderer`** — the per-line render core: `feed_line(line) ->
+  Vec<Line>` classifies via `BlockScanner`, highlights via `Highlighter`, wraps,
+  and stamps the bullet (first row) / indent. Both **`ui::message_lines`** (the
+  batch funnel every finished-message path goes through — streamed-then-committed
+  scrollback, resize repaint, Ctrl+O transcript) and **`ui::StreamRender`** (the
+  incremental streaming committer + preview) drive this one core, so they render
+  *identically* by construction. `message_lines` routes `Role::Assistant` through
+  `assistant_lines` (= drive `AssistantRenderer` over `text.split('\n')`); every
+  **other** role keeps the old plain path unchanged — a user pasting ` ``` ` is
+  never code-blocked, and the dark-bg padding math is untouched.
 
-Because `message_lines` is the one funnel, scrollback, resize repaint, the Ctrl+O
-transcript, and the preview row all agree automatically (invariants 2–4).
+Because `AssistantRenderer` is the one core, scrollback, the streaming preview, the
+resize repaint, and the Ctrl+O transcript all agree automatically (invariants 2–4).
 
 Styling is centralized as `CODE_*` / `HEADING_COLOR` consts at the top of
 `ui.rs`. Code hard-breaks at `content_width - gutter` rather than letting the
 terminal wrap it — a code line longer than the terminal would otherwise be
 wrapped by the emulator at the wrong column and misalign the gutter.
 
+## Incremental rendering while streaming (`ui::StreamRender`)
+
+`message_lines` renders a **finished** message from scratch — fine for the resize
+repaint and the Ctrl+O transcript (one message, once). But a *streaming* reply was
+also rendered whole on **every** path that runs per chunk and per frame:
+`stable_commit` re-rendered the entire accumulated reply to find the newly-stable
+lines, and the strip preview re-rendered it just to grab the last line. Each is
+O(reply); over a stream arriving in ~N chunks that is **O(reply²)**, and it all
+runs on the single-threaded event loop. On a long code reply this measured at
+~30–40 ms *per animation frame* at 1200–1600 lines — past the 32 ms status-frame
+budget — so the spinner visibly stuttered and input lagged. (See
+`examples/perf_probe.rs` for the measurement, and the git history of this change.)
+
+`ui::StreamRender` fixes this by rendering **incrementally**. It drives one
+`AssistantRenderer` — the per-line core extracted from `assistant_lines`, so batch
+and streaming render *identically* — feeding it source lines through
+`markdown::BlockScanner` (the incremental fence state machine, the counterpart of
+`parse_blocks`) and `highlight::Highlighter` (the incremental per-line highlighter,
+the counterpart of `highlight`). It **caches** the rendered rows of every complete
+source line and, on each `commit`/`preview`, advances over only the lines that
+arrived since the last call. So a `commit` is O(new text) and a `preview` is O(one
+line): streaming a whole reply is **O(reply)**, and redrawing the preview every
+frame is nearly free. (The one residual case is a single source line with no
+interior newline — a long paragraph or a minified one-liner: its still-growing
+*trailing* line is re-wrapped each call, so it is O(line) per commit/frame. That is
+bounded by one line, and no worse than the old whole-reply render for the same
+input; real replies carry newlines, so it never bites in practice.)
+
+The boundary (`main.rs`) holds one `StreamRender` for the turn (replacing the old
+`committed: usize`): `commit` on each `Chunk`, `finish` on `StreamDone`/tool
+split/interrupt, `preview` before each draw (its line handed to
+`ui::render_live_with_preview`), and `reset` at every turn boundary (turn end, tool
+split, interrupt, `/clear`, resize — matching the old `committed = 0`, so a
+mid-stream resize re-commits the reply at the new width).
+
 ## Why this is safe while streaming (prefix-stability)
 
-`ui::stable_commit` flushes every completed reply line to the terminal's real
+`StreamRender` flushes every completed reply line to the terminal's real
 scrollback as the reply streams, keeping only the **last** rendered line back
-(CLAUDE.md invariant 2). That is only sound if `message_lines(text)` is
-*prefix-stable*: appending to `text` may change only the last produced line;
-every earlier line is frozen forever.
+(CLAUDE.md invariant 2). That is only sound if the render is *prefix-stable*:
+appending to the reply may change only the last produced line; every earlier line
+is frozen forever. Because `StreamRender` caches a completed line's rows and never
+revisits them, prefix-stability holds *by construction* — but only if each line's
+rows genuinely depend on nothing after it:
 
 Code blocks (including their **syntax colours**) and headings preserve this
 because their rendering is a pure left-to-right function of the text *before*
 each line:
 
 - A line's prose/code **mode** is fixed by the fence state entering it — a scan
-  of the lines before it, no lookahead. Appending never reclassifies an earlier
+  of the lines before it, no lookahead. Appending never reclassifies an *earlier*
   line. An **unterminated** fence renders as code *identically* to a closed one,
   so nothing changes when the closing ` ``` ` finally arrives (it just emits zero
-  rows).
+  rows). The one wrinkle is the *fence-opener line itself*: while it is still a
+  **partial** marker run (`` ` `` or `` `` ``) it renders as prose, then flips to a
+  one-row label when the third marker arrives — a within-line reclassification. At
+  a normal width that 1–2-column run is a single (withheld) last row, but at
+  content-width 1 it wraps into two, so `StreamRender::commit` also withholds a
+  trailing line while `markdown::is_partial_fence` holds — the invariant then holds
+  at *every* width (the differential test covers width 3 upward).
 - `wrap_verbatim`'s width hard-break is greedy grapheme-by-grapheme, so appending
   extends or starts only the *last* row — exactly like `wrap_text`.
 - A heading's style trigger (`#…` at the line start) is seen before any of that
@@ -95,17 +144,23 @@ each line:
 - **But highlighting uses one-char lookahead *within* a line** (an identifier
   becomes a call at the `(`, `/` a comment at the next `/`). A code line longer
   than the width wraps into several rows, and committing an early row before the
-  lookahead char streams in would recolour it. So `stable_commit` withholds an
-  **in-progress code line** entirely (`markdown::ends_inside_code` → render only
-  the complete source up to the last newline); prose has no such lookahead and
-  still streams per wrapped row. This is the one place code needs source-line
-  gating — the same mechanism inline emphasis would need everywhere.
+  lookahead char streams in would recolour it. So `StreamRender::commit` withholds
+  an **in-progress code line** entirely whenever the trailing line is inside a
+  fenced block (`AssistantRenderer::in_code` — the `Highlighter` is present iff a
+  fence is open); prose has no such lookahead and still streams per wrapped row.
+  This is the one place code needs source-line gating — the same mechanism inline
+  emphasis would need everywhere.
 
-`markdown::tests::prefix_stability_no_committed_line_ever_changes` models
-`stable_commit` exactly (commit all-but-last, monotonic high-water) and proves no
-committed line is ever rewritten as a code-block reply streams one char at a
-time; `ui::tests::incremental_commits_reconstruct_a_fenced_code_reply` proves the
-streamed commits plus the final flush equal the fully-rendered message.
+`ui::tests::stream_render_is_prefix_stable_over_every_prefix` drives `StreamRender`
+over *every* character-prefix of a prose and a fenced-code reply and asserts no
+committed row ever changes text **or colour**;
+`ui::tests::streamed_code_never_recolours_a_committed_row` pins the specific
+call-`(` recolour case (the bug that first exposed the need for the `in_code`
+gate); and `ui::tests::incremental_commits_reconstruct_a_fenced_code_reply` proves
+the streamed commits plus the final flush equal the fully-rendered message.
+`markdown::tests::block_scanner_agrees_with_parse_blocks_on_code_membership` and
+`highlight::tests::highlighter_line_by_line_equals_batch_highlight` lock the
+incremental scanners to their batch counterparts.
 
 ## Scope (and what is deliberately out)
 
@@ -114,7 +169,7 @@ streamed commits plus the final flush equal the fully-rendered message.
 **Out — inline `**bold**` / `*italic*` / `` `code` ``.** These are prose-level
 and would need *span-preserving* word-wrap (flatten a styled line to text + span
 ranges, wrap, re-slice the spans — codex's `word_wrap_line`). Worse, an emphasis
-run can straddle a wrap boundary *mid-source-line*: `stable_commit` could commit
+run can straddle a wrap boundary *mid-source-line*: `StreamRender` could commit
 the opening half before the closing marker streams, then a later repaint would
 style it differently — a prefix-stability break. Codex only avoids this with
 **source-newline-gating** (never commit a line whose source line lacks a trailing
@@ -130,10 +185,10 @@ across lines like `"""` does (a low-severity cosmetic limitation, still
 prefix-stable); string interpolation (`f"{x}"`, `${x}`) isn't parsed; and an
 unknown/`text` language renders plain. An in-progress code line is withheld from
 scrollback until it completes, because highlighting uses one-char lookahead
-within a line (a call's `(`) — see the *streaming* note below.
+within a line (a call's `(`) — see the *streaming* note above.
 
 **Out — tables.** A new table row rewrites the column widths of *already-emitted*
 rows, so tables are inherently non-prefix-stable. Codex quarantines them in a
 re-renderable "tail" until finalized (a two-region streaming model). Do **not**
-add tables without porting that holdback — under the current `stable_commit` they
+add tables without porting that holdback — under the current `StreamRender` they
 would corrupt committed scrollback.

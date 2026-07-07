@@ -54,6 +54,7 @@ enum Carry {
 
 /// Per-language lexical rules. Keywords/strings/numbers are language-agnostic;
 /// only comment syntax and a couple of string flavours vary.
+#[derive(Clone)]
 struct Syntax {
     /// `#` starts a line comment (Python, shell, Ruby, …).
     hash_comment: bool,
@@ -317,29 +318,61 @@ const KEYWORDS: &[&str] = &[
     "None",
 ];
 
+/// An **incremental** syntax highlighter for one fenced code block: feed source
+/// lines one at a time with [`Highlighter::line`], threading the multi-line
+/// [`Carry`] state (open triple-string / block-comment) across the calls exactly
+/// as the batch [`highlight`] does. This is what lets the streaming renderer
+/// colour a growing code block in O(new line) per chunk instead of re-highlighting
+/// the whole block every time (`docs/markdown.md`).
+///
+/// Prefix-stable: a line's segments depend only on the lines fed before it, so a
+/// line already emitted never recolours.
+///
+/// `Clone` lets the streaming renderer cheaply *peek* the highlight of an
+/// in-progress (not yet complete) code line without disturbing the carry state
+/// it will resume from once the line completes.
+#[derive(Clone)]
+pub struct Highlighter {
+    /// The language's lexical rules, or `None` for a plain-text/unknown block
+    /// (every line is one [`Kind::Plain`] segment).
+    syntax: Option<Syntax>,
+    /// Open multi-line construct carried into the next line.
+    carry: Carry,
+}
+
+impl Highlighter {
+    /// A highlighter for `lang` (see [`Syntax::for_lang`]). An unrecognised or
+    /// plain-text language yields one [`Kind::Plain`] segment per line.
+    #[must_use]
+    pub fn new(lang: Option<&str>) -> Self {
+        Self {
+            syntax: lang.and_then(Syntax::for_lang),
+            carry: Carry::None,
+        }
+    }
+
+    /// Highlight the next source `line`, advancing the multi-line carry state.
+    #[must_use]
+    pub fn line(&mut self, line: &str) -> Vec<Seg> {
+        match &self.syntax {
+            Some(syntax) => highlight_line(line, syntax, &mut self.carry),
+            None => vec![Seg {
+                text: line.to_string(),
+                kind: Kind::Plain,
+            }],
+        }
+    }
+}
+
 /// Highlight each of `lines` (a fenced code block's source) into coloured
 /// segments, threading the multi-line [`Carry`] state left-to-right. Every line
 /// concatenates back to the original text. `lang` selects the comment style; an
 /// unrecognised or plain-text language yields one [`Kind::Plain`] segment per
-/// line.
+/// line. Thin batch wrapper over the incremental [`Highlighter`].
 #[must_use]
 pub fn highlight(lines: &[&str], lang: Option<&str>) -> Vec<Vec<Seg>> {
-    let Some(syntax) = lang.and_then(Syntax::for_lang) else {
-        return lines
-            .iter()
-            .map(|l| {
-                vec![Seg {
-                    text: (*l).to_string(),
-                    kind: Kind::Plain,
-                }]
-            })
-            .collect();
-    };
-    let mut carry = Carry::None;
-    lines
-        .iter()
-        .map(|line| highlight_line(line, &syntax, &mut carry))
-        .collect()
+    let mut h = Highlighter::new(lang);
+    lines.iter().map(|line| h.line(line)).collect()
 }
 
 /// Append `text` as a `kind` run, merging into the previous run when the class
@@ -754,6 +787,31 @@ mod tests {
             kind_of("x = 'hello world'", "python", "'hello world'"),
             Kind::Str
         );
+    }
+
+    #[test]
+    fn highlighter_line_by_line_equals_batch_highlight() {
+        // The incremental `Highlighter` (one `.line()` per source line, threading
+        // its own carry) must produce byte-identical output to the batch
+        // `highlight()` — same multi-line string/comment carry, same segments.
+        for (lang, lines) in [
+            (
+                Some("python"),
+                &["x = \"\"\"", "multi", "line\"\"\"", "y = f(1)"][..],
+            ),
+            (Some("c"), &["a /* start", "still comment", "end */ b"][..]),
+            (
+                Some("rust"),
+                &["impl<'a> Foo {", "    let c = 'x';", "}"][..],
+            ),
+            (None, &["def f():", "    return 1"][..]),
+            (Some("text"), &["plain", "output"][..]),
+        ] {
+            let batch = highlight(lines, lang);
+            let mut h = Highlighter::new(lang);
+            let incremental: Vec<Vec<Seg>> = lines.iter().map(|l| h.line(l)).collect();
+            assert_eq!(incremental, batch, "lang={lang:?}");
+        }
     }
 
     #[test]

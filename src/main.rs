@@ -204,8 +204,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // prefix. `None` until the first successful native copy (the OSC 52 fallback
     // needs no lease). See docs/copy.md.
     let mut _clipboard_lease: Option<clipboard::ClipboardLease> = None;
-    // How many lines of the in-progress reply have been flushed to scrollback.
-    let mut committed = 0usize;
+    // The incremental renderer that commits the in-progress reply to scrollback
+    // as it streams — O(reply) over the whole stream, not O(reply²). It also
+    // renders the strip's cheap preview line. See `docs/markdown.md`.
+    let mut render = ui::StreamRender::new();
     // Detects a paste / fast-type burst so its redraw can be coalesced.
     let mut burst = PasteBurst::new();
     // The live status indicator's clocks (impurity kept here, at the boundary):
@@ -247,7 +249,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // committed "Done for Ns" summary.
                                 if app.view != View::Conversation {
                                     term.exit_overlay()?;
-                                    repaint_conversation(term, &app, &mut committed)?;
+                                    repaint_conversation(term, &app, &mut render)?;
                                 }
                                 break;
                             }
@@ -260,7 +262,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 inflight = Some(start_turn(
                                     term, &mut app, &tx, backend.as_ref(),
                                     TurnInput { texts: vec![text], images },
-                                    &mut committed, &mut clocks,
+                                    &mut render, &mut clocks,
                                 )?);
                             }
                             Action::PasteImage => {
@@ -281,7 +283,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // resize repaint all work exactly like an AI turn.
                                 inflight = Some(run_shell(
                                     term, &mut app, &tx, command,
-                                    &mut committed, &mut clocks,
+                                    &mut render, &mut clocks,
                                 )?);
                             }
                             Action::ToggleToolView => {
@@ -298,7 +300,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // — or was dispatched off the queue — while the
                                     // overlay was showing (the reflow regenerates
                                     // any pending user bubbles from history).
-                                    repaint_conversation(term, &app, &mut committed)?;
+                                    repaint_conversation(term, &app, &mut render)?;
                                 }
                             }
                             Action::Notice(text) => {
@@ -306,7 +308,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // finalises any mid-flight reply segment first (same
                                 // ordering trick as a tool call) so the notice slots
                                 // after it in scrollback and history alike.
-                                commit_system_notice(term, &mut app, &mut committed, &text);
+                                commit_system_notice(term, &mut app, &mut render, &text);
                             }
                             Action::Copy(maybe_text) => {
                                 // `/copy`: do the clipboard I/O here at the boundary
@@ -315,7 +317,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // an empty conversation, None. See docs/copy.md.
                                 match maybe_text {
                                     None => commit_error_notice(
-                                        term, &mut app, &mut committed, COPY_EMPTY_NOTICE,
+                                        term, &mut app, &mut render, COPY_EMPTY_NOTICE,
                                     ),
                                     Some(text) => match clipboard::copy_to_clipboard(&text) {
                                         Ok(lease) => {
@@ -323,11 +325,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                             // app's lifetime (Linux); None over OSC 52.
                                             _clipboard_lease = lease;
                                             commit_system_notice(
-                                                term, &mut app, &mut committed, COPY_OK_NOTICE,
+                                                term, &mut app, &mut render, COPY_OK_NOTICE,
                                             );
                                         }
                                         Err(reason) => commit_error_notice(
-                                            term, &mut app, &mut committed,
+                                            term, &mut app, &mut render,
                                             &format!("Copy failed: {reason}"),
                                         ),
                                     },
@@ -350,12 +352,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 while reply_rx.try_recv().is_ok() {}
                                 clocks.turn_start = None;
                                 clocks.thinking_start = None;
-                                committed = 0;
+                                render.reset();
                                 // A cleared conversation starts a fresh session
                                 // file (codex's /new); the old one keeps what it
                                 // had (docs/resume.md).
                                 recorder.start_new();
-                                repaint_conversation(term, &app, &mut committed)?;
+                                repaint_conversation(term, &app, &mut render)?;
                             }
                             Action::Interrupt => {
                                 // Esc mid-generation (codex-style): stop the backend
@@ -376,13 +378,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     commit_turn_failure(
                                         term,
                                         &app,
-                                        committed,
+                                        &mut render,
                                         interrupted.partial,
                                         interrupted.tool,
                                         INTERRUPT_NOTICE,
                                     );
                                 }
-                                committed = 0;
+                                render.reset();
                                 clocks.turn_start = None;
                                 clocks.thinking_start = None;
                                 // The user interrupted to send their queued
@@ -394,7 +396,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // following turn-ends. Interrupt only arises in the
                                 // conversation view, so committing here is safe.
                                 inflight = flush_next_queued(
-                                    term, &mut app, &tx, backend.as_ref(), &mut committed, &mut clocks,
+                                    term, &mut app, &tx, backend.as_ref(), &mut render, &mut clocks,
                                 )?;
                             }
                             Action::OpenResumePicker => {
@@ -417,7 +419,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // already back on the conversation — leave the
                                 // overlay and repaint, the Ctrl+O return.
                                 term.exit_overlay()?;
-                                repaint_conversation(term, &app, &mut committed)?;
+                                repaint_conversation(term, &app, &mut render)?;
                             }
                             Action::ResumeSession(path) => {
                                 // Enter on a picker row: read + parse the rollout
@@ -443,14 +445,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         let torn = !text.is_empty() && !text.ends_with('\n');
                                         recorder.adopt(path, meta, count, torn);
                                         term.exit_overlay()?;
-                                        repaint_conversation(term, &app, &mut committed)?;
+                                        repaint_conversation(term, &app, &mut render)?;
                                     }
                                     None => {
                                         app.close_resume_picker();
                                         term.exit_overlay()?;
-                                        repaint_conversation(term, &app, &mut committed)?;
+                                        repaint_conversation(term, &app, &mut render)?;
                                         commit_error_notice(
-                                            term, &mut app, &mut committed,
+                                            term, &mut app, &mut render,
                                             &format!(
                                                 "Failed to load session: {}",
                                                 path.display()
@@ -462,7 +464,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             Action::ErrorNotice(text) => {
                                 // A slash command's one-off red notice (e.g.
                                 // /resume rejected mid-task) — Notice's error twin.
-                                commit_error_notice(term, &mut app, &mut committed, &text);
+                                commit_error_notice(term, &mut app, &mut render, &text);
                             }
                             Action::OpenModelPicker => {
                                 // /model from an idle composer (docs/llm.md): open
@@ -541,7 +543,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         commit_system_notice(
                                             term,
                                             &mut app,
-                                            &mut committed,
+                                            &mut render,
                                             &format!("Switched model to {id}"),
                                         );
                                     }
@@ -550,7 +552,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         commit_error_notice(
                                             term,
                                             &mut app,
-                                            &mut committed,
+                                            &mut render,
                                             &format!(
                                                 "Can't switch to {id}: run /login to set {env}"
                                             ),
@@ -597,7 +599,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         commit_system_notice(
                                             term,
                                             &mut app,
-                                            &mut committed,
+                                            &mut render,
                                             &format!(
                                                 "Saved {env_var} to {} — run /model to use {provider}",
                                                 env_file_path.display()
@@ -608,7 +610,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         commit_error_notice(
                                             term,
                                             &mut app,
-                                            &mut committed,
+                                            &mut render,
                                             &format!(
                                                 "Couldn't write {}: {e}",
                                                 env_file_path.display()
@@ -641,7 +643,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         // overlay just redraws at the new size (reflowing would
                         // write the alternate screen).
                         if size_changed && app.view == View::Conversation {
-                            repaint_conversation(term, &app, &mut committed)?;
+                            repaint_conversation(term, &app, &mut render)?;
                         }
                         burst.reset();
                         frame.schedule_frame();
@@ -682,7 +684,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             //    overlay we hold off and repaint on return).
             Some(stream_event) = reply_rx.recv() => {
                 if on_stream_event(
-                    term, &mut app, &mut committed, &mut clocks, stream_event,
+                    term, &mut app, &mut render, &mut clocks, stream_event,
                 )? {
                     // The stream ended. Send the next queued batch as the
                     // following turn (`None` when nothing is queued) — Enter
@@ -696,7 +698,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     // return's reflow drops + regenerates them from history —
                     // so invariant 4 holds.
                     inflight = flush_next_queued(
-                        term, &mut app, &tx, backend.as_ref(), &mut committed, &mut clocks,
+                        term, &mut app, &tx, backend.as_ref(), &mut render, &mut clocks,
                     )?;
                 }
                 frame.schedule_frame();
@@ -712,7 +714,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             Some(()) = draw_rx.recv() => {
                 update_status_times(&mut app, &clocks);
                 match app.view {
-                    View::Conversation => draw(term, &app)?,
+                    View::Conversation => {
+                        // Compute the strip preview cheaply (O(one line)) once per
+                        // frame, so the status animation never re-renders the whole
+                        // reply. See `docs/markdown.md`.
+                        let preview = stream_preview_line(&app, &mut render, term.screen().width);
+                        draw(term, &app, preview.as_ref())?;
+                    }
                     View::ToolOutput => draw_tool_view(term, &mut app)?,
                     View::ResumePicker => draw_resume_picker(term, &app)?,
                 }
@@ -741,7 +749,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     Err(reason) => {
                         let text = format!("Failed to paste image: {reason}");
                         if app.view == View::Conversation {
-                            commit_error_notice(term, &mut app, &mut committed, &text);
+                            commit_error_notice(term, &mut app, &mut render, &text);
                         } else {
                             app.record_error_message(&text);
                         }
@@ -1031,7 +1039,7 @@ fn start_turn(
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     backend: &dyn ReplySource,
     input: TurnInput,
-    committed: &mut usize,
+    render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
 ) -> io::Result<(CancelToken, JoinHandle<()>)> {
     let TurnInput { texts, images } = input;
@@ -1049,7 +1057,7 @@ fn start_turn(
     let prompt = texts.join("\n");
     app.count_user_input(&prompt);
     app.count_input_images(images.len());
-    *committed = 0;
+    render.reset();
     // Start the turn clock; the draw branch keeps the status animated from here.
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
@@ -1068,16 +1076,16 @@ fn start_turn(
 fn commit_notice(
     term: &mut InlineViewport,
     app: &mut App,
-    committed: &mut usize,
+    render: &mut ui::StreamRender,
     role: Role,
     record: fn(&mut App, &str),
     text: &str,
 ) {
     let width = term.screen().width;
     if let Some(segment) = app.flush_streaming_segment() {
-        term.insert_before(ui::final_commit(&segment, width, *committed));
+        term.insert_before(render.finish(&segment, width));
         term.insert_before(vec![Line::default()]);
-        *committed = 0;
+        render.reset();
     }
     record(app, text);
     term.insert_before(ui::message_lines(role, text, width));
@@ -1089,13 +1097,13 @@ fn commit_notice(
 fn commit_error_notice(
     term: &mut InlineViewport,
     app: &mut App,
-    committed: &mut usize,
+    render: &mut ui::StreamRender,
     text: &str,
 ) {
     commit_notice(
         term,
         app,
-        committed,
+        render,
         Role::Error,
         App::record_error_message,
         text,
@@ -1107,13 +1115,13 @@ fn commit_error_notice(
 fn commit_system_notice(
     term: &mut InlineViewport,
     app: &mut App,
-    committed: &mut usize,
+    render: &mut ui::StreamRender,
     text: &str,
 ) {
     commit_notice(
         term,
         app,
-        committed,
+        render,
         Role::System,
         App::record_system_message,
         text,
@@ -1130,7 +1138,7 @@ fn commit_system_notice(
 fn commit_turn_failure(
     term: &mut InlineViewport,
     app: &App,
-    committed: usize,
+    render: &mut ui::StreamRender,
     partial: Option<String>,
     tool: Option<inline_tui::app::ToolCall>,
     notice: &str,
@@ -1138,7 +1146,7 @@ fn commit_turn_failure(
     let width = term.screen().width;
     term.set_view_height(live_region_height(app, term.screen()));
     if let Some(partial) = partial {
-        term.insert_before(ui::final_commit(&partial, width, committed));
+        term.insert_before(render.finish(&partial, width));
         term.insert_before(vec![Line::default()]);
     }
     if let Some(tool) = tool {
@@ -1163,7 +1171,7 @@ fn run_shell(
     app: &mut App,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     command: String,
-    committed: &mut usize,
+    render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
 ) -> io::Result<(CancelToken, JoinHandle<()>)> {
     let width = term.screen().width;
@@ -1173,7 +1181,7 @@ fn run_shell(
     // codex-style exec cell (docs/shell-command.md).
     app.begin_shell(&command);
     term.insert_before(ui::message_lines(Role::Shell, &command, width));
-    *committed = 0;
+    render.reset();
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
     let cancel = CancelToken::new();
@@ -1192,7 +1200,7 @@ fn flush_next_queued(
     app: &mut App,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     backend: &dyn ReplySource,
-    committed: &mut usize,
+    render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
 ) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
     match app.drain_next_batch() {
@@ -1207,11 +1215,11 @@ fn flush_next_queued(
                 texts,
                 images: images.into_iter().map(|(_, path)| path).collect(),
             },
-            committed,
+            render,
             clocks,
         )?)),
         Some(QueuedTurn::Shell(command)) => {
-            Ok(Some(run_shell(term, app, tx, command, committed, clocks)?))
+            Ok(Some(run_shell(term, app, tx, command, render, clocks)?))
         }
         None => Ok(None),
     }
@@ -1401,7 +1409,7 @@ const SHELL_OUTPUT_MAX_BYTES: usize = 100_000;
 fn on_stream_event(
     term: &mut InlineViewport,
     app: &mut App,
-    committed: &mut usize,
+    render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
     event: StreamEvent,
 ) -> io::Result<bool> {
@@ -1414,9 +1422,7 @@ fn on_stream_event(
         StreamEvent::Chunk(chunk) => {
             app.push_chunk(&chunk);
             if committing && let Some(text) = app.streaming_text() {
-                let (lines, new_committed) = ui::stable_commit(text, width, *committed);
-                term.insert_before(lines);
-                *committed = new_committed;
+                term.insert_before(render.commit(text, width));
             }
             Ok(false)
         }
@@ -1428,10 +1434,10 @@ fn on_stream_event(
             if let Some(segment) = app.flush_streaming_segment()
                 && committing
             {
-                term.insert_before(ui::final_commit(&segment, width, *committed));
+                term.insert_before(render.finish(&segment, width));
                 term.insert_before(vec![Line::default()]);
             }
-            *committed = 0;
+            render.reset();
             app.start_tool(&name, &args);
             Ok(false)
         }
@@ -1487,7 +1493,7 @@ fn on_stream_event(
                 // blank rows beneath it).
                 term.set_view_height(live_region_height(app, term.screen()));
                 if let Some(text) = final_text {
-                    term.insert_before(ui::final_commit(&text, width, *committed));
+                    term.insert_before(render.finish(&text, width));
                     term.insert_before(vec![Line::default()]); // blank spacer
                 }
                 if let Some(summary) = summary {
@@ -1495,7 +1501,7 @@ fn on_stream_event(
                     term.insert_before(vec![Line::default()]); // blank spacer
                 }
             }
-            *committed = 0;
+            render.reset();
             clocks.turn_start = None;
             clocks.thinking_start = None;
             Ok(true)
@@ -1510,13 +1516,13 @@ fn on_stream_event(
                 commit_turn_failure(
                     term,
                     app,
-                    *committed,
+                    render,
                     failure.partial,
                     failure.tool,
                     &failure.error,
                 );
             }
-            *committed = 0;
+            render.reset();
             clocks.turn_start = None;
             clocks.thinking_start = None;
             Ok(true)
@@ -1601,37 +1607,62 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
 /// from the tool-output overlay (which kept the stream advancing without
 /// committing).
 ///
-/// We repaint the tail that fits above the live region; resetting `committed`
+/// We repaint the tail that fits above the live region; resetting `render`
 /// lets any in-progress reply re-commit itself from scratch on its next chunk,
-/// so a mid-stream resize or overlay round-trip recovers too.
+/// so a mid-stream resize or overlay round-trip recovers too. The reply is
+/// re-wrapped at the (possibly new) width, so the preview is recomputed here.
 fn repaint_conversation(
     term: &mut InlineViewport,
     app: &App,
-    committed: &mut usize,
+    render: &mut ui::StreamRender,
 ) -> io::Result<()> {
     let screen = term.screen();
     let height = live_region_height(app, screen);
     let budget = ui::repaint_budget(screen.height, height);
     let tail = ui::repaint_lines(&app.history, screen.width, budget);
+    let preview = stream_preview_line(app, render, screen.width);
     term.reflow(
         tail,
         height,
-        |area, buf| ui::render_live(area, buf, app),
+        |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_ref()),
         app,
     )?;
-    *committed = 0;
+    render.reset();
     Ok(())
+}
+
+/// The strip's streaming preview: the reply's last rendered line, computed
+/// cheaply by [`ui::StreamRender::preview`] (O(one line)) — or `None` when idle
+/// or while a tool runs (the tool's own header previews instead). Called before
+/// every conversation-view draw so the status animation never pays to re-render
+/// the whole reply. See `docs/markdown.md`.
+fn stream_preview_line(
+    app: &App,
+    render: &mut ui::StreamRender,
+    width: u16,
+) -> Option<Line<'static>> {
+    match app.streaming_text() {
+        Some(text) if !text.is_empty() && app.current_tool().is_none() => {
+            render.preview(text, width)
+        }
+        _ => None,
+    }
 }
 
 /// Render the live region at its current grown height and place the cursor.
 /// The composer keeps its cursor even while a reply streams (codex-style —
 /// typing mid-turn edits the draft, Enter queues it); only the Ctrl+O overlay
-/// hides it (`enter_overlay`).
-fn draw(term: &mut InlineViewport, app: &App) -> io::Result<()> {
+/// hides it (`enter_overlay`). `preview` is the streaming strip's precomputed
+/// last line (see [`stream_preview_line`]).
+fn draw(term: &mut InlineViewport, app: &App, preview: Option<&Line<'static>>) -> io::Result<()> {
     let height = live_region_height(app, term.screen());
     // `term` places the cursor from the final (content-anchored) viewport via
     // `ui::cursor_position`, which mirrors render_live's layout exactly.
-    term.draw(height, |area, buf| ui::render_live(area, buf, app), app)
+    term.draw(
+        height,
+        |area, buf| ui::render_live_with_preview(area, buf, app, preview),
+        app,
+    )
 }
 
 /// Render the full-screen tool-output overlay. Clamps the scroll to the current

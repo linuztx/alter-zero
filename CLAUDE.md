@@ -172,12 +172,24 @@ of bug:
 
 2. **Greedy word-wrap is prefix-stable** (`ui::wrap_text`): appending text only
    ever changes the *last* wrapped line. This is what makes streaming-to-scrollback
-   safe — `ui::stable_commit` flushes every line *except the last* to scrollback
-   via `term::InlineViewport::insert_before` as the reply grows, tracking a
-   `committed` count; `ui::final_commit` flushes the remainder on `StreamDone`. The
-   test `ui::tests::incremental_commits_reconstruct_the_whole_reply` locks this
-   property (committed lines + final flush == the fully-rendered message). Don't
-   change the wrap algorithm without re-checking that invariant.
+   safe — the **incremental** `ui::StreamRender` flushes every completed line to
+   scrollback via `term::InlineViewport::insert_before` as the reply grows,
+   *caching* the rendered rows of already-complete source lines and only rendering
+   the newly-arrived tail (so streaming a reply is **O(reply)**, not O(reply²) — it
+   replaced a per-chunk *whole-reply* re-render that starved the status animation on
+   long code; see `docs/markdown.md`). `StreamRender::commit` withholds the
+   still-growing last line (and, inside a fenced code block, the **whole**
+   in-progress line — a code line's colour isn't final until its closing `(`/`//`
+   streams in, and it may span several wrapped rows), `StreamRender::preview` renders
+   just that last line for the strip (cheap enough to redraw every animation frame),
+   and `StreamRender::finish` flushes the remainder on `StreamDone`. The tests
+   `ui::tests::incremental_commits_reconstruct_the_whole_reply`,
+   `stream_render_is_prefix_stable_over_every_prefix`, and
+   `streamed_code_never_recolours_a_committed_row` lock this property (committed rows
+   + final flush == the fully-rendered message, and no committed row ever changes
+   text *or* colour). Don't change the wrap algorithm — or the markdown/highlight
+   line renderers (`AssistantRenderer`, driven by `markdown::BlockScanner` +
+   `highlight::Highlighter`) — without re-checking those invariants.
 
 3. **The viewport is content-anchored (top fixed), and resize reflows both
    directions** (`main.rs::repaint_conversation`). Like Claude Code / codex, the
