@@ -592,11 +592,37 @@ pub fn live_height(
         .min(term_height.max(1))
 }
 
-/// The fixed rows framing the inline `/model` picker's list: the top rule, a
-/// gap, the search line, a gap, then below the list a counter, a gap, the
-/// model-name line, a gap, and the bottom rule (headerless — the "Showing models…"
-/// banner was dropped). The list rows sit between them (see [`model_list_rows`]).
+/// The fixed rows framing the inline `/model` picker's list when a real model
+/// is highlighted: the top rule, a gap, the search line, a gap (4 above), then
+/// below the list a counter, a gap, the model-name line, a gap, and the bottom
+/// rule (5 below — headerless, the "Showing models…" banner was dropped). The
+/// list rows sit between them (see [`model_list_rows`]).
 const MODEL_CHROME_ROWS: u16 = 9;
+
+/// The framing rows when the picker shows a **placeholder** instead of a model
+/// (loading / error / needs-login / no match): the same 4 above the list, then
+/// a single gap and the bottom rule. The blank counter + name rows collapse to
+/// that one gap so the box hugs the placeholder. See [`model_chrome_rows`].
+const MODEL_CHROME_ROWS_COLLAPSED: u16 = 6;
+
+/// Whether the picker shows its counter + model-name detail rows below the
+/// list — only when a real model is listed (Ready with at least one match).
+/// The placeholder states have a blank counter and name, so those rows collapse
+/// to a single trailing gap ([`MODEL_CHROME_ROWS_COLLAPSED`]).
+fn model_has_detail(picker: &ModelPicker) -> bool {
+    picker.status == ModelLoad::Ready && !picker.matches().is_empty()
+}
+
+/// The fixed framing rows for the picker's current state — full when a model is
+/// highlighted, collapsed for a placeholder. Mirrors [`render_model_picker`]'s
+/// two layouts so [`model_picker_height`] reserves exactly what's painted.
+fn model_chrome_rows(picker: &ModelPicker) -> u16 {
+    if model_has_detail(picker) {
+        MODEL_CHROME_ROWS
+    } else {
+        MODEL_CHROME_ROWS_COLLAPSED
+    }
+}
 
 /// How many rows the inline `/model` picker's **list** occupies: one placeholder
 /// row while loading / errored / empty, else the match count capped at
@@ -626,7 +652,7 @@ fn model_list_rows(picker: &ModelPicker) -> u16 {
 #[must_use]
 pub fn model_picker_height(app: &App, term_height: u16) -> Option<u16> {
     let picker = app.model_picker.as_ref()?;
-    Some((MODEL_CHROME_ROWS + model_list_rows(picker)).min(term_height.max(1)))
+    Some((model_chrome_rows(picker) + model_list_rows(picker)).min(term_height.max(1)))
 }
 
 /// How many rows the `/login` provider list occupies: the match count capped at
@@ -2471,45 +2497,68 @@ fn model_rule(width: u16) -> Line<'static> {
 /// a bottom rule. Headerless (the "Showing models…" banner was dropped). Pure —
 /// `render_live` paints this in place of the composer. See `docs/llm.md`.
 pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
-    let [
-        top_rule,
-        _gap1,
-        search,
-        _gap2,
-        list,
-        counter,
-        _gap3,
-        name,
-        _gap4,
-        bottom_rule,
-    ] = Layout::vertical([
-        Constraint::Length(1), // top rule
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // search
-        Constraint::Length(1), // gap
-        Constraint::Min(0),    // model list
-        Constraint::Length(1), // counter
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // model name
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // bottom rule
-    ])
-    .areas(area);
-
-    Paragraph::new(model_rule(area.width)).render(top_rule, buf);
-
-    // The `❯` search line — the cyan prompt then the query.
-    Paragraph::new(Line::from(vec![
+    // The `❯` search line and the list are the same in both layouts; only the
+    // rows *below* the list differ (see the branch). Each arm moves these — a
+    // value may be moved once per mutually-exclusive branch.
+    let search_line = Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
         Span::raw(picker.query.clone()),
-    ]))
-    .render(search, buf);
+    ]);
+    let list_lines = model_list_lines(picker, area.width);
 
-    Paragraph::new(model_list_lines(picker, area.width)).render(list, buf);
-    Paragraph::new(model_counter_line(picker)).render(counter, buf);
-    Paragraph::new(model_name_line(picker, area.width)).render(name, buf);
-    Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
+    if model_has_detail(picker) {
+        // A real model is highlighted: counter, gap, name, gap below the list.
+        let [
+            top_rule,
+            _gap1,
+            search,
+            _gap2,
+            list,
+            counter,
+            _gap3,
+            name,
+            _gap4,
+            bottom_rule,
+        ] = Layout::vertical([
+            Constraint::Length(1), // top rule
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // search
+            Constraint::Length(1), // gap
+            Constraint::Min(0),    // model list
+            Constraint::Length(1), // counter
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // model name
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // bottom rule
+        ])
+        .areas(area);
+
+        Paragraph::new(model_rule(area.width)).render(top_rule, buf);
+        Paragraph::new(search_line).render(search, buf);
+        Paragraph::new(list_lines).render(list, buf);
+        Paragraph::new(model_counter_line(picker)).render(counter, buf);
+        Paragraph::new(model_name_line(picker, area.width)).render(name, buf);
+        Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
+    } else {
+        // A placeholder (loading / error / needs-login / no match): the blank
+        // counter + name collapse to a single gap above the bottom rule.
+        let [top_rule, _gap1, search, _gap2, list, _gap3, bottom_rule] = Layout::vertical([
+            Constraint::Length(1), // top rule
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // search
+            Constraint::Length(1), // gap
+            Constraint::Min(0),    // placeholder list
+            Constraint::Length(1), // gap
+            Constraint::Length(1), // bottom rule
+        ])
+        .areas(area);
+
+        Paragraph::new(model_rule(area.width)).render(top_rule, buf);
+        Paragraph::new(search_line).render(search, buf);
+        Paragraph::new(list_lines).render(list, buf);
+        Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
+    }
 }
 
 /// The `/login` `>` line: the cyan prompt then `text` (the provider filter, or
@@ -6619,6 +6668,28 @@ mod tests {
     }
 
     #[test]
+    fn model_picker_placeholder_collapses_to_a_single_trailing_gap() {
+        // A placeholder state (loading / error / no match) has no counter or
+        // model-name to show, so those detail rows collapse: exactly one blank
+        // gap sits between the placeholder and the bottom rule — not the four
+        // trailing blanks the counter/gap/name/gap layout leaves for a real
+        // model. Size the buffer to the picker's natural height so the Min(0)
+        // list can't expand into the gap.
+        let picker = ModelPicker {
+            active_id: "x".into(),
+            ..ModelPicker::default()
+        };
+        assert_eq!(picker.status, ModelLoad::Loading);
+        // 6 collapsed chrome rows + 1 placeholder list row = 7.
+        let mut buf = buffer(60, 7);
+        render_model_picker(buf.area, &mut buf, &picker);
+        assert!(row(&buf, 0, 60).starts_with('─'), "top rule");
+        assert!(row(&buf, 4, 60).contains("Loading models…"), "list row");
+        assert!(row(&buf, 5, 60).trim().is_empty(), "single trailing gap");
+        assert!(row(&buf, 6, 60).starts_with('─'), "bottom rule");
+    }
+
+    #[test]
     fn model_picker_shows_an_error_placeholder_in_red() {
         let picker = ModelPicker {
             status: ModelLoad::Error("401 bad key".into()),
@@ -6650,6 +6721,10 @@ mod tests {
         assert_eq!(model_picker_height(&app, 40), Some(12));
         // Clamped to the terminal height.
         assert_eq!(model_picker_height(&app, 8), Some(8));
+        // A placeholder state (still loading — no models) drops the counter +
+        // name detail rows: 6 collapsed chrome + 1 placeholder row = 7.
+        app.open_model_picker("a");
+        assert_eq!(model_picker_height(&app, 40), Some(7));
         // None when the picker is closed.
         app.close_model_picker();
         assert_eq!(model_picker_height(&app, 40), None);

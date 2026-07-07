@@ -162,6 +162,12 @@ the bottom rule — the shape of the user's mock):
 
 - The picker is **headerless** — the old "Showing models…" banner was dropped, so
   the `❯` search line sits directly under the top rule; the selection marker is `→`.
+- The counter + `Model Name:` rows show **only when a real model is highlighted**.
+  A **placeholder** state (`Loading models…`, a red error, the `/login` hint, or
+  `No matching models`) has no counter or name, so those rows collapse to a single
+  gap above the bottom rule — the box hugs the placeholder instead of leaving four
+  blank rows (`model_has_detail`/`model_chrome_rows`; `MODEL_CHROME_ROWS` 9 →
+  `MODEL_CHROME_ROWS_COLLAPSED` 6).
 
 ### Styling
 
