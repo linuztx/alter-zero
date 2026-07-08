@@ -274,21 +274,18 @@ pub const COPY_OK_NOTICE: &str = "Copied last message to clipboard";
 /// `docs/copy.md`.
 pub const COPY_EMPTY_NOTICE: &str = "No agent response to copy";
 
-/// The notice committed when `/resume` is run while a turn is active — codex
-/// blocks the command mid-task (`slash_command_blocked_by_active_task`)
-/// instead of racing the stream. Recorded as a [`Role::Error`] message. See
-/// `docs/resume.md`.
+/// The transient toast shown when `/resume` is run while a turn is active —
+/// codex blocks the command mid-task (`slash_command_blocked_by_active_task`)
+/// instead of racing the stream (it would swap the whole conversation). Shown as
+/// an [`Action::Toast`] rather than a committed message — a soft rejection the
+/// user needn't keep. See `docs/resume.md` / `docs/toast.md`.
 pub const RESUME_BUSY_NOTICE: &str = "/resume is disabled while a task is in progress";
 
-/// The notice committed when `/model` is run while a turn is active — switching
-/// the backend mid-stream would race the reply, so the command is blocked like
-/// `/resume`. Recorded as a [`Role::Error`] message. See `docs/llm.md`.
-pub const MODEL_BUSY_NOTICE: &str = "/model is disabled while a task is in progress";
-
-/// The notice committed when `/login` is run while a turn is active — saving a
-/// key for the active provider rebuilds the backend, which would race the
-/// reply, so the onboarding flow is blocked like `/model`. See `docs/llm.md`.
-pub const LOGIN_BUSY_NOTICE: &str = "/login is disabled while a task is in progress";
+/// The transient toast shown when `/help` is run while a turn is active — its
+/// multi-line command list would interleave with the streaming reply in
+/// scrollback, so mid-turn it is rejected like `/resume` (idle it still commits
+/// the full list). Shown as an [`Action::Toast`]. See `docs/toast.md`.
+pub const HELP_BUSY_NOTICE: &str = "/help is disabled while a task is in progress";
 
 /// The output recorded on a tool that was still running when the user
 /// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
@@ -368,9 +365,13 @@ pub enum Action {
     /// or commits a red notice if the read fails, the current conversation
     /// unharmed (codex). See `docs/resume.md`.
     ResumeSession(PathBuf),
-    /// A one-off red error notice — [`Action::Notice`]'s [`Role::Error`] twin
-    /// (e.g. `/resume` rejected while a turn is active).
-    ErrorNotice(String),
+    /// Raise a transient info [`Toast`](crate::app::Toast) above the box — a
+    /// confirmation or soft rejection that self-clears (e.g. `/resume` or `/help`
+    /// run while a turn is active). The loop calls [`App::show_toast`] and arms
+    /// the boundary's expiry timer; nothing is committed to scrollback. Error
+    /// toasts (a `/copy` failure, a bad model switch) are raised by the boundary
+    /// directly, so this carries only the info text. See `docs/toast.md`.
+    Toast(String),
     /// `/model` from an idle composer: open the inline model picker. The *loop*
     /// spawns a worker to fetch the provider's model list (the HTTP stays at the
     /// boundary) and feeds it back via [`App::set_models`]. Unlike `/resume`,
@@ -486,21 +487,27 @@ const TOOL_VIEW_PAGE: usize = 10;
 pub enum CommandEffect {
     /// Clear the conversation history (`/clear`).
     Clear,
-    /// Post the list of available commands as a system notice (`/help`).
+    /// Post the list of available commands as a system notice (`/help`) — or,
+    /// while a turn is active, reject with a [`HELP_BUSY_NOTICE`] toast (its
+    /// multi-line list would interleave with the streaming reply). See
+    /// `docs/toast.md`.
     Help,
-    /// Copy the last assistant response to the clipboard (`/copy`). See
-    /// `docs/copy.md`.
+    /// Copy the last assistant response to the clipboard (`/copy`) — the
+    /// confirmation surfaces as a toast, not a scrollback message. See
+    /// `docs/copy.md` / `docs/toast.md`.
     Copy,
-    /// Open the `/resume` session picker — or reject with
-    /// [`RESUME_BUSY_NOTICE`] while a turn is active (codex blocks it
-    /// mid-task). See `docs/resume.md`.
+    /// Open the `/resume` session picker — or reject with a
+    /// [`RESUME_BUSY_NOTICE`] toast while a turn is active (codex blocks it
+    /// mid-task; it swaps the whole conversation). See `docs/resume.md`.
     Resume,
-    /// Open the inline `/model` picker — or reject with [`MODEL_BUSY_NOTICE`]
-    /// while a turn is active (a model switch mid-stream would race it). See
-    /// `docs/llm.md`.
+    /// Open the inline `/model` picker. Works **mid-turn** — it only replaces the
+    /// composer, never the running turn (which streams on its own thread); a
+    /// switch only rebinds the *next* turn's backend. See `docs/llm.md` /
+    /// `docs/toast.md`.
     Model,
-    /// Open the inline `/login` API-key onboarding flow — or reject with
-    /// [`LOGIN_BUSY_NOTICE`] while a turn is active. See `docs/llm.md`.
+    /// Open the inline `/login` API-key onboarding flow. Works **mid-turn** like
+    /// `/model` — saving a key never touches the running turn. See `docs/llm.md`
+    /// / `docs/toast.md`.
     Login,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
@@ -1149,6 +1156,32 @@ pub struct SessionInfo {
     pub cwd: String,
 }
 
+/// How a [`Toast`] is styled — a neutral confirmation or a failure. Drives the
+/// row's colour in `ui.rs` (dim vs. red). See `docs/toast.md`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    /// A neutral confirmation or soft rejection (dim) — `Copied last message to
+    /// clipboard`, `Switched model to …`, `/resume is disabled …`.
+    Info,
+    /// A failure (red) — `No agent response to copy`, `Copy failed: …`.
+    Error,
+}
+
+/// A transient status line shown just above the input box that clears itself
+/// after a few seconds — the ephemeral counterpart to a committed `Role::System`
+/// / `Role::Error` message. Raised for confirmations and soft rejections the
+/// user should see but never wants to keep (`/copy`, a model switch, a mid-turn
+/// `/resume`), so nothing lands in [`App::history`]. The expiry is driven at the
+/// I/O boundary via the timestamp pattern (`main.rs`'s `toast_deadline`); the
+/// pure core only holds *what* it says. See `docs/toast.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Toast {
+    /// The message shown (truncated to the width by the renderer).
+    pub text: String,
+    /// Whether it reads as a neutral info line or a red failure.
+    pub kind: ToastKind,
+}
+
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished
 /// history of messages and tool calls.
@@ -1323,6 +1356,17 @@ pub struct App {
     ///
     /// [`take_discarded_images`]: App::take_discarded_images
     discarded_images: Vec<PathBuf>,
+    /// The transient status line shown just above the box, if one is live —
+    /// a confirmation or soft rejection that self-clears after a few seconds
+    /// ([`show_toast`]/[`clear_toast`]). Never recorded in [`history`]: a toast
+    /// is UI, not conversation. Its expiry is timed at the I/O boundary
+    /// (`main.rs`'s `toast_deadline`), the timestamp pattern. See
+    /// `docs/toast.md`.
+    ///
+    /// [`show_toast`]: App::show_toast
+    /// [`clear_toast`]: App::clear_toast
+    /// [`history`]: App::history
+    toast: Option<Toast>,
 }
 
 impl App {
@@ -1355,6 +1399,30 @@ impl App {
             model: model.into(),
             cwd: cwd.into(),
         });
+    }
+
+    /// Raise a transient [`Toast`] above the box (replacing any current one). The
+    /// message self-clears after a few seconds — the *when* is timed at the I/O
+    /// boundary (`main.rs`'s `toast_deadline`), so this only records *what* to
+    /// show. Deliberately **not** pushed to [`history`](Self::history): a toast is
+    /// UI, never conversation. See `docs/toast.md`.
+    pub fn show_toast(&mut self, text: impl Into<String>, kind: ToastKind) {
+        self.toast = Some(Toast {
+            text: text.into(),
+            kind,
+        });
+    }
+
+    /// Drop the live toast (the boundary's expiry, and `/clear`).
+    pub fn clear_toast(&mut self) {
+        self.toast = None;
+    }
+
+    /// The transient toast currently shown above the box, if any — read by the
+    /// renderer (`ui::toast_rows`/`toast_line`).
+    #[must_use]
+    pub const fn toast(&self) -> Option<&Toast> {
+        self.toast.as_ref()
     }
 
     /// The current timestamp from the injected clock, or empty when none is set
@@ -2071,37 +2139,40 @@ impl App {
                 self.clear_conversation();
                 Action::Clear
             }
-            CommandEffect::Help => Action::Notice(help_text()),
+            CommandEffect::Help => {
+                // Idle, /help commits its multi-line command list. Mid-turn that
+                // list would interleave with the streaming reply, so it's
+                // rejected with a transient toast instead. See docs/toast.md.
+                if self.turn_active() {
+                    Action::Toast(HELP_BUSY_NOTICE.to_string())
+                } else {
+                    Action::Notice(help_text())
+                }
+            }
             CommandEffect::Copy => Action::Copy(self.last_assistant_text()),
             CommandEffect::Resume => {
-                // Codex blocks /resume while a task runs (an error cell)
-                // rather than racing the stream; idle, the *loop* scans the
-                // sessions dir and opens the picker. See docs/resume.md.
+                // Codex blocks /resume while a task runs (it swaps the whole
+                // conversation, racing the stream); the rejection is a transient
+                // toast. Idle, the *loop* scans the sessions dir and opens the
+                // picker. See docs/resume.md / docs/toast.md.
                 if self.turn_active() {
-                    Action::ErrorNotice(RESUME_BUSY_NOTICE.to_string())
+                    Action::Toast(RESUME_BUSY_NOTICE.to_string())
                 } else {
                     Action::OpenResumePicker
                 }
             }
             CommandEffect::Model => {
-                // Switching the backend mid-stream would race the reply, so
-                // `/model` is blocked while a task runs (like `/resume`); idle,
-                // the *loop* fetches the model list and the picker opens inline.
-                if self.turn_active() {
-                    Action::ErrorNotice(MODEL_BUSY_NOTICE.to_string())
-                } else {
-                    Action::OpenModelPicker
-                }
+                // /model works mid-turn: it only replaces the composer with the
+                // inline picker, never the running turn (which streams on its own
+                // thread). Selecting rebinds only the *next* turn's backend. The
+                // *loop* fetches the model list. See docs/llm.md / docs/toast.md.
+                Action::OpenModelPicker
             }
             CommandEffect::Login => {
-                // Saving a key for the active provider rebuilds the backend, so
-                // `/login` is blocked mid-task like `/model`; idle, the *loop*
-                // builds the provider choices and the onboarding opens inline.
-                if self.turn_active() {
-                    Action::ErrorNotice(LOGIN_BUSY_NOTICE.to_string())
-                } else {
-                    Action::OpenKeyOnboarding
-                }
+                // /login works mid-turn like /model — saving a key never touches
+                // the running turn. The *loop* builds the provider choices and
+                // opens the onboarding inline. See docs/llm.md / docs/toast.md.
+                Action::OpenKeyOnboarding
             }
             CommandEffect::Quit => Action::Quit,
         }
@@ -3650,6 +3721,8 @@ impl App {
             }
         }
         self.file_search = None;
+        // A cleared slate shows nothing lingering above the box.
+        self.toast = None;
     }
 }
 
@@ -5729,6 +5802,59 @@ mod tests {
     }
 
     #[test]
+    fn help_mid_turn_is_rejected_with_a_toast_not_the_command_list() {
+        // Mid-turn the multi-line list would interleave with the streaming
+        // reply, so /help is rejected with a transient toast instead.
+        let mut app = App::new();
+        app.begin_stream();
+        type_str(&mut app, "/help");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Toast(HELP_BUSY_NOTICE.to_string()),
+        );
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn show_toast_holds_the_text_and_kind_without_recording_history() {
+        let mut app = App::new();
+        app.show_toast("Copied last message to clipboard", ToastKind::Info);
+        let toast = app.toast().expect("a toast is live");
+        assert_eq!(toast.text, "Copied last message to clipboard");
+        assert_eq!(toast.kind, ToastKind::Info);
+        assert!(
+            app.history.is_empty(),
+            "a toast is UI, never a conversation entry"
+        );
+    }
+
+    #[test]
+    fn show_toast_overwrites_the_previous_one() {
+        let mut app = App::new();
+        app.show_toast("first", ToastKind::Info);
+        app.show_toast("second", ToastKind::Error);
+        let toast = app.toast().expect("a toast is live");
+        assert_eq!(toast.text, "second");
+        assert_eq!(toast.kind, ToastKind::Error);
+    }
+
+    #[test]
+    fn clear_toast_removes_it() {
+        let mut app = App::new();
+        app.show_toast("hi", ToastKind::Info);
+        app.clear_toast();
+        assert!(app.toast().is_none());
+    }
+
+    #[test]
+    fn clear_conversation_drops_a_live_toast() {
+        let mut app = App::new();
+        app.show_toast("Copied", ToastKind::Info);
+        app.clear_conversation();
+        assert!(app.toast().is_none(), "a cleared slate shows nothing");
+    }
+
+    #[test]
     fn enter_runs_the_quit_command() {
         // `/quit` exits the app, like codex's `/quit` ("exit Codex").
         let mut app = App::new();
@@ -7451,15 +7577,16 @@ mod tests {
     }
 
     #[test]
-    fn slash_resume_mid_turn_is_rejected_with_an_error_notice() {
-        // Codex blocks /resume while a task runs (an error cell) instead of
-        // racing the stream — the picker never opens over an active turn.
+    fn slash_resume_mid_turn_is_rejected_with_a_toast() {
+        // Codex blocks /resume while a task runs (it swaps the whole
+        // conversation) — the picker never opens over an active turn, and the
+        // rejection is a transient toast, not a scrollback bullet.
         let mut app = App::new();
         app.begin_stream();
         type_chars(&mut app, "/resume");
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
-            Action::ErrorNotice(RESUME_BUSY_NOTICE.to_string()),
+            Action::Toast(RESUME_BUSY_NOTICE.to_string()),
         );
         assert_eq!(app.view, View::Conversation);
         assert!(app.resume_picker.is_none());
@@ -7754,18 +7881,14 @@ mod tests {
     }
 
     #[test]
-    fn slash_model_mid_turn_is_rejected_with_an_error_notice() {
+    fn slash_model_opens_the_picker_mid_turn() {
+        // /model only swaps the composer, never the running turn, so it opens
+        // regardless of turn state (docs/toast.md). The *loop* does the fetch.
         let mut app = App::new();
         app.begin_stream();
         type_chars(&mut app, "/model");
-        assert_eq!(
-            app.on_key(key(KeyCode::Enter)),
-            Action::ErrorNotice(MODEL_BUSY_NOTICE.to_string()),
-        );
-        assert!(
-            app.model_picker.is_none(),
-            "the picker never opens over a turn"
-        );
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::OpenModelPicker);
+        assert!(app.turn_active(), "the turn keeps running underneath");
     }
 
     #[test]
@@ -8144,15 +8267,14 @@ mod tests {
     }
 
     #[test]
-    fn slash_login_mid_turn_is_rejected_with_an_error_notice() {
+    fn slash_login_opens_the_onboarding_mid_turn() {
+        // /login works mid-turn like /model — saving a key never touches the
+        // running turn (docs/toast.md). The *loop* builds the provider choices.
         let mut app = App::new();
         app.begin_stream();
         type_chars(&mut app, "/login");
-        assert_eq!(
-            app.on_key(key(KeyCode::Enter)),
-            Action::ErrorNotice(LOGIN_BUSY_NOTICE.to_string()),
-        );
-        assert!(app.key_onboarding.is_none());
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::OpenKeyOnboarding);
+        assert!(app.turn_active(), "the turn keeps running underneath");
     }
 
     #[test]

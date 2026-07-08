@@ -143,7 +143,16 @@ output **flush** below, `⎿ Running…` while it runs, the `Running…`/`esc to
 interrupt` status, **no** `Ran for Ns` summary, Esc killing the child;
 mid-turn it queues as a standalone `Shell` entry run locally when its turn comes
 — codex parity, never merged into a text batch, Alt+Up over it re-enters shell
-mode; see `docs/shell-command.md` and `docs/queue.md`); plus a one-row
+mode; see `docs/shell-command.md` and `docs/queue.md`); plus a **transient toast**
+— a one-row, self-clearing status line pinned at the *bottom of the strip, just
+above the box's top rule* (`App::toast`/`ui::toast_rows`/`toast_line`, threaded
+beside `queued_rows`; dim for info, red for errors). It's raised for
+confirmations and soft rejections the user should see but never keep — `/copy`
+(`Copied last message to clipboard`), a model switch, a mid-turn `/resume`/`/help`
+rejection — instead of committing a scrollback bullet; it never enters `history`,
+and its expiry is timed at the boundary (`main.rs`'s `toast_deadline` +
+`present_toast`, the timestamp pattern, cleared in the draw tick). See
+`docs/toast.md`; plus a one-row
 **session footer** on the region's last row —
 codex's footer status line, `{model} · {cwd}` dim and two-space inset
 (`dummy_model_name · ~/repo`) — whenever no band is open (the palette/shortcuts
@@ -349,7 +358,7 @@ return's reflow drops + regenerates, so invariant 4 holds.
 `App` (`app.rs`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,
-`TurnSummary`, `HistoryItem`, `QueuedTurn`, `FileSearch`, `ResumePicker`, `View` live there too
+`TurnSummary`, `HistoryItem`, `QueuedTurn`, `Toast`, `ToastKind`, `FileSearch`, `ResumePicker`, `View` live there too
 (the `@`-picker primitives `AtToken`/`FileMatch`/`at_token`/`fuzzy_match`/`rank_files`
 live in the pure `file_search` module, and the `/resume` primitives
 `SessionMeta`/`SessionSummary`/`meta_line`/`item_line`/`parse_session`/`preview_of`/
@@ -358,17 +367,20 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/resume`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/resume`, `/model`, `/login`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
 dispatches an `Action`
 (`/clear`→`Clear`, `/help`→`Notice(String)` committed as a `Role::System`
-message, `/quit`→`Quit`, **`/copy`→`Copy(Option<String>)`** — codex's `/copy`:
+message — **but mid-turn `/help` is rejected with a `Toast`** (its list would
+interleave with the reply; `docs/toast.md`),
+`/quit`→`Quit`, **`/copy`→`Copy(Option<String>)`** — codex's `/copy`:
 the pure core picks the last assistant message (`App::last_assistant_text`) and
 the loop writes it to the system clipboard, arboard with an OSC 52 fallback for
-headless/SSH/tmux, committing a `Copied last message to clipboard` system notice
-or a red `No agent response to copy`/`Copy failed` error; the clipboard write is
+headless/SSH/tmux, then shows a transient `Copied last message to clipboard` toast
+(or a red `No agent response to copy`/`Copy failed` toast) — **a self-clearing
+line above the box, not a scrollback bullet** (`docs/toast.md`); the clipboard write is
 the I/O boundary, the `base64`/OSC 52 framing a tested pure core in `clipboard`;
 see `docs/copy.md`, **and `/resume`→`OpenResumePicker`** — codex's `/resume`:
 every conversation records to a rollout JSONL file (the recorder + dir scan at
@@ -381,7 +393,11 @@ Created` — Tab moves the focus, ←/→ toggle, `Cwd`/`Updated` default),
 Enter → `ResumeSession(path)` loading the file's history via
 `App::load_session` and appending later turns to the same file; Esc clears the
 query first then closes, Ctrl+C closes, mid-turn `/resume` is rejected with a
-red `ErrorNotice` like codex; see `docs/resume.md`, `smoke.sh` Phase 31).
+transient `Toast` (was a red `ErrorNotice`; `docs/toast.md`) like codex; see
+`docs/resume.md`, `smoke.sh` Phase 31. **`/model` and `/login` (the inline
+pickers, `docs/llm.md`) now open *mid-turn* too** — they only replace the
+composer, never the running turn, so their old busy rejections are gone; their
+confirmations are toasts (`smoke.sh` Phase 33)).
 **`/clear` mid-turn is a kill**, not codex's
 "disabled while a task is in progress" rejection: `App::clear_conversation`
 wipes history, the streaming buffer, the running tool, the status, and the
@@ -464,7 +480,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   session footer (`FOOTER_*` — the two-space `FOOTER_INDENT`, the ` · `
   `FOOTER_SEPARATOR`, the dim `FOOTER_COLOR`; `footer_rows`/`footer_line`,
   ellipsis-truncated at narrow widths, with `display_cwd` formatting the
-  `~`-relative path), the Ctrl+R search line that takes the footer's slot while
+  `~`-relative path), the transient toast row above the box (`TOAST_*` — the
+  two-space `TOAST_INDENT`, the dim `TOAST_COLOR` (info) / red `TOAST_ERROR_COLOR`
+  (failure); `toast_rows`/`toast_line`, ellipsis-truncated like the footer — see
+  `docs/toast.md`), the Ctrl+R search line that takes the footer's slot while
   a search is open (`SEARCH_*` — the dim `SEARCH_PROMPT`, the cyan
   `SEARCH_QUERY_COLOR` shared by the bold accept/cancel hint keys, the red
   `SEARCH_NO_MATCH` notice, and `SEARCH_HIGHLIGHT` — the reversed+bold styling

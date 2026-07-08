@@ -21,8 +21,8 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::app::{
     App, HistoryItem, HistorySearch, KeyOnboarding, KeyStep, ModelLoad, ModelPicker,
     ProviderChoice, QueuedTurn, ResumeControl, ResumeFilter, ResumePicker, ResumeSort, Role,
-    SearchState, SlashCommand, TokenArrow, ToolCall, ToolStatus, TurnStatus, TurnSummary,
-    command_query, matching_commands,
+    SearchState, SlashCommand, ToastKind, TokenArrow, ToolCall, ToolStatus, TurnStatus,
+    TurnSummary, command_query, matching_commands,
 };
 use crate::file_search::FileMatch;
 use crate::highlight;
@@ -524,6 +524,21 @@ const FOOTER_SEPARATOR: &str = " · ";
 /// status-line style.
 const FOOTER_COLOR: Color = TOOL_DIM_COLOR;
 
+// --- The transient toast: a one-line, self-clearing status message pinned just
+// above the box (`Copied last message to clipboard`, `/resume is disabled …`).
+// It occupies the bottom of the strip, directly above the box's top rule, and
+// fades after a few seconds (the expiry timed at the I/O boundary). See
+// docs/toast.md. ---
+
+/// Indent prefixed to the toast row — the two-space inset shared with the
+/// footer and the queued messages.
+const TOAST_INDENT: &str = "  ";
+/// An info toast's colour (a confirmation / soft rejection) — dim, like the footer.
+const TOAST_COLOR: Color = TOOL_DIM_COLOR;
+/// An error toast's colour (a failure — a `/copy` error, a bad model switch) —
+/// the error red.
+const TOAST_ERROR_COLOR: Color = ERROR_COLOR;
+
 // --- The Ctrl+R reverse history search line (codex's reverse-i-search footer,
 // `chat_composer/history_search.rs::history_search_footer_line`). It takes the
 // session footer's slot while a search is open, and the previewed match in the
@@ -616,12 +631,13 @@ fn field_width(width: u16) -> u16 {
 /// Height of the bottom live region for the current `input` at this terminal
 /// size: the streaming strip (only while `streaming`) plus the `queued_rows`
 /// queued-message lines stacked under its status (the strip's
-/// [`queued_rows`]), two framing rules, one row per wrapped input line — so the
-/// box **grows** as the message wraps — the band below it (`band_rows`: the
-/// command palette's [`menu_rows`] plus the shortcuts band's [`shortcuts_rows`],
-/// 0 when both are closed), and the session-context footer under that
-/// (`footer_rows`: [`footer_rows`], 0 when a band displaces it) — clamped to
-/// the terminal height (after which the box scrolls internally; see
+/// [`queued_rows`]), the `toast_rows` transient toast row just above the box
+/// ([`toast_rows`], 0 or 1), two framing rules, one row per wrapped input line —
+/// so the box **grows** as the message wraps — the band below it (`band_rows`:
+/// the command palette's [`menu_rows`] plus the shortcuts band's
+/// [`shortcuts_rows`], 0 when both are closed), and the session-context footer
+/// under that (`footer_rows`: [`footer_rows`], 0 when a band displaces it) —
+/// clamped to the terminal height (after which the box scrolls internally; see
 /// [`render_live`]).
 // A flat list of irreducible geometry measurements — bundling them into a
 // struct would only obscure the positional layout the tests assert directly.
@@ -634,12 +650,14 @@ pub fn live_height(
     streaming: bool,
     has_preview: bool,
     queued_rows: u16,
+    toast_rows: u16,
     band_rows: u16,
     footer_rows: u16,
 ) -> u16 {
     let rows = input.row_count(field_width(width)) as u16;
     (strip_rows(streaming, has_preview)
         + queued_rows
+        + toast_rows
         + INPUT_CHROME_ROWS
         + rows
         + band_rows
@@ -789,24 +807,27 @@ pub fn repin(top: u16, old_height: u16, new_height: u16, screen_height: u16) -> 
 
 /// Split `area` into the live region's four stacked sub-areas
 /// `[strip, input, band, footer]`. The strip holds the streaming preview, gap,
-/// status, gap, **and the `queued_rows` queued-message lines below them**
-/// (height 0 when idle); the band — the command palette *or* the `?` shortcuts
-/// overview — takes its fixed `band_rows` below the box (0 when closed); the
-/// session-context footer sits on the very last `footer_rows` (0 when unset or
-/// displaced by the band); the input box takes whatever rows remain in
-/// between, so it **grows** as `area` grows (see [`live_height`]). Reserving
-/// the band and footer below rather than between keeps the box's top — and the
-/// cursor — put when they appear. The only place the split is expressed.
+/// status, gap, **the `queued_rows` queued-message lines below them, and the
+/// `toast_rows` transient toast row at its very bottom (just above the box)**
+/// (height 0 when idle and no toast); the band — the command palette *or* the
+/// `?` shortcuts overview — takes its fixed `band_rows` below the box (0 when
+/// closed); the session-context footer sits on the very last `footer_rows` (0
+/// when unset or displaced by the band); the input box takes whatever rows
+/// remain in between, so it **grows** as `area` grows (see [`live_height`]).
+/// Reserving the band and footer below rather than between keeps the box's top —
+/// and the cursor — put when they appear. The only place the split is expressed.
+#[allow(clippy::too_many_arguments)]
 fn live_layout(
     area: Rect,
     streaming: bool,
     has_preview: bool,
     queued_rows: u16,
+    toast_rows: u16,
     band_rows: u16,
     footer_rows: u16,
 ) -> [Rect; 4] {
     Layout::vertical([
-        Constraint::Length(strip_rows(streaming, has_preview) + queued_rows),
+        Constraint::Length(strip_rows(streaming, has_preview) + queued_rows + toast_rows),
         Constraint::Min(0),
         Constraint::Length(band_rows),
         Constraint::Length(footer_rows),
@@ -835,12 +856,14 @@ struct InputBox {
     scroll: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn input_box(
     area: Rect,
     input: &TextArea,
     streaming: bool,
     has_preview: bool,
     queued_rows: u16,
+    toast_rows: u16,
     band_rows: u16,
     footer_rows: u16,
 ) -> InputBox {
@@ -849,6 +872,7 @@ fn input_box(
         streaming,
         has_preview,
         queued_rows,
+        toast_rows,
         band_rows,
         footer_rows,
     );
@@ -1369,12 +1393,13 @@ pub fn render_live_with_preview(
     // the very last row unless a band displaces it.
     let band = band_rows(app);
     let queued = queued_rows(app, area.width);
+    let toast = toast_rows(app);
     let footer = footer_rows(app, band);
     // The preview row + its gap are only reserved when there is something to
     // preview; the pre-stream pause shows status-only (no stray blank line).
     let has_preview = strip_has_preview(app);
     let [strip, _, band_area, footer_area] =
-        live_layout(area, streaming, has_preview, queued, band, footer);
+        live_layout(area, streaming, has_preview, queued, toast, band, footer);
     // Rows the preview occupies at the strip's top (0 when there's no preview).
     let preview_rows = if has_preview {
         PREVIEW_ROWS + GAP_ROWS
@@ -1442,6 +1467,24 @@ pub fn render_live_with_preview(
         }
     }
 
+    // The transient toast, on the strip's very last row — directly above the
+    // box's top rule, below the status/queue when a turn streams and directly
+    // above the box when idle. Self-clears after a few seconds (the expiry is
+    // timed at the boundary). See docs/toast.md.
+    if toast > 0 {
+        let strip_bottom = strip.y + strip.height;
+        let t_y = strip_bottom.saturating_sub(toast);
+        if t_y < strip_bottom {
+            let t_area = Rect {
+                x: strip.x,
+                y: t_y,
+                width: strip.width,
+                height: toast.min(strip_bottom - t_y),
+            };
+            Paragraph::new(toast_line(app, t_area.width)).render(t_area, buf);
+        }
+    }
+
     // The input box: a top/bottom rule framing the wrapped input rows.
     let bx = input_box(
         area,
@@ -1449,6 +1492,7 @@ pub fn render_live_with_preview(
         streaming,
         has_preview,
         queued,
+        toast,
         band,
         footer,
     );
@@ -1910,6 +1954,40 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     }
     spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
     Line::from(spans)
+}
+
+/// How many rows the transient toast reserves above the box: 0 when none is
+/// live, else 1 (a single row, truncated to the width). Added to the strip by
+/// [`live_height`]/[`live_layout`], between the queued messages and the box's
+/// top rule. See `docs/toast.md`.
+#[must_use]
+pub fn toast_rows(app: &App) -> u16 {
+    u16::from(app.toast().is_some())
+}
+
+/// The transient toast's single line: the [`TOAST_INDENT`] then the message,
+/// dim for an info toast ([`TOAST_COLOR`]) or red for a failure
+/// ([`TOAST_ERROR_COLOR`]), cut with a trailing `…` when it overflows `width`
+/// (like the footer). Empty when no toast is live. See `docs/toast.md`.
+#[must_use]
+pub fn toast_line(app: &App, width: u16) -> Line<'static> {
+    let Some(toast) = app.toast() else {
+        return Line::default();
+    };
+    let color = match toast.kind {
+        ToastKind::Info => TOAST_COLOR,
+        ToastKind::Error => TOAST_ERROR_COLOR,
+    };
+    let style = Style::new().fg(color);
+    let budget = (width as usize).saturating_sub(cols(TOAST_INDENT));
+    let text = if cols(&toast.text) <= budget {
+        toast.text.clone()
+    } else {
+        let mut cut = truncate_cols(&toast.text, budget.saturating_sub(cols(STATUS_ELLIPSIS)));
+        cut.push_str(STATUS_ELLIPSIS);
+        cut
+    };
+    Line::from(vec![Span::raw(TOAST_INDENT), Span::styled(text, style)])
 }
 
 /// The `!` shell-mode footer line: the [`FOOTER_INDENT`] then `Shell mode` in
@@ -3508,6 +3586,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     let band = band_rows(app);
     let footer = footer_rows(app, band);
     let has_preview = strip_has_preview(app);
+    let toast = toast_rows(app);
     // While a Ctrl+R search is open the hardware cursor tracks the end of the
     // *footer query*, not the textarea preview — the shell reverse-i-search
     // feel (codex's history_search_cursor_pos), clamped inside the row.
@@ -3517,6 +3596,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
             app.is_streaming(),
             has_preview,
             queued_rows(app, area.width),
+            toast,
             band,
             footer,
         );
@@ -3532,6 +3612,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         app.is_streaming(),
         has_preview,
         queued_rows(app, area.width),
+        toast,
         band,
         footer,
     );
@@ -4846,7 +4927,7 @@ mod tests {
         app.begin_stream();
         app.push_chunk("hi");
         app.set_status_times(Duration::from_secs(3), None);
-        let h = live_height(&app.input, 40, 24, true, true, 0, 0, 0);
+        let h = live_height(&app.input, 40, 24, true, true, 0, 0, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -4870,7 +4951,7 @@ mod tests {
         // No preview content yet → the strip is status + gap only (no preview
         // row, no preview gap): exactly the box + status + the two gaps.
         assert!(!strip_has_preview(&app));
-        let h = live_height(&app.input, 60, 24, true, false, 0, 0, 0);
+        let h = live_height(&app.input, 60, 24, true, false, 0, 0, 0, 0);
         assert_eq!(
             h,
             STATUS_ROWS + STATUS_GAP_ROWS + INPUT_CHROME_ROWS + 1,
@@ -4906,7 +4987,7 @@ mod tests {
     fn render_live_grows_the_box_and_wraps_input_across_rows() {
         let mut app = App::new();
         app.input = TextArea::from_text("first\nsecond");
-        let h = live_height(&app.input, 20, 24, false, false, 0, 0, 0);
+        let h = live_height(&app.input, 20, 24, false, false, 0, 0, 0, 0);
         assert_eq!(h, 4, "two rules + two input rows (no strip when idle)");
         let mut buf = buffer(20, h);
         render_live(buf.area, &mut buf, &app);
@@ -4937,7 +5018,7 @@ mod tests {
         );
         let term_h = 6; // live clamps to 6 → text rows = 6 - 2 = 4
         assert_eq!(
-            live_height(&app.input, 20, term_h, false, false, 0, 0, 0),
+            live_height(&app.input, 20, term_h, false, false, 0, 0, 0, 0),
             6
         );
         let mut buf = buffer(20, 6);
@@ -5011,7 +5092,7 @@ mod tests {
             0,
             0,
             20,
-            live_height(&app.input, 20, 24, false, false, 0, 0, 0),
+            live_height(&app.input, 20, 24, false, false, 0, 0, 0, 0),
         );
         assert_eq!(cursor_position(area, &app), (4, 2));
     }
@@ -5248,11 +5329,11 @@ mod tests {
         // (no preview strip) = LIVE_MIN_HEIGHT (3).
         assert_eq!(LIVE_MIN_HEIGHT, 3);
         assert_eq!(
-            live_height(&TextArea::from_text(""), 40, 24, false, false, 0, 0, 0),
+            live_height(&TextArea::from_text(""), 40, 24, false, false, 0, 0, 0, 0),
             LIVE_MIN_HEIGHT
         );
         assert_eq!(
-            live_height(&TextArea::from_text("hi"), 40, 24, false, false, 0, 0, 0),
+            live_height(&TextArea::from_text("hi"), 40, 24, false, false, 0, 0, 0, 0),
             LIVE_MIN_HEIGHT
         );
     }
@@ -5265,8 +5346,8 @@ mod tests {
         for input in ["", "hi", "a\nb\nc"] {
             let ta = TextArea::from_text(input);
             assert_eq!(
-                live_height(&ta, 40, 24, true, true, 0, 0, 0),
-                live_height(&ta, 40, 24, false, false, 0, 0, 0) + 4,
+                live_height(&ta, 40, 24, true, true, 0, 0, 0, 0),
+                live_height(&ta, 40, 24, false, false, 0, 0, 0, 0) + 4,
                 "streaming adds the preview + gap + status + gap rows for {input:?}"
             );
         }
@@ -5283,6 +5364,7 @@ mod tests {
                 24,
                 false,
                 false,
+                0,
                 0,
                 0,
                 0
@@ -5306,6 +5388,7 @@ mod tests {
                 false,
                 0,
                 0,
+                0,
                 0
             ),
             5
@@ -5316,7 +5399,7 @@ mod tests {
     fn live_height_is_clamped_to_the_terminal_height() {
         let many = TextArea::from_text(&"a\n".repeat(50));
         assert_eq!(
-            live_height(&many, 40, 10, false, false, 0, 0, 0),
+            live_height(&many, 40, 10, false, false, 0, 0, 0, 0),
             10,
             "never taller than the screen"
         );
@@ -5412,6 +5495,7 @@ mod tests {
                                 streaming,
                                 has_preview,
                                 0,
+                                0,
                                 band_rows,
                                 footer_rows,
                             );
@@ -5459,7 +5543,7 @@ mod tests {
         app.queued.push_back(batch(&["world"]));
         app.input = TextArea::from_text("x");
         let q = queued_rows(&app, 40);
-        let h = live_height(&app.input, 40, 24, true, true, q, 0, 0);
+        let h = live_height(&app.input, 40, 24, true, true, q, 0, 0, 0);
         let area = Rect::new(0, 0, 40, h);
         let mut buf = buffer(40, h);
         render_live(area, &mut buf, &app);
@@ -5724,13 +5808,14 @@ mod tests {
 
     #[test]
     fn live_height_adds_the_command_menu_band() {
-        let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, false, 0, 0, 0);
+        let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, false, 0, 0, 0, 0);
         let open = live_height(
             &TextArea::from_text("/"),
             40,
             24,
             false,
             false,
+            0,
             0,
             MENU_MAX_ROWS,
             0,
@@ -5742,7 +5827,7 @@ mod tests {
     fn render_live_draws_the_command_menu_below_the_box() {
         let app = palette("/", 0);
         let menu = menu_rows(&app);
-        let h = live_height(&app.input, 40, 24, false, false, 0, menu, 0);
+        let h = live_height(&app.input, 40, 24, false, false, 0, 0, menu, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -5769,7 +5854,7 @@ mod tests {
             0,
             0,
             40,
-            live_height(&TextArea::from_text("/"), 40, 24, false, false, 0, 0, 0),
+            live_height(&TextArea::from_text("/"), 40, 24, false, false, 0, 0, 0, 0),
         );
         let closed = cursor_position(closed_area, &app);
         app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
@@ -5778,7 +5863,17 @@ mod tests {
             0,
             0,
             40,
-            live_height(&TextArea::from_text("/"), 40, 24, false, false, 0, menu, 0),
+            live_height(
+                &TextArea::from_text("/"),
+                40,
+                24,
+                false,
+                false,
+                0,
+                0,
+                menu,
+                0,
+            ),
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the menu opens");
@@ -5893,8 +5988,18 @@ mod tests {
     fn live_height_adds_the_shortcuts_band() {
         let mut app = App::new();
         app.shortcuts_open = true;
-        let closed = live_height(&app.input, 40, 24, false, false, 0, 0, 0);
-        let open = live_height(&app.input, 40, 24, false, false, 0, shortcuts_rows(&app), 0);
+        let closed = live_height(&app.input, 40, 24, false, false, 0, 0, 0, 0);
+        let open = live_height(
+            &app.input,
+            40,
+            24,
+            false,
+            false,
+            0,
+            0,
+            shortcuts_rows(&app),
+            0,
+        );
         assert_eq!(open, closed + shortcuts_rows(&app));
     }
 
@@ -5902,7 +6007,17 @@ mod tests {
     fn render_live_draws_the_shortcuts_band_below_the_box() {
         let mut app = App::new();
         app.shortcuts_open = true;
-        let h = live_height(&app.input, 60, 24, false, false, 0, shortcuts_rows(&app), 0);
+        let h = live_height(
+            &app.input,
+            60,
+            24,
+            false,
+            false,
+            0,
+            0,
+            shortcuts_rows(&app),
+            0,
+        );
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -5923,7 +6038,7 @@ mod tests {
             0,
             0,
             40,
-            live_height(&app.input, 40, 24, false, false, 0, 0, 0),
+            live_height(&app.input, 40, 24, false, false, 0, 0, 0, 0),
         );
         let closed = cursor_position(closed_area, &app);
         app.shortcuts_open = true;
@@ -5931,7 +6046,17 @@ mod tests {
             0,
             0,
             40,
-            live_height(&app.input, 40, 24, false, false, 0, shortcuts_rows(&app), 0),
+            live_height(
+                &app.input,
+                40,
+                24,
+                false,
+                false,
+                0,
+                0,
+                shortcuts_rows(&app),
+                0,
+            ),
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the band opens");
@@ -6108,10 +6233,10 @@ mod tests {
     fn live_height_grows_with_the_queue() {
         let mut app = App::new();
         app.begin_stream();
-        let without = live_height(&app.input, 40, 24, true, true, 0, 0, 0);
+        let without = live_height(&app.input, 40, 24, true, true, 0, 0, 0, 0);
         app.queued.push_back(batch(&["world"]));
         let q = queued_rows(&app, 40);
-        let with = live_height(&app.input, 40, 24, true, true, q, 0, 0);
+        let with = live_height(&app.input, 40, 24, true, true, q, 0, 0, 0);
         assert_eq!(with, without + q, "the queue grows the region by its rows");
         assert_eq!(q, 1, "one short queued message is one row");
     }
@@ -6122,7 +6247,7 @@ mod tests {
         app.begin_stream();
         app.queued.push_back(batch(&["world"]));
         let q = queued_rows(&app, 40);
-        let h = live_height(&app.input, 40, 24, true, true, q, 0, 0);
+        let h = live_height(&app.input, 40, 24, true, true, q, 0, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 40)).collect();
@@ -6155,7 +6280,17 @@ mod tests {
         app.shortcuts_open = true;
         app.queued.push_back(batch(&["world"]));
         let q = queued_rows(&app, 40);
-        let h = live_height(&app.input, 40, 24, true, true, q, shortcuts_rows(&app), 0);
+        let h = live_height(
+            &app.input,
+            40,
+            24,
+            true,
+            true,
+            q,
+            0,
+            shortcuts_rows(&app),
+            0,
+        );
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 40)).collect();
@@ -6247,8 +6382,8 @@ mod tests {
     fn live_height_adds_the_footer_row() {
         let ta = TextArea::from_text("hi");
         assert_eq!(
-            live_height(&ta, 40, 24, false, false, 0, 0, 1),
-            live_height(&ta, 40, 24, false, false, 0, 0, 0) + 1,
+            live_height(&ta, 40, 24, false, false, 0, 0, 0, 1),
+            live_height(&ta, 40, 24, false, false, 0, 0, 0, 0) + 1,
             "the footer adds its row at the very bottom"
         );
     }
@@ -6256,7 +6391,7 @@ mod tests {
     #[test]
     fn render_live_paints_the_footer_on_the_last_row() {
         let app = with_session();
-        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 0, 1);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);
@@ -6273,13 +6408,104 @@ mod tests {
         let mut app = with_session();
         app.begin_stream();
         app.push_chunk("hello");
-        let h = live_height(&app.input, 60, 24, true, true, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, true, true, 0, 0, 0, 1);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         assert!(
             row(&buf, h - 1, 60).contains("dummy_model_name"),
             "the footer is ambient — present mid-turn too"
         );
+    }
+
+    // --- the transient toast (docs/toast.md) ---
+
+    #[test]
+    fn toast_rows_is_zero_without_a_toast_and_one_with_it() {
+        let mut app = App::new();
+        assert_eq!(toast_rows(&app), 0);
+        app.show_toast("Copied last message to clipboard", ToastKind::Info);
+        assert_eq!(toast_rows(&app), 1);
+    }
+
+    #[test]
+    fn live_height_reserves_exactly_one_row_for_the_toast() {
+        let mut app = App::new();
+        let without = live_height(&app.input, 60, 24, false, false, 0, 0, 0, 0);
+        app.show_toast("hi", ToastKind::Info);
+        let with = live_height(&app.input, 60, 24, false, false, 0, toast_rows(&app), 0, 0);
+        assert_eq!(with, without + 1, "the toast adds exactly one row");
+    }
+
+    #[test]
+    fn render_live_paints_the_toast_directly_above_the_box_when_idle() {
+        let mut app = App::new();
+        app.show_toast("Copied last message to clipboard", ToastKind::Info);
+        let h = live_height(&app.input, 60, 24, false, false, 0, toast_rows(&app), 0, 0);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        assert!(
+            row(&buf, 0, 60).contains("Copied last message to clipboard"),
+            "the toast is the region's first row: {:?}",
+            row(&buf, 0, 60)
+        );
+        assert!(row(&buf, 0, 60).starts_with("  "), "two-column inset");
+        assert_eq!(
+            buf[(0, 1)].symbol(),
+            "─",
+            "the box's top rule sits directly below the toast"
+        );
+    }
+
+    #[test]
+    fn render_live_paints_the_toast_below_the_status_while_streaming() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("hi");
+        app.set_status_times(Duration::from_secs(1), None);
+        app.show_toast(
+            "/resume is disabled while a task is in progress",
+            ToastKind::Info,
+        );
+        let h = live_height(&app.input, 60, 24, true, true, 0, toast_rows(&app), 0, 0);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        // The toast sits on the strip's last row — directly above the box's top
+        // rule, below the status line.
+        let top_rule = (0..h)
+            .find(|&y| row(&buf, y, 60).chars().all(|c| c == '─'))
+            .expect("the box has a top rule");
+        assert!(top_rule >= 1);
+        assert!(
+            row(&buf, top_rule - 1, 60).contains("/resume is disabled"),
+            "the toast is the row just above the box: {:?}",
+            row(&buf, top_rule - 1, 60)
+        );
+        let all: String = (0..h).map(|y| row(&buf, y, 60)).collect();
+        assert!(all.contains("Working…"), "the status still shows above it");
+    }
+
+    #[test]
+    fn toast_line_colors_info_dim_and_error_red() {
+        let mut app = App::new();
+        app.show_toast("ok", ToastKind::Info);
+        assert_eq!(toast_line(&app, 40).spans[1].style.fg, Some(TOAST_COLOR));
+        app.show_toast("bad", ToastKind::Error);
+        assert_eq!(
+            toast_line(&app, 40).spans[1].style.fg,
+            Some(TOAST_ERROR_COLOR)
+        );
+    }
+
+    #[test]
+    fn toast_line_truncates_with_an_ellipsis_when_narrow() {
+        let mut app = App::new();
+        app.show_toast(
+            "a very long toast message that overflows the width",
+            ToastKind::Info,
+        );
+        let text = plain(&toast_line(&app, 12));
+        assert!(text.ends_with('…'), "truncated: {text:?}");
+        assert!(cols(&text) <= 12, "fits the width: {text:?}");
     }
 
     #[test]
@@ -6293,6 +6519,7 @@ mod tests {
             24,
             false,
             false,
+            0,
             0,
             band,
             footer_rows(&app, band),
@@ -6316,10 +6543,10 @@ mod tests {
         // must not move the cursor.
         let mut app = App::new();
         app.input = TextArea::from_text("hi");
-        let bare_h = live_height(&app.input, 40, 24, false, false, 0, 0, 0);
+        let bare_h = live_height(&app.input, 40, 24, false, false, 0, 0, 0, 0);
         let bare = cursor_position(Rect::new(0, 0, 40, bare_h), &app);
         app.set_session_info("dummy_model_name", "~/inline-tui");
-        let footer_h = live_height(&app.input, 40, 24, false, false, 0, 0, 1);
+        let footer_h = live_height(&app.input, 40, 24, false, false, 0, 0, 0, 1);
         let with_footer = cursor_position(Rect::new(0, 0, 40, footer_h), &app);
         assert_eq!(with_footer, bare, "cursor unchanged by the footer row");
     }
@@ -6448,6 +6675,7 @@ mod tests {
                             app.is_streaming(),
                             strip_has_preview(app),
                             queued_rows(app, w),
+                            0,
                             band,
                             footer_rows(app, band),
                         );
@@ -6510,7 +6738,7 @@ mod tests {
     fn the_search_line_displaces_the_session_footer() {
         let mut app = searching(&["git status"], "git");
         app.set_session_info("dummy_model_name", "~/inline-tui");
-        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 0, 1);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);
@@ -6575,7 +6803,7 @@ mod tests {
     #[test]
     fn the_cursor_sits_at_the_end_of_the_query_in_the_search_line() {
         let app = searching(&["git status"], "git");
-        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 0, 1);
         let area = Rect::new(0, 0, 60, h);
         let (x, y) = cursor_position(area, &app);
         assert_eq!(y, h - 1, "on the footer row, not in the textarea");
@@ -6586,7 +6814,7 @@ mod tests {
     #[test]
     fn the_search_cursor_clamps_inside_a_narrow_terminal() {
         let app = searching(&["git status"], "a very very long query indeed");
-        let h = live_height(&app.input, 20, 24, false, false, 0, 0, 1);
+        let h = live_height(&app.input, 20, 24, false, false, 0, 0, 0, 1);
         let area = Rect::new(0, 0, 20, h);
         let (x, _) = cursor_position(area, &app);
         assert!(x < 20, "clamped inside the width (codex clamps the same)");
@@ -6596,7 +6824,7 @@ mod tests {
     fn the_previewed_match_highlights_the_query_reversed() {
         let app = searching(&["git status"], "stat");
         assert_eq!(app.input.text(), "git status", "the match previews");
-        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 0, 1);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         // The input row is "❯ git status" on the row inside the box frame:
@@ -6653,7 +6881,7 @@ mod tests {
     fn the_shell_mode_line_displaces_the_session_footer() {
         let mut app = shelling("ls -la");
         app.set_session_info("dummy_model_name", "~/inline-tui");
-        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 0, 1);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);
@@ -6677,7 +6905,7 @@ mod tests {
     fn shell_mode_swaps_the_composer_prompt_for_a_red_bang() {
         // The absorbed `!` renders back as the prompt: `! pwd`, not `❯ pwd`.
         let app = shelling("pwd");
-        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 0, 1);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         assert_eq!(row(&buf, 1, 60).trim_end(), "! pwd");
@@ -6693,7 +6921,7 @@ mod tests {
         // Unlike the Ctrl+R search (which owns the footer cursor), shell mode
         // keeps the cursor on the composer's command line.
         let app = shelling("ls");
-        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 0, 1);
         let area = Rect::new(0, 0, 60, h);
         let (_, y) = cursor_position(area, &app);
         assert!(y < h - 1, "cursor is in the box, not on the footer row");
@@ -6955,7 +7183,17 @@ mod tests {
         let mut app = App::new();
         app.begin_shell("sleep 5");
         let q = queued_rows(&app, 60);
-        let h = live_height(&app.input, 60, 24, true, true, q, 0, footer_rows(&app, 0));
+        let h = live_height(
+            &app.input,
+            60,
+            24,
+            true,
+            true,
+            q,
+            0,
+            0,
+            footer_rows(&app, 0),
+        );
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         assert_eq!(
@@ -7060,7 +7298,7 @@ mod tests {
     fn render_live_draws_the_file_picker_below_the_box() {
         let app = file_picker("ma", vec![fmatch("src/main.rs")], 0);
         let band = file_menu_rows(&app);
-        let h = live_height(&app.input, 40, 24, false, false, 0, band, 0);
+        let h = live_height(&app.input, 40, 24, false, false, 0, 0, band, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -7218,7 +7456,7 @@ mod tests {
         app.set_session_info("model", "~/repo");
         app.backtrack.primed = true;
         let footer = footer_rows(&app, 0);
-        let h = live_height(&app.input, 60, 24, false, false, 0, 0, footer);
+        let h = live_height(&app.input, 60, 24, false, false, 0, 0, 0, footer);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);

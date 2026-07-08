@@ -6,9 +6,18 @@ Date: 2026-06-20
 
 A `/copy` slash command that copies the **last assistant response** to the
 system clipboard — a port of openai/codex's `/copy` ("copy last response as
-markdown"). Success commits a neutral system notice (`Copied last message to
-clipboard`); having nothing to copy, or a clipboard write that fails, commits a
-red error notice.
+markdown"). The outcome surfaces as a **transient toast** above the box (an info
+`Copied last message to clipboard`; an error `No agent response to copy` /
+`Copy failed: {e}`), which self-clears after a few seconds instead of committing
+a scrollback bullet. See `docs/toast.md`.
+
+> **Update (2026-07-08):** `/copy`'s confirmation moved from a committed
+> `Role::System` / `Role::Error` message to a transient toast (`present_toast`
+> in `main.rs`, `App::show_toast`). The clipboard I/O below is unchanged; only
+> the surface differs. `commit_system_notice` / the `COPY_OK_NOTICE` /
+> `COPY_EMPTY_NOTICE` strings still exist (the strings feed the toast now; the
+> commit helper still serves idle `/help`). The rest of this doc describes the
+> original committed-notice design for context.
 
 ## What codex does (ported from `/tmp/codex/codex-rs/tui`)
 

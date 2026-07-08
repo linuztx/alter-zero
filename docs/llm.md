@@ -175,8 +175,14 @@ the bottom rule — the shape of the user's mock):
 ────────────────────────────────────────────────
 ```
 
-- Opened by `/model` from an idle composer (`Action::OpenModelPicker`; rejected
-  mid-turn with a red notice, like `/resume`).
+- Opened by `/model` (`Action::OpenModelPicker`). **Works mid-turn** (updated
+  2026-07-08; it used to be rejected like `/resume`): the picker only replaces
+  the composer, never the running turn — which streams on its own thread — and a
+  switch rebinds only the *next* turn's backend, so there's nothing to race. The
+  switch confirmation is a transient toast (`Switched model to {id}` /
+  `Can't switch to {id}: …`), not a committed message — a mid-turn switch must
+  not split the streaming reply. While the picker is open the status strip is
+  hidden (it owns the whole region), reappearing on close. See `docs/toast.md`.
 - **A configured provider is required.** If no provider has a resolvable key, the
   boundary skips the fetch and the list area shows a cyan
   `No API key yet — run /login to add one` (`ModelLoad::NeedsLogin`) instead of
@@ -260,10 +266,13 @@ in place; unlike it, it is a **two-step** flow.
 ────────────────────────────────────────────────
 ```
 
-- Opened by `/login` from an idle composer (`Action::OpenKeyOnboarding`; rejected
-  mid-turn with a red notice, like `/model`). The boundary builds the provider
-  rows so the ✓ reflects real env / `.env` key resolution (`provider_choices`) and
-  injects the `~`-relative `.env` path the provider-step hint names.
+- Opened by `/login` (`Action::OpenKeyOnboarding`). **Works mid-turn** like
+  `/model` (updated 2026-07-08): saving a key never touches the running turn. The
+  boundary builds the provider rows so the ✓ reflects real env / `.env` key
+  resolution (`provider_choices`) and injects the `~`-relative `.env` path the
+  provider-step hint names. The save confirmation is a transient toast
+  (`Saved {ENV} — run /model to use {provider}`), not a committed message. See
+  `docs/toast.md`.
 - **Provider step**: type-to-filter (id/name substring), `↑/↓`/PgUp/PgDn/Home/End
   move, `Enter` advances to key entry for the highlighted provider (its index is
   pinned so the filter can't reorder it out from under you), `Esc` clears the

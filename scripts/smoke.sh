@@ -1422,6 +1422,85 @@ stall_after="$(tmux capture-pane -t "$STALL_S" -p -S -30)"
 printf '%s\n' "$stall_after"
 tmux kill-session -t "$STALL_S" 2>/dev/null
 
+# --- Phase 33: transient TOASTS above the box (docs/toast.md). A one-line status
+# message that self-clears after a few seconds instead of committing a scrollback
+# bullet. /copy's confirmation is a toast — it APPEARS then VANISHES (a committed
+# message would persist). /help and /resume run mid-turn surface a toast rejection
+# rather than a bulletpoint; /model now OPENS its inline picker mid-turn (it only
+# swaps the composer, never the running turn). A 2s startup delay widens the
+# pre-stream pause so the turn is reliably active when the mid-turn keys land. ---
+S33="${S}_toast"
+tmux new-session -d -s "$S33" -x 80 -y 24 "env $CFG_ENV INLINE_TUI_STARTUP_DELAY_MS=2000 $BIN"
+sleep 0.4
+# Get a finished reply into history so /copy has something to confirm.
+tmux send-keys -t "$S33" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S33" Enter
+toast_prev=""
+for _ in $(seq 1 90); do # up to ~18s: reply committed AND the screen settled
+	toast_cur="$(tmux capture-pane -t "$S33" -p)"
+	if printf '%s' "$toast_cur" | grep -qF "changes size" && [ "$toast_cur" = "$toast_prev" ]; then
+		break
+	fi
+	toast_prev="$toast_cur"
+	sleep 0.2
+done
+# /copy → the confirmation toast appears above the box.
+tmux send-keys -t "$S33" -l "/copy"
+sleep 0.3
+tmux send-keys -t "$S33" Enter
+toast_shown=""
+for _ in $(seq 1 20); do # up to ~2s
+	toast_shown="$(tmux capture-pane -t "$S33" -p)"
+	if printf '%s' "$toast_shown" | grep -qF "Copied last message to clipboard"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 33: pane with the /copy toast shown ===="
+printf '%s\n' "$toast_shown"
+# Wait past the ~4s TTL: the toast self-clears (a committed bullet would remain).
+sleep 5
+toast_cleared="$(tmux capture-pane -t "$S33" -p)"
+echo "==== Phase 33: pane ~5s later (the toast has cleared) ===="
+printf '%s\n' "$toast_cleared"
+# Mid-turn: start a turn, then during its 2s pre-stream pause run /help — its
+# command list would interleave with the reply, so it's rejected with a toast.
+tmux send-keys -t "$S33" -l "second question"
+sleep 0.2
+tmux send-keys -t "$S33" Enter
+sleep 0.3 # inside the 2s pause: the turn is active
+tmux send-keys -t "$S33" -l "/help"
+sleep 0.3
+tmux send-keys -t "$S33" Enter
+toast_help=""
+for _ in $(seq 1 15); do # up to ~1.5s (still inside the pause)
+	toast_help="$(tmux capture-pane -t "$S33" -p)"
+	if printf '%s' "$toast_help" | grep -qF "/help is disabled while a task is in progress"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 33: pane with the mid-turn /help toast ===="
+printf '%s\n' "$toast_help"
+# Still mid-turn (same active turn): /model OPENS its inline picker rather than
+# being blocked. No provider key is configured in the smoke env, so the picker
+# opens on its needs-login hint — proof it opened rather than being rejected.
+tmux send-keys -t "$S33" -l "/model"
+sleep 0.3
+tmux send-keys -t "$S33" Enter
+toast_model=""
+for _ in $(seq 1 15); do # up to ~1.5s
+	toast_model="$(tmux capture-pane -t "$S33" -p)"
+	if printf '%s' "$toast_model" | grep -qF "run /login to add one"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 33: pane with /model opened mid-turn ===="
+printf '%s\n' "$toast_model"
+tmux kill-session -t "$S33" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -2215,7 +2294,27 @@ if ! printf '%s' "$stall_after" | grep -qF "Conversation interrupted"; then
 	status=1
 fi
 
+# Phase 33: the /copy confirmation shows as a transient toast that self-clears.
+if ! printf '%s' "$toast_shown" | grep -qF "Copied last message to clipboard"; then
+	echo "FAIL: Phase 33 /copy did not show the 'Copied last message to clipboard' toast" >&2
+	status=1
+fi
+if printf '%s' "$toast_cleared" | grep -qF "Copied last message to clipboard"; then
+	echo "FAIL: Phase 33 the toast did NOT self-clear after its TTL (a transient toast must vanish, not persist like a scrollback bullet)" >&2
+	status=1
+fi
+# Phase 33: /help run mid-turn is rejected with a toast, not committed.
+if ! printf '%s' "$toast_help" | grep -qF "/help is disabled while a task is in progress"; then
+	echo "FAIL: Phase 33 mid-turn /help did not show the disabled toast" >&2
+	status=1
+fi
+# Phase 33: /model OPENS its inline picker mid-turn (no rejection).
+if ! printf '%s' "$toast_model" | grep -qF "run /login to add one"; then
+	echo "FAIL: Phase 33 mid-turn /model did not open the inline picker (it should no longer be blocked while a task runs)" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary), and /resume picks up a saved session (every conversation records to a rollout JSONL file — session_meta line first, created lazily on the first user message — a later launch's /resume lists it in a full-screen picker with a humanized age and the first-user-message preview, Enter repaints the whole saved conversation inline and appends the turns that follow to the same file, /clear starts a fresh rollout so the next message lands in a new one, and the picker carries codex's Filter/Sort toolbar — 'Filter: [Cwd] All   Sort: [Updated] Created' on the search row, Tab + arrows toggling — with the selected row lit on a full-width background tint), and an Esc interrupt stays prompt even when the backend is slow to observe the cancel — a stalled backend (INLINE_TUI_STALL_MS, ignoring the cancel for 3s) still commits the 'Conversation interrupted' notice within a frame because the loop detaches the thread and swaps the reply channel instead of join()ing it (the interrupt-lag fix — no UI freeze)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary), and /resume picks up a saved session (every conversation records to a rollout JSONL file — session_meta line first, created lazily on the first user message — a later launch's /resume lists it in a full-screen picker with a humanized age and the first-user-message preview, Enter repaints the whole saved conversation inline and appends the turns that follow to the same file, /clear starts a fresh rollout so the next message lands in a new one, and the picker carries codex's Filter/Sort toolbar — 'Filter: [Cwd] All   Sort: [Updated] Created' on the search row, Tab + arrows toggling — with the selected row lit on a full-width background tint), and an Esc interrupt stays prompt even when the backend is slow to observe the cancel — a stalled backend (INLINE_TUI_STALL_MS, ignoring the cancel for 3s) still commits the 'Conversation interrupted' notice within a frame because the loop detaches the thread and swaps the reply channel instead of join()ing it (the interrupt-lag fix — no UI freeze), and slash-command confirmations and soft rejections surface as transient toasts above the box that self-clear after a few seconds instead of committing scrollback bullets (/copy confirms with a toast that then vanishes; /help and /resume run mid-turn are rejected with a toast; /model and /login now open their inline pickers mid-turn since they only swap the composer, never the running turn)"
 fi
 exit "$status"

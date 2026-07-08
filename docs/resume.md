@@ -167,11 +167,13 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   Tab-cycled focus ←/→ act on; any toggle reseats the selection (codex
   restarts its list the same way).
 - `COMMANDS` gains `resume` ("Resume a saved chat") →
-  `CommandEffect::Resume`. Running it while a turn is active returns the new
-  `Action::ErrorNotice(RESUME_BUSY_NOTICE)` (codex rejects mid-task); idle it
-  returns `Action::OpenResumePicker` — the *loop* scans the disk and calls
-  `App::open_resume_picker(sessions)` (sets the view, resets the backtrack
-  prime, like `toggle_tool_view`).
+  `CommandEffect::Resume`. Running it while a turn is active returns
+  `Action::Toast(RESUME_BUSY_NOTICE)` — a transient toast above the box (codex
+  rejects mid-task; it swaps the whole conversation, racing the stream), *not* a
+  committed message (updated 2026-07-08; was `Action::ErrorNotice`, see
+  `docs/toast.md`). Idle it returns `Action::OpenResumePicker` — the *loop* scans
+  the disk and calls `App::open_resume_picker(sessions)` (sets the view, resets
+  the backtrack prime, like `toggle_tool_view`).
 - `on_key_resume_picker`: ↑/↓ clamped moves; PageUp/PageDown by
   `RESUME_PAGE` (10 — the tool view's page); Home/End; **Tab/BackTab swap the
   toolbar focus and ←/→ toggle the focused control's value** (Filter
@@ -203,8 +205,11 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   from history exactly like a resize (invariant 3). Err: close the picker the
   same way, then `commit_error_notice("Failed to load session: …")` — the
   current conversation continues unharmed (codex).
-- `Action::ErrorNotice(text)` → `commit_error_notice` (a general red twin of
-  `Action::Notice`).
+- `Action::Toast(text)` → `present_toast` (a transient info toast; the
+  `Action::ErrorNotice` red-committed twin of `Action::Notice` it replaced was
+  removed on 2026-07-08 — see `docs/toast.md`). A failed session *load* still
+  commits a red `commit_error_notice` (it's a real error worth keeping, not an
+  ephemeral rejection).
 - The Quit arm's overlay unwind generalizes from `view == ToolOutput` to
   `view != Conversation`; the draw branch gains a
   `View::ResumePicker => term.draw_overlay(ui::render_resume_picker)` arm.
@@ -303,8 +308,9 @@ and the list height; no stored scroll offset).
   skipped) and `None` without one;
   `relative_age` buckets (`now`, `59s ago`, `1m`, `59m`, `1h`, `23h`, `1d`);
   `rollout_rel_path` zero-pads and swaps `:` for `-`.
-- `app`: the `/resume` palette entry runs to `OpenResumePicker` idle and
-  `ErrorNotice` mid-turn; `open_resume_picker` enters the view (and resets a
+- `app`: the `/resume` palette entry runs to `OpenResumePicker` idle and a
+  `Toast(RESUME_BUSY_NOTICE)` mid-turn (2026-07-08; was `ErrorNotice`);
+  `open_resume_picker` enters the view (and resets a
   primed backtrack) with codex's defaults (filter `Cwd`, sort `Updated`,
   focus `Filter`); picker keys — ↑/↓ clamp, PageUp/PageDown/Home/End,
   type-to-filter narrows and reseats the selection, Backspace pops, a paste

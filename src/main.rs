@@ -50,7 +50,7 @@ use tokio_stream::StreamExt;
 
 use inline_tui::app::{
     Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, INTERRUPT_NOTICE, ProviderChoice,
-    QueuedTurn, Role, View,
+    QueuedTurn, Role, ToastKind, View,
 };
 use inline_tui::clipboard;
 use inline_tui::file_search::{FileMatch, rank_files};
@@ -237,6 +237,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // (`None` when not in one). The pure `App` only ever sees the *computed*
     // durations, via `set_status_times`. See docs/status-indicator.md.
     let mut clocks = StatusClocks::default();
+    // When the transient toast above the box should self-clear (`None` when
+    // none is live). The impurity kept here, at the boundary — the timestamp
+    // pattern, like `clocks`: `App` holds only the toast text, the draw tick
+    // clears it when due and re-arms a frame while it lingers. See docs/toast.md.
+    let mut toast_deadline: Option<Instant> = None;
 
     // Init already queried the cursor over stdin; the EventStream is now the sole
     // stdin reader (see the module-level invariant note).
@@ -336,23 +341,27 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // `/copy`: do the clipboard I/O here at the boundary
                                 // (run_selected_command stayed pure). The pure core
                                 // already decided *what* to copy — Some(text) or, for
-                                // an empty conversation, None. See docs/copy.md.
+                                // an empty conversation, None. The result surfaces as
+                                // a transient toast, not a scrollback bullet. See
+                                // docs/copy.md / docs/toast.md.
                                 match maybe_text {
-                                    None => commit_error_notice(
-                                        term, &mut app, &mut render, COPY_EMPTY_NOTICE,
+                                    None => present_toast(
+                                        &mut app, &mut toast_deadline, &frame,
+                                        COPY_EMPTY_NOTICE, ToastKind::Error,
                                     ),
                                     Some(text) => match clipboard::copy_to_clipboard(&text) {
                                         Ok(lease) => {
                                             // Hold the native selection alive for the
                                             // app's lifetime (Linux); None over OSC 52.
                                             _clipboard_lease = lease;
-                                            commit_system_notice(
-                                                term, &mut app, &mut render, COPY_OK_NOTICE,
+                                            present_toast(
+                                                &mut app, &mut toast_deadline, &frame,
+                                                COPY_OK_NOTICE, ToastKind::Info,
                                             );
                                         }
-                                        Err(reason) => commit_error_notice(
-                                            term, &mut app, &mut render,
-                                            &format!("Copy failed: {reason}"),
+                                        Err(reason) => present_toast(
+                                            &mut app, &mut toast_deadline, &frame,
+                                            format!("Copy failed: {reason}"), ToastKind::Error,
                                         ),
                                     },
                                 }
@@ -491,10 +500,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     }
                                 }
                             }
-                            Action::ErrorNotice(text) => {
-                                // A slash command's one-off red notice (e.g.
-                                // /resume rejected mid-task) — Notice's error twin.
-                                commit_error_notice(term, &mut app, &mut render, &text);
+                            Action::Toast(text) => {
+                                // A slash command's transient info toast — a soft
+                                // rejection (/resume, /help run mid-turn) that
+                                // self-clears above the box instead of landing in
+                                // scrollback. See docs/toast.md.
+                                present_toast(
+                                    &mut app, &mut toast_deadline, &frame, text,
+                                    ToastKind::Info,
+                                );
                             }
                             Action::OpenModelPicker => {
                                 // /model from an idle composer (docs/llm.md): open
@@ -549,7 +563,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // chosen provider/model (docs/llm.md). The picker is
                                 // already closed (on_key did it); cancel any pending
                                 // fetch, then switch if the config is usable (has a
-                                // key), else keep the current backend under a notice.
+                                // key), else keep the current backend. The outcome is
+                                // a transient toast — a mid-turn switch must not split
+                                // the streaming reply in scrollback. See docs/toast.md.
                                 if let Some(c) = model_fetch_cancel.take() {
                                     c.cancel();
                                 }
@@ -570,22 +586,24 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         // Persist the choice so it's the default
                                         // next run (docs/llm.md).
                                         save_settings(settings_path.as_deref(), &provider, &id);
-                                        commit_system_notice(
-                                            term,
+                                        present_toast(
                                             &mut app,
-                                            &mut render,
-                                            &format!("Switched model to {id}"),
+                                            &mut toast_deadline,
+                                            &frame,
+                                            format!("Switched model to {id}"),
+                                            ToastKind::Info,
                                         );
                                     }
                                     _ => {
                                         let env = key_env_name(&providers, &provider);
-                                        commit_error_notice(
-                                            term,
+                                        present_toast(
                                             &mut app,
-                                            &mut render,
-                                            &format!(
+                                            &mut toast_deadline,
+                                            &frame,
+                                            format!(
                                                 "Can't switch to {id}: run /login to set {env}"
                                             ),
+                                            ToastKind::Error,
                                         );
                                     }
                                 }
@@ -626,25 +644,26 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 match std::fs::write(&env_file_path, &updated) {
                                     Ok(()) => {
                                         env_file = EnvFile::parse(&updated);
-                                        commit_system_notice(
-                                            term,
+                                        present_toast(
                                             &mut app,
-                                            &mut render,
-                                            &format!(
-                                                "Saved {env_var} to {} — run /model to use {provider}",
-                                                env_file_path.display()
+                                            &mut toast_deadline,
+                                            &frame,
+                                            format!(
+                                                "Saved {env_var} — run /model to use {provider}"
                                             ),
+                                            ToastKind::Info,
                                         );
                                     }
                                     Err(e) => {
-                                        commit_error_notice(
-                                            term,
+                                        present_toast(
                                             &mut app,
-                                            &mut render,
-                                            &format!(
+                                            &mut toast_deadline,
+                                            &frame,
+                                            format!(
                                                 "Couldn't write {}: {e}",
                                                 env_file_path.display()
                                             ),
+                                            ToastKind::Error,
                                         );
                                     }
                                 }
@@ -743,6 +762,20 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             //    stops by itself on the first draw after the turn ends.
             Some(()) = draw_rx.recv() => {
                 update_status_times(&mut app, &clocks);
+                // Expire the transient toast when its deadline passes (so this
+                // very frame paints without it); while it still lingers, keep a
+                // frame pending for the eventual clear — a coalesced keystroke
+                // frame can consume the one `present_toast` scheduled, so
+                // re-arming here guarantees the clear fires. See docs/toast.md.
+                if let Some(deadline) = toast_deadline {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        app.clear_toast();
+                        toast_deadline = None;
+                    } else {
+                        frame.schedule_frame_in(deadline - now);
+                    }
+                }
                 match app.view {
                     View::Conversation => {
                         // Compute the strip preview cheaply (O(one line)) once per
@@ -1629,6 +1662,27 @@ fn schedule_for_key(frame: &FrameRequester, burst: &mut PasteBurst, key: &KeyEve
 /// sweep and keeps the timer advancing through event-less pauses.
 const STATUS_FRAME_INTERVAL: Duration = Duration::from_millis(32);
 
+/// How long a transient toast stays above the box before it self-clears. See
+/// docs/toast.md.
+const TOAST_TTL: Duration = Duration::from_secs(4);
+
+/// Raise a transient [`App`] toast and arm its expiry: set the text, stamp the
+/// deadline `TOAST_TTL` out, and ask the frame scheduler for a draw then — so
+/// it shows now (the caller schedules that frame) and self-clears later even
+/// with no turn active. The draw tick clears it when due and re-arms while it
+/// lingers. See docs/toast.md.
+fn present_toast(
+    app: &mut App,
+    toast_deadline: &mut Option<Instant>,
+    frame: &FrameRequester,
+    text: impl Into<String>,
+    kind: ToastKind,
+) {
+    app.show_toast(text, kind);
+    *toast_deadline = Some(Instant::now() + TOAST_TTL);
+    frame.schedule_frame_in(TOAST_TTL);
+}
+
 /// Write the live status's times onto `app` before a draw: how long the turn has
 /// run (whole seconds for display; sub-second for the shimmer phase) and the
 /// current thinking-phase duration (`Some` while thinking). Time is impure, so
@@ -1671,6 +1725,7 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
         app.is_streaming(),
         ui::strip_has_preview(app),
         ui::queued_rows(app, screen.width),
+        ui::toast_rows(app),
         band,
         ui::footer_rows(app, band),
     )
