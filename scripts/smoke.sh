@@ -43,6 +43,7 @@ cleanup() {
 	tmux kill-session -t "${S}_copy" 2>/dev/null
 	tmux kill-session -t "${S}_backtrack" 2>/dev/null
 	tmux kill-session -t "${S}_resume" 2>/dev/null
+	tmux kill-session -t "${S}_stall" 2>/dev/null
 	rm -f /tmp/inline-tui-shell-*.txt 2>/dev/null
 	rm -f /tmp/inline-tui-clipboard-*.png 2>/dev/null
 	[ -n "${RESUME_DIR:-}" ] && rm -rf "$RESUME_DIR" 2>/dev/null
@@ -1378,6 +1379,49 @@ sleep 0.3
 resume_files_after_clear="$(find "$RESUME_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
 tmux kill-session -t "$S31" 2>/dev/null
 
+# --- Phase 32: an Esc interrupt stays PROMPT even when the backend is slow to
+# observe the cancel (docs/interrupt.md — the interrupt-lag fix). INLINE_TUI_STALL_MS
+# selects a test backend that ignores the cancel for N ms, modelling a real
+# network backend wedged in a blocking read during the pre-first-token pause. The
+# old loop did `cancel + join`, which blocks the single-threaded loop until the
+# thread unwinds — freezing the whole UI for ~N ms; the fix detaches the thread
+# and swaps the reply channel, so the "Conversation interrupted" notice commits
+# within a frame. We submit, wait for the streaming status window, Esc, and TIME
+# how long the notice takes to appear: a join()ing loop lands near the stall, a
+# detaching loop lands in tens of ms. ---
+STALL_S="${S}_stall"
+STALL_MS=3000
+tmux new-session -d -s "$STALL_S" -x 80 -y 24 "env $CFG_ENV INLINE_TUI_STALL_MS=$STALL_MS $BIN"
+sleep 0.4
+tmux send-keys -t "$STALL_S" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$STALL_S" Enter
+# Wait for the pre-first-token status window (the stall backend sends nothing yet).
+stall_streaming=0
+for _ in $(seq 1 40); do # up to ~2s
+	if tmux capture-pane -t "$STALL_S" -p | grep -qF "esc to interrupt"; then
+		stall_streaming=1
+		break
+	fi
+	sleep 0.05
+done
+# Esc, then measure how long the interrupt notice takes to commit.
+stall_t0="$(date +%s.%N)"
+tmux send-keys -t "$STALL_S" Escape
+stall_gap=""
+for _ in $(seq 1 250); do # up to ~5s (well past the 3s stall)
+	if tmux capture-pane -t "$STALL_S" -p -S -30 | grep -qF "Conversation interrupted"; then
+		stall_gap="$(awk "BEGIN{printf \"%.3f\", $(date +%s.%N) - $stall_t0}")"
+		break
+	fi
+	sleep 0.02
+done
+echo "==== Phase 32: interrupt latency under a ${STALL_MS}ms stalled backend ===="
+echo "stall_streaming=$stall_streaming stall_gap=${stall_gap:-none}"
+stall_after="$(tmux capture-pane -t "$STALL_S" -p -S -30)"
+printf '%s\n' "$stall_after"
+tmux kill-session -t "$STALL_S" 2>/dev/null
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -2149,7 +2193,29 @@ if [ "$resume_files_after_clear" != "2" ]; then
 	status=1
 fi
 
+# Phase 32: an Esc interrupt is prompt even when the backend is slow to observe
+# the cancel — the loop detaches the thread instead of join()ing it, so the UI
+# never freezes (docs/interrupt.md, the interrupt-lag fix).
+if [ "$stall_streaming" -ne 1 ]; then
+	echo "FAIL: Phase 32 never reached the streaming status line under the stalled backend" >&2
+	status=1
+fi
+if [ -z "$stall_gap" ]; then
+	echo "FAIL: Phase 32 interrupt notice never committed under the stalled backend" >&2
+	status=1
+elif awk "BEGIN{exit !($stall_gap > 1.5)}"; then
+	# 1.5s is a generous ceiling — half the 3s stall. A join()ing loop lands near
+	# 3s; the detaching fix lands in tens of ms. Anything over 1.5s means the loop
+	# is blocking on the backend thread again (the interrupt-lag regression).
+	echo "FAIL: Phase 32 Esc took ${stall_gap}s to commit the interrupt notice (>1.5s) — the loop is blocking on the backend (join(), not detach)" >&2
+	status=1
+fi
+if ! printf '%s' "$stall_after" | grep -qF "Conversation interrupted"; then
+	echo "FAIL: Phase 32 did not commit the 'Conversation interrupted' notice under the stalled backend" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary), and /resume picks up a saved session (every conversation records to a rollout JSONL file — session_meta line first, created lazily on the first user message — a later launch's /resume lists it in a full-screen picker with a humanized age and the first-user-message preview, Enter repaints the whole saved conversation inline and appends the turns that follow to the same file, /clear starts a fresh rollout so the next message lands in a new one, and the picker carries codex's Filter/Sort toolbar — 'Filter: [Cwd] All   Sort: [Updated] Created' on the search row, Tab + arrows toggling — with the selected row lit on a full-width background tint)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… while it runs, no summary — a non-zero exit reports its status, Esc interrupts a long one, multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary), and /resume picks up a saved session (every conversation records to a rollout JSONL file — session_meta line first, created lazily on the first user message — a later launch's /resume lists it in a full-screen picker with a humanized age and the first-user-message preview, Enter repaints the whole saved conversation inline and appends the turns that follow to the same file, /clear starts a fresh rollout so the next message lands in a new one, and the picker carries codex's Filter/Sort toolbar — 'Filter: [Cwd] All   Sort: [Updated] Created' on the search row, Tab + arrows toggling — with the selected row lit on a full-width background tint), and an Esc interrupt stays prompt even when the backend is slow to observe the cancel — a stalled backend (INLINE_TUI_STALL_MS, ignoring the cancel for 3s) still commits the 'Conversation interrupted' notice within a frame because the loop detaches the thread and swaps the reply channel instead of join()ing it (the interrupt-lag fix — no UI freeze)"
 fi
 exit "$status"

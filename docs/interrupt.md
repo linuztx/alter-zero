@@ -79,28 +79,63 @@ matches stream order regardless.
 
 ### The event loop (`main.rs`, `Action::Interrupt` arm)
 
-1. `cancel.cancel()` + `join` the backend thread (it polls the token every
-   ≤20 ms, so this is prompt) — same teardown the quit path uses.
-2. **Drain the reply channel** of anything the backend sent before it saw the
-   cancel. A stale `ToolStart` processed after the interrupt would wedge a
-   phantom "running" tool whose `ToolEnd` never comes; the thread is joined,
-   so after the drain the channel stays empty.
-3. `app.interrupt_turn()`, then commit like `StreamDone` does: reseat the
+1. **`abandon_inflight`** — `cancel.cancel()`, then **detach** the backend
+   thread (never `join()` it on the loop) and **swap in a fresh reply
+   channel**. This is the whole fix for the *interrupt-lag* freeze (below):
+   the old code `join`ed the thread here, which blocks the single-threaded
+   loop until the thread unwinds — fine for the dummy (it polls the token
+   every ≤20 ms) but not for a real network backend parked in a blocking read
+   (see *The interrupt-lag freeze*). Detaching keeps the loop responsive; the
+   channel swap is both the "thread stopped sending" guarantee **and** the
+   drain — any stale event the dying thread still emits (a final chunk, or a
+   `ToolStart` that would otherwise wedge a phantom "running" tool) goes to
+   its old sender, whose receiver we just dropped, so it can never reach the
+   next turn (which spawns on the new sender). The detached handle is parked
+   in `reaping` and swept when finished (`is_finished()`, non-blocking).
+2. `app.interrupt_turn()`, then commit like `StreamDone` does: reseat the
    viewport to its idle height first (the streaming strip is gone —
    invariant 3), then `insert_before` the partial (via `final_commit`, which
    respects the already-committed lines), the cancelled tool (collapsed,
    red), and the red notice, each with a blank spacer.
-4. Reset `committed` / `turn_start` / `thinking_start`.
+3. Reset `committed` / `turn_start` / `thinking_start`, then flush the front
+   queued batch (`flush_next_queued`) onto the **new** channel.
 
 `Action::Interrupt` can only originate in the conversation view (overlay Esc
 returns instead), so the commits never touch the alternate screen.
 
-**`/clear` mid-turn reuses steps 1–2** (cancel + reap + drain — the same
-"nothing stale can arrive afterwards" guarantee) but skips the commits
-entirely: `App::clear_conversation` wipes history, the streaming buffer, the
-running tool, the status, *and the queued backlog*, recording no partial, no
-notice, and no summary — the user asked for a blank slate, not a finished
-turn. See `docs/design.md` (the `/clear` paragraph) and `smoke.sh` Phase 16.
+**`/clear` mid-turn reuses step 1** (cancel + detach + swap — the same
+"nothing stale can arrive afterwards" guarantee, now without the freeze) but
+skips the commits entirely: `App::clear_conversation` wipes history, the
+streaming buffer, the running tool, the status, *and the queued backlog*,
+recording no partial, no notice, and no summary — the user asked for a blank
+slate, not a finished turn. See `docs/design.md` (the `/clear` paragraph) and
+`smoke.sh` Phase 16. **Quit mid-turn** likewise cancels without joining, so
+the terminal restore isn't delayed by a wedged backend thread — the process
+exits right after and the OS reaps it.
+
+### The interrupt-lag freeze (why we detach instead of join)
+
+The reply backend streams on a plain OS thread and stops **cooperatively** —
+it polls the `CancelToken` between chunks. The dummy checks it every ≤20 ms,
+so `cancel + join` returns almost instantly. A **real** backend
+(`llm::LlmBackend`) is different: during the pre-first-token pause the thread
+is parked in a *blocking* network op — `reqwest`'s `send()` (waiting for the
+response headers, which never polls the token) or the first SSE `read()`
+(the SSE loop polls the token only *between* reads). Both wake only after the
+per-operation timeout (`STREAM_OP_TIMEOUT`, 3 s; `src/llm/openai.rs`,
+`src/llm/mod.rs::http_client`). So after Esc the thread cannot observe the
+cancel until its in-flight read returns — the network responding (~1–2 s) or
+the 3 s cap.
+
+The old arm called `handle.join()` on that thread on the **single-threaded**
+(`current_thread`) tokio loop, so the entire event loop — draw ticks, the
+status animation, keystrokes — blocked for that whole window: the reported
+"press Esc → the spinner freezes for 1–2 s, then unfreezes" bug. Reproduced
+deterministically offline by `stream::StallAi` (a backend that ignores the
+cancel for `INLINE_TUI_STALL_MS` ms, modelling the wedged read): with the old
+`join`, the `Conversation interrupted` notice lands ~`STALL_MS` after Esc;
+with `abandon_inflight` it lands within a frame. `smoke.sh` Phase 32 asserts
+the prompt path.
 
 ### The status-line hint (`ui::status_line`)
 
@@ -122,7 +157,16 @@ segment (lowercase, matching this codebase's hint convention —
   no-op when idle.
 - `ui`: `status_line` ends with the dim `esc to interrupt` hint in every
   phase.
+- `stream`: `StallAi` (the test double for a wedged backend) ignores the
+  cancel for its stall — a caller that `join()`s it pays the full stall — and
+  streams a normal reply when left to run.
 - `main.rs` (smoke, Phase 8): mid-stream Esc leaves the partial text and the
   `Conversation interrupted` notice on screen, clears the status line (no
   `tokens`), commits no `Done for`, and the app still completes a following
   turn normally.
+- `main.rs` (smoke, Phase 32 — the interrupt-lag regression guard): with a
+  backend stalled 3 s (`INLINE_TUI_STALL_MS`, ignoring the cancel), Esc still
+  commits the `Conversation interrupted` notice **within a frame** (asserted
+  `< 1.5 s`, well under the stall) — proving the loop detaches the thread
+  rather than `join()`ing it. Measured live: ~3.0 s (old, frozen) → ~0.015 s
+  (fixed), and the real OpenRouter backend interrupts in ~0.015 s too.

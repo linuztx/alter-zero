@@ -178,10 +178,12 @@ unit-tested must be unit-tested.
   **`/clear` mid-turn is a kill.** `App::clear_conversation` wipes the whole
   conversation state — `history`, the streaming buffer, a running tool, the
   live status, *and the queued backlog* — recording nothing (no partial, no
-  interrupt notice, no summary), and the loop's `Clear` arm cancels + reaps the
-  in-flight backend and drains its channel (the Esc-interrupt dance minus the
-  commits) before the blank repaint, so a stale chunk or `ToolStart` can't
-  repopulate the cleared state and stream into the fresh screen. Codex instead
+  interrupt notice, no summary), and the loop's `Clear` arm cancels + detaches
+  the in-flight backend and swaps in a fresh reply channel (`abandon_inflight` —
+  the Esc-interrupt dance minus the commits; never `join()`ing on the loop, the
+  interrupt-lag fix in `docs/interrupt.md`) before the blank repaint, so a stale
+  chunk or `ToolStart` can't repopulate the cleared state and stream into the
+  fresh screen. Codex instead
   *disables* `/new`/`/clear` while a task runs (`available_during_task` → the
   red `'/clear' is disabled while a task is in progress.` notice; Tab can queue
   one for the turn's end — `QueuedInputAction::ParseSlash`); killing is a
@@ -273,9 +275,11 @@ unit-tested must be unit-tested.
   the loaded keys live in an in-memory map, never the process env. Rejected
   mid-turn like `/model`.
 - **Esc interrupts a streaming turn** (ported from openai/codex — see
-  `docs/interrupt.md`): a single Esc while a turn is in flight cancels + reaps
-  the backend, keeps the partial reply, resolves a still-running tool as failed
-  (`Interrupted by user`), and commits a red
+  `docs/interrupt.md`): a single Esc while a turn is in flight cancels + detaches
+  the backend (never `join()`ing it on the loop — a backend parked in a blocking
+  network read would otherwise freeze the UI for up to one op-timeout, the
+  interrupt-lag fix), keeps the partial reply, resolves a still-running tool as
+  failed (`Interrupted by user`), and commits a red
   `Conversation interrupted - tell the model what to do differently.` notice —
   with **no** `Done for Ns` summary (the notice is the turn's terminal state).
   The palette still wins: Esc with the palette open only dismisses it, even
@@ -480,7 +484,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   from `App::take_submission_images` (`docs/image-paste.md`) — a thread that
   sends `Chunk(..)*` with `ToolStart`/`ToolEnd` pairs interleaved, then
   `StreamDone` (or `Error(msg)`). The loop keeps the thread's `JoinHandle` and
-  `CancelToken` so quitting mid-stream cancels and reaps it cleanly.
+  `CancelToken` so quitting mid-stream cancels it (and detaches the thread — it
+  finishes on its own; the loop never `join()`s a backend, so a wedged network
+  read can't delay the terminal restore — the interrupt-lag fix in
+  `docs/interrupt.md`).
 - On `Chunk`: append to the streaming buffer; commit any newly-stable lines to
   scrollback; redraw (preview row shows the partial last line).
 - On `ToolStart{name,args}`: `flush_streaming_segment` finalises the run of text
@@ -516,14 +523,18 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   a `Role::System` notice to scrollback.
 - On `Clear` (`/clear`): `App::clear_conversation` already wiped the app state
   (history, streaming buffer, running tool, status, queued backlog). Mid-turn
-  the loop also kills the backend — cancel + `join` + drain the reply channel,
-  the `Interrupt` dance minus the commits — then resets the boundary clocks and
-  `repaint_conversation` reflows the now-blank inline view (clears the visible
-  conversation; nothing may stream in afterwards — `smoke.sh` Phase 16).
-- On `Interrupt` (Esc while a turn is in flight — `docs/interrupt.md`): cancel +
-  `join` the backend thread, **drain** the reply channel (events sent before the
-  cancel was observed would otherwise arrive after the turn ended — a stale
-  `ToolStart` would wedge a phantom running tool), then `App::interrupt_turn`
+  the loop also kills the backend — `abandon_inflight` cancels + detaches it and
+  swaps in a fresh reply channel, the `Interrupt` dance minus the commits — then
+  resets the boundary clocks and `repaint_conversation` reflows the now-blank
+  inline view (clears the visible conversation; nothing may stream in afterwards
+  — `smoke.sh` Phase 16).
+- On `Interrupt` (Esc while a turn is in flight — `docs/interrupt.md`):
+  `abandon_inflight` cancels the backend, **detaches** its thread (never
+  `join()`ing on the loop — a backend parked in a blocking network read would
+  freeze the UI for up to one op-timeout: the interrupt-lag bug), and **swaps in
+  a fresh reply channel** (so any event the dying thread still sends lands on the
+  dropped receiver and can't reach the next turn — this is both the old join's
+  "thread stopped" guarantee and the old drain, in one). Then `App::interrupt_turn`
   and commit like `StreamDone` does: reseat the viewport to its idle height,
   flush the kept partial, the cancelled tool (collapsed, red), and the red
   `Conversation interrupted` notice. No `Done for Ns` summary.

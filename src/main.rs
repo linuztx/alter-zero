@@ -93,7 +93,9 @@ async fn main() -> io::Result<()> {
 async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // Backend → loop (the streamed reply). A tokio channel so the loop can
     // `select!` on it; the backend thread sends without touching the runtime.
-    let (tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
+    // `mut` because an interrupt / `/clear` swaps in a fresh channel to isolate
+    // a detached backend thread from the next turn (see `abandon_inflight`).
+    let (mut tx, mut reply_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
     // The frame requester + its scheduler task, and the scheduler's draw-tick
     // channel (scheduler → loop).
     let (frame, frame_rx) = frame::channel();
@@ -148,15 +150,28 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| saved.model.clone());
-    let mut backend: Box<dyn ReplySource> = build_backend(
-        &providers,
-        &env_file,
-        active_provider.as_deref(),
-        env_model.as_deref(),
-        temperature,
-        system_prompt.clone(),
-        startup_delay,
-    );
+    // `INLINE_TUI_STALL_MS` selects a test-only backend that ignores the cancel
+    // for N ms — modelling a real network backend wedged in a blocking read
+    // during the pre-first-token pause — so `scripts/smoke.sh` can prove an Esc
+    // interrupt stays responsive even then. Never used in normal operation (it
+    // preempts the real/dummy backend only when the env var is set). See
+    // `docs/interrupt.md`.
+    let stall_ms = std::env::var("INLINE_TUI_STALL_MS")
+        .ok()
+        .and_then(|ms| ms.parse::<u64>().ok());
+    let mut backend: Box<dyn ReplySource> = if let Some(ms) = stall_ms {
+        Box::new(stream::StallAi::new(Duration::from_millis(ms)))
+    } else {
+        build_backend(
+            &providers,
+            &env_file,
+            active_provider.as_deref(),
+            env_model.as_deref(),
+            temperature,
+            system_prompt.clone(),
+            startup_delay,
+        )
+    };
     let mut active_model = backend.model_name();
     // Session context for the footer under the box — the backend's model name
     // and the cwd — formatted here at the boundary (the set_clock pattern: the
@@ -196,8 +211,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let (model_tx, mut model_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
     let mut model_fetch_cancel: Option<CancelToken> = None;
     // The in-flight reply's cancel token + thread handle, so a quit mid-stream
-    // can stop and reap it cleanly. `None` whenever no reply is streaming.
+    // can stop it cleanly. `None` whenever no reply is streaming.
     let mut inflight: Option<(CancelToken, JoinHandle<()>)> = None;
+    // Backend threads whose turn was interrupted or `/clear`ed: signalled to
+    // cancel and *detached* to finish on their own. We never `join()` them on
+    // the event loop — a backend parked in a blocking network read can take up
+    // to one op-timeout to observe the cancel, and joining there froze the UI
+    // for that long (the interrupt-lag bug). Finished ones are swept off each
+    // loop iteration with the non-blocking `is_finished()`. See docs/interrupt.md.
+    let mut reaping: Vec<JoinHandle<()>> = Vec::new();
     // Keeps the last `/copy`'s native clipboard selection alive (Linux/arboard
     // serves it from a thread tied to the Clipboard's lifetime); replaced on each
     // copy, dropped at exit. Held only for its Drop — never read — hence the `_`
@@ -340,16 +362,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // streaming buffer, running tool, status, queued
                                 // backlog). Mid-turn it is also a kill — the user
                                 // asked for a fresh slate, not a finished turn — so
-                                // stop + reap the backend and drain the channel
-                                // (the Esc-interrupt dance, minus the commits:
-                                // a stale chunk or ToolStart processed after the
-                                // wipe would repopulate the cleared state and
-                                // stream into the blank screen).
-                                if let Some((cancel, handle)) = inflight.take() {
-                                    cancel.cancel();
-                                    let _ = handle.join();
-                                }
-                                while reply_rx.try_recv().is_ok() {}
+                                // stop the backend and isolate it from the blank
+                                // screen. `abandon_inflight` cancels + detaches it
+                                // and hands back a fresh channel (never join() on
+                                // the loop — the interrupt-lag freeze): any stale
+                                // chunk or ToolStart the dying thread still emits
+                                // lands on the dropped receiver, so it can't
+                                // repopulate the cleared state. See docs/interrupt.md.
+                                let (new_tx, new_rx) =
+                                    abandon_inflight(inflight.take(), &mut reaping);
+                                tx = new_tx;
+                                reply_rx = new_rx;
                                 clocks.turn_start = None;
                                 clocks.thinking_start = None;
                                 render.reset();
@@ -361,16 +384,23 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             }
                             Action::Interrupt => {
                                 // Esc mid-generation (codex-style): stop the backend
-                                // promptly and reap it, then drop anything it sent
-                                // before observing the cancel — a stale ToolStart
-                                // processed after the interrupt would wedge a phantom
-                                // "running" tool whose ToolEnd never comes. The thread
-                                // is joined, so after the drain the channel stays empty.
-                                if let Some((cancel, handle)) = inflight.take() {
-                                    cancel.cancel();
-                                    let _ = handle.join();
-                                }
-                                while reply_rx.try_recv().is_ok() {}
+                                // but NEVER join it on the loop. A real backend can
+                                // be parked in a blocking network read (the
+                                // pre-first-token pause) for up to one op-timeout
+                                // before it observes the cancel; join()ing there
+                                // froze the whole UI — spinner, timer, composer —
+                                // for that long (the interrupt-lag bug). Instead
+                                // `abandon_inflight` cancels + detaches the thread
+                                // and swaps in a fresh reply channel, so any stale
+                                // event it still emits (a final chunk, or a
+                                // ToolStart that would otherwise wedge a phantom
+                                // running tool) lands on the dropped receiver and
+                                // can't reach the next turn — replacing the old
+                                // cancel+join+drain. See docs/interrupt.md.
+                                let (new_tx, new_rx) =
+                                    abandon_inflight(inflight.take(), &mut reaping);
+                                tx = new_tx;
+                                reply_rx = new_rx;
                                 if let Some(interrupted) = app.interrupt_turn() {
                                     // Interrupt only arises in the conversation view
                                     // (overlay Esc returns instead), so committing here
@@ -779,14 +809,21 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         // nothing when unchanged — so streaming chunks (which never touch
         // history) cost no I/O.
         recorder.sync(&app.history);
+        // Reap detached backend threads (interrupt / `/clear` abandonments) that
+        // have finished. `is_finished()` never blocks, so this can't stall the
+        // loop; a thread still parked in its final network read is left until it
+        // exits on its own. See `abandon_inflight` / docs/interrupt.md.
+        reaping.retain(|handle| !handle.is_finished());
     }
 
     // The quit arms break before the loop-bottom sync — catch the last change.
     recorder.sync(&app.history);
-    // Stop any in-flight reply promptly and reap its thread on the way out.
-    if let Some((cancel, handle)) = inflight.take() {
+    // Stop any in-flight reply on the way out, but don't `join()` it: a backend
+    // parked in a blocking network read could delay the terminal restore by up
+    // to one op-timeout (the interrupt-lag freeze, on the quit path). The
+    // process exits right after `term.restore()`, reaping any detached thread.
+    if let Some((cancel, _handle)) = inflight.take() {
         cancel.cancel();
-        let _ = handle.join();
     }
     // Cancel a dangling /model fetch (its detached worker exits on the cancel).
     if let Some(cancel) = model_fetch_cancel.take() {
@@ -1013,6 +1050,37 @@ fn spawn_model_fetch(
 struct StatusClocks {
     turn_start: Option<Instant>,
     thinking_start: Option<Instant>,
+}
+
+/// Stop tracking the in-flight turn **without blocking the event loop**, and
+/// return a fresh reply channel to replace the old one.
+///
+/// The backend observes cancellation *cooperatively*, but a real network
+/// backend can be parked in a blocking read (waiting for the response headers
+/// or the first SSE byte) for up to one op-timeout before it notices — so
+/// `join`ing the thread here would freeze the whole UI (spinner, timer,
+/// composer) for that long: the interrupt-lag bug. Instead we **detach** the
+/// thread (it exits on its own once its read returns and it re-checks the
+/// token) and mint a **fresh** channel. Any last event the dying thread emits
+/// goes to its old sender, whose receiver the caller is about to drop, so it
+/// can never leak into the next turn (which spawns on the new sender). This
+/// replaces the old `cancel + join + drain` teardown wholesale — the channel
+/// swap is both the "thread stopped sending" guarantee *and* the drain. The
+/// detached handle is parked in `reaping`, swept when finished (invariant: a
+/// cancelled `LlmBackend` / `DummyAi` / `StallAi` / shell runner streams
+/// nothing further and returns within one op-timeout). See `docs/interrupt.md`.
+fn abandon_inflight(
+    inflight: Option<(CancelToken, JoinHandle<()>)>,
+    reaping: &mut Vec<JoinHandle<()>>,
+) -> (
+    tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+) {
+    if let Some((cancel, handle)) = inflight {
+        cancel.cancel();
+        reaping.push(handle);
+    }
+    tokio::sync::mpsc::unbounded_channel()
 }
 
 /// One turn's user input handed to [`start_turn`]: the text message(s) — a

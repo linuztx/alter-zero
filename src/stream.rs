@@ -356,6 +356,61 @@ impl ReplySource for DummyAi {
     }
 }
 
+/// A test-only backend that models a real network backend **parked in a
+/// blocking read it cannot interrupt**: its thread sleeps for `stall` *without*
+/// polling the [`CancelToken`], then — only once the stall elapses — observes
+/// the cancel (streaming nothing) or, if it was never cancelled, streams a
+/// one-word reply and finishes.
+///
+/// This is the failure mode the real [`crate::llm::LlmBackend`] hits during the
+/// pre-first-token pause (blocked in `req.send()` / the first SSE `read`, which
+/// only wake after one op-timeout — see `src/llm/openai.rs`), reproduced
+/// deterministically and offline. The event loop must therefore **never
+/// `join()`** a cancelled backend on its thread: doing so freezes the UI for
+/// the whole stall (the interrupt-lag bug). Selected via `INLINE_TUI_STALL_MS`
+/// and used only by `scripts/smoke.sh` — never in normal operation. See
+/// `docs/interrupt.md`.
+#[derive(Debug, Clone, Copy)]
+pub struct StallAi {
+    stall: Duration,
+}
+
+impl StallAi {
+    /// A stall backend that ignores the cancel for `stall` before it stops.
+    #[must_use]
+    pub fn new(stall: Duration) -> Self {
+        Self { stall }
+    }
+}
+
+impl ReplySource for StallAi {
+    fn spawn(
+        &self,
+        prompt: String,
+        _images: Vec<PathBuf>,
+        tx: UnboundedSender<StreamEvent>,
+        cancel: CancelToken,
+    ) -> JoinHandle<()> {
+        let stall = self.stall;
+        thread::spawn(move || {
+            // Block for `stall` in ONE shot, deliberately *not* polling cancel —
+            // this is the whole point of the double: a thread wedged in a
+            // blocking syscall. A well-behaved loop cancels + detaches us and
+            // stays responsive; a loop that join()s us here pays the full stall.
+            thread::sleep(stall);
+            if cancel.is_cancelled() {
+                return; // cancelled while we were blocked — stop silently
+            }
+            let _ = tx.send(StreamEvent::Chunk(format!("Echo: {prompt}")));
+            let _ = tx.send(StreamEvent::StreamDone);
+        })
+    }
+
+    fn model_name(&self) -> String {
+        "stall_model".to_string()
+    }
+}
+
 /// Sleep up to `dur`, in short slices, returning early the moment `cancel` is
 /// tripped — so a quit during a long tool "run" is still reaped promptly.
 fn nap(dur: Duration, cancel: &CancelToken) {
@@ -435,6 +490,46 @@ mod tests {
     #[test]
     fn dummy_response_is_deterministic() {
         assert_eq!(dummy_response("hello"), dummy_response("hello"));
+    }
+
+    #[test]
+    fn stall_ai_ignores_cancel_until_its_stall_elapses() {
+        // The stall double models a backend wedged in a blocking read: a cancel
+        // does NOT stop it early, so a caller that join()s it pays the whole
+        // stall (the interrupt-lag freeze the loop must avoid — it detaches
+        // instead; see docs/interrupt.md). A short stall keeps the test fast.
+        let stall = Duration::from_millis(200);
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let start = std::time::Instant::now();
+        let handle = StallAi::new(stall).spawn("hi".to_string(), vec![], tx, cancel.clone());
+        cancel.cancel(); // interrupt immediately — the stall ignores it
+        handle.join().unwrap();
+        assert!(
+            start.elapsed() >= stall,
+            "joining a cancelled stall backend blocks for the full stall"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a stall cancelled mid-block streams nothing"
+        );
+    }
+
+    #[test]
+    fn stall_ai_streams_a_reply_when_not_cancelled() {
+        // Left to run, the stall backend completes a normal turn, so the smoke
+        // harness can also exercise an uninterrupted stalled turn.
+        let (tx, mut rx) = unbounded_channel();
+        let handle = StallAi::new(Duration::from_millis(10)).spawn(
+            "ping".to_string(),
+            vec![],
+            tx,
+            CancelToken::new(),
+        );
+        let first = rx.blocking_recv().expect("a chunk arrives");
+        assert!(matches!(first, StreamEvent::Chunk(_)));
+        assert_eq!(rx.blocking_recv(), Some(StreamEvent::StreamDone));
+        handle.join().unwrap();
     }
 
     #[test]
