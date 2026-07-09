@@ -33,19 +33,30 @@ pub enum Block {
     },
 }
 
-/// Split assistant `text` into prose and fenced-code [`Block`]s.
+/// Split assistant `text` into prose, fenced-code, and **indented-code**
+/// [`Block`]s.
 ///
 /// A line opens/closes a fence when — after ≤3 leading spaces — it begins with
 /// 3+ `` ` `` or `~`. The closing fence must match the opening char, be at least
 /// as long, and carry no info string. An unterminated fence at end-of-text still
 /// yields a trailing [`Block::Code`] (see the module docs on prefix-stability).
+///
+/// A run of lines each indented ≥4 spaces (or a leading tab) is a CommonMark
+/// **indented code block** (`lang: None`), but only when it does *not* interrupt
+/// a paragraph — it must be preceded by a blank line or start-of-text
+/// (`prev_blank`). Blank lines inside the run stay part of it; the first
+/// non-blank, non-indented line ends it. This mirrors codex's
+/// `CodeBlockKind::Indented` (which strips the 4-space marker then re-adds a
+/// 4-space prefix — net: the source indentation, which we keep verbatim).
 #[must_use]
 pub fn parse_blocks(text: &str) -> Vec<Block> {
     let mut blocks = Vec::new();
     let mut prose: Vec<&str> = Vec::new();
     let mut code: Vec<String> = Vec::new();
     let mut lang: Option<String> = None;
-    let mut open: Option<(char, usize)> = None; // (fence char, fence length)
+    let mut open: Option<(char, usize)> = None; // fenced: (fence char, fence length)
+    let mut in_indented = false; // inside an indented (4-space) code block
+    let mut prev_blank = true; // start-of-text is a blank boundary
 
     let flush_prose = |prose: &mut Vec<&str>, blocks: &mut Vec<Block>| {
         if !prose.is_empty() {
@@ -55,36 +66,62 @@ pub fn parse_blocks(text: &str) -> Vec<Block> {
     };
 
     for line in text.split('\n') {
-        match open {
-            None => {
-                if let Some((ch, len, info)) = fence_marker(line) {
-                    flush_prose(&mut prose, &mut blocks);
-                    open = Some((ch, len));
-                    lang = fence_lang(info);
-                } else {
-                    prose.push(line);
-                }
+        // Inside a fenced block: everything is code until the matching close.
+        if let Some((ch, len)) = open {
+            if is_closing_fence(line, ch, len) {
+                blocks.push(Block::Code {
+                    lang: lang.take(),
+                    lines: std::mem::take(&mut code),
+                });
+                open = None;
+            } else {
+                code.push(line.to_string());
             }
-            Some((ch, len)) => {
-                // A closing fence matches the opening char, is at least as long,
-                // and carries no info string; otherwise it's a code line.
-                if is_closing_fence(line, ch, len) {
-                    blocks.push(Block::Code {
-                        lang: lang.take(),
-                        lines: std::mem::take(&mut code),
-                    });
-                    open = None;
-                } else {
-                    code.push(line.to_string());
-                }
+            prev_blank = false;
+            continue;
+        }
+        let blank = line.trim().is_empty();
+        // Inside an indented block: blank + still-indented lines stay code; the
+        // first non-blank, non-indented line ends it (and is reclassified below).
+        if in_indented {
+            if blank || is_indented_code_line(line) {
+                code.push(line.to_string());
+                prev_blank = blank;
+                continue;
             }
+            blocks.push(Block::Code {
+                lang: None,
+                lines: std::mem::take(&mut code),
+            });
+            in_indented = false;
+        }
+        if let Some((ch, len, info)) = fence_marker(line) {
+            flush_prose(&mut prose, &mut blocks);
+            open = Some((ch, len));
+            lang = fence_lang(info);
+            prev_blank = false;
+        } else if !blank && prev_blank && is_indented_code_line(line) {
+            // An indented code block starts only after a blank/at start-of-text
+            // (it cannot interrupt a paragraph).
+            flush_prose(&mut prose, &mut blocks);
+            in_indented = true;
+            code.push(line.to_string());
+            prev_blank = false;
+        } else {
+            prose.push(line);
+            prev_blank = blank;
         }
     }
-    // End of text: flush whatever is open. An unterminated fence still renders as
-    // a code block (prefix-stable — see the module docs).
+    // End of text: flush whatever is open. An unterminated fence — or a trailing
+    // indented block — still renders as code (prefix-stable, see the module docs).
     if open.is_some() {
         blocks.push(Block::Code {
             lang: lang.take(),
+            lines: code,
+        });
+    } else if in_indented {
+        blocks.push(Block::Code {
+            lang: None,
             lines: code,
         });
     } else {
@@ -102,7 +139,9 @@ pub enum LineKind {
     /// only to prime syntax highlighting). The renderer emits no row — the fence
     /// line and its language label are hidden.
     CodeStart(Option<String>),
-    /// A verbatim code line inside the open fence.
+    /// A verbatim code line — inside an open fence, or inside an **indented**
+    /// (4-space) code block (the renderer highlights fenced code by language and
+    /// indented code as plain text).
     Code,
     /// A closing fence — rendered as nothing (the fence is hidden).
     CodeEnd,
@@ -119,10 +158,28 @@ pub enum LineKind {
 ///
 /// `Clone` lets the streaming renderer peek the classification of an in-progress
 /// line without advancing the fence state it will resume from.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct BlockScanner {
     /// The open fence's `(marker char, run length)`, or `None` outside a block.
     open: Option<(char, usize)>,
+    /// Whether the scanner is inside an **indented** (4-space) code block.
+    in_indented: bool,
+    /// Whether the previous line was blank (or this is start-of-text) — the gate
+    /// that lets an indented line *start* a code block without interrupting a
+    /// paragraph. Mirrors [`parse_blocks`].
+    prev_blank: bool,
+}
+
+impl Default for BlockScanner {
+    fn default() -> Self {
+        // `prev_blank` starts true: before the first line the scanner sits at a
+        // block boundary, so a leading indented line opens an indented code block.
+        Self {
+            open: None,
+            in_indented: false,
+            prev_blank: true,
+        }
+    }
 }
 
 impl BlockScanner {
@@ -131,25 +188,43 @@ impl BlockScanner {
         Self::default()
     }
 
-    /// Classify the next source `line`, advancing the fence state.
+    /// Classify the next source `line`, advancing the fence/indent state. The
+    /// verdict for a line depends only on the lines before it (a left-to-right
+    /// scan), so it never changes once made — the property scrollback commits
+    /// rely on. Agrees with [`parse_blocks`] line for line.
     pub fn classify(&mut self, line: &str) -> LineKind {
-        match self.open {
-            None => {
-                if let Some((ch, len, info)) = fence_marker(line) {
-                    self.open = Some((ch, len));
-                    LineKind::CodeStart(fence_lang(info))
-                } else {
-                    LineKind::Prose
-                }
+        // Inside a fenced block: code until the matching close.
+        if let Some((ch, len)) = self.open {
+            self.prev_blank = false;
+            return if is_closing_fence(line, ch, len) {
+                self.open = None;
+                LineKind::CodeEnd
+            } else {
+                LineKind::Code
+            };
+        }
+        let blank = line.trim().is_empty();
+        // Inside an indented block: blank + still-indented lines stay code.
+        if self.in_indented {
+            if blank || is_indented_code_line(line) {
+                self.prev_blank = blank;
+                return LineKind::Code;
             }
-            Some((ch, len)) => {
-                if is_closing_fence(line, ch, len) {
-                    self.open = None;
-                    LineKind::CodeEnd
-                } else {
-                    LineKind::Code
-                }
-            }
+            self.in_indented = false; // ended — reclassify this line below
+        }
+        if let Some((ch, len, info)) = fence_marker(line) {
+            self.open = Some((ch, len));
+            self.prev_blank = false;
+            LineKind::CodeStart(fence_lang(info))
+        } else if !blank && self.prev_blank && is_indented_code_line(line) {
+            // Start an indented code block (its first line is code content, so
+            // there is no separate `CodeStart` — the renderer highlights it plain).
+            self.in_indented = true;
+            self.prev_blank = false;
+            LineKind::Code
+        } else {
+            self.prev_blank = blank;
+            LineKind::Prose
         }
     }
 }
@@ -192,6 +267,79 @@ pub fn ends_inside_code(text: &str) -> bool {
         }
     }
     open.is_some()
+}
+
+/// Whether `line` is deep enough to be a CommonMark **indented code** line — it
+/// begins with 4 spaces or a leading tab (a tab counts as ≥4 columns). Whether it
+/// actually *is* code also depends on context (not interrupting a paragraph); the
+/// caller ([`parse_blocks`] / [`BlockScanner`]) applies that `prev_blank` gate.
+fn is_indented_code_line(line: &str) -> bool {
+    line.starts_with("    ") || line.starts_with('\t')
+}
+
+/// If `line` is a CommonMark **thematic break** (horizontal rule) — after ≤3
+/// leading spaces, a run of ≥3 of the *same* marker among `-`, `*`, `_`,
+/// optionally separated by spaces/tabs, and nothing else — return the marker
+/// char. The marker matters to the caller: a `-` rule is ambiguous with a setext
+/// `H2` underline, so the renderer only honours it after a blank line, whereas
+/// `*`/`_` are unambiguous. Codex renders any of these as a `———` em-dash rule
+/// (`markdown_render.rs`'s `Event::Rule`).
+#[must_use]
+pub fn thematic_break(line: &str) -> Option<char> {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return None; // 4+ spaces of indent is indented code, not a rule
+    }
+    for marker in ['-', '*', '_'] {
+        let mut count = 0usize;
+        let mut only_marker_or_space = true;
+        for c in trimmed.chars() {
+            if c == marker {
+                count += 1;
+            } else if c != ' ' && c != '\t' {
+                only_marker_or_space = false;
+                break;
+            }
+        }
+        if only_marker_or_space && count >= 3 {
+            return Some(marker);
+        }
+    }
+    None
+}
+
+/// Whether `line` is a *partial* thematic-break run — after ≤3 leading spaces,
+/// only marker chars of a single family (`-`/`*`/`_`) and spaces/tabs, with
+/// **1–2** markers so far, so appending another marker could flip it to a `———`
+/// rule. The streaming renderer withholds such a trailing line whole — exactly
+/// like [`is_partial_fence`] — so a narrow-width wrap can't commit a prose row
+/// the completed rule then rewrites (the differential test covers width 3 up).
+/// Deliberately conservative: it also covers list-marker starts like `- ` (which
+/// settle to prose the instant a non-marker char arrives), whose brief withholding
+/// is harmless — [`crate::ui::StreamRender::finish`] flushes them.
+#[must_use]
+pub fn is_partial_thematic_break(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return false; // 4+ spaces of indent is indented code, never a rule
+    }
+    for marker in ['-', '*', '_'] {
+        let mut count = 0usize;
+        let mut only_marker_or_space = true;
+        for c in trimmed.chars() {
+            if c == marker {
+                count += 1;
+            } else if c != ' ' && c != '\t' {
+                only_marker_or_space = false;
+                break;
+            }
+        }
+        // 1–2 markers and nothing else → a third marker would open a rule.
+        if only_marker_or_space && (1..3).contains(&count) {
+            return true;
+        }
+    }
+    false
 }
 
 /// If `line` is a fence delimiter — after ≤3 leading spaces, 3+ of `` ` `` or
@@ -309,6 +457,14 @@ mod tests {
             "~~~\n```\nnested\n~~~\ntail",
             "intro\n```py\nunterminated",
             "   ```\nindented fence\n   ```",
+            // Indented (4-space) code blocks — the scanner and parse_blocks must
+            // agree on their membership too (start-after-blank, blank-line
+            // continuation, paragraph-interruption gate, trailing block).
+            "intro\n\n    indented\n    code\nback",
+            "    leading code\ndone",
+            "para\n    lazy continuation not code",
+            "    a\n\n    b\nx",
+            "\ttab code after start\nprose",
         ] {
             // parse_blocks: flatten to (is_code, line) per source line.
             let expected: Vec<bool> = parse_blocks(text)
@@ -399,6 +555,106 @@ mod tests {
     fn empty_prose_runs_are_omitted() {
         // Text that is exactly a code block yields only the Code block.
         assert_eq!(parse_blocks("```\na\n```"), vec![code(None, &["a"])]);
+    }
+
+    #[test]
+    fn a_four_space_indent_after_a_blank_is_an_indented_code_block() {
+        // Preceded by a blank line, a ≥4-space run is a code block (lang None),
+        // kept verbatim; the first non-indented line ends it.
+        let text = "intro\n\n    let x = 1;\n    let y = 2;\nback to prose";
+        assert_eq!(
+            parse_blocks(text),
+            vec![
+                Block::Prose("intro\n".into()),
+                code(None, &["    let x = 1;", "    let y = 2;"]),
+                Block::Prose("back to prose".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_leading_indented_line_is_code_at_start_of_text() {
+        // Start-of-text counts as a blank boundary, so a leading indented run
+        // opens an indented code block.
+        assert_eq!(
+            parse_blocks("    code here\ntail"),
+            vec![code(None, &["    code here"]), Block::Prose("tail".into()),]
+        );
+    }
+
+    #[test]
+    fn an_indented_line_continuing_a_paragraph_is_not_code() {
+        // No blank before the indented line → a lazy paragraph continuation, so
+        // it stays prose (an indented code block cannot interrupt a paragraph).
+        let text = "a paragraph\n    still the paragraph";
+        assert_eq!(
+            parse_blocks(text),
+            vec![Block::Prose("a paragraph\n    still the paragraph".into())]
+        );
+    }
+
+    #[test]
+    fn a_tab_indent_after_a_blank_is_an_indented_code_block() {
+        assert_eq!(
+            parse_blocks("x\n\n\ttab_code()"),
+            vec![Block::Prose("x\n".into()), code(None, &["\ttab_code()"]),]
+        );
+    }
+
+    #[test]
+    fn blank_lines_inside_an_indented_block_stay_code() {
+        let text = "    a\n\n    b\nx";
+        assert_eq!(
+            parse_blocks(text),
+            vec![
+                code(None, &["    a", "", "    b"]),
+                Block::Prose("x".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn thematic_break_detects_rules_and_rejects_non_rules() {
+        assert_eq!(thematic_break("---"), Some('-'));
+        assert_eq!(thematic_break("***"), Some('*'));
+        assert_eq!(thematic_break("___"), Some('_'));
+        assert_eq!(thematic_break("- - -"), Some('-'));
+        assert_eq!(thematic_break("  ***  "), Some('*'));
+        assert_eq!(thematic_break("-----"), Some('-'));
+        // Not rules:
+        assert_eq!(thematic_break("--"), None, "only two markers");
+        assert_eq!(thematic_break("- item"), None, "list item, not a rule");
+        assert_eq!(thematic_break("---x"), None, "trailing non-marker");
+        assert_eq!(thematic_break("    ---"), None, "4-space indent is code");
+        assert_eq!(thematic_break("| a | b |"), None, "table row");
+        assert_eq!(thematic_break(""), None);
+        assert_eq!(
+            thematic_break("=="),
+            None,
+            "'=' is not a thematic-break marker"
+        );
+    }
+
+    #[test]
+    fn is_partial_thematic_break_detects_unsettled_rule_runs() {
+        // 1–2 markers (optionally with spaces) can still grow into a ≥3 rule.
+        assert!(is_partial_thematic_break("-"));
+        assert!(is_partial_thematic_break("--"));
+        assert!(is_partial_thematic_break("**"));
+        assert!(is_partial_thematic_break("__"));
+        assert!(is_partial_thematic_break("- "));
+        assert!(is_partial_thematic_break("- -"));
+        assert!(is_partial_thematic_break("  --"));
+        // 3+ markers is already a settled rule, not a partial.
+        assert!(!is_partial_thematic_break("---"));
+        assert!(!is_partial_thematic_break("***"));
+        // A non-marker char settles it as prose (e.g. a list item).
+        assert!(!is_partial_thematic_break("- x"));
+        assert!(!is_partial_thematic_break("-x"));
+        assert!(!is_partial_thematic_break("hello"));
+        assert!(!is_partial_thematic_break(""));
+        // 4+ spaces of indent is indented code, never a rule.
+        assert!(!is_partial_thematic_break("    --"));
     }
 
     #[test]

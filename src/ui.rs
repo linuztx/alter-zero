@@ -95,6 +95,25 @@ fn heading_style(level: u8) -> Style {
     Style::new().add_modifier(modifier)
 }
 
+/// A markdown thematic break (`---` / `***` / `___`) renders as this em-dash rule,
+/// a direct port of codex's `Event::Rule` (`Line::from("———")` — three U+2014 EM
+/// DASH, unstyled/default foreground). See `docs/markdown.md`.
+const THEMATIC_BREAK: &str = "———";
+
+/// Whether `line` should render as a [`THEMATIC_BREAK`]. A `-` rule is
+/// indistinguishable from a **setext `H2` underline** (which we can't render —
+/// it needs lookahead that would break streaming prefix-stability), so a `-` rule
+/// is only honoured when the previous line was blank (`prev_blank`); `*`/`_` runs
+/// are unambiguous and always render. Keeps a `text\n---` pair as literal prose
+/// rather than fabricating a rule where codex would show a heading.
+fn is_thematic_break(line: &str, prev_blank: bool) -> bool {
+    match markdown::thematic_break(line) {
+        Some('-') => prev_blank,
+        Some(_) => true,
+        None => false,
+    }
+}
+
 // Syntax-highlight palette (One Dark) — `highlight::Kind` → colour, mapped here
 // so all styling stays centralized in `ui.rs` (the tokenizer is colour-agnostic).
 /// Keywords — magenta.
@@ -1262,6 +1281,9 @@ struct AssistantRenderer {
     highlighter: Option<highlight::Highlighter>,
     /// Whether any row has been emitted yet (the first gets the bullet).
     emitted_any: bool,
+    /// Whether the previous source line was blank — the gate that lets a `-` rule
+    /// (`---`, ambiguous with a setext underline) render as an em-dash break.
+    prev_blank: bool,
 }
 
 impl AssistantRenderer {
@@ -1273,6 +1295,7 @@ impl AssistantRenderer {
             scanner: markdown::BlockScanner::new(),
             highlighter: None,
             emitted_any: false,
+            prev_blank: true, // start-of-message is a blank boundary
         }
     }
 
@@ -1291,6 +1314,12 @@ impl AssistantRenderer {
     /// closing fence render nothing (no gutter, and the language info-string is
     /// not shown).
     fn content_rows(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
+        // Track blank-line boundaries for the `-` thematic-break gate below. This
+        // mirrors the scanner's own `prev_blank` (used for indented code) but is
+        // kept here because the rule decision lives in this Prose branch, like
+        // headings.
+        let was_blank = self.prev_blank;
+        self.prev_blank = line.trim().is_empty();
         match self.scanner.classify(line) {
             markdown::LineKind::CodeStart(lang) => {
                 // The fence opens the block silently: it primes highlighting for
@@ -1336,6 +1365,11 @@ impl AssistantRenderer {
                         .into_iter()
                         .map(|l| vec![Span::styled(l, style)])
                         .collect()
+                } else if is_thematic_break(line, was_blank) {
+                    // Codex renders `---`/`***`/`___` as an unstyled `———` rule on
+                    // its own row (`Event::Rule`). It's a single settled row, so
+                    // it stays prefix-stable while streaming.
+                    vec![vec![Span::raw(THEMATIC_BREAK.to_string())]]
                 } else {
                     wrap_text(line, self.content_width)
                         .into_iter()
@@ -3488,11 +3522,17 @@ impl StreamRender {
         //    could recolour it once the lookahead char arrives; and
         //  - a **partial fence marker** (`` ` ``/`` `` ``): a third marker would
         //    flip it from prose to a one-row label, so its wrapped prose rows must
-        //    not reach scrollback.
+        //    not reach scrollback; and
+        //  - a **partial thematic-break run** (`-`/`*`/`_`, 1–2 markers): a third
+        //    marker would collapse its wrapped prose rows into a single `———` rule.
         // Otherwise it's settled prose — only its still-growing *last* row is held
         // back. `tail_rows` (an O(one line) render) is computed only in that case,
         // never in the withhold path where it would be discarded.
-        if self.renderer.in_code() || markdown::is_partial_fence(&text[self.consumed..]) {
+        let tail_src = &text[self.consumed..];
+        if self.renderer.in_code()
+            || markdown::is_partial_fence(tail_src)
+            || markdown::is_partial_thematic_break(tail_src)
+        {
             let stable = self.frozen.len();
             self.take_rows(&[], stable)
         } else {
@@ -4100,6 +4140,72 @@ mod tests {
         assert!(
             m(6).contains(Modifier::ITALIC) && !m(6).contains(Modifier::BOLD),
             "h6 italic"
+        );
+    }
+
+    #[test]
+    fn assistant_thematic_break_renders_an_em_dash_rule_like_codex() {
+        // `---`/`***`/`___` after a blank line render as codex's `———` (Event::Rule),
+        // with the raw markers gone.
+        for src in [
+            "intro\n\n---\nmore",
+            "intro\n\n***\nmore",
+            "intro\n\n___\nmore",
+        ] {
+            let joined: Vec<String> = message_lines(Role::Assistant, src, 80)
+                .iter()
+                .map(plain)
+                .collect();
+            assert!(
+                joined.iter().any(|l| l.contains(THEMATIC_BREAK)),
+                "em-dash rule rendered for {src:?}: {joined:?}"
+            );
+            assert!(
+                !joined
+                    .iter()
+                    .any(|l| l.contains("---") || l.contains("***") || l.contains("___")),
+                "raw markers gone for {src:?}: {joined:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dash_rule_without_a_preceding_blank_stays_literal() {
+        // `text\n---` is a setext H2 underline in codex, which we can't render;
+        // rather than fabricate a rule we leave `---` as literal prose.
+        let joined: Vec<String> = message_lines(Role::Assistant, "some text\n---", 80)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            joined.iter().any(|l| l.contains("---")),
+            "literal --- kept: {joined:?}"
+        );
+        assert!(
+            !joined.iter().any(|l| l.contains(THEMATIC_BREAK)),
+            "no fabricated rule: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn assistant_indented_code_renders_verbatim_like_codex() {
+        // A 4-space-indented run after a blank is an indented code block: its
+        // indentation is preserved (unlike prose, which collapses leading space).
+        let joined: Vec<String> = message_lines(
+            Role::Assistant,
+            "intro\n\n    x = 1\n        deep()\nback",
+            80,
+        )
+        .iter()
+        .map(plain)
+        .collect();
+        assert!(
+            joined.iter().any(|l| l.contains("    x = 1")),
+            "4-space indent kept: {joined:?}"
+        );
+        assert!(
+            joined.iter().any(|l| l.contains("        deep()")),
+            "8-space indent kept: {joined:?}"
         );
     }
 
@@ -5289,6 +5395,17 @@ mod tests {
             // Multi-byte UTF-8: emoji + CJK in prose and inside a string, so the
             // per-prefix char-boundary handling is exercised.
             "greeting 🎮 hello 世界 more text to wrap around\n```python\nprint(\"🎮 世界!\")\n```\ndone 🚀",
+            // Indented (4-space) code block: after a blank it renders verbatim
+            // plain; the committed rows must stay stable as it streams in.
+            "intro line\n\n    def f(x):\n        return x + 1\nback to prose",
+            // A long indented-code line that hard-breaks at narrow widths, plus a
+            // blank line inside the block (kept as code), then prose ends it.
+            "note\n\n    a_really_long_indented_code_line_that_wraps_several_times = 42\n\n    tail\ndone",
+            // Thematic breaks (`---` after a blank, and `***`) render as `———`.
+            "one\n\n---\n\ntwo",
+            "a\n\n***\nb",
+            // Indented code followed by a thematic break and more prose.
+            "lead\n\n    code_here()\n\n---\n\ntrailer",
         ];
 
         for full in corpus {

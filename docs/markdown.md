@@ -199,7 +199,31 @@ incremental scanners to their batch counterparts.
 
 ## Scope (and what is deliberately out)
 
-**In:** fenced code blocks (` ``` ` and `~~~`, verbatim) and ATX headings.
+**In:** fenced code blocks (` ``` ` and `~~~`, verbatim), **indented (4-space)
+code blocks**, ATX headings, and **thematic breaks** (`---` / `***` / `___`).
+
+**In — indented (4-space) code blocks.** A run of lines each indented ≥4 spaces
+(or a leading tab) is a CommonMark indented code block, rendered **verbatim**
+(plain, no language) like a fenced block. It only starts after a blank line or
+at start-of-text (`prev_blank` in `markdown::BlockScanner` / `parse_blocks`), so
+it never mis-classifies a lazy paragraph continuation as code — matching codex's
+`CodeBlockKind::Indented` (which strips the 4-space marker then re-adds a 4-space
+prefix; net = the source indentation, which we keep). Blank lines inside the run
+stay part of it. This is prefix-stable (a line's membership depends only on the
+lines before it) and plain (no highlighter → no within-line lookahead), so its
+completed lines stream to scrollback per row like prose.
+
+**In — thematic breaks.** A `---` / `***` / `___` line (CommonMark rule syntax —
+`markdown::thematic_break`) renders as codex's unstyled `———` em-dash rule
+(`Event::Rule`, `ui::THEMATIC_BREAK`). A `-` rule is ambiguous with a setext `H2`
+underline (which we can't render — it needs next-line lookahead that breaks
+streaming), so a `-` rule is honoured **only after a blank line**
+(`ui::is_thematic_break`'s `prev_blank` gate); `*`/`_` runs are unambiguous and
+always render. While streaming, a *partial* marker run (`--`, `**`) is withheld
+from scrollback until settled (`markdown::is_partial_thematic_break`, wired into
+`StreamRender::commit` beside `is_partial_fence`) — otherwise at content-width 1
+its wrapped prose rows could reach scrollback before the third marker collapses
+them into the one `———` row (the differential test covers width 3 up).
 
 **Out — inline `**bold**` / `*italic*` / `` `code` ``.** These are prose-level
 and would need *span-preserving* word-wrap (flatten a styled line to text + span
