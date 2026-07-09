@@ -23,25 +23,20 @@ pub struct ModelEntry {
     pub display_name: String,
 }
 
-/// The OpenAI `/models` envelope: `{ "data": [ { "id", "name"? } ] }`.
+/// The OpenAI `/models` envelope: `{ "data": [ { "id", "name"? } ] }`. Each
+/// record stays a raw [`serde_json::Value`] so one malformed aggregator entry
+/// (a missing/null/non-string id, a non-object row) is skipped per-record
+/// instead of failing the whole list into a Decode error.
 #[derive(Debug, Deserialize)]
 struct ModelsResponse {
     #[serde(default)]
-    data: Vec<ModelRecord>,
-}
-
-#[derive(Debug, Deserialize)]
-struct ModelRecord {
-    id: String,
-    /// OpenRouter and some aggregators include a human name; OpenAI itself does
-    /// not (we fall back to the id).
-    #[serde(default)]
-    name: Option<String>,
+    data: Vec<serde_json::Value>,
 }
 
 /// Parse a `/models` response body into rows tagged with `provider`, sorted by
-/// id (the picker lists alphabetically, matching the mock). Records without an
-/// id are skipped.
+/// id (the picker lists alphabetically, matching the mock). Records without a
+/// usable string id are skipped; `name` (OpenRouter and some aggregators send
+/// one, OpenAI does not) falls back to the id.
 ///
 /// # Errors
 /// Returns a decode error when the body isn't the expected envelope.
@@ -50,18 +45,22 @@ pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
         serde_json::from_str(body).map_err(|e| LlmError::Decode(e.to_string()))?;
     let mut out: Vec<ModelEntry> = parsed
         .data
-        .into_iter()
-        .filter(|r| !r.id.is_empty())
-        .map(|r| {
-            let display_name = r
-                .name
-                .filter(|n| !n.trim().is_empty())
-                .unwrap_or_else(|| r.id.clone());
-            ModelEntry {
-                id: r.id,
-                provider: provider.to_string(),
-                display_name,
+        .iter()
+        .filter_map(|record| {
+            let id = record.get("id")?.as_str()?;
+            if id.is_empty() {
+                return None;
             }
+            let display_name = record
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or(id);
+            Some(ModelEntry {
+                id: id.to_string(),
+                provider: provider.to_string(),
+                display_name: display_name.to_string(),
+            })
         })
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
@@ -156,6 +155,24 @@ mod tests {
         let models = parse_models(body, "p").unwrap();
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].id, "keep");
+    }
+
+    #[test]
+    fn one_malformed_record_does_not_fail_the_list() {
+        // A single aggregator entry with a missing / null / non-string id (or
+        // a non-object row) must be skipped — not turn the provider's whole
+        // list into a Decode error and mark it unavailable in the picker.
+        let body = r#"{"data":[
+            {"name":"no id at all"},
+            {"id":null},
+            {"id":42},
+            "not even an object",
+            {"id":"keep","name":"Keeper"}
+        ]}"#;
+        let models = parse_models(body, "p").unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "keep");
+        assert_eq!(models[0].display_name, "Keeper");
     }
 
     #[test]

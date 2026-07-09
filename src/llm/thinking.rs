@@ -69,14 +69,18 @@ impl ThinkingSplitter {
         let (mut resp_out, reason_out) = if self.native {
             (response_delta.to_string(), reasoning_delta.to_string())
         } else {
-            self.process_thinking(response_delta, reasoning_delta)
+            self.process_thinking(response_delta)
         };
 
-        // Trim leading whitespace once, on the first response text we surface, so
-        // a model that opens with a blank line doesn't push the reply down.
+        // Trim leading whitespace on the first response text we surface, so a
+        // model that opens with a blank line doesn't push the reply down. An
+        // all-whitespace delta trims to nothing and must NOT burn the flag —
+        // the next delta still opens the reply.
         if self.first_chunk && !resp_out.is_empty() {
             resp_out = resp_out.trim_start().to_string();
-            self.first_chunk = false;
+            if !resp_out.is_empty() {
+                self.first_chunk = false;
+            }
         }
 
         if !resp_out.is_empty() {
@@ -88,14 +92,10 @@ impl ThinkingSplitter {
         (resp_out, reason_out)
     }
 
-    fn process_thinking(
-        &mut self,
-        response_delta: &str,
-        reasoning_delta: &str,
-    ) -> (String, String) {
+    fn process_thinking(&mut self, response_delta: &str) -> (String, String) {
         let mut response = std::mem::take(&mut self.pending);
         response.push_str(response_delta);
-        let mut reasoning = String::from(reasoning_delta);
+        let mut reasoning = String::new();
 
         if self.thinking {
             if let Some(idx) = response.find(self.closing_tag) {
@@ -111,6 +111,23 @@ impl ThinkingSplitter {
             }
             reasoning.push_str(&response);
             return (String::new(), reasoning);
+        }
+
+        // Opening tags are recognised only at the reply's START (`first_chunk`
+        // — nothing visible surfaced yet). Mid-reply detection was
+        // chunk-boundary-dependent: a chunk that *happened* to begin with
+        // "<think>" — say, the model writing about the tag — silently hid real
+        // reply text, while the same text split differently passed through.
+        // The models that use the inline convention open with the tag.
+        if !self.first_chunk {
+            return (response, reasoning);
+        }
+        // Whitespace may precede the tag ("\n<think>" is common) — strip it
+        // *before* matching, or the tag is never seen at the start and the
+        // whole chain-of-thought leaks into the visible reply. The surfaced
+        // text loses that whitespace to the first-chunk trim anyway.
+        if response.starts_with(char::is_whitespace) {
+            response = response.trim_start().to_string();
         }
 
         for (open, close) in PAIRS {
@@ -177,19 +194,13 @@ impl ThinkingSplitter {
         }
     }
 
-    /// Flush whatever is still buffered as its current kind, returning the final
-    /// accumulated split.
+    /// Flush whatever is still buffered as its current kind ([`flush`]),
+    /// returning the final accumulated split.
+    ///
+    /// [`flush`]: ThinkingSplitter::flush
     #[must_use]
     pub fn finish(mut self) -> ChatStreamResult {
-        if !self.pending.is_empty() {
-            if self.thinking {
-                let pending = std::mem::take(&mut self.pending);
-                self.reasoning.push_str(&pending);
-            } else {
-                let pending = std::mem::take(&mut self.pending);
-                self.response.push_str(&pending);
-            }
-        }
+        let _ = self.flush();
         ChatStreamResult {
             response: self.response,
             reasoning: self.reasoning,
@@ -333,5 +344,53 @@ mod tests {
         s.feed("b</think>c", "");
         assert_eq!(s.reasoning(), "ab");
         assert_eq!(s.response(), "c");
+    }
+
+    #[test]
+    fn leading_whitespace_before_the_open_tag_still_splits() {
+        // Models often open with "\n<think>" — the whitespace must not defeat
+        // tag detection, or the whole chain-of-thought leaks into the visible
+        // reply.
+        let mut s = ThinkingSplitter::new();
+        s.feed("\n<think>plan</think>hi", "");
+        let res = s.finish();
+        assert_eq!(res.reasoning, "plan");
+        assert_eq!(res.response, "hi");
+    }
+
+    #[test]
+    fn whitespace_then_partial_open_tag_across_chunks_still_splits() {
+        // The same, split across SSE frames: "\n<thi" + "nk>plan</think>ok".
+        let mut s = ThinkingSplitter::new();
+        let (r, _t) = s.feed("\n<thi", "");
+        assert!(r.is_empty(), "possible tag start is buffered, not surfaced");
+        let (r, t) = s.feed("nk>plan</think>ok", "");
+        assert_eq!(r, "ok");
+        assert_eq!(t, "plan");
+    }
+
+    #[test]
+    fn whitespace_only_first_delta_keeps_trimming_the_next() {
+        // An all-whitespace first delta must not burn the one leading trim —
+        // the *next* delta still opens the reply and gets trimmed.
+        let mut s = ThinkingSplitter::new();
+        let (r, _t) = s.feed("\n\n", "");
+        assert_eq!(r, "");
+        let (r, _t) = s.feed("  hi", "");
+        assert_eq!(r, "hi");
+        assert_eq!(s.response(), "hi");
+    }
+
+    #[test]
+    fn open_tags_after_visible_text_are_plain_content() {
+        // Tag detection is gated to the reply's start: once visible text has
+        // streamed, a chunk that happens to begin with "<think>" is content
+        // the model wrote, not a reasoning block — swallowing it (the old,
+        // chunk-boundary-dependent behaviour) silently hid real reply text.
+        let mut s = ThinkingSplitter::new();
+        s.feed("literal tags: ", "");
+        let (r, t) = s.feed("<think>is markup</think>", "");
+        assert_eq!(r, "<think>is markup</think>");
+        assert!(t.is_empty());
     }
 }
