@@ -84,6 +84,39 @@ shape in `main.rs` barely changes.
 - `paint_frame` queues `Show` instead of ratatui's `show_cursor` (which
   `execute!`s — an extra mid-frame flush), so a frame is one write.
 
+## Cursor visibility — the kitty cursor-trail refinement
+
+Date: 2026-07-09
+
+The synchronized update stops the terminal from *presenting* a torn or boxless
+intermediate frame, but it does **not** stop a terminal that animates cursor
+motion (kitty's `cursor_trail`) from streaking. That animation is driven by the
+cursor's *logical* position: a frame that homes the cursor to the top
+(`clear_scrollback_and_screen`'s `ESC[H` on a resize / `/clear`) or scrolls it
+(`write_above` on a scrollback commit) and only re-seats it on the prompt at the
+end still moved a **shown** cursor from the prompt → the top → back, so kitty
+draws a trail down from the top even though every byte rode one BSU/ESU frame.
+This is the "cursor animation starts on top, not from the text area" report.
+
+So the earlier "nothing needs to be hidden/shown around the writes" holds only
+for *tearing*, not for cursor-trail. The frame now also **hides the cursor for
+its whole body** and shows it only at the final prompt seat — codex's rule that
+the cursor is only ever *shown* where it comes to rest:
+
+- `draw` and `reflow` queue `Hide` immediately after `BeginSynchronizedUpdate`,
+  before any `flush_pending` / `write_above` scroll, `clear_scrollback_and_screen`
+  home, or cell blit. `paint_frame` queues the matching `Show` after positioning
+  the cursor, so it reappears only at the prompt, never mid-flight.
+- `enter_overlay` hides **before** the alt-screen switch (was after), and
+  `draw_overlay` re-asserts the hide, so the switch + full-screen paint can't
+  streak the cursor up into the overlay. The overlay never re-shows it; the
+  Ctrl+O return's `reflow` re-seats it on the prompt.
+- Hiding costs nothing on a plain terminal: the Hide + Show land in the same
+  synchronized update, so the cursor simply reappears at the prompt with no
+  visible flicker (the same hide-then-show-at-rest dance ratatui does per draw).
+  The mid-stream "cursor stays visible on the prompt row" behaviour is
+  unchanged — between frames it is shown, on the prompt, exactly as before.
+
 ### Why deferral is safe (ordering)
 
 - `set_view_height` mutates the *tracked* height immediately, so queued lines
@@ -129,6 +162,13 @@ asserts at the **byte level** instead, where the property is exact:
   block; the fix records **0 outside** (and fewer clears overall, since a
   frame batches its commits). The recording closes before the quit:
   `restore`'s teardown clear is legitimately unbracketed.
+- **Phase 34** records the raw output stream across a resize (`tmux pipe-pane`,
+  like Phase 15) and walks it: the reflow must emit a cursor Hide (`ESC[?25l`)
+  **before** it homes/clears the screen (`ESC[H` / `ESC[2J` / `ESC[3J`) and a
+  Show (`ESC[?25h`) after — the byte-level proof of the cursor-trail refinement.
+  Deterministic in both directions: the pre-fix build recorded **0 hides** in
+  the resize frame (`scripts/cursor_hide_check.sh` is the standalone Red→Green
+  probe), the fix records the Hide before the first home/clear.
 - All existing phases (streaming bottom-pin, resize, overlay round-trips,
   interrupt, queue flushes, `/clear`) exercise the deferred-flush ordering
   end to end — they prove the queued lines land, in order, with the box

@@ -31,6 +31,15 @@
 //!   growth and the box repaint land as a single atomic frame (no flushed state
 //!   ever lacks the box — the streaming flicker; see `docs/flicker.md`).
 //!
+//! The hardware cursor is **hidden for the whole body of every frame** and shown
+//! again only at its final prompt seat (each of [`draw`]/[`reflow`] queues a
+//! `Hide` right after opening its synchronized update; `paint_frame` queues the
+//! matching `Show` after positioning it). codex's rule — the cursor is only ever
+//! *shown* where it comes to rest, never left visible while the redraw scrolls or
+//! blits it around. That keeps a terminal cursor-trail animation (kitty) from
+//! streaking across the screen when a reflow homes the cursor to the top on a
+//! resize / `/clear`, or a scrollback commit yanks it up and back mid-stream.
+//!
 //! [`draw`]: InlineViewport::draw
 //! [`reflow`]: InlineViewport::reflow
 
@@ -39,7 +48,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
 use ratatui::buffer::{Buffer, Cell};
-use ratatui::crossterm::cursor::Show;
+use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
@@ -224,6 +233,17 @@ impl InlineViewport {
         // the markers. `EndSynchronizedUpdate` always runs (even if a write failed
         // mid-frame) so the terminal is never left buffering.
         queue!(self.backend, BeginSynchronizedUpdate)?;
+        // Hide the hardware cursor for the duration of the frame, before any
+        // scroll (`flush_pending`'s `write_above`) or cell blit moves it — the
+        // frame's closing `paint_frame` re-seats it on the prompt row and shows
+        // it again. codex's rule: the cursor is only ever *shown* at its final
+        // resting position, never left visible while the screen is repainted. On
+        // terminals with a cursor-trail animation (kitty) a still-shown cursor
+        // otherwise streaks across the screen as the redraw drags it around
+        // (worst on a scrollback commit, which yanks it up then back). Hiding is
+        // free on plain terminals — it lands in the same synchronized update, so
+        // the cursor simply reappears at the prompt with no visible flicker.
+        queue!(self.backend, Hide)?;
         let painted = self.paint_live(height, render, app);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         self.prev = Some(painted?);
@@ -283,8 +303,11 @@ impl InlineViewport {
         }
         let (x, y) = ui::cursor_position(self.view, app);
         self.backend.set_cursor_position(Position::new(x, y))?;
-        // Queue the Show (ratatui's `show_cursor` would `execute!` — an extra
-        // flush mid-synchronized-update); the frame goes out in one write.
+        // Re-show the cursor at its final prompt seat, undoing the frame-start
+        // Hide ([`draw`]/[`reflow`]) now that every scroll and blit that would
+        // have dragged it around is done — so it appears only here, never
+        // mid-flight. Queue the Show (ratatui's `show_cursor` would `execute!` —
+        // an extra flush mid-synchronized-update); the frame goes out in one write.
         queue!(self.backend, Show)?;
         Ok(())
     }
@@ -452,6 +475,14 @@ impl InlineViewport {
         let height = height.clamp(1, self.screen.height.max(1));
         self.pending.clear();
         queue!(self.backend, BeginSynchronizedUpdate)?;
+        // Hide the cursor before the rebuild (see [`draw`]): a reflow homes the
+        // cursor to the top (`clear_scrollback_and_screen`'s `ESC[H`, or
+        // `write_above`'s scroll) before `paint_frame` re-seats it on the prompt.
+        // Left shown, that top-then-prompt jog is exactly what makes kitty's
+        // cursor-trail streak down from the top on a resize / `/clear`. `Purge`
+        // even emits its clear as a bare `write!` outside the diff, so hiding
+        // here is the only thing that keeps the cursor out of that jog.
+        queue!(self.backend, Hide)?;
         let painted = self.paint_reflow(tail, height, clear, render, app);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         self.prev = Some(painted?);
@@ -523,8 +554,14 @@ impl InlineViewport {
         // the exit paths still emit a LeaveAlternateScreen (harmless when the
         // terminal never actually switched) rather than risk stranding it.
         OVERLAY_ACTIVE.store(true, Ordering::SeqCst);
-        execute!(self.backend, EnterAlternateScreen)?;
+        // Hide the cursor BEFORE switching buffers, not after: the switch + clear
+        // move the cursor to the top of the (blank) alternate screen, and a
+        // still-shown cursor makes kitty's cursor-trail streak from the composer
+        // up into the overlay. The overlay never shows the cursor again
+        // ([`draw_overlay`] leaves it hidden), so this holds until [`exit_overlay`]
+        // returns and the inline reflow re-seats it on the prompt.
         self.backend.hide_cursor()?;
+        execute!(self.backend, EnterAlternateScreen)?;
         self.backend.clear_region(ClearType::All)?;
         self.prev = None; // the inline view isn't on screen now
         Backend::flush(&mut self.backend)
@@ -562,6 +599,12 @@ impl InlineViewport {
         // Atomic frame (see `draw`): the overlay swaps in one shot, so scrolling it
         // never tears.
         queue!(self.backend, BeginSynchronizedUpdate)?;
+        // Keep the cursor hidden while painting the overlay — [`enter_overlay`]
+        // already hid it, but re-assert here so a terminal that resets cursor
+        // visibility on the buffer switch can't leave it visible to trail across
+        // the full-screen redraw. The overlay never re-shows it; [`exit_overlay`]
+        // returns to the inline view, whose reflow re-seats it on the prompt.
+        queue!(self.backend, Hide)?;
         let drawn = self.backend.draw(iter);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         drawn?;
