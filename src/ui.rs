@@ -64,21 +64,13 @@ const INDENT: &str = "  ";
 const BULLET_WIDTH: u16 = 2;
 
 // --- Assistant markdown rendering (fenced code blocks + ATX headings;
-// `docs/markdown.md`). Code sits under the bullet behind a dim left gutter,
-// rendered VERBATIM (indentation preserved, no word-wrap) — the fix for code
-// losing its indentation — and **syntax-highlighted** by the hand-rolled
-// `highlight` tokenizer (One Dark palette below). Headings drop their `#`s and
-// render bold. ---
-/// The dim left bar (+ trailing space) prefixing every code-block row.
-const CODE_GUTTER: &str = "▏ ";
-/// Display columns [`CODE_GUTTER`] occupies (subtracted from the code width).
-const CODE_GUTTER_WIDTH: u16 = 2;
-/// The gutter bar's colour — dim, so it frames without shouting.
-const CODE_GUTTER_COLOR: Color = Color::Rgb(0x5A, 0x5A, 0x5A);
+// `docs/markdown.md`). Code sits under the bullet (no gutter, no language
+// label), rendered VERBATIM (indentation preserved, no word-wrap) — the fix
+// for code losing its indentation — and **syntax-highlighted** by the
+// hand-rolled `highlight` tokenizer (One Dark palette below). Headings drop
+// their `#`s and render bold. ---
 /// Code text — a neutral light grey, the default (unhighlighted) code colour.
 const CODE_TEXT_COLOR: Color = Color::Rgb(0xAB, 0xB2, 0xBF);
-/// The dim language label capping a code block (`` ```python `` → `python`).
-const CODE_LABEL_COLOR: Color = TOOL_DIM_COLOR;
 /// ATX headings render in this colour, bold, with the `#` markers stripped.
 const HEADING_COLOR: Color = AI_COLOR;
 
@@ -1125,23 +1117,13 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// The content spans of one code-block row: the dim gutter bar then `text` in
-/// `text_color` (used for the language label). The leading bullet/indent is
-/// stamped on later by [`assistant_lines`].
-fn code_row(text: String, text_color: Color) -> Vec<Span<'static>> {
-    vec![
-        Span::styled(CODE_GUTTER.to_string(), Style::new().fg(CODE_GUTTER_COLOR)),
-        Span::styled(text, Style::new().fg(text_color)),
-    ]
-}
-
 /// Hard-break a code line's **coloured** segments into display rows of at most
 /// `width` columns, preserving each run's colour across the break — the verbatim,
 /// whitespace-preserving counterpart of [`wrap_verbatim`] that keeps syntax
 /// colours. Breaks on grapheme boundaries measured in display columns (an
 /// overflowing cluster is placed alone); adjacent same-colour graphemes coalesce
-/// into one span. An empty line yields a single empty row (just the gutter, once
-/// stamped). Prefix-stable — appending only extends the last row.
+/// into one span. An empty line yields a single empty row (just the bullet/indent,
+/// once stamped). Prefix-stable — appending only extends the last row.
 fn code_content_rows(segments: &[(String, Color)], width: u16) -> Vec<Vec<Span<'static>>> {
     let width = (width as usize).max(1);
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
@@ -1180,11 +1162,11 @@ fn code_content_rows(segments: &[(String, Color)], width: u16) -> Vec<Vec<Span<'
 /// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`):
 /// [`markdown::parse_blocks`] splits prose from fenced code; prose word-wraps via
 /// [`wrap_text`] (ATX headings render bold with their `#`s dropped) while **code
-/// blocks render verbatim** — each source line kept byte-for-byte behind a dim
-/// gutter, **syntax-highlighted** ([`highlight::highlight`]) and hard-broken only
-/// on width via [`code_content_rows`], the fences hidden and the language shown as
-/// a dim label. The bullet lands on row 0 and `INDENT` on the rest, exactly like
-/// the plain path — so fence/heading-free text is byte-identical to before.
+/// blocks render verbatim** — each source line kept byte-for-byte,
+/// **syntax-highlighted** ([`highlight::highlight`]) and hard-broken only on width
+/// via [`code_content_rows`], with both fences (and the language info-string)
+/// hidden. The bullet lands on row 0 and `INDENT` on the rest, exactly like the
+/// plain path — so fence/heading-free text is byte-identical to before.
 ///
 /// **Prefix-stable at the line level:** a line's prose/code mode and its highlight
 /// are fixed by the text before it. (Highlighting uses one-char lookahead within a
@@ -1196,16 +1178,25 @@ fn assistant_lines(text: &str, width: u16, bullet: &str, color: Color) -> Vec<Li
     for line in text.split('\n') {
         rows.extend(renderer.feed_line(line));
     }
-    // An empty reply is still one (blank) row, so the bullet always has a home.
-    // (Unreachable in practice — a prose line always yields ≥1 row — but kept so
-    // the bullet is guaranteed a home.)
+    // A reply that renders to zero rows still gets one bullet row so the bullet
+    // always has a home — an empty reply, or (now that fences render nothing) a
+    // reply that is only a code fence. The streaming [`StreamRender`] applies the
+    // same fallback, so the two never disagree on such a reply.
     if rows.is_empty() {
-        rows.push(Line::from(vec![Span::styled(
-            bullet.to_string(),
-            Style::new().fg(color).add_modifier(Modifier::BOLD),
-        )]));
+        rows.push(empty_assistant_row(bullet, color));
     }
     rows
+}
+
+/// The lone bullet row an assistant message falls back to when its body renders
+/// to **zero** rows (an empty reply, or one that is only a hidden code fence), so
+/// the role bullet always has a home. Shared by the batch [`assistant_lines`] and
+/// the streaming [`StreamRender`] so they agree on such a reply.
+fn empty_assistant_row(bullet: &str, color: Color) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        bullet.to_string(),
+        Style::new().fg(color).add_modifier(Modifier::BOLD),
+    )])
 }
 
 /// The incremental, prefix-stable core shared by the batch [`assistant_lines`]
@@ -1222,10 +1213,8 @@ fn assistant_lines(text: &str, width: u16, bullet: &str, color: Color) -> Vec<Li
 /// state it will resume from.
 #[derive(Clone)]
 struct AssistantRenderer {
-    /// Columns available to prose after the bullet.
+    /// Columns available to prose (and code) after the bullet.
     content_width: u16,
-    /// Columns available to code after the bullet + gutter.
-    code_width: u16,
     /// The role bullet stamped on the first row.
     bullet: String,
     /// The bullet's colour.
@@ -1242,9 +1231,6 @@ impl AssistantRenderer {
     fn new(width: u16, bullet: &str, color: Color) -> Self {
         Self {
             content_width: width.saturating_sub(BULLET_WIDTH).max(1),
-            code_width: width
-                .saturating_sub(BULLET_WIDTH + CODE_GUTTER_WIDTH)
-                .max(1),
             bullet: bullet.to_string(),
             color,
             scanner: markdown::BlockScanner::new(),
@@ -1263,15 +1249,16 @@ impl AssistantRenderer {
 
     /// The row *content* spans for `line` (no bullet/indent prefix yet),
     /// advancing fence/highlight state. Prose word-wraps (headings bold, `#`s
-    /// dropped); code renders verbatim behind the gutter, syntax-highlighted; a
-    /// fence open becomes the dim language label and a fence close renders
-    /// nothing.
+    /// dropped); code renders verbatim, syntax-highlighted; both the opening and
+    /// closing fence render nothing (no gutter, and the language info-string is
+    /// not shown).
     fn content_rows(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
         match self.scanner.classify(line) {
             markdown::LineKind::CodeStart(lang) => {
+                // The fence opens the block silently: it primes highlighting for
+                // the info-string language but emits no row (no gutter, no label).
                 self.highlighter = Some(highlight::Highlighter::new(lang.as_deref()));
-                // A dim label caps the block (the hidden fence's language).
-                vec![code_row(lang.unwrap_or_default(), CODE_LABEL_COLOR)]
+                Vec::new()
             }
             markdown::LineKind::CodeEnd => {
                 self.highlighter = None;
@@ -1289,17 +1276,7 @@ impl AssistantRenderer {
                     .into_iter()
                     .map(|s| (s.text, code_kind_color(s.kind)))
                     .collect();
-                code_content_rows(&colored, self.code_width)
-                    .into_iter()
-                    .map(|mut spans| {
-                        let mut row = vec![Span::styled(
-                            CODE_GUTTER.to_string(),
-                            Style::new().fg(CODE_GUTTER_COLOR),
-                        )];
-                        row.append(&mut spans);
-                        row
-                    })
-                    .collect()
+                code_content_rows(&colored, self.content_width)
             }
             markdown::LineKind::Prose => {
                 if let Some((_level, htext)) = markdown::heading_level(line) {
@@ -3483,6 +3460,14 @@ impl StreamRender {
         let tail = self.renderer.feed_line(&text[self.consumed..]);
         self.consumed = text.len();
         self.frozen.extend(tail);
+        if self.frozen.is_empty() {
+            // The whole reply rendered to zero rows (only a code fence) — commit
+            // the bullet home once, matching `assistant_lines`.
+            self.frozen.push(empty_assistant_row(
+                &self.renderer.bullet,
+                self.renderer.color,
+            ));
+        }
         let total = self.frozen.len();
         self.take_rows(&[], total)
     }
@@ -3494,7 +3479,18 @@ impl StreamRender {
     pub fn preview(&mut self, text: &str, width: u16) -> Option<Line<'static>> {
         self.advance(text, width);
         let tail = self.tail_rows(text);
-        tail.last().or_else(|| self.frozen.last()).cloned()
+        tail.last()
+            .or_else(|| self.frozen.last())
+            .cloned()
+            .or_else(|| {
+                // The reply-so-far renders to zero rows (only a code fence): batch
+                // `assistant_lines` still emits the bullet home, so the preview must
+                // match it or the strip would diverge from a repaint.
+                Some(empty_assistant_row(
+                    &self.renderer.bullet,
+                    self.renderer.color,
+                ))
+            })
     }
 }
 
@@ -3918,7 +3914,7 @@ mod tests {
     }
 
     #[test]
-    fn assistant_code_hides_the_fences_and_labels_the_language() {
+    fn assistant_code_hides_the_fences_and_the_language_label() {
         let joined: Vec<String> = message_lines(Role::Assistant, "```python\nx = 1\n```", 80)
             .iter()
             .map(plain)
@@ -3928,46 +3924,47 @@ mod tests {
             "fences hidden: {joined:?}"
         );
         assert!(
-            joined.iter().any(|l| l.contains("python")),
-            "language label shown: {joined:?}"
+            !joined.iter().any(|l| l.contains("python")),
+            "language label NOT shown: {joined:?}"
+        );
+        // The code itself still renders.
+        assert!(
+            joined.iter().any(|l| l.contains("x = 1")),
+            "code shown: {joined:?}"
         );
     }
 
     #[test]
-    fn assistant_code_rows_carry_the_dim_gutter_and_code_colour() {
+    fn assistant_code_rows_have_no_gutter_and_use_the_code_colour() {
         let lines = message_lines(Role::Assistant, "```\nx=1\n```", 80);
         let code = lines
             .iter()
             .find(|l| plain(l).contains("x=1"))
             .expect("a code row");
-        assert!(plain(code).contains('▏'), "gutter bar: {:?}", plain(code));
+        assert!(
+            !plain(code).contains('▏'),
+            "no gutter bar: {:?}",
+            plain(code)
+        );
         assert!(
             code.spans
                 .iter()
                 .any(|s| s.style.fg == Some(CODE_TEXT_COLOR)),
             "code text uses the code colour"
         );
-        assert!(
-            code.spans
-                .iter()
-                .any(|s| s.style.fg == Some(CODE_GUTTER_COLOR)),
-            "gutter uses the gutter colour"
-        );
     }
 
     #[test]
     fn assistant_over_width_code_hard_breaks_keeping_whitespace() {
         // A code line wider than the code area hard-breaks (no word-collapse); the
-        // first row keeps the leading indentation.
+        // first row keeps the leading indentation. There is no language label and
+        // no gutter, so the rendered rows are the wrapped code alone (under the
+        // bullet/indent).
         let src = "```\n        eight_spaces_then_a_very_long_token_here\n```";
         let lines = message_lines(Role::Assistant, src, 22);
-        let code: Vec<String> = lines
-            .iter()
-            .map(plain)
-            .filter(|l| l.contains('▏'))
-            .collect();
-        // Label row + at least two wrapped code rows.
-        assert!(code.len() >= 3, "hard-broke into rows: {code:?}");
+        let code: Vec<String> = lines.iter().map(plain).collect();
+        // At least two wrapped code rows (no label row now).
+        assert!(code.len() >= 2, "hard-broke into rows: {code:?}");
         assert!(
             code.iter().any(|l| l.contains("        eight")),
             "leading spaces survive on the first code row: {code:?}"
@@ -4012,7 +4009,7 @@ mod tests {
         // already-committed row when it finally streams in. Compare the streamed
         // commits' SPAN COLOURS (not just text) to the final render.
         let full = "```py\nsome_really_long_function_name_here()\n```";
-        let width = 22; // code_width 18 → the long name wraps
+        let width = 22; // content_width 20 → the long name wraps
         let styled = |l: &Line| -> Vec<(String, Option<Color>)> {
             l.spans
                 .iter()
@@ -4075,6 +4072,34 @@ mod tests {
         got.extend(render.finish(&acc, width).iter().map(plain));
 
         assert_eq!(got, expected, "streamed commits reconstruct the code reply");
+    }
+
+    #[test]
+    fn a_fence_only_reply_renders_a_lone_bullet_in_batch_and_streaming() {
+        // With fences hidden and no language label, a reply that is *only* a code
+        // fence renders to zero body rows — but the role bullet still needs a
+        // home, and the batch and streaming paths must agree on it (else the strip
+        // preview would diverge from a scrollback repaint).
+        let full = "```";
+        let width = 40;
+        let expected: Vec<String> = message_lines(Role::Assistant, full, width)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            expected,
+            vec!["● ".to_string()],
+            "batch: a lone bullet home"
+        );
+
+        let mut render = StreamRender::new();
+        assert_eq!(
+            render.preview(full, width).map(|l| plain(&l)).as_deref(),
+            Some("● "),
+            "preview matches the batch bullet home"
+        );
+        let committed: Vec<String> = render.finish(full, width).iter().map(plain).collect();
+        assert_eq!(committed, expected, "streamed finish matches batch");
     }
 
     // --- tool_lines (collapsed, colour-by-status) ---

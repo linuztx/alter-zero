@@ -98,9 +98,9 @@ pub fn parse_blocks(text: &str) -> Vec<Block> {
 pub enum LineKind {
     /// A non-code line (prose or heading — the renderer decides which).
     Prose,
-    /// An opening fence: the block's info-string language (first token).
-    /// The renderer emits the dim language label; the fence line itself is
-    /// hidden.
+    /// An opening fence: the block's info-string language (first token, used
+    /// only to prime syntax highlighting). The renderer emits no row — the fence
+    /// line and its language label are hidden.
     CodeStart(Option<String>),
     /// A verbatim code line inside the open fence.
     Code,

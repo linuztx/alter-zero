@@ -16,17 +16,17 @@ do inline emphasis, lists, or tables (see *Scope* below).
 ````text
 ● The Code                                     ← `## The Code` → bold, `#`s dropped
   Save this as snake.py:                        ← prose (word-wrapped, white)
-  ▏ python                                       ← dim language label (hidden fence)
-  ▏ def main(stdscr):                            ← code, verbatim, dim gutter + grey text
-  ▏     curses.curs_set(0)                       ← 4-space indent preserved
-  ▏     while True:
-  ▏         sh, sw = stdscr.getmaxyx()           ← 8-space indent preserved
+  def main(stdscr):                             ← code, verbatim, syntax-highlighted
+      curses.curs_set(0)                        ← 4-space indent preserved
+      while True:
+          sh, sw = stdscr.getmaxyx()            ← 8-space indent preserved
 ````
 
-Code sits under the assistant bullet behind a dim left **gutter** (`▏ `) and is
-**syntax-highlighted** (One Dark palette — keywords magenta, strings green,
-comments dim, numbers orange, calls blue). The opening ` ``` ` fence becomes the
-dim language label; the closing fence is hidden.
+Code sits under the assistant bullet (aligned with the wrapped-prose indent, no
+gutter) and is **syntax-highlighted** (One Dark palette — keywords magenta,
+strings green, comments dim, numbers orange, calls blue). Both the opening and
+closing ` ``` ` fences are hidden, and the info-string language is used only to
+pick the highlighter — it is **not** shown as a label.
 
 Highlighting is hand-rolled (`highlight.rs`) — codex uses `syntect` (~250
 TextMate grammars); this codebase takes no such dependency, so a **generic**
@@ -68,9 +68,9 @@ Because `AssistantRenderer` is the one core, scrollback, the streaming preview, 
 resize repaint, and the Ctrl+O transcript all agree automatically (invariants 2–4).
 
 Styling is centralized as `CODE_*` / `HEADING_COLOR` consts at the top of
-`ui.rs`. Code hard-breaks at `content_width - gutter` rather than letting the
-terminal wrap it — a code line longer than the terminal would otherwise be
-wrapped by the emulator at the wrong column and misalign the gutter.
+`ui.rs`. Code hard-breaks at `content_width` rather than letting the terminal
+wrap it — a code line longer than the terminal would otherwise be wrapped by the
+emulator at the wrong column and lose its alignment under the bullet.
 
 ## Incremental rendering while streaming (`ui::StreamRender`)
 
@@ -126,12 +126,13 @@ each line:
   line. An **unterminated** fence renders as code *identically* to a closed one,
   so nothing changes when the closing ` ``` ` finally arrives (it just emits zero
   rows). The one wrinkle is the *fence-opener line itself*: while it is still a
-  **partial** marker run (`` ` `` or `` `` ``) it renders as prose, then flips to a
-  one-row label when the third marker arrives — a within-line reclassification. At
-  a normal width that 1–2-column run is a single (withheld) last row, but at
-  content-width 1 it wraps into two, so `StreamRender::commit` also withholds a
-  trailing line while `markdown::is_partial_fence` holds — the invariant then holds
-  at *every* width (the differential test covers width 3 upward).
+  **partial** marker run (`` ` `` or `` `` ``) it renders as prose, then flips to
+  **zero rows** when the third marker arrives (the fence is hidden) — a within-line
+  reclassification. At a normal width that 1–2-column prose run is a single
+  (withheld) last row, but at content-width 1 it wraps into two, so
+  `StreamRender::commit` also withholds a trailing line while
+  `markdown::is_partial_fence` holds — the invariant then holds at *every* width
+  (the differential test covers width 3 upward).
 - `wrap_verbatim`'s width hard-break is greedy grapheme-by-grapheme, so appending
   extends or starts only the *last* row — exactly like `wrap_text`.
 - A heading's style trigger (`#…` at the line start) is seen before any of that
