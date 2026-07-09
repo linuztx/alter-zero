@@ -209,6 +209,16 @@ incremental scanners to their batch counterparts.
 **In:** fenced code blocks (` ``` ` and `~~~`, verbatim), **indented (4-space)
 code blocks**, ATX headings, and **thematic breaks** (`---` / `***` / `___`).
 
+Per CommonMark, a *backtick* fence's info string may not contain a backtick —
+such a line (`` ```rust`x ``) is inline-code prose, not an opener (treating it
+as one swallowed the rest of the reply as an unterminated block); tilde fences
+may. A **leading tab** (≥4 columns of indent) makes a would-be `---` line
+indented code, never a rule. And while streaming, a trailing **bare `#` run**
+(1–6 hashes) is withheld like a partial fence (`markdown::is_partial_heading`):
+its heading *level* — and so its bold/italic style — isn't settled until a
+space, text, or a 7th `#` (which flips it to prose) arrives, so at a width
+narrower than the run its wrapped rows must not reach scrollback yet.
+
 **In — indented (4-space) code blocks.** A run of lines each indented ≥4 spaces
 (or a leading tab) is a CommonMark indented code block, rendered **verbatim**
 (plain, no language) like a fenced block. It only starts after a blank line or

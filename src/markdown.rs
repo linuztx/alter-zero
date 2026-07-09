@@ -238,37 +238,6 @@ fn is_closing_fence(line: &str, ch: char, len: usize) -> bool {
     )
 }
 
-/// Whether the **trailing (unterminated) line** of `text` sits inside an open
-/// fenced code block — i.e. streaming more of that line extends code, not prose.
-/// Only the complete (newline-terminated) lines are scanned; the trailing partial
-/// line's membership is the fence state entering it. The renderer uses this to
-/// withhold an in-progress code line from scrollback until it completes, since a
-/// code line's syntax highlight isn't final until the whole line is seen (a call's
-/// `(`, a `//` comment); prose has no such lookahead. See `ui::stable_commit`.
-#[must_use]
-pub fn ends_inside_code(text: &str) -> bool {
-    let mut open: Option<(char, usize)> = None;
-    let mut lines = text.split('\n').peekable();
-    while let Some(line) = lines.next() {
-        if lines.peek().is_none() {
-            break; // the trailing partial line — its membership is `open`
-        }
-        match open {
-            None => {
-                if let Some((ch, len, _)) = fence_marker(line) {
-                    open = Some((ch, len));
-                }
-            }
-            Some((ch, len)) => {
-                if is_closing_fence(line, ch, len) {
-                    open = None;
-                }
-            }
-        }
-    }
-    open.is_some()
-}
-
 /// Whether `line` is deep enough to be a CommonMark **indented code** line — it
 /// begins with 4 spaces or a leading tab (a tab counts as ≥4 columns). Whether it
 /// actually *is* code also depends on context (not interrupting a paragraph); the
@@ -286,26 +255,33 @@ fn is_indented_code_line(line: &str) -> bool {
 /// (`markdown_render.rs`'s `Event::Rule`).
 #[must_use]
 pub fn thematic_break(line: &str) -> Option<char> {
+    thematic_marker_run(line).and_then(|(marker, count)| (count >= 3).then_some(marker))
+}
+
+/// The single-family marker run of a would-be thematic break: after ≤3 leading
+/// spaces (a leading tab is ≥4 columns — indented code, never a rule), a line
+/// holding only one of `-`/`*`/`_` plus spaces/tabs — returned as
+/// `(marker, count)`. `None` when any other char, a mixed family, or nothing
+/// but whitespace appears. The one scan [`thematic_break`] (≥3 markers) and
+/// [`is_partial_thematic_break`] (1–2 so far) both read.
+fn thematic_marker_run(line: &str) -> Option<(char, usize)> {
     let trimmed = line.trim_start_matches(' ');
-    if line.len() - trimmed.len() > 3 {
-        return None; // 4+ spaces of indent is indented code, not a rule
+    if line.len() - trimmed.len() > 3 || trimmed.starts_with('\t') {
+        return None;
     }
-    for marker in ['-', '*', '_'] {
-        let mut count = 0usize;
-        let mut only_marker_or_space = true;
-        for c in trimmed.chars() {
-            if c == marker {
-                count += 1;
-            } else if c != ' ' && c != '\t' {
-                only_marker_or_space = false;
-                break;
-            }
-        }
-        if only_marker_or_space && count >= 3 {
-            return Some(marker);
+    let marker = trimmed.chars().find(|c| !matches!(c, ' ' | '\t'))?;
+    if !matches!(marker, '-' | '*' | '_') {
+        return None;
+    }
+    let mut count = 0usize;
+    for c in trimmed.chars() {
+        if c == marker {
+            count += 1;
+        } else if c != ' ' && c != '\t' {
+            return None;
         }
     }
-    None
+    Some((marker, count))
 }
 
 /// Whether `line` is a *partial* thematic-break run — after ≤3 leading spaces,
@@ -319,31 +295,32 @@ pub fn thematic_break(line: &str) -> Option<char> {
 /// is harmless — [`crate::ui::StreamRender::finish`] flushes them.
 #[must_use]
 pub fn is_partial_thematic_break(line: &str) -> bool {
+    // 1–2 markers and nothing else → a third marker would open a rule.
+    thematic_marker_run(line).is_some_and(|(_, count)| (1..3).contains(&count))
+}
+
+/// Whether `line` is a *partial* ATX heading — after ≤3 leading spaces, a bare
+/// run of 1–6 `#` and nothing else. Such a line is already a (level-N, empty)
+/// heading, but its **style is not settled**: another `#` deepens the level (a
+/// different modifier set) and a 7th flips it to prose — so at a width
+/// narrower than the run, its wrapped rows must not reach scrollback yet
+/// (exactly the [`is_partial_fence`] situation). A space or text after the
+/// `#`s settles the level; any other leading char was never a heading.
+#[must_use]
+pub fn is_partial_heading(line: &str) -> bool {
     let trimmed = line.trim_start_matches(' ');
     if line.len() - trimmed.len() > 3 {
-        return false; // 4+ spaces of indent is indented code, never a rule
+        return false; // 4+ spaces of indent is indented code, never a heading
     }
-    for marker in ['-', '*', '_'] {
-        let mut count = 0usize;
-        let mut only_marker_or_space = true;
-        for c in trimmed.chars() {
-            if c == marker {
-                count += 1;
-            } else if c != ' ' && c != '\t' {
-                only_marker_or_space = false;
-                break;
-            }
-        }
-        // 1–2 markers and nothing else → a third marker would open a rule.
-        if only_marker_or_space && (1..3).contains(&count) {
-            return true;
-        }
-    }
-    false
+    let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+    (1..=6).contains(&hashes) && hashes == trimmed.len()
 }
 
 /// If `line` is a fence delimiter — after ≤3 leading spaces, 3+ of `` ` `` or
-/// `~` — return `(marker char, run length, info string)`.
+/// `~` — return `(marker char, run length, info string)`. CommonMark: the info
+/// string of a *backtick* fence may not contain a backtick (such a line is
+/// inline code, not a fence — treating it as an opener would swallow the rest
+/// of the reply as an unterminated block); a tilde fence's info string may.
 fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
     let trimmed = line.trim_start_matches(' ');
     if line.len() - trimmed.len() > 3 {
@@ -352,7 +329,11 @@ fn fence_marker(line: &str) -> Option<(char, usize, &str)> {
     for marker in ['`', '~'] {
         let len = trimmed.chars().take_while(|&c| c == marker).count();
         if len >= 3 {
-            return Some((marker, len, &trimmed[len..]));
+            let info = &trimmed[len..];
+            if marker == '`' && info.contains('`') {
+                return None;
+            }
+            return Some((marker, len, info));
         }
     }
     None
@@ -712,18 +693,46 @@ mod tests {
     }
 
     #[test]
-    fn ends_inside_code_tracks_the_trailing_line() {
-        // Trailing line inside an open fence → true.
-        assert!(ends_inside_code("```py\nx = 1"));
-        assert!(ends_inside_code("intro\n```py\nlong_line_still_streaming"));
-        // Trailing newline after code (next line is still code) → true.
-        assert!(ends_inside_code("```py\nx = 1\n"));
-        // Closed block, trailing prose → false.
-        assert!(!ends_inside_code("```py\nx = 1\n```\ndone"));
-        // No fences at all → false (prose streams per row).
-        assert!(!ends_inside_code("just some prose here"));
-        // A partial fence-opener with no newline yet is not yet code.
-        assert!(!ends_inside_code("intro\n```py"));
+    fn backtick_fence_info_string_may_not_contain_backticks() {
+        // CommonMark: the info string of a *backtick* fence cannot contain a
+        // backtick (such a line is inline code, not a fence). Treating it as
+        // an opener swallowed the rest of the reply as an unterminated block.
+        let blocks = parse_blocks("```rust`inline`\nstill prose");
+        assert!(
+            blocks.iter().all(|b| matches!(b, Block::Prose(_))),
+            "a backtick run with a backtick in its info string is prose: {blocks:?}"
+        );
+        // Tilde fences may carry backticks in the info string (spec).
+        let blocks = parse_blocks("~~~py`x\ncode\n~~~");
+        assert!(
+            blocks.iter().any(|b| matches!(b, Block::Code { .. })),
+            "a tilde fence still opens: {blocks:?}"
+        );
+    }
+
+    #[test]
+    fn a_leading_tab_is_never_a_thematic_break() {
+        // A leading tab is ≥4 columns of indent — indented code, not a rule.
+        assert_eq!(thematic_break("\t---"), None);
+        assert_eq!(thematic_break(" \t***"), None);
+        assert!(!is_partial_thematic_break("\t--"));
+        // Interior tabs between markers are still fine (spec).
+        assert_eq!(thematic_break("- \t- \t-"), Some('-'));
+    }
+
+    #[test]
+    fn is_partial_heading_holds_only_while_a_bare_hash_run() {
+        // A trailing all-# line is a heading whose LEVEL is unsettled: another
+        // '#' deepens it (different style), a 7th flips it to prose — the
+        // renderer must withhold it like a partial fence.
+        for run in ["#", "##", "######", "  ###"] {
+            assert!(is_partial_heading(run), "{run:?} could still deepen");
+        }
+        // Settled: too deep for a heading, a space/text after the run, prose,
+        // or 4+ spaces of indent (indented code, never a heading).
+        for done in ["#######", "# title", "## ", "##x", "plain", "", "    #"] {
+            assert!(!is_partial_heading(done), "{done:?} is settled");
+        }
     }
 
     #[test]

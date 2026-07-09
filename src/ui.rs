@@ -3524,7 +3524,12 @@ impl StreamRender {
         //    flip it from prose to a one-row label, so its wrapped prose rows must
         //    not reach scrollback; and
         //  - a **partial thematic-break run** (`-`/`*`/`_`, 1–2 markers): a third
-        //    marker would collapse its wrapped prose rows into a single `———` rule.
+        //    marker would collapse its wrapped prose rows into a single `———`
+        //    rule; and
+        //  - a **bare `#` run** (1–6 hashes): its heading *level* — and so its
+        //    style — isn't settled (another `#` deepens it, a 7th flips it to
+        //    prose), so at a width narrower than the run its wrapped rows must
+        //    not reach scrollback yet.
         // Otherwise it's settled prose — only its still-growing *last* row is held
         // back. `tail_rows` (an O(one line) render) is computed only in that case,
         // never in the withhold path where it would be discarded.
@@ -3532,6 +3537,7 @@ impl StreamRender {
         if self.renderer.in_code()
             || markdown::is_partial_fence(tail_src)
             || markdown::is_partial_thematic_break(tail_src)
+            || markdown::is_partial_heading(tail_src)
         {
             let stable = self.frozen.len();
             self.take_rows(&[], stable)
@@ -5405,16 +5411,18 @@ mod tests {
     /// Adversarial differential test: for a corpus of tricky replies at several
     /// widths, drive [`StreamRender`] over **every character-prefix** and assert
     /// that (a) the streamed commits + `finish` reconstruct the batch
-    /// [`message_lines`] render exactly (text **and** colour), (b) no committed
-    /// row ever changes, and (c) `preview(prefix)` equals the last row of the
-    /// batch render of that prefix. This is the guard against immutable-scrollback
-    /// corruption — the incremental renderer must never diverge from the batch one.
+    /// [`message_lines`] render exactly (text, colour, **and modifiers** —
+    /// heading levels differ only by bold/italic, so an fg-only comparison is
+    /// blind to a level flip), (b) no committed row ever changes, and (c)
+    /// `preview(prefix)` equals the last row of the batch render of that
+    /// prefix. This is the guard against immutable-scrollback corruption — the
+    /// incremental renderer must never diverge from the batch one.
     #[test]
     fn stream_render_matches_batch_render_on_every_prefix() {
-        let styled = |l: &Line| -> Vec<(String, Option<Color>)> {
+        let styled = |l: &Line| -> Vec<(String, Option<Color>, Modifier)> {
             l.spans
                 .iter()
-                .map(|s| (s.content.to_string(), s.style.fg))
+                .map(|s| (s.content.to_string(), s.style.fg, s.style.add_modifier))
                 .collect()
         };
         let corpus = [
@@ -5458,6 +5466,13 @@ mod tests {
             "a\n\n***\nb",
             // Indented code followed by a thematic break and more prose.
             "lead\n\n    code_here()\n\n---\n\ntrailer",
+            // A deep heading: while the trailing line is a bare `#` run its
+            // LEVEL (→ style) is unsettled — another `#` deepens it, a 7th
+            // flips it to prose — so at content-width 1 its wrapped rows must
+            // be withheld (`markdown::is_partial_heading`), like a fence's.
+            "lead\n###### deep heading level six",
+            // The 7-hash flip: `#######` is prose, not a heading.
+            "a\n####### not a heading",
         ];
 
         for full in corpus {
@@ -5465,14 +5480,14 @@ mod tests {
             // partial fence marker wraps into ≥2 rows — the invariant must hold
             // there too (`markdown::is_partial_fence`), not just at usable widths.
             for width in [3u16, 4, 5, 10, 16, 24, 40] {
-                let expected: Vec<Vec<(String, Option<Color>)>> =
+                let expected: Vec<Vec<(String, Option<Color>, Modifier)>> =
                     message_lines(Role::Assistant, full, width)
                         .iter()
                         .map(styled)
                         .collect();
 
                 let mut render = StreamRender::new();
-                let mut committed: Vec<Vec<(String, Option<Color>)>> = Vec::new();
+                let mut committed: Vec<Vec<(String, Option<Color>, Modifier)>> = Vec::new();
                 for end in 1..=full.len() {
                     if !full.is_char_boundary(end) {
                         continue;

@@ -590,11 +590,7 @@ fn scan_triple_body(chars: &[char], start: usize, q: char) -> (usize, bool) {
             i += 2;
             continue;
         }
-        if chars[i] == q
-            && i + 2 < n + 1
-            && chars.get(i + 1) == Some(&q)
-            && chars.get(i + 2) == Some(&q)
-        {
+        if chars[i] == q && chars.get(i + 1) == Some(&q) && chars.get(i + 2) == Some(&q) {
             return (i + 3, true);
         }
         i += 1;
