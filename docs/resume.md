@@ -201,10 +201,13 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   (the Ctrl+O return).
 - `Action::ResumeSession(path)` → read + `session::parse_session` at the
   boundary. Ok: `app.load_session(items)`, recorder adopts the file,
-  `exit_overlay` + `repaint_conversation` — the loaded conversation repaints
-  from history exactly like a resize (invariant 3). Err: close the picker the
-  same way, then `commit_error_notice("Failed to load session: …")` — the
-  current conversation continues unharmed (codex).
+  `exit_overlay` + a **purge** `repaint_conversation` (`ReflowClear::Purge`,
+  like `/clear`) — the loaded session *replaces* the whole conversation, so
+  the rebuild fills scrollback with its full history; the old in-place return
+  left the previous chat in scrollback above it and committed only the last
+  screenful of the resumed one. Err: close the picker with the normal
+  in-place return, then `commit_error_notice("Failed to load session: …")` —
+  the current conversation continues unharmed (codex).
 - `Action::Toast(text)` → `present_toast` (a transient info toast; the
   `Action::ErrorNotice` red-committed twin of `Action::Notice` it replaced was
   removed on 2026-07-08 — see `docs/toast.md`). A failed session *load* still
