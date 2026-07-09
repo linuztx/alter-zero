@@ -103,9 +103,12 @@ shape in `main.rs` barely changes.
 - Codex wraps pending lines itself (`HistoryLineWrapPolicy`, hyperlink-aware)
   and scrolls with margin regions where supported; our `write_above` keeps the
   simpler ratatui portable scroll math we already had.
-- Codex never reflows committed scrollback on resize (its viewport repaints
-  only); our `reflow` is homegrown, so the atomic-frame treatment for it has
-  no codex counterpart to mirror.
+- Codex *does* rebuild scrollback on resize — it purges the screen + scrollback
+  and replays the transcript (`clear_terminal_for_resize_replay` +
+  `reflow_transcript_now`), which our `ReflowClear::Purge` mode now mirrors (see
+  `docs/design.md`). What has no codex counterpart is the **atomic-frame**
+  treatment: our `reflow` is homegrown and wraps the purge + rebuild in one
+  synchronized update, where codex reflows without that framing.
 - No zellij special-casing (codex's `InsertHistoryMode::ZellijRaw`).
 
 ## Testing

@@ -604,13 +604,17 @@ tmux send-keys -t "$S13" -l "/clear"
 sleep 0.2
 tmux send-keys -t "$S13" Enter
 sleep 0.5
-# Capture the VISIBLE screen only (no -S): the empty-tail reflow clears with
-# clear_region(All), which tmux answers by spilling the old frame into its
-# scrollback (same as an idle /clear, or a shell `clear`) — the contract here
-# is that the screen the user sees is blank.
+# /clear now clears the visible screen AND purges the terminal's own scrollback
+# (codex's clear_scrollback_and_visible_screen_ansi: ED2 to clear the screen +
+# the ED3 scrollback purge, emitted as one ANSI write). So both must be blank —
+# a bare clear_region(All)/ED2 used to leave the whole conversation sitting one
+# scroll up. Capture the VISIBLE screen first, then the scrollback (-S).
 cleared_now="$(tmux capture-pane -t "$S13" -p)"
 echo "==== captured visible screen (right after /clear mid-stream) ===="
 printf '%s\n' "$cleared_now"
+cleared_scrollback="$(tmux capture-pane -t "$S13" -p -S -200)"
+echo "==== captured scrollback (-S -200) right after /clear — must not hold the old turn ===="
+printf '%s\n' "$cleared_scrollback"
 # The dummy turn would keep streaming (text, thinking, tools) for several more
 # seconds; if the backend survived the /clear its output would recommit into
 # the blank screen. Let that window pass, then look again.
@@ -667,6 +671,19 @@ sleep 0.6
 resize_regrown="$(tmux capture-pane -t "$S14" -p)"
 echo "==== captured visible screen (after height grow back to 80x24) ===="
 printf '%s\n' "$resize_regrown"
+# A WIDTH change is the classic duplication trigger: the emulator re-wraps the
+# on-screen lines, and the old in-place overwrite left that reflowed copy behind
+# (the TUI-text duplication this fix targets). The purge-mode resize clears the
+# screen + scrollback and rebuilds the whole conversation from history, so the
+# user message stays SINGLE. Shrink the width, capture the FULL pane (-S), then
+# restore to 80x24 so the mid-stream section below starts where it expects.
+tmux resize-window -t "$S14" -x 50 -y 24
+sleep 0.6
+resize_narrow_full="$(tmux capture-pane -t "$S14" -p -S -200)"
+echo "==== captured full pane (-S) after width shrink to 50x24 — no duplication ===="
+printf '%s\n' "$resize_narrow_full"
+tmux resize-window -t "$S14" -x 80 -y 24
+sleep 0.6
 # A height shrink MID-STREAM must recover the same way: the repaint resets the
 # committed count, so the in-flight reply re-commits itself at the new size as
 # the remaining chunks flow ("Finished for" is turn 2's done verb).
@@ -1850,6 +1867,12 @@ if printf '%s' "$cleared_now" | grep -qF "❯ hello there"; then
 	echo "FAIL: the old conversation ('❯ hello there') survived a mid-turn /clear" >&2
 	status=1
 fi
+# … and the SCROLLBACK is purged too (codex's ED3), not just the visible screen:
+# scrolling up after /clear must show nothing of the old turn.
+if printf '%s' "$cleared_scrollback" | grep -qF "❯ hello there"; then
+	echo "FAIL: /clear did not purge scrollback — the old conversation ('❯ hello there') is still one scroll up (the ED3 purge is missing)" >&2
+	status=1
+fi
 if printf '%s' "$cleared_now" | grep -qF "esc to interrupt"; then
 	echo "FAIL: the live status line is still up after a mid-turn /clear" >&2
 	status=1
@@ -1927,6 +1950,15 @@ if ! printf '%s' "$resize_regrown" | grep -qF "❯ $USER_MSG"; then
 fi
 if ! printf '%s' "$resize_regrown" | grep -qF "$EXPECT_REPLY"; then
 	echo "FAIL: after growing back to 80x24 the reply did not return to view" >&2
+	status=1
+fi
+# No duplication: after a WIDTH resize the whole pane (visible + scrollback) must
+# hold the user message EXACTLY once. The old in-place overwrite left the
+# emulator's own reflowed copy behind on a width change — the TUI-text
+# duplication this fix targets; the purge-mode rebuild keeps it single.
+resize_dup="$(printf '%s\n' "$resize_narrow_full" | grep -cF "❯ $USER_MSG")"
+if [ "$resize_dup" != "1" ]; then
+	echo "FAIL: after a width resize the conversation is duplicated ('❯ $USER_MSG' ×$resize_dup, expected 1) — the reflowed copy was not cleared" >&2
 	status=1
 fi
 

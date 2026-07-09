@@ -56,6 +56,30 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::app::App;
 use crate::ui;
 
+/// How [`InlineViewport::reflow`] prepares the screen before rebuilding it from
+/// the `tail`.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ReflowClear {
+    /// Overwrite the screen in place, clearing only the rows *below* the rebuilt
+    /// tail (`write_above`'s draw-then-clear). Spill-safe for the Ctrl+O /
+    /// `/resume` overlay return (invariant 4): leaving the alternate screen
+    /// restores the main screen with its stale streaming strip, and a leading
+    /// full clear would make tmux push that strip into scrollback above the
+    /// rebuilt conversation (`smoke.sh` Phase 7). Keeps the terminal's own
+    /// scrollback, so the caller repaints only the on-screen tail.
+    InPlace,
+    /// Purge the terminal scrollback **and** clear the whole visible screen
+    /// first, then rebuild from the `tail` — a port of codex's
+    /// `clear_scrollback_and_visible_screen_ansi`. Used by `/clear` and by every
+    /// resize so no duplicated or stale row can survive the rebuild (a resize's
+    /// in-place overwrite left the emulator's own reflowed copy of the old
+    /// content behind — the duplication this fixes). The purge drops scrollback,
+    /// so the caller passes the **full** history as the tail and `write_above`
+    /// scrolls the overflow back into the now-empty scrollback, reconstructing
+    /// the whole conversation clean.
+    Purge,
+}
+
 /// A content-anchored inline viewport whose height can change between draws (its
 /// top stays put; it grows downward in place).
 pub struct InlineViewport {
@@ -361,6 +385,24 @@ impl InlineViewport {
         self.view.height = height.clamp(1, self.screen.height.max(1));
     }
 
+    /// Purge the terminal scrollback and clear the whole visible screen with a
+    /// single ANSI sequence — a port of codex's
+    /// `clear_scrollback_and_visible_screen_ansi`. Reset the scroll region + SGR
+    /// state (`ESC [ r`, `ESC [ 0 m`), home the cursor (`ESC [ H`), clear the
+    /// screen (`ESC [ 2 J`, ED2), purge the scrollback (`ESC [ 3 J`, ED3), then
+    /// home again. Emitted as one write because some terminals (Terminal.app,
+    /// Warp) don't reliably drop scrollback when the clear and the purge are
+    /// separate backend commands. Invalidates `prev` so the next paint redraws in
+    /// full. Called by [`reflow`] under [`ReflowClear::Purge`], inside its
+    /// synchronized update, so the purge and the rebuild land as one atomic frame.
+    ///
+    /// [`reflow`]: InlineViewport::reflow
+    fn clear_scrollback_and_screen(&mut self) -> io::Result<()> {
+        write!(self.backend, "\x1b[r\x1b[0m\x1b[H\x1b[2J\x1b[3J\x1b[H")?;
+        self.prev = None;
+        Ok(())
+    }
+
     /// Note a new terminal size. Returns whether the size changed at all — any
     /// change forces the conversation repaint (see [`reflow`]): a width change
     /// stales every wrapped line, and a height change moves the screen contents
@@ -387,27 +429,30 @@ impl InlineViewport {
     /// synchronized frame: seat the viewport at the top, write the tail so it
     /// fills the screen and pushes the viewport down below it, then paint the
     /// box at its final position — atomically, so the rebuilt screen never
-    /// flashes without the box (`docs/flicker.md`). The tail write overwrites
-    /// the screen in place (drawing top-down, then clearing the rows below it),
-    /// so a full `clear_region(All)` is needed only for an *empty* tail (see the
-    /// body for the tmux-spill reason).
+    /// flashes without the box (`docs/flicker.md`). `clear` chooses how the
+    /// screen is prepared first — see [`ReflowClear`]: [`InPlace`] overwrites
+    /// top-down (the Ctrl+O return), [`Purge`] drops scrollback + clears the
+    /// screen (`/clear`, resize) so nothing stale or duplicated survives.
     ///
     /// Lines still queued by [`insert_before`] are **dropped**, not flushed: the
     /// tail regenerates everything pending from history (the caller resets its
     /// `committed` count), so flushing them too would duplicate.
     ///
     /// [`insert_before`]: InlineViewport::insert_before
+    /// [`InPlace`]: ReflowClear::InPlace
+    /// [`Purge`]: ReflowClear::Purge
     pub fn reflow(
         &mut self,
         tail: Vec<Line<'static>>,
         height: u16,
+        clear: ReflowClear,
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
         self.pending.clear();
         queue!(self.backend, BeginSynchronizedUpdate)?;
-        let painted = self.paint_reflow(tail, height, render, app);
+        let painted = self.paint_reflow(tail, height, clear, render, app);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         self.prev = Some(painted?);
         ended?;
@@ -423,20 +468,30 @@ impl InlineViewport {
         &mut self,
         tail: Vec<Line<'static>>,
         height: u16,
+        clear: ReflowClear,
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<Buffer> {
-        // An empty tail (e.g. `/clear`) never reaches `write_above`'s draw, so
-        // blank the screen outright for it. For a NON-empty tail we must *not*
-        // `clear_region(All)` first: `write_above` already overwrites the screen
-        // top-down and clears the rows below the tail (a spill-safe draw-then-clear).
-        // A leading full clear, when the screen still holds the frame restored by
-        // *leaving the Ctrl+O alt-screen*, makes tmux push that stale frame into
-        // scrollback — the leak that left the old `Working… (… tokens)` status strip
-        // sitting above the rebuilt conversation. Overwriting in place avoids the
-        // clear-then-scroll sequence entirely.
-        if tail.is_empty() {
-            self.backend.clear_region(ClearType::All)?;
+        match clear {
+            // Purge scrollback + clear the whole screen up front (codex's
+            // clear_scrollback_and_visible_screen_ansi). `write_above` then
+            // rebuilds the full tail into the freshly-blank screen, scrolling any
+            // overflow into the now-empty scrollback — no duplicated or stale row
+            // can survive. Safe even on the Ctrl+O return the InPlace arm guards:
+            // the ED3 purge drops the spilled strip that a bare clear-then-scroll
+            // would have left in scrollback (`/clear` and resize use this).
+            ReflowClear::Purge => self.clear_scrollback_and_screen()?,
+            // In place: an empty tail (an idle Ctrl+O/`/resume` return with no
+            // history) never reaches `write_above`'s draw, so blank the screen
+            // outright. A NON-empty tail must *not* `clear_region(All)` first —
+            // `write_above` already overwrites top-down and clears the rows below
+            // the tail (a spill-safe draw-then-clear); a leading full clear, when
+            // the screen still holds the frame restored by leaving the Ctrl+O
+            // alt-screen, makes tmux push that stale strip into scrollback.
+            ReflowClear::InPlace if tail.is_empty() => {
+                self.backend.clear_region(ClearType::All)?;
+            }
+            ReflowClear::InPlace => {}
         }
         self.backend.set_cursor_position(Position::new(0, 0))?;
         self.prev = None; // the screen is being rebuilt out from under `prev`

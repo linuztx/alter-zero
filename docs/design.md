@@ -886,12 +886,29 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
   rebuilt either way). This is the *only* use of the alternate screen — the
   conversation itself stays inline.
 - `reflow` rebuilds the inline view from a re-wrapped `tail` (after a resize, a
-  Ctrl+O return, or `/clear`). It lets `insert_before` **overwrite the screen in
-  place** (draw top-down, then clear the rows below the tail) and `clear_region(All)`s
-  *only* for an empty tail. A leading full clear before `insert_before`'s scroll
-  makes tmux spill the on-screen frame into scrollback; after a Ctrl+O return that
-  frame is the **stale streaming strip**, so the clear would push `Working… (…
-  tokens)` into scrollback above the rebuilt conversation (`smoke.sh` Phase 7).
+  Ctrl+O return, or `/clear`), taking a `ReflowClear` mode that says how to prep
+  the screen first:
+  - **`InPlace`** (the Ctrl+O / `/resume` overlay return) lets `write_above`
+    **overwrite the screen in place** (draw top-down, then clear the rows below the
+    tail) and `clear_region(All)`s *only* for an empty tail. A leading full clear
+    before that scroll makes tmux spill the on-screen frame into scrollback; after
+    a Ctrl+O return that frame is the **stale streaming strip**, so the clear would
+    push `Working… (… tokens)` into scrollback above the rebuilt conversation
+    (`smoke.sh` Phase 7). It keeps the terminal's own scrollback and repaints only
+    the on-screen tail.
+  - **`Purge`** (`/clear` *and* every resize) instead **purges the scrollback and
+    clears the whole visible screen** up front — a port of codex's
+    `clear_scrollback_and_visible_screen_ansi`, one ANSI write of `ESC[r ESC[0m
+    ESC[H ESC[2J ESC[3J ESC[H` (reset scroll region + SGR, home, clear screen with
+    ED2, purge scrollback with **ED3**, home). Because the purge drops scrollback,
+    the caller repaints the **whole** history (bounded by `RESIZE_REFLOW_MAX_ROWS`,
+    ~10k rows, mirroring codex's per-terminal resize-reflow cap) and `write_above`
+    scrolls the overflow back into the now-empty scrollback. Two things this buys,
+    both matching codex: `/clear` genuinely wipes scrollback (scrolling up after it
+    shows nothing, not the old chat — a bare `ED2` left it there), and a resize
+    can't leave the emulator's *own* reflowed copy of the old rows on screen — the
+    TUI-text duplication the in-place overwrite showed on a width change
+    (`smoke.sh` Phases 16 and 17).
 
 `term.rs` is, like `main.rs`, an I/O boundary verified via `scripts/smoke.sh`
 rather than unit tests; all the geometry it consumes is pure and tested in `ui`.

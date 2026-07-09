@@ -225,15 +225,25 @@ of bug:
    `history: Vec<HistoryItem>` of finished messages *and
    tool calls* (kept for two reasons: this repaint, and listing tools in the Ctrl+O
    view) and `term::reflow` seats the viewport at the top, writes the re-wrapped
-   tail (`ui::repaint_lines`) **overwriting the screen in place** (top-down, then
-   clearing the rows below the tail), and paints the live region below it — all in
+   tail (`ui::repaint_lines`) and paints the live region below it — all in
    the same synchronized frame (stale queued lines are dropped: the tail regenerates
-   them). `reflow` only `clear_region(All)`s for an *empty* tail (`/clear`): a leading full
-   clear before the tail-write's scroll makes tmux spill the on-screen frame into
-   scrollback — harmless on a resize, but after a Ctrl+O return (invariant 4) it
-   pushes the **stale streaming strip** (`Working… (… tokens)`) into scrollback above
-   the rebuilt conversation (guarded by `smoke.sh` Phase 7). `committed` is reset so
-   a mid-stream resize re-commits the reply.
+   them). How the screen is prepped first is a `term::ReflowClear` mode: **`InPlace`**
+   (the Ctrl+O / `/resume` overlay return) **overwrites the screen top-down** then
+   clears the rows below the tail, and `clear_region(All)`s *only* for an empty
+   tail — because a leading full clear before the tail-write's scroll makes tmux
+   spill the on-screen frame into scrollback, and after a Ctrl+O return (invariant 4)
+   that pushes the **stale streaming strip** (`Working… (… tokens)`) into scrollback
+   above the rebuilt conversation (guarded by `smoke.sh` Phase 7). **`Purge`** (`/clear`
+   *and* every resize) instead **purges scrollback + clears the whole screen** first
+   (codex's `clear_scrollback_and_visible_screen_ansi` — `ESC[2J` then the `ESC[3J`
+   scrollback purge, emitted as one ANSI write) and rebuilds the **full** history
+   (`RESIZE_REFLOW_MAX_ROWS`-capped) into the blank screen, `write_above` scrolling
+   the overflow back into the now-empty scrollback: so `/clear` truly wipes
+   scrollback (scrolling up shows nothing, not the old chat), and a resize can't
+   leave the emulator's own reflowed copy of the old rows behind — the TUI-text
+   duplication that in-place overwrite showed on a width change (guarded by
+   `smoke.sh` Phases 16 and 17). `committed` is reset so a mid-stream resize
+   re-commits the reply.
 
 4. **Tool calls interleave with text, and Ctrl+O opens a separate overlay.** A
    tool call splits the assistant text around it: `App::flush_streaming_segment`

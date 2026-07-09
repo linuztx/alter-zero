@@ -61,7 +61,7 @@ use inline_tui::llm::{
 use inline_tui::paste::{self, PasteBurst};
 use inline_tui::session::{self, SessionMeta, SessionSummary};
 use inline_tui::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
-use inline_tui::term::InlineViewport;
+use inline_tui::term::{InlineViewport, ReflowClear};
 use inline_tui::ui;
 
 /// A finished `/model` fetch from one provider: its human label (for a failure
@@ -276,7 +276,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // committed "Done for Ns" summary.
                                 if app.view != View::Conversation {
                                     term.exit_overlay()?;
-                                    repaint_conversation(term, &app, &mut render)?;
+                                    repaint_conversation(
+                                        term, &app, &mut render, ReflowClear::InPlace,
+                                    )?;
                                 }
                                 break;
                             }
@@ -326,8 +328,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // Catch the inline view up on whatever streamed
                                     // — or was dispatched off the queue — while the
                                     // overlay was showing (the reflow regenerates
-                                    // any pending user bubbles from history).
-                                    repaint_conversation(term, &app, &mut render)?;
+                                    // any pending user bubbles from history). An
+                                    // in-place repaint keeps the terminal's own
+                                    // scrollback (invariant 4 / Phase 7).
+                                    repaint_conversation(
+                                        term, &app, &mut render, ReflowClear::InPlace,
+                                    )?;
                                 }
                             }
                             Action::Notice(text) => {
@@ -389,7 +395,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // file (codex's /new); the old one keeps what it
                                 // had (docs/resume.md).
                                 recorder.start_new();
-                                repaint_conversation(term, &app, &mut render)?;
+                                // Purge scrollback + clear the screen (codex's
+                                // /clear), not just blank the visible screen —
+                                // the old conversation must be gone from
+                                // scrollback too, so scrolling up shows nothing.
+                                repaint_conversation(
+                                    term, &app, &mut render, ReflowClear::Purge,
+                                )?;
                             }
                             Action::Interrupt => {
                                 // Esc mid-generation (codex-style): stop the backend
@@ -458,7 +470,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // already back on the conversation — leave the
                                 // overlay and repaint, the Ctrl+O return.
                                 term.exit_overlay()?;
-                                repaint_conversation(term, &app, &mut render)?;
+                                repaint_conversation(
+                                    term, &app, &mut render, ReflowClear::InPlace,
+                                )?;
                             }
                             Action::ResumeSession(path) => {
                                 // Enter on a picker row: read + parse the rollout
@@ -484,12 +498,16 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         let torn = !text.is_empty() && !text.ends_with('\n');
                                         recorder.adopt(path, meta, count, torn);
                                         term.exit_overlay()?;
-                                        repaint_conversation(term, &app, &mut render)?;
+                                        repaint_conversation(
+                                            term, &app, &mut render, ReflowClear::InPlace,
+                                        )?;
                                     }
                                     None => {
                                         app.close_resume_picker();
                                         term.exit_overlay()?;
-                                        repaint_conversation(term, &app, &mut render)?;
+                                        repaint_conversation(
+                                            term, &app, &mut render, ReflowClear::InPlace,
+                                        )?;
                                         commit_error_notice(
                                             term, &mut app, &mut render,
                                             &format!(
@@ -688,11 +706,18 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         // stales the wrapping, and a height change moves the
                         // screen contents out from under the tracked viewport
                         // row — repainting at a stale row leaves phantom input
-                        // boxes behind. Only the inline view reflows; the
-                        // overlay just redraws at the new size (reflowing would
-                        // write the alternate screen).
+                        // boxes behind. Purge scrollback + clear the screen
+                        // first (codex's resize replay), rebuilding the whole
+                        // conversation from history — the in-place overwrite
+                        // otherwise left the emulator's own reflowed copy of the
+                        // old content on screen, duplicating the TUI text. Only
+                        // the inline view reflows; the overlay just redraws at
+                        // the new size (reflowing would write the alternate
+                        // screen).
                         if size_changed && app.view == View::Conversation {
-                            repaint_conversation(term, &app, &mut render)?;
+                            repaint_conversation(
+                                term, &app, &mut render, ReflowClear::Purge,
+                            )?;
                         }
                         burst.reset();
                         frame.schedule_frame();
@@ -1731,29 +1756,48 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
     )
 }
 
+/// Upper bound on the rows a [`ReflowClear::Purge`] repaint (`/clear`, resize)
+/// re-renders into scrollback. A purge drops the terminal's own scrollback, so
+/// the whole conversation is rebuilt from history — capped here so a
+/// pathologically long conversation can't turn one resize into an unbounded
+/// write. codex bounds its resize reflow the same way (per-terminal 1k–10k rows);
+/// 10k is effectively "everything" for any real conversation.
+const RESIZE_REFLOW_MAX_ROWS: usize = 10_000;
+
 /// Repaint the inline conversation from `App`'s retained history, re-wrapped to
 /// the current width — tail and live region in one synchronized frame
-/// ([`InlineViewport::reflow`]). Used both after a resize *and* when returning
-/// from the tool-output overlay (which kept the stream advancing without
-/// committing).
+/// ([`InlineViewport::reflow`]). Used after a resize, on `/clear`, and when
+/// returning from the tool-output / `/resume` overlay (which kept the stream
+/// advancing without committing).
 ///
-/// We repaint the tail that fits above the live region; resetting `render`
-/// lets any in-progress reply re-commit itself from scratch on its next chunk,
-/// so a mid-stream resize or overlay round-trip recovers too. The reply is
-/// re-wrapped at the (possibly new) width, so the preview is recomputed here.
+/// `clear` selects how the screen is prepared (see [`ReflowClear`]). A
+/// [`Purge`] rebuilds scrollback from scratch, so it repaints the **whole**
+/// history (bounded by [`RESIZE_REFLOW_MAX_ROWS`]) — otherwise older turns would
+/// be lost from the purged scrollback. An [`InPlace`] repaint keeps the
+/// terminal's scrollback and only repaints the on-screen tail. Either way,
+/// resetting `render` lets any in-progress reply re-commit itself from scratch
+/// on its next chunk, so a mid-stream resize or overlay round-trip recovers too.
+///
+/// [`Purge`]: ReflowClear::Purge
+/// [`InPlace`]: ReflowClear::InPlace
 fn repaint_conversation(
     term: &mut InlineViewport,
     app: &App,
     render: &mut ui::StreamRender,
+    clear: ReflowClear,
 ) -> io::Result<()> {
     let screen = term.screen();
     let height = live_region_height(app, screen);
-    let budget = ui::repaint_budget(screen.height, height);
+    let budget = match clear {
+        ReflowClear::Purge => RESIZE_REFLOW_MAX_ROWS,
+        ReflowClear::InPlace => ui::repaint_budget(screen.height, height),
+    };
     let tail = ui::repaint_lines(&app.history, screen.width, budget);
     let preview = stream_preview_line(app, render, screen.width);
     term.reflow(
         tail,
         height,
+        clear,
         |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_ref()),
         app,
     )?;
