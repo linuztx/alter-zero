@@ -230,8 +230,11 @@ impl InlineViewport {
         // atomic step, so neither a fast burst of keystrokes nor a scrollback commit
         // ever shows a half-painted frame, a missing box, or the cursor mid-flight.
         // This is the trick codex wraps its draws in. Terminals lacking 2026 ignore
-        // the markers. `EndSynchronizedUpdate` always runs (even if a write failed
-        // mid-frame) so the terminal is never left buffering.
+        // the markers. `EndSynchronizedUpdate` is always *queued* (before the
+        // `painted?` short-circuit below) so a clean frame closes the update; if a
+        // write fails mid-frame the ESU may go unflushed with the cursor still
+        // hidden, but that error unwinds the loop and `restore()` flushes + shows
+        // the cursor microseconds later, so the terminal is never left that way.
         queue!(self.backend, BeginSynchronizedUpdate)?;
         // Hide the hardware cursor for the duration of the frame, before any
         // scroll (`flush_pending`'s `write_above`) or cell blit moves it — the
