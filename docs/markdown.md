@@ -8,19 +8,44 @@ its indentation gone and its lines re-flowed together — unreadable.
 
 This adds a small, prefix-stable markdown layer for assistant text: fenced code
 blocks render **verbatim** (indentation byte-for-byte, no reflow) and ATX
-headings render bold with their `#` markers dropped. It deliberately does **not**
-do inline emphasis, lists, or tables (see *Scope* below).
+headings render **like codex** — the `#` markers are **kept** and the whole line
+is styled per level (see *Headings* below). It deliberately does **not** do
+inline emphasis, lists, or tables (see *Scope* below).
 
 ## What it looks like
 
 ````text
-● The Code                                     ← `## The Code` → bold, `#`s dropped
+● ## The Code                                  ← `## The Code` → `#`s kept, line bold
   Save this as snake.py:                        ← prose (word-wrapped, white)
   def main(stdscr):                             ← code, verbatim, syntax-highlighted
       curses.curs_set(0)                        ← 4-space indent preserved
       while True:
           sh, sw = stdscr.getmaxyx()            ← 8-space indent preserved
 ````
+
+## Headings (codex parity)
+
+Codex's terminal markdown renderer (`codex-rs/tui/src/markdown_render.rs`,
+`start_heading`) does **not** strip the ATX `#` markers — it re-emits
+`"#".repeat(level) + " "` as a styled prefix and styles the heading text with
+that same style, so a heading reads as e.g. **`## The Code`** with the hashes
+still visible. The per-level styles are **text modifiers only, no foreground
+colour**:
+
+| Level | Codex style       |
+|-------|-------------------|
+| `#`   | bold + underlined |
+| `##`  | bold              |
+| `###` | bold + italic     |
+| `####`+ | italic          |
+
+`ui::heading_style(level)` is a direct port of that mapping, and
+`AssistantRenderer::content_rows` reconstructs the `# ` marker run (normalised to
+one space, like codex) in front of the heading text before word-wrapping. This
+deliberately **reverses** the earlier behaviour (drop the `#`s, bold in
+`AI_COLOR`) so we match codex exactly — a user who reads codex output sees the
+raw markers, so we show them too. It is still a pure per-line transform, so
+prefix-stability and the batch/stream agreement are unchanged.
 
 Code sits under the assistant bullet (aligned with the wrapped-prose indent, no
 gutter) and is **syntax-highlighted** (One Dark palette — keywords magenta,

@@ -67,8 +67,9 @@ const BULLET_WIDTH: u16 = 2;
 // `docs/markdown.md`). Code sits under the bullet (no gutter, no language
 // label), rendered VERBATIM (indentation preserved, no word-wrap) — the fix
 // for code losing its indentation — and **syntax-highlighted** by the
-// hand-rolled `highlight` tokenizer (One Dark palette below). Headings drop
-// their `#`s and render bold. ---
+// hand-rolled `highlight` tokenizer (One Dark palette below). Headings keep
+// their `#` markers and style the line per level, matching codex
+// (`heading_style`). ---
 /// Code text — a neutral light grey, the default (unhighlighted) code colour.
 const CODE_TEXT_COLOR: Color = Color::Rgb(0xAB, 0xB2, 0xBF);
 /// A tab inside a code block expands to this many spaces **for display**. A tab
@@ -78,8 +79,21 @@ const CODE_TEXT_COLOR: Color = Color::Rgb(0xAB, 0xB2, 0xBF);
 /// it simple and prefix-stable, matching codex's `expand_tabs`. Copy is
 /// unaffected: `/copy` reads the raw message text, not the rendered rows.
 const CODE_TAB_WIDTH: usize = 4;
-/// ATX headings render in this colour, bold, with the `#` markers stripped.
-const HEADING_COLOR: Color = AI_COLOR;
+/// The style an ATX heading of `level` (1–6) renders with — a faithful port of
+/// codex's `markdown_render.rs::start_heading`: the `#` markers are **kept**
+/// (see [`AssistantRenderer::content_rows`]) and the whole line carries text
+/// *modifiers only*, no foreground colour, so a heading reads like codex's:
+/// h1 bold+underlined, h2 bold, h3 bold+italic, h4–h6 italic. See
+/// `docs/markdown.md`.
+fn heading_style(level: u8) -> Style {
+    let modifier = match level {
+        1 => Modifier::BOLD | Modifier::UNDERLINED,
+        2 => Modifier::BOLD,
+        3 => Modifier::BOLD | Modifier::ITALIC,
+        _ => Modifier::ITALIC, // h4–h6 (and any deeper level clamps here)
+    };
+    Style::new().add_modifier(modifier)
+}
 
 // Syntax-highlight palette (One Dark) — `highlight::Kind` → colour, mapped here
 // so all styling stays centralized in `ui.rs` (the tokenizer is colour-agnostic).
@@ -1183,7 +1197,8 @@ fn code_content_rows(segments: &[(String, Color)], width: u16) -> Vec<Vec<Span<'
 
 /// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`):
 /// [`markdown::parse_blocks`] splits prose from fenced code; prose word-wraps via
-/// [`wrap_text`] (ATX headings render bold with their `#`s dropped) while **code
+/// [`wrap_text`] (ATX headings keep their `#`s and style per level, codex-style)
+/// while **code
 /// blocks render verbatim** — each source line kept byte-for-byte,
 /// **syntax-highlighted** ([`highlight::highlight`]) and hard-broken only on width
 /// via [`code_content_rows`], with both fences (and the language info-string)
@@ -1270,8 +1285,9 @@ impl AssistantRenderer {
     }
 
     /// The row *content* spans for `line` (no bullet/indent prefix yet),
-    /// advancing fence/highlight state. Prose word-wraps (headings bold, `#`s
-    /// dropped); code renders verbatim, syntax-highlighted; both the opening and
+    /// advancing fence/highlight state. Prose word-wraps (headings keep their
+    /// `#`s and style per level, codex-style); code renders verbatim,
+    /// syntax-highlighted; both the opening and
     /// closing fence render nothing (no gutter, and the language info-string is
     /// not shown).
     fn content_rows(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
@@ -1304,11 +1320,21 @@ impl AssistantRenderer {
                 code_content_rows(&colored, self.content_width)
             }
             markdown::LineKind::Prose => {
-                if let Some((_level, htext)) = markdown::heading_level(line) {
-                    let heading_style = Style::new().fg(HEADING_COLOR).add_modifier(Modifier::BOLD);
-                    wrap_text(htext, self.content_width)
+                if let Some((level, htext)) = markdown::heading_level(line) {
+                    // Codex keeps the `#` markers visible (`"#".repeat(level)`) and
+                    // styles the whole line per level — no colour, just modifiers.
+                    // We normalise the marker run + a single space like codex does,
+                    // then word-wrap the reconstructed heading.
+                    let style = heading_style(level);
+                    let hashes = "#".repeat(level as usize);
+                    let content = if htext.is_empty() {
+                        hashes
+                    } else {
+                        format!("{hashes} {htext}")
+                    };
+                    wrap_text(&content, self.content_width)
                         .into_iter()
-                        .map(|l| vec![Span::styled(l, heading_style)])
+                        .map(|l| vec![Span::styled(l, style)])
                         .collect()
                 } else {
                     wrap_text(line, self.content_width)
@@ -4026,14 +4052,54 @@ mod tests {
     }
 
     #[test]
-    fn assistant_headings_drop_the_hashes_and_render_bold() {
-        let lines = message_lines(Role::Assistant, "## The Code", 80);
-        assert_eq!(plain(&lines[0]), "● The Code", "hashes stripped");
+    fn assistant_headings_keep_the_hashes_and_style_per_level_like_codex() {
+        // Codex keeps the `#` markers visible and styles the whole heading line
+        // per level with text *modifiers only* (no foreground colour): h1
+        // bold+underlined, h2 bold, h3 bold+italic, h4-6 italic. See
+        // docs/markdown.md and codex-rs/tui/src/markdown_render.rs::start_heading.
+        let h2 = message_lines(Role::Assistant, "## The Code", 80);
+        assert_eq!(plain(&h2[0]), "● ## The Code", "hashes kept, not stripped");
+
+        // The heading-text span carries the level's modifiers and no fg override.
+        let style_of = |level: u8| {
+            let src = format!("{} Heading", "#".repeat(level as usize));
+            let lines = message_lines(Role::Assistant, &src, 80);
+            lines[0]
+                .spans
+                .iter()
+                .find(|s| s.content.contains("Heading"))
+                .expect("heading text span")
+                .style
+        };
+        for level in 1..=6u8 {
+            assert_eq!(
+                style_of(level).fg,
+                None,
+                "codex headings carry no colour (h{level})"
+            );
+        }
+        let m = |level: u8| style_of(level).add_modifier;
         assert!(
-            lines[0].spans.iter().any(|s| {
-                s.content.contains("The Code") && s.style.add_modifier.contains(Modifier::BOLD)
-            }),
-            "heading text is bold"
+            m(1).contains(Modifier::BOLD) && m(1).contains(Modifier::UNDERLINED),
+            "h1 bold+underlined"
+        );
+        assert!(
+            m(2).contains(Modifier::BOLD)
+                && !m(2).contains(Modifier::ITALIC)
+                && !m(2).contains(Modifier::UNDERLINED),
+            "h2 bold only"
+        );
+        assert!(
+            m(3).contains(Modifier::BOLD) && m(3).contains(Modifier::ITALIC),
+            "h3 bold+italic"
+        );
+        assert!(
+            m(4).contains(Modifier::ITALIC) && !m(4).contains(Modifier::BOLD),
+            "h4 italic only"
+        );
+        assert!(
+            m(6).contains(Modifier::ITALIC) && !m(6).contains(Modifier::BOLD),
+            "h6 italic"
         );
     }
 
