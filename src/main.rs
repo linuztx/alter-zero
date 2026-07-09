@@ -146,10 +146,18 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         .filter(|s| !s.is_empty())
         .or_else(|| saved.provider.clone())
         .or_else(|| providers.default_provider());
+    // The saved provider/model are ONE selection: pairing the saved model with
+    // a *different* (env-overridden) provider would ask that provider for a
+    // model it may not serve, so the saved model applies only when the
+    // resolved provider is the one it was saved with.
+    let saved_model = saved
+        .model
+        .clone()
+        .filter(|_| active_provider == saved.provider);
     let env_model = std::env::var("INLINE_TUI_MODEL")
         .ok()
         .filter(|s| !s.is_empty())
-        .or_else(|| saved.model.clone());
+        .or(saved_model);
     // `INLINE_TUI_STALL_MS` selects a test-only backend that ignores the cancel
     // for N ms — modelling a real network backend wedged in a blocking read
     // during the pre-first-token pause — so `scripts/smoke.sh` can prove an Esc
@@ -511,7 +519,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         let torn = !text.is_empty() && !text.ends_with('\n');
                                         recorder.adopt(path, meta, count, torn);
                                         term.exit_overlay()?;
-                                        repaint_conversation(term, &app, &mut render, clear)?;
+                                        // A resumed session REPLACES the whole
+                                        // conversation: purge-rebuild (like
+                                        // /clear) so the loaded history fills
+                                        // scrollback — an in-place repaint left
+                                        // the old chat above it and put only the
+                                        // last screenful of the resumed one on
+                                        // record (its earlier turns were never
+                                        // scrollback-committed in this run).
+                                        repaint_conversation(
+                                            term, &app, &mut render, ReflowClear::Purge,
+                                        )?;
                                     }
                                     None => {
                                         app.close_resume_picker();
@@ -941,10 +959,11 @@ fn load_providers() -> ProvidersFile {
 }
 
 /// The environment variable a provider's API key is read from (its `api_key_env`
-/// or `<ID>_API_KEY`), for both the key lookup and the "set X" hint.
+/// or the sanitized `<ID>_API_KEY` default), for both the key lookup and the
+/// "set X" hint.
 fn key_env_name(providers: &ProvidersFile, provider: &str) -> String {
     providers.get(provider).map_or_else(
-        || format!("{}_API_KEY", provider.to_uppercase()),
+        || inline_tui::llm::config::default_key_env(provider),
         |p| p.key_env(provider),
     )
 }
