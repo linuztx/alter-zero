@@ -242,8 +242,15 @@ of bug:
    scrollback (scrolling up shows nothing, not the old chat), and a resize can't
    leave the emulator's own reflowed copy of the old rows behind — the TUI-text
    duplication that in-place overwrite showed on a width change (guarded by
-   `smoke.sh` Phases 16 and 17). `committed` is reset so a mid-stream resize
-   re-commits the reply.
+   `smoke.sh` Phases 16 and 17). A mid-stream repaint must not lose the
+   in-flight partial reply (it lives in the streaming buffer, not `history`):
+   the tail carries the rows the stream already committed
+   (`ui::repaint_tail` / `StreamRender::committed_rows`) and the rows that
+   arrived since — chunks drained under the overlay, or the whole partial after
+   a purge reset the render — are queued right after via the normal
+   `insert_before` pipeline, reaching scrollback exactly once (guarded by
+   `smoke.sh` Phase 35; a resize that lands *while* an overlay is up upgrades
+   that return's repaint from `InPlace` to `Purge` — `overlay_resized`).
 
 4. **Tool calls interleave with text, and Ctrl+O opens a separate overlay.** A
    tool call splits the assistant text around it: `App::flush_streaming_segment`

@@ -3563,6 +3563,28 @@ impl StreamRender {
         self.take_rows(&[], total)
     }
 
+    /// The rows this render has already handed to scrollback for `text` — the
+    /// first `committed` rows of the virtual `frozen ++ tail` concatenation —
+    /// re-rendered for a repaint (the Ctrl+O overlay return; see
+    /// [`repaint_tail`]). Advances the line cache over `text` first, so rows
+    /// committed from a since-completed trailing line are found in `frozen`;
+    /// `committed` itself is untouched, so a follow-up [`commit`](Self::commit)
+    /// still emits exactly the not-yet-committed rows. After a width change
+    /// there *are* no already-committed rows at the new width (the cache
+    /// rebuilt), so this returns nothing and the follow-up commit re-emits the
+    /// whole reply.
+    #[must_use]
+    pub fn committed_rows(&mut self, text: &str, width: u16) -> Vec<Line<'static>> {
+        self.advance(text, width);
+        let mut rows: Vec<Line<'static>> =
+            self.frozen.iter().take(self.committed).cloned().collect();
+        if self.committed > self.frozen.len() {
+            let tail = self.tail_rows(text);
+            rows.extend(tail.into_iter().take(self.committed - self.frozen.len()));
+        }
+        rows
+    }
+
     /// The last rendered row of the current buffer — the strip's streaming
     /// preview. O(new complete lines since the last call + the one trailing line),
     /// so redrawing it every animation frame is cheap.
@@ -3623,7 +3645,37 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
 /// re-scrolling content the terminal already kept.
 #[must_use]
 pub fn repaint_lines(history: &[HistoryItem], width: u16, max_rows: usize) -> Vec<Line<'static>> {
+    keep_last_rows(conversation_lines(history, width), max_rows)
+}
+
+/// The repaint tail for a mid-stream conversation rebuild
+/// (`main.rs::repaint_conversation`): the finished history plus the rows of
+/// the in-flight partial reply that were **already committed** to scrollback
+/// ([`StreamRender::committed_rows`]), re-rendered in place. Repainting from
+/// history alone blanks the partial until its next chunk arrives (the Ctrl+O
+/// disappear-then-flicker bug). The rows still to come are deliberately *not*
+/// included — the caller queues them right after via [`StreamRender::commit`]
+/// (the standard `insert_before` pipeline), so rows that streamed while the
+/// overlay was up reach scrollback exactly once, however many there are.
+#[must_use]
+pub fn repaint_tail(
+    history: &[HistoryItem],
+    streaming: Option<&str>,
+    render: &mut StreamRender,
+    width: u16,
+    max_rows: usize,
+) -> Vec<Line<'static>> {
     let mut lines = conversation_lines(history, width);
+    if let Some(text) = streaming.filter(|text| !text.is_empty()) {
+        lines.extend(render.committed_rows(text, width));
+    }
+    keep_last_rows(lines, max_rows)
+}
+
+/// The last `max_rows` of `lines` — the shared cap of [`repaint_lines`] and
+/// [`repaint_tail`] (applied *after* the partial's rows join the tail, so the
+/// budget always keeps the newest rows, like a screen would).
+fn keep_last_rows(mut lines: Vec<Line<'static>>, max_rows: usize) -> Vec<Line<'static>> {
     if lines.len() > max_rows {
         lines = lines.split_off(lines.len() - max_rows);
     }
@@ -5917,6 +5969,132 @@ mod tests {
     #[test]
     fn repaint_lines_of_empty_history_is_empty() {
         assert!(repaint_lines(&[], 80, 10).is_empty());
+    }
+
+    #[test]
+    fn repaint_tail_repaints_the_partial_reply_rows_already_committed() {
+        // Mid-stream repaint (the Ctrl+O overlay return): the tail must carry
+        // the rows the stream had already committed to scrollback — repainting
+        // from history alone blanks the partial reply until the next chunk
+        // arrives (the disappear-then-flicker bug).
+        let width = 30;
+        let history = [msg(Role::User, "hi")];
+        let partial = "first line of the reply\nsecond line still growing";
+        let mut render = StreamRender::new();
+        let committed: Vec<String> = render.commit(partial, width).iter().map(plain).collect();
+        assert!(!committed.is_empty(), "the completed first line is stable");
+
+        let tail: Vec<String> = repaint_tail(&history, Some(partial), &mut render, width, 100)
+            .iter()
+            .map(plain)
+            .collect();
+        let mut expected: Vec<String> = repaint_lines(&history, width, 100)
+            .iter()
+            .map(plain)
+            .collect();
+        expected.extend(committed);
+        assert_eq!(tail, expected);
+    }
+
+    #[test]
+    fn repaint_tail_repaints_committed_rows_of_a_still_open_line() {
+        // The committed counter can point past `frozen` (wrapped rows of a
+        // prose line that hasn't seen its newline yet) — those rows reached
+        // scrollback too, so the repaint must reproduce them.
+        let width = 18;
+        let before = "a long prose line that wraps into a good number of rows here";
+        let mut render = StreamRender::new();
+        let committed: Vec<String> = render.commit(before, width).iter().map(plain).collect();
+        assert!(
+            committed.len() > 1,
+            "several wrapped rows are stable: {committed:?}"
+        );
+        let full = format!("{before} and more");
+        let tail: Vec<String> = repaint_tail(&[], Some(&full), &mut render, width, 100)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(tail, committed);
+    }
+
+    #[test]
+    fn repaint_tail_then_commit_catches_up_without_duplicate_or_gap() {
+        // Chunks that arrived while the overlay was up commit right after the
+        // repaint: committed-before ++ committed-after ++ finish must
+        // reconstruct the whole reply exactly — no row lost, none inserted
+        // twice (the scrollback-duplication half of the bug).
+        let width = 24;
+        let before = "streamed before the overlay opened\nand a second line\n";
+        let full =
+            format!("{before}plus lines that arrived\nwhile the overlay was up\nstill going");
+        let mut render = StreamRender::new();
+        let mut inserted: Vec<String> = render.commit(before, width).iter().map(plain).collect();
+
+        // The overlay round-trip: the tail repaints exactly what was already
+        // committed (empty history keeps the comparison direct)…
+        let tail: Vec<String> = repaint_tail(&[], Some(&full), &mut render, width, 100)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(tail, inserted, "the tail repaints the committed rows only");
+        // …and the follow-up commit emits just the overlay-time delta.
+        inserted.extend(render.commit(&full, width).iter().map(plain));
+        inserted.extend(render.finish(&full, width).iter().map(plain));
+
+        let expected: Vec<String> = message_lines(Role::Assistant, &full, width)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(inserted, expected);
+    }
+
+    #[test]
+    fn repaint_tail_without_a_stream_matches_repaint_lines() {
+        let history = [msg(Role::User, "one"), msg(Role::Assistant, "two")];
+        let mut render = StreamRender::new();
+        let tail: Vec<String> = repaint_tail(&history, None, &mut render, 80, 2)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(tail, vec!["● two", ""]);
+    }
+
+    #[test]
+    fn repaint_tail_cap_keeps_the_newest_rows_including_the_partial() {
+        // The row budget applies to the combined tail — history and partial
+        // together — keeping the newest rows, like a screen would.
+        let width = 80;
+        let history = [msg(Role::User, "one")];
+        let partial = "alpha\nbeta\ngamma";
+        let mut render = StreamRender::new();
+        let _ = render.commit(partial, width);
+        let tail: Vec<String> = repaint_tail(&history, Some(partial), &mut render, width, 2)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(tail.len(), 2);
+        assert!(
+            tail[1].contains("beta"),
+            "newest stream rows kept: {tail:?}"
+        );
+    }
+
+    #[test]
+    fn repaint_tail_after_a_width_change_carries_no_stale_rows() {
+        // A width change rebuilt the render's cache: nothing is "already
+        // committed" at the new width, so the tail carries no stale-width rows
+        // and the follow-up commit re-emits the reply wrapped fresh.
+        let partial = "one two three four five six seven\nnext";
+        let mut render = StreamRender::new();
+        let _ = render.commit(partial, 20);
+        let tail = repaint_tail(&[], Some(partial), &mut render, 40, 100);
+        assert!(tail.is_empty(), "no stale-width rows repainted");
+        let recommitted: Vec<String> = render.commit(partial, 40).iter().map(plain).collect();
+        let expected: Vec<String> = message_lines(Role::Assistant, partial, 40)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(recommitted[..], expected[..recommitted.len()]);
     }
 
     #[test]
