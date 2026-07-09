@@ -71,6 +71,13 @@ const BULLET_WIDTH: u16 = 2;
 // their `#`s and render bold. ---
 /// Code text — a neutral light grey, the default (unhighlighted) code colour.
 const CODE_TEXT_COLOR: Color = Color::Rgb(0xAB, 0xB2, 0xBF);
+/// A tab inside a code block expands to this many spaces **for display**. A tab
+/// is zero display columns (unicode-width treats it as a control char), so code
+/// rendered verbatim would lose all its tab indentation (Go, Makefiles, …
+/// collapse flush-left). A fixed substitution — not tab-stop alignment — keeps
+/// it simple and prefix-stable, matching codex's `expand_tabs`. Copy is
+/// unaffected: `/copy` reads the raw message text, not the rendered rows.
+const CODE_TAB_WIDTH: usize = 4;
 /// ATX headings render in this colour, bold, with the `#` markers stripped.
 const HEADING_COLOR: Color = AI_COLOR;
 
@@ -1117,6 +1124,21 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// Expand tabs in a single code line to spaces **for display** (see
+/// [`CODE_TAB_WIDTH`]). A tab is zero display columns, so tab-indented code
+/// rendered verbatim would collapse flush-left; this substitutes a fixed run of
+/// spaces (not tab-stop alignment) so the indentation survives, matching codex's
+/// `expand_tabs`. Borrows unchanged in the common (tab-free) case. Applied only
+/// on the render path — the stored message text keeps its tabs, so `/copy` is
+/// byte-exact.
+fn expand_code_tabs(line: &str) -> std::borrow::Cow<'_, str> {
+    if line.contains('\t') {
+        std::borrow::Cow::Owned(line.replace('\t', &" ".repeat(CODE_TAB_WIDTH)))
+    } else {
+        std::borrow::Cow::Borrowed(line)
+    }
+}
+
 /// Hard-break a code line's **coloured** segments into display rows of at most
 /// `width` columns, preserving each run's colour across the break — the verbatim,
 /// whitespace-preserving counterpart of [`wrap_verbatim`] that keeps syntax
@@ -1265,10 +1287,13 @@ impl AssistantRenderer {
                 Vec::new()
             }
             markdown::LineKind::Code => {
+                // Expand tabs to spaces first so tab-indented code (Go, Makefiles)
+                // keeps its indentation — a tab is zero-width and would collapse.
+                let expanded = expand_code_tabs(line);
                 let segs = match self.highlighter.as_mut() {
-                    Some(h) => h.line(line),
+                    Some(h) => h.line(&expanded),
                     None => vec![highlight::Seg {
-                        text: line.to_string(),
+                        text: expanded.into_owned(),
                         kind: highlight::Kind::Plain,
                     }],
                 };
@@ -3972,6 +3997,35 @@ mod tests {
     }
 
     #[test]
+    fn assistant_code_expands_tabs_so_indentation_survives() {
+        // THE BUG: Go (and many langs) indent with TAB. A tab is zero display
+        // width (unicode-width), so rendered verbatim it collapses and the code
+        // loses all its indentation. Tabs must be expanded to spaces for display
+        // (matching codex — a fixed CODE_TAB_WIDTH substitution, not tab stops).
+        let src = "```go\nfunc main() {\n\tfmt.Println(\"hi\")\n\t\tnested()\n}\n```";
+        let lines = message_lines(Role::Assistant, src, 80);
+        let row = |needle: &str| -> String {
+            plain(lines.iter().find(|l| plain(l).contains(needle)).unwrap())
+        };
+        let println = row("fmt.Println");
+        assert!(!println.contains('\t'), "no raw tab survives: {println:?}");
+        // The 2-col continuation indent, then one tab → CODE_TAB_WIDTH spaces.
+        let one = "  ".to_string() + &" ".repeat(CODE_TAB_WIDTH);
+        assert!(
+            println.starts_with(&format!("{one}fmt.Println")),
+            "one tab expands to {CODE_TAB_WIDTH} spaces of indent: {println:?}"
+        );
+        // Two tabs → twice the indent, so nesting reads as deeper.
+        let nested = row("nested()");
+        let two = "  ".to_string() + &" ".repeat(CODE_TAB_WIDTH * 2);
+        assert!(
+            nested.starts_with(&format!("{two}nested()")),
+            "two tabs expand to {} spaces: {nested:?}",
+            CODE_TAB_WIDTH * 2
+        );
+    }
+
+    #[test]
     fn assistant_headings_drop_the_hashes_and_render_bold() {
         let lines = message_lines(Role::Assistant, "## The Code", 80);
         assert_eq!(plain(&lines[0]), "● The Code", "hashes stripped");
@@ -5160,6 +5214,10 @@ mod tests {
             "# Title\nsome text under it\n## Sub heading here that is quite long and wraps\n```\ncode\n```",
             // Reply that is exactly a code block; unterminated fence at the end.
             "```go\npackage main\nfunc main() {}",
+            // TAB-indented code (Go): tabs expand to spaces on the render path, so
+            // the streamed commits must still match the batch render at every
+            // prefix (the expansion is a pure per-line transform, prefix-stable).
+            "```go\nfunc main() {\n\tif x {\n\t\tfmt.Println(\"hi\")\n\t}\n}\n```",
             // Consecutive fences (open immediately closed) and empty prose lines.
             "a\n\n```\n```\n\nb",
             // Multi-byte UTF-8: emoji + CJK in prose and inside a string, so the

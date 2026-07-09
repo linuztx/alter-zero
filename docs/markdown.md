@@ -28,6 +28,15 @@ strings green, comments dim, numbers orange, calls blue). Both the opening and
 closing ` ``` ` fences are hidden, and the info-string language is used only to
 pick the highlighter — it is **not** shown as a label.
 
+**Tabs are expanded to spaces** on the render path (`expand_code_tabs`, a fixed
+`CODE_TAB_WIDTH`-space substitution, like codex's `expand_tabs`). A tab is zero
+display columns (unicode-width treats it as a control char), so tab-indented
+code — Go, Makefiles — would otherwise collapse flush-left, losing all its
+indentation. The substitution is display-only: the stored message text keeps its
+tabs, so `/copy` is byte-exact. It is a pure per-line transform applied in the
+one `AssistantRenderer` core, so batch and streaming stay identical and
+prefix-stable (a tab-indented block is in the differential corpus).
+
 Highlighting is hand-rolled (`highlight.rs`) — codex uses `syntect` (~250
 TextMate grammars); this codebase takes no such dependency, so a **generic**
 tokenizer classifies the token shapes common to mainstream languages (comments,
