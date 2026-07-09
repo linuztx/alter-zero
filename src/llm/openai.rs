@@ -130,17 +130,24 @@ impl OpenAiClient {
             match reader.read(&mut byte) {
                 Ok(0) => {
                     // EOF: flush any final line that had no trailing newline.
-                    if !line.is_empty() {
-                        process_sse_line(&line, &mut splitter, &mut on_delta);
+                    if !line.is_empty()
+                        && let SseStep::Fail(err) =
+                            process_sse_line(&line, &mut splitter, &mut on_delta)
+                    {
+                        return Err(err);
                     }
                     break;
                 }
                 Ok(_) => match byte[0] {
                     b'\n' => {
-                        let done = process_sse_line(&line, &mut splitter, &mut on_delta);
+                        let step = process_sse_line(&line, &mut splitter, &mut on_delta);
                         line.clear();
-                        if done {
-                            break; // saw `data: [DONE]`
+                        match step {
+                            SseStep::Continue => {}
+                            SseStep::Done => break, // saw `data: [DONE]`
+                            // The provider failed the stream in-band; surface
+                            // it instead of letting EOF report a clean finish.
+                            SseStep::Fail(err) => return Err(err),
                         }
                     }
                     b'\r' => {} // SSE line ending — ignore the CR
@@ -175,27 +182,41 @@ fn is_read_timeout(e: &std::io::Error) -> bool {
         .is_some_and(reqwest::Error::is_timeout)
 }
 
+/// What one processed SSE line means for the drain loop.
+enum SseStep {
+    /// Keep reading (a delta was emitted, or the line was skippable).
+    Continue,
+    /// The `data: [DONE]` sentinel — the stream is complete.
+    Done,
+    /// The provider reported a failure as an in-band `{"error": …}` frame
+    /// (aggregators send these on an HTTP 200 stream, then close without
+    /// `[DONE]`) — the stream failed and the turn must surface it.
+    Fail(LlmError),
+}
+
 /// Parse and dispatch one SSE line's bytes: skip non-`data:` lines and empty
 /// deltas, feed the rest through `splitter`, and emit a non-empty split via
-/// `on_delta`. Returns `true` when the line was the `[DONE]` sentinel (the
-/// caller stops). Invalid UTF-8 is skipped, never fatal.
+/// `on_delta`. Invalid UTF-8 is skipped, never fatal.
 fn process_sse_line(
     line: &[u8],
     splitter: &mut ThinkingSplitter,
     on_delta: &mut impl FnMut(Delta),
-) -> bool {
+) -> SseStep {
     let Ok(text) = std::str::from_utf8(line) else {
-        return false;
+        return SseStep::Continue;
     };
     let Some(data) = sse_data(text) else {
-        return false;
+        return SseStep::Continue;
     };
     if data == "[DONE]" {
-        return true;
+        return SseStep::Done;
+    }
+    if let Some(err) = parse_sse_error(data) {
+        return SseStep::Fail(err);
     }
     let (content, reasoning) = parse_sse_data(data);
     if content.is_empty() && reasoning.is_empty() {
-        return false;
+        return SseStep::Continue;
     }
     let (resp_delta, reason_delta) = splitter.feed(&content, &reasoning);
     if !resp_delta.is_empty() || !reason_delta.is_empty() {
@@ -204,7 +225,44 @@ fn process_sse_line(
             reasoning: reason_delta,
         });
     }
-    false
+    SseStep::Continue
+}
+
+/// The wire shape of an in-band error frame: `{"error": {"message", "code"?}}`.
+/// The code is a number for HTTP-like statuses (OpenRouter) but some providers
+/// send a string tag — both map into [`LlmError::Api`] (a string code becomes
+/// status 0, keeping the message).
+#[derive(Debug, Deserialize)]
+struct ErrorPayload {
+    error: ErrorBody,
+}
+
+#[derive(Debug, Deserialize)]
+struct ErrorBody {
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    code: Option<serde_json::Value>,
+}
+
+/// Detect an in-band `{"error": …}` frame in one SSE `data:` payload. `None`
+/// for ordinary delta frames (including unparseable ones — those stay skipped,
+/// a keep-alive shouldn't kill the stream).
+fn parse_sse_error(data: &str) -> Option<LlmError> {
+    let payload: ErrorPayload = serde_json::from_str(data).ok()?;
+    let status = payload
+        .error
+        .code
+        .as_ref()
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|c| u16::try_from(c).ok())
+        .unwrap_or(0);
+    let body = payload
+        .error
+        .message
+        .filter(|m| !m.trim().is_empty())
+        .unwrap_or_else(|| data.to_string());
+    Some(LlmError::Api { status, body })
 }
 
 /// Extract the `data:` payload from one SSE line, or `None` for comments/blank
@@ -375,26 +433,56 @@ mod tests {
     }
 
     /// Run a line's bytes through `process_sse_line`, collecting emitted deltas.
-    fn drive_line(line: &str) -> (bool, Vec<Delta>) {
+    fn drive_line(line: &str) -> (SseStep, Vec<Delta>) {
         let mut splitter = ThinkingSplitter::new();
         let mut out = Vec::new();
-        let done = process_sse_line(line.as_bytes(), &mut splitter, &mut |d| out.push(d));
-        (done, out)
+        let step = process_sse_line(line.as_bytes(), &mut splitter, &mut |d| out.push(d));
+        (step, out)
     }
 
     #[test]
     fn process_sse_line_emits_a_content_delta() {
-        let (done, deltas) = drive_line(r#"data: {"choices":[{"delta":{"content":"Hi"}}]}"#);
-        assert!(!done);
+        let (step, deltas) = drive_line(r#"data: {"choices":[{"delta":{"content":"Hi"}}]}"#);
+        assert!(matches!(step, SseStep::Continue));
         assert_eq!(deltas.len(), 1);
         assert_eq!(deltas[0].response, "Hi");
     }
 
     #[test]
     fn process_sse_line_reports_the_done_sentinel() {
-        let (done, deltas) = drive_line("data: [DONE]");
-        assert!(done, "the caller stops on [DONE]");
+        let (step, deltas) = drive_line("data: [DONE]");
+        assert!(matches!(step, SseStep::Done), "the caller stops on [DONE]");
         assert!(deltas.is_empty());
+    }
+
+    #[test]
+    fn process_sse_line_surfaces_an_in_band_error_frame() {
+        // OpenRouter (and other aggregators) report a mid-stream failure as a
+        // normal-looking `data:` frame carrying an "error" object, then end
+        // the stream without [DONE]. Swallowing it turned a failed/truncated
+        // stream into a silently "successful" turn.
+        let (step, deltas) =
+            drive_line(r#"data: {"error":{"message":"Provider returned error","code":429}}"#);
+        let SseStep::Fail(err) = step else {
+            panic!("an in-band error frame must fail the stream, got a pass-through");
+        };
+        assert!(deltas.is_empty());
+        let shown = err.to_string();
+        assert!(shown.contains("429"), "carries the code: {shown}");
+        assert!(
+            shown.contains("Provider returned error"),
+            "carries the message: {shown}"
+        );
+    }
+
+    #[test]
+    fn process_sse_line_in_band_error_with_a_string_code_still_fails() {
+        let (step, _deltas) =
+            drive_line(r#"data: {"error":{"message":"quota exhausted","code":"rate_limited"}}"#);
+        let SseStep::Fail(err) = step else {
+            panic!("expected a failure step");
+        };
+        assert!(err.to_string().contains("quota exhausted"));
     }
 
     #[test]
@@ -409,14 +497,14 @@ mod tests {
         let mut splitter = ThinkingSplitter::new();
         let mut emitted = false;
         // A lone 0xFF byte after the prefix isn't valid UTF-8.
-        let done = process_sse_line(
+        let step = process_sse_line(
             &[b'd', b'a', b't', b'a', b':', 0xFF],
             &mut splitter,
             &mut |_| {
                 emitted = true;
             },
         );
-        assert!(!done);
+        assert!(matches!(step, SseStep::Continue));
         assert!(!emitted);
     }
 

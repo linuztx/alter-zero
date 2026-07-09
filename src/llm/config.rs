@@ -50,14 +50,35 @@ pub struct Kwargs {
     pub extra: BTreeMap<String, toml::Value>,
 }
 
+/// The default environment variable a provider's API key is read from:
+/// `<ID_UPPERCASE>_API_KEY`, with any character that isn't valid in an
+/// env-var name (`-`, `.`, …) mapped to `_` — `EnvFile::parse` (rightly)
+/// skips invalid keys, so an unsanitized name would let `/login` write a key
+/// that never resolves again. The one place this rule lives (`main.rs`'s
+/// unknown-provider fallback shares it).
+#[must_use]
+pub fn default_key_env(id: &str) -> String {
+    let sanitized: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{sanitized}_API_KEY")
+}
+
 impl Provider {
     /// The environment variable this provider's API key is read from: the
-    /// explicit `api_key_env`, else `<ID_UPPERCASE>_API_KEY`.
+    /// explicit `api_key_env`, else [`default_key_env`].
     #[must_use]
     pub fn key_env(&self, id: &str) -> String {
         self.api_key_env
             .clone()
-            .unwrap_or_else(|| format!("{}_API_KEY", id.to_uppercase()))
+            .unwrap_or_else(|| default_key_env(id))
     }
 
     /// Where the picker lists models from: `api_model_base` if set, else the
@@ -237,6 +258,20 @@ mod tests {
         let p = file.get("openrouter").unwrap();
         assert_eq!(p.key_env("openrouter"), "OPENROUTER_API_KEY");
         assert_eq!(p.key_env("sambanova"), "SAMBANOVA_API_KEY");
+    }
+
+    #[test]
+    fn key_env_of_a_punctuated_id_is_a_valid_env_var_name() {
+        // A provider id like "my-provider.v2" must not derive "MY-PROVIDER.V2_
+        // API_KEY": EnvFile::parse (rightly) skips keys with '-'/'.', so a
+        // /login-saved key would never resolve again. Punctuation maps to '_'.
+        assert_eq!(default_key_env("my-provider.v2"), "MY_PROVIDER_V2_API_KEY");
+        let file = ProvidersFile::parse(
+            "[providers.my-provider]\nname = \"X\"\n[providers.my-provider.kwargs]\napi_base = \"https://x/v1\"\n",
+        )
+        .unwrap();
+        let p = file.get("my-provider").unwrap();
+        assert_eq!(p.key_env("my-provider"), "MY_PROVIDER_API_KEY");
     }
 
     #[test]

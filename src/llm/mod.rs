@@ -128,7 +128,23 @@ fn truncate_chars(s: &str, max: usize) -> String {
 ///
 /// # Errors
 /// Returns [`LlmError::Http`] if the client can't be built.
+///
+/// Clients are cached per `op_timeout` for the life of the process (a
+/// `reqwest` client is an `Arc` handle): building one per attempt re-read and
+/// re-parsed the CA bundle every turn and — because each fresh client starts
+/// an empty connection pool — paid a full TLS handshake per request, defeating
+/// the `pool_idle_timeout` set here. The env config a client bakes in (proxy,
+/// CA paths) never changes mid-process (this crate forbids `set_var`).
 pub(crate) fn http_client(op_timeout: Duration) -> Result<reqwest::blocking::Client> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CLIENTS: OnceLock<Mutex<HashMap<Duration, reqwest::blocking::Client>>> = OnceLock::new();
+    let cache = CLIENTS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(map) = cache.lock()
+        && let Some(client) = map.get(&op_timeout)
+    {
+        return Ok(client.clone());
+    }
     let mut builder = reqwest::blocking::Client::builder()
         .pool_idle_timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(30))
@@ -136,7 +152,11 @@ pub(crate) fn http_client(op_timeout: Duration) -> Result<reqwest::blocking::Cli
     for cert in extra_root_certificates() {
         builder = builder.add_root_certificate(cert);
     }
-    builder.build().map_err(|e| LlmError::Http(e.to_string()))
+    let client = builder.build().map_err(|e| LlmError::Http(e.to_string()))?;
+    if let Ok(mut map) = cache.lock() {
+        map.insert(op_timeout, client.clone());
+    }
+    Ok(client)
 }
 
 /// Extra trust roots loaded from `INLINE_TUI_CA_FILE` or `SSL_CERT_FILE` — the

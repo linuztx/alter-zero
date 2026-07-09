@@ -71,7 +71,14 @@ impl EnvFile {
         let mut replaced = false;
         for line in &mut lines {
             if split_key_value(line).map(|(k, _)| k) == Some(key) {
-                *line = new_line.clone();
+                // An exported line stays exported — the rewrite preserves the
+                // file's shape, like the untouched comments around it.
+                let exported = line.trim_start().starts_with("export ");
+                *line = if exported {
+                    format!("export {new_line}")
+                } else {
+                    new_line.clone()
+                };
                 replaced = true;
                 break;
             }
@@ -135,8 +142,8 @@ fn unquote(raw: &str) -> String {
     v.to_string()
 }
 
-/// Unescape the inside of a double-quoted value (`\"`, `\\`, `\n`, `\t`; an
-/// unknown escape keeps its backslash).
+/// Unescape the inside of a double-quoted value (`\"`, `\\`, `\n`, `\t`, `\r`;
+/// an unknown escape keeps its backslash).
 fn unescape_double(inner: &str) -> String {
     let mut out = String::with_capacity(inner.len());
     let mut chars = inner.chars();
@@ -147,6 +154,7 @@ fn unescape_double(inner: &str) -> String {
                 Some('\\') => out.push('\\'),
                 Some('n') => out.push('\n'),
                 Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
                 Some(other) => {
                     out.push('\\');
                     out.push(other);
@@ -169,9 +177,17 @@ fn needs_quote(value: &str) -> bool {
             .any(|c| c.is_whitespace() || c == '#' || c == '"' || c == '\'')
 }
 
-/// Wrap `value` in double quotes, escaping backslashes and double quotes.
+/// Wrap `value` in double quotes, escaping backslashes, double quotes, and the
+/// control characters [`unescape_double`] reads back (`\n`/`\t`/`\r`) — a
+/// literal newline inside the quotes would tear the file into two
+/// unparseable lines.
 fn quote(value: &str) -> String {
-    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped = value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\t', "\\t")
+        .replace('\r', "\\r");
     format!("\"{escaped}\"")
 }
 
@@ -284,8 +300,19 @@ mod tests {
 
     #[test]
     fn upsert_recognises_an_exported_key_line() {
+        // The existing exported line is replaced in place — keeping its
+        // `export ` prefix, like every other preserved detail of the file.
         let out = EnvFile::upsert("export K=old\n", "K", "new");
-        // The existing (exported) line is replaced, not duplicated.
-        assert_eq!(out, "K=new\n");
+        assert_eq!(out, "export K=new\n");
+    }
+
+    #[test]
+    fn upsert_of_a_value_with_newlines_round_trips() {
+        // quote() must escape control characters — a literal newline inside
+        // the quotes tears the file into two unparseable lines.
+        let out = EnvFile::upsert("", "K", "a\nb\tc\r");
+        assert_eq!(out.lines().count(), 1, "one line, not a torn file: {out:?}");
+        let env = EnvFile::parse(&out);
+        assert_eq!(env.get("K"), Some("a\nb\tc\r"));
     }
 }
