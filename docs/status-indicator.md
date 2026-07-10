@@ -150,8 +150,11 @@ transcript (stamp-free there — only user messages display a timestamp):
 
 ## Strip geometry
 
-The strip above the box has two parts. The **status line + its gap** are always
-present while a turn runs. The **preview line + its gap are only reserved when
+The strip above the box has two independent slots, each a content row plus a
+trailing gap. The **status line + its gap are reserved while a turn runs**,
+*except a `!` shell turn* — which hides the spinner status entirely and shows
+its elapsed in the `⎿ Running… (Ns)` preview (`ui::strip_has_status`; see
+`docs/shell-command.md`). The **preview line + its gap are only reserved when
 there is something to preview** — a running tool, or a reply whose buffer is
 non-empty (`ui::strip_has_preview`). During the pre-stream pause (and any moment
 before the first chunk) there is no preview, so the strip is just status + gap
@@ -160,18 +163,19 @@ only reserves a blank *separator* when the status is visible, never an empty
 content/preview row; `bottom_pane/mod.rs`):
 
 ```
-strip = (has_preview ? preview (1) + gap (1) : 0) + status (1) + gap (1)
-      = 4 rows streaming a reply / running a tool
+strip = (has_preview ? preview (1) + gap (1) : 0) + (has_status ? status (1) + gap (1) : 0)
+      = 4 rows streaming a reply / running an AI tool
       = 2 rows during the pre-stream pause (status + gap only)
+      = 2 rows during a `!` shell run   (preview + gap only, status hidden)
       = 0 idle
 ```
 
 `render_live` draws `status_line` at `preview_rows` into the strip (0 when there
-is no preview, so the status is the strip's top row); the `STATUS_GAP_ROWS` row
-below it stays blank. `live_height`/`live_layout`/`input_box` take a
-`has_preview: bool` alongside the `streaming` (turn-active) flag, fed by
-`strip_has_preview` from the `App`-having callers (`render_live`,
-`cursor_position`, `main.rs`).
+is no preview, so the status is the strip's top row) *only when* `has_status`;
+the `STATUS_GAP_ROWS` row below it stays blank. `live_height`/`live_layout`/
+`input_box` take a `has_status: bool` and a `has_preview: bool`, fed by
+`strip_has_status`/`strip_has_preview` from the `App`-having callers
+(`render_live`, `cursor_position`, `main.rs`).
 
 ## The shimmer wave (ported from openai/codex)
 

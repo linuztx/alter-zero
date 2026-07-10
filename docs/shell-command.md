@@ -37,9 +37,16 @@ interruptible with Esc.
 
 We have no real model, so "inject the output into the model's context" is moot
 — a `!command` is **purely local**. Everything else maps cleanly onto the
-existing turn + tool machinery, so a shell run reuses the streaming strip
-(spinner, elapsed timer, `esc to interrupt`), the `⎿` peek/expand cell, the
-resize repaint, and the queue — almost no new rendering.
+existing turn + tool machinery, so a shell run reuses the streaming strip, the
+`⎿` peek/expand cell, the resize repaint, and the queue — almost no new
+rendering. It **diverges** from an AI turn in two rendered ways, both matching
+the user's spec:
+
+- the spinner **status line is hidden** — no `Running… (Ns · esc to interrupt)`
+  row. Its elapsed instead rides the preview as `⎿ Running… (Ns)`
+  (`strip_has_status` is false for a shell turn; see *The running preview*).
+- an Esc interrupt commits **no** `Conversation interrupted` notice — the
+  resolved `⎿ Interrupted by user` cell is the whole record (see *Interrupt*).
 
 ### The absorbed prefix — `App::shell_mode` (codex's `is_bash_mode`)
 
@@ -100,17 +107,20 @@ exactly that:
 - `streaming = Some(String::new())` — an **empty** buffer: `is_streaming()` is
   true (the strip shows, a mid-run Enter queues) but `finish_stream` records no
   phantom message;
-- a `shell`-flagged `TurnStatus` (`SHELL_VERB` → the live `Running…` status;
-  the flag makes `end_turn` skip the `Ran for Ns` summary — **the cell is its
-  own record**);
+- a `shell`-flagged `TurnStatus`: the flag makes `end_turn` skip the `Ran for
+  Ns` summary (**the cell is its own record**) *and* makes `strip_has_status`
+  false, so the spinner status **line is not rendered** — the status object
+  still lives (it carries the boundary-supplied `elapsed` and keeps the turn
+  machinery running), but `SHELL_VERB`/`↑ tokens`/`esc to interrupt` never show;
 - the command as the running **shell-flagged tool**: `tool_lines` renders it
-  **headerless** (no `● name(args)` — the Shell message above is the header),
-  so while it runs the strip's preview row is just `  ⎿ Running…`, sitting
-  flush under the committed header; on `ToolEnd` the committed `⎿` block (up to
-  `TOOL_PEEK_LINES` aligned lines, then `… +N lines (ctrl+o to expand)`)
-  replaces it (`result_row` does the corner/continuation alignment).
-  `conversation_lines` skips the blank spacer after a Shell message so the
-  repaint keeps the cell flush.
+  **headerless** (no `● name(args)` — the Shell message above is the header).
+  While it runs the strip's preview row is `  ⎿ Running… (Ns)` —
+  `render_live`'s `shell_running_line(elapsed)`, the elapsed the hidden status
+  would have carried — sitting flush under the committed header; on `ToolEnd`
+  the committed `⎿` block (up to `TOOL_PEEK_LINES` aligned lines, then `… +N
+  lines (ctrl+o to expand)`) replaces it (`result_row` does the corner/
+  continuation alignment). `conversation_lines` skips the blank spacer after a
+  Shell message so the repaint keeps the cell flush.
 
 The **Ctrl+O view** renders the same shell cell **headerless** too
 (`tool_full_lines` skips `tool_header` for a shell tool), so the overlay shows
@@ -127,9 +137,11 @@ stdout/stderr drained on reader threads (no pipe-buffer deadlock), and sends
 `Action::Interrupt`: the cancel kills the child (the runner returns at once
 *without* joining its reader threads — a reparented grandchild like `sleep`
 can hold the pipe open long after `sh` dies), and `interrupt_turn` resolves
-the cell as `⎿ Interrupted by user`. Output is stdout then stderr
-concatenated; a non-zero exit appends `[exit status: N]` and resolves the
-cell red.
+the cell as `⎿ Interrupted by user` and commits **no** `Conversation
+interrupted` notice (req 2 — that cell is the record; `interrupt_turn` returns
+`Kept { notice: None }` for a shell turn, so `commit_turn_failure` writes only
+the tool). Output is stdout then stderr concatenated; a non-zero exit appends
+`[exit status: N]` and resolves the cell red.
 
 ### Output too large — cap it in memory (the peak-memory fix)
 
@@ -209,12 +221,17 @@ The `?` shortcuts band gains a `! for shell command` entry.
   one opens a fresh batch, Alt+Up over it re-enters shell mode; see
   `docs/queue.md`); `begin_shell` records the `Role::Shell` header, flags the
   status + tool, and `end_turn` then returns no summary; interrupting resolves
-  the command failed.
-- `ui`: `message_lines(Role::Shell…)` is the dark user-style line with the red
+  the command failed and returns `Kept { notice: None }` — no `Conversation
+  interrupted` message (req 2).
+- `ui`: `strip_has_status` is false for a shell turn, so `render_live` hides the
+  status line and shows `⎿ Running… (Ns)` (the elapsed) as the preview, the
+  strip being preview + gap only (no `esc to interrupt`, req 3);
+  `message_lines(Role::Shell…)` is the dark user-style line with the red
   `! ` bullet, width-padded; a shell tool renders headerless — inline a `⎿`
   block of up to `TOOL_PEEK_LINES` lines (continuation lines aligned under the
   corner) with a `… +N lines (ctrl+o to expand)` hint when more is hidden,
-  `⎿ Running…` while running; the Ctrl+O `tool_full_lines` is headerless too
+  `⎿ Running…` while running (`tool_lines`; the live preview adds the elapsed);
+  the Ctrl+O `tool_full_lines` is headerless too
   (no `● ls` bullet) and shows the retained output uncapped under `⎿`,
   whitespace preserved verbatim (`wrap_verbatim` — `ls -l`/`tree` alignment
   survives; `wrap_text` stays for messages); a
@@ -232,8 +249,10 @@ The `?` shortcuts band gains a `! for shell command` entry.
 - `main.rs` (smoke, Phase 19): typing `!echo …` shows the `! echo …` prompt and
   the `Shell mode` footer (never `❯ !echo`); the run commits the exec cell
   (`! echo …` header + `⎿` output, no `●` header, no `Ran for` summary); a
-  failing command reports `[exit status: N]`; `!sleep 9` then Esc commits the
-  interrupt notice promptly. **Phase 22**: a `!` command with >100KB output
+  failing command reports `[exit status: N]`; a running `!sleep 9` shows the
+  `⎿ Running… (Ns)` preview with **no** `esc to interrupt` status (req 3), and
+  Esc resolves it `⎿ Interrupted by user` with **no** `Conversation interrupted`
+  notice (req 2). **Phase 22**: a `!` command with >100KB output
   (`seq 1 50000`) renders its retained head with the `+N lines (ctrl+o to
   expand)` peek hint, writes **no** `/tmp/inline-tui-shell-*.txt` file (the
   output is capped in memory, never saved), and the Ctrl+O view ends with the `…`
@@ -251,5 +270,7 @@ The `?` shortcuts band gains a `! for shell command` entry.
   trade-off is the tail is unrecoverable. Bump the const (or add head+tail
   retention, codex's `HeadTailBuffer`) if more is needed.
 - stdout and stderr are **concatenated**, not truly interleaved.
-- The interrupt notice is the shared `Conversation interrupted…` text.
+- ~~The interrupt notice is the shared `Conversation interrupted…` text.~~ —
+  **resolved**: a shell interrupt now commits no notice, the resolved
+  `⎿ Interrupted by user` cell being the record (req 2; see `docs/interrupt.md`).
 - No timeout — a hung command runs until Esc (codex caps at 1 hour).

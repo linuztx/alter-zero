@@ -620,27 +620,36 @@ const INPUT_CHROME_ROWS: u16 = 2;
 /// rules (idle has no preview strip). `main.rs` sizes the initial viewport from this.
 pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
 
-/// Rows of the streaming strip above the box, shown only while a turn is active.
-/// The **status line** and its trailing gap are always present during a turn; the
-/// **preview line and its gap are only reserved when there is something to
-/// preview** (`has_preview`: a running tool, or a reply whose buffer is
-/// non-empty). During the pre-stream pause — and any moment before the first
-/// chunk — there is no preview, so the strip is just status + gap and the box
-/// sits one blank below the committed user message (codex doesn't reserve an
-/// empty preview line). Idle, the strip collapses to nothing. The **queued
-/// messages** (`queued_rows`) stack below this, between the status gap and the
-/// box's top rule — added separately by [`live_height`]/[`live_layout`] since
-/// their height depends on the queue.
-const fn strip_rows(streaming: bool, has_preview: bool) -> u16 {
-    if !streaming {
-        return 0;
-    }
+/// Rows of the streaming strip above the box. The strip has two independent
+/// slots, each a content row plus a trailing gap:
+///
+/// - the **status line** (`has_status`: a turn is active *and* it is not a `!`
+///   shell turn — a shell run hides the spinner status entirely, showing its
+///   elapsed in the `⎿ Running… (Ns)` preview instead, see [`strip_has_status`]
+///   and `docs/shell-command.md`);
+/// - the **preview line** (`has_preview`: a running tool, or a reply whose
+///   buffer is non-empty — [`strip_has_preview`]).
+///
+/// So a normal streaming turn is preview + gap + status + gap (4 rows); the
+/// pre-stream pause is status + gap only (2 rows, no empty preview line, codex
+/// parity); a shell run is preview + gap only (2 rows, no status); and idle it
+/// collapses to nothing (both flags false — `has_preview` can't be true while
+/// idle, since it needs a running tool or a live buffer). The **queued
+/// messages** (`queued_rows`) stack below this, between the strip and the box's
+/// top rule — added separately by [`live_height`]/[`live_layout`] since their
+/// height depends on the queue.
+const fn strip_rows(has_status: bool, has_preview: bool) -> u16 {
     let preview = if has_preview {
         PREVIEW_ROWS + GAP_ROWS
     } else {
         0
     };
-    preview + STATUS_ROWS + STATUS_GAP_ROWS
+    let status = if has_status {
+        STATUS_ROWS + STATUS_GAP_ROWS
+    } else {
+        0
+    };
+    preview + status
 }
 
 /// Whether the streaming strip reserves a **preview** row: a tool is running
@@ -654,6 +663,17 @@ pub fn strip_has_preview(app: &App) -> bool {
     app.current_tool().is_some() || app.streaming_text().is_some_and(|t| !t.is_empty())
 }
 
+/// Whether the streaming strip shows the **status line** (the spinner + timer +
+/// `esc to interrupt`): true while a turn is active, **except a `!` shell
+/// turn**, which suppresses the whole status row and shows its elapsed in the
+/// `⎿ Running… (Ns)` preview instead (docs/shell-command.md). Idle → false
+/// (no turn). Used by [`render_live`]/[`cursor_position`]/`main.rs` to feed
+/// `strip_rows` (and to gate the status render in [`render_live`]).
+#[must_use]
+pub fn strip_has_status(app: &App) -> bool {
+    app.status().is_some_and(|status| !status.shell)
+}
+
 /// Columns the input field's text occupies: the box spans the full width (no side
 /// borders) minus the prompt/indent that prefixes every text row.
 fn field_width(width: u16) -> u16 {
@@ -661,8 +681,9 @@ fn field_width(width: u16) -> u16 {
 }
 
 /// Height of the bottom live region for the current `input` at this terminal
-/// size: the streaming strip (only while `streaming`) plus the `queued_rows`
-/// queued-message lines stacked under its status (the strip's
+/// size: the streaming strip (the status and/or preview slots — see
+/// [`strip_rows`] for how `has_status`/`has_preview` size it) plus the
+/// `queued_rows` queued-message lines stacked under it (the strip's
 /// [`queued_rows`]), the `toast_rows` transient toast row just above the box
 /// ([`toast_rows`], 0 or 1), two framing rules, one row per wrapped input line —
 /// so the box **grows** as the message wraps — the band below it (`band_rows`:
@@ -679,7 +700,7 @@ pub fn live_height(
     input: &TextArea,
     width: u16,
     term_height: u16,
-    streaming: bool,
+    has_status: bool,
     has_preview: bool,
     queued_rows: u16,
     toast_rows: u16,
@@ -687,7 +708,7 @@ pub fn live_height(
     footer_rows: u16,
 ) -> u16 {
     let rows = input.row_count(field_width(width)) as u16;
-    (strip_rows(streaming, has_preview)
+    (strip_rows(has_status, has_preview)
         + queued_rows
         + toast_rows
         + INPUT_CHROME_ROWS
@@ -851,7 +872,7 @@ pub fn repin(top: u16, old_height: u16, new_height: u16, screen_height: u16) -> 
 #[allow(clippy::too_many_arguments)]
 fn live_layout(
     area: Rect,
-    streaming: bool,
+    has_status: bool,
     has_preview: bool,
     queued_rows: u16,
     toast_rows: u16,
@@ -859,7 +880,7 @@ fn live_layout(
     footer_rows: u16,
 ) -> [Rect; 4] {
     Layout::vertical([
-        Constraint::Length(strip_rows(streaming, has_preview) + queued_rows + toast_rows),
+        Constraint::Length(strip_rows(has_status, has_preview) + queued_rows + toast_rows),
         Constraint::Min(0),
         Constraint::Length(band_rows),
         Constraint::Length(footer_rows),
@@ -892,7 +913,7 @@ struct InputBox {
 fn input_box(
     area: Rect,
     input: &TextArea,
-    streaming: bool,
+    has_status: bool,
     has_preview: bool,
     queued_rows: u16,
     toast_rows: u16,
@@ -901,7 +922,7 @@ fn input_box(
 ) -> InputBox {
     let [_, frame, _, _] = live_layout(
         area,
-        streaming,
+        has_status,
         has_preview,
         queued_rows,
         toast_rows,
@@ -1448,7 +1469,6 @@ pub fn render_live_with_preview(
         render_key_onboarding(area, buf, onboarding);
         return;
     }
-    let streaming = app.is_streaming();
     // The band below the box holds the palette, the shortcuts overview, *or* the
     // `@` file picker (band_rows — mutually exclusive). Queued messages render
     // in the strip *above* the box instead; the session-context footer takes
@@ -1459,24 +1479,39 @@ pub fn render_live_with_preview(
     let footer = footer_rows(app, band);
     // The preview row + its gap are only reserved when there is something to
     // preview; the pre-stream pause shows status-only (no stray blank line).
+    // The status row + its gap are reserved unless this is a `!` shell turn,
+    // which hides the spinner status and shows its elapsed in the preview.
     let has_preview = strip_has_preview(app);
+    let has_status = strip_has_status(app);
     let [strip, _, band_area, footer_area] =
-        live_layout(area, streaming, has_preview, queued, toast, band, footer);
-    // Rows the preview occupies at the strip's top (0 when there's no preview).
+        live_layout(area, has_status, has_preview, queued, toast, band, footer);
+    // Rows the preview / status each occupy at the strip's top (0 when absent).
     let preview_rows = if has_preview {
         PREVIEW_ROWS + GAP_ROWS
+    } else {
+        0
+    };
+    let status_rows = if has_status {
+        STATUS_ROWS + STATUS_GAP_ROWS
     } else {
         0
     };
 
     // Strip preview (top row; the row below it is the blank gap). A running
     // tool takes precedence — its coloured header (blue) shows what's executing;
-    // otherwise the in-progress reply's last line previews. Nothing when idle —
-    // or before the first chunk (an empty buffer has nothing to preview, so the
+    // otherwise the in-progress reply's last line previews. A running `!` shell
+    // command shows `⎿ Running… (Ns)` instead — the elapsed the hidden status
+    // line would have carried (docs/shell-command.md). Nothing when idle — or
+    // before the first chunk (an empty buffer has nothing to preview, so the
     // pre-stream pause shows only the status line, no stray `●` bullet and no
     // reserved row for it).
     let preview = if let Some(tool) = app.current_tool() {
-        tool_lines(tool, strip.width).into_iter().next()
+        if tool.shell && tool.status == ToolStatus::Running {
+            let elapsed = app.status().map_or(Duration::ZERO, |s| s.elapsed);
+            Some(shell_running_line(elapsed))
+        } else {
+            tool_lines(tool, strip.width).into_iter().next()
+        }
     } else if let Some(line) = stream_preview {
         // The boundary already rendered the reply's last line cheaply.
         Some(line.clone())
@@ -1497,8 +1532,9 @@ pub fn render_live_with_preview(
     }
 
     // The live status line, pinned below the preview (or at the strip top during
-    // the pause), just above the box, while a turn is in flight.
-    if let Some(status) = app.status() {
+    // the pause), just above the box, while a turn is in flight — suppressed for
+    // a `!` shell turn (has_status false), whose elapsed rides the preview above.
+    if has_status && let Some(status) = app.status() {
         let status_y = strip.y + preview_rows;
         if status_y < strip.y + strip.height {
             let status_area = Rect {
@@ -1514,9 +1550,11 @@ pub fn render_live_with_preview(
     // The queued messages, styled like sent user messages (❯ bullet, dark
     // background, wrapped), stacked below the status's gap and just above the
     // box's top rule — only while a turn streams (the only time the queue is
-    // non-empty). codex's pending-input preview, in our user-message style.
+    // non-empty). codex's pending-input preview, in our user-message style. The
+    // status slot is 0 rows for a shell turn (status_rows), so the queue sits
+    // flush under the preview's gap then.
     if queued > 0 {
-        let q_y = strip.y + preview_rows + STATUS_ROWS + STATUS_GAP_ROWS;
+        let q_y = strip.y + preview_rows + status_rows;
         let strip_bottom = strip.y + strip.height;
         if q_y < strip_bottom {
             let q_area = Rect {
@@ -1551,7 +1589,7 @@ pub fn render_live_with_preview(
     let bx = input_box(
         area,
         &app.input,
-        streaming,
+        has_status,
         has_preview,
         queued,
         toast,
@@ -2176,6 +2214,16 @@ fn result_row(index: usize, text: String) -> Line<'static> {
         " ".repeat(cols(TOOL_RESULT_PREFIX))
     };
     Line::from(vec![Span::styled(prefix, dim), Span::styled(text, dim)])
+}
+
+/// The live preview row for a running `!` shell command: `⎿ Running… (Ns)`. A
+/// shell turn hides the spinner status line entirely (see [`strip_has_status`]),
+/// so its running elapsed lives here instead — the boundary-supplied
+/// `elapsed` (whole seconds), like the status line's timer. Only shown live in
+/// [`render_live`]; the committed cell renders its output, not `Running…`. See
+/// `docs/shell-command.md`.
+fn shell_running_line(elapsed: Duration) -> Line<'static> {
+    result_row(0, format!("{TOOL_RUNNING} ({}s)", elapsed.as_secs()))
 }
 
 /// The output of `tool` split into display lines (a single trailing blank from a
@@ -3731,6 +3779,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     let band = band_rows(app);
     let footer = footer_rows(app, band);
     let has_preview = strip_has_preview(app);
+    let has_status = strip_has_status(app);
     let toast = toast_rows(app);
     // While a Ctrl+R search is open the hardware cursor tracks the end of the
     // *footer query*, not the textarea preview — the shell reverse-i-search
@@ -3738,7 +3787,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     if let Some(search) = &app.history_search {
         let [_, _, _, footer_area] = live_layout(
             area,
-            app.is_streaming(),
+            has_status,
             has_preview,
             queued_rows(app, area.width),
             toast,
@@ -3754,7 +3803,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     let bx = input_box(
         area,
         &app.input,
-        app.is_streaming(),
+        has_status,
         has_preview,
         queued_rows(app, area.width),
         toast,
@@ -5370,6 +5419,44 @@ mod tests {
             buf[(0, 4)].symbol(),
             "─",
             "top rule below the status gap, not touching the status"
+        );
+    }
+
+    #[test]
+    fn render_live_shell_run_shows_running_elapsed_and_hides_the_status_line() {
+        // A `!` shell run suppresses the spinner status line entirely and shows
+        // its elapsed in the `⎿ Running… (Ns)` preview (req 3): the strip is
+        // just preview + gap (2 rows), then the box's top rule — no status row,
+        // no `esc to interrupt` hint. See docs/shell-command.md.
+        let mut app = App::new();
+        app.begin_shell("sleep 30");
+        app.set_status_times(Duration::from_secs(3), None);
+        let mut buf = buffer(40, 5); // preview + gap + (two rules + one input)
+        render_live(buf.area, &mut buf, &app);
+
+        assert_eq!(
+            row(&buf, 0, 40).trim_end(),
+            "  ⎿ Running… (3s)",
+            "the running preview carries the elapsed the status line would have"
+        );
+        assert!(
+            row(&buf, 1, 40).trim().is_empty(),
+            "blank gap row below the preview"
+        );
+        assert_eq!(
+            buf[(0, 2)].symbol(),
+            "─",
+            "the box's top rule sits right under the preview gap — no status line between"
+        );
+        let all: String = (0..5).map(|y| row(&buf, y, 40)).collect();
+        assert!(
+            !all.contains("esc to interrupt"),
+            "a shell run shows no status line (and so no interrupt hint): {all:?}"
+        );
+        assert_eq!(
+            all.matches("Running…").count(),
+            1,
+            "`Running…` appears only in the preview, not also in a status line"
         );
     }
 
@@ -7131,7 +7218,7 @@ mod tests {
                             &app.input,
                             w,
                             h,
-                            app.is_streaming(),
+                            strip_has_status(app),
                             strip_has_preview(app),
                             queued_rows(app, w),
                             0,
@@ -7641,13 +7728,16 @@ mod tests {
     fn the_running_shell_preview_is_the_flush_running_peek() {
         let mut app = App::new();
         app.begin_shell("sleep 5");
+        app.set_status_times(Duration::from_secs(5), None);
         let q = queued_rows(&app, 60);
+        // A shell turn hides the status line (has_status false), so the strip is
+        // preview + gap only — sized exactly as main.rs::draw does.
         let h = live_height(
             &app.input,
             60,
             24,
-            true,
-            true,
+            strip_has_status(&app),
+            strip_has_preview(&app),
             q,
             0,
             0,
@@ -7657,9 +7747,9 @@ mod tests {
         render_live(buf.area, &mut buf, &app);
         assert_eq!(
             row(&buf, 0, 60).trim_end(),
-            "  ⎿ Running…",
-            "the strip preview is the cell's running peek, flush under the \
-             committed `! sleep 5` header just above the live region"
+            "  ⎿ Running… (5s)",
+            "the strip preview is the cell's running peek with its elapsed, flush \
+             under the committed `! sleep 5` header just above the live region"
         );
     }
 

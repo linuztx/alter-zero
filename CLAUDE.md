@@ -96,7 +96,11 @@ shimmering with a white sweep ported from
 codex's `shimmer_spans`; on finish a dim `{done verb} for {n}s` summary commits to
 scrollback, while **Esc mid-turn interrupts** instead (codex-style — cancel + reap
 the backend, drain the channel, keep the partial, resolve a running tool as
-failed, commit the red `Conversation interrupted` notice, **no** summary; see
+failed, commit the red `Conversation interrupted` notice, **no** summary — but
+when **nothing had streamed** (no partial, no tool, empty queue) it instead
+**undoes** the submission, the message back in the composer and no notice, and a
+**`!` shell interrupt** commits no notice either (its `⎿ Interrupted by user`
+cell is the record); see
 `docs/interrupt.md`; **idle Esc instead arms the Esc-Esc backtrack** — a second
 Esc previews previous user messages in the transcript overlay and Enter rewinds
 the conversation to the highlighted one, its text back in the composer
@@ -139,8 +143,11 @@ exit the mode; the palette/`?` band are suppressed in it); Enter from an idle
 composer runs the draft under `sh -c` on a background thread as a turn
 (`App::begin_shell`) committing a codex-style **exec cell** — the `! command`
 header on the dark user-style line (a `Role::Shell` message) with the `⎿`
-output **flush** below, `⎿ Running…` while it runs, the `Running…`/`esc to
-interrupt` status, **no** `Ran for Ns` summary, Esc killing the child;
+output **flush** below, `⎿ Running… (Ns)` while it runs (the elapsed rides the
+preview — a shell turn **hides the spinner status line** entirely,
+`ui::strip_has_status`), **no** `Ran for Ns` summary, Esc killing the child
+(resolving `⎿ Interrupted by user` with **no** `Conversation interrupted`
+notice — the cell is the record);
 mid-turn it queues as a standalone `Shell` entry run locally when its turn comes
 — codex parity, never merged into a text batch, Alt+Up over it re-enters shell
 mode; see `docs/shell-command.md` and `docs/queue.md`); plus a **transient toast**
@@ -360,12 +367,15 @@ records the `Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` 
 flight returns `Action::Interrupt`** (palette-dismiss still wins; when idle Esc
 arms the Esc-Esc backtrack instead, is a no-op over a typed draft, and quits
 only with an empty composer and no user message to edit —
-`docs/backtrack.md`): the loop cancels + joins the backend, **drains the channel** (a stale
-`ToolStart` would wedge a phantom running tool), and `App::interrupt_turn` keeps
-the partial, resolves a running tool as failed (`Interrupted by user`), records
-the red `INTERRUPT_NOTICE`, and clears the status with no summary
-(`docs/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc
-interrupt — the loop pops the front queued batch (`App::drain_next_batch`) and
+`docs/backtrack.md`): the loop cancels + detaches the backend, **swaps the channel** (a stale
+`ToolStart` would wedge a phantom running tool), and `App::interrupt_turn` returns
+either `Kept` — keep the partial, resolve a running tool as failed
+(`Interrupted by user`), record the red `INTERRUPT_NOTICE` (**`None` for a shell
+turn** — its cell is the record), clear the status with no summary — **or**
+`Undone` when nothing had streamed and nothing is queued: the submission rolls
+back, its message returned to the composer and dropped from history (the loop
+purge-repaints, no notice; `docs/interrupt.md`). On any turn-end — `StreamDone`, `Error`, *or* the Esc
+interrupt (its `Kept` branch) — the loop pops the front queued batch (`App::drain_next_batch`) and
 `start_turn`s it as the next turn (the remaining batches iterate at the
 following turn-ends), so **Esc sends the front batch right away**; the drain
 runs **under the Ctrl+O overlay too** (codex's queue dispatches at turn end

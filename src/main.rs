@@ -49,7 +49,7 @@ use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
 use inline_tui::app::{
-    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, INTERRUPT_NOTICE, ProviderChoice,
+    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, InterruptedTurn, ProviderChoice,
     QueuedTurn, Role, ToastKind, View,
 };
 use inline_tui::clipboard;
@@ -441,33 +441,54 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     abandon_inflight(inflight.take(), &mut reaping);
                                 tx = new_tx;
                                 reply_rx = new_rx;
-                                if let Some(interrupted) = app.interrupt_turn() {
-                                    // Interrupt only arises in the conversation view
-                                    // (overlay Esc returns instead), so committing here
-                                    // never touches the alternate screen.
-                                    commit_turn_failure(
-                                        term,
-                                        &app,
-                                        &mut render,
-                                        interrupted.partial,
-                                        interrupted.tool,
-                                        INTERRUPT_NOTICE,
-                                    );
-                                }
-                                render.reset();
                                 clocks.turn_start = None;
                                 clocks.thinking_start = None;
-                                // The user interrupted to send their queued
-                                // follow-ups right away (their spec; codex's
-                                // submit-pending-steers-after-interrupt). The
-                                // front entry — the first queue — goes out now
-                                // (a text batch to the model, or a `!` command
-                                // run locally); any later batches iterate at the
-                                // following turn-ends. Interrupt only arises in the
-                                // conversation view, so committing here is safe.
-                                inflight = flush_next_queued(
-                                    term, &mut app, &tx, backend.as_ref(), &mut render, &mut clocks,
-                                )?;
+                                // Interrupt only arises in the conversation view
+                                // (overlay Esc returns instead), so nothing here
+                                // touches the alternate screen.
+                                match app.interrupt_turn() {
+                                    Some(InterruptedTurn::Undone) => {
+                                        // Nothing had streamed and nothing was
+                                        // queued: the submission is undone —
+                                        // interrupt_turn put the message back in
+                                        // the composer and dropped it from
+                                        // history. Repaint scrollback without it
+                                        // (a purge rebuild from the truncated
+                                        // history, like /clear — it resets `render`
+                                        // itself). No notice, and no queue flush —
+                                        // the empty queue is the undo's
+                                        // precondition. See docs/interrupt.md.
+                                        repaint_conversation(
+                                            term, &app, &mut render, ReflowClear::Purge,
+                                        )?;
+                                    }
+                                    Some(InterruptedTurn::Kept { partial, tool, notice }) => {
+                                        // Something streamed — keep it, commit the
+                                        // notice (None for a `!` shell turn, whose
+                                        // `⎿ Interrupted by user` cell already says
+                                        // it — req 2). `commit_turn_failure`'s
+                                        // `render.finish(partial)` needs the
+                                        // committed-lines cache intact (it flushes
+                                        // only the not-yet-committed tail), so
+                                        // reset `render` AFTER it, never before.
+                                        commit_turn_failure(
+                                            term, &app, &mut render, partial, tool, notice,
+                                        );
+                                        render.reset();
+                                        // The user interrupted to send their queued
+                                        // follow-ups right away (their spec; codex's
+                                        // submit-pending-steers-after-interrupt). The
+                                        // front entry — the first queue — goes out now
+                                        // (a text batch to the model, or a `!` command
+                                        // run locally); any later batches iterate at
+                                        // the following turn-ends.
+                                        inflight = flush_next_queued(
+                                            term, &mut app, &tx, backend.as_ref(),
+                                            &mut render, &mut clocks,
+                                        )?;
+                                    }
+                                    None => render.reset(),
+                                }
                             }
                             Action::OpenResumePicker => {
                                 // /resume from an idle composer (docs/resume.md):
@@ -1295,13 +1316,18 @@ fn commit_system_notice(
 /// streaming strip clears). The shape shared by the Esc interrupt
 /// ([`App::interrupt_turn`]) and a backend [`StreamEvent::Error`]
 /// ([`App::fail_stream`]); the caller guarantees the conversation view.
+///
+/// `notice` is `None` for a `!` shell interrupt, whose `⎿ Interrupted by user`
+/// cell (the `tool`) already says it — committing a second `Conversation
+/// interrupted` line would be redundant (docs/interrupt.md, req 2). A backend
+/// error always passes `Some` (the error text is its terminal notice).
 fn commit_turn_failure(
     term: &mut InlineViewport,
     app: &App,
     render: &mut ui::StreamRender,
     partial: Option<String>,
     tool: Option<inline_tui::app::ToolCall>,
-    notice: &str,
+    notice: Option<&str>,
 ) {
     let width = term.screen().width;
     term.set_view_height(live_region_height(app, term.screen()));
@@ -1313,8 +1339,10 @@ fn commit_turn_failure(
         term.insert_before(ui::tool_lines(&tool, width));
         term.insert_before(vec![Line::default()]);
     }
-    term.insert_before(ui::message_lines(Role::Error, notice, width));
-    term.insert_before(vec![Line::default()]);
+    if let Some(notice) = notice {
+        term.insert_before(ui::message_lines(Role::Error, notice, width));
+        term.insert_before(vec![Line::default()]);
+    }
 }
 
 /// Run a `!command` locally as a turn (the [`Action::RunShell`] arm; see
@@ -1686,7 +1714,7 @@ fn on_stream_event(
                     render,
                     failure.partial,
                     failure.tool,
-                    &failure.error,
+                    Some(&failure.error),
                 );
             }
             render.reset();
@@ -1781,7 +1809,7 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
         &app.input,
         screen.width,
         screen.height,
-        app.is_streaming(),
+        ui::strip_has_status(app),
         ui::strip_has_preview(app),
         ui::queued_rows(app, screen.width),
         ui::toast_rows(app),

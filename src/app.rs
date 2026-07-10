@@ -250,7 +250,7 @@ pub struct StreamError {
     /// The tool that was mid-run when the backend died, now resolved as
     /// [`ToolStatus::Failed`] with [`ERROR_TOOL_OUTPUT`], if one was running —
     /// the stream contract allows `Error` in place of `StreamDone` at any
-    /// point, `ToolEnd` still owed (the interrupt's [`InterruptedTurn::tool`]
+    /// point, `ToolEnd` still owed (the interrupt's [`InterruptedTurn::Kept`]
     /// twin).
     pub tool: Option<ToolCall>,
     /// The error message to show the user.
@@ -299,17 +299,39 @@ pub const INTERRUPT_TOOL_OUTPUT: &str = "Interrupted by user";
 pub const ERROR_TOOL_OUTPUT: &str = "Interrupted by a backend error";
 
 /// What interrupting a turn leaves behind ([`App::interrupt_turn`]), handed to
-/// the event loop to flush to scrollback — the kept partial reply and the
-/// cancelled tool, both also recorded in [`App::history`] (followed by the
-/// [`INTERRUPT_NOTICE`]) so a later resize repaints them.
+/// the event loop to decide how to settle the screen.
+///
+/// Two outcomes, mirroring codex's "keep what streamed" versus this codebase's
+/// "nothing streamed yet, so undo it" divergence (see `docs/interrupt.md`):
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InterruptedTurn {
-    /// The reply text streamed before the interrupt, if any non-empty text
-    /// arrived since the last flush. Kept, codex-style — never retracted.
-    pub partial: Option<String>,
-    /// The tool that was mid-run, now resolved as failed with
-    /// [`INTERRUPT_TOOL_OUTPUT`], if one was running.
-    pub tool: Option<ToolCall>,
+pub enum InterruptedTurn {
+    /// The turn had produced **no output** (no partial reply, no tool) and
+    /// nothing was queued behind it, so the whole submission is rolled back
+    /// rather than interrupted: [`App::interrupt_turn`] has already pulled the
+    /// turn's user message(s) back into the composer and dropped them from
+    /// [`App::history`], recording **no** `Conversation interrupted` notice
+    /// (there was nothing to keep). The loop repaints scrollback without the
+    /// undone message. The user's "there's no output yet, move it back to the
+    /// textarea" case.
+    Undone,
+    /// Some output had streamed — a partial reply and/or a running tool — so it
+    /// is **kept** in the transcript (codex never retracts what streamed). Both
+    /// are also recorded in [`App::history`] so a later resize repaints them.
+    Kept {
+        /// The reply text streamed before the interrupt, if any non-empty text
+        /// arrived since the last flush.
+        partial: Option<String>,
+        /// The tool that was mid-run, now resolved as failed with
+        /// [`INTERRUPT_TOOL_OUTPUT`], if one was running.
+        tool: Option<ToolCall>,
+        /// The red terminal notice to commit to scrollback — [`INTERRUPT_NOTICE`]
+        /// for a normal turn, or **`None`** for a `!` shell turn, whose
+        /// `⎿ Interrupted by user` cell already says it (so a second
+        /// `Conversation interrupted` line would be redundant). Whatever this
+        /// holds, [`App::interrupt_turn`] has already recorded it in
+        /// [`App::history`] to match.
+        notice: Option<&'static str>,
+    },
 }
 
 /// The result of handling a key press, interpreted by the event loop.
@@ -3669,31 +3691,98 @@ impl App {
         })
     }
 
-    /// End the in-progress turn because the user interrupted it (Esc).
+    /// End the in-progress turn because the user interrupted it (Esc). Returns
+    /// the [`InterruptedTurn`] telling the loop how to settle the screen, or
+    /// `None` if no turn was in flight. Two outcomes (see `docs/interrupt.md`):
     ///
-    /// Keeps any non-empty partial reply as an assistant message (codex keeps
-    /// what already streamed), resolves a still-running tool as
-    /// [`ToolStatus::Failed`] with [`INTERRUPT_TOOL_OUTPUT`], records the
-    /// [`INTERRUPT_NOTICE`] as a [`Role::Error`] message, and clears the live
-    /// status **without** a `Done for Ns` summary (like [`App::fail_stream`],
-    /// the notice is the turn's terminal state). Returns the
-    /// [`InterruptedTurn`] for the event loop to flush to scrollback, or
-    /// `None` if no turn was in flight. See `docs/interrupt.md`.
+    /// - **No output yet** — nothing streamed (no non-empty partial reply, no
+    ///   running tool) and nothing is queued behind this turn: the submission is
+    ///   **undone** rather than interrupted. The turn's just-submitted user
+    ///   message(s) are pulled back into the composer
+    ///   ([`take_trailing_user_messages`] + [`recall_input`]) and dropped from
+    ///   history, the status clears, and **no** `Conversation interrupted`
+    ///   notice is recorded — there is nothing to keep, so we roll back to the
+    ///   pre-submit state (the user's "move it back to the textarea" case). A
+    ///   non-empty queue opts out: the user wants their follow-ups sent, so the
+    ///   keep path runs instead.
+    /// - **Something streamed** — keep any non-empty partial reply as an
+    ///   assistant message (codex never retracts streamed text), resolve a
+    ///   still-running tool as [`ToolStatus::Failed`] with
+    ///   [`INTERRUPT_TOOL_OUTPUT`], and record the [`INTERRUPT_NOTICE`] as a
+    ///   [`Role::Error`] message — **except for a `!` shell turn**, whose
+    ///   `⎿ Interrupted by user` cell already says it, so no redundant notice is
+    ///   committed. The live status clears **without** a `Done for Ns` summary
+    ///   (like [`App::fail_stream`], the notice — or the shell cell — is the
+    ///   turn's terminal state).
+    ///
+    /// [`take_trailing_user_messages`]: App::take_trailing_user_messages
+    /// [`recall_input`]: App::recall_input
     pub fn interrupt_turn(&mut self) -> Option<InterruptedTurn> {
         if !self.is_streaming() && !self.turn_active() {
             return None;
         }
-        // Keep the partial in stream order: the buffer's text streamed before
-        // the running tool started (in practice a ToolStart flushed it, so the
-        // two are never both non-empty — but the order holds regardless).
+        // Take the partial first (empties the streaming buffer either way).
         let partial = self.streaming.take().filter(|text| !text.is_empty());
+
+        // No output produced (no partial, no running tool) and nothing queued
+        // behind it → undo the submission wholesale: roll the user's message(s)
+        // back into the composer and drop them from history, recording no
+        // notice. `current_tool` is peeked (not resolved) so the undo path
+        // never touches history or the token tally. A shell turn always has a
+        // running tool, so it can never land here — it takes the keep path
+        // below (and skips the notice there).
+        if partial.is_none() && self.current_tool.is_none() && self.queued.is_empty() {
+            self.status = None;
+            let text = self.take_trailing_user_messages();
+            self.recall_input(&text);
+            return Some(InterruptedTurn::Undone);
+        }
+
+        // Keep what streamed, in stream order: the partial (Assistant) before
+        // the tool the interrupt resolves (a ToolStart flushes the buffer, so
+        // the two are never both non-empty — but the order holds regardless).
         if let Some(text) = &partial {
             self.record_message(Role::Assistant, text.clone());
         }
         let tool = self.end_tool(INTERRUPT_TOOL_OUTPUT, false);
-        self.record_message(Role::Error, INTERRUPT_NOTICE);
+        // A `!` shell turn's `⎿ Interrupted by user` cell is its own record —
+        // committing a second `Conversation interrupted` line would be
+        // redundant, so skip the notice for it.
+        let notice = if self.status.as_ref().is_some_and(|s| s.shell) {
+            None
+        } else {
+            self.record_message(Role::Error, INTERRUPT_NOTICE);
+            Some(INTERRUPT_NOTICE)
+        };
         self.status = None;
-        Some(InterruptedTurn { partial, tool })
+        Some(InterruptedTurn::Kept {
+            partial,
+            tool,
+            notice,
+        })
+    }
+
+    /// Remove and return the turn's just-submitted user message(s) — the
+    /// maximal run of trailing [`Role::User`] messages in [`history`] — joined
+    /// with newlines (a batch flushed as one turn records several; codex's
+    /// Alt+Up joins them the same way). The undo path of [`interrupt_turn`]
+    /// hands the result to [`recall_input`]. Empty when there is no trailing
+    /// user message (a bare `begin_stream` with no submission). A previous turn
+    /// always ends with a summary, notice, or tool — never a user message — so
+    /// this only ever reclaims the current turn's own input.
+    ///
+    /// [`history`]: App::history
+    /// [`interrupt_turn`]: App::interrupt_turn
+    /// [`recall_input`]: App::recall_input
+    fn take_trailing_user_messages(&mut self) -> String {
+        let mut texts = Vec::new();
+        while matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User) {
+            if let Some(HistoryItem::Message(m)) = self.history.pop() {
+                texts.push(m.text);
+            }
+        }
+        texts.reverse();
+        texts.join("\n")
     }
 
     /// Wipe the conversation to a fresh slate — the `/clear` effect. History,
@@ -4786,9 +4875,17 @@ mod tests {
         let mut app = App::new();
         app.begin_stream();
         app.push_chunk("half a rep");
-        let interrupted = app.interrupt_turn().expect("a turn was active");
-        assert_eq!(interrupted.partial.as_deref(), Some("half a rep"));
-        assert!(interrupted.tool.is_none(), "no tool was running");
+        let InterruptedTurn::Kept {
+            partial,
+            tool,
+            notice,
+        } = app.interrupt_turn().expect("a turn was active")
+        else {
+            panic!("a streamed partial is kept, not undone");
+        };
+        assert_eq!(partial.as_deref(), Some("half a rep"));
+        assert!(tool.is_none(), "no tool was running");
+        assert_eq!(notice, Some(INTERRUPT_NOTICE), "a normal turn's notice");
         assert!(!app.is_streaming());
         assert!(!app.turn_active(), "the live status cleared");
         assert_eq!(roles(&app), vec![Role::Assistant, Role::Error]);
@@ -4797,12 +4894,86 @@ mod tests {
     }
 
     #[test]
-    fn interrupt_turn_with_no_partial_records_only_the_notice() {
+    fn interrupt_turn_with_no_output_undoes_the_submission() {
+        // The user submitted "Hi", the backend produced nothing, then Esc:
+        // instead of a `Conversation interrupted` notice the whole turn is
+        // undone — "Hi" goes back into the composer and out of history, and
+        // nothing is recorded (docs/interrupt.md, the "no output yet" case).
         let mut app = App::new();
-        app.begin_stream(); // interrupted before any chunk arrived
-        let interrupted = app.interrupt_turn().expect("a turn was active");
-        assert!(interrupted.partial.is_none());
-        assert_eq!(roles(&app), vec![Role::Error]);
+        app.record_user_message("Hi");
+        app.begin_stream();
+        app.count_user_input("Hi");
+        let outcome = app.interrupt_turn().expect("a turn was active");
+        assert_eq!(outcome, InterruptedTurn::Undone);
+        assert_eq!(
+            app.input.text(),
+            "Hi",
+            "the message is back in the composer"
+        );
+        assert!(
+            app.history.is_empty(),
+            "the user message is dropped from history"
+        );
+        assert!(!app.turn_active(), "the live status cleared");
+        assert!(!app.is_streaming());
+    }
+
+    #[test]
+    fn interrupt_turn_undo_rejoins_a_batch_with_newlines() {
+        // A queued batch flushes several user messages as one turn; undoing it
+        // rejoins them with newlines (codex's Alt+Up shape).
+        let mut app = App::new();
+        app.record_user_message("first");
+        app.record_user_message("second");
+        app.begin_stream();
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        assert_eq!(app.input.text(), "first\nsecond");
+        assert!(app.history.is_empty());
+    }
+
+    #[test]
+    fn interrupt_turn_undo_only_reclaims_the_current_turns_message() {
+        // A finished prior turn stays put; only the just-submitted message is
+        // rolled back (trailing user messages belong to the current turn).
+        let mut app = App::new();
+        app.record_user_message("old");
+        app.record_message(Role::Assistant, "a reply");
+        app.record_user_message("new");
+        app.begin_stream();
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        assert_eq!(app.input.text(), "new");
+        assert_eq!(
+            roles(&app),
+            vec![Role::User, Role::Assistant],
+            "only the new user message was removed"
+        );
+        assert_eq!(message_at(&app, 0).text, "old");
+    }
+
+    #[test]
+    fn interrupt_turn_keeps_the_notice_when_a_message_is_queued() {
+        // With follow-ups queued the user wants them sent, so Esc interrupts
+        // normally (notice committed) rather than undoing — even with no output.
+        let mut app = App::new();
+        app.record_user_message("Hi");
+        app.begin_stream();
+        app.queued.push_back(QueuedTurn::Shell("ls".to_string()));
+        let outcome = app.interrupt_turn().expect("a turn was active");
+        assert!(
+            matches!(
+                outcome,
+                InterruptedTurn::Kept {
+                    notice: Some(_),
+                    ..
+                }
+            ),
+            "a non-empty queue opts out of the undo"
+        );
+        assert!(app.input.text().is_empty(), "the composer is untouched");
+        assert!(
+            roles(&app).contains(&Role::Error),
+            "the interrupt notice is recorded"
+        );
     }
 
     #[test]
@@ -4811,8 +4982,11 @@ mod tests {
         app.begin_stream();
         app.push_chunk("before the tool ");
         app.start_tool("Bash", "sleep 100"); // flush happens loop-side; buffer keeps streaming
-        let interrupted = app.interrupt_turn().expect("a turn was active");
-        let tool = interrupted.tool.expect("the running tool was resolved");
+        let InterruptedTurn::Kept { tool, .. } = app.interrupt_turn().expect("a turn was active")
+        else {
+            panic!("streamed output is kept, not undone");
+        };
+        let tool = tool.expect("the running tool was resolved");
         assert_eq!(tool.status, ToolStatus::Failed);
         assert_eq!(tool.output, INTERRUPT_TOOL_OUTPUT);
         assert!(app.current_tool().is_none(), "no tool left running");
@@ -7107,12 +7281,24 @@ mod tests {
     fn interrupting_a_shell_turn_resolves_the_command_as_failed() {
         let mut app = App::new();
         app.begin_shell("sleep 5");
-        let interrupted = app.interrupt_turn().expect("a turn was in flight");
-        let tool = interrupted.tool.expect("the running command is resolved");
+        let InterruptedTurn::Kept { tool, notice, .. } =
+            app.interrupt_turn().expect("a turn was in flight")
+        else {
+            panic!("a shell turn has a running tool, so it is kept, not undone");
+        };
+        let tool = tool.expect("the running command is resolved");
         assert_eq!(tool.name, "sleep 5");
         assert_eq!(tool.status, ToolStatus::Failed);
+        assert_eq!(tool.output, INTERRUPT_TOOL_OUTPUT);
         assert!(app.current_tool().is_none());
         assert!(!app.turn_active());
+        // Req 2: the `⎿ Interrupted by user` cell is the record — a shell turn
+        // commits no redundant `Conversation interrupted` notice.
+        assert_eq!(notice, None, "shell interrupt commits no notice");
+        assert!(
+            !roles(&app).contains(&Role::Error),
+            "no `Conversation interrupted` error message for a shell interrupt"
+        );
     }
 
     // ===== `@` file picker (docs/file-search.md) =====

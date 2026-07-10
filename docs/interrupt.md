@@ -9,6 +9,20 @@ way openai/codex interrupts a running task — instead of quitting the app. The
 partial reply stays in the conversation, a notice tells the user what
 happened, and the input box is ready for the next message at once.
 
+Two deliberate divergences from codex tune what happens when there is nothing
+worth keeping:
+
+- **No output yet → undo, don't notify.** If Esc lands before the turn has
+  produced anything (no partial reply, no tool) and nothing is queued behind
+  it, the submission is **rolled back** rather than interrupted: the just-sent
+  user message goes back into the composer to edit, and **no** `Conversation
+  interrupted` notice is committed. There was no output, so we return to the
+  pre-submit state instead of leaving a stray user bubble + notice on screen.
+- **A `!` shell interrupt commits no notice.** A cancelled shell command already
+  resolves its cell to `⎿ Interrupted by user`; a second `Conversation
+  interrupted` line under it would be redundant, so the shell turn skips the
+  notice (its cell is the record — like the `Ran for Ns` summary it also omits).
+
 ## What codex does (ported from `/tmp/codex/codex-rs/tui`)
 
 - **A single Esc interrupts immediately** while a task is running — no
@@ -50,14 +64,37 @@ already cancels and reaps the backend.
 
 ### Pure state (`App::interrupt_turn`)
 
-A sibling of `fail_stream`, returning what the loop must flush:
+A sibling of `fail_stream`, returning an enum that tells the loop how to settle
+the screen — codex's "keep what streamed" *or* this codebase's "nothing
+streamed, so undo it":
 
 ```rust
-pub struct InterruptedTurn {
-    pub partial: Option<String>, // the kept partial reply, if any text streamed
-    pub tool: Option<ToolCall>,  // the cancelled tool, resolved Failed, if one ran
+pub enum InterruptedTurn {
+    Undone,                          // no output + empty queue: rolled back
+    Kept {
+        partial: Option<String>,     // the kept partial reply, if any text streamed
+        tool: Option<ToolCall>,      // the cancelled tool, resolved Failed, if one ran
+        notice: Option<&'static str>,// INTERRUPT_NOTICE, or None for a shell turn
+    },
 }
 ```
+
+`interrupt_turn` takes the partial buffer first, then branches:
+
+**Undo path** — `partial.is_none() && current_tool.is_none() && queued.is_empty()`
+(nothing was produced and nothing waits behind it):
+
+- `take_trailing_user_messages` pops the maximal run of trailing `Role::User`
+  messages (the turn's own input — a previous turn always ends with a summary,
+  notice, or tool, never a user message) and joins them with `\n` (a batch
+  flushed as one turn recorded several; codex's Alt+Up rejoins the same way).
+- `recall_input` puts that text back in the composer.
+- The status clears and **nothing** is recorded — no partial, no tool (it is
+  peeked, not resolved, so the token tally is untouched), no notice.
+- Returns `Undone`; the loop repaints scrollback without the rolled-back
+  message. A shell turn never lands here — it always has a running tool.
+
+**Keep path** — something streamed (or a queue is waiting):
 
 - Keeps any non-empty partial as a normal `Role::Assistant` history message
   (codex keeps partial output).
@@ -67,10 +104,13 @@ pub struct InterruptedTurn {
   Ctrl+O view (codex: aborted tools "may have partially executed").
 - Records the notice as a `Role::Error` message —
   `INTERRUPT_NOTICE` = `"Conversation interrupted - tell the model what to do
-  differently."` (codex's wording minus its `/feedback` plug).
+  differently."` (codex's wording minus its `/feedback` plug) — **unless it is
+  a `!` shell turn** (`status.shell`), whose `⎿ Interrupted by user` cell is its
+  own record, so `notice` is `None` and no `Role::Error` message is recorded.
 - Clears the live status **without** a `Done for Ns` summary (like
-  `fail_stream`: the notice is the summary).
-- `None` (recording nothing) when no turn is in flight.
+  `fail_stream`: the notice — or the shell cell — is the summary).
+
+`None` (recording nothing) when no turn is in flight.
 
 Note the buffer/tool exclusivity: a `ToolStart` flushes the streaming segment
 first, so when a tool is running the buffer is empty — `partial` and `tool`
@@ -92,13 +132,20 @@ matches stream order regardless.
    its old sender, whose receiver we just dropped, so it can never reach the
    next turn (which spawns on the new sender). The detached handle is parked
    in `reaping` and swept when finished (`is_finished()`, non-blocking).
-2. `app.interrupt_turn()`, then commit like `StreamDone` does: reseat the
-   viewport to its idle height first (the streaming strip is gone —
-   invariant 3), then `insert_before` the partial (via `final_commit`, which
-   respects the already-committed lines), the cancelled tool (collapsed,
-   red), and the red notice, each with a blank spacer.
-3. Reset `committed` / `turn_start` / `thinking_start`, then flush the front
-   queued batch (`flush_next_queued`) onto the **new** channel.
+2. Reset `committed` / `turn_start` / `thinking_start`, then `app.interrupt_turn()`
+   and branch on the outcome:
+   - **`Undone`** — the submission was rolled back (message back in the composer,
+     dropped from history). `repaint_conversation(ReflowClear::Purge)` rebuilds
+     scrollback from the now-truncated history, so the user bubble vanishes and
+     the composer shows the restored draft. No commit, and no queue flush (the
+     empty queue is the undo's precondition).
+   - **`Kept { partial, tool, notice }`** — commit like `StreamDone` does: reseat
+     the viewport to its idle height first (the streaming strip is gone —
+     invariant 3), then `insert_before` the partial, the cancelled tool
+     (collapsed, red), and the notice (`commit_turn_failure`, each with a blank
+     spacer). `notice` is `None` for a shell turn, so its `⎿ Interrupted by user`
+     cell stands alone. Then flush the front queued batch (`flush_next_queued`)
+     onto the **new** channel — Esc sends the queue right away.
 
 `Action::Interrupt` can only originate in the conversation view (overlay Esc
 returns instead), so the commits never touch the alternate screen.
@@ -132,10 +179,11 @@ The old arm called `handle.join()` on that thread on the **single-threaded**
 status animation, keystrokes — blocked for that whole window: the reported
 "press Esc → the spinner freezes for 1–2 s, then unfreezes" bug. Reproduced
 deterministically offline by `stream::StallAi` (a backend that ignores the
-cancel for `INLINE_TUI_STALL_MS` ms, modelling the wedged read): with the old
-`join`, the `Conversation interrupted` notice lands ~`STALL_MS` after Esc;
-with `abandon_inflight` it lands within a frame. `smoke.sh` Phase 32 asserts
-the prompt path.
+cancel for `INLINE_TUI_STALL_MS` ms, modelling the wedged read): the stall
+backend streams nothing before the stall, so Esc lands on the **undo** path —
+with the old `join` the status line stays frozen ~`STALL_MS`; with
+`abandon_inflight` it clears (and the message returns to the composer) within a
+frame. `smoke.sh` Phase 32 asserts that prompt settle.
 
 ### The status-line hint (`ui::status_line`)
 
@@ -151,22 +199,33 @@ segment (lowercase, matching this codebase's hint convention —
 
 - `app`: Esc while a turn is active → `Action::Interrupt`; Esc idle still
   quits; Esc with the palette open still only dismisses it (turn keeps
-  running); `interrupt_turn` keeps the partial + records the notice, resolves
-  a running tool as Failed with `"Interrupted by user"`, records **no**
-  summary, clears the status, stamps with the injected clock, and is a `None`
-  no-op when idle.
-- `ui`: `status_line` ends with the dim `esc to interrupt` hint in every
-  phase.
+  running); `interrupt_turn` — the **keep** path — keeps the partial + records
+  the notice (`Kept { notice: Some(_) }`), resolves a running tool as Failed
+  with `"Interrupted by user"`, records **no** summary, clears the status,
+  stamps with the injected clock, and is a `None` no-op when idle.
+- `app` (the **undo** path, req 1): interrupting with no output (`Kept`'s
+  opposite, `Undone`) drops the turn's user message(s) from history, restores
+  their text (a batch rejoined by `\n`) to the composer, records **no** notice,
+  and only reclaims the *current* turn's messages; a non-empty queue opts out
+  (back to the keep path, notice committed).
+- `app` (the shell notice skip, req 2): interrupting a `!` shell turn resolves
+  the command Failed with `"Interrupted by user"` and returns `notice: None` —
+  no `Role::Error` `Conversation interrupted` message.
+- `ui`: `status_line` ends with the dim `esc to interrupt` hint in every phase.
 - `stream`: `StallAi` (the test double for a wedged backend) ignores the
   cancel for its stall — a caller that `join()`s it pays the full stall — and
   streams a normal reply when left to run.
-- `main.rs` (smoke, Phase 8): mid-stream Esc leaves the partial text and the
-  `Conversation interrupted` notice on screen, clears the status line (no
-  `tokens`), commits no `Done for`, and the app still completes a following
-  turn normally.
-- `main.rs` (smoke, Phase 32 — the interrupt-lag regression guard): with a
-  backend stalled 3 s (`INLINE_TUI_STALL_MS`, ignoring the cancel), Esc still
-  commits the `Conversation interrupted` notice **within a frame** (asserted
-  `< 1.5 s`, well under the stall) — proving the loop detaches the thread
-  rather than `join()`ing it. Measured live: ~3.0 s (old, frozen) → ~0.015 s
-  (fixed), and the real OpenRouter backend interrupts in ~0.015 s too.
+- `main.rs` (smoke, Phase 8): mid-stream Esc (after a partial streamed) leaves
+  the partial text and the `Conversation interrupted` notice on screen, clears
+  the status line (no `tokens`), commits no `Done for`, and the app still
+  completes a following turn normally.
+- `main.rs` (smoke, Phase 32 — the interrupt-lag regression guard, req 1): with a
+  backend stalled 3 s (`INLINE_TUI_STALL_MS`, ignoring the cancel and streaming
+  nothing), Esc **undoes** the turn — the status line clears **within a frame**
+  (asserted `< 1.5 s`, well under the stall) and `hello there` returns to the
+  composer with **no** `Conversation interrupted` notice — proving the loop
+  detaches the thread rather than `join()`ing it. Measured live: ~3.0 s (old,
+  frozen) → ~0.015 s (fixed).
+- `main.rs` (smoke, Phase 19 — req 2/3): a running `!sleep 9` shows the
+  `⎿ Running… (Ns)` preview with **no** status line, and Esc resolves it
+  `⎿ Interrupted by user` with **no** `Conversation interrupted` notice.
