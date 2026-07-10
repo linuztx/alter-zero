@@ -31,35 +31,85 @@ pub use models::ModelEntry;
 pub use settings::Settings;
 
 /// One message in a chat-completion request.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: MessageContent,
+}
+
+/// A chat message's content: the classic plain string, or the multimodal
+/// parts array a vision request uses (text + `data:`-URL images). `untagged`
+/// so `Text` serializes as a bare JSON string — the shape every
+/// OpenAI-compatible endpoint accepts — and only image-carrying messages pay
+/// the array form. See `docs/context.md`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
+/// One element of a multimodal content array — OpenAI's
+/// `{"type": "text", …}` / `{"type": "image_url", …}` shape.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrl },
+}
+
+/// The `image_url` object of an image part. `url` is a base64 `data:` URL —
+/// the attachment is embedded, never fetched.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ImageUrl {
+    pub url: String,
+}
+
+impl ContentPart {
+    #[must_use]
+    pub fn text(t: impl Into<String>) -> Self {
+        Self::Text { text: t.into() }
+    }
+
+    #[must_use]
+    pub fn image(url: impl Into<String>) -> Self {
+        Self::ImageUrl {
+            image_url: ImageUrl { url: url.into() },
+        }
+    }
 }
 
 impl ChatMessage {
     #[must_use]
-    pub fn system(c: impl Into<String>) -> Self {
+    pub fn new(role: &str, c: impl Into<String>) -> Self {
         Self {
-            role: "system".into(),
-            content: c.into(),
+            role: role.into(),
+            content: MessageContent::Text(c.into()),
         }
+    }
+
+    /// A multimodal message — a text part plus image parts (vision).
+    #[must_use]
+    pub fn with_parts(role: &str, parts: Vec<ContentPart>) -> Self {
+        Self {
+            role: role.into(),
+            content: MessageContent::Parts(parts),
+        }
+    }
+
+    #[must_use]
+    pub fn system(c: impl Into<String>) -> Self {
+        Self::new("system", c)
     }
 
     #[must_use]
     pub fn user(c: impl Into<String>) -> Self {
-        Self {
-            role: "user".into(),
-            content: c.into(),
-        }
+        Self::new("user", c)
     }
 
     #[must_use]
     pub fn assistant(c: impl Into<String>) -> Self {
-        Self {
-            role: "assistant".into(),
-            content: c.into(),
-        }
+        Self::new("assistant", c)
     }
 }
 
@@ -184,6 +234,37 @@ mod tests {
         assert_eq!(ChatMessage::system("a").role, "system");
         assert_eq!(ChatMessage::user("a").role, "user");
         assert_eq!(ChatMessage::assistant("a").role, "assistant");
+    }
+
+    #[test]
+    fn text_content_serializes_as_a_bare_string() {
+        // The classic chat-completions shape: `"content": "hi"` — every
+        // OpenAI-compatible endpoint accepts it, so imageless messages (the
+        // overwhelmingly common case) never pay the parts-array form.
+        let json = serde_json::to_value(ChatMessage::user("hi")).unwrap();
+        assert_eq!(json, serde_json::json!({"role": "user", "content": "hi"}));
+    }
+
+    #[test]
+    fn parts_content_serializes_as_the_openai_multimodal_array() {
+        let msg = ChatMessage::with_parts(
+            "user",
+            vec![
+                ContentPart::text("what is this?"),
+                ContentPart::image("data:image/png;base64,AAAA"),
+            ],
+        );
+        let json = serde_json::to_value(msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "what is this?"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                ],
+            })
+        );
     }
 
     #[test]

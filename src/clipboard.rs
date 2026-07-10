@@ -237,9 +237,10 @@ const BASE64_ALPHABET: &[u8; 64] =
 /// Standard base64 (RFC 4648 — `+/` alphabet, `=` padding, no line wrapping) of
 /// `bytes`. Hand-rolled to keep the dependency list lean: it's a few lines, pure,
 /// and unit-tested against the RFC vectors. Used to encode the clipboard text for
-/// the OSC 52 escape.
+/// the OSC 52 escape, and by the LLM backend to embed image attachments as
+/// `data:` URLs (`docs/context.md`).
 #[must_use]
-fn base64_encode(bytes: &[u8]) -> String {
+pub(crate) fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
         let b0 = chunk[0] as usize;

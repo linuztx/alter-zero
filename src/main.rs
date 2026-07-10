@@ -53,6 +53,7 @@ use inline_tui::app::{
     QueuedTurn, Role, ToastKind, View,
 };
 use inline_tui::clipboard;
+use inline_tui::context;
 use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::llm::{
@@ -1225,8 +1226,16 @@ fn start_turn(
 ) -> io::Result<(CancelToken, JoinHandle<()>)> {
     let TurnInput { texts, images } = input;
     let width = term.screen().width;
-    for text in &texts {
-        app.record_user_message(text);
+    for (index, text) in texts.iter().enumerate() {
+        // The batch's attachments ride its first message (a Submit is a batch
+        // of one, so this is exact; a rare multi-text batch keeps them all on
+        // one message — the request carries them either way).
+        let attached = if index == 0 {
+            images.clone()
+        } else {
+            Vec::new()
+        };
+        app.record_user_message_with_images(text, attached);
         term.insert_before(ui::message_lines(Role::User, text, width));
         term.insert_before(vec![Line::default()]);
     }
@@ -1243,9 +1252,12 @@ fn start_turn(
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
     let cancel = CancelToken::new();
-    // The image paths travel a separate typed channel alongside the text prompt
-    // (codex's `UserInput::LocalImage`); a real vision backend reads the files.
-    let handle = backend.spawn(prompt, images, tx.clone(), cancel.clone());
+    // The whole conversation — the just-recorded user message included — rides
+    // the request so a real model keeps its context across turns; the image
+    // paths also travel the original typed channel (codex's
+    // `UserInput::LocalImage`). See docs/context.md.
+    let context = context::context_messages(&app.history);
+    let handle = backend.spawn(prompt, images, context, tx.clone(), cancel.clone());
     Ok((cancel, handle))
 }
 

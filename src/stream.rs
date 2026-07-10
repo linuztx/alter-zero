@@ -14,6 +14,8 @@ use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::context::ContextMessage;
+
 /// What a backend sends to the event loop. Only the *reply* travels this channel
 /// — keyboard input arrives separately via the terminal event stream (see
 /// `main.rs`). It is a tokio unbounded channel so the async loop can `select!` on
@@ -251,11 +253,19 @@ impl CancelToken {
 /// `prompt`): a real vision backend reads each file and attaches it to its
 /// request. The built-in [`DummyAi`] has no vision, so it only acknowledges
 /// their count. See `docs/image-paste.md`.
+///
+/// `context` is the whole conversation so far — derived from the history by
+/// [`crate::context::context_messages`] right after the turn's user message
+/// was recorded, so its last entry *is* the current message (text and
+/// attachments included). A real backend sends it verbatim so the model never
+/// loses context; the dummy ignores it (its replies are canned). See
+/// `docs/context.md`.
 pub trait ReplySource {
     fn spawn(
         &self,
         prompt: String,
         images: Vec<PathBuf>,
+        context: Vec<ContextMessage>,
         tx: UnboundedSender<StreamEvent>,
         cancel: CancelToken,
     ) -> JoinHandle<()>;
@@ -264,6 +274,13 @@ pub trait ReplySource {
     /// footer under the input box (see `docs/footer.md`). A real backend
     /// returns its real model name.
     fn model_name(&self) -> String;
+
+    /// The system prompt this backend prepends to every request, if any —
+    /// surfaced so the Ctrl+D context-debug view can show the *whole* context
+    /// window (see `docs/context.md`). The dummy sends none.
+    fn system_prompt(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The built-in canned-reply backend used by the demo.
@@ -311,6 +328,7 @@ impl ReplySource for DummyAi {
         &self,
         prompt: String,
         images: Vec<PathBuf>,
+        _context: Vec<ContextMessage>, // canned replies — no context to use
         tx: UnboundedSender<StreamEvent>,
         cancel: CancelToken,
     ) -> JoinHandle<()> {
@@ -388,6 +406,7 @@ impl ReplySource for StallAi {
         &self,
         prompt: String,
         _images: Vec<PathBuf>,
+        _context: Vec<ContextMessage>,
         tx: UnboundedSender<StreamEvent>,
         cancel: CancelToken,
     ) -> JoinHandle<()> {
@@ -455,6 +474,7 @@ mod tests {
         let handle = DummyAi::with_startup_delay(delay).spawn(
             "hi".to_string(),
             vec![],
+            vec![],
             tx,
             CancelToken::new(),
         );
@@ -478,7 +498,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let backend = DummyAi::with_startup_delay(Duration::from_secs(30));
-        let handle = backend.spawn("hello".to_string(), vec![], tx, cancel.clone());
+        let handle = backend.spawn("hello".to_string(), vec![], vec![], tx, cancel.clone());
         cancel.cancel();
         handle.join().unwrap();
         assert!(
@@ -502,7 +522,8 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let start = std::time::Instant::now();
-        let handle = StallAi::new(stall).spawn("hi".to_string(), vec![], tx, cancel.clone());
+        let handle =
+            StallAi::new(stall).spawn("hi".to_string(), vec![], vec![], tx, cancel.clone());
         cancel.cancel(); // interrupt immediately — the stall ignores it
         handle.join().unwrap();
         assert!(
@@ -522,6 +543,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let handle = StallAi::new(Duration::from_millis(10)).spawn(
             "ping".to_string(),
+            vec![],
             vec![],
             tx,
             CancelToken::new(),
@@ -746,6 +768,7 @@ mod tests {
         let handle = DummyAi::with_startup_delay(Duration::ZERO).spawn(
             prompt,
             vec![],
+            vec![],
             tx,
             CancelToken::new(),
         );
@@ -798,6 +821,7 @@ mod tests {
         let handle = DummyAi::with_startup_delay(Duration::ZERO).spawn(
             "describe".to_string(),
             images,
+            vec![],
             tx,
             CancelToken::new(),
         );
@@ -822,7 +846,7 @@ mod tests {
         let cancel = CancelToken::new();
         cancel.cancel();
         DummyAi::default()
-            .spawn("hello".to_string(), vec![], tx, cancel)
+            .spawn("hello".to_string(), vec![], vec![], tx, cancel)
             .join()
             .unwrap();
         // Cancelled before the first chunk → no Chunk and no StreamDone arrive.
@@ -842,6 +866,7 @@ mod tests {
                 &self,
                 _prompt: String,
                 _images: Vec<PathBuf>,
+                _context: Vec<ContextMessage>,
                 tx: UnboundedSender<StreamEvent>,
                 _cancel: CancelToken,
             ) -> JoinHandle<()> {
@@ -856,7 +881,7 @@ mod tests {
         }
         let (tx, mut rx) = unbounded_channel();
         Failing
-            .spawn("x".to_string(), vec![], tx, CancelToken::new())
+            .spawn("x".to_string(), vec![], vec![], tx, CancelToken::new())
             .join()
             .unwrap();
         assert_eq!(
