@@ -1225,11 +1225,12 @@ fn abandon_inflight(
 
 /// One turn's user input handed to [`start_turn`]: the text message(s) — a
 /// Submit is a batch of one, a queue flush a batch — plus any Ctrl+V-attached
-/// image paths that travel the typed image channel (codex's `UserMessage`'s
-/// `text` + `local_images`). See `docs/image-paste.md`.
+/// images as their `(placeholder, path)` pairs (codex's `UserMessage`'s
+/// `text` + `local_images`): the names let recording match each path to the
+/// message whose text carries its placeholder. See `docs/image-paste.md`.
 struct TurnInput {
     texts: Vec<String>,
-    images: Vec<PathBuf>,
+    images: Vec<(String, PathBuf)>,
 }
 
 /// Start one turn for `texts` (a Submit is a batch of one; a queue flush sends
@@ -1252,16 +1253,16 @@ fn start_turn(
 ) -> io::Result<(CancelToken, JoinHandle<()>)> {
     let TurnInput { texts, images } = input;
     let width = term.screen().width;
-    for (index, text) in texts.iter().enumerate() {
-        // The batch's attachments ride its first message (a Submit is a batch
-        // of one, so this is exact; a rare multi-text batch keeps them all on
-        // one message — the request carries them either way).
-        let attached = if index == 0 {
-            images.clone()
-        } else {
-            Vec::new()
-        };
-        app.record_user_message_with_images(text, attached);
+    // Each path is recorded onto the message whose text carries its
+    // placeholder, in text-occurrence order — a merged batch's duplicate
+    // `[Image #1]`s resolve to their own drafts' paths, and the
+    // undo/backtrack re-key zips occurrences straight over the recorded
+    // order (docs/image-paste.md).
+    let image_count = images.len();
+    let paths: Vec<PathBuf> = images.iter().map(|(_, path)| path.clone()).collect();
+    let mut per_text = paste::distribute_images(&texts, images);
+    for (text, attached) in texts.iter().zip(&mut per_text) {
+        app.record_user_message_with_images(text, std::mem::take(attached));
         term.insert_before(ui::message_lines(Role::User, text, width));
         term.insert_before(vec![Line::default()]);
     }
@@ -1272,7 +1273,7 @@ fn start_turn(
     // the same ↑ tally (docs/image-paste.md).
     let prompt = texts.join("\n");
     app.count_user_input(&prompt);
-    app.count_input_images(images.len());
+    app.count_input_images(image_count);
     render.reset();
     // Start the turn clock; the draw branch keeps the status animated from here.
     clocks.turn_start = Some(Instant::now());
@@ -1283,7 +1284,7 @@ fn start_turn(
     // paths also travel the original typed channel (codex's
     // `UserInput::LocalImage`). See docs/context.md.
     let context = context::context_messages(&app.history);
-    let handle = backend.spawn(prompt, images, context, tx.clone(), cancel.clone());
+    let handle = backend.spawn(prompt, paths, context, tx.clone(), cancel.clone());
     Ok((cancel, handle))
 }
 
@@ -1430,17 +1431,15 @@ fn flush_next_queued(
     clocks: &mut StatusClocks,
 ) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
     match app.drain_next_batch() {
-        // The batch's Ctrl+V attachments dispatch with it: their paths ride the
-        // typed image channel like an idle submit's (docs/image-paste.md).
+        // The batch's Ctrl+V attachments dispatch with it — the whole
+        // (placeholder, path) pairs, so start_turn can record each path on
+        // the message carrying its placeholder (docs/image-paste.md).
         Some(QueuedTurn::Messages { texts, images }) => Ok(Some(start_turn(
             term,
             app,
             tx,
             backend,
-            TurnInput {
-                texts,
-                images: images.into_iter().map(|(_, path)| path).collect(),
-            },
+            TurnInput { texts, images },
             render,
             clocks,
         )?)),

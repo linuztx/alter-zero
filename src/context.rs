@@ -23,10 +23,12 @@ use crate::app::{HistoryItem, Role, ToolCall, ToolStatus};
 /// The wire role a context message is sent as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextRole {
-    /// The provider-side instructions (and TUI notices ride along as
-    /// mid-conversation system notes).
+    /// The provider-side instructions — only ever the backend's system
+    /// prompt, at the front of the request. TUI notices ride as bracketed
+    /// `user` notes instead: strict OpenAI-compatible providers (alternation
+    /// templates) reject mid-conversation system messages.
     System,
-    /// The human: typed messages and `!` shell runs.
+    /// The human: typed messages, `!` shell runs, and bracketed TUI notices.
     User,
     /// The model: reply text and the tools it ran.
     Assistant,
@@ -107,6 +109,9 @@ fn tool_message(tool: &ToolCall) -> ContextMessage {
     ContextMessage::new(role, text)
 }
 
+/// How adjacent same-role context entries are joined when merged.
+const MERGE_SEPARATOR: &str = "\n\n";
+
 /// Derive the raw context window from the conversation history, oldest first.
 ///
 /// - [`Role::User`] / [`Role::Assistant`] messages carry their text verbatim
@@ -115,36 +120,56 @@ fn tool_message(tool: &ToolCall) -> ContextMessage {
 /// - A [`HistoryItem::Tool`] becomes its raw bracketed format (see
 ///   [`tool_message`]).
 /// - [`Role::Error`] / [`Role::System`] notices become `[error]` / `[system]`
-///   system-role notes, so the model knows about interrupts, failures, and
-///   slash-command output without mistaking them for instructions.
+///   **user-role** notes, so the model knows about interrupts, failures, and
+///   slash-command output. (Not system-role: strict OpenAI-compatible
+///   providers reject mid-conversation system messages; the bracket prefix
+///   already marks them as UI, not the human.)
 /// - [`Role::Shell`] header messages are skipped — the shell *tool* recorded
 ///   with them already carries the command and its output.
 /// - [`HistoryItem::Summary`] rows are TUI chrome and are skipped.
+///
+/// Adjacent same-role entries are **merged** (texts joined with a blank line,
+/// attachments concatenated): an assistant segment and the tool record that
+/// split it become one assistant message, and the derived sequence strictly
+/// alternates `user`/`assistant` — the shape even the strictest chat
+/// templates accept. What Ctrl+D shows *is* this merged form — exactly the
+/// wire messages.
 #[must_use]
 pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
-    let mut out = Vec::new();
+    let mut out: Vec<ContextMessage> = Vec::new();
+    let mut push = |message: ContextMessage| {
+        if let Some(last) = out.last_mut()
+            && last.role == message.role
+        {
+            last.text.push_str(MERGE_SEPARATOR);
+            last.text.push_str(&message.text);
+            last.images.extend(message.images);
+            return;
+        }
+        out.push(message);
+    };
     for item in history {
         match item {
             HistoryItem::Message(message) => match message.role {
-                Role::User => out.push(ContextMessage {
+                Role::User => push(ContextMessage {
                     role: ContextRole::User,
                     text: message.text.clone(),
                     images: message.images.clone(),
                 }),
                 Role::Assistant => {
-                    out.push(ContextMessage::new(ContextRole::Assistant, &message.text));
+                    push(ContextMessage::new(ContextRole::Assistant, &message.text));
                 }
-                Role::Error => out.push(ContextMessage::new(
-                    ContextRole::System,
+                Role::Error => push(ContextMessage::new(
+                    ContextRole::User,
                     format!("[error] {}", message.text),
                 )),
-                Role::System => out.push(ContextMessage::new(
-                    ContextRole::System,
+                Role::System => push(ContextMessage::new(
+                    ContextRole::User,
                     format!("[system] {}", message.text),
                 )),
                 Role::Shell => {} // its tool cell carries the command + output
             },
-            HistoryItem::Tool(tool) => out.push(tool_message(tool)),
+            HistoryItem::Tool(tool) => push(tool_message(tool)),
             HistoryItem::Summary(_) => {} // TUI chrome, not conversation
         }
     }
@@ -272,7 +297,10 @@ mod tests {
     }
 
     #[test]
-    fn notices_become_system_role_notes() {
+    fn notices_become_bracketed_user_role_notes() {
+        // User-role, not system-role: strict OpenAI-compatible providers
+        // reject mid-conversation system messages, and adjacent notes merge
+        // into one entry (the alternation-safe wire shape).
         let history = vec![
             message(Role::Error, "Conversation interrupted"),
             message(Role::System, "help text"),
@@ -280,10 +308,60 @@ mod tests {
         let ctx = context_messages(&history);
         assert_eq!(
             ctx,
+            vec![ContextMessage::new(
+                ContextRole::User,
+                "[error] Conversation interrupted\n\n[system] help text"
+            )]
+        );
+    }
+
+    #[test]
+    fn adjacent_same_role_entries_merge_so_roles_strictly_alternate() {
+        // A full turn — user, assistant segment, tool record, closing segment
+        // — derives as exactly two alternating messages: some providers'
+        // chat templates reject consecutive same-role messages.
+        let history = vec![
+            message(Role::User, "do the thing"),
+            message(Role::Assistant, "let me check"),
+            tool("Read", "f", "L1", ToolStatus::Ok, false),
+            message(Role::Assistant, "all done"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(
+            ctx,
             vec![
-                ContextMessage::new(ContextRole::System, "[error] Conversation interrupted"),
-                ContextMessage::new(ContextRole::System, "[system] help text"),
+                ContextMessage::new(ContextRole::User, "do the thing"),
+                ContextMessage::new(
+                    ContextRole::Assistant,
+                    "let me check\n\n[tool Read(f) ok]\nL1\n\nall done"
+                ),
             ]
+        );
+    }
+
+    #[test]
+    fn merged_user_entries_concatenate_their_image_attachments() {
+        // A batch's messages merge into one user entry; both attachments ride.
+        let history = vec![
+            HistoryItem::Message(Message {
+                role: Role::User,
+                text: "[Image #1] first".to_string(),
+                timestamp: String::new(),
+                images: vec![PathBuf::from("/a.png")],
+            }),
+            HistoryItem::Message(Message {
+                role: Role::User,
+                text: "[Image #1] second".to_string(),
+                timestamp: String::new(),
+                images: vec![PathBuf::from("/b.png")],
+            }),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 1);
+        assert_eq!(ctx[0].text, "[Image #1] first\n\n[Image #1] second");
+        assert_eq!(
+            ctx[0].images,
+            vec![PathBuf::from("/a.png"), PathBuf::from("/b.png")]
         );
     }
 

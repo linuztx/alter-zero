@@ -134,30 +134,56 @@ pub fn next_image_placeholder<T>(existing: &[(String, T)]) -> String {
     format!("[Image #{}]", max + 1)
 }
 
-/// The `[Image #N]` placeholders present in `text`, deduplicated and sorted
-/// ascending by `N` — which **is** attach order, because
-/// [`next_image_placeholder`] numbers by max-existing + 1 (a later attachment
-/// always gets a larger `N`, even across deletions). The interrupt-undo path
-/// zips this with the turn's image paths (also attach-ordered) to rebuild the
-/// composer's `(placeholder, path)` pairs. See `docs/image-paste.md`.
+/// Every `[Image #N]` placeholder occurrence in `text`, **in text order,
+/// duplicates kept** — not deduplicated or number-sorted, because placeholder
+/// numbering restarts per draft (see [`next_image_placeholder`]): two drafts
+/// merged into one queued batch can both carry an `[Image #1]`, and a draft's
+/// placeholders can sit in any text order after cursor moves. Recording
+/// ([`distribute_images`]) stores each message's paths in this same
+/// text-occurrence order, so the undo/backtrack re-key can zip occurrences
+/// with a message's recorded paths exactly. See `docs/image-paste.md`.
 #[must_use]
-pub fn image_placeholders_in(text: &str) -> Vec<String> {
-    let mut numbers: Vec<usize> = Vec::new();
+pub fn image_placeholder_occurrences(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
     let mut rest = text;
     while let Some(start) = rest.find("[Image #") {
         rest = &rest[start + "[Image #".len()..];
         if let Some(end) = rest.find(']')
-            && let Ok(n) = rest[..end].parse::<usize>()
-            && !numbers.contains(&n)
+            && rest[..end].parse::<usize>().is_ok()
         {
-            numbers.push(n);
+            out.push(format!("[Image #{}]", &rest[..end]));
         }
     }
-    numbers.sort_unstable();
-    numbers
-        .into_iter()
-        .map(|n| format!("[Image #{n}]"))
-        .collect()
+    out
+}
+
+/// Split a batch's `(placeholder, path)` pairs among its texts for recording:
+/// each text takes, in the order its placeholder occurrences appear, the
+/// first remaining pair with that name — so a duplicate `[Image #1]` across
+/// two merged drafts resolves to each draft's own path, and paths land on the
+/// message that actually carries their placeholder, **in text order**. Pairs
+/// no text claims (a placeholder edited away with its pair somehow intact)
+/// ride the first text so no attachment is silently dropped from the wire.
+#[must_use]
+pub fn distribute_images(
+    texts: &[String],
+    pairs: Vec<(String, std::path::PathBuf)>,
+) -> Vec<Vec<std::path::PathBuf>> {
+    let mut remaining = pairs;
+    let mut out: Vec<Vec<std::path::PathBuf>> = Vec::with_capacity(texts.len());
+    for text in texts {
+        let mut mine = Vec::new();
+        for occurrence in image_placeholder_occurrences(text) {
+            if let Some(i) = remaining.iter().position(|(name, _)| *name == occurrence) {
+                mine.push(remaining.remove(i).1);
+            }
+        }
+        out.push(mine);
+    }
+    if let Some(first) = out.first_mut() {
+        first.extend(remaining.into_iter().map(|(_, path)| path));
+    }
+    out
 }
 
 /// The longest placeholder in `pastes` that `text[i..]` starts with, if any.
@@ -547,22 +573,83 @@ mod tests {
     }
 
     #[test]
-    fn image_placeholders_in_finds_them_in_ascending_number_order() {
-        // Ascending N is attach order (numbering is max+1), so the undo path
-        // can zip these with the attach-ordered image paths.
+    fn image_placeholder_occurrences_come_in_text_order_with_duplicates_kept() {
+        // Text order, not number order: a draft's placeholders can sit in any
+        // order after cursor moves, and merged drafts can repeat a number —
+        // the recorded path order matches this scan, so re-keying zips exactly.
         assert_eq!(
-            image_placeholders_in("[Image #3] before [Image #1] and text"),
-            vec!["[Image #1]".to_string(), "[Image #3]".to_string()]
+            image_placeholder_occurrences("[Image #3] before [Image #1] and [Image #1]"),
+            vec![
+                "[Image #3]".to_string(),
+                "[Image #1]".to_string(),
+                "[Image #1]".to_string(),
+            ]
         );
     }
 
     #[test]
-    fn image_placeholders_in_ignores_duplicates_and_junk() {
+    fn image_placeholder_occurrences_skip_junk() {
         assert_eq!(
-            image_placeholders_in("[Image #1] again [Image #1], [Image #x], [Image #"),
-            vec!["[Image #1]".to_string()]
+            image_placeholder_occurrences("[Image #x], [Image #, plain text"),
+            Vec::<String>::new()
         );
-        assert!(image_placeholders_in("no placeholders here").is_empty());
+        assert!(image_placeholder_occurrences("no placeholders here").is_empty());
+    }
+
+    #[test]
+    fn distribute_images_matches_pairs_to_the_text_that_carries_them() {
+        // Two merged drafts both carry an "[Image #1]" (numbering restarts per
+        // draft): each text takes its own draft's path, in batch order.
+        let texts = vec![
+            "[Image #1] first".to_string(),
+            "[Image #1] second".to_string(),
+        ];
+        let pairs = vec![
+            ("[Image #1]".to_string(), std::path::PathBuf::from("/a.png")),
+            ("[Image #1]".to_string(), std::path::PathBuf::from("/b.png")),
+        ];
+        assert_eq!(
+            distribute_images(&texts, pairs),
+            vec![
+                vec![std::path::PathBuf::from("/a.png")],
+                vec![std::path::PathBuf::from("/b.png")],
+            ]
+        );
+    }
+
+    #[test]
+    fn distribute_images_stores_paths_in_text_occurrence_order() {
+        // "[Image #2]" typed before "[Image #1]": the recorded order follows
+        // the text, so occurrence-zip re-keying rebuilds the right pairs.
+        let texts = vec!["[Image #2] then [Image #1]".to_string()];
+        let pairs = vec![
+            (
+                "[Image #1]".to_string(),
+                std::path::PathBuf::from("/one.png"),
+            ),
+            (
+                "[Image #2]".to_string(),
+                std::path::PathBuf::from("/two.png"),
+            ),
+        ];
+        assert_eq!(
+            distribute_images(&texts, pairs),
+            vec![vec![
+                std::path::PathBuf::from("/two.png"),
+                std::path::PathBuf::from("/one.png"),
+            ]]
+        );
+    }
+
+    #[test]
+    fn distribute_images_parks_unclaimed_pairs_on_the_first_text() {
+        // No text carries the placeholder — never drop an attachment silently.
+        let texts = vec!["no placeholder".to_string(), "none here".to_string()];
+        let pairs = vec![("[Image #9]".to_string(), std::path::PathBuf::from("/x.png"))];
+        assert_eq!(
+            distribute_images(&texts, pairs),
+            vec![vec![std::path::PathBuf::from("/x.png")], vec![]]
+        );
     }
 
     #[test]

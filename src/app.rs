@@ -1385,15 +1385,18 @@ pub struct App {
     /// [`take_submission_images`]: App::take_submission_images
     /// [`submission_images`]: App::submission_images
     pub images: Vec<(String, PathBuf)>,
-    /// The just-submitted turn's image paths, staged by the idle submit path
-    /// (moved out of [`images`] before [`take_input`] clears the composer) for the
-    /// loop to drain via [`take_submission_images`] — codex's
-    /// `recent_submission_images`. See `docs/image-paste.md`.
+    /// The just-submitted turn's image attachments — the whole
+    /// `(placeholder, path)` pairs, staged by the idle submit path (moved out
+    /// of [`images`] before [`take_input`] clears the composer) for the loop
+    /// to drain via [`take_submission_images`] — codex's
+    /// `recent_submission_images`. The names ride along so recording can
+    /// match each path to the message text that carries its placeholder
+    /// (`paste::distribute_images`). See `docs/image-paste.md`.
     ///
     /// [`images`]: App::images
     /// [`take_input`]: App::take_input
     /// [`take_submission_images`]: App::take_submission_images
-    submission_images: Vec<PathBuf>,
+    submission_images: Vec<(String, PathBuf)>,
     /// Temp-PNG paths of attachments that were **dropped without being
     /// submitted** — an atomic placeholder delete, a Ctrl+C-cleared draft, a
     /// `/clear`'d queue. The pure core only records the drops; the boundary
@@ -1653,11 +1656,12 @@ impl App {
         self.refresh_file_search(had_token);
     }
 
-    /// Take the image paths staged by the last idle submit (codex's
-    /// `take_recent_submission_images`): the loop drains these into
-    /// [`crate::stream::ReplySource::spawn`] alongside the text prompt. See
-    /// `docs/image-paste.md`.
-    pub fn take_submission_images(&mut self) -> Vec<PathBuf> {
+    /// Take the image attachments staged by the last idle submit (codex's
+    /// `take_recent_submission_images`), as `(placeholder, path)` pairs: the
+    /// loop threads them into `start_turn`, which records each path onto the
+    /// message carrying its placeholder and hands the bare paths to
+    /// [`crate::stream::ReplySource::spawn`]. See `docs/image-paste.md`.
+    pub fn take_submission_images(&mut self) -> Vec<(String, PathBuf)> {
         std::mem::take(&mut self.submission_images)
     }
 
@@ -1937,12 +1941,9 @@ impl App {
                 } else {
                     // Stage any Ctrl+V-attached images for the boundary to
                     // deliver alongside the text, *before* take_input clears the
-                    // composer (the placeholder text stays; only the paths travel
+                    // composer (the placeholder text stays; the pairs travel
                     // the side channel — docs/image-paste.md).
-                    self.submission_images = std::mem::take(&mut self.images)
-                        .into_iter()
-                        .map(|(_, path)| path)
-                        .collect();
+                    self.submission_images = std::mem::take(&mut self.images);
                     let text = self.take_input();
                     self.file_search = None;
                     self.input_history.record(&text);
@@ -3356,8 +3357,12 @@ impl App {
     /// edit — codex's rollback + `set_composer_text`, except there is no
     /// backend session to fork: one prompt per turn means truncating
     /// [`history`] *is* the whole rewind. The loop's return-from-overlay
-    /// repaint rebuilds the inline view from the truncated history. See
-    /// `docs/backtrack.md`.
+    /// repaint rebuilds the inline view from the truncated history. The
+    /// message's image attachments come back with it (the interrupt-undo
+    /// dance): any pairs backing the clobbered draft are discarded, the
+    /// restored placeholders are re-keyed to the message's recorded paths,
+    /// and the *later* dropped user messages' attachments — now referenced by
+    /// nothing — are queued for temp-file deletion. See `docs/backtrack.md`.
     ///
     /// [`history`]: App::history
     fn confirm_backtrack(&mut self) {
@@ -3369,10 +3374,30 @@ impl App {
             return;
         };
         let text = message.text.clone();
+        let images = message.images.clone();
+        // Attachments of user messages *after* the rewound one leave the
+        // conversation entirely — orphaned temp files, queued for deletion.
+        for item in &self.history[position + 1..] {
+            if let HistoryItem::Message(m) = item
+                && m.role == Role::User
+            {
+                self.discarded_images.extend(m.images.iter().cloned());
+            }
+        }
         self.history.truncate(position);
         self.backtrack = Backtrack::default();
         self.view = View::Conversation;
         self.recall_input(&text);
+        // recall_input replaced the draft: discard any pairs that backed it,
+        // then re-key the rewound message's attachments to the placeholders
+        // now back in the composer (paths were recorded in occurrence order).
+        let stale = std::mem::take(&mut self.images);
+        self.discarded_images
+            .extend(stale.into_iter().map(|(_, path)| path));
+        self.images = crate::paste::image_placeholder_occurrences(&text)
+            .into_iter()
+            .zip(images)
+            .collect();
     }
 
     /// Take the pending scroll-into-view request, if any. The overlay draw
@@ -3867,18 +3892,16 @@ impl App {
         // below (and skips the notice there).
         if partial.is_none() && self.current_tool.is_none() && self.queued.is_empty() {
             self.status = None;
-            let (text, images) = self.take_trailing_user_messages();
+            let (text, pairs) = self.take_trailing_user_messages();
             self.recall_input(&text);
             // recall_input replaced the draft, unanchoring any pairs that
             // backed it — discard those (the boundary deletes the orphaned
-            // temp files) and re-key the undone submission's attachments to
-            // the placeholders now back in the composer (ascending `#N` is
-            // attach order, matching the recorded path order).
+            // temp files) and restore the undone submission's own pairs so
+            // the placeholders back in the composer are backed again.
             let stale = std::mem::take(&mut self.images);
             self.discarded_images
                 .extend(stale.into_iter().map(|(_, path)| path));
-            let placeholders = crate::paste::image_placeholders_in(&text);
-            self.images = placeholders.into_iter().zip(images).collect();
+            self.images = pairs;
             return Some(InterruptedTurn::Undone);
         }
 
@@ -3909,30 +3932,39 @@ impl App {
     /// Remove and return the turn's just-submitted user message(s) — the
     /// maximal run of trailing [`Role::User`] messages in [`history`] — joined
     /// with newlines (a batch flushed as one turn records several; codex's
-    /// Alt+Up joins them the same way), plus their image attachments in attach
-    /// order. The undo path of [`interrupt_turn`] hands the text to
-    /// [`recall_input`] and re-keys the images to the restored placeholders.
-    /// Empty when there is no trailing user message (a bare `begin_stream`
-    /// with no submission). A previous turn always ends with a summary,
-    /// notice, or tool — never a user message — so this only ever reclaims the
-    /// current turn's own input.
+    /// Alt+Up joins them the same way), plus their image attachments rebuilt
+    /// as `(placeholder, path)` pairs: each message's paths are recorded in
+    /// its text's placeholder-occurrence order (`paste::distribute_images`),
+    /// so zipping the occurrences back over them per message is exact — a
+    /// duplicate `[Image #1]` across a merged batch re-keys to each message's
+    /// own path. The undo path of [`interrupt_turn`] hands the text to
+    /// [`recall_input`] and the pairs to the composer. Empty when there is no
+    /// trailing user message (a bare `begin_stream` with no submission). A
+    /// previous turn always ends with a summary, notice, or tool — never a
+    /// user message — so this only ever reclaims the current turn's own input.
     ///
     /// [`history`]: App::history
     /// [`interrupt_turn`]: App::interrupt_turn
     /// [`recall_input`]: App::recall_input
-    fn take_trailing_user_messages(&mut self) -> (String, Vec<PathBuf>) {
-        let mut texts = Vec::new();
-        let mut image_groups = Vec::new();
+    fn take_trailing_user_messages(&mut self) -> (String, Vec<(String, PathBuf)>) {
+        let mut messages = Vec::new();
         while matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User) {
             if let Some(HistoryItem::Message(m)) = self.history.pop() {
-                texts.push(m.text);
-                image_groups.push(m.images);
+                messages.push(m);
             }
         }
-        texts.reverse();
-        image_groups.reverse();
-        let images = image_groups.into_iter().flatten().collect();
-        (texts.join("\n"), images)
+        messages.reverse();
+        let mut pairs = Vec::new();
+        let mut texts = Vec::with_capacity(messages.len());
+        for message in messages {
+            pairs.extend(
+                crate::paste::image_placeholder_occurrences(&message.text)
+                    .into_iter()
+                    .zip(message.images),
+            );
+            texts.push(message.text);
+        }
+        (texts.join("\n"), pairs)
     }
 
     /// Wipe the conversation to a fresh slate — the `/clear` effect. History,
@@ -4239,7 +4271,7 @@ mod tests {
         assert_eq!(action, Action::Submit("[Image #1] describe".to_string()));
         assert_eq!(
             app.take_submission_images(),
-            vec![PathBuf::from("/tmp/a.png")]
+            vec![("[Image #1]".to_string(), PathBuf::from("/tmp/a.png"))]
         );
     }
 
@@ -5105,8 +5137,12 @@ mod tests {
         }
         let action = app.on_key(key(KeyCode::Enter));
         assert_eq!(action, Action::Submit("[Image #1] look".to_string()));
-        let images = app.take_submission_images();
-        app.record_user_message_with_images("[Image #1] look", images);
+        let paths = app
+            .take_submission_images()
+            .into_iter()
+            .map(|(_, path)| path)
+            .collect();
+        app.record_user_message_with_images("[Image #1] look", paths);
         app.begin_stream();
         assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
         assert_eq!(app.input.text(), "[Image #1] look");
@@ -5114,6 +5150,32 @@ mod tests {
             app.images,
             vec![("[Image #1]".to_string(), PathBuf::from("/tmp/a.png"))],
             "the placeholder is backed by its path again"
+        );
+    }
+
+    #[test]
+    fn interrupt_turn_undo_rekeys_a_batchs_duplicate_placeholders_per_message() {
+        // Placeholder numbering restarts per draft, so a merged batch can hold
+        // two "[Image #1]"s with different paths. Recording stores each path
+        // on its own message; the undo re-key zips per message, so neither
+        // path is dropped or swapped (the review's duplicate-placeholder bug).
+        let mut app = App::new();
+        app.record_user_message_with_images("[Image #1] first", vec![PathBuf::from("/a.png")]);
+        app.record_user_message_with_images("[Image #1] second", vec![PathBuf::from("/b.png")]);
+        app.begin_stream();
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        assert_eq!(app.input.text(), "[Image #1] first\n[Image #1] second");
+        assert_eq!(
+            app.images,
+            vec![
+                ("[Image #1]".to_string(), PathBuf::from("/a.png")),
+                ("[Image #1]".to_string(), PathBuf::from("/b.png")),
+            ],
+            "both duplicate-named pairs survive, in message order"
+        );
+        assert!(
+            app.take_discarded_images().is_empty(),
+            "nothing leaks to the discard list"
         );
     }
 
@@ -5855,7 +5917,7 @@ mod tests {
         );
         assert_eq!(
             app.take_submission_images(),
-            vec![PathBuf::from("/tmp/pic.png")]
+            vec![("[Image #1]".to_string(), PathBuf::from("/tmp/pic.png"))]
         );
     }
 
@@ -7909,6 +7971,60 @@ mod tests {
             app.backtrack,
             Backtrack::default(),
             "the gesture state fully resets"
+        );
+    }
+
+    #[test]
+    fn enter_restores_the_rewound_messages_image_attachments() {
+        // The rewound message's Ctrl+V attachments come back with its text —
+        // the interrupt-undo dance — so resubmitting still sends the image;
+        // and the dropped *later* user message's attachment is orphaned, so
+        // its temp file is queued for deletion.
+        let mut app = App::new();
+        app.record_user_message_with_images("[Image #1] look", vec![PathBuf::from("/a.png")]);
+        app.begin_stream();
+        app.push_chunk("a reply");
+        app.finish_stream();
+        app.end_turn(1);
+        app.record_user_message_with_images("[Image #1] later", vec![PathBuf::from("/b.png")]);
+        app.begin_stream();
+        app.push_chunk("b reply");
+        app.finish_stream();
+        app.end_turn(1);
+        app.on_key(key(KeyCode::Esc));
+        app.on_key(key(KeyCode::Esc)); // preview on the later message
+        app.on_key(key(KeyCode::Esc)); // step to the first
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(app.input.text(), "[Image #1] look");
+        assert_eq!(
+            app.images,
+            vec![("[Image #1]".to_string(), PathBuf::from("/a.png"))],
+            "the placeholder is backed by its path again"
+        );
+        assert_eq!(
+            app.take_discarded_images(),
+            vec![PathBuf::from("/b.png")],
+            "the dropped later message's temp file is queued for deletion"
+        );
+    }
+
+    #[test]
+    fn enter_discards_a_drafted_attachment_the_rewind_clobbers() {
+        // A draft with its own attachment can be open when the preview is
+        // begun from the Ctrl+O view; confirming clobbers the draft, so its
+        // pair must not linger as a ghost image on the rewound message.
+        let mut app = App::new();
+        exchange(&mut app, "hello", "hi");
+        app.attach_image(PathBuf::from("/tmp/draft.png"));
+        app.on_key(ctrl('o')); // the overlay opens over the non-empty draft
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None); // begin preview
+        app.on_key(key(KeyCode::Enter)); // rewind to "hello"
+        assert_eq!(app.input.text(), "hello");
+        assert!(app.images.is_empty(), "no unanchored pairs survive");
+        assert_eq!(
+            app.take_discarded_images(),
+            vec![PathBuf::from("/tmp/draft.png")],
+            "the clobbered draft's temp file is queued for deletion"
         );
     }
 

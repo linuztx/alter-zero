@@ -98,11 +98,14 @@ There is no backend session to fork: a `ReplySource` gets one prompt per turn
 codex's `Op::ThreadRollback` round-trip has no equivalent here. A real
 stateful backend would hook its own rewind into the same confirm.
 
-Prefill is text-only: a `[Pasted Content N chars]` placeholder was already
-expanded at submit time so the full text comes back, but `[Image #N]`
-placeholders return as inert text — the temp PNGs were handed to the backend
-at submit and are no longer attached (codex re-attaches its retained local
-image paths; our pure core doesn't retain them).
+Prefill restores attachments too (updated with `docs/context.md`): a
+`[Pasted Content N chars]` placeholder was already expanded at submit time so
+the full text comes back, and `[Image #N]` placeholders come back **backed** —
+the message records its temp-PNG paths now, so the confirm re-keys them to the
+restored placeholders (the interrupt-undo dance: any pairs backing a clobbered
+draft are discarded first, and the dropped *later* user messages' orphaned
+attachments are queued for temp-file deletion), codex's retained-local-images
+re-attach.
 
 ## Rendering
 

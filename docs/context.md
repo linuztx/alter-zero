@@ -39,13 +39,22 @@ session back restores its history, and therefore its context, in one move.
 | history item | context entry |
 | --- | --- |
 | `Message(User)` | `user`, text verbatim (placeholders included) + its image paths |
-| `Message(Assistant)` | `assistant`, text verbatim (one entry per segment — tool splits preserved) |
+| `Message(Assistant)` | `assistant`, text verbatim |
 | `Tool` (backend) | `assistant`, raw format: `[tool {name}({args}) {ok\|failed}]\n{output}` |
 | `Tool` (`!` shell) | `user`, raw format: `[shell {ok\|failed}] $ {command}\n{output}` |
 | `Message(Shell)` | skipped — its tool cell above carries the command and output |
-| `Message(Error)` | `system`, `[error] {text}` (interrupts and backend failures) |
-| `Message(System)` | `system`, `[system] {text}` (slash-command notices) |
+| `Message(Error)` | `user`, `[error] {text}` (interrupts and backend failures) |
+| `Message(System)` | `user`, `[system] {text}` (slash-command notices) |
 | `Summary` | skipped — `Done for Ns` is TUI chrome, not conversation |
+
+…then **adjacent same-role entries merge** (texts joined with a blank line,
+attachments concatenated), so an assistant segment and the tool record that
+split it become one assistant message and the derived sequence strictly
+alternates `user`/`assistant`. That shape — plus mapping the TUI notices to
+*user*-role bracketed notes rather than mid-conversation `system` messages —
+is deliberate wire-compatibility: strict OpenAI-compatible providers
+(alternation chat templates) reject consecutive same-role messages and
+non-leading system messages.
 
 Every message type therefore reaches the context (the user-visible ask), in
 one of two shapes: verbatim conversation text, or a **raw bracketed record**.
@@ -85,15 +94,19 @@ context entry. It is generic over `encode_image: Fn(&Path) -> Option<String>`
 
 `app::Message` gains `images: Vec<PathBuf>` — a user message *owns* its
 Ctrl+V attachments (the `[Image #N]` placeholders stay in the text; the paths
-ride beside it). The submit path records them
-(`App::record_user_message_with_images`; a multi-text batch keeps the batch's
-attachments on its first message), the session file round-trips them (a new
-optional `images` field on the message record — omitted when empty, so old
-files and imageless lines keep the old shape), and the interrupt-undo path
-restores them to the composer (re-keyed to the restored placeholders by
-ascending `#N`, which is attach order — `paste::image_placeholders_in`; any
-mid-turn draft's pairs are discarded first, their temp files queued for
-deletion).
+ride beside it). The submit path stages the whole `(placeholder, path)` pairs
+and records each path onto the message whose text carries its placeholder, in
+text-occurrence order (`paste::distribute_images` — so a merged batch's
+duplicate `[Image #1]`s resolve to their own drafts' paths, and a
+within-draft reorder records faithfully). The session file round-trips the
+paths (a new optional `images` field on the message record — omitted when
+empty, so old files and imageless lines keep the old shape; written as lossy
+strings so a non-UTF8 path can't panic the recorder). The interrupt-undo
+**and** the Esc-Esc backtrack rewind both restore them to the composer:
+occurrences zipped back over each message's recorded paths
+(`paste::image_placeholder_occurrences`), any pairs backing a clobbered draft
+discarded first, and — for a backtrack — the dropped *later* user messages'
+orphaned attachments queued for temp-file deletion.
 
 `ChatMessage.content` is now `MessageContent::Text(String) |
 Parts(Vec<ContentPart>)` (serde-`untagged`, so imageless messages keep the
@@ -169,11 +182,12 @@ empty → no system prompt at all (`with_system_prompt` drops blanks).
 - There is no context-window **cap**: a very long session sends its whole
   history until it hits the provider's limit (the provider's error surfaces
   in-band like any other). Trimming/summarising is future work.
-- A multi-text batch attaches all its images to the batch's first message
-  (the request carries them regardless; only Ctrl+D's grouping and a resume's
-  per-message fidelity are affected).
 - Session files record attachment *paths*, not bytes: resuming after the OS
   temp-cleaner ran sends the `[image unavailable]` note instead of the image.
+- The undo/backtrack attachment re-key zips a message's placeholder
+  occurrences over its recorded paths; a placeholder typed *by hand* (never
+  attach-backed) in the same message can shift that pairing — the string-keyed
+  scheme's known edge (`docs/paste.md`).
 - Tool calls are replayed in the bracketed raw format, not the provider's
   native `tool_calls` protocol (there is no live tool-calling loop yet —
   `docs/llm.md`).

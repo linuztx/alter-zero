@@ -2805,10 +2805,14 @@ fn context_entry_lines(
         lines.push(Line::from(format!("{CONTEXT_INDENT}{row}")));
     }
     for path in images {
-        lines.push(Line::from(Span::styled(
-            format!("{CONTEXT_INDENT}{CONTEXT_IMAGE_LABEL}{}", path.display()),
-            Style::new().fg(TOOL_DIM_COLOR),
-        )));
+        // Wrapped like the text — a long temp path must not clip off-screen.
+        let label = format!("{CONTEXT_IMAGE_LABEL}{}", path.display());
+        for row in wrap_verbatim(&label, text_width) {
+            lines.push(Line::from(Span::styled(
+                format!("{CONTEXT_INDENT}{row}"),
+                Style::new().fg(TOOL_DIM_COLOR),
+            )));
+        }
     }
     lines.push(Line::default());
 }
@@ -5014,6 +5018,35 @@ mod tests {
         assert!(
             texts.iter().any(|t| t == "  image: /tmp/shot.png"),
             "the attachment path lists beneath: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn context_lines_wrap_a_long_image_path_instead_of_clipping() {
+        let mut app = App::new();
+        app.record_user_message_with_images(
+            "[Image #1]",
+            vec![std::path::PathBuf::from(
+                "/tmp/a-very-long-temp-directory-name/inline-tui-clipboard-0123456789.png",
+            )],
+        );
+        let texts: Vec<String> = context_lines(&app, 30)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.starts_with("  image: /tmp")),
+            "the label row starts the path: {texts:?}"
+        );
+        assert!(
+            texts
+                .iter()
+                .any(|t| t.ends_with(".png") && !t.contains("image:")),
+            "the path's tail wraps onto a continuation row: {texts:?}"
+        );
+        assert!(
+            texts.iter().all(|t| cols(t) <= 30),
+            "no row exceeds the width: {texts:?}"
         );
     }
 

@@ -106,9 +106,13 @@ struct MessageRecord {
     timestamp: String,
     /// The Ctrl+V attachment paths a user message carried (`docs/context.md`).
     /// Omitted when empty, so imageless lines keep the pre-images shape and
-    /// files written before the field still parse.
+    /// files written before the field still parse. Stored as plain strings
+    /// (lossy-converted on write): serializing a non-UTF8 `PathBuf` is a
+    /// serde_json *error*, which would break [`line`]'s infallibility and
+    /// panic the recorder — a mangled path merely fails to open later and
+    /// surfaces as the backend's `[image unavailable]` note.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    images: Vec<PathBuf>,
+    images: Vec<String>,
 }
 
 /// A finished [`ToolCall`] on disk. Only finished statuses exist in history,
@@ -196,7 +200,11 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             role: role_name(message.role).to_string(),
             text: message.text.clone(),
             timestamp: message.timestamp.clone(),
-            images: message.images.clone(),
+            images: message
+                .images
+                .iter()
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect(),
         }),
         // Only finished tools reach history, so status collapses to ok/failed
         // (a Running status — impossible here — would record as failed).
@@ -247,7 +255,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                         role,
                         text: message.text,
                         timestamp: message.timestamp,
-                        images: message.images,
+                        images: message.images.into_iter().map(PathBuf::from).collect(),
                     }));
                 }
             }
@@ -418,6 +426,25 @@ mod tests {
         };
         assert_eq!(message.text, "hi");
         assert!(message.images.is_empty());
+    }
+
+    #[test]
+    fn a_non_utf8_image_path_records_lossily_instead_of_panicking() {
+        // Serializing a non-UTF8 PathBuf is a serde_json error — it must not
+        // break `line`'s infallibility and panic the recorder mid-session.
+        // The lossy path merely fails to open later ([image unavailable]).
+        use std::os::unix::ffi::OsStrExt;
+        let bad = PathBuf::from(std::ffi::OsStr::from_bytes(b"/tmp/bad-\xff.png"));
+        let item = HistoryItem::Message(Message {
+            role: Role::User,
+            text: "[Image #1]".into(),
+            timestamp: String::new(),
+            images: vec![bad],
+        });
+        let line = item_line(&item, "t"); // must not panic
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        let recorded = value["payload"]["images"][0].as_str().expect("a string");
+        assert!(recorded.starts_with("/tmp/bad-"), "{recorded:?}");
     }
 
     #[test]
