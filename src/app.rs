@@ -3759,8 +3759,18 @@ impl App {
         // below (and skips the notice there).
         if partial.is_none() && self.current_tool.is_none() && self.queued.is_empty() {
             self.status = None;
-            let text = self.take_trailing_user_messages();
+            let (text, images) = self.take_trailing_user_messages();
             self.recall_input(&text);
+            // recall_input replaced the draft, unanchoring any pairs that
+            // backed it — discard those (the boundary deletes the orphaned
+            // temp files) and re-key the undone submission's attachments to
+            // the placeholders now back in the composer (ascending `#N` is
+            // attach order, matching the recorded path order).
+            let stale = std::mem::take(&mut self.images);
+            self.discarded_images
+                .extend(stale.into_iter().map(|(_, path)| path));
+            let placeholders = crate::paste::image_placeholders_in(&text);
+            self.images = placeholders.into_iter().zip(images).collect();
             return Some(InterruptedTurn::Undone);
         }
 
@@ -3791,24 +3801,30 @@ impl App {
     /// Remove and return the turn's just-submitted user message(s) — the
     /// maximal run of trailing [`Role::User`] messages in [`history`] — joined
     /// with newlines (a batch flushed as one turn records several; codex's
-    /// Alt+Up joins them the same way). The undo path of [`interrupt_turn`]
-    /// hands the result to [`recall_input`]. Empty when there is no trailing
-    /// user message (a bare `begin_stream` with no submission). A previous turn
-    /// always ends with a summary, notice, or tool — never a user message — so
-    /// this only ever reclaims the current turn's own input.
+    /// Alt+Up joins them the same way), plus their image attachments in attach
+    /// order. The undo path of [`interrupt_turn`] hands the text to
+    /// [`recall_input`] and re-keys the images to the restored placeholders.
+    /// Empty when there is no trailing user message (a bare `begin_stream`
+    /// with no submission). A previous turn always ends with a summary,
+    /// notice, or tool — never a user message — so this only ever reclaims the
+    /// current turn's own input.
     ///
     /// [`history`]: App::history
     /// [`interrupt_turn`]: App::interrupt_turn
     /// [`recall_input`]: App::recall_input
-    fn take_trailing_user_messages(&mut self) -> String {
+    fn take_trailing_user_messages(&mut self) -> (String, Vec<PathBuf>) {
         let mut texts = Vec::new();
+        let mut image_groups = Vec::new();
         while matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User) {
             if let Some(HistoryItem::Message(m)) = self.history.pop() {
                 texts.push(m.text);
+                image_groups.push(m.images);
             }
         }
         texts.reverse();
-        texts.join("\n")
+        image_groups.reverse();
+        let images = image_groups.into_iter().flatten().collect();
+        (texts.join("\n"), images)
     }
 
     /// Wipe the conversation to a fresh slate — the `/clear` effect. History,
@@ -4967,6 +4983,49 @@ mod tests {
         );
         assert!(!app.turn_active(), "the live status cleared");
         assert!(!app.is_streaming());
+    }
+
+    #[test]
+    fn interrupt_turn_undo_restores_the_submissions_image_attachments() {
+        // An undone submission's Ctrl+V attachments come back with it: the
+        // placeholders in the restored draft are backed again, so resubmitting
+        // sends the images (docs/context.md).
+        let mut app = App::new();
+        app.attach_image(PathBuf::from("/tmp/a.png"));
+        for c in " look".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        let action = app.on_key(key(KeyCode::Enter));
+        assert_eq!(action, Action::Submit("[Image #1] look".to_string()));
+        let images = app.take_submission_images();
+        app.record_user_message_with_images("[Image #1] look", images);
+        app.begin_stream();
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        assert_eq!(app.input.text(), "[Image #1] look");
+        assert_eq!(
+            app.images,
+            vec![("[Image #1]".to_string(), PathBuf::from("/tmp/a.png"))],
+            "the placeholder is backed by its path again"
+        );
+    }
+
+    #[test]
+    fn interrupt_turn_undo_discards_a_mid_turn_drafts_attachments() {
+        // recall_input clobbers whatever draft was typed mid-turn; its
+        // attachments must not linger as invisible pairs — they are discarded
+        // (and their temp files handed to the boundary for deletion).
+        let mut app = App::new();
+        app.record_user_message("Hi");
+        app.begin_stream();
+        app.attach_image(PathBuf::from("/tmp/draft.png")); // typed mid-turn
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        assert_eq!(app.input.text(), "Hi");
+        assert!(app.images.is_empty(), "no unanchored pairs survive");
+        assert_eq!(
+            app.take_discarded_images(),
+            vec![PathBuf::from("/tmp/draft.png")],
+            "the clobbered draft's temp file is queued for deletion"
+        );
     }
 
     #[test]

@@ -134,6 +134,32 @@ pub fn next_image_placeholder<T>(existing: &[(String, T)]) -> String {
     format!("[Image #{}]", max + 1)
 }
 
+/// The `[Image #N]` placeholders present in `text`, deduplicated and sorted
+/// ascending by `N` — which **is** attach order, because
+/// [`next_image_placeholder`] numbers by max-existing + 1 (a later attachment
+/// always gets a larger `N`, even across deletions). The interrupt-undo path
+/// zips this with the turn's image paths (also attach-ordered) to rebuild the
+/// composer's `(placeholder, path)` pairs. See `docs/image-paste.md`.
+#[must_use]
+pub fn image_placeholders_in(text: &str) -> Vec<String> {
+    let mut numbers: Vec<usize> = Vec::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("[Image #") {
+        rest = &rest[start + "[Image #".len()..];
+        if let Some(end) = rest.find(']')
+            && let Ok(n) = rest[..end].parse::<usize>()
+            && !numbers.contains(&n)
+        {
+            numbers.push(n);
+        }
+    }
+    numbers.sort_unstable();
+    numbers
+        .into_iter()
+        .map(|n| format!("[Image #{n}]"))
+        .collect()
+}
+
 /// The longest placeholder in `pastes` that `text[i..]` starts with, if any.
 /// Longest-match so a base `[Pasted Content N chars]` can't shadow its `… #N`
 /// extension (of which it is a prefix). Shared by the left-to-right walk in
@@ -518,6 +544,25 @@ mod tests {
         // A gap is fine — labels must stay unique because we match by string.
         let gapped = image_pairs(&["[Image #1]", "[Image #3]"]);
         assert_eq!(next_image_placeholder(&gapped), "[Image #4]");
+    }
+
+    #[test]
+    fn image_placeholders_in_finds_them_in_ascending_number_order() {
+        // Ascending N is attach order (numbering is max+1), so the undo path
+        // can zip these with the attach-ordered image paths.
+        assert_eq!(
+            image_placeholders_in("[Image #3] before [Image #1] and text"),
+            vec!["[Image #1]".to_string(), "[Image #3]".to_string()]
+        );
+    }
+
+    #[test]
+    fn image_placeholders_in_ignores_duplicates_and_junk() {
+        assert_eq!(
+            image_placeholders_in("[Image #1] again [Image #1], [Image #x], [Image #"),
+            vec!["[Image #1]".to_string()]
+        );
+        assert!(image_placeholders_in("no placeholders here").is_empty());
     }
 
     #[test]
