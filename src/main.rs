@@ -58,6 +58,7 @@ use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::llm::{
     self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, Selection, Settings,
+    backend::DEFAULT_SYSTEM_PROMPT,
 };
 use inline_tui::paste::{self, PasteBurst};
 use inline_tui::session::{self, SessionMeta, SessionSummary};
@@ -137,7 +138,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let temperature = std::env::var("INLINE_TUI_TEMPERATURE")
         .ok()
         .and_then(|t| t.trim().parse::<f32>().ok());
-    let system_prompt = std::env::var("INLINE_TUI_SYSTEM_PROMPT").ok();
+    // The real backend's system prompt: the default (which explains the
+    // bracketed context records — docs/context.md) unless the env var
+    // overrides it. Setting the var to an empty string sends no system
+    // prompt at all (`with_system_prompt` drops blanks).
+    let system_prompt = std::env::var("INLINE_TUI_SYSTEM_PROMPT")
+        .ok()
+        .or_else(|| Some(DEFAULT_SYSTEM_PROMPT.to_string()));
     // The provider the /model picker lists from and switches within: env, else
     // the saved selection, else the file's default. The active model starts from
     // env, then the saved selection, then tracks what the backend actually
@@ -192,6 +199,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // it names the real file even under an `INLINE_TUI_ENV_FILE` override.
     let env_path_display = ui::display_cwd(&env_file_path, home.as_deref());
     app.set_session_info(backend.model_name(), cwd_display.clone());
+    // The backend's system prompt rides into App so the Ctrl+D view shows the
+    // whole context window (docs/context.md). None for the dummy.
+    app.set_system_prompt(backend.system_prompt());
     // The /resume session recorder (docs/resume.md): mirrors App::history to a
     // rollout file, lazily created on the first recorded item so empty
     // sessions never touch disk. `sync` runs once per loop iteration below.
@@ -350,6 +360,20 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // scrollback (invariant 4 / Phase 7) — unless a
                                     // resize landed under the overlay, which forces
                                     // the purge-rebuild every resize gets.
+                                    repaint_conversation(
+                                        term, &app, &mut render,
+                                        overlay_return_clear(&mut overlay_resized),
+                                    )?;
+                                }
+                            }
+                            Action::ToggleContextDebug => {
+                                // The Ctrl+D raw-context view — the same overlay
+                                // dance as Ctrl+O (docs/context.md).
+                                if app.view == View::ContextDebug {
+                                    term.enter_overlay()?;
+                                    draw_context_view(term, &mut app)?;
+                                } else {
+                                    term.exit_overlay()?;
                                     repaint_conversation(
                                         term, &app, &mut render,
                                         overlay_return_clear(&mut overlay_resized),
@@ -650,6 +674,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                             backend.model_name(),
                                             cwd_display.clone(),
                                         );
+                                        app.set_system_prompt(backend.system_prompt());
                                         // Persist the choice so it's the default
                                         // next run (docs/llm.md).
                                         save_settings(settings_path.as_deref(), &provider, &id);
@@ -799,7 +824,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 dispatch_file_search(&app, &file_req_tx, &mut last_file_query);
                             }
                             View::ResumePicker => app.paste_into_resume_search(&pasted),
-                            View::ToolOutput => {}
+                            View::ToolOutput | View::ContextDebug => {}
                         }
                         burst.reset();
                         frame.schedule_frame();
@@ -866,6 +891,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     }
                     View::ToolOutput => draw_tool_view(term, &mut app)?,
                     View::ResumePicker => draw_resume_picker(term, &app)?,
+                    View::ContextDebug => draw_context_view(term, &mut app)?,
                 }
                 if app.turn_active() {
                     frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
@@ -1976,6 +2002,16 @@ fn draw_tool_view(term: &mut InlineViewport, app: &mut App) -> io::Result<()> {
 /// (the transcript overlay's twin). See `docs/resume.md`.
 fn draw_resume_picker(term: &mut InlineViewport, app: &App) -> io::Result<()> {
     term.draw_overlay(|area, buf| ui::render_resume_picker(area, buf, app))
+}
+
+/// Render the Ctrl+D context-debug view onto the alternate screen — the
+/// transcript pager's raw-context sibling: settle the scroll against the
+/// current screen, then paint. See `docs/context.md`.
+fn draw_context_view(term: &mut InlineViewport, app: &mut App) -> io::Result<()> {
+    let screen = term.screen();
+    let max = ui::context_view_max_scroll(app, screen.width, screen.height);
+    app.settle_debug_scroll(max);
+    term.draw_overlay(|area, buf| ui::render_context_view(area, buf, app))
 }
 
 // ===== /resume session recording + listing boundary (docs/resume.md) =====

@@ -5,14 +5,17 @@ The app ships with a canned [`DummyAi`](../src/stream.rs) so it runs offline and
 streams from any OpenAI-compatible endpoint, the flag that toggles the dummy back
 on, and the inline **`/model`** picker that lists and switches models.
 
-## The seam (unchanged)
+## The seam
 
 Nothing about the event loop changes: the backend is still a
-[`stream::ReplySource`](../src/stream.rs) whose `spawn(prompt, images, tx, cancel)`
-runs on a plain OS thread that *only sends* `StreamEvent`s and polls the
-`CancelToken`. The only structural change is that `main.rs` now holds the backend
-as a **`Box<dyn ReplySource>`** instead of a concrete `DummyAi`, so `/model` can
-swap it at runtime (`start_turn`/`flush_next_queued` take `&dyn ReplySource`).
+[`stream::ReplySource`](../src/stream.rs) whose
+`spawn(prompt, images, context, tx, cancel)` runs on a plain OS thread that
+*only sends* `StreamEvent`s and polls the `CancelToken`. `main.rs` holds the
+backend as a **`Box<dyn ReplySource>`** instead of a concrete `DummyAi`, so
+`/model` can swap it at runtime (`start_turn`/`flush_next_queued` take
+`&dyn ReplySource`). `context` is the whole conversation derived from history
+— the multi-turn memory a real model needs, with image attachments sent as
+embedded `data:` URLs — see `docs/context.md`.
 
 ## The `llm` module (the I/O boundary for a real model)
 
@@ -306,7 +309,9 @@ that names the provider on the key step. Retheme there.
   session-meta `model` field (it names the model the file was started with).
 - No streaming tool-call support from the model yet — assistant text and reasoning
   stream; a real tool-calling loop is future work. The `!` local shell and the
-  dummy's scripted tools are unaffected.
+  dummy's scripted tools are unaffected. (Finished tools *are* replayed to the
+  model as raw bracketed records in the conversation context — see
+  `docs/context.md`.)
 - The picker fetches models when opened (no cache); a slow provider shows
   `Loading models…` until the response lands.
 - **Interrupt latency during a network stall.** The SSE drain runs on a blocking

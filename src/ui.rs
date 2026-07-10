@@ -232,6 +232,34 @@ const TOOL_VIEW_FILL: &str = "~";
 /// The dim placeholder shown when the transcript has nothing to list yet.
 const TOOL_VIEW_EMPTY: &str = "Nothing here yet.";
 
+// --- Ctrl+D context-debug view (the third alternate-screen overlay) — the
+// raw LLM context window (docs/context.md): the transcript pager's chrome
+// (slash-tiled title, `~` filler, percentage separator, dim key hints) over
+// a body listing exactly what the model is sent — the system prompt, then
+// every derived context message role-tagged, its text **verbatim** (image
+// placeholders and bracketed tool/shell/notice formats unrendered) with the
+// attachment paths dim beneath. ---
+
+/// The view's spaced-caps title, overlaid on the slash tiling.
+const CONTEXT_VIEW_TITLE: &str = "C O N T E X T";
+/// Second key-hint row: every key that closes the view.
+const CONTEXT_VIEW_HINT_QUIT: &str = " q/esc/ctrl+d to quit";
+/// The dim placeholder when the context window is empty (no system prompt —
+/// the dummy sends none — and nothing said yet).
+const CONTEXT_VIEW_EMPTY: &str = "Context is empty — send a message to fill it.";
+/// The system prompt's role tag — set apart from a mid-conversation
+/// `system:` note (a derived `[system]`/`[error]` notice).
+const CONTEXT_SYSTEM_PROMPT_TAG: &str = "system prompt:";
+/// The inset of an entry's raw text (and attachment rows) under its tag.
+const CONTEXT_INDENT: &str = "  ";
+/// The label of an attachment row under a user entry's text.
+const CONTEXT_IMAGE_LABEL: &str = "image: ";
+/// Role-tag colours — the tool palette's hues (user blue, assistant green,
+/// system amber) so the roles scan apart at a glance.
+const CONTEXT_USER_COLOR: Color = TOOL_RUNNING_COLOR;
+const CONTEXT_ASSISTANT_COLOR: Color = TOOL_OK_COLOR;
+const CONTEXT_SYSTEM_COLOR: Color = Color::Rgb(0xE5, 0xC0, 0x7B);
+
 // --- /resume session picker (the other alternate-screen overlay) — codex's
 // resume picker, sized down (docs/resume.md): the same slash-tiled title
 // chrome as the transcript pager, a type-to-search line, dense one-line
@@ -510,6 +538,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("alt+↑", " to edit queue"),
     ("tab", " to queue next turn"),
     ("ctrl+v", " for image paste"),
+    ("ctrl+d", " for llm context"),
 ];
 /// The display column where a row's second entry starts (the first entry is
 /// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea.
@@ -2746,6 +2775,128 @@ pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
     .render(hints_area, buf);
 }
 
+/// The role-tag colour of one context entry (see the `CONTEXT_*` consts).
+const fn context_role_color(role: crate::context::ContextRole) -> Color {
+    match role {
+        crate::context::ContextRole::User => CONTEXT_USER_COLOR,
+        crate::context::ContextRole::Assistant => CONTEXT_ASSISTANT_COLOR,
+        crate::context::ContextRole::System => CONTEXT_SYSTEM_COLOR,
+    }
+}
+
+/// One context entry's rows: the coloured `role:` tag, the raw text wrapped
+/// **verbatim** (never the markdown renderer — the whole point is showing the
+/// unformatted wire content), any attachment paths dim beneath, and a blank
+/// spacer.
+fn context_entry_lines(
+    lines: &mut Vec<Line<'static>>,
+    tag: &str,
+    color: Color,
+    text: &str,
+    images: &[std::path::PathBuf],
+    width: u16,
+) {
+    lines.push(Line::from(Span::styled(
+        tag.to_string(),
+        Style::new().fg(color),
+    )));
+    let text_width = width.saturating_sub(cols(CONTEXT_INDENT) as u16);
+    for row in wrap_verbatim(text, text_width) {
+        lines.push(Line::from(format!("{CONTEXT_INDENT}{row}")));
+    }
+    for path in images {
+        lines.push(Line::from(Span::styled(
+            format!("{CONTEXT_INDENT}{CONTEXT_IMAGE_LABEL}{}", path.display()),
+            Style::new().fg(TOOL_DIM_COLOR),
+        )));
+    }
+    lines.push(Line::default());
+}
+
+/// The Ctrl+D body: the raw context window, oldest first — the system prompt
+/// (when the backend sends one), then every message
+/// [`crate::context::context_messages`] derives from the history. What you
+/// read here is what [`crate::llm::backend::build_messages`] sends (the
+/// attachments as their paths rather than encoded bytes). A dim placeholder
+/// when there is nothing yet. See `docs/context.md`.
+#[must_use]
+pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    if let Some(prompt) = &app.system_prompt {
+        context_entry_lines(
+            &mut lines,
+            CONTEXT_SYSTEM_PROMPT_TAG,
+            CONTEXT_SYSTEM_COLOR,
+            prompt,
+            &[],
+            width,
+        );
+    }
+    for message in crate::context::context_messages(&app.history) {
+        context_entry_lines(
+            &mut lines,
+            &format!("{}:", message.role.wire_name()),
+            context_role_color(message.role),
+            &message.text,
+            &message.images,
+            width,
+        );
+    }
+    if lines.is_empty() {
+        return vec![Line::from(Span::styled(
+            CONTEXT_VIEW_EMPTY,
+            Style::new().fg(TOOL_DIM_COLOR),
+        ))];
+    }
+    lines
+}
+
+/// The largest scroll offset the context view can take on this screen —
+/// [`tool_view_max_scroll`]'s sibling (the chrome rows are shared).
+#[must_use]
+pub fn context_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize {
+    let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS + TOOL_VIEW_FOOTER_ROWS) as usize;
+    context_lines(app, width).len().saturating_sub(body)
+}
+
+/// Render the full-screen Ctrl+D context-debug view — the transcript pager's
+/// chrome over the raw context window, windowed by `App::debug_scroll`
+/// (clamped) with `~` filler past the end. Pure — `term.rs` paints this onto
+/// the overlay. See `docs/context.md`.
+pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App) {
+    let [title_area, body_area, sep_area, hints_area] = Layout::vertical([
+        Constraint::Length(TOOL_VIEW_TITLE_ROWS),
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(TOOL_VIEW_FOOTER_ROWS - 1),
+    ])
+    .areas(area);
+
+    Paragraph::new(overlay_header(CONTEXT_VIEW_TITLE, area.width)).render(title_area, buf);
+
+    let lines = context_lines(app, body_area.width);
+    let max = lines.len().saturating_sub(body_area.height as usize);
+    let scroll = app.debug_scroll.min(max);
+    let mut visible: Vec<Line> = lines
+        .into_iter()
+        .skip(scroll)
+        .take(body_area.height as usize)
+        .collect();
+    while (visible.len() as u16) < body_area.height {
+        visible.push(Line::from(TOOL_VIEW_FILL));
+    }
+    Paragraph::new(visible).render(body_area, buf);
+
+    Paragraph::new(tool_view_separator(area.width, scroll, max)).render(sep_area, buf);
+
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    Paragraph::new(vec![
+        Line::from(Span::styled(TOOL_VIEW_HINT_KEYS.to_string(), dim)),
+        Line::from(Span::styled(CONTEXT_VIEW_HINT_QUIT.to_string(), dim)),
+    ])
+    .render(hints_area, buf);
+}
+
 /// One dense session row: the `❯ ` marker (spaces when unselected), the age
 /// padded to [`RESUME_AGE_WIDTH`] columns, and the preview truncated to the
 /// rest of the width — the whole row lit in the palette's selected colour or
@@ -4809,6 +4960,134 @@ mod tests {
         );
     }
 
+    // ===== Ctrl+D context-debug view (docs/context.md) =====
+
+    /// A conversation with a system prompt, a user turn, a raw tool record,
+    /// and a summary — everything the context window derives from.
+    fn context_fixture() -> App {
+        let mut app = transcript_fixture();
+        app.set_system_prompt(Some("be nice".to_string()));
+        app.end_turn(2);
+        app
+    }
+
+    #[test]
+    fn context_lines_show_the_raw_window_with_role_tags() {
+        let app = context_fixture();
+        let texts: Vec<String> = context_lines(&app, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        // The system prompt leads, tagged apart from mid-conversation notes.
+        assert_eq!(texts[0], "system prompt:", "{texts:?}");
+        assert_eq!(texts[1], "  be nice", "{texts:?}");
+        assert!(texts.iter().any(|t| t == "user:"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "  hello"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "assistant:"), "{texts:?}");
+        assert!(texts.iter().any(|t| t == "  let me check"), "{texts:?}");
+        // The tool call appears in its raw bracketed format — the form the
+        // model sees — not the TUI's bullet rendering.
+        assert!(
+            texts.iter().any(|t| t == "  [tool Read(f) ok]"),
+            "{texts:?}"
+        );
+        assert!(texts.iter().any(|t| t == "  L1"), "{texts:?}");
+        // Turn summaries are TUI chrome; they never reach the context.
+        assert!(!texts.iter().any(|t| t.contains("Done")), "{texts:?}");
+    }
+
+    #[test]
+    fn context_lines_list_image_attachments_under_their_message() {
+        let mut app = App::new();
+        app.record_user_message_with_images(
+            "[Image #1] what is this?",
+            vec![std::path::PathBuf::from("/tmp/shot.png")],
+        );
+        let texts: Vec<String> = context_lines(&app, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t == "  [Image #1] what is this?"),
+            "the placeholder stays raw in the text: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t == "  image: /tmp/shot.png"),
+            "the attachment path lists beneath: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_context_shows_the_placeholder() {
+        let lines = context_lines(&App::new(), 80);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(plain(&lines[0]), CONTEXT_VIEW_EMPTY);
+    }
+
+    #[test]
+    fn render_context_view_paints_the_pager_chrome_with_its_own_title_and_keys() {
+        let app = context_fixture();
+        let mut buf = buffer(50, 14);
+        render_context_view(buf.area, &mut buf, &app);
+        let header = row(&buf, 0, 50);
+        assert!(
+            header.starts_with("/ C O N T E X T / "),
+            "the title overlays the slash tiling: {header:?}"
+        );
+        let sep = row(&buf, 10, 50);
+        assert!(sep.starts_with('─'), "{sep:?}");
+        assert!(sep.contains('%'), "the scroll percentage rides it: {sep:?}");
+        assert!(
+            row(&buf, 11, 50).contains("to scroll"),
+            "{:?}",
+            row(&buf, 11, 50)
+        );
+        assert!(
+            row(&buf, 12, 50).contains("q/esc/ctrl+d to quit"),
+            "{:?}",
+            row(&buf, 12, 50)
+        );
+        assert_eq!(row(&buf, 13, 50).trim(), "", "a blank final row");
+    }
+
+    #[test]
+    fn render_context_view_fills_rows_below_the_content_with_tildes() {
+        let mut app = App::new();
+        app.record_user_message("hi");
+        let mut buf = buffer(30, 16);
+        render_context_view(buf.area, &mut buf, &app);
+        assert!(
+            row(&buf, 9, 30).starts_with('~'),
+            "vi-style filler past the end: {:?}",
+            row(&buf, 9, 30)
+        );
+    }
+
+    #[test]
+    fn context_view_max_scroll_is_total_lines_minus_the_body() {
+        let app = context_fixture();
+        let total = context_lines(&app, 40).len();
+        let screen_h = 10u16;
+        let body = (screen_h - TOOL_VIEW_TITLE_ROWS - TOOL_VIEW_FOOTER_ROWS) as usize;
+        assert_eq!(
+            context_view_max_scroll(&app, 40, screen_h),
+            total.saturating_sub(body)
+        );
+    }
+
+    #[test]
+    fn render_context_view_windows_by_the_debug_scroll() {
+        let mut app = context_fixture();
+        app.debug_scroll = 2; // past "system prompt:" and "  be nice"
+        let mut buf = buffer(50, 14);
+        render_context_view(buf.area, &mut buf, &app);
+        assert!(
+            !row(&buf, 1, 50).contains("system prompt"),
+            "the scrolled-off tag is gone: {:?}",
+            row(&buf, 1, 50)
+        );
+    }
+
     // --- timestamps: only the user message's, bottom-right, transcript-only ---
 
     const STAMP: &str = "03:20 AM";
@@ -6482,6 +6761,11 @@ mod tests {
             "{texts:?}"
         );
         assert!(texts[4].contains("alt+↑ to edit queue"), "{texts:?}");
+        assert!(
+            texts[5].contains("ctrl+v for image paste")
+                && texts[5].contains("ctrl+d for llm context"),
+            "{texts:?}"
+        );
         // The second column is aligned: both rows' right keys start at the
         // same display column.
         let col = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);

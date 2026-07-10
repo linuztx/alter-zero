@@ -7,7 +7,8 @@
 //! - [`clipboard`]   — Ctrl+V image reads and the `/copy` write (arboard +
 //!   OSC 52); the base64 framing is the tested pure core, the rest is I/O.
 //! - [`context`]     — the per-session LLM conversation context: derive the
-//!   raw message list a real backend sends (and Ctrl+D shows) from history.
+//!   raw message list a real backend sends (and the Ctrl+D context-debug
+//!   view shows) from history. See `docs/context.md`.
 //! - [`file_search`] — the `@` picker's pure primitives (token detection,
 //!   fuzzy match, ranking).
 //! - [`frame`]       — frame scheduling: coalesce redraw requests, 120 fps cap.

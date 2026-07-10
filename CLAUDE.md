@@ -30,10 +30,10 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `textarea`, `file_search`, `clipboard`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `textarea`, `file_search`, `clipboard`, `context`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
-`app`/`stream`/`ui`/`textarea`/`file_search`/`session` (plus the pure cores of `frame`/`paste`) so behavior
+`app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`context` (plus the pure cores of `frame`/`paste`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
 **and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read, and the
 `/resume` session recording + dir scan — `main.rs::SessionRecorder`/`list_sessions`,
@@ -166,10 +166,14 @@ codex's footer status line, `{model} · {cwd}` dim and two-space inset
 band displaces it, and the Ctrl+R search line / `!` shell-mode hint take its
 slot; `App::set_session_info` injects the strings at the boundary
 like the clock, the model name coming from `ReplySource::model_name`; see
-`docs/footer.md`) stays pinned at the bottom. The alternate screen is used in exactly one
-place: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
+`docs/footer.md`) stays pinned at the bottom. The alternate screen hosts the
+full-screen overlays: the **Ctrl+O tool-output view**, a full-screen overlay listing every tool
 call's complete output while the conversation keeps streaming underneath (see
-invariant 4). ratatui's `Viewport::Inline` can't change height after startup, so
+invariant 4), the **`/resume` picker**, and the **Ctrl+D context-debug view**
+(the raw LLM context window — the derived conversation the real backend sends
+each turn, tool calls in their bracketed wire format and `[Image #N]`
+placeholders unrendered; `ui::render_context_view`/`ui::context_lines` over
+the pure `context::context_messages`, see `docs/context.md`). ratatui's `Viewport::Inline` can't change height after startup, so
 `term::InlineViewport` is a *custom* inline viewport over a `CrosstermBackend`
 whose height is **dynamic** — the input box grows with the wrapped input, the
 streaming strip, the palette band, and the session footer (`ui::live_height`). Four non-obvious

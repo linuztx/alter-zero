@@ -357,6 +357,10 @@ pub enum Action {
     /// The user toggled the tool-output view (Ctrl+O, or Esc to leave it). The
     /// loop syncs the full-screen overlay to the now-updated [`App::view`].
     ToggleToolView,
+    /// The user toggled the Ctrl+D context-debug view (or closed it with
+    /// q/Esc). The loop syncs the overlay to the now-updated [`App::view`],
+    /// exactly like [`Action::ToggleToolView`]. See `docs/context.md`.
+    ToggleContextDebug,
     /// A slash command produced a one-off system notice (e.g. `/help`'s command
     /// list, or a stub's placeholder). The loop records it as a [`Role::System`]
     /// message and commits it to scrollback, like a normal message.
@@ -451,6 +455,10 @@ pub enum View {
     /// The full-screen `/resume` session picker — the other alternate-screen
     /// overlay (codex's `resume_picker`). See `docs/resume.md`.
     ResumePicker,
+    /// The full-screen Ctrl+D context-debug view: the raw LLM context window
+    /// (system prompt + every derived context message, placeholders and
+    /// bracketed tool formats unrendered). See `docs/context.md`.
+    ContextDebug,
 }
 
 /// The Esc-Esc backtrack gesture's state — codex's `BacktrackState`
@@ -1286,6 +1294,17 @@ pub struct App {
     /// opens this way and re-streams keep the latest content in view, until you
     /// scroll up to read back (and re-engages when you scroll to the bottom).
     pub tool_follow: bool,
+    /// The Ctrl+D context-debug view's vertical scroll offset, in lines from
+    /// the top — its own state so flipping between overlays never clobbers the
+    /// transcript pager's place. See `docs/context.md`.
+    pub debug_scroll: usize,
+    /// Whether the context-debug view is pinned to the bottom (tail-follow),
+    /// exactly like [`tool_follow`](Self::tool_follow).
+    pub debug_follow: bool,
+    /// The active backend's system prompt, injected at the boundary
+    /// ([`App::set_system_prompt`], from `ReplySource::system_prompt`) so the
+    /// Ctrl+D view can show the *whole* context window. `None` for the dummy.
+    pub system_prompt: Option<String>,
     /// The Esc-Esc backtrack gesture (edit a previous message): primed by Esc
     /// from an idle empty composer when a previous user message exists,
     /// previewing in the transcript overlay, confirmed with Enter. Reset by
@@ -1722,19 +1741,30 @@ impl App {
         }
         // Ctrl+O toggles the full-screen tool-output view from either screen —
         // even mid-stream, so the conversation keeps updating underneath it.
-        // (Not from the /resume picker: both overlays share the alternate
-        // screen, so the transcript view can't stack on top of it.)
+        // (Not from the /resume picker or the Ctrl+D view: the full-screen
+        // views share the alternate screen, so they never stack.)
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
-            if self.view == View::ResumePicker {
+            if matches!(self.view, View::ResumePicker | View::ContextDebug) {
                 return Action::None;
             }
             self.toggle_tool_view();
             return Action::ToggleToolView;
         }
+        // Ctrl+D toggles the full-screen context-debug view — the raw LLM
+        // context window — with the same rules as Ctrl+O: works mid-stream,
+        // inert under the other full-screen views. See docs/context.md.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+            if matches!(self.view, View::ResumePicker | View::ToolOutput) {
+                return Action::None;
+            }
+            self.toggle_context_debug();
+            return Action::ToggleContextDebug;
+        }
         match self.view {
             View::Conversation => self.on_key_conversation(key),
             View::ToolOutput => self.on_key_tool_view(key),
             View::ResumePicker => self.on_key_resume_picker(key),
+            View::ContextDebug => self.on_key_context_debug(key),
         }
     }
 
@@ -2651,12 +2681,70 @@ impl App {
         self.backtrack = Backtrack::default();
         self.view = match self.view {
             View::Conversation => View::ToolOutput,
-            // The Ctrl+O guard in on_key keeps the picker out of here; the
-            // arm is only exhaustiveness.
-            View::ToolOutput | View::ResumePicker => View::Conversation,
+            // The Ctrl+O guard in on_key keeps the picker and the Ctrl+D view
+            // out of here; the arm is only exhaustiveness.
+            View::ToolOutput | View::ResumePicker | View::ContextDebug => View::Conversation,
         };
         self.tool_scroll = 0;
         self.tool_follow = self.view == View::ToolOutput;
+    }
+
+    /// Keys while the Ctrl+D context-debug view is showing: the transcript
+    /// pager's scroll set, with q/Esc (or Ctrl+D itself, handled globally)
+    /// closing it. It has no backtrack — the view shows the derived context,
+    /// not the editable conversation. See `docs/context.md`.
+    fn on_key_context_debug(&mut self, key: KeyEvent) -> Action {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.toggle_context_debug();
+                Action::ToggleContextDebug
+            }
+            KeyCode::Up => {
+                self.debug_follow = false;
+                self.debug_scroll = self.debug_scroll.saturating_sub(1);
+                Action::None
+            }
+            KeyCode::Down => {
+                self.debug_scroll = self.debug_scroll.saturating_add(1);
+                Action::None
+            }
+            KeyCode::PageUp => {
+                self.debug_follow = false;
+                self.debug_scroll = self.debug_scroll.saturating_sub(TOOL_VIEW_PAGE);
+                Action::None
+            }
+            KeyCode::PageDown => {
+                self.debug_scroll = self.debug_scroll.saturating_add(TOOL_VIEW_PAGE);
+                Action::None
+            }
+            KeyCode::Home => {
+                self.debug_follow = false;
+                self.debug_scroll = 0;
+                Action::None
+            }
+            KeyCode::End => {
+                // Past any end — `settle_debug_scroll` pins it to the bottom
+                // and re-engages tail-follow, like the pager's End.
+                self.debug_scroll = usize::MAX;
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+
+    /// Flip between the conversation and the Ctrl+D context-debug view —
+    /// [`toggle_tool_view`](Self::toggle_tool_view)'s sibling, with the same
+    /// activity rules (the `?` band closes, a backtrack gesture is abandoned)
+    /// and the same open-at-the-bottom tail-follow.
+    fn toggle_context_debug(&mut self) {
+        self.shortcuts_open = false;
+        self.backtrack = Backtrack::default();
+        self.view = match self.view {
+            View::Conversation => View::ContextDebug,
+            View::ContextDebug | View::ToolOutput | View::ResumePicker => View::Conversation,
+        };
+        self.debug_scroll = 0;
+        self.debug_follow = self.view == View::ContextDebug;
     }
 
     /// Open the `/resume` picker over `sessions` (the boundary's scan of the
@@ -3323,6 +3411,26 @@ impl App {
         } else {
             self.tool_scroll.min(max)
         };
+    }
+
+    /// Settle the context-debug scroll for a draw —
+    /// [`settle_tool_scroll`](Self::settle_tool_scroll) for the Ctrl+D view.
+    pub fn settle_debug_scroll(&mut self, max: usize) {
+        if self.debug_scroll >= max {
+            self.debug_follow = true;
+        }
+        self.debug_scroll = if self.debug_follow {
+            max
+        } else {
+            self.debug_scroll.min(max)
+        };
+    }
+
+    /// Inject the active backend's system prompt (from
+    /// `ReplySource::system_prompt`, at startup and on a `/model` switch) so
+    /// the Ctrl+D view shows the whole context window. See `docs/context.md`.
+    pub fn set_system_prompt(&mut self, prompt: Option<String>) {
+        self.system_prompt = prompt;
     }
 
     /// Record a finished user message in the history.
@@ -5372,6 +5480,107 @@ mod tests {
         assert_eq!(app.view, View::ToolOutput);
         assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
         assert_eq!(app.view, View::Conversation);
+    }
+
+    // ===== Ctrl+D context-debug view (docs/context.md) =====
+
+    #[test]
+    fn ctrl_d_toggles_into_and_out_of_the_context_debug_view() {
+        let mut app = App::new();
+        assert_eq!(app.view, View::Conversation);
+        assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+        assert_eq!(app.view, View::ContextDebug);
+        assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+        assert_eq!(app.view, View::Conversation);
+    }
+
+    #[test]
+    fn q_and_esc_close_the_context_debug_view() {
+        for code in [KeyCode::Char('q'), KeyCode::Esc] {
+            let mut app = App::new();
+            app.on_key(ctrl('d'));
+            assert_eq!(app.on_key(key(code)), Action::ToggleContextDebug);
+            assert_eq!(app.view, View::Conversation, "{code:?} closes");
+        }
+    }
+
+    #[test]
+    fn ctrl_d_is_inert_in_the_other_overlays_and_ctrl_o_in_it() {
+        // All three full-screen views share the alternate screen, so they
+        // never stack: Ctrl+D does nothing under the tool view or the resume
+        // picker, and Ctrl+O does nothing under the context-debug view.
+        let mut app = App::new();
+        app.on_key(ctrl('o'));
+        assert_eq!(app.on_key(ctrl('d')), Action::None);
+        assert_eq!(app.view, View::ToolOutput);
+
+        let mut app = App::new();
+        app.open_resume_picker(Vec::new(), String::new());
+        assert_eq!(app.on_key(ctrl('d')), Action::None);
+        assert_eq!(app.view, View::ResumePicker);
+
+        let mut app = App::new();
+        app.on_key(ctrl('d'));
+        assert_eq!(app.on_key(ctrl('o')), Action::None);
+        assert_eq!(app.view, View::ContextDebug);
+    }
+
+    #[test]
+    fn ctrl_d_works_mid_turn_like_ctrl_o() {
+        // The conversation keeps streaming underneath; the debug view only
+        // reads state, so it opens even while a turn is active.
+        let mut app = App::new();
+        app.record_user_message("hi");
+        app.begin_stream();
+        assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+        assert_eq!(app.view, View::ContextDebug);
+    }
+
+    #[test]
+    fn scroll_keys_move_the_context_debug_offset() {
+        let mut app = App::new();
+        app.on_key(ctrl('d'));
+        assert!(app.debug_follow, "opens pinned to the bottom");
+        app.on_key(key(KeyCode::Up));
+        assert!(!app.debug_follow, "scrolling up unpins");
+        app.debug_scroll = 5;
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(app.debug_scroll, 4);
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.debug_scroll, 5);
+        app.on_key(key(KeyCode::PageUp));
+        assert_eq!(app.debug_scroll, 0);
+        app.on_key(key(KeyCode::PageDown));
+        assert_eq!(app.debug_scroll, TOOL_VIEW_PAGE);
+        app.on_key(key(KeyCode::Home));
+        assert_eq!(app.debug_scroll, 0);
+        app.on_key(key(KeyCode::End));
+        assert_eq!(app.debug_scroll, usize::MAX, "End settles at the draw");
+    }
+
+    #[test]
+    fn settle_debug_scroll_caps_a_stale_offset_and_repins_follow() {
+        let mut app = App::new();
+        app.on_key(ctrl('d'));
+        app.debug_follow = false;
+        app.debug_scroll = 100;
+        app.settle_debug_scroll(7);
+        assert_eq!(app.debug_scroll, 7);
+        assert!(app.debug_follow, "hitting the end re-engages follow");
+        app.debug_follow = false;
+        app.debug_scroll = 3;
+        app.settle_debug_scroll(7);
+        assert_eq!(app.debug_scroll, 3, "an in-range offset is kept");
+    }
+
+    #[test]
+    fn set_system_prompt_stores_the_backends_prompt_for_the_debug_view() {
+        let mut app = App::new();
+        assert!(app.system_prompt.is_none());
+        app.set_system_prompt(Some("be nice".to_string()));
+        assert_eq!(app.system_prompt.as_deref(), Some("be nice"));
+        app.set_system_prompt(None);
+        assert!(app.system_prompt.is_none());
     }
 
     #[test]

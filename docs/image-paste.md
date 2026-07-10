@@ -156,7 +156,11 @@ per attached image so the status reflects them.
 `DummyAi` has no vision, so it **acknowledges** the images instead: `turn_events`
 takes the image count and, when non-zero, prepends a short
 `Looking at your N image(s). ` chunk to the reply — visible proof the channel
-carried the attachments end to end. The mid-turn message **queue carries the
+carried the attachments end to end. **The real `LlmBackend` has vision now**:
+the recorded user message keeps its attachment paths, and each request embeds
+them as base64 `data:` URLs in OpenAI's multimodal parts form — past turns'
+images re-send with the conversation context, so follow-up questions about an
+earlier image work. See `docs/context.md`. The mid-turn message **queue carries the
 attachments with the batch**: `queue_draft` stages the `(placeholder, path)`
 pairs into the `QueuedTurn::Messages` entry (an Enter merging into a batch
 merges its images too, in attach order), the queue flush dispatches the paths
