@@ -6,6 +6,8 @@
 //! - [`app`]         — conversation state and the pure key/stream update logic.
 //! - [`clipboard`]   — Ctrl+V image reads and the `/copy` write (arboard +
 //!   OSC 52); the base64 framing is the tested pure core, the rest is I/O.
+//! - [`context`]     — the per-session LLM conversation context: derive the
+//!   raw message list a real backend sends (and Ctrl+D shows) from history.
 //! - [`file_search`] — the `@` picker's pure primitives (token detection,
 //!   fuzzy match, ranking).
 //! - [`frame`]       — frame scheduling: coalesce redraw requests, 120 fps cap.
@@ -31,6 +33,7 @@
 
 pub mod app;
 pub mod clipboard;
+pub mod context;
 pub mod file_search;
 pub mod frame;
 pub mod highlight;

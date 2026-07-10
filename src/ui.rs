@@ -4821,6 +4821,7 @@ mod tests {
                 role: Role::User,
                 text: "hi".to_string(),
                 timestamp: STAMP.to_string(),
+                images: Vec::new(),
             }),
             HistoryItem::Tool(ToolCall {
                 name: "Read".to_string(),
@@ -4835,6 +4836,7 @@ mod tests {
                 role: Role::Assistant,
                 text: "hello".to_string(),
                 timestamp: STAMP.to_string(),
+                images: Vec::new(),
             }),
         ]
     }
@@ -4872,6 +4874,7 @@ mod tests {
                 role: Role::Assistant,
                 text: "hello".to_string(),
                 timestamp: STAMP.to_string(),
+                images: Vec::new(),
             }),
             HistoryItem::Tool(ToolCall {
                 name: "Read".to_string(),
@@ -6008,6 +6011,7 @@ mod tests {
             role,
             text: text.to_string(),
             timestamp: String::new(),
+            images: Vec::new(),
         })
     }
 
@@ -7619,6 +7623,7 @@ mod tests {
                 role: Role::Shell,
                 text: "ls".to_string(),
                 timestamp: String::new(),
+                images: Vec::new(),
             }),
             HistoryItem::Tool(t),
         ];
@@ -7656,6 +7661,7 @@ mod tests {
                 role: Role::Shell,
                 text: "pwd".to_string(),
                 timestamp: String::new(),
+                images: Vec::new(),
             }),
             HistoryItem::Tool(t),
         ];
@@ -7679,6 +7685,7 @@ mod tests {
                 role: Role::Shell,
                 text: "pwd".to_string(),
                 timestamp: String::new(),
+                images: Vec::new(),
             }),
             HistoryItem::Tool(t),
         ];

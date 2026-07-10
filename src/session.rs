@@ -104,6 +104,11 @@ struct MessageRecord {
     /// The display stamp the item carried (`hh:mm AM/PM`, possibly empty) —
     /// round-tripped verbatim; see `docs/timestamps.md`.
     timestamp: String,
+    /// The Ctrl+V attachment paths a user message carried (`docs/context.md`).
+    /// Omitted when empty, so imageless lines keep the pre-images shape and
+    /// files written before the field still parse.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    images: Vec<PathBuf>,
 }
 
 /// A finished [`ToolCall`] on disk. Only finished statuses exist in history,
@@ -191,6 +196,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             role: role_name(message.role).to_string(),
             text: message.text.clone(),
             timestamp: message.timestamp.clone(),
+            images: message.images.clone(),
         }),
         // Only finished tools reach history, so status collapses to ok/failed
         // (a Running status — impossible here — would record as failed).
@@ -241,6 +247,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                         role,
                         text: message.text,
                         timestamp: message.timestamp,
+                        images: message.images,
                     }));
                 }
             }
@@ -355,6 +362,7 @@ mod tests {
             role,
             text: text.into(),
             timestamp: "03:20 PM".into(),
+            images: Vec::new(),
         })
     }
 
@@ -382,6 +390,42 @@ mod tests {
         assert_eq!(value["payload"]["role"], "user");
         assert_eq!(value["payload"]["text"], "hello there");
         assert_eq!(value["payload"]["timestamp"], "03:20 PM");
+    }
+
+    #[test]
+    fn user_message_images_round_trip() {
+        // The Ctrl+V attachment paths ride the message record so a /resume
+        // restores them for the conversation context (docs/context.md).
+        let item = HistoryItem::Message(Message {
+            role: Role::User,
+            text: "[Image #1] what is this?".into(),
+            timestamp: "03:20 PM".into(),
+            images: vec![PathBuf::from("/tmp/inline-tui-clipboard-a.png")],
+        });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_message_line_without_images_still_parses() {
+        // Rollout files written before the images field omit it entirely —
+        // they must keep loading (the forward-compatibility contract).
+        let old = r#"{"timestamp":"t","type":"message","payload":{"role":"user","text":"hi","timestamp":""}}"#;
+        let text = format!("{}\n{old}\n", meta_line(&meta(), "t0"));
+        let (_, parsed) = parse_session(&text).expect("parses");
+        let [HistoryItem::Message(message)] = parsed.as_slice() else {
+            panic!("one message parses, got {parsed:?}");
+        };
+        assert_eq!(message.text, "hi");
+        assert!(message.images.is_empty());
+    }
+
+    #[test]
+    fn an_imageless_message_line_keeps_the_old_shape() {
+        // No `images` key on the wire when there are none, so files stay
+        // byte-identical to the pre-images format in the common case.
+        let line = item_line(&message(Role::User, "hi"), "t");
+        assert!(!line.contains("images"), "no empty images key: {line}");
     }
 
     #[test]

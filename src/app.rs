@@ -53,6 +53,12 @@ pub struct Message {
     /// when no clock is injected (the unit-test default); set from `App`'s
     /// clock at the I/O boundary. See `docs/timestamps.md`.
     pub timestamp: String,
+    /// The temp-file paths of the Ctrl+V images attached to this message
+    /// (user messages only — empty for every other role). The `[Image #N]`
+    /// placeholders stay in `text`; the paths ride here so the conversation
+    /// context can re-send the attachments to a vision backend on later turns
+    /// and a `/resume` restores them. See `docs/image-paste.md`.
+    pub images: Vec<PathBuf>,
 }
 
 /// The lifecycle of a tool call — selects its bullet colour when rendered:
@@ -1458,11 +1464,24 @@ impl App {
     /// recording path (user echo, assistant text, notices, shell headers)
     /// stays in one shape.
     fn record_message(&mut self, role: Role, text: impl Into<String>) {
+        self.record_message_with_images(role, text, Vec::new());
+    }
+
+    /// [`record_message`](Self::record_message) with image attachments — the
+    /// submit path threads the turn's Ctrl+V temp-file paths onto the user
+    /// message so later turns' context can re-send them (`docs/context.md`).
+    fn record_message_with_images(
+        &mut self,
+        role: Role,
+        text: impl Into<String>,
+        images: Vec<PathBuf>,
+    ) {
         let timestamp = self.now_stamp();
         self.history.push(HistoryItem::Message(Message {
             role,
             text: text.into(),
             timestamp,
+            images,
         }));
     }
 
@@ -3311,6 +3330,13 @@ impl App {
         self.record_message(Role::User, text);
     }
 
+    /// Record a finished user message together with its Ctrl+V image
+    /// attachments — the submit path, so the message keeps its images for the
+    /// conversation context and the session file (`docs/context.md`).
+    pub fn record_user_message_with_images(&mut self, text: &str, images: Vec<PathBuf>) {
+        self.record_message_with_images(Role::User, text, images);
+    }
+
     /// Pop the front queued batch — the messages of the next turn — for the loop
     /// to send when the current turn ends; empty when nothing is queued. Each
     /// batch is its own turn, so popping one per turn-end iterates the
@@ -4007,6 +4033,30 @@ mod tests {
     }
 
     // ===== Ctrl+V image paste (docs/image-paste.md) =====
+
+    #[test]
+    fn record_user_message_with_images_attaches_the_paths() {
+        // The submit path records the turn's attachments onto the user
+        // message so the conversation context re-sends them (docs/context.md).
+        let mut app = App::new();
+        app.record_user_message_with_images("[Image #1] look", vec![PathBuf::from("/tmp/a.png")]);
+        let Some(HistoryItem::Message(message)) = app.history.last() else {
+            panic!("a user message was recorded");
+        };
+        assert_eq!(message.role, Role::User);
+        assert_eq!(message.text, "[Image #1] look");
+        assert_eq!(message.images, vec![PathBuf::from("/tmp/a.png")]);
+    }
+
+    #[test]
+    fn record_user_message_records_no_images() {
+        let mut app = App::new();
+        app.record_user_message("plain");
+        let Some(HistoryItem::Message(message)) = app.history.last() else {
+            panic!("a user message was recorded");
+        };
+        assert!(message.images.is_empty());
+    }
 
     #[test]
     fn ctrl_v_requests_an_image_paste() {
@@ -4747,6 +4797,7 @@ mod tests {
                 role: Role::Assistant,
                 text: "hi there".to_string(),
                 timestamp: String::new(),
+                images: Vec::new(),
             }))
         );
     }
@@ -5217,6 +5268,7 @@ mod tests {
                 role: Role::Assistant,
                 text: "before the tool".to_string(),
                 timestamp: String::new(),
+                images: Vec::new(),
             }))
         );
     }
@@ -6162,6 +6214,7 @@ mod tests {
                 role: Role::System,
                 text: "a notice".to_string(),
                 timestamp: String::new(),
+                images: Vec::new(),
             }))
         );
     }
@@ -8003,11 +8056,13 @@ mod tests {
                 role: Role::User,
                 text: "hello".into(),
                 timestamp: String::new(),
+                images: Vec::new(),
             }),
             HistoryItem::Message(Message {
                 role: Role::Assistant,
                 text: "hi".into(),
                 timestamp: String::new(),
+                images: Vec::new(),
             }),
         ];
         app.load_session(items.clone());
