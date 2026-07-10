@@ -125,7 +125,10 @@ unit-tested must be unit-tested.
   Home/End jump). It **opens
   pinned to the bottom** and tail-follows new content as it streams in (scroll up
   to read back; scrolling to the bottom re-engages following). It is the
-  expanded counterpart of the inline view (where tools are collapsed). The
+  expanded counterpart of the inline view (where tools are collapsed): each tool's
+  full output hangs under the same `⎿` gutter as the inline peek — a backend tool
+  keeps its `● name(args)` header over it, a `!` shell cell stays headerless — with
+  continuation rows aligned under the corner. The
   conversation **keeps streaming and updating underneath**: while the overlay is up
   the event loop still drains reply events into `App` (so the view updates live)
   but holds off committing to scrollback — and a turn that ends there still

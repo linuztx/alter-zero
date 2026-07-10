@@ -2337,48 +2337,41 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
 /// One tool call's full lines for the transcript view: its **complete** output
 /// (wrapped **verbatim** — [`wrap_verbatim`], so `ls -l`/`tree` alignment and
 /// indentation survive), or `running…` / `(no output)` when there is none yet.
-/// The expanded counterpart of [`tool_lines`]. A `!` shell command stays
-/// **headerless** here too (the `! pwd` dark header is the `Role::Shell`
-/// message above it) and its output renders as the same `⎿` block, uncapped; a
-/// backend tool keeps its coloured `● name(args)` header with the output
-/// indented under it. An over-cap shell output ([`ToolCall::truncated`])
-/// appends a dim [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
+/// The expanded counterpart of [`tool_lines`]. The output renders as a `⎿`
+/// gutter block — each row aligned under the corner ([`result_row`]), the same
+/// gutter as the inline peek and a shell cell — uncapped. A `!` shell command
+/// stays **headerless** (the `! pwd` dark header is the `Role::Shell` message
+/// above it); a backend tool keeps its coloured `● name(args)` header over the
+/// gutter. An over-cap shell output ([`ToolCall::truncated`]) appends a dim
+/// [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
 fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     let running_word = tool_running_marker(tool.shell);
-    if tool.shell {
-        let body_width = width.saturating_sub(cols(TOOL_RESULT_PREFIX) as u16).max(1);
-        let mut body = match (tool.status, tool.output.is_empty()) {
-            (ToolStatus::Running, true) => vec![running_word.to_string()],
-            (_, true) => vec![TOOL_NO_OUTPUT.to_string()],
-            _ => wrap_verbatim(&tool.output, body_width),
-        };
-        // The output was cut at the in-memory cap — mark the end so the user
-        // knows more was dropped (it is not recoverable; nothing to expand to).
-        if tool.truncated {
-            body.push(TOOL_TRUNCATED_MARKER.to_string());
-        }
-        return body
-            .into_iter()
-            .enumerate()
-            .map(|(i, line)| result_row(i, line))
-            .collect();
-    }
-
-    let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let mut lines = vec![tool_header(tool)];
-    let body = match (tool.status, tool.output.is_empty()) {
+    // The body hangs under the `⎿` gutter, so it wraps to the width left of it
+    // (like [`result_row`]'s continuation indent) — for a backend tool too, so
+    // its expanded output aligns under the corner just like its inline peek.
+    let body_width = width.saturating_sub(cols(TOOL_RESULT_PREFIX) as u16).max(1);
+    let mut body = match (tool.status, tool.output.is_empty()) {
         (ToolStatus::Running, true) => vec![running_word.to_string()],
         (_, true) => vec![TOOL_NO_OUTPUT.to_string()],
-        _ => wrap_verbatim(&tool.output, content_width),
+        _ => wrap_verbatim(&tool.output, body_width),
     };
-    for out in body {
-        lines.push(Line::from(vec![
-            Span::raw(INDENT.to_string()),
-            Span::styled(out, dim),
-        ]));
+    // The output was cut at the in-memory cap — mark the end so the user knows
+    // more was dropped (it is not recoverable; nothing to expand to). Only the
+    // `!` shell runner caps, so a backend tool never sets this.
+    if tool.truncated {
+        body.push(TOOL_TRUNCATED_MARKER.to_string());
     }
-    lines
+    let result = body
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| result_row(i, line));
+    // A `!` shell command is headerless (its `Role::Shell` header sits above);
+    // a backend tool keeps its coloured `● name(args)` header over the gutter.
+    if tool.shell {
+        result.collect()
+    } else {
+        std::iter::once(tool_header(tool)).chain(result).collect()
+    }
 }
 
 /// Linearly blend `fg` toward `bg` by `1 - alpha` (codex's `blend`): `alpha` 1
@@ -4802,7 +4795,11 @@ mod tests {
     }
 
     #[test]
-    fn a_backend_tools_full_output_keeps_its_whitespace_verbatim() {
+    fn a_backend_tools_full_output_hangs_under_the_gutter_verbatim() {
+        // The expanded (Ctrl+O) view opens a backend tool's output with the same
+        // `⎿` gutter as its inline peek (and as a shell cell), continuation rows
+        // aligned under the corner — Claude-Code's exec-cell style — with the
+        // output's own space runs preserved (`ls -l` columns must survive).
         let lines: Vec<String> = tool_full_lines(
             &tool(
                 "Bash",
@@ -4817,8 +4814,8 @@ mod tests {
         .collect();
         assert_eq!(
             lines,
-            vec!["● Bash(ls -l)", "  total 8", "  -rw-  1 user   42 a"],
-            "the indented body preserves the output's space runs"
+            vec!["● Bash(ls -l)", "  ⎿ total 8", "    -rw-  1 user   42 a"],
+            "the gutter opens the body, continuation rows aligned, space runs kept"
         );
     }
 
