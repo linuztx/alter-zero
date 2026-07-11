@@ -16,7 +16,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Widget};
 use unicode_segmentation::UnicodeSegmentation;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
     App, HistoryItem, HistorySearch, KeyOnboarding, KeyStep, ModelLoad, ModelPicker,
@@ -37,11 +37,6 @@ use crate::textarea::TextArea;
 /// raw char count would wrap and pad non-ASCII text incorrectly.
 fn cols(s: &str) -> usize {
     s.width()
-}
-
-/// Display width of a single `char` in terminal columns (control chars → 0).
-fn char_cols(ch: char) -> usize {
-    ch.width().unwrap_or(0)
 }
 
 // --- Claude-Code-ish styling. Centralised so it's trivial to retheme. ---
@@ -751,15 +746,19 @@ pub fn live_height(
     band_rows: u16,
     footer_rows: u16,
 ) -> u16 {
-    let rows = input.row_count(field_width(width)) as u16;
-    (strip_rows(has_status, has_preview)
-        + queued_rows
-        + toast_rows
-        + INPUT_CHROME_ROWS
+    // Summed in usize: `rows` and `queued_rows` are both unbounded (a recalled
+    // multi-megabyte paste wraps to tens of thousands of rows, and the queue
+    // is deliberately uncapped), so a u16 sum can overflow-panic long before
+    // the clamp. The result is ≤ term_height, so the final cast is exact.
+    let rows = input.row_count(field_width(width));
+    (usize::from(strip_rows(has_status, has_preview))
+        + usize::from(queued_rows)
+        + usize::from(toast_rows)
+        + usize::from(INPUT_CHROME_ROWS)
         + rows
-        + band_rows
-        + footer_rows)
-        .min(term_height.max(1))
+        + usize::from(band_rows)
+        + usize::from(footer_rows))
+    .min(usize::from(term_height.max(1))) as u16
 }
 
 /// The fixed rows framing the inline `/model` picker's list when a real model
@@ -924,7 +923,13 @@ fn live_layout(
     footer_rows: u16,
 ) -> [Rect; 4] {
     Layout::vertical([
-        Constraint::Length(strip_rows(has_status, has_preview) + queued_rows + toast_rows),
+        // Saturating: `queued_rows` is uncapped, and the layout clamp below
+        // (not this sum) is what bounds it to the area.
+        Constraint::Length(
+            strip_rows(has_status, has_preview)
+                .saturating_add(queued_rows)
+                .saturating_add(toast_rows),
+        ),
         Constraint::Min(0),
         Constraint::Length(band_rows),
         Constraint::Length(footer_rows),
@@ -1977,7 +1982,9 @@ pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'stat
 /// `live_height`'s terminal-height clamp still bounds the region as a whole.
 #[must_use]
 pub fn queued_rows(app: &App, width: u16) -> u16 {
-    queued_lines(app, width).len() as u16
+    // Saturating: the queue is uncapped, and a plain `as` cast would silently
+    // wrap a >65,535-row backlog into a tiny (wrong) height.
+    queued_lines(app, width).len().min(usize::from(u16::MAX)) as u16
 }
 
 /// The styled lines for the queued follow-up messages: each rendered like a sent
@@ -2226,17 +2233,21 @@ const fn tool_status_color(status: ToolStatus) -> Color {
 }
 
 /// Truncate `s` to at most `max` display columns (column-aware, so wide glyphs
-/// count as two), returning the kept prefix.
+/// count as two), returning the kept prefix. Measured per **grapheme cluster**
+/// with [`cols`] — the same str-level width every fit-check, pad, and ratatui
+/// paint uses — so a VS16 emoji (`❤️`, str width 2, char-sum 1) can't overflow
+/// the budget and a ZWJ sequence (`👨‍👩‍👧`) is kept or dropped whole, never
+/// split after a dangling joiner.
 fn truncate_cols(s: &str, max: usize) -> String {
     let mut out = String::new();
     let mut w = 0;
-    for ch in s.chars() {
-        let cw = char_cols(ch);
-        if w + cw > max {
+    for g in s.graphemes(true) {
+        let gw = cols(g);
+        if w + gw > max {
             break;
         }
-        out.push(ch);
-        w += cw;
+        out.push_str(g);
+        w += gw;
     }
     out
 }
@@ -2339,13 +2350,21 @@ fn shell_running_line(elapsed: Duration) -> Line<'static> {
 }
 
 /// The output of `tool` split into display lines (a single trailing blank from a
-/// final newline dropped, so a hidden-line count is accurate).
-fn tool_output_lines(tool: &ToolCall) -> Vec<&str> {
+/// final newline dropped, so a hidden-line count is accurate). Tabs are
+/// expanded for display ([`expand_code_tabs`]) — a `'\t'` grapheme paints as
+/// zero cells (ratatui filters control chars), gluing tab-separated fields
+/// together — while the stored output stays byte-exact, like the code-block
+/// render path.
+fn tool_output_lines(tool: &ToolCall) -> Vec<String> {
     if tool.output.is_empty() {
         return Vec::new();
     }
-    let mut out: Vec<&str> = tool.output.split('\n').collect();
-    if out.last() == Some(&"") {
+    let mut out: Vec<String> = tool
+        .output
+        .split('\n')
+        .map(|line| expand_code_tabs(line).into_owned())
+        .collect();
+    if out.last().is_some_and(String::is_empty) {
         out.pop();
     }
     out
@@ -2392,7 +2411,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     let peek = match tool.status {
         ToolStatus::Running => tool_running_marker(tool.shell).to_string(),
         _ if out_lines.is_empty() => TOOL_NO_OUTPUT.to_string(),
-        _ => truncate_cols(out_lines[0], peek_width),
+        _ => truncate_cols(&out_lines[0], peek_width),
     };
     let mut lines = vec![
         tool_header(tool),
@@ -2413,7 +2432,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
 /// `peek_width`, then a `… +N lines` hint when more is hidden. Shared by the
 /// shell cell and the diff-tool cell.
 fn result_peek_block(
-    out_lines: &[&str],
+    out_lines: &[String],
     peek_width: usize,
     row: impl Fn(usize, String) -> Line<'static>,
 ) -> Vec<Line<'static>> {
@@ -2459,12 +2478,14 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
             .split('\n')
             .flat_map(|src| {
                 let color = diff_line_color(src);
-                wrap_verbatim(src, body_width)
+                wrap_verbatim(&expand_code_tabs(src), body_width)
                     .into_iter()
                     .map(move |piece| (piece, color))
             })
             .collect(),
-        _ => wrap_verbatim(&tool.output, body_width)
+        // Tabs expanded for display (they paint as zero cells otherwise —
+        // see `tool_output_lines`); the stored output stays byte-exact.
+        _ => wrap_verbatim(&expand_code_tabs(&tool.output), body_width)
             .into_iter()
             .map(|line| (line, None))
             .collect(),
@@ -2912,7 +2933,9 @@ fn context_entry_lines(
     )));
     let text_width = width.saturating_sub(cols(CONTEXT_INDENT) as u16);
     if !text.is_empty() {
-        for row in wrap_verbatim(text, text_width) {
+        // Tool results ride this path too — expand their tabs for display
+        // (they paint as zero cells otherwise; see `tool_output_lines`).
+        for row in wrap_verbatim(&expand_code_tabs(text), text_width) {
             lines.push(Line::from(format!("{CONTEXT_INDENT}{row}")));
         }
     }
@@ -4150,6 +4173,16 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         band,
         footer,
     );
+    // The frame can collapse below its two rules (a tall strip/queue on a
+    // short terminal): `Rect::inner` then returns `Rect::ZERO`, whose origin
+    // says nothing about where the box is. Park the cursor on the region's
+    // last row instead of teleporting it to the screen's top-left, over the
+    // scrollback.
+    if bx.text.height == 0 || bx.text.width == 0 {
+        let x = area.x + BULLET_WIDTH.min(area.width.saturating_sub(1));
+        let y = area.y + area.height.saturating_sub(1);
+        return (x, y);
+    }
     let row = bx.cursor_row.saturating_sub(bx.scroll) as u16;
     let col = bx.cursor_col as u16;
     (bx.text.x + BULLET_WIDTH + col, bx.text.y + row)
@@ -9386,5 +9419,101 @@ mod tests {
         // No counter or model-name line when there's nothing selectable.
         assert!(row(&buf, 7, 60).trim().is_empty(), "no counter");
         assert!(row(&buf, 9, 60).trim().is_empty(), "no model name");
+    }
+
+    // ===== audited-defect regressions (2026-07 review) =====
+
+    #[test]
+    fn truncate_cols_measures_graphemes_not_chars() {
+        // ❤️ (U+2764 U+FE0F) paints 2 columns (str-level width, what ratatui
+        // uses); summing per-char widths counted 1 and let truncations
+        // overflow their budget 2x.
+        let hearts = "❤️".repeat(4); // 8 display columns
+        assert_eq!(cols(&hearts), 8);
+        let kept = truncate_cols(&hearts, 4);
+        assert_eq!(cols(&kept), 4, "the kept prefix fits the budget as painted");
+        assert_eq!(kept, "❤️".repeat(2));
+    }
+
+    #[test]
+    fn truncate_cols_never_splits_a_zwj_cluster() {
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}"; // 👨‍👩‍👧, 2 cols
+        let s = format!("{family} ok");
+        assert_eq!(
+            truncate_cols(&s, 3),
+            format!("{family} "),
+            "the whole cluster (2 cols) fits a 3-col budget"
+        );
+        assert_eq!(
+            truncate_cols(&s, 1),
+            "",
+            "a cluster wider than the budget is dropped whole, never split"
+        );
+    }
+
+    #[test]
+    fn live_height_saturates_instead_of_overflowing_u16() {
+        // A recalled multi-megabyte paste (tens of thousands of wrapped rows)
+        // plus the same text queued mid-turn used to overflow the u16 row sum
+        // and panic in dev builds (overflow checks on).
+        let input = TextArea::from_text(&"x".repeat(170_000));
+        let h = live_height(&input, 10, 24, true, false, 60_000, 0, 0, 1);
+        assert_eq!(h, 24, "clamped to the terminal height");
+    }
+
+    #[test]
+    fn cursor_position_stays_in_the_live_region_when_the_box_collapses() {
+        // A tall queue on a short terminal leaves the input frame no rows at
+        // all: Rect::inner returns Rect::ZERO (origin discarded) and the
+        // hardware cursor used to teleport to the screen's top-left, sitting
+        // over the scrollback.
+        let mut app = App::new();
+        for i in 0..20 {
+            let text = format!("q{i}");
+            app.queued.push_back(batch(&[text.as_str()]));
+        }
+        let area = Rect::new(0, 5, 30, 15);
+        let (_, y) = cursor_position(area, &app);
+        assert!(
+            y >= area.y,
+            "the cursor stays inside the live region (y={y}, region starts at {})",
+            area.y
+        );
+    }
+
+    #[test]
+    fn tool_peek_expands_tabs_for_display() {
+        // A '\t' paints as zero cells (ratatui filters control-char
+        // graphemes), gluing tab-separated fields together: `! printf
+        // 'name\tsize'` showed "namesize". Tool output expands tabs on the
+        // render path exactly like code blocks (expand_code_tabs); the
+        // stored output stays byte-exact.
+        let mut t = tool("pwd", "", ToolStatus::Ok, "name\tsize");
+        t.shell = true;
+        let texts: Vec<String> = tool_lines(&t, 80).iter().map(plain).collect();
+        assert!(
+            !texts.iter().any(|l| l.contains('\t')),
+            "no raw tab reaches a painted row: {texts:?}"
+        );
+        let tab = " ".repeat(CODE_TAB_WIDTH);
+        assert!(
+            texts.iter().any(|l| l.contains(&format!("name{tab}size"))),
+            "the separator survives as spaces: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn tool_full_lines_expand_tabs_for_display() {
+        let t = tool("bash", "cat Makefile", ToolStatus::Ok, "target:\n\tcc -o x");
+        let texts: Vec<String> = tool_full_lines(&t, 80).iter().map(plain).collect();
+        assert!(
+            !texts.iter().any(|l| l.contains('\t')),
+            "no raw tab reaches the expanded view: {texts:?}"
+        );
+        let tab = " ".repeat(CODE_TAB_WIDTH);
+        assert!(
+            texts.iter().any(|l| l.contains(&format!("{tab}cc -o x"))),
+            "the recipe keeps its indentation: {texts:?}"
+        );
     }
 }
