@@ -225,7 +225,7 @@ fn push_text(out: &mut Vec<ContextMessage>, role: ContextRole, text: String, ima
 pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
     let mut out: Vec<ContextMessage> = Vec::new();
     let mut tool_seq = 0usize;
-    for item in history {
+    for (position, item) in history.iter().enumerate() {
         match item {
             HistoryItem::Message(message) => match message.role {
                 Role::User => push_text(
@@ -254,7 +254,26 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
                     format!("[system] {}", message.text),
                     vec![],
                 ),
-                Role::Shell => {} // its tool cell carries the command + output
+                Role::Shell => {
+                    // Its tool cell (recorded when the command resolves)
+                    // carries the command + output — except for a *dangling*
+                    // header: the app quit mid-command, so no tool ever
+                    // landed (docs/resume.md). Emit the bare command then, or
+                    // the run would vanish from the derived context while the
+                    // transcript still shows it.
+                    let resolved = matches!(
+                        history.get(position + 1),
+                        Some(HistoryItem::Tool(tool)) if tool.shell
+                    );
+                    if !resolved {
+                        push_text(
+                            &mut out,
+                            ContextRole::User,
+                            format!("$ {}", message.text),
+                            vec![],
+                        );
+                    }
+                }
             },
             HistoryItem::Tool(tool) if tool.shell => {
                 // The user's local `!` command: a natural shell transcript under
@@ -517,6 +536,35 @@ mod tests {
         let history = vec![tool("true", "", "", ToolStatus::Ok, true)];
         let ctx = context_messages(&history);
         assert_eq!(ctx, vec![ContextMessage::new(ContextRole::User, "$ true")]);
+    }
+
+    #[test]
+    fn a_dangling_shell_header_still_reaches_the_context() {
+        // Quitting mid-`!` command records the Role::Shell header with no
+        // tool cell behind it (the tool only lands when the command
+        // resolves); after /resume the transcript shows `! make build` but
+        // the derived context must not silently omit the run.
+        let history = vec![message(Role::Shell, "make build")];
+        let ctx = context_messages(&history);
+        assert_eq!(
+            ctx,
+            vec![ContextMessage::new(ContextRole::User, "$ make build")]
+        );
+    }
+
+    #[test]
+    fn a_resolved_shell_headers_command_is_not_doubled() {
+        // The header before a resolved shell tool stays skipped — only the
+        // dangling case emits.
+        let history = vec![
+            message(Role::Shell, "pwd"),
+            tool("pwd", "", "/home/user", ToolStatus::Ok, true),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(
+            ctx,
+            vec![ContextMessage::new(ContextRole::User, "$ pwd\n/home/user")]
+        );
     }
 
     #[test]

@@ -243,7 +243,17 @@ impl TextArea {
             }
             self.preferred_col.get_or_insert(target);
             let prev = &rows[row - 1];
-            self.cursor = self.pos_at_col(prev.start, prev.end, target);
+            let pos = self.pos_at_col(prev.start, prev.end, target);
+            // Byte-abutting rows (a hard-broken word chunk, the end-of-text
+            // sentinel) share their boundary byte with this row's start;
+            // clamping to `prev.end` would leave the cursor exactly where it
+            // was — and with `preferred_col` now pinned, every further ↑
+            // would repeat the no-op. Step strictly into the previous row.
+            self.cursor = if pos == self.cursor {
+                prev_grapheme(&self.text, pos)
+            } else {
+                pos
+            };
             return;
         }
         // Cache cold: logical-line fallback.
@@ -942,5 +952,26 @@ mod tests {
         assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11, 11..11]);
         ta.set_text("hi");
         assert_eq!(ta.wrapped_rows(5), vec![0..2], "re-wrapped after the edit");
+    }
+
+    #[test]
+    fn move_up_from_an_abutting_row_boundary_still_moves() {
+        // "hello world" at width 5 wraps to [0..5, 6..11, 11..11] — the
+        // sentinel row abuts row 1 byte-exactly. A cursor parked on the
+        // shared boundary byte with a pinned preferred_col at (or past) the
+        // previous row's width used to compute a "previous-row" position
+        // equal to itself, so every further ↑ was a permanent no-op.
+        let mut ta = TextArea::from_text("hello world");
+        for _ in 0..6 {
+            ta.move_left(); // byte 5 — the consumed break space (col 5)
+        }
+        assert_eq!(ta.cursor(), 5);
+        let _ = ta.wrapped_rows(5); // warm the cache at width 5
+        ta.move_down(); // pins preferred_col 5, lands on the sentinel row
+        assert_eq!(ta.cursor(), 11);
+        ta.move_up();
+        assert_ne!(ta.cursor(), 11, "↑ must move off the boundary");
+        ta.move_up();
+        assert!(ta.cursor() <= 5, "a second ↑ keeps climbing");
     }
 }

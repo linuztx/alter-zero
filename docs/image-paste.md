@@ -210,8 +210,10 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
   covers the common case.
 - **Placeholder numbering restarts per draft**, so two separately queued
   messages can each carry an `[Image #1]`; a batch merging both restores two
-  pairs keyed by the same string on Alt+Up, and an atomic Backspace over one
-  occurrence then drops both pairs (the string-keyed scheme's known edge).
+  pairs keyed by the same string on Alt+Up. An atomic Backspace over one
+  occurrence drops only *its own* pair — occurrences in text order pair with
+  list entries in order (`App::delete_placeholder`'s ordinal match) — so the
+  other occurrence stays backed.
 - A **Ctrl+C-cleared** draft drops its attachments (the recorded ↑-recall text
   keeps the now-unbacked placeholder as plain text — codex renders the marker
   as text in sent messages anyway); a **shell-mode** draft never carries images

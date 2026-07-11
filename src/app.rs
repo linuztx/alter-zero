@@ -1417,6 +1417,16 @@ pub struct App {
     /// [`clear_toast`]: App::clear_toast
     /// [`history`]: App::history
     toast: Option<Toast>,
+    /// The [`history`] index below which the interrupt-undo may never pop.
+    /// Usually 0 — a previous turn's tail (summary/notice/tool) already stops
+    /// [`take_trailing_user_messages`] — but a `/resume` can install a history
+    /// *ending* with a user message (a rollout cut short mid-turn), and a
+    /// backtrack rewind can leave an older batch-sibling user message as the
+    /// tail; the floor keeps the undo from swallowing those into the composer.
+    ///
+    /// [`history`]: App::history
+    /// [`take_trailing_user_messages`]: App::take_trailing_user_messages
+    undo_floor: usize,
 }
 
 impl App {
@@ -1602,8 +1612,9 @@ impl App {
             &self.pasted,
             backward,
         ) {
+            let ordinal = occurrence_ordinal(self.input.text(), &span);
             let placeholder = self.delete_span(span);
-            self.pasted.retain(|(ph, _)| ph != &placeholder);
+            remove_nth_pair(&mut self.pasted, &placeholder, ordinal);
             return true;
         }
         if let Some(span) = crate::paste::placeholder_to_delete(
@@ -1612,15 +1623,17 @@ impl App {
             &self.images,
             backward,
         ) {
+            let ordinal = occurrence_ordinal(self.input.text(), &span);
             let placeholder = self.delete_span(span);
-            // The dropped attachment's temp file is orphaned now — hand its
-            // path to the boundary for removal (docs/image-paste.md).
-            let (dropped, kept) = std::mem::take(&mut self.images)
-                .into_iter()
-                .partition(|(ph, _)| ph == &placeholder);
-            self.images = kept;
-            self.discarded_images
-                .extend(dropped.into_iter().map(|(_, path)| path));
+            // Only the deleted occurrence's own pair goes (occurrences in
+            // text order pair with list entries in order — the string-keyed
+            // scheme's convention): a merged batch's duplicate-named pairs
+            // keep backing their other occurrences. The dropped attachment's
+            // temp file is orphaned now — hand its path to the boundary for
+            // removal (docs/image-paste.md).
+            if let Some(path) = remove_nth_pair(&mut self.images, &placeholder, ordinal) {
+                self.discarded_images.push(path);
+            }
             return true;
         }
         false
@@ -2103,8 +2116,23 @@ impl App {
     ///
     /// [`input_history`]: App::input_history
     fn should_browse_history(&self) -> bool {
+        let text = self.input.text();
+        // A recalled `!command`'s bang lives in [`shell_mode`], not the text
+        // (sync_shell_mode absorbed it), while the recorded entry keeps it —
+        // reconstruct the `!`-prefixed form for the unedited-recall
+        // comparison, mapping the composer's ends onto the recorded ends, or
+        // browsing strands permanently on a shell entry. An empty shell
+        // composer browses like any empty composer.
+        //
+        // [`shell_mode`]: App::shell_mode
+        if self.shell_mode && !text.is_empty() {
+            let recorded = format!("!{text}");
+            let cursor = self.input.cursor();
+            let cursor = if cursor == 0 { 0 } else { cursor + 1 };
+            return self.input_history.should_navigate(&recorded, cursor);
+        }
         self.input_history
-            .should_navigate(self.input.text(), self.input.cursor())
+            .should_navigate(text, self.input.cursor())
     }
 
     /// Replace the draft with a recalled history entry. `set_text` puts the
@@ -2545,6 +2573,7 @@ impl App {
         if let Some(search) = self.history_search.take() {
             self.input = search.snapshot;
             self.shell_mode = search.snapshot_shell;
+            self.reconcile_images_with_input();
         }
     }
 
@@ -2571,6 +2600,13 @@ impl App {
         };
         self.history_search = None;
         self.input_history.resume_at(entry);
+        // The accepted entry replaced the pre-search draft, unanchoring the
+        // pairs that backed it — discard them (the boundary deletes the
+        // orphaned temp files) so a stale attachment can't silently ride the
+        // next submission; any `[Image #N]` in the accepted text is an
+        // unbacked marker (docs/image-paste.md). Mirrors the interrupt-undo
+        // and backtrack draft-replacement paths.
+        self.discard_attachments();
         self.refresh_command_menu(false);
         // An accepted `!entry` re-enters shell mode (the recall rule).
         self.sync_shell_mode();
@@ -2581,7 +2617,30 @@ impl App {
     fn restore_search_snapshot(&mut self) {
         if let Some(search) = self.history_search.as_ref() {
             self.input = search.snapshot.clone();
+            self.reconcile_images_with_input();
         }
+    }
+
+    /// Drop image pairs no longer anchored to a placeholder occurrence in the
+    /// composer (keeping at most one pair per occurrence, in order) — the
+    /// reconcile a search-snapshot restore needs when an async Ctrl+V
+    /// completion landed while the Ctrl+R search owned the composer: its
+    /// placeholder went with the preview text, so the pair must not linger
+    /// invisibly and ride the next submission. Orphaned temp files go to the
+    /// boundary's discard list (docs/image-paste.md).
+    fn reconcile_images_with_input(&mut self) {
+        let text = self.input.text().to_string();
+        let mut kept: Vec<(String, PathBuf)> = Vec::new();
+        for (placeholder, path) in std::mem::take(&mut self.images) {
+            let occurrences = text.matches(placeholder.as_str()).count();
+            let backed = kept.iter().filter(|(ph, _)| *ph == placeholder).count();
+            if backed < occurrences {
+                kept.push((placeholder, path));
+            } else {
+                self.discarded_images.push(path);
+            }
+        }
+        self.images = kept;
     }
 
     /// Byte ranges of the query's occurrences in the composer text, **only
@@ -2784,6 +2843,10 @@ impl App {
     pub fn load_session(&mut self, items: Vec<HistoryItem>) {
         self.clear_conversation();
         self.history = items;
+        // A rollout cut short mid-turn ends with its user message; that tail
+        // belongs to the resumed conversation, not to any new turn — fence it
+        // off from the interrupt-undo (docs/interrupt.md).
+        self.undo_floor = self.history.len();
         self.close_resume_picker();
     }
 
@@ -3385,6 +3448,9 @@ impl App {
             }
         }
         self.history.truncate(position);
+        // The rewound history's tail can be an older batch-sibling user
+        // message — fence it off from the interrupt-undo like a resumed tail.
+        self.undo_floor = self.history.len();
         self.backtrack = Backtrack::default();
         self.view = View::Conversation;
         self.recall_input(&text);
@@ -3989,7 +4055,9 @@ impl App {
     /// [`recall_input`]: App::recall_input
     fn take_trailing_user_messages(&mut self) -> (String, Vec<(String, PathBuf)>) {
         let mut messages = Vec::new();
-        while matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User) {
+        while self.history.len() > self.undo_floor
+            && matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User)
+        {
             if let Some(HistoryItem::Message(m)) = self.history.pop() {
                 messages.push(m);
             }
@@ -4033,9 +4101,36 @@ impl App {
             }
         }
         self.file_search = None;
+        self.undo_floor = 0;
         // A cleared slate shows nothing lingering above the box.
         self.toast = None;
     }
+}
+
+/// How many earlier occurrences of the placeholder at `span` precede it in
+/// `text` — the ordinal pairing a placeholder occurrence to its list entry
+/// (occurrences in text order correspond to `(placeholder, value)` pairs in
+/// list order; see `paste::distribute_images`).
+fn occurrence_ordinal(text: &str, span: &Range<usize>) -> usize {
+    let placeholder = &text[span.clone()];
+    text[..span.start].matches(placeholder).count()
+}
+
+/// Remove and return the value of the pair backing the `ordinal`-th occurrence
+/// of `placeholder`; `None` when no pair sits at that ordinal (the occurrence
+/// was an unbacked marker recalled as plain text).
+fn remove_nth_pair<V>(
+    pairs: &mut Vec<(String, V)>,
+    placeholder: &str,
+    ordinal: usize,
+) -> Option<V> {
+    let pos = pairs
+        .iter()
+        .enumerate()
+        .filter(|(_, (ph, _))| ph == placeholder)
+        .map(|(i, _)| i)
+        .nth(ordinal)?;
+    Some(pairs.remove(pos).1)
 }
 
 #[cfg(test)]
@@ -9158,5 +9253,164 @@ mod tests {
         let mut app = login_app();
         app.paste_into_key_onboarding("open router");
         assert_eq!(app.key_onboarding.as_ref().unwrap().query, "open router");
+    }
+
+    // ===== audited-defect regressions (2026-07 review) =====
+
+    #[test]
+    fn history_browsing_steps_past_a_recalled_shell_entry() {
+        // Recalling "!ls" absorbs the bang into shell_mode (composer "ls"),
+        // but the recorded entry is "!ls" — the unedited-recall comparison
+        // must account for the absorbed bang or browsing strands on the
+        // shell entry (docs/input-history.md: unedited recalls keep browsing).
+        let mut app = App::new();
+        submit(&mut app, "hello");
+        type_query(&mut app, "!ls");
+        app.on_key(key(KeyCode::Enter)); // records "!ls"
+        app.on_key(key(KeyCode::Up)); // recall "!ls" → shell mode, text "ls"
+        assert!(app.shell_mode);
+        assert_eq!(app.input.text(), "ls");
+        app.on_key(key(KeyCode::Up)); // must step OLDER, not move the cursor
+        assert_eq!(app.input.text(), "hello");
+        assert!(!app.shell_mode, "the older plain entry leaves the mode");
+        app.on_key(key(KeyCode::Down)); // and ↓ steps back to the shell entry
+        assert!(app.shell_mode);
+        assert_eq!(app.input.text(), "ls");
+    }
+
+    #[test]
+    fn down_past_a_recalled_shell_entry_clears_the_composer() {
+        let mut app = App::new();
+        type_query(&mut app, "!ls");
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Up)); // recall the newest ("!ls")
+        assert!(app.shell_mode);
+        app.on_key(key(KeyCode::Down)); // ↓ past the newest clears + exits
+        assert_eq!(app.input.text(), "");
+        assert!(!app.shell_mode);
+    }
+
+    #[test]
+    fn deleting_one_duplicate_named_placeholder_keeps_the_other_pair() {
+        // An undone batch can hold two "[Image #1]"s with different paths
+        // (numbering restarts per draft). Backspacing over ONE occurrence
+        // must drop only its own pair — not every pair sharing the name,
+        // which deleted the temp file backing the occurrence still in the
+        // composer (docs/image-paste.md).
+        let mut app = App::new();
+        app.record_user_message_with_images("[Image #1] first", vec![PathBuf::from("/a.png")]);
+        app.record_user_message_with_images("[Image #1] second", vec![PathBuf::from("/b.png")]);
+        app.begin_stream();
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        // Seat the cursor right after the SECOND [Image #1] and Backspace it.
+        let text = app.input.text().to_string();
+        let second_end = text.rfind("[Image #1]").unwrap() + "[Image #1]".len();
+        app.input.set_text_with_cursor(&text, second_end);
+        app.on_key(key(KeyCode::Backspace));
+        assert_eq!(app.input.text(), "[Image #1] first\n second");
+        assert_eq!(
+            app.images,
+            vec![("[Image #1]".to_string(), PathBuf::from("/a.png"))],
+            "the first occurrence's pair survives"
+        );
+        assert_eq!(
+            app.take_discarded_images(),
+            vec![PathBuf::from("/b.png")],
+            "only the deleted occurrence's temp file is discarded"
+        );
+    }
+
+    #[test]
+    fn accepting_a_search_match_discards_the_replaced_drafts_attachments() {
+        // Enter on a Ctrl+R match replaces the pre-search draft; the pairs
+        // that backed it are unanchored and must be discarded — otherwise the
+        // stale attachment silently rides the next submission
+        // (paste::distribute_images parks unclaimed pairs on the first text).
+        let mut app = App::new();
+        submit(&mut app, "old entry");
+        app.attach_image(PathBuf::from("/tmp/img.png"));
+        app.on_key(ctrl('r'));
+        type_query(&mut app, "old");
+        app.on_key(key(KeyCode::Enter)); // accept the previewed match
+        assert_eq!(app.input.text(), "old entry");
+        assert!(app.images.is_empty(), "no unanchored pairs survive");
+        assert_eq!(
+            app.take_discarded_images(),
+            vec![PathBuf::from("/tmp/img.png")]
+        );
+    }
+
+    #[test]
+    fn cancelling_a_search_discards_an_image_attached_while_it_was_open() {
+        // A Ctrl+V decode finishing while the search owns the composer lands
+        // its placeholder in the preview text; the snapshot restore drops the
+        // text, so the pair must go too — not linger invisibly and ride the
+        // next submission.
+        let mut app = App::new();
+        submit(&mut app, "old entry");
+        app.on_key(ctrl('r'));
+        app.attach_image(PathBuf::from("/tmp/late.png"));
+        app.on_key(key(KeyCode::Esc)); // cancel → snapshot (empty draft) restored
+        assert_eq!(app.input.text(), "");
+        assert!(app.images.is_empty());
+        assert_eq!(
+            app.take_discarded_images(),
+            vec![PathBuf::from("/tmp/late.png")]
+        );
+    }
+
+    #[test]
+    fn cancelling_a_search_keeps_the_snapshot_drafts_attachments() {
+        let mut app = App::new();
+        submit(&mut app, "old entry");
+        app.attach_image(PathBuf::from("/tmp/keep.png"));
+        app.on_key(ctrl('r'));
+        app.on_key(key(KeyCode::Esc));
+        assert_eq!(app.input.text(), "[Image #1]");
+        assert_eq!(
+            app.images,
+            vec![("[Image #1]".to_string(), PathBuf::from("/tmp/keep.png"))],
+            "the restored draft's own pair stays backed"
+        );
+        assert!(app.take_discarded_images().is_empty());
+    }
+
+    #[test]
+    fn interrupt_undo_stops_at_a_resumed_sessions_trailing_user_message() {
+        // A rollout can end with a user message (quit mid-turn before any
+        // reply); resuming installs it as the history tail. A NEW submission
+        // undone by an early Esc must pull back only its own message — not
+        // merge the resumed conversation's tail into the composer and drop it
+        // from history.
+        let mut app = App::new();
+        app.record_user_message("old");
+        let items = std::mem::take(&mut app.history);
+        app.load_session(items);
+        app.record_user_message("new");
+        app.begin_stream();
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        assert_eq!(app.input.text(), "new");
+        assert_eq!(roles(&app), vec![Role::User], "the resumed tail survives");
+        assert_eq!(message_at(&app, 0).text, "old");
+    }
+
+    #[test]
+    fn interrupt_undo_stops_at_a_backtrack_rewind_boundary() {
+        // A batch records two user messages; backtracking to the second
+        // leaves the first as the history tail. A new submission undone by an
+        // early Esc must not pull that older message back with it.
+        let mut app = App::new();
+        app.record_user_message("first");
+        app.record_user_message("second");
+        app.on_key(key(KeyCode::Esc)); // arm
+        app.on_key(key(KeyCode::Esc)); // preview at the newest ("second")
+        app.on_key(key(KeyCode::Enter)); // rewind: history = [first]
+        assert_eq!(app.input.text(), "second");
+        app.record_user_message("new");
+        app.begin_stream();
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        assert_eq!(app.input.text(), "new");
+        assert_eq!(roles(&app), vec![Role::User]);
+        assert_eq!(message_at(&app, 0).text, "first");
     }
 }
