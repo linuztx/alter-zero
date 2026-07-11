@@ -390,7 +390,26 @@ pub fn apply_edit(
     if old == new {
         return Err(EditError::NoChange);
     }
-    let count = content.matches(old).count();
+    let mut old = std::borrow::Cow::Borrowed(old);
+    let mut new = std::borrow::Cow::Borrowed(new);
+    let mut count = content.matches(old.as_ref()).count();
+    // The `read` tool shows CRLF files with the \r stripped (str::lines), so a
+    // faithfully-copied multi-line old_string arrives \n-joined and can never
+    // match the raw file across a line boundary. When the exact match misses
+    // on a CRLF file, retry with both strings normalized to \r\n endings —
+    // otherwise the documented read-then-edit workflow fails deterministically.
+    if count == 0 && content.contains("\r\n") && old.contains('\n') && !old.contains('\r') {
+        let old_crlf = old.replace('\n', "\r\n");
+        let crlf_count = content.matches(&old_crlf).count();
+        if crlf_count > 0 {
+            old = std::borrow::Cow::Owned(old_crlf);
+            if !new.contains('\r') {
+                new = std::borrow::Cow::Owned(new.replace('\n', "\r\n"));
+            }
+            count = crlf_count;
+        }
+    }
+    let (old, new) = (old.as_ref(), new.as_ref());
     match count {
         0 => Err(EditError::NotFound),
         n if n > 1 && !replace_all => Err(EditError::NotUnique(n)),
@@ -458,9 +477,20 @@ pub struct Diff {
     pub removed: usize,
 }
 
+/// The most LCS-table cells [`diff_lines`] will allocate (~8 MB of `usize`s).
+/// The common prefix/suffix are trimmed first, so a typical edit — however
+/// large the file — only needs the table for its changed middle; a middle
+/// whose old×new line product exceeds this budget is rendered as a plain
+/// remove/add block instead. Without the bound, an `edit`/`write` touching a
+/// 30k-line file (a lockfile, a generated bundle) allocates an O(n×m) table
+/// in the gigabytes and can OOM-abort the whole TUI.
+const DIFF_LCS_MAX_CELLS: usize = 1_000_000;
+
 /// Compute a line-level diff of `old` → `new` via a longest-common-subsequence
 /// match, so unchanged lines are shared context and only the real changes are
 /// marked `+`/`-`. Pure; drives the `(+A −D)` summaries and the diff cells.
+/// Memory-bounded: the shared prefix/suffix never enter the LCS table, and a
+/// changed middle past [`DIFF_LCS_MAX_CELLS`] falls back to remove-all/add-all.
 #[must_use]
 pub fn diff_lines(old: &str, new: &str) -> Diff {
     let a: Vec<&str> = if old.is_empty() {
@@ -473,47 +503,77 @@ pub fn diff_lines(old: &str, new: &str) -> Diff {
     } else {
         new.lines().collect()
     };
-    // LCS table (lengths). `a.len()`/`b.len()` are file line counts — fine.
-    let (n, m) = (a.len(), b.len());
-    let mut lcs = vec![vec![0usize; m + 1]; n + 1];
-    for i in (0..n).rev() {
-        for j in (0..m).rev() {
-            lcs[i][j] = if a[i] == b[j] {
-                lcs[i + 1][j + 1] + 1
-            } else {
-                lcs[i + 1][j].max(lcs[i][j + 1])
-            };
-        }
-    }
-    // Walk the table to reconstruct the diff.
-    let mut lines = Vec::new();
+    // Trim the common prefix and suffix — context that never needs the table.
+    let prefix = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    let suffix = a[prefix..]
+        .iter()
+        .rev()
+        .zip(b[prefix..].iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let mut lines: Vec<DiffLine> = a[..prefix]
+        .iter()
+        .map(|l| DiffLine::Context(l.to_string()))
+        .collect();
+    let am = &a[prefix..a.len() - suffix];
+    let bm = &b[prefix..b.len() - suffix];
     let (mut added, mut removed) = (0usize, 0usize);
-    let (mut i, mut j) = (0usize, 0usize);
-    while i < n && j < m {
-        if a[i] == b[j] {
-            lines.push(DiffLine::Context(a[i].to_string()));
-            i += 1;
-            j += 1;
-        } else if lcs[i + 1][j] >= lcs[i][j + 1] {
-            lines.push(DiffLine::Remove(a[i].to_string()));
+    if am.len().saturating_mul(bm.len()) > DIFF_LCS_MAX_CELLS {
+        // Past the budget: a plain replacement block, no shared-context search.
+        for l in am {
+            lines.push(DiffLine::Remove(l.to_string()));
+            removed += 1;
+        }
+        for l in bm {
+            lines.push(DiffLine::Add(l.to_string()));
+            added += 1;
+        }
+    } else {
+        // LCS table (lengths) over the changed middle only.
+        let (n, m) = (am.len(), bm.len());
+        let mut lcs = vec![vec![0usize; m + 1]; n + 1];
+        for i in (0..n).rev() {
+            for j in (0..m).rev() {
+                lcs[i][j] = if am[i] == bm[j] {
+                    lcs[i + 1][j + 1] + 1
+                } else {
+                    lcs[i + 1][j].max(lcs[i][j + 1])
+                };
+            }
+        }
+        // Walk the table to reconstruct the diff.
+        let (mut i, mut j) = (0usize, 0usize);
+        while i < n && j < m {
+            if am[i] == bm[j] {
+                lines.push(DiffLine::Context(am[i].to_string()));
+                i += 1;
+                j += 1;
+            } else if lcs[i + 1][j] >= lcs[i][j + 1] {
+                lines.push(DiffLine::Remove(am[i].to_string()));
+                removed += 1;
+                i += 1;
+            } else {
+                lines.push(DiffLine::Add(bm[j].to_string()));
+                added += 1;
+                j += 1;
+            }
+        }
+        while i < n {
+            lines.push(DiffLine::Remove(am[i].to_string()));
             removed += 1;
             i += 1;
-        } else {
-            lines.push(DiffLine::Add(b[j].to_string()));
+        }
+        while j < m {
+            lines.push(DiffLine::Add(bm[j].to_string()));
             added += 1;
             j += 1;
         }
     }
-    while i < n {
-        lines.push(DiffLine::Remove(a[i].to_string()));
-        removed += 1;
-        i += 1;
-    }
-    while j < m {
-        lines.push(DiffLine::Add(b[j].to_string()));
-        added += 1;
-        j += 1;
-    }
+    lines.extend(
+        a[a.len() - suffix..]
+            .iter()
+            .map(|l| DiffLine::Context(l.to_string())),
+    );
     Diff {
         lines,
         added,
@@ -726,6 +786,45 @@ mod tests {
     }
 
     #[test]
+    fn edit_matches_lf_old_string_against_a_crlf_file() {
+        // `read` shows CRLF files with the \r stripped (str::lines), so a
+        // faithfully-copied old_string arrives \n-joined; the edit must still
+        // land, and the file must stay CRLF.
+        let out = apply_edit(
+            "alpha\r\nbeta\r\ngamma\r\n",
+            "alpha\nbeta",
+            "alpha\nBETA",
+            false,
+        )
+        .unwrap();
+        assert_eq!(out.new_content, "alpha\r\nBETA\r\ngamma\r\n");
+        assert_eq!(out.replacements, 1);
+    }
+
+    #[test]
+    fn crlf_fallback_counts_uniqueness_over_the_normalized_form() {
+        assert_eq!(
+            apply_edit("x\r\ny\r\nx\r\ny\r\n", "x\ny", "x\nY", false),
+            Err(EditError::NotUnique(2))
+        );
+    }
+
+    #[test]
+    fn crlf_fallback_replace_all_changes_every_occurrence() {
+        let out = apply_edit("x\r\ny\r\nx\r\ny\r\n", "x\ny", "x\nY", true).unwrap();
+        assert_eq!(out.new_content, "x\r\nY\r\nx\r\nY\r\n");
+        assert_eq!(out.replacements, 2);
+    }
+
+    #[test]
+    fn an_exact_match_wins_over_the_crlf_fallback() {
+        // Mixed-endings file: the literal \n match exists, so it is taken
+        // as-is and no normalization happens.
+        let out = apply_edit("a\nb--a\r\nb", "a\nb", "a\nB", false).unwrap();
+        assert_eq!(out.new_content, "a\nB--a\r\nb");
+    }
+
+    #[test]
     fn apply_edit_rejects_empty_and_noop() {
         assert_eq!(
             apply_edit("abc", "", "x", false),
@@ -778,6 +877,58 @@ mod tests {
         let d = diff_lines("same\ntext", "same\ntext");
         assert_eq!((d.added, d.removed), (0, 0));
         assert!(d.lines.iter().all(|l| matches!(l, DiffLine::Context(_))));
+    }
+
+    #[test]
+    fn a_diff_past_the_lcs_budget_falls_back_to_plain_replacement() {
+        // Two unrelated ~1100-line middles exceed DIFF_LCS_MAX_CELLS. The
+        // budget is what keeps an edit to a 30k-line file from allocating a
+        // multi-gigabyte O(n×m) table — past it, the changed middle renders
+        // as a plain remove/add block (the shared "COMMON" line is the
+        // context a full LCS would have found; the fallback trades it for
+        // bounded memory).
+        let old: String = (0..1100)
+            .map(|i| {
+                if i == 550 {
+                    "COMMON\n".to_string()
+                } else {
+                    format!("old {i}\n")
+                }
+            })
+            .collect();
+        let new: String = (0..1100)
+            .map(|i| {
+                if i == 550 {
+                    "COMMON\n".to_string()
+                } else {
+                    format!("new {i}\n")
+                }
+            })
+            .collect();
+        let d = diff_lines(&old, &new);
+        assert_eq!((d.added, d.removed), (1100, 1100));
+        assert!(
+            d.lines.iter().all(|l| !matches!(l, DiffLine::Context(_))),
+            "past the budget the middle is a plain remove/add block"
+        );
+    }
+
+    #[test]
+    fn a_one_line_edit_in_a_huge_file_diffs_exactly() {
+        // The OOM trigger: one changed line in a 50k-line file. The trimmed
+        // prefix/suffix keep the LCS to the single changed line, so the diff
+        // stays exact — with the old unbounded table this test allocated
+        // ~20 GB and aborted the process.
+        let old: String = (0..50_000).map(|i| format!("line {i}\n")).collect();
+        let new = old.replace("line 25000\n", "line 25000 CHANGED\n");
+        let d = diff_lines(&old, &new);
+        assert_eq!((d.added, d.removed), (1, 1));
+        assert_eq!(d.lines.len(), 50_001, "one remove + one add + all context");
+        assert!(
+            d.lines
+                .iter()
+                .any(|l| matches!(l, DiffLine::Add(t) if t.contains("CHANGED")))
+        );
     }
 
     #[test]

@@ -226,6 +226,23 @@ fn drain_stream(
     let mut tools = ToolCallAccumulator::default();
     let mut finish_reason: Option<String> = None;
     let mut line: Vec<u8> = Vec::new();
+    // A response that ignored `stream:true` has no SSE framing at all —
+    // collect its raw lines (bounded) so EOF can fall back to parsing one
+    // plain JSON completion instead of reporting a clean empty stream.
+    let mut saw_sse_framing = false;
+    let mut raw_body: Vec<u8> = Vec::new();
+    let note_raw_line = |line: &[u8], saw: &mut bool, body: &mut Vec<u8>| {
+        if *saw {
+            return;
+        }
+        if is_sse_framing(line) {
+            *saw = true;
+            body.clear();
+        } else if body.len() + line.len() < RAW_BODY_MAX_BYTES {
+            body.extend_from_slice(line);
+            body.push(b'\n');
+        } // past the cap the tail is dropped — the fallback parse then errors
+    };
     'stream: loop {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
@@ -235,6 +252,7 @@ fn drain_stream(
                 for &byte in &chunk {
                     match byte {
                         b'\n' => {
+                            note_raw_line(&line, &mut saw_sse_framing, &mut raw_body);
                             let step = process_sse_line(
                                 &line,
                                 &mut splitter,
@@ -262,6 +280,7 @@ fn drain_stream(
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
                 // Clean EOF: flush any final line that had no trailing newline.
+                note_raw_line(&line, &mut saw_sse_framing, &mut raw_body);
                 if !line.is_empty()
                     && let SseStep::Fail(err) = process_sse_line(
                         &line,
@@ -274,6 +293,35 @@ fn drain_stream(
                     return Err(err);
                 }
                 break;
+            }
+        }
+    }
+    // No SSE framing at all: the provider answered with one plain body — a
+    // shim that ignored `stream:true` returning a whole JSON completion, or a
+    // bare JSON error on a 200. Parse it as one payload; an unparseable
+    // non-empty body is a decode failure, never a clean empty finish.
+    if !saw_sse_framing {
+        let body_text = String::from_utf8_lossy(&raw_body);
+        let body = body_text.trim();
+        if !body.is_empty() {
+            let mut yielded = false;
+            if let SseStep::Fail(err) = process_payload(
+                body,
+                &mut splitter,
+                &mut tools,
+                &mut finish_reason,
+                &mut |d| {
+                    yielded = true;
+                    on_delta(d);
+                },
+            ) {
+                return Err(err);
+            }
+            if !yielded && tools.is_empty() && finish_reason.is_none() {
+                return Err(LlmError::Decode(
+                    "the 200 response was not an SSE stream and did not parse as a chat completion"
+                        .to_string(),
+                ));
             }
         }
     }
@@ -306,7 +354,9 @@ pub struct ToolCallAccumulator {
 
 #[derive(Debug, Default)]
 struct PartialToolCall {
-    index: usize,
+    /// The wire `index`, when the provider sent one — `None` for index-less
+    /// entries (the non-streaming `message.tool_calls` array has no index).
+    index: Option<usize>,
     id: String,
     name: String,
     arguments: String,
@@ -314,16 +364,32 @@ struct PartialToolCall {
 
 impl ToolCallAccumulator {
     /// Fold one streamed tool-call delta fragment. `id`/`name` overwrite when
-    /// non-empty (they arrive once); `arguments` fragments concatenate.
+    /// non-empty (they arrive once); `arguments` fragments concatenate. A
+    /// fragment carrying a *different* non-empty `id` than the entry it would
+    /// continue is a NEW parallel call, never a merge — providers like
+    /// Gemini's OpenAI layer reuse index 0 for every parallel call, and the
+    /// non-streaming `message.tool_calls` shape omits `index` entirely, so
+    /// keying by index alone corrupted distinct calls into one.
     fn push(
         &mut self,
-        index: usize,
+        index: Option<usize>,
         id: Option<&str>,
         name: Option<&str>,
         arguments: Option<&str>,
     ) {
-        let entry = match self.calls.iter_mut().find(|c| c.index == index) {
-            Some(entry) => entry,
+        // Which entry would this fragment continue? With an index, the latest
+        // entry carrying it (so continuations follow a same-index split);
+        // without one, the latest entry outright.
+        let pos = match index {
+            Some(i) => self.calls.iter().rposition(|c| c.index == Some(i)),
+            None => self.calls.len().checked_sub(1),
+        };
+        let pos = pos.filter(|&p| match id {
+            Some(id) if !id.is_empty() => self.calls[p].id.is_empty() || self.calls[p].id == id,
+            _ => true,
+        });
+        let entry = match pos {
+            Some(p) => &mut self.calls[p],
             None => {
                 self.calls.push(PartialToolCall {
                     index,
@@ -351,15 +417,17 @@ impl ToolCallAccumulator {
 
     /// The finished tool calls, in stream order (a delta with no name is
     /// dropped — an incomplete fragment); a call with no id gets a synthetic
-    /// `call_{index}` so the result message can still pair to it.
+    /// `call_{index}` (its position when it had no wire index) so the result
+    /// message can still pair to it.
     #[must_use]
     pub fn finish(self) -> Vec<ToolCallRequest> {
         self.calls
             .into_iter()
             .filter(|c| !c.name.is_empty())
-            .map(|c| ToolCallRequest {
+            .enumerate()
+            .map(|(pos, c)| ToolCallRequest {
                 id: if c.id.is_empty() {
-                    format!("call_{}", c.index)
+                    format!("call_{}", c.index.unwrap_or(pos))
                 } else {
                     c.id
                 },
@@ -402,6 +470,20 @@ fn process_sse_line(
     if data == "[DONE]" {
         return SseStep::Done;
     }
+    process_payload(data, splitter, tools, finish_reason, on_delta)
+}
+
+/// Parse and dispatch one JSON payload (the body of a `data:` frame — or, at
+/// EOF, a whole non-SSE response body) through the same machinery: surface an
+/// in-band error, feed text/reasoning through `splitter`, fold `tool_calls`
+/// fragments into `tools`, record a `finish_reason`.
+fn process_payload(
+    data: &str,
+    splitter: &mut ThinkingSplitter,
+    tools: &mut ToolCallAccumulator,
+    finish_reason: &mut Option<String>,
+    on_delta: &mut impl FnMut(Delta),
+) -> SseStep {
     if let Some(err) = parse_sse_error(data) {
         return SseStep::Fail(err);
     }
@@ -482,6 +564,20 @@ fn parse_sse_error(data: &str) -> Option<LlmError> {
     Some(LlmError::Api { status, body })
 }
 
+/// The most raw non-SSE body bytes [`drain_stream`] retains for the EOF
+/// JSON-completion fallback — a plain completion fits easily; past it the
+/// fallback parse fails and surfaces a decode error instead of ballooning.
+const RAW_BODY_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// Is this line SSE framing (any field or comment line)? A plain JSON body
+/// line never is: raw newlines cannot occur inside JSON strings, so a body
+/// line starts with `{`, whitespace, or a quoted key — never `data:`/`:`.
+fn is_sse_framing(line: &[u8]) -> bool {
+    [b"data:" as &[u8], b"event:", b"id:", b"retry:", b":"]
+        .iter()
+        .any(|p| line.starts_with(p))
+}
+
 /// Extract the `data:` payload from one SSE line, or `None` for comments/blank
 /// lines/other fields. The optional single space after the colon is stripped.
 fn sse_data(line: &str) -> Option<&str> {
@@ -524,10 +620,12 @@ struct StreamDelta {
 }
 
 /// One streamed `tool_calls[]` entry — the fragmented Chat Completions shape.
+/// `index` stays `None` when absent (the non-streaming `message.tool_calls`
+/// array has none) so the accumulator can tell "no index" from "index 0".
 #[derive(Debug, Deserialize)]
 struct ToolCallDelta {
     #[serde(default)]
-    index: usize,
+    index: Option<usize>,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -544,7 +642,7 @@ struct FunctionDelta {
 
 /// One parsed tool-call fragment, flattened for the accumulator.
 struct ToolCallDeltaParsed {
-    index: usize,
+    index: Option<usize>,
     id: Option<String>,
     name: Option<String>,
     arguments: Option<String>,
@@ -911,6 +1009,46 @@ mod tests {
     }
 
     #[test]
+    fn index_less_parallel_tool_calls_stay_distinct() {
+        // A non-streaming `message.tool_calls` array (and some streaming
+        // providers) omits `index` entirely — two distinct calls must not
+        // merge into one corrupted entry.
+        let calls = drive_tool_stream(&[
+            r#"data: {"choices":[{"message":{"tool_calls":[{"id":"a","function":{"name":"read","arguments":"{\"path\":\"x\"}"}},{"id":"b","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}}]}"#,
+        ]);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            (calls[0].id.as_str(), calls[0].name.as_str()),
+            ("a", "read")
+        );
+        assert_eq!(calls[0].arguments, r#"{"path":"x"}"#);
+        assert_eq!(
+            (calls[1].id.as_str(), calls[1].name.as_str()),
+            ("b", "bash")
+        );
+        assert_eq!(calls[1].arguments, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn a_new_id_at_the_same_index_starts_a_new_call() {
+        // Some OpenAI-compat layers (Gemini's, for one) stream every parallel
+        // call with index 0: the id is what separates them, and continuation
+        // fragments (no id) belong to the latest call.
+        let calls = drive_tool_stream(&[
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"read","arguments":"{}"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"b","function":{"name":"bash","arguments":"{\"comm"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"and\":\"ls\"}"}}]}}]}"#,
+        ]);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            (calls[0].id.as_str(), calls[0].name.as_str()),
+            ("a", "read")
+        );
+        assert_eq!(calls[1].id, "b");
+        assert_eq!(calls[1].arguments, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
     fn a_content_only_stream_yields_no_tool_calls() {
         let calls = drive_tool_stream(&[r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#]);
         assert!(calls.is_empty());
@@ -1063,5 +1201,54 @@ mod tests {
             "the generation fragment surfaced for counting"
         );
         assert_eq!(deltas[0].tool_call, "bash{}");
+    }
+
+    #[test]
+    fn a_plain_json_completion_body_is_parsed_not_dropped() {
+        // An OpenAI-compatible shim that ignores `stream:true` answers with
+        // one plain JSON completion — no SSE framing at all. The reply must
+        // not vanish into a clean empty StreamDone.
+        let body = br#"{"choices":[{"message":{"content":"full answer"},"finish_reason":"stop"}]}"#
+            .to_vec();
+        let (out, deltas) = drain_queued(vec![Ok(body)]);
+        let outcome = out.expect("a parseable JSON completion succeeds");
+        assert_eq!(outcome.text.response, "full answer");
+        assert_eq!(outcome.finish_reason.as_deref(), Some("stop"));
+        assert!(deltas.iter().any(|d| d.response.contains("full answer")));
+    }
+
+    #[test]
+    fn a_plain_json_error_body_fails_the_stream() {
+        // A 200 whose body is a bare JSON error object (no SSE framing).
+        let body = br#"{"error":{"message":"quota exhausted","code":429}}"#.to_vec();
+        let (out, deltas) = drain_queued(vec![Ok(body)]);
+        assert!(deltas.is_empty());
+        match out {
+            Err(LlmError::Api { status, body }) => {
+                assert_eq!(status, 429);
+                assert!(body.contains("quota exhausted"));
+            }
+            other => panic!("expected the plain-body Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_non_sse_garbage_body_is_an_error_not_a_clean_empty_finish() {
+        let (out, deltas) = drain_queued(vec![Ok(b"<html>bad gateway</html>".to_vec())]);
+        assert!(deltas.is_empty());
+        assert!(
+            out.is_err(),
+            "an unparseable non-SSE body must surface, not finish clean: {out:?}"
+        );
+    }
+
+    #[test]
+    fn a_keep_alive_only_stream_still_finishes_clean() {
+        // Real SSE framing (a comment line) with no data frames stays a clean
+        // empty finish — only a body with NO framing takes the JSON fallback.
+        let (out, deltas) = drain_queued(vec![Ok(b": keep-alive\n\n".to_vec())]);
+        let outcome = out.expect("an empty keep-alive stream is not an error");
+        assert!(outcome.text.response.is_empty());
+        assert!(deltas.is_empty());
     }
 }

@@ -72,6 +72,19 @@ pub fn run_agent(
                 return;
             }
             RoundOutcome::ToolCalls { assistant, calls } => {
+                // The cap bounds TOOL ROUNDS, not the final answer: after the
+                // max-th round the model still gets one more request, and a
+                // plain-text reply there completes the turn — only a further
+                // tool request trips the error (docs/tools.md). Checking here,
+                // before the round's tools run, also keeps the max+1-th
+                // round's side-effecting calls from executing just to have
+                // their results discarded.
+                if iterations >= max_iterations {
+                    let _ = tx.send(StreamEvent::Error(format!(
+                        "stopped after {max_iterations} tool iterations without a final answer"
+                    )));
+                    return;
+                }
                 messages.push(assistant);
                 for call in &calls {
                     if cancel.is_cancelled() {
@@ -95,12 +108,6 @@ pub fn run_agent(
                     return;
                 }
                 iterations += 1;
-                if iterations >= max_iterations {
-                    let _ = tx.send(StreamEvent::Error(format!(
-                        "stopped after {max_iterations} tool iterations without a final answer"
-                    )));
-                    return;
-                }
             }
         }
     }
@@ -353,5 +360,45 @@ mod tests {
             .filter(|e| matches!(e, StreamEvent::ToolEnd { .. }))
             .count();
         assert_eq!(ends, 3);
+    }
+
+    #[test]
+    fn a_final_answer_after_exactly_max_tool_rounds_completes() {
+        // The cap bounds TOOL ROUNDS, not the final answer (docs/tools.md):
+        // after the max-th round the model still gets one more request, and a
+        // plain-text reply there finishes the turn — only a further tool
+        // request trips the error.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c", "bash", r#"{"command":"step"}"#)];
+        run_agent(
+            &tx,
+            &cancel,
+            2,
+            vec![ChatMessage::user("x")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n <= 2 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |_c| ToolOutcome::ok("done"),
+        );
+        let events = drain(&mut rx);
+        assert!(
+            events.iter().any(|e| matches!(e, StreamEvent::StreamDone)),
+            "a Complete round after max tool rounds still finishes: {events:?}"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Error(_))),
+            "no cap error for a turn that answered: {events:?}"
+        );
     }
 }
