@@ -193,6 +193,26 @@ each line:
   This is the one place code needs source-line gating — the same mechanism inline
   emphasis would need everywhere.
 
+### Trailing blank rows are trimmed
+
+A model often ends an assistant message with a paragraph break (`…\n\n`) right
+before it calls a tool. Those trailing blank source lines render as blank rows,
+and the boundary already inserts **one** spacer between the message and the tool
+cell — so without trimming they stacked into three blank rows (a reported bug).
+Both render paths now drop a message's **trailing** blank rows: the batch
+`assistant_lines` pops them after rendering, and the streaming `StreamRender`
+**withholds** them in `commit` (they commit only once real content follows, so
+they're never a committed-row regression) and trims them in `finish`. Interior
+blank lines (a paragraph break *between* two paragraphs) are untouched, and the
+trim is gated on `!in_code()` so a blank line inside an open fence — which is
+content — survives. `preview` skips trailing blanks the same way (checking the
+fence state *after* the trailing line, since a trailing `` ``` `` opens a fence
+and keeps the blank before it), so the strip's last row matches the trimmed
+batch render. A whitespace-only segment records no message at all
+(`App::flush_streaming_segment`/`finish_stream`), so a repaint can't resurrect a
+stray `●` bullet the live view never showed. `stream_render_matches_batch_render_on_every_prefix`
+covers this with trailing-`\n\n` corpus entries.
+
 `ui::tests::stream_render_is_prefix_stable_over_every_prefix` drives `StreamRender`
 over *every* character-prefix of a prose and a fenced-code reply and asserts no
 committed row ever changes text **or colour**;

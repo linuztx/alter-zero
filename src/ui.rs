@@ -1299,6 +1299,16 @@ fn assistant_lines(text: &str, width: u16, bullet: &str, color: Color) -> Vec<Li
     for line in text.split('\n') {
         rows.extend(renderer.feed_line(line));
     }
+    // Trim trailing blank rows (a model's `…\n\n` before a tool call, say): the
+    // caller adds exactly one spacer, so trailing blanks would stack. Skipped
+    // when the reply ends inside an open code fence — its blank lines are
+    // content. The streaming [`StreamRender`] trims the same way, so the two
+    // never disagree.
+    if !renderer.in_code() {
+        while rows.last().is_some_and(row_is_blank) {
+            rows.pop();
+        }
+    }
     // A reply that renders to zero rows still gets one bullet row so the bullet
     // always has a home — an empty reply, or (now that fences render nothing) a
     // reply that is only a code fence. The streaming [`StreamRender`] applies the
@@ -1318,6 +1328,17 @@ fn empty_assistant_row(bullet: &str, color: Color) -> Line<'static> {
         bullet.to_string(),
         Style::new().fg(color).add_modifier(Modifier::BOLD),
     )])
+}
+
+/// Whether a rendered row is visually blank — every span is whitespace (an
+/// indent-only continuation row for an empty source line). Used to trim a
+/// message's **trailing** blank rows so a model's `…\n\n` before a tool call
+/// doesn't stack blank rows on top of the caller's single spacer (the
+/// 3-newline bug). The bullet-home fallback row (`● `) is *not* blank, so it is
+/// never trimmed. Shared by [`assistant_lines`] (repaint) and [`StreamRender`]
+/// (live) so they agree.
+fn row_is_blank(line: &Line<'_>) -> bool {
+    line.spans.iter().all(|s| s.content.trim().is_empty())
 }
 
 /// The incremental, prefix-stable core shared by the batch [`assistant_lines`]
@@ -3849,12 +3870,45 @@ impl StreamRender {
             || markdown::is_partial_heading(tail_src)
         {
             let stable = self.frozen.len();
+            // Inside a fence blank lines are content; otherwise still hold back a
+            // trailing blank run (a paragraph break before this in-progress line)
+            // — it commits once real content follows, or stays withheld to be
+            // trimmed by `finish` if the message ends here.
+            let stable = if self.renderer.in_code() {
+                stable
+            } else {
+                self.without_trailing_blanks(&[], stable)
+            };
             self.take_rows(&[], stable)
         } else {
             let tail = self.tail_rows(text);
             let stable = (self.frozen.len() + tail.len()).saturating_sub(1);
+            let stable = self.without_trailing_blanks(&tail, stable);
             self.take_rows(&tail, stable)
         }
+    }
+
+    /// Back off `stable` over trailing blank rows of the virtual `frozen ++ tail`
+    /// sequence (never below `committed`), so a message-trailing blank run is
+    /// **withheld** rather than committed on top of the next item's spacer (the
+    /// 3-newline bug). A blank followed by real content is no longer trailing on
+    /// the next call, so it commits then. Gated by the caller to skip code.
+    fn without_trailing_blanks(&self, tail: &[Line<'static>], stable: usize) -> usize {
+        let frozen_len = self.frozen.len();
+        let mut s = stable;
+        while s > self.committed {
+            let row = if s - 1 < frozen_len {
+                &self.frozen[s - 1]
+            } else {
+                &tail[s - 1 - frozen_len]
+            };
+            if row_is_blank(row) {
+                s -= 1;
+            } else {
+                break;
+            }
+        }
+        s
     }
 
     /// The remaining rows once the reply is complete: the withheld last row plus
@@ -3874,7 +3928,17 @@ impl StreamRender {
                 self.renderer.color,
             ));
         }
-        let total = self.frozen.len();
+        // Trim trailing blank rows (a model's `…\n\n` before a tool call, or at
+        // the reply's end) — the caller adds exactly one spacer — unless the
+        // reply ended inside an open fence (blank lines there are content). The
+        // bullet-home fallback above is never blank, so an empty reply still
+        // commits its bullet. Matches `assistant_lines` so the two agree.
+        let mut total = self.frozen.len();
+        if !self.renderer.in_code() {
+            while total > self.committed && row_is_blank(&self.frozen[total - 1]) {
+                total -= 1;
+            }
+        }
         self.take_rows(&[], total)
     }
 
@@ -3906,14 +3970,29 @@ impl StreamRender {
     #[must_use]
     pub fn preview(&mut self, text: &str, width: u16) -> Option<Line<'static>> {
         self.advance(text, width);
-        let tail = self.tail_rows(text);
-        tail.last()
-            .or_else(|| self.frozen.last())
-            .cloned()
+        // Feed the trailing line on a clone (not disturbing the resumable state)
+        // and keep the clone so its *post-tail* fence state decides trimming —
+        // the same state `finish`/`assistant_lines` see once the whole prefix is
+        // rendered (a trailing `` ``` `` opens a fence, so a blank before it is
+        // kept, not trimmed).
+        let mut clone = self.renderer.clone();
+        let tail = clone.feed_line(&text[self.consumed..]);
+        // The last rendered row, skipping trailing blank rows so the strip shows
+        // content rather than a paragraph-break blank — matching the trimmed
+        // batch render. Inside a fence blank lines are content, so keep as-is.
+        let last_row = |rows: &[Line<'static>]| -> Option<Line<'static>> {
+            if clone.in_code() {
+                rows.last().cloned()
+            } else {
+                rows.iter().rev().find(|r| !row_is_blank(r)).cloned()
+            }
+        };
+        last_row(&tail)
+            .or_else(|| last_row(&self.frozen))
             .or_else(|| {
-                // The reply-so-far renders to zero rows (only a code fence): batch
-                // `assistant_lines` still emits the bullet home, so the preview must
-                // match it or the strip would diverge from a repaint.
+                // The reply-so-far renders to zero rows (only a code fence, or only
+                // whitespace): batch `assistant_lines` still emits the bullet home, so
+                // the preview must match it or the strip would diverge from a repaint.
                 Some(empty_assistant_row(
                     &self.renderer.bullet,
                     self.renderer.color,
@@ -6081,6 +6160,14 @@ mod tests {
             "lead\n###### deep heading level six",
             // The 7-hash flip: `#######` is prose, not a heading.
             "a\n####### not a heading",
+            // Trailing paragraph break (a model's `…\n\n` before a tool call):
+            // the trailing blank rows must be trimmed at every prefix, and a
+            // committed row must never regress when they are.
+            "building the thing now.\n\n",
+            "first paragraph.\n\nsecond paragraph.\n\n",
+            // A blank line *inside* a still-open fence at the end is content, not
+            // a trailing blank — it must survive (the `!in_code` trim gate).
+            "intro\n```\ncode\n\n",
         ];
 
         for full in corpus {
@@ -6249,6 +6336,56 @@ mod tests {
             .map(plain)
             .collect();
         assert_eq!(got, expected, "rebuilt at the new width");
+    }
+
+    #[test]
+    fn assistant_lines_trims_a_trailing_paragraph_break() {
+        // A reply ending with a blank line (a model often emits "…\n\n" before a
+        // tool call) must render no trailing blank rows: the caller adds exactly
+        // one spacer, so trailing blanks would stack (the 3-newline bug).
+        let with: Vec<String> = assistant_lines("Building it.\n\n", 80, AI_BULLET, AI_COLOR)
+            .iter()
+            .map(plain)
+            .collect();
+        let without: Vec<String> = assistant_lines("Building it.", 80, AI_BULLET, AI_COLOR)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(with, without, "trailing blank rows are trimmed");
+    }
+
+    #[test]
+    fn assistant_lines_keeps_interior_blank_lines() {
+        // Only *trailing* blanks are trimmed — a paragraph break in the middle
+        // stays (it separates two paragraphs).
+        let rows = assistant_lines("One.\n\nTwo.", 80, AI_BULLET, AI_COLOR);
+        assert_eq!(rows.len(), 3, "the interior blank is preserved");
+        assert!(plain(&rows[0]).contains("One."));
+        assert!(plain(&rows[1]).trim().is_empty(), "middle row is blank");
+        assert!(plain(&rows[2]).contains("Two."));
+    }
+
+    #[test]
+    fn stream_render_trims_a_trailing_paragraph_break() {
+        // Streaming "text.\n\n" char-by-char (as a real model emits before a tool
+        // call) then finishing must commit no trailing blank rows — otherwise the
+        // boundary's single spacer stacks into three (the reported bug).
+        let full = "Building it.\n\n";
+        let width = 80;
+        let mut render = StreamRender::new();
+        let mut got: Vec<String> = Vec::new();
+        for end in 1..=full.len() {
+            if !full.is_char_boundary(end) {
+                continue;
+            }
+            got.extend(render.commit(&full[..end], width).iter().map(plain));
+        }
+        got.extend(render.finish(full, width).iter().map(plain));
+        assert_eq!(
+            got,
+            vec!["● Building it.".to_string()],
+            "no trailing blanks"
+        );
     }
 
     #[test]
@@ -6554,6 +6691,36 @@ mod tests {
             .collect();
         // User line, blank, assistant line, blank spacer after the reply.
         assert_eq!(texts, vec!["❯ hi", "", "● hello", ""]);
+    }
+
+    #[test]
+    fn conversation_lines_puts_one_blank_between_trailing_break_text_and_a_tool() {
+        // The reported bug: an assistant segment ending with a paragraph break
+        // (`…\n\n`) before a tool call must show exactly ONE blank row between
+        // them on a repaint — not three (the trailing blanks plus the spacer).
+        let history = [
+            msg(Role::User, "go"),
+            msg(Role::Assistant, "I'll do it.\n\n"),
+            HistoryItem::Tool(tool("Bash", "ls", ToolStatus::Ok, "out")),
+        ];
+        let texts: Vec<String> = conversation_lines(&history, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        let text_idx = texts
+            .iter()
+            .position(|t| t == "● I'll do it.")
+            .unwrap_or_else(|| panic!("assistant text present: {texts:?}"));
+        let tool_idx = texts
+            .iter()
+            .position(|t| t == "● Bash(ls)")
+            .unwrap_or_else(|| panic!("tool header present: {texts:?}"));
+        assert_eq!(
+            tool_idx - text_idx,
+            2,
+            "exactly one blank row between text and tool: {texts:?}"
+        );
+        assert_eq!(texts[text_idx + 1], "", "the single separator is blank");
     }
 
     #[test]

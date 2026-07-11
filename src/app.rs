@@ -3618,7 +3618,12 @@ impl App {
     /// The stream stays open.
     pub fn flush_streaming_segment(&mut self) -> Option<String> {
         let buf = self.streaming.as_mut()?;
-        if buf.is_empty() {
+        // A whitespace-only run (a model emitting `\n\n` before a tool call)
+        // records no message: it renders to zero rows once trailing blanks are
+        // trimmed (`ui::assistant_lines`), so recording it would leave a stray
+        // `● ` bullet on a repaint that the live view never showed.
+        if buf.trim().is_empty() {
+            buf.clear(); // leaves Some("") — the stream stays open
             return None;
         }
         let text = std::mem::take(buf); // leaves Some("") — the stream stays open
@@ -3804,8 +3809,11 @@ impl App {
     pub fn finish_stream(&mut self) -> Option<String> {
         let text = self.streaming.take()?;
         // A turn can end right after a tool call with no trailing text; don't
-        // record (or later commit) a phantom empty assistant message for it.
-        if text.is_empty() {
+        // record (or later commit) a phantom empty assistant message for it. A
+        // whitespace-only tail counts as empty too — it renders to zero rows once
+        // trailing blanks are trimmed (`ui::assistant_lines`), so recording it
+        // would leave a stray `● ` bullet on a repaint.
+        if text.trim().is_empty() {
             return None;
         }
         self.record_message(Role::Assistant, text.clone());

@@ -201,7 +201,11 @@ of bug:
    long code; see `docs/markdown.md`). `StreamRender::commit` withholds the
    still-growing last line (and, inside a fenced code block, the **whole**
    in-progress line — a code line's colour isn't final until its closing `(`/`//`
-   streams in, and it may span several wrapped rows), `StreamRender::preview` renders
+   streams in, and it may span several wrapped rows), plus any **trailing blank
+   rows** (a model's `…\n\n` before a tool call — trimmed so they don't stack on
+   the boundary's single spacer into three blank rows; the batch `assistant_lines`
+   trims them too, both gated on `!in_code` so a blank inside an open fence
+   survives), `StreamRender::preview` renders
    just that last line for the strip (cheap enough to redraw every animation frame),
    and `StreamRender::finish` flushes the remainder on `StreamDone`. The tests
    `ui::tests::incremental_commits_reconstruct_the_whole_reply`,
