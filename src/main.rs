@@ -306,8 +306,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // committed "Done for Ns" summary.
                                 if app.view != View::Conversation {
                                     term.exit_overlay()?;
+                                    // Like every overlay return: a resize that
+                                    // landed under the overlay upgrades the
+                                    // repaint to Purge (the emulator reflowed
+                                    // the main screen underneath — invariant 3).
                                     repaint_conversation(
-                                        term, &app, &mut render, ReflowClear::InPlace,
+                                        term,
+                                        &app,
+                                        &mut render,
+                                        overlay_return_clear(&mut overlay_resized),
                                     )?;
                                 }
                                 break;
@@ -736,7 +743,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 if let Some(parent) = env_file_path.parent() {
                                     let _ = std::fs::create_dir_all(parent);
                                 }
-                                match std::fs::write(&env_file_path, &updated) {
+                                match write_key_store(&env_file_path, &updated) {
                                     Ok(()) => {
                                         env_file = EnvFile::parse(&updated);
                                         present_toast(
@@ -965,8 +972,22 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // interrupt-lag freeze, on the quit path). The process exits right after
     // `term.restore()`, reaping any detached thread — the backend's and its
     // transport thread alike.
-    if let Some((cancel, _handle)) = inflight.take() {
+    if let Some((cancel, handle)) = inflight.take() {
         cancel.cancel();
+        // A `!` shell turn's child is a separate PROCESS: the runner thread
+        // dies with this process before its 20ms cancel poll can run, so the
+        // reparented `sh -c` child would outlive the TUI (Esc and /clear kill
+        // it only because the app stays alive long enough for the poll). Give
+        // the runner a bounded window to observe the cancel and kill/reap the
+        // child. A backend network thread is still never joined — the wait
+        // applies only to the local shell runner, and it is bounded so a
+        // wedged kill can't stall the quit.
+        if app.status().is_some_and(|status| status.shell) {
+            let deadline = Instant::now() + SHELL_QUIT_KILL_WINDOW;
+            while !handle.is_finished() && Instant::now() < deadline {
+                std::thread::sleep(SHELL_POLL_INTERVAL / 2);
+            }
+        }
     }
     // Cancel a dangling /model fetch (its detached worker exits on the cancel).
     if let Some(cancel) = model_fetch_cancel.take() {
@@ -1099,6 +1120,31 @@ fn config_home() -> Option<PathBuf> {
 
 /// The `.env` key store path: `INLINE_TUI_ENV_FILE`, else `{config_home}/.env`,
 /// else `./.env` when there's no config home. Written by the `/login` flow.
+/// Write the `.env` key store **owner-only**: the file holds plaintext API
+/// keys, so it is created `0o600` — and a pre-existing file's mode is
+/// tightened, since `mode()` only applies at creation — matching the
+/// credential-file convention of gh/codex/Claude Code. On non-unix the plain
+/// write applies.
+fn write_key_store(path: &std::path::Path, contents: &str) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(path)?;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+        file.write_all(contents.as_bytes())
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::write(path, contents)
+    }
+}
+
 fn env_file_path() -> PathBuf {
     if let Some(path) = std::env::var_os("INLINE_TUI_ENV_FILE") {
         return PathBuf::from(path);
@@ -1619,6 +1665,12 @@ fn read_capped(mut reader: impl io::Read, cap: usize) -> (Vec<u8>, bool) {
 /// watching for an interrupt — short enough that Esc kills it promptly.
 const SHELL_POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+/// How long the quit path waits for the shell runner to observe the cancel
+/// and kill/reap its child before the process exits. Bounded — a wedged kill
+/// can't stall the quit — and comfortably above [`SHELL_POLL_INTERVAL`] plus
+/// the kill/wait syscalls.
+const SHELL_QUIT_KILL_WINDOW: Duration = Duration::from_millis(250);
+
 /// A `!` shell command retains at most this many bytes of output in memory; the
 /// rest is drained and dropped (the cell appends a `…` marker). This caps peak
 /// memory so a command with huge output (`tree ~/`) can't spike RSS — the
@@ -1686,6 +1738,14 @@ fn on_stream_event(
             if let Some(tool) = app.end_tool(&output, ok)
                 && committing
             {
+                // A `!` shell turn's strip (preview + gap; it has no status
+                // line) collapses the moment end_tool clears the running
+                // tool — reseat the viewport before queueing the cell, like
+                // StreamDone does, so a draw tick racing in ahead of the
+                // back-to-back StreamDone can't flush against the stale
+                // strip-inflated height and over-scroll the box off the
+                // bottom (invariant 3).
+                term.set_view_height(live_region_height(app, term.screen()));
                 term.insert_before(ui::tool_lines(&tool, width));
                 term.insert_before(vec![Line::default()]);
             }

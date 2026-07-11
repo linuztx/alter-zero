@@ -148,6 +148,27 @@ impl InlineViewport {
         );
         install_panic_hook(keyboard_enhanced);
         enable_raw_mode()?;
+        // Every fallible step from here on runs with raw mode ON, and the
+        // caller has no viewport to `restore()` when init itself fails — a
+        // bare `?` would strand the parent shell in raw mode (the concrete
+        // case: the DSR cursor query timing out). Unwind the terminal state
+        // (the panic hook's teardown, minus the alt screen) before
+        // propagating the error.
+        Self::init_in_raw_mode(min_height, keyboard_enhanced).inspect_err(|_| {
+            if keyboard_enhanced {
+                let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+            }
+            let _ = execute!(io::stdout(), DisableBracketedPaste);
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), Show);
+        })
+    }
+
+    /// The raw-mode half of [`init`] — split out so a failure in any step can
+    /// unwind the modes already set instead of propagating with raw mode on.
+    ///
+    /// [`init`]: InlineViewport::init
+    fn init_in_raw_mode(min_height: u16, keyboard_enhanced: bool) -> io::Result<Self> {
         let mut backend = CrosstermBackend::new(io::stdout());
         let size = backend.size()?;
         let screen = Rect::new(0, 0, size.width, size.height);
@@ -349,7 +370,23 @@ impl InlineViewport {
     /// `insert_before`: draw the lines into the rows above the viewport, scrolling
     /// the screen up only as much as needed, then leave the viewport cleared for
     /// the repaint that follows in the same frame.
-    fn write_above(&mut self, lines: Vec<Line<'static>>) -> io::Result<()> {
+    fn write_above(&mut self, mut lines: Vec<Line<'static>>) -> io::Result<()> {
+        // One commit can exceed u16 rows (a multi-megabyte paste expands back
+        // to its full text on send): chunk it so the `as u16` below is exact —
+        // a plain cast silently wrapped, dropping almost all of the batch
+        // (and exactly 65,536 lines dropped everything via the height == 0
+        // early-return).
+        while lines.len() > usize::from(u16::MAX) {
+            let tail = lines.split_off(usize::from(u16::MAX));
+            self.write_above_chunk(lines)?;
+            lines = tail;
+        }
+        self.write_above_chunk(lines)
+    }
+
+    /// One ≤ `u16::MAX`-row batch of [`write_above`] — the whole commit in the
+    /// common case.
+    fn write_above_chunk(&mut self, lines: Vec<Line<'static>>) -> io::Result<()> {
         let height = lines.len() as u16;
         if height == 0 {
             return Ok(());
