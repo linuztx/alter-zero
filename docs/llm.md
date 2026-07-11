@@ -312,8 +312,9 @@ that names the provider on the key step. Retheme there.
   the model `bash`/`read`/`write`/`edit` and runs them in an agentic loop. See
   **`docs/tools.md`**. Assistant text and reasoning still stream as before; the
   `!` local shell and the dummy's scripted tools are unaffected. (Finished tools
-  are replayed to the model as raw bracketed records in the conversation context
-  — see `docs/context.md`.)
+  are replayed to the model on later turns in the provider-native
+  `tool_calls`/`tool` format — the same protocol the live loop streams — see
+  `docs/context.md`.)
 - The picker fetches models when opened (no cache); a slow provider shows
   `Loading models…` until the response lands.
 - **Interrupt latency during a network stall.** The SSE drain runs on a blocking

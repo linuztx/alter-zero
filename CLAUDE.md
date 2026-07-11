@@ -171,7 +171,8 @@ full-screen overlays: the **Ctrl+O tool-output view**, a full-screen overlay lis
 call's complete output while the conversation keeps streaming underneath (see
 invariant 4), the **`/resume` picker**, and the **Ctrl+D context-debug view**
 (the raw LLM context window — the derived conversation the real backend sends
-each turn, tool calls in their bracketed wire format and `[Image #N]`
+each turn, tool calls in the provider-native `tool_calls`/`tool` wire format
+(an assistant `→ name(args)` request + a `tool:` result entry) and `[Image #N]`
 placeholders unrendered; `ui::render_context_view`/`ui::context_lines` over
 the pure `context::context_messages`, see `docs/context.md`). ratatui's `Viewport::Inline` can't change height after startup, so
 `term::InlineViewport` is a *custom* inline viewport over a `CrosstermBackend`

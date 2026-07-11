@@ -9,7 +9,8 @@ Three features share one data model, so they share one document:
    apology.
 3. **The Ctrl+D context-debug view** — a full-screen overlay (the Ctrl+O
    pager's sibling) showing the raw context window: exactly what the model is
-   sent, placeholders and bracketed tool formats unrendered.
+   sent — image placeholders raw, and every tool call/result as its own native
+   `assistant` request + `tool` result entry.
 
 ## The context is *derived*, not stored
 
@@ -40,31 +41,36 @@ session back restores its history, and therefore its context, in one move.
 | --- | --- |
 | `Message(User)` | `user`, text verbatim (placeholders included) + its image paths |
 | `Message(Assistant)` | `assistant`, text verbatim |
-| `Tool` (backend) | `assistant`, raw format: `[tool {name}({args}) {ok\|failed}]\n{output}` |
-| `Tool` (`!` shell) | `user`, raw format: `[shell {ok\|failed}] $ {command}\n{output}` |
+| `Tool` (backend) | an assistant `tool_calls` entry (native `{id, name, arguments}`) folded onto the preceding assistant segment, then a `tool`-role result carrying `{output}` |
+| `Tool` (`!` shell) | `user`, a `$ {command}\n{output}` transcript (the user ran it locally) |
 | `Message(Shell)` | skipped — its tool cell above carries the command and output |
 | `Message(Error)` | `user`, `[error] {text}` (interrupts and backend failures) |
 | `Message(System)` | `user`, `[system] {text}` (slash-command notices) |
 | `Summary` | skipped — `Done for Ns` is TUI chrome, not conversation |
 
-…then **adjacent same-role entries merge** (texts joined with a blank line,
-attachments concatenated), so an assistant segment and the tool record that
-split it become one assistant message and the derived sequence strictly
-alternates `user`/`assistant`. That shape — plus mapping the TUI notices to
-*user*-role bracketed notes rather than mid-conversation `system` messages —
-is deliberate wire-compatibility: strict OpenAI-compatible providers
-(alternation chat templates) reject consecutive same-role messages and
-non-leading system messages.
+A model tool call maps to the **provider-native** Chat Completions shape — the
+exact protocol the live agent loop already streams within a turn (`docs/tools.md`),
+now replayed across turns: an `assistant` message carrying a `tool_calls`
+array, immediately followed by one `tool`-role message per call. Call **ids are
+synthesized per derivation** (`call_0`, `call_1`, …) — the whole context is
+rebuilt each turn, so the pairing only has to be internally consistent within
+one request. History stores a tool's one-line *summary*, not its raw argument
+JSON, so the replayed call's `arguments` is **reconstructed** from that summary
+(`{"command": …}` for `bash`, `{"path": …}` for the file tools); the tool
+**result** below it carries the full outcome the model reasons from (the diff,
+the file contents, the command output), so nothing the model needs is lost.
 
-Every message type therefore reaches the context (the user-visible ask), in
-one of two shapes: verbatim conversation text, or a **raw bracketed record**.
-The bracketed forms are what the wire carries and what Ctrl+D shows; the
-inline TUI keeps rendering the same items prettily from `history`. The
-default system prompt (`llm::backend::DEFAULT_SYSTEM_PROMPT`) tells the model
-what the brackets mean so it treats them as context, not as a format to
-imitate. A backend tool call rides back as an `assistant` entry (the model
-ran it); a `!` shell command rides back as a `user` entry (the user ran it
-locally).
+Adjacent same-role **plain-text** entries still **merge** (texts joined with a
+blank line, attachments concatenated) so message batches and notice runs
+collapse; tool-call assistant messages and tool-result messages are never merge
+targets (a result must sit between them). Mapping the TUI notices to *user*-role
+bracketed notes rather than mid-conversation `system` messages is deliberate
+wire-compatibility (strict providers reject non-leading system messages); the
+native tool round-trip is accepted by any provider that supports function
+calling, which is exactly the set that would emit tool calls in the first place.
+A `!` shell command rides back as a `user` `$ command` transcript — it is the
+*user's* local action, not a model tool call, so it has no assistant
+`tool_calls` entry to pair a native `tool` message to.
 
 ## The seam
 
@@ -142,12 +148,14 @@ The body (`ui::context_lines`) is the raw context window:
 
 ```
 system prompt:                        (amber tag — the backend's prompt)
-  You are a helpful assistant …
+  You are Alter Zero, an autonomous AI agent …
 user:                                 (blue tag)
   [Image #1] what's in this picture?
   image: /tmp/inline-tui-clipboard-x.png    (dim attachment row)
 assistant:                            (green tag)
-  [tool Read(src/main.rs) ok]
+  Let me look at the file.
+  → read({"path":"src/main.rs"})      (purple — the native tool call)
+tool:                                 (purple tag — the tool result)
   fn main() { … }
 ```
 
@@ -156,8 +164,9 @@ assistant:                            (green tag)
 on every `/model` switch; the dummy has none), then every derived context
 message: a coloured `role:` tag over its text wrapped **verbatim**
 (`wrap_verbatim`, never the markdown renderer — the whole point is the
-unformatted wire content), attachment paths dim beneath. Placeholders and the
-bracketed tool/shell/notice formats appear raw here and only here. While the
+unformatted wire content), an assistant entry's native tool calls as purple
+`→ name(arguments)` rows, attachment paths dim beneath. Image placeholders, the
+raw tool-call JSON, and the tool results appear raw here and only here. While the
 view is up the loop keeps draining stream events (commits stay gated on the
 conversation view, invariant 4) and the tail-follow keeps the newest entries
 in view; closing repaints the inline conversation exactly like a Ctrl+O
@@ -188,6 +197,12 @@ empty → no system prompt at all (`with_system_prompt` drops blanks).
   occurrences over its recorded paths; a placeholder typed *by hand* (never
   attach-backed) in the same message can shift that pairing — the string-keyed
   scheme's known edge (`docs/paste.md`).
-- Tool calls are replayed in the bracketed raw format, not the provider's
-  native `tool_calls` protocol (there is no live tool-calling loop yet —
-  `docs/llm.md`).
+- A replayed tool call's `arguments` is reconstructed from history's one-line
+  summary (`{"command"/"path": …}`), not the model's original full JSON — the
+  full `write` content / `edit` strings aren't stored. The tool **result**
+  (the diff / output) carries the change, so the model reasons correctly; the
+  echoed argument is just lossy. (`docs/tools.md`.)
+- Replaying native `tool_calls`/`tool` messages assumes the provider supports
+  function calling (the same providers that would emit tool calls). Resuming a
+  tools-on session with `INLINE_TUI_TOOLS=0` would replay tool messages to a
+  request that declares no tools — a narrow edge a strict provider could reject.

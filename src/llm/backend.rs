@@ -20,16 +20,15 @@ use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
 use crate::context::ContextMessage;
 use crate::stream::{CancelToken, ReplySource, StreamEvent};
 
-/// The default system prompt for the real backend — kept short and neutral.
-/// The request carries the whole conversation context, including the raw
-/// bracketed records of tool calls, `!` shell runs, and TUI notices (see
-/// `docs/context.md`), so the prompt explains what those are. Override with
+/// The default system prompt for the real backend — the "Alter Zero" agent
+/// identity, authored in [`prompts/alter_zero.md`](../../prompts/alter_zero.md)
+/// and compiled in with `include_str!` so the wording lives in a maintainable
+/// markdown file (drop in a new `prompts/*.md` and point this const at it to
+/// swap personas). Kept short to save tokens. Tool calls and `!` shell runs now
+/// replay in the provider-native format (see `docs/context.md`), so the prompt
+/// no longer has to explain any bracketed records. Override with
 /// `INLINE_TUI_SYSTEM_PROMPT`.
-pub const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant running inside a terminal UI. The conversation \
-     history may contain bracketed records — [tool …] entries for tools, \
-     [shell …] entries for commands the user ran locally, and [system …]/\
-     [error …] notes from the UI. Treat them as context; do not imitate their \
-     format. Keep replies concise and well-formatted for a narrow terminal.";
+pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/alter_zero.md");
 
 /// A real OpenAI-compatible backend. Holds the streaming client (carrying the
 /// tool definitions when tools are enabled) plus the model id it answers as
@@ -67,13 +66,18 @@ impl LlmBackend {
     pub fn configure(cfg: ModelConfig, system_prompt: Option<String>, tools_enabled: bool) -> Self {
         let model = cfg.model.clone();
         let mut client = OpenAiClient::new(cfg);
-        let mut system_prompt = system_prompt.filter(|s| !s.trim().is_empty());
+        // Trim so the prompt-file trailing newline (or a whitespace-only
+        // override) normalizes away; a now-empty prompt sends no system message.
+        let mut system_prompt = system_prompt
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
         if tools_enabled {
             client = client.with_tools(tools::tool_specs());
             // Tell the model the tools exist (the schemas carry the detail);
             // the Ctrl+D debug view then shows the same augmented prompt.
             if let Some(prompt) = system_prompt.as_mut() {
-                prompt.push_str(TOOLS_SYSTEM_SUFFIX);
+                prompt.push_str("\n\n");
+                prompt.push_str(TOOLS_SYSTEM_SUFFIX.trim());
             }
         }
         Self {
@@ -103,14 +107,12 @@ fn tools_enabled_from_env() -> bool {
     }
 }
 
-/// The tool definitions offered to the model, appended to the default system
-/// prompt so it knows the tools exist. Kept short; the schemas carry the detail.
-const TOOLS_SYSTEM_SUFFIX: &str = "\n\nYou can call tools to work in the user's project: `bash` (run a shell \
-     command), `read` (read a file with line numbers), `write` (create or \
-     overwrite a file), and `edit` (replace an exact string in a file). Use \
-     `read` to inspect a file before you `edit` it, and prefer `edit` over \
-     `write` for changing part of a file. Paths are relative to the working \
-     directory. After the tools finish, answer the user in plain text.";
+/// The tool-capability note appended to the system prompt when tools are
+/// enabled, authored in [`prompts/tools.md`](../../prompts/tools.md) and
+/// compiled in with `include_str!` (same maintainable-markdown seam as
+/// [`DEFAULT_SYSTEM_PROMPT`]). Joined after a blank line; the schemas carry the
+/// per-parameter detail.
+const TOOLS_SYSTEM_SUFFIX: &str = include_str!("../../prompts/tools.md");
 
 /// Assemble the request messages for one turn: the optional system prompt,
 /// then the whole conversation context in order — the multi-turn memory (see
@@ -141,13 +143,28 @@ pub fn build_messages(
     messages
 }
 
-/// One context message as a wire [`ChatMessage`]: plain text when imageless,
-/// the multimodal parts array when attachments encode.
+/// One context message as a wire [`ChatMessage`]: an assistant tool-call turn
+/// or a `tool`-role result in the provider-native shape, plain text when
+/// imageless, or the multimodal parts array when attachments encode.
 fn chat_message(
     message: &ContextMessage,
     encode_image: &impl Fn(&Path) -> Option<String>,
 ) -> ChatMessage {
     let role = message.role.wire_name();
+    // A tool result carries its call id; an assistant entry may carry the native
+    // tool calls it requested — both replay in the Chat Completions tool shape
+    // (see docs/context.md), and neither ever has image attachments.
+    if let Some(id) = &message.tool_call_id {
+        return ChatMessage::tool_result(id, &message.text);
+    }
+    if !message.tool_calls.is_empty() {
+        let specs = message
+            .tool_calls
+            .iter()
+            .map(|c| ToolCallSpec::function(&c.id, &c.name, &c.arguments))
+            .collect();
+        return ChatMessage::assistant_tool_calls(&message.text, specs);
+    }
     if message.images.is_empty() {
         return ChatMessage::new(role, &message.text);
     }
@@ -339,7 +356,7 @@ fn to_tool_call_specs(calls: &[ToolCallRequest]) -> Vec<ToolCallSpec> {
 mod tests {
     use super::*;
 
-    use crate::context::{ContextMessage, ContextRole};
+    use crate::context::{ContextMessage, ContextRole, ContextToolCall};
     use crate::llm::MessageContent;
 
     /// A fake encoder for the pure tests: every path "encodes" to a data URL
@@ -373,6 +390,33 @@ mod tests {
     }
 
     #[test]
+    fn build_messages_translates_native_tool_calls_and_results() {
+        // A replayed tool round from history: the assistant `tool_calls` entry
+        // and its `tool`-role result become the provider-native wire messages
+        // (not the old bracketed text) — see docs/context.md.
+        let context = vec![
+            ContextMessage::assistant_tool_calls(
+                "let me check",
+                vec![ContextToolCall::new("call_0", "read", r#"{"path":"f"}"#)],
+            ),
+            ContextMessage::tool_result("call_0", "L1"),
+        ];
+        let msgs = build_messages(None, "", &context, fake_encode);
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].role, "assistant");
+        assert_eq!(msgs[0].content, MessageContent::Text("let me check".into()));
+        assert_eq!(
+            msgs[0].tool_calls,
+            vec![ToolCallSpec::function("call_0", "read", r#"{"path":"f"}"#)]
+        );
+        assert!(msgs[0].tool_call_id.is_none());
+        assert_eq!(msgs[1].role, "tool");
+        assert_eq!(msgs[1].content, MessageContent::Text("L1".into()));
+        assert!(msgs[1].tool_calls.is_empty());
+        assert_eq!(msgs[1].tool_call_id.as_deref(), Some("call_0"));
+    }
+
+    #[test]
     fn build_messages_omits_the_system_prompt_when_none() {
         let context = vec![ContextMessage::new(ContextRole::User, "hello")];
         let msgs = build_messages(None, "hello", &context, fake_encode);
@@ -396,6 +440,8 @@ mod tests {
             role: ContextRole::User,
             text: "[Image #1] what is this?".into(),
             images: vec![PathBuf::from("/tmp/shot.png")],
+            tool_calls: vec![],
+            tool_call_id: None,
         }];
         let msgs = build_messages(None, "", &context, fake_encode);
         assert_eq!(
@@ -413,6 +459,8 @@ mod tests {
             role: ContextRole::User,
             text: "look".into(),
             images: vec![PathBuf::from("/tmp/gone.png")],
+            tool_calls: vec![],
+            tool_call_id: None,
         }];
         let msgs = build_messages(None, "", &context, failing_encode);
         // No image encoded → back to plain text, with the loss noted.
@@ -428,6 +476,8 @@ mod tests {
             role: ContextRole::User,
             text: "both".into(),
             images: vec![PathBuf::from("/tmp/gone.png"), PathBuf::from("/tmp/ok.png")],
+            tool_calls: vec![],
+            tool_call_id: None,
         }];
         let encode = |path: &Path| {
             (path == Path::new("/tmp/ok.png")).then(|| "data:image/png;base64,OK".to_string())

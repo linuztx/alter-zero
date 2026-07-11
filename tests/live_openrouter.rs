@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use inline_tui::context::{ContextMessage, ContextRole};
+use inline_tui::context::{ContextMessage, ContextRole, ContextToolCall};
 use inline_tui::llm::{LlmBackend, ModelConfig};
 use inline_tui::stream::{CancelToken, ReplySource, StreamEvent};
 
@@ -93,14 +93,20 @@ fn live_multi_turn_context_is_remembered() {
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_raw_tool_records_are_usable_context() {
-    // The bracketed raw tool format must read as context: the model answers a
-    // question whose answer only exists inside a [tool …] record.
+    // The native tool round-trip must read as context: a replayed assistant
+    // `tool_calls` request + its `tool`-role result (docs/context.md), and the
+    // model answers a question whose answer only exists inside that result.
     let context = vec![
         ContextMessage::new(ContextRole::User, "Read the config file."),
-        ContextMessage::new(
-            ContextRole::Assistant,
-            "[tool Read(config.toml) ok]\nport = 4821\nhost = \"example.test\"",
+        ContextMessage::assistant_tool_calls(
+            "",
+            vec![ContextToolCall::new(
+                "call_0",
+                "read",
+                r#"{"path":"config.toml"}"#,
+            )],
         ),
+        ContextMessage::tool_result("call_0", "port = 4821\nhost = \"example.test\""),
         ContextMessage::new(
             ContextRole::User,
             "According to the tool output above, what port is configured? Reply with just the number.",
@@ -110,7 +116,7 @@ fn live_raw_tool_records_are_usable_context() {
     println!("model replied: {reply:?}");
     assert!(
         reply.contains("4821"),
-        "the model should read the port out of the raw tool record, got: {reply:?}"
+        "the model should read the port out of the native tool result, got: {reply:?}"
     );
 }
 
@@ -129,6 +135,8 @@ fn live_vision_reads_a_pasted_image() {
                Answer with one lowercase word."
             .to_string(),
         images: vec![path.clone()],
+        tool_calls: vec![],
+        tool_call_id: None,
     }];
     let reply = complete("what color?", vec![path.clone()], context);
     std::fs::remove_file(&path).ok();

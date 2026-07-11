@@ -262,11 +262,18 @@ const CONTEXT_SYSTEM_PROMPT_TAG: &str = "system prompt:";
 const CONTEXT_INDENT: &str = "  ";
 /// The label of an attachment row under a user entry's text.
 const CONTEXT_IMAGE_LABEL: &str = "image: ";
+/// The prefix of a native tool-call row under an assistant entry —
+/// `→ name(arguments)`, the model's request in the raw wire form.
+const CONTEXT_TOOL_CALL_PREFIX: &str = "→ ";
 /// Role-tag colours — the tool palette's hues (user blue, assistant green,
-/// system amber) so the roles scan apart at a glance.
+/// system amber, tool-result purple) so the roles scan apart at a glance.
 const CONTEXT_USER_COLOR: Color = TOOL_RUNNING_COLOR;
 const CONTEXT_ASSISTANT_COLOR: Color = TOOL_OK_COLOR;
 const CONTEXT_SYSTEM_COLOR: Color = Color::Rgb(0xE5, 0xC0, 0x7B);
+/// The `tool:` result-role tag and the `→ name(args)` tool-call lines under an
+/// assistant entry — a distinct purple so the native tool round-trip reads
+/// apart from plain assistant text.
+const CONTEXT_TOOL_COLOR: Color = Color::Rgb(0xC6, 0x78, 0xDD);
 
 // --- /resume session picker (the other alternate-screen overlay) — codex's
 // resume picker, sized down (docs/resume.md): the same slash-tiled title
@@ -2860,18 +2867,21 @@ const fn context_role_color(role: crate::context::ContextRole) -> Color {
         crate::context::ContextRole::User => CONTEXT_USER_COLOR,
         crate::context::ContextRole::Assistant => CONTEXT_ASSISTANT_COLOR,
         crate::context::ContextRole::System => CONTEXT_SYSTEM_COLOR,
+        crate::context::ContextRole::Tool => CONTEXT_TOOL_COLOR,
     }
 }
 
 /// One context entry's rows: the coloured `role:` tag, the raw text wrapped
 /// **verbatim** (never the markdown renderer — the whole point is showing the
-/// unformatted wire content), any attachment paths dim beneath, and a blank
-/// spacer.
+/// unformatted wire content), any native tool calls as `→ name(arguments)`
+/// rows, any attachment paths dim beneath, and a blank spacer. An empty text
+/// (an assistant entry that only called tools) contributes no text row.
 fn context_entry_lines(
     lines: &mut Vec<Line<'static>>,
     tag: &str,
     color: Color,
     text: &str,
+    tool_calls: &[crate::context::ContextToolCall],
     images: &[std::path::PathBuf],
     width: u16,
 ) {
@@ -2880,8 +2890,23 @@ fn context_entry_lines(
         Style::new().fg(color),
     )));
     let text_width = width.saturating_sub(cols(CONTEXT_INDENT) as u16);
-    for row in wrap_verbatim(text, text_width) {
-        lines.push(Line::from(format!("{CONTEXT_INDENT}{row}")));
+    if !text.is_empty() {
+        for row in wrap_verbatim(text, text_width) {
+            lines.push(Line::from(format!("{CONTEXT_INDENT}{row}")));
+        }
+    }
+    for call in tool_calls {
+        // The native tool request in its raw wire form: `→ name(arguments)`.
+        let rendered = format!(
+            "{CONTEXT_TOOL_CALL_PREFIX}{}({})",
+            call.name, call.arguments
+        );
+        for row in wrap_verbatim(&rendered, text_width) {
+            lines.push(Line::from(Span::styled(
+                format!("{CONTEXT_INDENT}{row}"),
+                Style::new().fg(CONTEXT_TOOL_COLOR),
+            )));
+        }
     }
     for path in images {
         // Wrapped like the text — a long temp path must not clip off-screen.
@@ -2912,6 +2937,7 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             CONTEXT_SYSTEM_COLOR,
             prompt,
             &[],
+            &[],
             width,
         );
     }
@@ -2921,6 +2947,7 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             &format!("{}:", message.role.wire_name()),
             context_role_color(message.role),
             &message.text,
+            &message.tool_calls,
             &message.images,
             width,
         );
@@ -5162,13 +5189,19 @@ mod tests {
         assert!(texts.iter().any(|t| t == "  hello"), "{texts:?}");
         assert!(texts.iter().any(|t| t == "assistant:"), "{texts:?}");
         assert!(texts.iter().any(|t| t == "  let me check"), "{texts:?}");
-        // The tool call appears in its raw bracketed format — the form the
-        // model sees — not the TUI's bullet rendering.
+        // The tool call appears as a native `→ name(arguments)` request under
+        // the assistant — the raw wire form, not the old `[tool …]` bracket and
+        // not the TUI's bullet rendering.
         assert!(
-            texts.iter().any(|t| t == "  [tool Read(f) ok]"),
+            texts.iter().any(|t| t == r#"  → read({"path":"f"})"#),
             "{texts:?}"
         );
-        assert!(texts.iter().any(|t| t == "  L1"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.contains("[tool")), "{texts:?}");
+        // The result rides its own `tool:` role entry, in full.
+        assert!(texts.iter().any(|t| t == "tool:"), "{texts:?}");
+        for needle in ["  L1", "  L2", "  L3"] {
+            assert!(texts.iter().any(|t| t == needle), "{texts:?}");
+        }
         // Turn summaries are TUI chrome; they never reach the context.
         assert!(!texts.iter().any(|t| t.contains("Done")), "{texts:?}");
     }

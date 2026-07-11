@@ -125,8 +125,9 @@ dummy has scripted exactly this since day one (`stream::turn_events`), and
 `main.rs::on_stream_event` already flushes the text segment, shows the tool blue,
 commits it green/red, and records it into `history`. A real model driving those
 same events needs **no new event-loop code**. Interrupts, the Ctrl+O transcript,
-resize repaint, and `context_messages` replay (finished tools → `[tool …]`
-bracketed records next turn) all work unchanged.
+resize repaint, and `context_messages` replay (finished tools → the native
+`assistant tool_calls` + `tool` result pair on the next turn, matching this
+in-turn protocol — see `docs/context.md`) all work unchanged.
 
 ## The executor (`llm::exec::RealToolExecutor`)
 
@@ -153,8 +154,12 @@ can recover, exactly like codex's `RespondToModel`.
 
 Tools are **on by default for the real backend** and never for the dummy (the
 dummy's canned tools are unaffected). Toggle with `INLINE_TUI_TOOLS`
-(`0`/`false`/`no` disables). The default system prompt gains a short paragraph
-naming the tools, the cwd, and the "prefer `read` before `edit`" convention.
+(`0`/`false`/`no` disables). When enabled, the tool-capability note in
+[`prompts/tools.md`](../prompts/tools.md) is appended to the base system prompt
+([`prompts/alter_zero.md`](../prompts/alter_zero.md)) — both `include_str!`d into
+`llm::backend` so the wording lives in maintainable markdown files (swap a
+persona by pointing the const at a different `prompts/*.md`). It names the tools
+and the "prefer `read` before `edit`" convention; the schemas carry the detail.
 
 The executor runs commands and writes files **in the app's working directory with
 no sandbox** — the same trust model as the `!` shell. A future revision could add
