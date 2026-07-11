@@ -3736,6 +3736,22 @@ impl App {
         }
     }
 
+    /// Count a streamed tool-call generation delta (the model emitting a tool
+    /// call's `name`/`arguments` fragments) into the live token tally (arrow
+    /// down — it is model output, streaming) **without** touching the reply
+    /// buffer: the fragment is opaque JSON, never rendered. This keeps the
+    /// status count ticking while the model *generates* a tool call, exactly
+    /// like reasoning ticks it while the model thinks (see
+    /// `docs/status-indicator.md`). No-op when no turn is in flight.
+    pub fn push_tool_call_progress(&mut self, chunk: &str) {
+        if let Some(status) = self.status.as_mut() {
+            status.tokens += count_tokens(chunk);
+            status.arrow = TokenArrow::Down;
+            // Generating the call is content too — a retrying request recovered.
+            status.retry = None;
+        }
+    }
+
     /// Record that a failed request is being retried, so the status line shows
     /// `retrying {attempt}/{max}` while the backend reconnects. The 1-based
     /// `attempt` and the ceiling `max` come straight from the backend's
@@ -6816,6 +6832,37 @@ mod tests {
     fn push_thinking_is_a_no_op_when_idle() {
         let mut app = App::new();
         app.push_thinking("stray reasoning after the turn ended");
+        assert!(app.status().is_none(), "no status conjured up");
+        assert_eq!(app.streaming_text(), None);
+    }
+
+    #[test]
+    fn push_tool_call_progress_grows_the_tally_pointing_down_without_touching_the_reply() {
+        // While the model *generates* a tool call, the streamed name/argument
+        // fragments count into the tally (arrow ↓ — model output) so the status
+        // keeps ticking, but the opaque JSON never reaches the reply buffer.
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("let me check ");
+        let before = app.status().unwrap().tokens;
+        app.push_tool_call_progress(r#"bash{"command":"ls -la"}"#);
+        let status = app.status().unwrap();
+        assert!(
+            status.tokens > before,
+            "the tool-call fragment counts tokens"
+        );
+        assert_eq!(status.arrow, TokenArrow::Down, "generation streams down");
+        assert_eq!(
+            app.streaming_text(),
+            Some("let me check "),
+            "the reply buffer is untouched by tool-call JSON"
+        );
+    }
+
+    #[test]
+    fn push_tool_call_progress_is_a_no_op_when_idle() {
+        let mut app = App::new();
+        app.push_tool_call_progress(r#"{"command":"ls"}"#);
         assert!(app.status().is_none(), "no status conjured up");
         assert_eq!(app.streaming_text(), None);
     }

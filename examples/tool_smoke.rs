@@ -78,6 +78,13 @@ fn main() {
             StreamEvent::ThinkingStart => println!("\x1b[90m[thinking…]\x1b[0m"),
             StreamEvent::ThinkingChunk(_) => {}
             StreamEvent::ThinkingEnd => {}
+            StreamEvent::ToolCallDelta(frag) => {
+                // The model is generating a tool call — show the streamed
+                // name/argument fragments dim (the app counts these tokens).
+                print!("\x1b[90m{frag}\x1b[0m");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
             StreamEvent::Retrying { attempt, max } => {
                 println!("\x1b[33m[retrying {attempt}/{max}]\x1b[0m");
             }

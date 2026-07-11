@@ -1699,6 +1699,13 @@ fn on_stream_event(
             app.push_thinking(&chunk);
             Ok(false)
         }
+        StreamEvent::ToolCallDelta(chunk) => {
+            // The model is generating a tool call: opaque JSON, counted into the
+            // token tally only (like reasoning) so the status ticks while it
+            // generates — never rendered, never committed.
+            app.push_tool_call_progress(&chunk);
+            Ok(false)
+        }
         StreamEvent::ThinkingEnd => {
             clocks.thinking_start = None;
             Ok(false)

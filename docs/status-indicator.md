@@ -35,6 +35,7 @@ The live line is
 | pre-stream pause     | `(●•·   ) Working… (1s · ↑ 7 tokens · esc to interrupt)`                       |
 | streaming text       | `(•●    ) Working… (3s · ↓ 100 tokens · esc to interrupt)`                     |
 | streaming + thinking | `(·•●   ) Working… (3s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)`   |
+| generating a tool call | `( ·•●  ) Working… (3s · ↓ 170 tokens · esc to interrupt)` (count ticks as the call streams) |
 | after a tool result  | `( ·•●  ) Working… (4s · ↑ 200 tokens · esc to interrupt)`                     |
 | retrying a failure   | `( ·•●  ) Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)`       |
 | finished (committed) | `Done for 20s`                                                                 |
@@ -66,7 +67,10 @@ real backend's own latency plays the same role.
   events arrive (the draw branch re-arms an animation frame while a turn is
   active — see the shimmer section).
 - **tokens** — a single cumulative tally for the whole turn (the **user's input**
-  message, the reply text, **reasoning deltas**, and tool output), counted
+  message, the reply text, **reasoning deltas**, the **tool-call the model
+  generates** (its streamed `name`/`arguments` fragments — counted like reasoning
+  so the tally keeps ticking *while the model produces the call*, before it runs),
+  and tool output), counted
   app-side by a real `tiktoken` tokenizer (`o200k_base` — the count seam is
   `app::count_tokens` → [`tokenizer::count`], see `src/tokenizer.rs`). Exact for
   current OpenAI models and close for the other models the providers serve. Each
@@ -130,7 +134,10 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
   the pre-stream pause shows the input count uploaded; `push_chunk` adds tokens
   (`↓`, and clears any `retry`); `push_thinking` adds tokens (`↓`, the reply
   buffer untouched — reasoning text is opaque, and clears any `retry`);
-  `set_retry(a, max)` sets the amber `retrying a/max` clause (from a
+  `push_tool_call_progress` adds tokens the same way (`↓`, buffer untouched) as
+  the model *generates* a tool call — driven by `StreamEvent::ToolCallDelta`, the
+  streamed `name`/`arguments` fragments the real backend surfaces before the
+  `ToolStart`; `set_retry(a, max)` sets the amber `retrying a/max` clause (from a
   `StreamEvent::Retrying`); `end_tool` adds tokens (`↑`); `fail_stream`
   clears the status (an error is the summary — no "Done" line); `interrupt_turn`
   clears it the same way (the `Conversation interrupted` notice is the summary);
@@ -240,6 +247,17 @@ the token tally keeps ticking through the phase (a real API's reasoning
 deltas; the text is never rendered, only counted via `App::push_thinking`).
 The loop maps the pair to `thinking_start = Some(now)` / `None`; the thinking
 *seconds* reach the status only through `set_status_times`.
+
+## Tool-call generation in the dummy backend
+
+The same demo trick covers the model *generating* a tool call. Before each
+scripted `ToolStart`, `DummyAi` streams a few `StreamEvent::ToolCallDelta`
+fragments (`DUMMY_READ_CALL` / `DUMMY_BASH_CALL` — the `name` + JSON `arguments`
+pieces), one `THINK_CHUNK_DELAY` pause each, so the token tally visibly ticks
+while the call is produced — just like reasoning. The loop counts them via
+`App::push_tool_call_progress` (never rendered). A real backend surfaces the
+same events straight from its streamed `tool_calls` deltas
+(`openai::Delta::tool_call`), ahead of the `ToolStart` that runs the tool.
 
 ## Testing
 

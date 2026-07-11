@@ -354,7 +354,11 @@ backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok,trunc
 and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
 running (blue) then commits it collapsed (green/red), and flips its `thinking_start`
-`Instant` so the status line shows/drops `Thinking for Ns`. The just-sent
+`Instant` so the status line shows/drops `Thinking for Ns`. Before a tool runs, the backend also streams the model **generating** the call as
+`ToolCallDelta(fragment)` events (the `name`/`arguments` pieces of a `tool_calls`
+delta — `openai::Delta::tool_call`, surfaced ahead of the `ToolStart`); the loop
+counts them via `App::push_tool_call_progress` (never rendered) so the tally ticks
+while the call is produced, exactly like reasoning. The just-sent
 **user message is counted up front** (`App::count_user_input` after
 `begin_stream`, arrow `↑` — uploaded input), so the status shows `↑ N tokens`
 through the backend's **pre-stream pause** (`DummyAi` waits `STARTUP_DELAY`/3s
@@ -362,9 +366,10 @@ before its first chunk so the indicator is visibly working first — overridable
 via `INLINE_TUI_STARTUP_DELAY_MS`; the strip reserves **no preview row** while
 there's nothing to preview — `ui::strip_has_preview` — so the pause is status +
 gap only, no stray empty line, like codex). Then `Chunk`s,
-`ThinkingChunk`s (counted via `App::push_thinking` — never rendered), and a tool's
-output grow the cumulative token tally on `App::status` (`↓` while replying or
-thinking, `↑` for the input and right after a tool — never reset); on `StreamDone` `App::end_turn`
+`ThinkingChunk`s (counted via `App::push_thinking` — never rendered), the
+tool-call generation deltas, and a tool's
+output grow the cumulative token tally on `App::status` (`↓` while replying,
+thinking, or generating a tool call, `↑` for the input and right after a tool — never reset); on `StreamDone` `App::end_turn`
 records the `Done for Ns` summary. A backend may send `StreamEvent::Error(msg)` instead of
 `StreamDone` — even mid-tool; the loop turns that into a red `Role::Error` notice via
 `App::fail_stream` (which also resolves a still-running tool as failed —
@@ -576,7 +581,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   Stream `StreamEvent::Chunk(..)` per token on the `tokio`
   `UnboundedSender` (its `send` is sync — callable straight from your background
   thread, no runtime needed), poll the `CancelToken` so a quit can stop you, then
-  send `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure. For tool calls, send a
+  send `StreamEvent::StreamDone` — or `StreamEvent::Error(msg)` on failure. For tool calls, optionally
+  stream `StreamEvent::ToolCallDelta(fragment)`s as the model *generates* the call
+  (its `name`/`arguments` pieces — counted like reasoning so the tally ticks while
+  the call is produced, the text never shown), then send a
   `StreamEvent::ToolStart{name,args}` then a `ToolEnd{output,ok,truncated}`
   (`truncated: false` from a backend tool — only the `!` shell runner caps); wrap a reasoning
   phase in a `ThinkingStart`/`ThinkingEnd` pair to drive the `Thinking for Ns`

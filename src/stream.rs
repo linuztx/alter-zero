@@ -53,6 +53,14 @@ pub enum StreamEvent {
     /// The model's thinking phase ended. Always follows a
     /// [`StreamEvent::ThinkingStart`]; drops the `Thinking for Ns` suffix.
     ThinkingEnd,
+    /// A fragment of a tool call the model is **generating** — the streamed
+    /// `name`/`arguments` pieces of a `tool_calls` delta, before the tool runs.
+    /// Opaque JSON, never rendered, but counted into the live token tally (like
+    /// [`StreamEvent::ThinkingChunk`]) so the status keeps ticking while the
+    /// model generates the call. Emitted by a real backend during a
+    /// tool-calling round, ahead of the [`StreamEvent::ToolStart`] that begins
+    /// executing it. See `docs/status-indicator.md`.
+    ToolCallDelta(String),
     /// A failed request is being retried (the connection/send failed before any
     /// content streamed, or the server returned a transient status). Carries the
     /// 1-based retry number and the ceiling, shown live in the status line as
@@ -94,6 +102,15 @@ pub const THINK_CHUNK_DELAY: Duration = Duration::from_millis(150);
 /// [`StreamEvent::ThinkingChunk`]s during its thinking phase. Never shown —
 /// it only feeds the token tally (like a real API's reasoning deltas).
 const DUMMY_THINKING: &str = "Let me look at the code first.";
+
+/// The dummy's canned tool-call "generation" fragments, streamed as
+/// [`StreamEvent::ToolCallDelta`]s just before each `ToolStart` — the pieces a
+/// real model emits while producing a `tool_calls` request. Never shown; they
+/// only feed the token tally so the status ticks while the model *generates*
+/// the call (like [`DUMMY_THINKING`] does for reasoning). See
+/// `docs/status-indicator.md`.
+const DUMMY_READ_CALL: &[&str] = &["read", "{\"path\":", "\"src/main.rs\"}"];
+const DUMMY_BASH_CALL: &[&str] = &["bash", "{\"command\":", "\"grep -n TODO\"}"];
 
 /// Canned multi-line output for the dummy `Read` tool (resolves green).
 const DUMMY_READ_OUTPUT: &str = "fn main() -> io::Result<()> {\n    \
@@ -190,6 +207,12 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
             .map(StreamEvent::ThinkingChunk),
     );
     events.push(StreamEvent::ThinkingEnd);
+    // Each tool call is "generated" first (its fragments tick the token tally,
+    // like reasoning) and then executed — the ToolStart still lands immediately
+    // before its ToolEnd, so the loop only ever tracks one running tool.
+    for frag in DUMMY_READ_CALL {
+        events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
+    }
     events.push(StreamEvent::ToolStart {
         name: "Read".to_string(),
         args: "src/main.rs".to_string(),
@@ -199,6 +222,9 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
         ok: true,
         truncated: false,
     });
+    for frag in DUMMY_BASH_CALL {
+        events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
+    }
     events.push(StreamEvent::ToolStart {
         name: "Bash".to_string(),
         args: "grep -n TODO".to_string(),
@@ -353,9 +379,9 @@ impl ReplySource for DummyAi {
                 let pause = match &event {
                     StreamEvent::Chunk(_) => Some(CHUNK_DELAY),
                     StreamEvent::ToolStart { .. } => Some(TOOL_DELAY),
-                    StreamEvent::ThinkingStart | StreamEvent::ThinkingChunk(_) => {
-                        Some(THINK_CHUNK_DELAY)
-                    }
+                    StreamEvent::ThinkingStart
+                    | StreamEvent::ThinkingChunk(_)
+                    | StreamEvent::ToolCallDelta(_) => Some(THINK_CHUNK_DELAY),
                     _ => None,
                 };
                 if tx.send(event).is_err() {
@@ -680,6 +706,34 @@ mod tests {
     }
 
     #[test]
+    fn turn_events_generates_each_tool_call_before_it_starts() {
+        // Each ToolStart is preceded by ToolCallDelta fragments (the model
+        // "generating" the call) and never sits between a Start and its End, so
+        // the tally ticks during generation and tools still resolve one at a time.
+        let events = turn_events("anything", 0);
+        let deltas = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ToolCallDelta(_)))
+            .count();
+        assert!(
+            deltas >= 1,
+            "the dummy streams tool-call generation fragments"
+        );
+        let mut running = false;
+        for event in &events {
+            match event {
+                StreamEvent::ToolStart { .. } => running = true,
+                StreamEvent::ToolEnd { .. } => running = false,
+                StreamEvent::ToolCallDelta(_) => assert!(
+                    !running,
+                    "a generation fragment never streams while a tool is running"
+                ),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
     fn turn_events_shows_both_a_success_and_a_failure() {
         // The demo exercises green and red: at least one ok tool and one failing.
         let events = turn_events("x", 0);
@@ -780,6 +834,7 @@ mod tests {
         let mut think_starts = 0;
         let mut think_chunks = 0;
         let mut think_ends = 0;
+        let mut tool_call_deltas = 0;
         // `blocking_recv` waits for each delayed event (no runtime here, so it's
         // allowed); `None` means the backend dropped its sender.
         while let Some(event) = rx.blocking_recv() {
@@ -790,6 +845,7 @@ mod tests {
                 StreamEvent::ThinkingStart => think_starts += 1,
                 StreamEvent::ThinkingChunk(_) => think_chunks += 1,
                 StreamEvent::ThinkingEnd => think_ends += 1,
+                StreamEvent::ToolCallDelta(_) => tool_call_deltas += 1,
                 StreamEvent::StreamDone => {
                     saw_done = true;
                     break;
@@ -804,6 +860,10 @@ mod tests {
         assert_eq!(streamed, expected, "chunks still reconstruct the reply");
         assert!(tool_starts >= 1, "the dummy streams at least one tool call");
         assert_eq!(tool_starts, tool_ends, "every tool that starts also ends");
+        assert!(
+            tool_call_deltas >= 1,
+            "the dummy generates each tool call first (ticking the tally)"
+        );
         assert_eq!(think_starts, 1, "the dummy thinks once");
         assert!(think_chunks >= 1, "reasoning deltas stream while thinking");
         assert_eq!(

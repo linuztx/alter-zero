@@ -27,11 +27,15 @@ const STREAM_OP_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A split delta surfaced to the caller each SSE frame: the visible response
 /// text and the (hidden) reasoning text, already peeled apart by the
-/// [`ThinkingSplitter`].
+/// [`ThinkingSplitter`], plus the raw tool-call fragment (`name`/`arguments`
+/// pieces) streamed this frame — surfaced so the caller can count the tokens
+/// the model spends *generating* a tool call, the same way reasoning is counted
+/// (never rendered; see `docs/status-indicator.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Delta {
     pub response: String,
     pub reasoning: String,
+    pub tool_call: String,
 }
 
 /// What one completed stream produced: the accumulated text/reasoning, the
@@ -211,6 +215,7 @@ impl OpenAiClient {
             on_delta(Delta {
                 response: resp_tail,
                 reasoning: reason_tail,
+                tool_call: String::new(),
             });
         }
         Ok(StreamOutcome {
@@ -344,9 +349,18 @@ fn process_sse_line(
     }
     // Tool-call fragments and the finish reason ride the same JSON frame as the
     // text delta — fold them in before the content early-return so a
-    // tool-call-only frame (no content) is never skipped.
+    // tool-call-only frame (no content) is never skipped. The raw name/argument
+    // pieces are also gathered into `tool_frag` so the caller can count the
+    // model *generating* the call (docs/status-indicator.md).
     let (tool_deltas, reason) = parse_sse_tool_calls(data);
+    let mut tool_frag = String::new();
     for td in tool_deltas {
+        if let Some(name) = &td.name {
+            tool_frag.push_str(name);
+        }
+        if let Some(args) = &td.arguments {
+            tool_frag.push_str(args);
+        }
         tools.push(
             td.index,
             td.id.as_deref(),
@@ -358,14 +372,16 @@ fn process_sse_line(
         *finish_reason = Some(reason);
     }
     let (content, reasoning) = parse_sse_data(data);
-    if content.is_empty() && reasoning.is_empty() {
+    // Nothing to surface this frame (a keep-alive, or a finish_reason-only frame).
+    if content.is_empty() && reasoning.is_empty() && tool_frag.is_empty() {
         return SseStep::Continue;
     }
     let (resp_delta, reason_delta) = splitter.feed(&content, &reasoning);
-    if !resp_delta.is_empty() || !reason_delta.is_empty() {
+    if !resp_delta.is_empty() || !reason_delta.is_empty() || !tool_frag.is_empty() {
         on_delta(Delta {
             response: resp_delta,
             reasoning: reason_delta,
+            tool_call: tool_frag,
         });
     }
     SseStep::Continue
@@ -733,6 +749,35 @@ mod tests {
         assert_eq!(deltas.len(), 1);
         assert!(deltas[0].response.is_empty());
         assert_eq!(deltas[0].reasoning, "why");
+    }
+
+    #[test]
+    fn process_sse_line_surfaces_tool_call_fragments_for_counting() {
+        // A tool-call-only frame (no content/reasoning) must still emit a Delta
+        // carrying the streamed name/arguments fragment, so the live token tally
+        // ticks while the model *generates* the call (see docs/status-indicator.md).
+        let (step, deltas) = drive_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c","function":{"name":"bash","arguments":"{\"command\":"}}]}}]}"#,
+        );
+        assert!(matches!(step, SseStep::Continue));
+        assert_eq!(deltas.len(), 1, "the frame surfaces one delta");
+        assert!(deltas[0].response.is_empty(), "no visible reply text");
+        assert!(deltas[0].reasoning.is_empty(), "not reasoning");
+        assert_eq!(
+            deltas[0].tool_call, r#"bash{"command":"#,
+            "the name + arguments fragment rides for counting"
+        );
+    }
+
+    #[test]
+    fn process_sse_line_counts_an_argument_only_tool_fragment() {
+        // A later fragment carries only more `arguments` (no name/id) — still
+        // surfaced so its tokens count too.
+        let (_step, deltas) = drive_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"ls\"}"}}]}}]}"#,
+        );
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].tool_call, r#""ls"}"#);
     }
 
     #[test]
