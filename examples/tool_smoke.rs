@@ -14,14 +14,16 @@
 use std::time::Duration;
 
 use inline_tui::context::{ContextMessage, ContextRole};
-use inline_tui::llm::config::{ProvidersFile, Selection};
 use inline_tui::llm::LlmBackend;
+use inline_tui::llm::config::{ProvidersFile, Selection};
 use inline_tui::stream::{CancelToken, ReplySource, StreamEvent};
 use tokio::sync::mpsc::unbounded_channel;
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let model = args.next().unwrap_or_else(|| "openai/gpt-4o-mini".to_string());
+    let model = args
+        .next()
+        .unwrap_or_else(|| "openai/gpt-4o-mini".to_string());
     let prompt = args.next().unwrap_or_else(|| {
         "Use the bash tool to run `ls` in the current directory, then tell me in one \
          sentence what kind of project this is."
@@ -71,9 +73,7 @@ fn main() {
             } => {
                 let color = if ok { "\x1b[32m" } else { "\x1b[31m" };
                 let head: String = output.lines().take(8).collect::<Vec<_>>().join("\n");
-                println!(
-                    "{color}  ⎿ ok={ok} truncated={truncated}\x1b[0m\n{head}\n  ---"
-                );
+                println!("{color}  ⎿ ok={ok} truncated={truncated}\x1b[0m\n{head}\n  ---");
             }
             StreamEvent::ThinkingStart => println!("\x1b[90m[thinking…]\x1b[0m"),
             StreamEvent::ThinkingChunk(_) => {}

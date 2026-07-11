@@ -72,14 +72,24 @@ fn run_bash(arguments: &str, cancel: &CancelToken) -> ToolOutcome {
     };
     let timeout = Duration::from_millis(args.timeout_ms());
 
-    let mut child = match Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg("-c")
         .arg(&args.command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    // Put `sh` in its own process group (its pgid == its pid) so we can kill the
+    // **whole tree** — a command that forks or backgrounds a child (`sleep 5 &`,
+    // launching a server) leaves a grandchild holding the stdout/stderr pipe;
+    // killing `sh` alone would orphan it, so the reader thread never sees EOF and
+    // a join would hang, defeating the timeout. Killing the group reaps them all.
+    #[cfg(unix)]
     {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = match command.spawn() {
         Ok(child) => child,
         Err(err) => return ToolOutcome::error(format!("failed to run command: {err}")),
     };
@@ -102,16 +112,14 @@ fn run_bash(arguments: &str, cancel: &CancelToken) -> ToolOutcome {
     let mut timed_out = false;
     let status = loop {
         if cancel.is_cancelled() {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_process_group(&mut child);
             // The interrupt path owns the UI; return a terse outcome (the loop
-            // discards it — the channel is already swapped). Detach the readers
-            // (a reparented grandchild could hold the pipe open).
+            // discards it — the channel is already swapped). The group kill has
+            // reaped any straggler, so the detached readers finish on their own.
             return ToolOutcome::error("Interrupted by user");
         }
         if start.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
+            kill_process_group(&mut child);
             timed_out = true;
             break None;
         }
@@ -119,12 +127,14 @@ fn run_bash(arguments: &str, cancel: &CancelToken) -> ToolOutcome {
             Ok(Some(status)) => break Some(status),
             Ok(None) => std::thread::sleep(BASH_POLL_INTERVAL),
             Err(err) => {
-                let _ = out_reader.join();
-                let _ = err_reader.join();
+                kill_process_group(&mut child);
                 return ToolOutcome::error(format!("error waiting on command: {err}"));
             }
         }
     };
+    // Even on a clean exit, reap any process the command backgrounded — it holds
+    // the pipe open, so joining the readers below would otherwise block on it.
+    kill_process_group(&mut child);
 
     let (out_bytes, out_trunc) = out_reader.join().unwrap_or((Vec::new(), false));
     let (err_bytes, err_trunc) = err_reader.join().unwrap_or((Vec::new(), false));
@@ -259,6 +269,35 @@ fn create_parents(path: &Path) -> std::io::Result<()> {
     }
 }
 
+/// Kill `child`'s entire process group and reap it. Because `run_bash` spawns
+/// `sh` with `process_group(0)`, the child leads its own group (pgid == pid), so
+/// a **negative pid** targets the whole tree — reaping any process the command
+/// forked or backgrounded, which would otherwise keep the stdout/stderr pipe
+/// open and hang a reader-thread join (defeating the timeout). Best-effort;
+/// errors are ignored.
+///
+/// This crate `forbid`s `unsafe`, so it can't call `libc::kill(-pid, …)`
+/// directly; instead it uses the shell's POSIX `kill` builtin, which treats a
+/// negative operand as a process group (`sh -c "kill -KILL -<pgid>"`). The
+/// helper `sh` starts in its own group, so it never signals itself.
+#[cfg(unix)]
+fn kill_process_group(child: &mut std::process::Child) {
+    let pgid = child.id();
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(format!("kill -KILL -{pgid} 2>/dev/null"))
+        .status();
+    let _ = child.kill(); // reap the direct child too (no-op if already gone)
+    let _ = child.wait();
+}
+
+/// Non-unix fallback: no process groups — just kill and reap the direct child.
+#[cfg(not(unix))]
+fn kill_process_group(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
 /// Read `reader` to EOF (so the child never blocks on a full pipe) but retain at
 /// most `cap` bytes; return the retained head and whether anything was dropped.
 /// Mirrors `main.rs::read_capped`.
@@ -335,6 +374,42 @@ mod tests {
         let out = exec("bash", r#"{"command":"sleep 5","timeout_ms":150}"#);
         assert!(!out.ok);
         assert!(out.output.contains("timed out"), "got {}", out.output);
+    }
+
+    #[test]
+    fn bash_does_not_hang_on_a_backgrounded_grandchild() {
+        // `sleep 10 &` makes `sh` fork `sleep` into the background and exit 0 at
+        // once. `sleep` inherits the stdout/stderr pipe, so read_capped never
+        // sees EOF — joining the reader would block ~10s (the timeout defeated).
+        // Killing the whole process group reaps the straggler, so the call
+        // returns promptly. Assert it finishes well under the 10s straggler.
+        let start = std::time::Instant::now();
+        let out = exec("bash", r#"{"command":"sleep 10 &","timeout_ms":30000}"#);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "run_bash returned in {elapsed:?} — a backgrounded grandchild made it hang"
+        );
+        assert!(out.ok, "the command itself exits 0");
+    }
+
+    #[test]
+    fn bash_timeout_is_honoured_even_when_a_child_survives() {
+        // A foreground long child that `sh` forked (not exec'd): on timeout,
+        // killing `sh` alone would orphan the child holding the pipe and the
+        // join would wait it out. The group kill must make the timeout prompt.
+        let start = std::time::Instant::now();
+        let out = exec(
+            "bash",
+            r#"{"command":"(sleep 10 & wait)","timeout_ms":300}"#,
+        );
+        let elapsed = start.elapsed();
+        assert!(!out.ok);
+        assert!(out.output.contains("timed out"), "got {}", out.output);
+        assert!(
+            elapsed < std::time::Duration::from_secs(5),
+            "the timeout took {elapsed:?} — a surviving child defeated it"
+        );
     }
 
     #[test]

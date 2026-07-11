@@ -3890,7 +3890,24 @@ impl App {
         // never touches history or the token tally. A shell turn always has a
         // running tool, so it can never land here — it takes the keep path
         // below (and skips the notice there).
-        if partial.is_none() && self.current_tool.is_none() && self.queued.is_empty() {
+        //
+        // The trailing-user-message guard is what makes this safe under the
+        // real backend's **multi-round tool loop**: after an earlier round
+        // committed an assistant segment + a tool, the streaming buffer is
+        // `Some("")` and `current_tool` is `None` again, so the three empties
+        // alone would wrongly fire the undo mid-turn — dropping the notice,
+        // orphaning the committed output, and (via `recall_input("")`) wiping a
+        // typed draft. When the just-submitted user message(s) are still the
+        // history tail, nothing has been committed since, so the undo is the
+        // right call; otherwise this turn already produced output and the Kept
+        // path below records the notice. See `docs/tools.md` / `docs/interrupt.md`.
+        let submission_is_intact =
+            matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User);
+        if submission_is_intact
+            && partial.is_none()
+            && self.current_tool.is_none()
+            && self.queued.is_empty()
+        {
             self.status = None;
             let (text, pairs) = self.take_trailing_user_messages();
             self.recall_input(&text);
@@ -5123,6 +5140,53 @@ mod tests {
         );
         assert!(!app.turn_active(), "the live status cleared");
         assert!(!app.is_streaming());
+    }
+
+    #[test]
+    fn interrupt_between_tool_rounds_keeps_the_output_and_records_the_notice() {
+        // The real backend's multi-round tool loop can leave the streaming
+        // buffer empty (Some("")) with no running tool *after* an earlier round
+        // already committed an assistant segment + a tool to history. An Esc in
+        // the gap before the next round must NOT undo the turn (that would drop
+        // the notice, orphan the committed output, and wipe a typed draft) — it
+        // must take the Kept path and record the interrupt notice.
+        let mut app = App::new();
+        app.record_user_message("fix the bug");
+        app.begin_stream();
+        // Round 1: an assistant segment, then a finished tool.
+        app.push_chunk("let me look");
+        app.flush_streaming_segment(); // records the segment, leaves streaming = Some("")
+        app.start_tool("Read", "src/app.rs");
+        app.end_tool("fn main() {}", true); // pushes HistoryItem::Tool, current_tool = None
+        // Round 2 is about to start; nothing has streamed yet this round.
+        assert!(
+            app.is_streaming(),
+            "the stream is still open between rounds"
+        );
+        assert!(app.current_tool().is_none());
+
+        let outcome = app.interrupt_turn().expect("a turn was active");
+        match outcome {
+            InterruptedTurn::Kept { notice, .. } => {
+                assert_eq!(
+                    notice,
+                    Some(INTERRUPT_NOTICE),
+                    "a turn that already produced output records the interrupt notice"
+                );
+            }
+            InterruptedTurn::Undone => panic!("must not undo a turn that already committed output"),
+        }
+        // The committed round-1 output survives, plus the interrupt notice.
+        assert!(
+            app.history
+                .iter()
+                .any(|h| matches!(h, HistoryItem::Message(m) if m.role == Role::Error)),
+            "the interrupt notice is in history"
+        );
+        assert!(
+            app.input.text().is_empty(),
+            "the composer draft is left untouched (not clobbered by a bogus recall)"
+        );
     }
 
     #[test]

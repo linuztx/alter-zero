@@ -2240,17 +2240,28 @@ fn tool_header(tool: &ToolCall) -> Line<'static> {
     Line::from(spans)
 }
 
-/// One row of a `⎿` result block, dim: the **first** row (index 0) opens with
-/// the [`TOOL_RESULT_PREFIX`] corner, continuation rows indent by its display
-/// width so the text aligns under it (Claude-Code's exec-cell output style).
-fn result_row(index: usize, text: String) -> Line<'static> {
+/// A `⎿` gutter row with an explicit content colour (`None` → dim): the
+/// **first** row (index 0) opens with the [`TOOL_RESULT_PREFIX`] corner,
+/// continuation rows indent by its display width so the text aligns under it
+/// (Claude-Code's exec-cell output style). The shared basis for the dim
+/// [`result_row`] and the diff-coloured rows.
+fn gutter_row(index: usize, text: String, color: Option<Color>) -> Line<'static> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let prefix = if index == 0 {
         TOOL_RESULT_PREFIX.to_string()
     } else {
         " ".repeat(cols(TOOL_RESULT_PREFIX))
     };
-    Line::from(vec![Span::styled(prefix, dim), Span::styled(text, dim)])
+    let content_style = color.map_or(dim, |c| Style::new().fg(c));
+    Line::from(vec![
+        Span::styled(prefix, dim),
+        Span::styled(text, content_style),
+    ])
+}
+
+/// A dim `⎿` result row (the default: command output, non-diff tools).
+fn result_row(index: usize, text: String) -> Line<'static> {
+    gutter_row(index, text, None)
 }
 
 /// Is this a model tool whose output is a diff — so its `⎿` rows get `+`/`-`
@@ -2259,26 +2270,25 @@ fn is_diff_tool(tool: &ToolCall) -> bool {
     !tool.shell && DIFF_TOOL_NAMES.contains(&tool.name.as_str())
 }
 
-/// A `⎿` result row for an `edit`/`write` diff cell: the gutter stays dim, but
-/// the content is coloured by its leading diff marker — `+` green, `-` red,
-/// everything else (context, the summary header) dim. Codex's diff look, in the
-/// existing gutter. See `docs/tools.md`.
+/// The diff colour for a source line by its leading marker — `+` green, `-`
+/// red, everything else (context, the summary header) dim (`None`).
+fn diff_line_color(line: &str) -> Option<Color> {
+    match line.chars().next() {
+        Some('+') => Some(TOOL_DIFF_ADD_COLOR),
+        Some('-') => Some(TOOL_DIFF_DEL_COLOR),
+        _ => None,
+    }
+}
+
+/// A `⎿` result row for an `edit`/`write` diff cell, coloured by the row's own
+/// leading diff marker — for the **inline peek**, where each row is a whole
+/// (un-wrapped) source line so the first char is authoritative. The expanded
+/// view wraps line-by-line and colours by the *source* line instead
+/// ([`tool_full_lines`]). Codex's diff look, in the existing gutter. See
+/// `docs/tools.md`.
 fn diff_result_row(index: usize, text: String) -> Line<'static> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let prefix = if index == 0 {
-        TOOL_RESULT_PREFIX.to_string()
-    } else {
-        " ".repeat(cols(TOOL_RESULT_PREFIX))
-    };
-    let content_style = match text.chars().next() {
-        Some('+') => Style::new().fg(TOOL_DIFF_ADD_COLOR),
-        Some('-') => Style::new().fg(TOOL_DIFF_DEL_COLOR),
-        _ => dim,
-    };
-    Line::from(vec![
-        Span::styled(prefix, dim),
-        Span::styled(text, content_style),
-    ])
+    let color = diff_line_color(&text);
+    gutter_row(index, text, color)
 }
 
 /// The dim `… +N lines (ctrl+o to expand)` hint under a capped peek.
@@ -2408,28 +2418,39 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // (like [`result_row`]'s continuation indent) — for a backend tool too, so
     // its expanded output aligns under the corner just like its inline peek.
     let body_width = width.saturating_sub(cols(TOOL_RESULT_PREFIX) as u16).max(1);
-    let mut body = match (tool.status, tool.output.is_empty()) {
-        (ToolStatus::Running, true) => vec![running_word.to_string()],
-        (_, true) => vec![TOOL_NO_OUTPUT.to_string()],
-        _ => wrap_verbatim(&tool.output, body_width),
+    // Each body row carries its content colour (`None` → dim). For an
+    // `edit`/`write` diff cell the colour comes from the **source** line, then
+    // the line is wrapped — so a long `+`/`-` line's continuation rows keep the
+    // added/removed colour instead of being mis-coloured by their own
+    // (marker-less) first char. Every other tool's output is dim.
+    let mut rows: Vec<(String, Option<Color>)> = match (tool.status, tool.output.is_empty()) {
+        (ToolStatus::Running, true) => vec![(running_word.to_string(), None)],
+        (_, true) => vec![(TOOL_NO_OUTPUT.to_string(), None)],
+        _ if is_diff_tool(tool) => tool
+            .output
+            .split('\n')
+            .flat_map(|src| {
+                let color = diff_line_color(src);
+                wrap_verbatim(src, body_width)
+                    .into_iter()
+                    .map(move |piece| (piece, color))
+            })
+            .collect(),
+        _ => wrap_verbatim(&tool.output, body_width)
+            .into_iter()
+            .map(|line| (line, None))
+            .collect(),
     };
     // The output was cut at the in-memory cap — mark the end so the user knows
     // more was dropped (it is not recoverable; nothing to expand to). Only the
     // `!` shell runner caps, so a backend tool never sets this.
     if tool.truncated {
-        body.push(TOOL_TRUNCATED_MARKER.to_string());
+        rows.push((TOOL_TRUNCATED_MARKER.to_string(), None));
     }
-    // An `edit`/`write` diff cell colours its `+`/`-` rows; every other tool's
-    // output is dim.
-    let row_style: fn(usize, String) -> Line<'static> = if is_diff_tool(tool) {
-        diff_result_row
-    } else {
-        result_row
-    };
-    let result = body
+    let result = rows
         .into_iter()
         .enumerate()
-        .map(|(i, line)| row_style(i, line));
+        .map(|(i, (text, color))| gutter_row(i, text, color));
     // A `!` shell command is headerless (its `Role::Shell` header sits above);
     // a backend tool keeps its coloured `● name(args)` header over the gutter.
     if tool.shell {
@@ -4769,6 +4790,44 @@ mod tests {
             add.spans.last().unwrap().style.fg,
             Some(TOOL_DIFF_ADD_COLOR)
         );
+    }
+
+    #[test]
+    fn edit_full_view_colours_wrapped_continuation_rows_by_their_source_line() {
+        // A `+` line longer than the width wraps into several rows in the Ctrl+O
+        // view. Every wrapped row of an added line must stay green (and a removed
+        // line red) — colouring each display row by ITS OWN first char would
+        // leave the marker-less continuation rows dim (or mis-colour them).
+        let added = format!("+{}", "x".repeat(60));
+        let removed = format!("-{}", "y".repeat(60));
+        let output = format!("Updated a.rs (+1 -1)\n{added}\n{removed}");
+        let width = 24; // body width ~20 → the 61-char lines wrap into several rows
+        let lines = tool_full_lines(&tool("Edit", "a.rs", ToolStatus::Ok, &output), width);
+        let content_fg = |l: &Line| l.spans.last().unwrap().style.fg;
+        let add_rows: Vec<_> = lines.iter().filter(|l| plain(l).contains('x')).collect();
+        let del_rows: Vec<_> = lines.iter().filter(|l| plain(l).contains('y')).collect();
+        assert!(
+            add_rows.len() > 1,
+            "the added line wrapped into multiple rows"
+        );
+        assert!(
+            del_rows.len() > 1,
+            "the removed line wrapped into multiple rows"
+        );
+        for row in add_rows {
+            assert_eq!(
+                content_fg(row),
+                Some(TOOL_DIFF_ADD_COLOR),
+                "every wrapped +row is green"
+            );
+        }
+        for row in del_rows {
+            assert_eq!(
+                content_fg(row),
+                Some(TOOL_DIFF_DEL_COLOR),
+                "every wrapped -row is red"
+            );
+        }
     }
 
     #[test]
