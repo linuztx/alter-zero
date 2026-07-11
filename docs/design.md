@@ -110,6 +110,11 @@ unit-tested must be unit-tested.
   text before a tool is committed as its own message so the scrollback (and the
   resize repaint) keeps text and tools in the exact order they streamed. The dummy
   runs a `Read` (green) then a `Bash` (red) per turn so all three colours show.
+  With a **real** backend these tools are driven by the model: it can call
+  `bash`/`read`/`write`/`edit`, which run locally in an agentic loop and feed
+  their results back until it answers in plain text (`docs/tools.md`). An
+  `edit`/`write` cell renders its output as a **diff** — green `+` / red `-` rows
+  in the `⎿` gutter.
 - **The Ctrl+O tool-output view.** Ctrl+O (from either screen, even mid-stream)
   opens a **separate full-screen overlay** — on the terminal's *alternate screen*,
   so the inline conversation is preserved — styled as **codex's Ctrl+T

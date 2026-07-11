@@ -107,6 +107,7 @@ default — and can be switched live by `/model`:
 | `INLINE_TUI_CONFIG_DIR` | the config home (holds `.env` + `config.json`) | `~/.inline-tui` |
 | `INLINE_TUI_ENV_FILE` | the `.env` key store `/login` reads and writes | `{config_home}/.env` |
 | `INLINE_TUI_TEMPERATURE` | sampling temperature | provider/omit |
+| `INLINE_TUI_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
 | `SSL_CERT_FILE` / `INLINE_TUI_CA_FILE` | extra CA bundle for the proxy | unset |
 
 **The dummy is the fallback, never a surprise.** The real backend activates only
@@ -307,11 +308,12 @@ that names the provider on the key step. Retheme there.
   `usage` block is not surfaced through `StreamEvent` (unchanged from the dummy).
 - Switching models mid-session does not rewrite the already-recorded `/resume`
   session-meta `model` field (it names the model the file was started with).
-- No streaming tool-call support from the model yet — assistant text and reasoning
-  stream; a real tool-calling loop is future work. The `!` local shell and the
-  dummy's scripted tools are unaffected. (Finished tools *are* replayed to the
-  model as raw bracketed records in the conversation context — see
-  `docs/context.md`.)
+- **Tool calling is now implemented** (was future work): the real backend offers
+  the model `bash`/`read`/`write`/`edit` and runs them in an agentic loop. See
+  **`docs/tools.md`**. Assistant text and reasoning still stream as before; the
+  `!` local shell and the dummy's scripted tools are unaffected. (Finished tools
+  are replayed to the model as raw bracketed records in the conversation context
+  — see `docs/context.md`.)
 - The picker fetches models when opened (no cache); a slow provider shows
   `Loading models…` until the response lands.
 - **Interrupt latency during a network stall.** The SSE drain runs on a blocking

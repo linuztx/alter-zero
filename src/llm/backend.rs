@@ -10,10 +10,13 @@ use std::thread::{self, JoinHandle};
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::agent::{self, RoundOutcome};
 use super::config::ModelConfig;
-use super::openai::OpenAiClient;
+use super::exec::{RealToolExecutor, ToolExecutor};
+use super::openai::{Delta, OpenAiClient};
 use super::retry::{self, AttemptResult, MAX_RETRIES};
-use super::{ChatMessage, ContentPart, LlmError};
+use super::tools::{self, ToolCallRequest};
+use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
 use crate::context::ContextMessage;
 use crate::stream::{CancelToken, ReplySource, StreamEvent};
 
@@ -28,13 +31,16 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = "You are a helpful assistant running ins
      [error …] notes from the UI. Treat them as context; do not imitate their \
      format. Keep replies concise and well-formatted for a narrow terminal.";
 
-/// A real OpenAI-compatible backend. Holds the streaming client plus the model
-/// id it answers as (for the session footer) and an optional system prompt.
+/// A real OpenAI-compatible backend. Holds the streaming client (carrying the
+/// tool definitions when tools are enabled) plus the model id it answers as
+/// (for the session footer), whether tools are enabled, and an optional system
+/// prompt.
 #[derive(Debug, Clone)]
 pub struct LlmBackend {
     client: OpenAiClient,
     model: String,
     system_prompt: Option<String>,
+    tools_enabled: bool,
 }
 
 impl LlmBackend {
@@ -47,16 +53,64 @@ impl LlmBackend {
 
     /// Build a backend with an explicit system prompt (`None` sends no system
     /// message). The boundary passes `INLINE_TUI_SYSTEM_PROMPT` through here.
+    /// Tools are enabled unless `INLINE_TUI_TOOLS` is falsy (see `docs/tools.md`).
     #[must_use]
     pub fn with_system_prompt(cfg: ModelConfig, system_prompt: Option<String>) -> Self {
+        Self::configure(cfg, system_prompt, tools_enabled_from_env())
+    }
+
+    /// Build a backend with an explicit tools toggle (the tests' seam; the app
+    /// goes through [`with_system_prompt`], reading the env).
+    ///
+    /// [`with_system_prompt`]: LlmBackend::with_system_prompt
+    #[must_use]
+    pub fn configure(cfg: ModelConfig, system_prompt: Option<String>, tools_enabled: bool) -> Self {
         let model = cfg.model.clone();
+        let mut client = OpenAiClient::new(cfg);
+        let mut system_prompt = system_prompt.filter(|s| !s.trim().is_empty());
+        if tools_enabled {
+            client = client.with_tools(tools::tool_specs());
+            // Tell the model the tools exist (the schemas carry the detail);
+            // the Ctrl+D debug view then shows the same augmented prompt.
+            if let Some(prompt) = system_prompt.as_mut() {
+                prompt.push_str(TOOLS_SYSTEM_SUFFIX);
+            }
+        }
         Self {
-            client: OpenAiClient::new(cfg),
+            client,
             model,
-            system_prompt: system_prompt.filter(|s| !s.trim().is_empty()),
+            system_prompt,
+            tools_enabled,
         }
     }
+
+    /// Whether the `bash`/`read`/`write`/`edit` tools are offered to the model.
+    #[must_use]
+    pub fn tools_enabled(&self) -> bool {
+        self.tools_enabled
+    }
 }
+
+/// Are the `bash`/`read`/`write`/`edit` tools enabled? On by default; disabled
+/// by a falsy `INLINE_TUI_TOOLS` (`0`/`false`/`no`/`off`). See `docs/tools.md`.
+fn tools_enabled_from_env() -> bool {
+    match std::env::var("INLINE_TUI_TOOLS") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+/// The tool definitions offered to the model, appended to the default system
+/// prompt so it knows the tools exist. Kept short; the schemas carry the detail.
+const TOOLS_SYSTEM_SUFFIX: &str = "\n\nYou can call tools to work in the user's project: `bash` (run a shell \
+     command), `read` (read a file with line numbers), `write` (create or \
+     overwrite a file), and `edit` (replace an exact string in a file). Use \
+     `read` to inspect a file before you `edit` it, and prefer `edit` over \
+     `write` for changing part of a file. Paths are relative to the working \
+     directory. After the tools finish, answer the user in plain text.";
 
 /// Assemble the request messages for one turn: the optional system prompt,
 /// then the whole conversation context in order — the multi-turn memory (see
@@ -160,53 +214,23 @@ impl ReplySource for LlmBackend {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop.
             let messages = build_messages(system.as_deref(), &prompt, &context, image_data_url);
-            // One streaming attempt: stream the deltas as events and report the
-            // outcome plus whether it emitted any content. The retry driver
-            // (`retry::run_stream`) calls this again — after announcing a
-            // `Retrying` event and backing off — only for a retryable failure
-            // that emitted nothing (a connection/send failure before the first
-            // byte), so a retry can never duplicate streamed text. See
-            // `docs/llm.md`.
-            let attempt = || {
-                let mut emitted = false;
-                // Track the thinking phase so a reasoning burst opens exactly one
-                // ThinkingStart and the first response text after it closes with a
-                // ThinkingEnd — the pairing the status line expects.
-                let mut thinking = false;
-                let result = client.stream_chat(messages.clone(), &cancel, |delta| {
-                    if !delta.reasoning.is_empty() {
-                        emitted = true;
-                        if !thinking {
-                            thinking = true;
-                            let _ = tx.send(StreamEvent::ThinkingStart);
-                        }
-                        let _ = tx.send(StreamEvent::ThinkingChunk(delta.reasoning));
-                    }
-                    if !delta.response.is_empty() {
-                        emitted = true;
-                        if thinking {
-                            thinking = false;
-                            let _ = tx.send(StreamEvent::ThinkingEnd);
-                        }
-                        let _ = tx.send(StreamEvent::Chunk(delta.response));
-                    }
-                });
-                // A stream that ends while still "thinking" (reasoning only, no
-                // response) must still close the phase. Thinking implies content
-                // was emitted, so this only ever fires on the final attempt.
-                if thinking {
-                    let _ = tx.send(StreamEvent::ThinkingEnd);
-                }
-                let outcome = match result {
-                    Ok(_) => AttemptResult::Ok,
-                    Err(LlmError::Cancelled) => AttemptResult::Cancelled,
-                    Err(e) => AttemptResult::Failed(e),
-                };
-                (outcome, emitted)
-            };
-            // The driver sends the terminal StreamDone/Error (or nothing on a
-            // cancel) and every Retrying announcement itself.
-            retry::run_stream(&tx, &cancel, MAX_RETRIES, attempt, retry::sleep_cancellable);
+            let executor = RealToolExecutor::new();
+            // The agentic loop: `run_agent` streams one round, runs any tool
+            // calls the model requested (via `executor`, emitting the
+            // ToolStart/ToolEnd pair the TUI renders), appends the results, and
+            // loops until the model answers with plain text — sending the
+            // terminal StreamDone/Error itself. Each round retries transient
+            // failures internally (see `stream_round`). With tools disabled the
+            // model never asks for any, so this collapses to a single round —
+            // the old plain-stream behaviour. See `docs/tools.md`.
+            agent::run_agent(
+                &tx,
+                &cancel,
+                agent::MAX_TOOL_ITERATIONS,
+                messages,
+                |msgs| stream_round(&client, msgs, &tx, &cancel),
+                |call| executor.execute(call, &cancel),
+            );
         })
     }
 
@@ -217,6 +241,98 @@ impl ReplySource for LlmBackend {
     fn system_prompt(&self) -> Option<String> {
         self.system_prompt.clone()
     }
+}
+
+/// Stream one round of the conversation: one HTTP request (with the existing
+/// per-request retry), emitting the `Chunk`/`Thinking*` events as text and
+/// reasoning arrive, and reporting the [`RoundOutcome`] the agent loop acts on
+/// — `Complete` (plain answer), `ToolCalls` (the model wants to run tools),
+/// `Cancelled`, or `Failed`. Boundary code (real HTTP); the loop that calls it
+/// and the retry it wraps are unit-tested separately.
+fn stream_round(
+    client: &OpenAiClient,
+    messages: &[ChatMessage],
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+) -> RoundOutcome {
+    // The successful attempt's outcome (text + tool calls) is stashed here so
+    // it survives the retry driver, which only reports the disposition.
+    let mut captured = None;
+    // One streaming attempt: stream the deltas as events and report the outcome
+    // plus whether it emitted any content. `retry::run_attempts` re-runs it —
+    // after a `Retrying` announcement + backoff — only for a retryable failure
+    // that emitted nothing, so a retry can never duplicate streamed text.
+    let attempt = || {
+        let mut emitted = false;
+        // Track the thinking phase so a reasoning burst opens exactly one
+        // ThinkingStart and the first response text after it closes with a
+        // ThinkingEnd — the pairing the status line expects.
+        let mut thinking = false;
+        let result = client.stream_chat(messages.to_vec(), cancel, |delta: Delta| {
+            if !delta.reasoning.is_empty() {
+                emitted = true;
+                if !thinking {
+                    thinking = true;
+                    let _ = tx.send(StreamEvent::ThinkingStart);
+                }
+                let _ = tx.send(StreamEvent::ThinkingChunk(delta.reasoning));
+            }
+            if !delta.response.is_empty() {
+                emitted = true;
+                if thinking {
+                    thinking = false;
+                    let _ = tx.send(StreamEvent::ThinkingEnd);
+                }
+                let _ = tx.send(StreamEvent::Chunk(delta.response));
+            }
+        });
+        // A stream that ends while still "thinking" (reasoning only, no
+        // response) must still close the phase.
+        if thinking {
+            let _ = tx.send(StreamEvent::ThinkingEnd);
+        }
+        match result {
+            Ok(outcome) => {
+                // A tool-calling round emits no visible reply text, so treat it
+                // as "emitted" too — a retry would re-run tools, which we never
+                // want (it can never duplicate here since Ok isn't retried).
+                let had_tools = !outcome.tool_calls.is_empty();
+                captured = Some(outcome);
+                (AttemptResult::Ok, emitted || had_tools)
+            }
+            Err(LlmError::Cancelled) => (AttemptResult::Cancelled, emitted),
+            Err(e) => (AttemptResult::Failed(e), emitted),
+        }
+    };
+    match retry::run_attempts(tx, cancel, MAX_RETRIES, attempt, retry::sleep_cancellable) {
+        AttemptResult::Ok => {
+            let outcome = captured.unwrap_or_default();
+            if outcome.tool_calls.is_empty() {
+                RoundOutcome::Complete
+            } else {
+                let assistant = ChatMessage::assistant_tool_calls(
+                    outcome.text.response,
+                    to_tool_call_specs(&outcome.tool_calls),
+                );
+                RoundOutcome::ToolCalls {
+                    assistant,
+                    calls: outcome.tool_calls,
+                }
+            }
+        }
+        AttemptResult::Cancelled => RoundOutcome::Cancelled,
+        AttemptResult::Failed(e) => RoundOutcome::Failed(e),
+    }
+}
+
+/// Echo the model's requested tool calls back as the assistant message's
+/// `tool_calls` array, so the provider can pair each `role:"tool"` result to
+/// its call.
+fn to_tool_call_specs(calls: &[ToolCallRequest]) -> Vec<ToolCallSpec> {
+    calls
+        .iter()
+        .map(|c| ToolCallSpec::function(&c.id, &c.name, &c.arguments))
+        .collect()
 }
 
 #[cfg(test)]
@@ -358,8 +474,9 @@ mod tests {
 
     #[test]
     fn backend_surfaces_its_system_prompt_for_the_debug_view() {
-        let backend =
-            LlmBackend::with_system_prompt(ModelConfig::fallback(), Some("be nice".into()));
+        // Tools off so the prompt isn't augmented — deterministic regardless of
+        // the ambient INLINE_TUI_TOOLS (the augmented case has its own test).
+        let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
         assert_eq!(
             ReplySource::system_prompt(&backend).as_deref(),
             Some("be nice")
@@ -370,5 +487,36 @@ mod tests {
     fn blank_system_prompt_is_dropped() {
         let backend = LlmBackend::with_system_prompt(ModelConfig::fallback(), Some("  ".into()));
         assert!(backend.system_prompt.is_none());
+    }
+
+    #[test]
+    fn enabling_tools_augments_the_system_prompt_and_flags_the_backend() {
+        let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), true);
+        assert!(backend.tools_enabled());
+        let prompt = backend.system_prompt.as_deref().unwrap();
+        assert!(prompt.starts_with("be nice"));
+        assert!(prompt.contains("bash"), "the tools are named in the prompt");
+        assert!(prompt.contains("edit"));
+    }
+
+    #[test]
+    fn disabling_tools_leaves_the_prompt_untouched() {
+        let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
+        assert!(!backend.tools_enabled());
+        assert_eq!(backend.system_prompt.as_deref(), Some("be nice"));
+    }
+
+    #[test]
+    fn to_tool_call_specs_echoes_id_name_and_arguments() {
+        let calls = vec![ToolCallRequest {
+            id: "c1".into(),
+            name: "bash".into(),
+            arguments: r#"{"command":"ls"}"#.into(),
+        }];
+        let specs = to_tool_call_specs(&calls);
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].id, "c1");
+        assert_eq!(specs[0].function.name, "bash");
+        assert_eq!(specs[0].function.arguments, r#"{"command":"ls"}"#);
     }
 }

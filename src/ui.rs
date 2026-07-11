@@ -191,6 +191,14 @@ const TOOL_FAIL_COLOR: Color = ERROR_COLOR;
 const TOOL_NAME_COLOR: Color = AI_COLOR;
 /// Dim grey — a tool's argument summary and its collapsed peek/hint.
 const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
+/// Green — an added (`+`) line in an `edit`/`write` diff cell (codex's diff
+/// look, adapted to the `⎿` gutter; see `docs/tools.md`).
+const TOOL_DIFF_ADD_COLOR: Color = TOOL_OK_COLOR;
+/// Red — a removed (`-`) line in an `edit`/`write` diff cell.
+const TOOL_DIFF_DEL_COLOR: Color = TOOL_FAIL_COLOR;
+/// The model tools whose output is a diff (so its `⎿` rows are `+`/`-`
+/// coloured). A `!` shell command is never one (its output is command output).
+const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
 
 /// The running placeholder for a tool — the shell-vs-backend casing rule
 /// ([`TOOL_RUNNING`] / [`TOOL_RUNNING_LOWER`]) in one place, so `tool_lines`
@@ -2245,6 +2253,43 @@ fn result_row(index: usize, text: String) -> Line<'static> {
     Line::from(vec![Span::styled(prefix, dim), Span::styled(text, dim)])
 }
 
+/// Is this a model tool whose output is a diff — so its `⎿` rows get `+`/`-`
+/// diff colouring ([`diff_result_row`])? See [`DIFF_TOOL_NAMES`].
+fn is_diff_tool(tool: &ToolCall) -> bool {
+    !tool.shell && DIFF_TOOL_NAMES.contains(&tool.name.as_str())
+}
+
+/// A `⎿` result row for an `edit`/`write` diff cell: the gutter stays dim, but
+/// the content is coloured by its leading diff marker — `+` green, `-` red,
+/// everything else (context, the summary header) dim. Codex's diff look, in the
+/// existing gutter. See `docs/tools.md`.
+fn diff_result_row(index: usize, text: String) -> Line<'static> {
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let prefix = if index == 0 {
+        TOOL_RESULT_PREFIX.to_string()
+    } else {
+        " ".repeat(cols(TOOL_RESULT_PREFIX))
+    };
+    let content_style = match text.chars().next() {
+        Some('+') => Style::new().fg(TOOL_DIFF_ADD_COLOR),
+        Some('-') => Style::new().fg(TOOL_DIFF_DEL_COLOR),
+        _ => dim,
+    };
+    Line::from(vec![
+        Span::styled(prefix, dim),
+        Span::styled(text, content_style),
+    ])
+}
+
+/// The dim `… +N lines (ctrl+o to expand)` hint under a capped peek.
+fn more_hint_line(hidden: usize) -> Line<'static> {
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    Line::from(vec![
+        Span::styled(TOOL_MORE_PREFIX.to_string(), dim),
+        Span::styled(format!("+{hidden} lines{EXPAND_HINT}"), dim),
+    ])
+}
+
 /// The live preview row for a running `!` shell command: `⎿ Running… (Ns)`. A
 /// shell turn hides the spinner status line entirely (see [`strip_has_status`]),
 /// so its running elapsed lives here instead — the boundary-supplied
@@ -2292,23 +2337,17 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         return match tool.status {
             ToolStatus::Running => vec![result_row(0, tool_running_marker(tool.shell).to_string())],
             _ if out_lines.is_empty() => vec![result_row(0, TOOL_NO_OUTPUT.to_string())],
-            _ => {
-                let shown = out_lines.len().min(TOOL_PEEK_LINES);
-                let mut lines: Vec<Line> = out_lines[..shown]
-                    .iter()
-                    .enumerate()
-                    .map(|(i, line)| result_row(i, truncate_cols(line, peek_width)))
-                    .collect();
-                let hidden = out_lines.len() - shown;
-                if hidden > 0 {
-                    lines.push(Line::from(vec![
-                        Span::styled(TOOL_MORE_PREFIX.to_string(), dim),
-                        Span::styled(format!("+{hidden} lines{EXPAND_HINT}"), dim),
-                    ]));
-                }
-                lines
-            }
+            _ => result_peek_block(&out_lines, peek_width, result_row),
         };
+    }
+
+    // An `edit`/`write` diff tool: coloured header + a multi-line `⎿` peek whose
+    // `+`/`-` rows are diff-coloured (the codex trick shows inline, not just in
+    // the Ctrl+O view). Other backend tools keep the single collapsed peek line.
+    if is_diff_tool(tool) && tool.status != ToolStatus::Running && !out_lines.is_empty() {
+        let mut lines = vec![tool_header(tool)];
+        lines.extend(result_peek_block(&out_lines, peek_width, diff_result_row));
+        return lines;
     }
 
     // A backend tool: coloured header + a single collapsed peek line.
@@ -2326,10 +2365,29 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     ];
     let hidden = out_lines.len().saturating_sub(1);
     if hidden > 0 {
-        lines.push(Line::from(vec![
-            Span::styled(TOOL_MORE_PREFIX.to_string(), dim),
-            Span::styled(format!("+{hidden} lines{EXPAND_HINT}"), dim),
-        ]));
+        lines.push(more_hint_line(hidden));
+    }
+    lines
+}
+
+/// Up to [`TOOL_PEEK_LINES`] `⎿` rows of `out_lines` built with `row` (dim
+/// [`result_row`] or diff-coloured [`diff_result_row`]), each truncated to
+/// `peek_width`, then a `… +N lines` hint when more is hidden. Shared by the
+/// shell cell and the diff-tool cell.
+fn result_peek_block(
+    out_lines: &[&str],
+    peek_width: usize,
+    row: impl Fn(usize, String) -> Line<'static>,
+) -> Vec<Line<'static>> {
+    let shown = out_lines.len().min(TOOL_PEEK_LINES);
+    let mut lines: Vec<Line> = out_lines[..shown]
+        .iter()
+        .enumerate()
+        .map(|(i, line)| row(i, truncate_cols(line, peek_width)))
+        .collect();
+    let hidden = out_lines.len() - shown;
+    if hidden > 0 {
+        lines.push(more_hint_line(hidden));
     }
     lines
 }
@@ -2361,10 +2419,17 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     if tool.truncated {
         body.push(TOOL_TRUNCATED_MARKER.to_string());
     }
+    // An `edit`/`write` diff cell colours its `+`/`-` rows; every other tool's
+    // output is dim.
+    let row_style: fn(usize, String) -> Line<'static> = if is_diff_tool(tool) {
+        diff_result_row
+    } else {
+        result_row
+    };
     let result = body
         .into_iter()
         .enumerate()
-        .map(|(i, line)| result_row(i, line));
+        .map(|(i, line)| row_style(i, line));
     // A `!` shell command is headerless (its `Role::Shell` header sits above);
     // a backend tool keeps its coloured `● name(args)` header over the gutter.
     if tool.shell {
@@ -4651,6 +4716,58 @@ mod tests {
             plain(&lines[1]).to_lowercase().contains("running"),
             "a running tool peeks as running: {:?}",
             plain(&lines[1])
+        );
+    }
+
+    #[test]
+    fn edit_tool_inline_peek_colours_the_diff_rows() {
+        // An `edit` cell shows its diff inline (codex's trick): a `+` row is
+        // green, a `-` row is red, the summary/context dim.
+        let output = "Updated a.rs (+1 -1)\n keep\n-old\n+new";
+        let lines = tool_lines(&tool("Edit", "a.rs", ToolStatus::Ok, output), 80);
+        assert_eq!(
+            plain(&lines[0]),
+            "● Edit(a.rs)",
+            "keeps the coloured header"
+        );
+        // Rows: header, summary, ` keep`, `-old`, `+new`.
+        let del = lines.iter().find(|l| plain(l).contains("-old")).unwrap();
+        let add = lines.iter().find(|l| plain(l).contains("+new")).unwrap();
+        // The content span (after the gutter) carries the diff colour.
+        assert_eq!(
+            del.spans.last().unwrap().style.fg,
+            Some(TOOL_DIFF_DEL_COLOR)
+        );
+        assert_eq!(
+            add.spans.last().unwrap().style.fg,
+            Some(TOOL_DIFF_ADD_COLOR)
+        );
+    }
+
+    #[test]
+    fn a_non_diff_tool_peek_is_not_diff_coloured() {
+        // A `bash` cell whose output happens to start with `+`/`-` is NOT a diff
+        // tool, so its rows stay dim.
+        let lines = tool_lines(
+            &tool("Bash", "diff a b", ToolStatus::Ok, "-removed\n+added"),
+            80,
+        );
+        let row = &lines[1];
+        assert_eq!(
+            row.spans.last().unwrap().style.fg,
+            Some(TOOL_DIM_COLOR),
+            "bash output is never diff-coloured"
+        );
+    }
+
+    #[test]
+    fn write_tool_full_view_colours_the_diff() {
+        let output = "Updated a.rs (+1 -0)\n keep\n+added";
+        let lines = tool_full_lines(&tool("Write", "a.rs", ToolStatus::Ok, output), 80);
+        let add = lines.iter().find(|l| plain(l).contains("+added")).unwrap();
+        assert_eq!(
+            add.spans.last().unwrap().style.fg,
+            Some(TOOL_DIFF_ADD_COLOR)
         );
     }
 

@@ -107,9 +107,38 @@ pub fn run_stream(
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
     max: u32,
-    mut attempt: impl FnMut() -> (AttemptResult, bool),
+    attempt: impl FnMut() -> (AttemptResult, bool),
     sleep: impl Fn(Duration, &CancelToken),
 ) {
+    // The terminal event depends only on the disposition [`run_attempts`]
+    // returns; a cancel is a silent stop (the loop's interrupt path commits the
+    // notice, mirroring the dummy).
+    match run_attempts(tx, cancel, max, attempt, sleep) {
+        AttemptResult::Ok => {
+            let _ = tx.send(StreamEvent::StreamDone);
+        }
+        AttemptResult::Cancelled => {}
+        AttemptResult::Failed(err) => {
+            let _ = tx.send(StreamEvent::Error(err.to_string()));
+        }
+    }
+}
+
+/// Drive the retry sequence and **return** the final disposition instead of
+/// sending a terminal event — announcing each [`StreamEvent::Retrying`] on the
+/// way. This is the reusable core of [`run_stream`]; the agentic tool loop
+/// ([`crate::llm::agent::run_agent`]) uses it directly, because *it* decides
+/// when the turn is really done (a successful round that requested tool calls
+/// is not the end). Generic over `attempt`/`sleep` for the same fake-driven
+/// tests. A cancel — mid-attempt or during a backoff — returns
+/// [`AttemptResult::Cancelled`].
+pub fn run_attempts(
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    max: u32,
+    mut attempt: impl FnMut() -> (AttemptResult, bool),
+    sleep: impl Fn(Duration, &CancelToken),
+) -> AttemptResult {
     let mut attempt_no = 0u32;
     // Cumulative: once any attempt streams a byte we never retry (retrying
     // would duplicate the content). So the attempt that emits is always the
@@ -119,20 +148,7 @@ pub fn run_stream(
         let (result, this_emitted) = attempt();
         emitted |= this_emitted;
         match next_step(&result, attempt_no, emitted, max) {
-            RetryStep::Proceed => {
-                match result {
-                    AttemptResult::Ok => {
-                        let _ = tx.send(StreamEvent::StreamDone);
-                    }
-                    // A cancel is a silent stop — the loop's interrupt path
-                    // commits the notice, not the backend (mirrors the dummy).
-                    AttemptResult::Cancelled => {}
-                    AttemptResult::Failed(err) => {
-                        let _ = tx.send(StreamEvent::Error(err.to_string()));
-                    }
-                }
-                return;
-            }
+            RetryStep::Proceed => return result,
             RetryStep::Retry { number, wait } => {
                 let _ = tx.send(StreamEvent::Retrying {
                     attempt: number,
@@ -140,10 +156,10 @@ pub fn run_stream(
                 });
                 attempt_no = number;
                 sleep(wait, cancel);
-                // A cancel during the backoff reaps us here — stop silently,
+                // A cancel during the backoff reaps us here — a silent stop,
                 // exactly as a cancel mid-attempt would.
                 if cancel.is_cancelled() {
-                    return;
+                    return AttemptResult::Cancelled;
                 }
             }
         }

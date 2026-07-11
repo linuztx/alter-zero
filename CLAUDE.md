@@ -592,3 +592,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   tokens app-side with a real `tiktoken` `o200k_base` tokenizer (no usage
   reporting in the protocol) via the `app::count_tokens` → `tokenizer::count`
   seam — exact for OpenAI models, close for the rest; nothing else changes.
+  **The real `LlmBackend` also drives an agentic tool loop** (`docs/tools.md`):
+  it offers the model `bash`/`read`/`write`/`edit` as Chat Completions function
+  tools, and `llm::agent::run_agent` streams a round, runs the tools the model
+  requested (emitting the same `ToolStart`/`ToolEnd` events the dummy scripts,
+  via the `llm::exec::ToolExecutor` seam), feeds the results back, and loops
+  until the model answers with plain text. The pure pieces — the tool defs +
+  edit engine (`llm::tools`), the streamed `tool_calls` accumulator
+  (`llm::openai::ToolCallAccumulator`), and the loop itself — are unit-tested;
+  the executor's file/process I/O is boundary code. Tools are on by default,
+  off via `INLINE_TUI_TOOLS`. An `edit`/`write` cell renders its output as a
+  diff (green `+` / red `-` rows in the `⎿` gutter — `ui.rs`'s `TOOL_DIFF_*`).

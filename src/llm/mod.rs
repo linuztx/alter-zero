@@ -13,14 +13,17 @@
 //! [`CancelToken`](crate::stream::CancelToken) — the same cooperative-cancel
 //! shape as `DummyAi`, with no nested tokio runtime.
 
+pub mod agent;
 pub mod backend;
 pub mod config;
+pub mod exec;
 pub mod keystore;
 pub mod models;
 pub mod openai;
 pub mod retry;
 pub mod settings;
 pub mod thinking;
+pub mod tools;
 
 use std::time::Duration;
 
@@ -31,10 +34,60 @@ pub use models::ModelEntry;
 pub use settings::Settings;
 
 /// One message in a chat-completion request.
+///
+/// The base shape is `{role, content}`; two optional fields carry the
+/// tool-calling turn (see `docs/tools.md`), both `skip_serializing_if`-guarded
+/// so an ordinary system/user/assistant message serializes byte-for-byte as
+/// before:
+/// - `tool_calls` — on an **assistant** message, the function calls the model
+///   requested (echoed back verbatim so the provider can pair the results);
+/// - `tool_call_id` — on a **`role:"tool"`** message, which call this output
+///   answers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ChatMessage {
     pub role: String,
     pub content: MessageContent,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallSpec>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+}
+
+/// One entry of an assistant message's `tool_calls` array — the Chat
+/// Completions `{"id","type":"function","function":{"name","arguments"}}`
+/// shape. `arguments` is the raw JSON string the model emitted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ToolCallSpec {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub function: FunctionCall,
+}
+
+/// The `function` object of a [`ToolCallSpec`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FunctionCall {
+    pub name: String,
+    pub arguments: String,
+}
+
+impl ToolCallSpec {
+    /// A function tool call echoed back to the provider.
+    #[must_use]
+    pub fn function(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            kind: "function".to_string(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: arguments.into(),
+            },
+        }
+    }
 }
 
 /// A chat message's content: the classic plain string, or the multimodal
@@ -85,6 +138,8 @@ impl ChatMessage {
         Self {
             role: role.into(),
             content: MessageContent::Text(c.into()),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         }
     }
 
@@ -94,6 +149,32 @@ impl ChatMessage {
         Self {
             role: role.into(),
             content: MessageContent::Parts(parts),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+        }
+    }
+
+    /// An assistant message that requested tool calls (its `content` may be
+    /// empty when the model only called tools). Echoed back so the provider
+    /// can pair each `role:"tool"` result to its call (see `docs/tools.md`).
+    #[must_use]
+    pub fn assistant_tool_calls(text: impl Into<String>, tool_calls: Vec<ToolCallSpec>) -> Self {
+        Self {
+            role: "assistant".to_string(),
+            content: MessageContent::Text(text.into()),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    /// A `role:"tool"` result message answering the call `tool_call_id`.
+    #[must_use]
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
+        Self {
+            role: "tool".to_string(),
+            content: MessageContent::Text(content.into()),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.into()),
         }
     }
 
@@ -265,6 +346,54 @@ mod tests {
                 ],
             })
         );
+    }
+
+    #[test]
+    fn assistant_tool_call_message_serializes_the_tool_calls_array() {
+        let msg = ChatMessage::assistant_tool_calls(
+            "",
+            vec![ToolCallSpec::function(
+                "call_1",
+                "bash",
+                r#"{"command":"ls"}"#,
+            )],
+        );
+        let json = serde_json::to_value(msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn tool_result_message_carries_the_call_id() {
+        let msg = ChatMessage::tool_result("call_1", "hello\n");
+        let json = serde_json::to_value(msg).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "role": "tool",
+                "content": "hello\n",
+                "tool_call_id": "call_1"
+            })
+        );
+    }
+
+    #[test]
+    fn a_plain_message_omits_the_tool_fields() {
+        // The skip_serializing_if guards mean ordinary messages are unchanged.
+        let json = serde_json::to_value(ChatMessage::user("hi")).unwrap();
+        assert_eq!(json, serde_json::json!({"role": "user", "content": "hi"}));
+        assert!(json.get("tool_calls").is_none());
+        assert!(json.get("tool_call_id").is_none());
     }
 
     #[test]

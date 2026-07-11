@@ -13,6 +13,7 @@ use serde_json::json;
 
 use super::config::ModelConfig;
 use super::thinking::ThinkingSplitter;
+use super::tools::ToolCallRequest;
 use super::{ChatMessage, LlmError, Result};
 use crate::stream::CancelToken;
 
@@ -33,16 +34,43 @@ pub struct Delta {
     pub reasoning: String,
 }
 
-/// A streaming chat client bound to one [`ModelConfig`].
+/// What one completed stream produced: the accumulated text/reasoning, the
+/// tool calls the model requested (empty on a plain answer), and the
+/// `finish_reason` the provider reported. The backend inspects `tool_calls` to
+/// decide whether to run tools and loop again (see `docs/tools.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamOutcome {
+    pub text: super::thinking::ChatStreamResult,
+    pub tool_calls: Vec<ToolCallRequest>,
+    pub finish_reason: Option<String>,
+}
+
+/// A streaming chat client bound to one [`ModelConfig`], optionally carrying the
+/// tool definitions (`tools` array) offered to the model.
 #[derive(Debug, Clone)]
 pub struct OpenAiClient {
     cfg: ModelConfig,
+    /// The Chat Completions `tools` array (empty → no tools, `tool_choice`
+    /// omitted). Set via [`OpenAiClient::with_tools`].
+    tools: Vec<serde_json::Value>,
 }
 
 impl OpenAiClient {
     #[must_use]
     pub fn new(cfg: ModelConfig) -> Self {
-        Self { cfg }
+        Self {
+            cfg,
+            tools: Vec::new(),
+        }
+    }
+
+    /// Offer these tool definitions to the model (added to the payload as the
+    /// `tools` array with `tool_choice:"auto"`). Empty leaves the request
+    /// tool-free.
+    #[must_use]
+    pub fn with_tools(mut self, tools: Vec<serde_json::Value>) -> Self {
+        self.tools = tools;
+        self
     }
 
     /// The chat-completions endpoint (`{api_base}/chat/completions`), falling
@@ -70,6 +98,10 @@ impl OpenAiClient {
         if let Some(t) = self.cfg.temperature {
             payload["temperature"] = json!(t);
         }
+        if !self.tools.is_empty() {
+            payload["tools"] = json!(self.tools);
+            payload["tool_choice"] = json!("auto");
+        }
         if let Some(obj) = payload.as_object_mut() {
             for (k, v) in &self.cfg.extra_body {
                 obj.insert(k.clone(), v.clone());
@@ -91,7 +123,7 @@ impl OpenAiClient {
         messages: Vec<ChatMessage>,
         cancel: &CancelToken,
         mut on_delta: impl FnMut(Delta),
-    ) -> Result<super::thinking::ChatStreamResult> {
+    ) -> Result<StreamOutcome> {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
@@ -120,6 +152,8 @@ impl OpenAiClient {
         // cancellation prompt *without* losing a partial line: on a timeout the
         // `line` buffer is preserved and we just loop back to poll `cancel`.
         let mut splitter = ThinkingSplitter::new();
+        let mut tools = ToolCallAccumulator::default();
+        let mut finish_reason: Option<String> = None;
         let mut reader = BufReader::new(resp);
         let mut line: Vec<u8> = Vec::new();
         let mut byte = [0u8; 1];
@@ -131,8 +165,13 @@ impl OpenAiClient {
                 Ok(0) => {
                     // EOF: flush any final line that had no trailing newline.
                     if !line.is_empty()
-                        && let SseStep::Fail(err) =
-                            process_sse_line(&line, &mut splitter, &mut on_delta)
+                        && let SseStep::Fail(err) = process_sse_line(
+                            &line,
+                            &mut splitter,
+                            &mut tools,
+                            &mut finish_reason,
+                            &mut on_delta,
+                        )
                     {
                         return Err(err);
                     }
@@ -140,7 +179,13 @@ impl OpenAiClient {
                 }
                 Ok(_) => match byte[0] {
                     b'\n' => {
-                        let step = process_sse_line(&line, &mut splitter, &mut on_delta);
+                        let step = process_sse_line(
+                            &line,
+                            &mut splitter,
+                            &mut tools,
+                            &mut finish_reason,
+                            &mut on_delta,
+                        );
                         line.clear();
                         match step {
                             SseStep::Continue => {}
@@ -168,7 +213,87 @@ impl OpenAiClient {
                 reasoning: reason_tail,
             });
         }
-        Ok(splitter.finish())
+        Ok(StreamOutcome {
+            text: splitter.finish(),
+            tool_calls: tools.finish(),
+            finish_reason,
+        })
+    }
+}
+
+/// Folds the streamed `tool_calls` deltas — each keyed by an `index`, its
+/// `id`/`name` arriving on the first fragment and its `arguments` in string
+/// pieces — into whole [`ToolCallRequest`]s. Pure and unit-tested (the
+/// fragmentation is provider-specific and easy to get wrong). See
+/// `docs/tools.md`.
+#[derive(Debug, Default)]
+pub struct ToolCallAccumulator {
+    calls: Vec<PartialToolCall>,
+}
+
+#[derive(Debug, Default)]
+struct PartialToolCall {
+    index: usize,
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+impl ToolCallAccumulator {
+    /// Fold one streamed tool-call delta fragment. `id`/`name` overwrite when
+    /// non-empty (they arrive once); `arguments` fragments concatenate.
+    fn push(
+        &mut self,
+        index: usize,
+        id: Option<&str>,
+        name: Option<&str>,
+        arguments: Option<&str>,
+    ) {
+        let entry = match self.calls.iter_mut().find(|c| c.index == index) {
+            Some(entry) => entry,
+            None => {
+                self.calls.push(PartialToolCall {
+                    index,
+                    ..Default::default()
+                });
+                self.calls.last_mut().expect("just pushed an entry")
+            }
+        };
+        if let Some(id) = id.filter(|s| !s.is_empty()) {
+            entry.id = id.to_string();
+        }
+        if let Some(name) = name.filter(|s| !s.is_empty()) {
+            entry.name = name.to_string();
+        }
+        if let Some(args) = arguments {
+            entry.arguments.push_str(args);
+        }
+    }
+
+    /// Were any tool-call deltas seen?
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+
+    /// The finished tool calls, in stream order (a delta with no name is
+    /// dropped — an incomplete fragment); a call with no id gets a synthetic
+    /// `call_{index}` so the result message can still pair to it.
+    #[must_use]
+    pub fn finish(self) -> Vec<ToolCallRequest> {
+        self.calls
+            .into_iter()
+            .filter(|c| !c.name.is_empty())
+            .map(|c| ToolCallRequest {
+                id: if c.id.is_empty() {
+                    format!("call_{}", c.index)
+                } else {
+                    c.id
+                },
+                name: c.name,
+                arguments: c.arguments,
+            })
+            .collect()
     }
 }
 
@@ -195,11 +320,14 @@ enum SseStep {
 }
 
 /// Parse and dispatch one SSE line's bytes: skip non-`data:` lines and empty
-/// deltas, feed the rest through `splitter`, and emit a non-empty split via
-/// `on_delta`. Invalid UTF-8 is skipped, never fatal.
+/// deltas, feed text/reasoning through `splitter` (emitting via `on_delta`),
+/// fold any `tool_calls` fragments into `tools`, and record a `finish_reason`.
+/// Invalid UTF-8 is skipped, never fatal.
 fn process_sse_line(
     line: &[u8],
     splitter: &mut ThinkingSplitter,
+    tools: &mut ToolCallAccumulator,
+    finish_reason: &mut Option<String>,
     on_delta: &mut impl FnMut(Delta),
 ) -> SseStep {
     let Ok(text) = std::str::from_utf8(line) else {
@@ -213,6 +341,21 @@ fn process_sse_line(
     }
     if let Some(err) = parse_sse_error(data) {
         return SseStep::Fail(err);
+    }
+    // Tool-call fragments and the finish reason ride the same JSON frame as the
+    // text delta — fold them in before the content early-return so a
+    // tool-call-only frame (no content) is never skipped.
+    let (tool_deltas, reason) = parse_sse_tool_calls(data);
+    for td in tool_deltas {
+        tools.push(
+            td.index,
+            td.id.as_deref(),
+            td.name.as_deref(),
+            td.arguments.as_deref(),
+        );
+    }
+    if let Some(reason) = reason {
+        *finish_reason = Some(reason);
     }
     let (content, reasoning) = parse_sse_data(data);
     if content.is_empty() && reasoning.is_empty() {
@@ -290,6 +433,8 @@ struct StreamChoice {
     delta: Option<StreamDelta>,
     #[serde(default)]
     message: Option<StreamDelta>,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -300,6 +445,67 @@ struct StreamDelta {
     reasoning_content: Option<String>,
     #[serde(default)]
     reasoning: Option<String>,
+    #[serde(default)]
+    tool_calls: Option<Vec<ToolCallDelta>>,
+}
+
+/// One streamed `tool_calls[]` entry — the fragmented Chat Completions shape.
+#[derive(Debug, Deserialize)]
+struct ToolCallDelta {
+    #[serde(default)]
+    index: usize,
+    #[serde(default)]
+    id: Option<String>,
+    #[serde(default)]
+    function: Option<FunctionDelta>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct FunctionDelta {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    arguments: Option<String>,
+}
+
+/// One parsed tool-call fragment, flattened for the accumulator.
+struct ToolCallDeltaParsed {
+    index: usize,
+    id: Option<String>,
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+/// Extract the `tool_calls` fragments and the `finish_reason` from one SSE
+/// `data:` frame (a second parse of the same JSON as [`parse_sse_data`], which
+/// stays focused on content/reasoning). Unparseable frames yield nothing.
+fn parse_sse_tool_calls(data: &str) -> (Vec<ToolCallDeltaParsed>, Option<String>) {
+    let Ok(payload) = serde_json::from_str::<StreamPayload>(data) else {
+        return (Vec::new(), None);
+    };
+    let mut calls = Vec::new();
+    let mut finish = None;
+    for choice in payload.choices {
+        if let Some(reason) = choice.finish_reason.filter(|r| !r.is_empty()) {
+            finish = Some(reason);
+        }
+        let delta = choice.delta.or(choice.message).unwrap_or_default();
+        if let Some(tool_calls) = delta.tool_calls {
+            for tc in tool_calls {
+                let (name, arguments) = match tc.function {
+                    Some(f) => (f.name, f.arguments),
+                    None => (None, None),
+                };
+                calls.push(ToolCallDeltaParsed {
+                    index: tc.index,
+                    id: tc.id,
+                    name,
+                    arguments,
+                });
+            }
+        }
+    }
+    (calls, finish)
 }
 
 /// Parse one SSE `data:` JSON payload into `(content, reasoning)`, concatenating
@@ -435,8 +641,16 @@ mod tests {
     /// Run a line's bytes through `process_sse_line`, collecting emitted deltas.
     fn drive_line(line: &str) -> (SseStep, Vec<Delta>) {
         let mut splitter = ThinkingSplitter::new();
+        let mut tools = ToolCallAccumulator::default();
+        let mut finish = None;
         let mut out = Vec::new();
-        let step = process_sse_line(line.as_bytes(), &mut splitter, &mut |d| out.push(d));
+        let step = process_sse_line(
+            line.as_bytes(),
+            &mut splitter,
+            &mut tools,
+            &mut finish,
+            &mut |d| out.push(d),
+        );
         (step, out)
     }
 
@@ -495,11 +709,15 @@ mod tests {
     #[test]
     fn process_sse_line_ignores_invalid_utf8() {
         let mut splitter = ThinkingSplitter::new();
+        let mut tools = ToolCallAccumulator::default();
+        let mut finish = None;
         let mut emitted = false;
         // A lone 0xFF byte after the prefix isn't valid UTF-8.
         let step = process_sse_line(
             &[b'd', b'a', b't', b'a', b':', 0xFF],
             &mut splitter,
+            &mut tools,
+            &mut finish,
             &mut |_| {
                 emitted = true;
             },
@@ -515,5 +733,83 @@ mod tests {
         assert_eq!(deltas.len(), 1);
         assert!(deltas[0].response.is_empty());
         assert_eq!(deltas[0].reasoning, "why");
+    }
+
+    #[test]
+    fn payload_includes_the_tools_array_and_auto_choice_when_set() {
+        let client =
+            OpenAiClient::new(ModelConfig::fallback()).with_tools(crate::llm::tools::tool_specs());
+        let p = client.build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["tool_choice"], json!("auto"));
+        assert_eq!(p["tools"][0]["function"]["name"], "bash");
+        assert_eq!(p["tools"].as_array().unwrap().len(), 4);
+    }
+
+    #[test]
+    fn payload_omits_tools_when_none_are_offered() {
+        let client = OpenAiClient::new(ModelConfig::fallback());
+        let p = client.build_payload(&[ChatMessage::user("hi")]);
+        assert!(p.get("tools").is_none());
+        assert!(p.get("tool_choice").is_none());
+    }
+
+    /// Feed a sequence of SSE lines through one accumulator, as a real stream
+    /// would, and return the finished tool calls.
+    fn drive_tool_stream(lines: &[&str]) -> Vec<ToolCallRequest> {
+        let mut splitter = ThinkingSplitter::new();
+        let mut tools = ToolCallAccumulator::default();
+        let mut finish = None;
+        for line in lines {
+            process_sse_line(
+                line.as_bytes(),
+                &mut splitter,
+                &mut tools,
+                &mut finish,
+                &mut |_| {},
+            );
+        }
+        tools.finish()
+    }
+
+    #[test]
+    fn tool_call_arguments_accumulate_across_fragments() {
+        // The name + id arrive on the first fragment; the arguments string
+        // streams in pieces that must concatenate into valid JSON.
+        let calls = drive_tool_stream(&[
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"bash","arguments":"{\"comm"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"and\":\"ls\"}"}}]}}]}"#,
+        ]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_a");
+        assert_eq!(calls[0].name, "bash");
+        assert_eq!(calls[0].arguments, r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn two_parallel_tool_calls_accumulate_by_index() {
+        let calls = drive_tool_stream(&[
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"name":"read","arguments":"{}"}}]}}]}"#,
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"b","function":{"name":"bash","arguments":"{}"}}]}}]}"#,
+        ]);
+        assert_eq!(calls.len(), 2);
+        assert_eq!(
+            (calls[0].name.as_str(), calls[1].name.as_str()),
+            ("read", "bash")
+        );
+    }
+
+    #[test]
+    fn a_tool_call_without_an_id_gets_a_synthetic_one() {
+        let calls = drive_tool_stream(&[
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":2,"function":{"name":"edit","arguments":"{}"}}]}}]}"#,
+        ]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].id, "call_2");
+    }
+
+    #[test]
+    fn a_content_only_stream_yields_no_tool_calls() {
+        let calls = drive_tool_stream(&[r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#]);
+        assert!(calls.is_empty());
     }
 }
