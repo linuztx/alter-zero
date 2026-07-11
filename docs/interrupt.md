@@ -165,14 +165,18 @@ exits right after and the OS reaps it.
 The reply backend streams on a plain OS thread and stops **cooperatively** —
 it polls the `CancelToken` between chunks. The dummy checks it every ≤20 ms,
 so `cancel + join` returns almost instantly. A **real** backend
-(`llm::LlmBackend`) is different: during the pre-first-token pause the thread
-is parked in a *blocking* network op — `reqwest`'s `send()` (waiting for the
-response headers, which never polls the token) or the first SSE `read()`
-(the SSE loop polls the token only *between* reads). Both wake only after the
-per-operation timeout (`STREAM_OP_TIMEOUT`, 3 s; `src/llm/openai.rs`,
-`src/llm/mod.rs::http_client`). So after Esc the thread cannot observe the
-cancel until its in-flight read returns — the network responding (~1–2 s) or
-the 3 s cap.
+(`llm::LlmBackend`) *used to be* different: during the pre-first-token pause
+the thread was parked in a *blocking* network op — `reqwest`'s `send()`
+(waiting for the response headers, which never polls the token) or the first
+SSE `read()` (polled only *between* reads) — waking only after the client's
+per-operation timeout, 3 s at the time. So after Esc the thread could not
+observe the cancel until its in-flight op returned — the network responding
+(~1–2 s) or the 3 s cap. (Today those blocking ops live on a further *detached
+transport thread*, and the streaming thread polls the token every ~50 ms while
+receiving from it — `openai::drain_stream`, see `docs/llm.md` — so it
+acknowledges a cancel promptly even mid-stall. The detach-don't-join
+discipline below still stands: it is what keeps *any* backend's worst case off
+the loop.)
 
 The old arm called `handle.join()` on that thread on the **single-threaded**
 (`current_thread`) tokio loop, so the entire event loop — draw ticks, the

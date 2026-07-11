@@ -33,13 +33,36 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary) | split |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
-### Why blocking `reqwest` and a hand-rolled SSE reader
+### Why blocking `reqwest`, a transport thread, and a hand-rolled SSE reader
 
 `ReplySource::spawn` hands the loop a `std::thread::JoinHandle`, exactly like
-`DummyAi`. A blocking `reqwest::Response` is a `std::io::Read`, so the backend
-drains it line-by-line for `data:` frames while polling the `CancelToken` between
-lines — the same cooperative-cancellation shape as the dummy's `nap`, with no
-nested tokio runtime. `reqwest` honours `HTTPS_PROXY` from the environment; the
+`DummyAi` — no nested tokio runtime. Every **blocking network operation** — the
+`send()` that uploads the request body and waits for the response headers, and
+each body `read()` — runs on a further **detached transport thread**
+(`openai::run_transport`) that forwards body chunks (or the failure that ended
+the stream) over a `std::sync::mpsc` channel; a clean EOF just drops the
+sender. The streaming thread drains that channel (`openai::drain_stream`, pure
+w.r.t. the network and unit-tested by feeding the channel): it reassembles SSE
+`data:` frames across arbitrary chunk boundaries and polls the `CancelToken`
+every ~50 ms while the channel is quiet — the same cooperative-cancellation
+shape as the dummy's `nap`, but with Esc/quit acknowledged promptly **even
+while the network blocks**. On a cancel the drain returns immediately and
+drops its receiver; the transport thread exits at its next channel send (or
+when its current operation times out), detached and bounded — never joined.
+
+The client's per-operation timeout (`openai::NET_OP_TIMEOUT`, 120 s — blocking
+`reqwest` applies it to the whole send/header exchange and to each body read)
+is purely a **stall detector**: generous enough for a vision request's
+multi-megabyte base64 upload and a busy provider's slow first header, while
+still bounding a genuinely dead connection, whose timeout becomes an ordinary
+retryable failure. Its 3 s predecessor (`STREAM_OP_TIMEOUT`) doubled as the
+cancel wake, and that coupling failed exactly the slow-but-alive requests: a
+pasted image whose upload couldn't fit 3 s spent its whole retry budget
+re-hitting the same wall (`retrying 1/3 … 3/3`, then the surfaced timeout),
+and a slow header exchange flashed spurious retry counters a few seconds into
+a normal text turn.
+
+`reqwest` honours `HTTPS_PROXY` from the environment; the
 agent proxy's custom CA is loaded at runtime from `SSL_CERT_FILE` (or
 `INLINE_TUI_CA_FILE`) and added as an extra trust root, so `rustls` keeps the
 build free of system OpenSSL.
@@ -317,16 +340,19 @@ that names the provider on the key step. Retheme there.
   `docs/context.md`.)
 - The picker fetches models when opened (no cache); a slow provider shows
   `Loading models…` until the response lands.
-- **Interrupt latency during a network stall.** The SSE drain runs on a blocking
-  thread that the event loop `join()`s on interrupt/quit. Blocking `reqwest`
-  applies its `timeout` per read, so the thread wakes every `STREAM_OP_TIMEOUT`
-  (3s) to poll the `CancelToken` — meaning Esc/quit reaps within ~3s *even if the
-  connection stalls with no bytes arriving*. During normal streaming (bytes
-  flowing) a read returns immediately, so interrupt is effectively instant; the
-  3s cap only bites while genuinely waiting on a silent socket. The same 3s also
-  bounds the initial send/header exchange (blocking `reqwest` couples the two),
-  so it's kept above a normal connect-plus-headers latency rather than tuned as
-  low as possible.
+- **A dead-silent connection takes up to `NET_OP_TIMEOUT` (120 s) to fail.**
+  The per-operation timeout is a stall detector sized for the slow-but-alive
+  cases (a vision request's multi-megabyte upload, a provider sitting on the
+  headers or between tokens), so a connection that goes quiet *without* dying
+  is only declared failed once it elapses. Interrupting is never blocked on
+  it: Esc/quit is acknowledged within ~50 ms (the drain's cancel poll), the
+  turn ends immediately, and the detached transport thread winds down on its
+  own — at its next channel send, or after at most one op-timeout if parked on
+  the silent socket. A failure before any content streamed retries as usual
+  (`llm::retry`); one after content is surfaced, never retried (a retry would
+  duplicate the streamed text).
+- A `429`'s `Retry-After` (and OpenRouter's rate-limit reset headers) are not
+  read; a rate-limited retry waits the standard exponential backoff instead.
 - The `ThinkingSplitter`'s inline-tag path and a provider's *native* `reasoning`
   field are handled independently; a single completion that mixed inline
   `<think>` tags **and** native reasoning deltas could misorder a buffered tag

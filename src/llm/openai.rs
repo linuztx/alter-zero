@@ -5,7 +5,8 @@
 //! SSE frame parse are pure and unit-tested; [`OpenAiClient::stream_chat`] is the
 //! boundary that opens the blocking request and drains it. See `docs/llm.md`.
 
-use std::io::{BufReader, Read};
+use std::io::Read;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -17,13 +18,24 @@ use super::tools::ToolCallRequest;
 use super::{ChatMessage, LlmError, Result};
 use crate::stream::CancelToken;
 
-/// The streaming client's per-operation timeout (see [`super::http_client`]):
-/// each body read wakes after this so the SSE drain can poll the [`CancelToken`]
-/// (a timed-out read is retried, never fatal), which also caps how long an
-/// Esc-interrupt / quit waits to reap the backend thread. It bounds the initial
-/// send/header exchange too, so it's kept comfortably above a normal
-/// connect-plus-headers latency rather than as short as possible.
-const STREAM_OP_TIMEOUT: Duration = Duration::from_secs(3);
+/// The HTTP client's per-operation deadline (see [`super::http_client`]): it
+/// bounds the whole send/header exchange — connect, uploading the request
+/// body, awaiting the response headers — and each individual body read. This
+/// is a **stall detector**, not the cancel wake (the drain polls the
+/// [`CancelToken`] on its own [`CANCEL_POLL_INTERVAL`] cadence), so it is set
+/// generously: a vision request uploads megabytes of base64 `data:` URLs, and
+/// a busy provider can sit far past any snappy deadline before its first
+/// header or between tokens. Its predecessor — a 3 s `STREAM_OP_TIMEOUT`
+/// doubling as the cancel wake — failed exactly those requests: a pasted
+/// image whose upload couldn't fit 3 s spent its whole retry budget re-hitting
+/// the same wall, and a slow header exchange flashed spurious
+/// `retrying n/3` counters a few seconds into a normal turn.
+const NET_OP_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// How often [`drain_stream`] wakes to poll the [`CancelToken`] while the
+/// transport channel is quiet — the Esc-interrupt/quit acknowledgement
+/// latency, matching `retry::sleep_cancellable`'s slice.
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 
 /// A split delta surfaced to the caller each SSE frame: the visible response
 /// text and the (hidden) reasoning text, already peeled apart by the
@@ -126,12 +138,12 @@ impl OpenAiClient {
         &self,
         messages: Vec<ChatMessage>,
         cancel: &CancelToken,
-        mut on_delta: impl FnMut(Delta),
+        on_delta: impl FnMut(Delta),
     ) -> Result<StreamOutcome> {
         if cancel.is_cancelled() {
             return Err(LlmError::Cancelled);
         }
-        let client = super::http_client(STREAM_OP_TIMEOUT)?;
+        let client = super::http_client(NET_OP_TIMEOUT)?;
         let mut req = client
             .post(self.endpoint())
             .header("accept", "text/event-stream")
@@ -144,86 +156,142 @@ impl OpenAiClient {
             req = req.header(k, v);
         }
 
-        let resp = req.send().map_err(|e| LlmError::Http(e.to_string()))?;
-        if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let body = resp.text().unwrap_or_default();
-            return Err(LlmError::Api { status, body });
-        }
-
-        // Drain the SSE body a byte at a time, accumulating a line across the
-        // read-timeout wakeups. Reading manually (not `read_line`) is what makes
-        // cancellation prompt *without* losing a partial line: on a timeout the
-        // `line` buffer is preserved and we just loop back to poll `cancel`.
-        let mut splitter = ThinkingSplitter::new();
-        let mut tools = ToolCallAccumulator::default();
-        let mut finish_reason: Option<String> = None;
-        let mut reader = BufReader::new(resp);
-        let mut line: Vec<u8> = Vec::new();
-        let mut byte = [0u8; 1];
-        loop {
-            if cancel.is_cancelled() {
-                return Err(LlmError::Cancelled);
-            }
-            match reader.read(&mut byte) {
-                Ok(0) => {
-                    // EOF: flush any final line that had no trailing newline.
-                    if !line.is_empty()
-                        && let SseStep::Fail(err) = process_sse_line(
-                            &line,
-                            &mut splitter,
-                            &mut tools,
-                            &mut finish_reason,
-                            &mut on_delta,
-                        )
-                    {
-                        return Err(err);
-                    }
-                    break;
-                }
-                Ok(_) => match byte[0] {
-                    b'\n' => {
-                        let step = process_sse_line(
-                            &line,
-                            &mut splitter,
-                            &mut tools,
-                            &mut finish_reason,
-                            &mut on_delta,
-                        );
-                        line.clear();
-                        match step {
-                            SseStep::Continue => {}
-                            SseStep::Done => break, // saw `data: [DONE]`
-                            // The provider failed the stream in-band; surface
-                            // it instead of letting EOF report a clean finish.
-                            SseStep::Fail(err) => return Err(err),
-                        }
-                    }
-                    b'\r' => {} // SSE line ending — ignore the CR
-                    b => line.push(b),
-                },
-                // A per-read timeout (the cancel-poll wake) isn't a failure — the
-                // partial `line` is intact, so loop back and re-check `cancel`.
-                Err(e) if is_read_timeout(&e) => continue,
-                Err(e) => return Err(LlmError::Http(e.to_string())),
-            }
-        }
-        // Surface any tail buffered mid-tag so an EOF inside a partial
-        // `<think>`/`</think>` fragment doesn't drop it.
-        let (resp_tail, reason_tail) = splitter.flush();
-        if !resp_tail.is_empty() || !reason_tail.is_empty() {
-            on_delta(Delta {
-                response: resp_tail,
-                reasoning: reason_tail,
-                tool_call: String::new(),
-            });
-        }
-        Ok(StreamOutcome {
-            text: splitter.finish(),
-            tool_calls: tools.finish(),
-            finish_reason,
-        })
+        // All blocking network I/O — the send/header exchange and every body
+        // read — runs on a detached transport thread feeding this channel, so
+        // the drain below can poll `cancel` every CANCEL_POLL_INTERVAL no
+        // matter how long the network blocks (a megabyte image upload, a
+        // provider sitting on the headers, a mid-stream stall). On cancel the
+        // receiver drops; the transport exits at its next channel send — or
+        // when its current network operation hits NET_OP_TIMEOUT on a silent
+        // socket — detached and bounded, never joined (the loop's
+        // detach-don't-join discipline, docs/interrupt.md).
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || run_transport(req, &tx));
+        drain_stream(&rx, cancel, on_delta)
     }
+}
+
+/// The transport thread body: perform the blocking send, then forward the
+/// response body to [`drain_stream`] in chunks. Every event on the channel is
+/// a `Result` — body bytes, or the failure that ended the stream (a transport
+/// error, or a non-2xx status with its body); a clean EOF just drops the
+/// sender, the disconnect being the signal. Each blocking operation here is
+/// bounded by [`NET_OP_TIMEOUT`]; a failed channel send (the drain dropped its
+/// receiver after a cancel) exits early. Boundary code — real HTTP.
+fn run_transport(req: reqwest::blocking::RequestBuilder, tx: &Sender<Result<Vec<u8>>>) {
+    let mut resp = match req.send() {
+        Ok(resp) => resp,
+        Err(e) => {
+            let _ = tx.send(Err(LlmError::Http(e.to_string())));
+            return;
+        }
+    };
+    if !resp.status().is_success() {
+        let status = resp.status().as_u16();
+        let body = resp.text().unwrap_or_default();
+        let _ = tx.send(Err(LlmError::Api { status, body }));
+        return;
+    }
+    let mut buf = [0u8; 8192];
+    loop {
+        match resp.read(&mut buf) {
+            Ok(0) => return, // EOF — dropping `tx` tells the drain
+            Ok(n) => {
+                if tx.send(Ok(buf[..n].to_vec())).is_err() {
+                    return; // the drain is gone (cancelled) — stop reading
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Err(LlmError::Http(e.to_string())));
+                return;
+            }
+        }
+    }
+}
+
+/// Drain one streamed response from the transport channel: reassemble SSE
+/// lines across arbitrary chunk boundaries, dispatch each through
+/// [`process_sse_line`], and poll `cancel` every [`CANCEL_POLL_INTERVAL`]
+/// while the channel is quiet — so an Esc/quit is acknowledged promptly even
+/// while the transport is parked in a long network operation. A disconnected
+/// channel is the clean EOF (any buffered final line flushed first, so a
+/// stream ending without a trailing newline still parses). Pure with respect
+/// to the network — unit-tested by feeding the channel directly.
+fn drain_stream(
+    rx: &Receiver<Result<Vec<u8>>>,
+    cancel: &CancelToken,
+    mut on_delta: impl FnMut(Delta),
+) -> Result<StreamOutcome> {
+    let mut splitter = ThinkingSplitter::new();
+    let mut tools = ToolCallAccumulator::default();
+    let mut finish_reason: Option<String> = None;
+    let mut line: Vec<u8> = Vec::new();
+    'stream: loop {
+        if cancel.is_cancelled() {
+            return Err(LlmError::Cancelled);
+        }
+        match rx.recv_timeout(CANCEL_POLL_INTERVAL) {
+            Ok(Ok(chunk)) => {
+                for &byte in &chunk {
+                    match byte {
+                        b'\n' => {
+                            let step = process_sse_line(
+                                &line,
+                                &mut splitter,
+                                &mut tools,
+                                &mut finish_reason,
+                                &mut on_delta,
+                            );
+                            line.clear();
+                            match step {
+                                SseStep::Continue => {}
+                                SseStep::Done => break 'stream, // saw `data: [DONE]`
+                                // The provider failed the stream in-band; surface
+                                // it instead of letting EOF report a clean finish.
+                                SseStep::Fail(err) => return Err(err),
+                            }
+                        }
+                        b'\r' => {} // SSE line ending — ignore the CR
+                        byte => line.push(byte),
+                    }
+                }
+            }
+            // The transport reported the failure that ended the stream.
+            Ok(Err(err)) => return Err(err),
+            // Quiet channel — loop back to poll `cancel`.
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => {
+                // Clean EOF: flush any final line that had no trailing newline.
+                if !line.is_empty()
+                    && let SseStep::Fail(err) = process_sse_line(
+                        &line,
+                        &mut splitter,
+                        &mut tools,
+                        &mut finish_reason,
+                        &mut on_delta,
+                    )
+                {
+                    return Err(err);
+                }
+                break;
+            }
+        }
+    }
+    // Surface any tail buffered mid-tag so an EOF inside a partial
+    // `<think>`/`</think>` fragment doesn't drop it.
+    let (resp_tail, reason_tail) = splitter.flush();
+    if !resp_tail.is_empty() || !reason_tail.is_empty() {
+        on_delta(Delta {
+            response: resp_tail,
+            reasoning: reason_tail,
+            tool_call: String::new(),
+        });
+    }
+    Ok(StreamOutcome {
+        text: splitter.finish(),
+        tool_calls: tools.finish(),
+        finish_reason,
+    })
 }
 
 /// Folds the streamed `tool_calls` deltas — each keyed by an `index`, its
@@ -300,16 +368,6 @@ impl ToolCallAccumulator {
             })
             .collect()
     }
-}
-
-/// Is this read error the streaming client's per-read timeout (the cancel-poll
-/// wake), rather than a real transport failure? `reqwest` surfaces the timeout
-/// as an `ErrorKind::Other` wrapping a `reqwest::Error` whose `is_timeout()` is
-/// true.
-fn is_read_timeout(e: &std::io::Error) -> bool {
-    e.get_ref()
-        .and_then(|inner| inner.downcast_ref::<reqwest::Error>())
-        .is_some_and(reqwest::Error::is_timeout)
 }
 
 /// What one processed SSE line means for the drain loop.
@@ -856,5 +914,154 @@ mod tests {
     fn a_content_only_stream_yields_no_tool_calls() {
         let calls = drive_tool_stream(&[r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#]);
         assert!(calls.is_empty());
+    }
+
+    /// Queue `events` on a transport channel, disconnect it (the clean-EOF
+    /// signal), and drain — returning the outcome and every surfaced delta.
+    fn drain_queued(events: Vec<Result<Vec<u8>>>) -> (Result<StreamOutcome>, Vec<Delta>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for e in events {
+            tx.send(e).unwrap();
+        }
+        drop(tx);
+        let mut deltas = Vec::new();
+        let out = drain_stream(&rx, &CancelToken::new(), |d| deltas.push(d));
+        (out, deltas)
+    }
+
+    #[test]
+    fn drain_stream_reassembles_a_frame_split_across_chunks() {
+        // The transport thread hands over whatever each socket read returned —
+        // a `data:` frame can split anywhere (even mid-JSON-key), and CRLF
+        // endings must survive the reassembly.
+        let (out, deltas) = drain_queued(vec![
+            Ok(b"data: {\"choices\":[{\"delta\":{\"cont".to_vec()),
+            Ok(b"ent\":\"Hello\"}}]}\r\n".to_vec()),
+            Ok(b"data: [DONE]\n".to_vec()),
+        ]);
+        assert_eq!(deltas.len(), 1, "one frame, one delta");
+        assert_eq!(deltas[0].response, "Hello");
+        assert_eq!(
+            out.expect("a [DONE] stream succeeds").text.response,
+            "Hello"
+        );
+    }
+
+    #[test]
+    fn drain_stream_flushes_a_trailing_line_at_disconnect() {
+        // EOF without [DONE] or a final newline — the buffered line still
+        // parses (mirrors the old reader's EOF flush).
+        let (out, deltas) = drain_queued(vec![Ok(
+            br#"data: {"choices":[{"delta":{"content":"tail"}}]}"#.to_vec(),
+        )]);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].response, "tail");
+        assert!(out.is_ok());
+    }
+
+    #[test]
+    fn drain_stream_stops_at_done_and_ignores_later_bytes() {
+        let chunk = format!(
+            "data: {first}\ndata: [DONE]\ndata: {never}\n",
+            first = r#"{"choices":[{"delta":{"content":"first"}}]}"#,
+            never = r#"{"choices":[{"delta":{"content":"never"}}]}"#,
+        );
+        let (out, deltas) = drain_queued(vec![Ok(chunk.into_bytes())]);
+        assert_eq!(deltas.len(), 1, "nothing after [DONE] is processed");
+        assert_eq!(deltas[0].response, "first");
+        assert_eq!(out.unwrap().text.response, "first");
+    }
+
+    #[test]
+    fn drain_stream_surfaces_a_transport_failure_after_content() {
+        // A send/read failure travels the channel as an Err event; the deltas
+        // streamed before it stand (the retry driver decides what happens next).
+        let (out, deltas) = drain_queued(vec![
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n".to_vec()),
+            Err(LlmError::Http("connection reset".into())),
+        ]);
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].response, "Hi");
+        assert!(
+            matches!(out, Err(LlmError::Http(msg)) if msg.contains("connection reset")),
+            "the transport error surfaces"
+        );
+    }
+
+    #[test]
+    fn drain_stream_surfaces_an_in_band_error_frame() {
+        let (out, deltas) = drain_queued(vec![Ok(
+            br#"data: {"error":{"message":"Provider returned error","code":429}}
+"#
+            .to_vec(),
+        )]);
+        assert!(deltas.is_empty());
+        match out {
+            Err(LlmError::Api { status, body }) => {
+                assert_eq!(status, 429);
+                assert!(body.contains("Provider returned error"));
+            }
+            other => panic!("expected the in-band Api error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn drain_stream_returns_cancelled_without_waiting_for_the_transport() {
+        // The channel is open but silent (a transport still parked in send());
+        // a pre-tripped token must return immediately, not after any timeout.
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>>>();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let out = drain_stream(&rx, &cancel, |_| {});
+        drop(tx);
+        assert!(matches!(out, Err(LlmError::Cancelled)));
+    }
+
+    #[test]
+    fn drain_stream_wakes_to_observe_a_cancel_during_a_stall() {
+        // A silent transport (stalled send / quiet socket) with a cancel
+        // tripped mid-stall: the drain's poll wake must observe it promptly —
+        // this is the Esc-interrupt latency, no longer tied to any network
+        // timeout.
+        let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>>>();
+        let cancel = CancelToken::new();
+        let canceller = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(80));
+                cancel.cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let out = drain_stream(&rx, &cancel, |_| {});
+        let waited = started.elapsed();
+        canceller.join().unwrap();
+        drop(tx);
+        assert!(matches!(out, Err(LlmError::Cancelled)));
+        assert!(
+            waited < Duration::from_secs(2),
+            "the cancel is observed within the poll cadence, waited {waited:?}"
+        );
+    }
+
+    #[test]
+    fn drain_stream_accumulates_tool_calls_and_finish_reason() {
+        let (out, deltas) = drain_queued(vec![
+            Ok(br#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"bash","arguments":"{}"}}]}}]}
+"#
+            .to_vec()),
+            Ok(b"data: {\"choices\":[{\"finish_reason\":\"tool_calls\"}]}\n".to_vec()),
+            Ok(b"data: [DONE]\n".to_vec()),
+        ]);
+        let outcome = out.unwrap();
+        assert_eq!(outcome.tool_calls.len(), 1);
+        assert_eq!(outcome.tool_calls[0].name, "bash");
+        assert_eq!(outcome.finish_reason.as_deref(), Some("tool_calls"));
+        assert_eq!(
+            deltas.len(),
+            1,
+            "the generation fragment surfaced for counting"
+        );
+        assert_eq!(deltas[0].tool_call, "bash{}");
     }
 }

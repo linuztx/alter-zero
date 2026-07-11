@@ -246,16 +246,19 @@ fn truncate_chars(s: &str, max: usize) -> String {
 /// Build a blocking HTTP client: env proxies (`HTTPS_PROXY`) are picked up
 /// automatically; the agent proxy's custom CA is added from `SSL_CERT_FILE` /
 /// `INLINE_TUI_CA_FILE` so `rustls` trusts it. A short connect timeout bounds a
-/// hung connect.
+/// hung connect (DNS + TCP + TLS — a blackholed host fails in seconds, not
+/// after the full per-operation deadline).
 ///
 /// `op_timeout` is applied via [`reqwest::blocking::ClientBuilder::timeout`],
 /// which in the blocking client is a **per-operation** deadline — it bounds the
 /// send/header exchange *and* each individual body `read()` (a fresh deadline
-/// per read), **not** the total request. The streaming client relies on that:
-/// each body read wakes after `op_timeout` so the SSE drain can poll the
-/// `CancelToken` and reap promptly on interrupt, while a legitimately long
-/// stream keeps going (a read that times out is retried, not fatal — see
-/// `openai::stream_chat`). So it doubles as the worst-case interrupt latency.
+/// per read), **not** the total request. It is purely a **stall detector**: an
+/// operation that sits longer than this is treated as failed and handed to the
+/// retry policy. Cancellation does *not* ride on it — the streaming path runs
+/// its blocking operations on a detached transport thread and polls the
+/// `CancelToken` while receiving from it (`openai::drain_stream`), so
+/// `op_timeout` can be generous (a vision request uploads megabytes of base64)
+/// without costing interrupt latency.
 ///
 /// # Errors
 /// Returns [`LlmError::Http`] if the client can't be built.
@@ -278,7 +281,7 @@ pub(crate) fn http_client(op_timeout: Duration) -> Result<reqwest::blocking::Cli
     }
     let mut builder = reqwest::blocking::Client::builder()
         .pool_idle_timeout(Duration::from_secs(30))
-        .connect_timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(10))
         .timeout(op_timeout);
     for cert in extra_root_certificates() {
         builder = builder.add_root_certificate(cert);

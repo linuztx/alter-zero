@@ -284,9 +284,11 @@ unit-tested must be unit-tested.
   mid-turn like `/model`.
 - **Esc interrupts a streaming turn** (ported from openai/codex — see
   `docs/interrupt.md`): a single Esc while a turn is in flight cancels + detaches
-  the backend (never `join()`ing it on the loop — a backend parked in a blocking
-  network read would otherwise freeze the UI for up to one op-timeout, the
-  interrupt-lag fix), keeps the partial reply, resolves a still-running tool as
+  the backend (never `join()`ing it on the loop — joining couples the UI to the
+  thread's worst case, the interrupt-lag fix; the real backend's blocking
+  network ops live on their own detached transport thread so the streaming
+  thread acknowledges the cancel within ~50 ms — `docs/llm.md`), keeps the
+  partial reply, resolves a still-running tool as
   failed (`Interrupted by user`), and commits a red
   `Conversation interrupted - tell the model what to do differently.` notice —
   with **no** `Done for Ns` summary (the notice is the turn's terminal state).
@@ -538,8 +540,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   — `smoke.sh` Phase 16).
 - On `Interrupt` (Esc while a turn is in flight — `docs/interrupt.md`):
   `abandon_inflight` cancels the backend, **detaches** its thread (never
-  `join()`ing on the loop — a backend parked in a blocking network read would
-  freeze the UI for up to one op-timeout: the interrupt-lag bug), and **swaps in
+  `join()`ing on the loop — joining couples the UI to the thread's worst case:
+  the interrupt-lag bug), and **swaps in
   a fresh reply channel** (so any event the dying thread still sends lands on the
   dropped receiver and can't reach the next turn — this is both the old join's
   "thread stopped" guarantee and the old drain, in one). Then `App::interrupt_turn`

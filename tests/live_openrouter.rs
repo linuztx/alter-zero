@@ -53,6 +53,10 @@ fn complete(prompt: &str, images: Vec<PathBuf>, context: Vec<ContextMessage>) ->
     while let Some(event) = rx.blocking_recv() {
         match event {
             StreamEvent::Chunk(chunk) => text.push_str(&chunk),
+            // Surfaced so a live run shows a request silently burning its
+            // retry budget (the old 3 s send-timeout bug looked exactly like
+            // this before failing outright).
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
             StreamEvent::Error(e) => panic!("backend error: {e}"),
             StreamEvent::StreamDone => break,
             _ => {}
@@ -194,5 +198,57 @@ fn live_vision_reads_a_pasted_image() {
     assert!(
         reply.to_lowercase().contains("red"),
         "the model should see the red image, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_vision_survives_a_large_image_upload() {
+    // The send-phase regression canary (docs/llm.md): a multi-megabyte base64
+    // body — the realistic size of a pasted screenshot — must survive the
+    // send/header exchange. Under the old 3 s per-operation timeout this
+    // upload burned the whole retry budget re-hitting the same wall and the
+    // turn failed ("[Image] can't be processed").
+    let path = std::env::temp_dir().join("inline-tui-live-vision-large.png");
+    // Deterministic noise compresses poorly, so the PNG lands in the
+    // megabytes without shipping a binary fixture; the solid red centre
+    // square keeps a semantic assertion possible.
+    let mut state: u64 = 0x1234_5678_9abc_def0;
+    let mut noise = move || {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (state >> 33) as u8
+    };
+    let img = image::RgbaImage::from_fn(1024, 1024, |x, y| {
+        if (312..712).contains(&x) && (312..712).contains(&y) {
+            image::Rgba([220, 20, 20, 255])
+        } else {
+            image::Rgba([noise(), noise(), noise(), 255])
+        }
+    });
+    img.save(&path).expect("write the large test PNG");
+    let bytes = std::fs::metadata(&path).expect("stat the PNG").len();
+    println!("large test PNG: {bytes} bytes");
+    assert!(
+        bytes > 2_000_000,
+        "the fixture must be multi-megabyte to exercise the upload path, got {bytes}"
+    );
+
+    let context = vec![ContextMessage {
+        role: ContextRole::User,
+        text: "[Image #1] What is the color of the solid square at the center \
+               of this noisy image? Answer with one lowercase word."
+            .to_string(),
+        images: vec![path.clone()],
+        tool_calls: vec![],
+        tool_call_id: None,
+    }];
+    let reply = complete("what color is the square?", vec![path.clone()], context);
+    std::fs::remove_file(&path).ok();
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.to_lowercase().contains("red"),
+        "the model should see the red centre square, got: {reply:?}"
     );
 }

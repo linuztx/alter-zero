@@ -234,10 +234,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let mut inflight: Option<(CancelToken, JoinHandle<()>)> = None;
     // Backend threads whose turn was interrupted or `/clear`ed: signalled to
     // cancel and *detached* to finish on their own. We never `join()` them on
-    // the event loop — a backend parked in a blocking network read can take up
-    // to one op-timeout to observe the cancel, and joining there froze the UI
-    // for that long (the interrupt-lag bug). Finished ones are swept off each
-    // loop iteration with the non-blocking `is_finished()`. See docs/interrupt.md.
+    // the event loop — joining couples the UI to the thread's worst case, and
+    // did freeze it for up to a network op-timeout back when the backend read
+    // the socket itself (the interrupt-lag bug; the real backend now parks its
+    // blocking network ops on a further detached transport thread and observes
+    // the cancel within ~50 ms — see docs/llm.md). Finished ones are swept off
+    // each loop iteration with the non-blocking `is_finished()`. See
+    // docs/interrupt.md.
     let mut reaping: Vec<JoinHandle<()>> = Vec::new();
     // Keeps the last `/copy`'s native clipboard selection alive (Linux/arboard
     // serves it from a thread tied to the Clipboard's lifetime); replaced on each
@@ -957,10 +960,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
 
     // The quit arms break before the loop-bottom sync — catch the last change.
     recorder.sync(&app.history);
-    // Stop any in-flight reply on the way out, but don't `join()` it: a backend
-    // parked in a blocking network read could delay the terminal restore by up
-    // to one op-timeout (the interrupt-lag freeze, on the quit path). The
-    // process exits right after `term.restore()`, reaping any detached thread.
+    // Stop any in-flight reply on the way out, but don't `join()` it: joining
+    // would couple the terminal restore to the backend's worst case (the
+    // interrupt-lag freeze, on the quit path). The process exits right after
+    // `term.restore()`, reaping any detached thread — the backend's and its
+    // transport thread alike.
     if let Some((cancel, _handle)) = inflight.take() {
         cancel.cancel();
     }
