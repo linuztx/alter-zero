@@ -1,4 +1,4 @@
-# Assistant markdown rendering (code blocks + headings)
+# Assistant markdown rendering
 
 The model streams **markdown**, but assistant replies were word-wrapped as plain
 prose by `ui::wrap_text`, which *collapses whitespace runs* (it is greedy
@@ -6,11 +6,27 @@ word-wrap for paragraphs). That destroyed the one construct where whitespace is
 load-bearing: **fenced code blocks**. A Python snippet rendered flush-left with
 its indentation gone and its lines re-flowed together — unreadable.
 
-This adds a small, prefix-stable markdown layer for assistant text: fenced code
-blocks render **verbatim** (indentation byte-for-byte, no reflow) and ATX
-headings render **like codex** — the `#` markers are **kept** and the whole line
-is styled per level (see *Headings* below). It deliberately does **not** do
-inline emphasis, lists, or tables (see *Scope* below).
+This is a prefix-stable markdown layer for assistant text. It now covers the full
+common set — matching the clean codex/Claude-Code look:
+
+- **Fenced + indented code blocks** — verbatim (indentation byte-for-byte),
+  syntax-highlighted, fences hidden (see *Code* / *Headings* below).
+- **ATX headings** — the `#` markers are **kept** and the line is styled per
+  level, like codex (see *Headings*).
+- **Inline** `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``,
+  `[text](url)`, `![alt](url)` (see *Inline markdown*).
+- **Lists** (bullets, ordered, task lists) and **blockquotes**, with nesting
+  indent preserved and hanging-indent wrapping (see *Lists and blockquotes*).
+- **GFM pipe tables** — box-drawing grids (see *Tables*).
+- **Thematic breaks** (`---` / `***` / `___`) as a `———` rule.
+
+The hard constraint throughout is **prefix-stability** (CLAUDE.md invariant 2):
+`StreamRender` flushes finished rows to the terminal's real scrollback as the
+reply streams, so a construct whose rendering depends on *later* text must be
+**held back** until it settles. Two constructs need this — **tables** (a later
+row can widen a column) and **inline emphasis** (a closing marker can restyle an
+already-wrapped row) — and both reuse the same withholding machinery the code
+blocks introduced (`AssistantRenderer::in_code`). See *Prefix-stable holdback*.
 
 ## What it looks like
 
@@ -262,17 +278,36 @@ from scrollback until settled (`markdown::is_partial_thematic_break`, wired into
 its wrapped prose rows could reach scrollback before the third marker collapses
 them into the one `———` row (the differential test covers width 3 up).
 
-**Out — inline `**bold**` / `*italic*` / `` `code` ``.** These are prose-level
-and would need *span-preserving* word-wrap (flatten a styled line to text + span
-ranges, wrap, re-slice the spans — codex's `word_wrap_line`). Worse, an emphasis
-run can straddle a wrap boundary *mid-source-line*: `StreamRender` could commit
-the opening half before the closing marker streams, then a later repaint would
-style it differently — a prefix-stability break. Codex only avoids this with
-**source-newline-gating** (never commit a line whose source line lacks a trailing
-newline), which this codebase does not do. Adding inline emphasis therefore means
-first reworking the streaming commit; it is a separate change.
+**In — inline markdown.** `markdown::parse_inline` turns a prose line into a tree
+of `Inline` nodes (`Text`, `Bold`, `Italic`, `Strike`, `Code`, `Link`, `Image` —
+nesting composes, e.g. `**bold _and italic_**`); `ui::inline_spans` maps each to
+a `Style` (emphasis is modifier-only; code is cyan; a link shows its text then a
+blue underlined ` (url)`; an image renders its alt), and `ui::wrap_inline`
+word-wraps the styled segments **span-preserving** (a bold run keeps its style
+across a wrap boundary; a word split by emphasis — `un**bold**` — stays one word).
+Parsing is CommonMark-lite: `*`/`**` need a non-whitespace flank (so `2 * 3` and
+`snake_case` stay literal), backtick runs match by exact length, `[text](url)`
+and `![alt](url)` parse their brackets. It is **line-local** — an unclosed marker
+stays literal — so a *complete* line's styling is final (its frozen rows never
+restyle). See *Prefix-stable holdback* for the trailing-line case.
 
-**Out — lists / blockquotes.** Prefix-stable but not the reported bug; deferred.
+**In — lists and blockquotes.** `markdown::list_item` classifies a bullet
+(`-`/`*`/`+`) or ordered (`N.`/`N)`) item — its nesting **indent**, marker, and
+content — and `markdown::block_quote` strips a `>`. Both are **line-local** (the
+line's own prefix decides), checked *after* `thematic_break` so `- - -` / `* * *`
+stay rules. `ui::render_list_item` keeps the nesting indent, styles the marker
+(`-` plain, `N.` accent-coloured), inline-parses the content and wraps it with a
+**hanging indent** (continuation rows align under the text). `ui::render_block_quote`
+prefixes each wrapped row with a dim `> `. **Task lists** (`- [x]`) need no
+special code — the inline parser leaves `[x]` literal (no `(` follows), so they
+render as bullets with a checkbox.
+
+**In — GFM pipe tables.** A header row, a **delimiter** row (`|---|:-:|`, its
+column count + alignments govern the grid), and data rows render as a box-drawing
+grid (`ui::table_content_rows` — dim borders, bold header cells, per-column
+alignment, width-shrunk with `…` truncation when the natural grid overflows). See
+*Prefix-stable holdback* — a table is buffered whole and committed only when it
+closes, because a later row can widen an already-emitted column.
 
 **Syntax highlighting is generic, not per-grammar.** No `syntect`/TextMate
 grammars, so a few shapes are approximate: multi-line backtick strings (Go raw
@@ -283,8 +318,42 @@ unknown/`text` language renders plain. An in-progress code line is withheld from
 scrollback until it completes, because highlighting uses one-char lookahead
 within a line (a call's `(`) — see the *streaming* note above.
 
-**Out — tables.** A new table row rewrites the column widths of *already-emitted*
-rows, so tables are inherently non-prefix-stable. Codex quarantines them in a
-re-renderable "tail" until finalized (a two-region streaming model). Do **not**
-add tables without porting that holdback — under the current `StreamRender` they
-would corrupt committed scrollback.
+## Prefix-stable holdback (tables + inline emphasis)
+
+`StreamRender` flushes finished rows to real scrollback as the reply streams, so
+anything whose rendering depends on *later* text must be **held back** until it
+settles. Two constructs need it, and both reuse the code-block withholding
+mechanism (`AssistantRenderer::in_code`, which `StreamRender::commit` already
+consults to keep an in-progress *code* line out of scrollback):
+
+- **Tables — block holdback.** `AssistantRenderer` buffers a table's source
+  lines (a candidate header confirmed by the next line's delimiter, then rows) in
+  a `TableState`, returning **no rows** until the block closes (a non-table line,
+  a code fence, or end-of-message via `flush`). `in_table()` exposes that state;
+  `StreamRender::commit` withholds the trailing line while `in_table()` (or the
+  trailing line is a fresh `is_table_row` candidate), so the whole grid reaches
+  scrollback **at once** with final column widths. Batch (`assistant_lines`) and
+  streaming share the one `AssistantRenderer`, so they render identically; the
+  batch of a *partial* prefix flushes the table-so-far, which the strip `preview`
+  matches by flushing its clone.
+- **Inline emphasis — line-newline gating.** Because emphasis is line-local, a
+  *complete* line is always final; only the **trailing partial** line can restyle
+  (an open `**` could still close). `markdown::has_open_inline` reports an
+  unclosed emphasis/code/link delimiter on the trailing line, and
+  `StreamRender::commit` withholds the whole line while it holds — so an in-flight
+  `**bold` never reaches scrollback half-styled. When it settles (the closer
+  arrives, or the line ends leaving the marker literal), it commits.
+
+Two partial-marker withholds join the existing `is_partial_fence` /
+`is_partial_thematic_break` / `is_partial_heading` set: `has_open_inline` (above)
+and `is_partial_list_marker` (a bare digit run like `10`, which a following
+`.`/`)` would flip into an ordered marker — recolouring the digits and, at a
+narrow width, collapsing their wrapped rows into one marker span).
+
+The differential test `ui::tests::stream_render_matches_batch_render_on_every_prefix`
+drives `StreamRender` over **every char-prefix** of a large corpus (tables,
+inline emphasis, nested lists, blockquotes, links, task lists, the marker-reveal
+flip) at widths 3–40 and asserts the committed rows are always a stable prefix of
+the batch render, the final flush reconstructs it exactly, and the preview equals
+the batch's last row. It is the guardrail for every construct here — extend it,
+never weaken it, when touching the renderer.
