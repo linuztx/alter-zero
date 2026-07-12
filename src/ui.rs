@@ -116,6 +116,15 @@ fn is_thematic_break(line: &str, prev_blank: bool) -> bool {
 /// Dim colour of a table's box-drawing borders (`│ ─ ┌┬┐ ├┼┤ └┴┘`).
 const TABLE_BORDER_COLOR: Color = TOOL_DIM_COLOR;
 
+// --- Inline markdown styling (docs/markdown.md). A prose line's `**bold**`,
+// `*italic*`, `~~strike~~`, `` `code` `` and `[text](url)` render with these;
+// emphasis is modifier-only (bold/italic/crossed-out), code and links carry a
+// colour. Parsing lives in `markdown::parse_inline`; `ui` owns the styling. ---
+/// Inline `` `code` `` — a distinct cyan so it reads as code within prose.
+const INLINE_CODE_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
+/// A link's URL, shown as ` (url)` after its text — blue and underlined.
+const LINK_URL_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+
 // Syntax-highlight palette (One Dark) — `highlight::Kind` → colour, mapped here
 // so all styling stays centralized in `ui.rs` (the tokenizer is colour-agnostic).
 /// Keywords — magenta.
@@ -1305,6 +1314,157 @@ fn code_content_rows(segments: &[(String, Color)], width: u16) -> Vec<Vec<Span<'
     rows
 }
 
+/// Flatten a parsed inline tree ([`markdown::parse_inline`]) into styled text
+/// segments under `base`. Emphasis adds a modifier, `code` a colour, a link its
+/// text plus a ` (url)` suffix, an image its alt text. Nesting composes styles.
+fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(String, Style)> {
+    let mut out = Vec::new();
+    for node in nodes {
+        match node {
+            markdown::Inline::Text(t) => out.push((t.clone(), base)),
+            markdown::Inline::Bold(inner) => {
+                out.extend(inline_spans(inner, base.add_modifier(Modifier::BOLD)));
+            }
+            markdown::Inline::Italic(inner) => {
+                out.extend(inline_spans(inner, base.add_modifier(Modifier::ITALIC)));
+            }
+            markdown::Inline::Strike(inner) => {
+                out.extend(inline_spans(
+                    inner,
+                    base.add_modifier(Modifier::CROSSED_OUT),
+                ));
+            }
+            markdown::Inline::Code(c) => out.push((c.clone(), base.fg(INLINE_CODE_COLOR))),
+            markdown::Inline::Link { text, url } => {
+                out.extend(inline_spans(text, base));
+                out.push((
+                    format!(" ({url})"),
+                    base.fg(LINK_URL_COLOR).add_modifier(Modifier::UNDERLINED),
+                ));
+            }
+            markdown::Inline::Image { alt } => out.push((alt.clone(), base)),
+        }
+    }
+    out
+}
+
+/// Word-wrap styled inline `segments` to `width` columns, preserving each run's
+/// style across wraps — the span-aware counterpart of [`wrap_text`]. Words (runs
+/// of non-whitespace, which may span several styled pieces, e.g. `un**bold**`)
+/// stay intact where they fit; a word wider than `width` hard-breaks on grapheme
+/// boundaries; whitespace collapses to single base-styled spaces between words.
+/// An empty line yields one empty row (matching [`wrap_text`]).
+fn wrap_inline(segments: &[(String, Style)], width: u16) -> Vec<Vec<Span<'static>>> {
+    let words = tokenize_words(segments);
+    let to_spans = |rows: Vec<Vec<(String, Style)>>| -> Vec<Vec<Span<'static>>> {
+        rows.into_iter()
+            .map(|r| r.into_iter().map(|(t, s)| Span::styled(t, s)).collect())
+            .collect()
+    };
+    if width == 0 {
+        // No wrapping: one row, words rejoined by single spaces.
+        let mut row: Vec<(String, Style)> = Vec::new();
+        for (i, word) in words.iter().enumerate() {
+            if i > 0 {
+                push_piece(&mut row, " ", Style::default());
+            }
+            for (t, s) in word {
+                push_piece(&mut row, t, *s);
+            }
+        }
+        return to_spans(vec![row]);
+    }
+    let width = width as usize;
+    let mut rows: Vec<Vec<(String, Style)>> = Vec::new();
+    let mut row: Vec<(String, Style)> = Vec::new();
+    let mut row_w = 0usize;
+    for word in &words {
+        let ww: usize = word.iter().map(|(t, _)| cols(t)).sum();
+        if ww > width {
+            // A word too wide for any line: hard-break it grapheme by grapheme.
+            if row_w > 0 {
+                rows.push(std::mem::take(&mut row));
+                row_w = 0;
+            }
+            for (t, s) in word {
+                for g in t.graphemes(true) {
+                    let gw = cols(g);
+                    if row_w > 0 && row_w + gw > width {
+                        rows.push(std::mem::take(&mut row));
+                        row_w = 0;
+                    }
+                    push_piece(&mut row, g, *s);
+                    row_w += gw;
+                }
+            }
+            continue;
+        }
+        let needed = if row_w == 0 { ww } else { row_w + 1 + ww };
+        if needed > width {
+            rows.push(std::mem::take(&mut row));
+            row_w = 0;
+        } else if row_w > 0 {
+            push_piece(&mut row, " ", Style::default());
+            row_w += 1;
+        }
+        for (t, s) in word {
+            push_piece(&mut row, t, *s);
+        }
+        row_w += ww;
+    }
+    if !row.is_empty() || rows.is_empty() {
+        rows.push(row);
+    }
+    to_spans(rows)
+}
+
+/// Split styled `segments` into words — each a run of non-whitespace pieces
+/// (`Vec<(text, style)>`) that may cross piece/style boundaries — dropping the
+/// whitespace between them ([`wrap_inline`] re-inserts single spaces).
+fn tokenize_words(segments: &[(String, Style)]) -> Vec<Vec<(String, Style)>> {
+    let mut words: Vec<Vec<(String, Style)>> = Vec::new();
+    let mut word: Vec<(String, Style)> = Vec::new();
+    let mut piece = String::new();
+    let mut piece_style = Style::default();
+    for (text, style) in segments {
+        for ch in text.chars() {
+            if ch.is_whitespace() {
+                if !piece.is_empty() {
+                    word.push((std::mem::take(&mut piece), piece_style));
+                }
+                if !word.is_empty() {
+                    words.push(std::mem::take(&mut word));
+                }
+            } else {
+                if !piece.is_empty() && *style != piece_style {
+                    word.push((std::mem::take(&mut piece), piece_style));
+                }
+                piece_style = *style;
+                piece.push(ch);
+            }
+        }
+    }
+    if !piece.is_empty() {
+        word.push((piece, piece_style));
+    }
+    if !word.is_empty() {
+        words.push(word);
+    }
+    words
+}
+
+/// Append `text` to a row of styled pieces, coalescing with the last piece when
+/// the style matches so a run of same-styled graphemes stays one span.
+fn push_piece(row: &mut Vec<(String, Style)>, text: &str, style: Style) {
+    if let Some((last_text, last_style)) = row.last_mut()
+        && *last_style == style
+    {
+        last_text.push_str(text);
+        return;
+    }
+    row.push((text.to_string(), style));
+}
+
 /// Render a buffered GFM pipe table into box-drawing content rows
 /// (`docs/markdown.md`). `lines[0]` is the header row, `lines[1]` the delimiter
 /// (its column count and [`markdown::Alignment`]s govern the grid) and `lines[2..]`
@@ -1644,10 +1804,13 @@ impl AssistantRenderer {
             // row (`Event::Rule`). A single settled row, so prefix-stable.
             vec![vec![Span::raw(THEMATIC_BREAK.to_string())]]
         } else {
-            wrap_text(line, self.content_width)
-                .into_iter()
-                .map(|l| vec![Span::raw(l)])
-                .collect()
+            // Plain prose: parse inline `**bold**`/`*italic*`/`~~strike~~`/
+            // `` `code` ``/`[link](url)` into styled spans, then span-preserving
+            // word-wrap. Emphasis is line-local, so a complete line's styling is
+            // final; a trailing line with an open marker is withheld by
+            // `StreamRender` (`markdown::has_open_inline`).
+            let segs = inline_spans(&markdown::parse_inline(line), Style::default());
+            wrap_inline(&segs, self.content_width)
         }
     }
 
@@ -4440,7 +4603,11 @@ impl StreamRender {
         //    fresh table-row candidate (`is_table_row`): a later row can widen a
         //    column, so the whole block is held back and committed at once when it
         //    closes (`docs/markdown.md`). Its rows aren't in `frozen` yet, so this
-        //    branch commits only the settled pre-table rows.
+        //    branch commits only the settled pre-table rows; and
+        //  - a trailing line with an **open inline marker** (`has_open_inline` —
+        //    an unclosed `**`/`*`/`~~`/`` ` ``/`[`): its closer could still restyle
+        //    an already-wrapped row, so the whole line is withheld until it settles
+        //    (inline emphasis is line-local, so a *complete* line is always final).
         // Otherwise it's settled prose — only its still-growing *last* row is held
         // back. `tail_rows` (an O(one line) render) is computed only in that case,
         // never in the withhold path where it would be discarded.
@@ -4451,6 +4618,7 @@ impl StreamRender {
             || markdown::is_partial_fence(tail_src)
             || markdown::is_partial_thematic_break(tail_src)
             || markdown::is_partial_heading(tail_src)
+            || markdown::has_open_inline(tail_src)
         {
             let stable = self.frozen.len();
             // Inside a fence blank lines are content; otherwise still hold back a
@@ -4842,6 +5010,73 @@ mod tests {
                 "└───┴───┘",
             ]
         );
+    }
+
+    #[test]
+    fn assistant_inline_emphasis_styles_spans() {
+        let lines = message_lines(Role::Assistant, "a **b** _i_ ~~s~~ `c`", 80);
+        let spans: Vec<(String, Modifier, Option<Color>)> = lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| (s.content.to_string(), s.style.add_modifier, s.style.fg))
+            .collect();
+        assert!(
+            spans
+                .iter()
+                .any(|(t, m, _)| t == "b" && m.contains(Modifier::BOLD))
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(t, m, _)| t == "i" && m.contains(Modifier::ITALIC))
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(t, m, _)| t == "s" && m.contains(Modifier::CROSSED_OUT))
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(t, _, fg)| t == "c" && *fg == Some(INLINE_CODE_COLOR))
+        );
+        // No raw markers leak through.
+        let joined: String = spans.iter().map(|(t, _, _)| t.as_str()).collect();
+        assert!(!joined.contains("**") && !joined.contains("~~") && !joined.contains('`'));
+    }
+
+    #[test]
+    fn assistant_inline_link_shows_text_then_url() {
+        let joined: String = message_lines(Role::Assistant, "see [docs](https://x.com) ok", 80)
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(joined.contains("docs"), "link text kept: {joined:?}");
+        assert!(joined.contains("(https://x.com)"), "url shown: {joined:?}");
+        assert!(
+            !joined.contains("[docs]"),
+            "raw link syntax gone: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn inline_emphasis_survives_a_wrap_boundary() {
+        // A bold run that wraps keeps its style on every wrapped word.
+        let lines = message_lines(Role::Assistant, "**alpha beta gamma delta**", 12);
+        assert!(lines.len() >= 2, "wrapped into multiple rows");
+        for line in &lines {
+            for s in &line.spans {
+                let t = s.content.as_ref();
+                if t.trim().is_empty() || t == "● " {
+                    continue;
+                }
+                assert!(
+                    s.style.add_modifier.contains(Modifier::BOLD),
+                    "{t:?} should stay bold across the wrap"
+                );
+            }
+        }
     }
 
     #[test]
@@ -7169,6 +7404,22 @@ mod tests {
             "| a | b |\n|---|---|\n| 1 | 2 |\n```\ncode\n```",
             // A single-column table, then prose.
             "| Item |\n|------|\n| one |\n| two |\ndone",
+            // --- Inline emphasis (docs/markdown.md): line-local, so a complete
+            // line's styling is final (its frozen rows never restyle) while a
+            // trailing line with an open marker is withheld (has_open_inline). The
+            // streamed commits must match the batch render at every prefix/width,
+            // including the marker-reveal flip and mid-word style changes. ---
+            "first line **bold** here\nsecond *italic* line\nthird `code` end",
+            // Emphasis closes early, then a long plain tail streams per row.
+            "this **bold** part settles then a long plain tail that wraps across several rows here",
+            // A bold phrase that itself wraps across rows (narrow widths hard-break it).
+            "**wide bold phrase that wraps across multiple rows** then plain tail here",
+            // Nested emphasis, a code span, a link and an image across a wrap.
+            "nested **bold with _italic_ inside** and a `code span`\nsee [the docs](https://example.com/x) or ![pic](https://img/y.png) inline",
+            // Non-emphasis markers stay literal: spaced `*`, snake_case `_`.
+            "compute 2 * 3 and read foo_bar_baz then stop\ndone",
+            // A strikethrough and inline code together, then a closing paragraph.
+            "~~removed~~ and `kept` values differ\n\nsummary paragraph after a blank",
         ];
 
         for full in corpus {

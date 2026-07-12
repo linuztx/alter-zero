@@ -534,9 +534,436 @@ pub fn table_delimiter(line: &str) -> Option<Vec<Alignment>> {
     Some(aligns)
 }
 
+// --- Inline markdown (`docs/markdown.md`). A prose line's `**bold**`,
+// `*italic*`, `~~strike~~`, `` `code` `` and `[text](url)` / `![alt](url)` runs
+// parse into a tree of styled spans; [`crate::ui`] maps each node to a `Style`
+// (the `highlight::Kind` → colour pattern). Emphasis is **line-local** — an
+// unclosed marker stays literal — so a *complete* source line's styling is final
+// (its frozen rows never restyle). A *trailing partial* line with an unclosed
+// delimiter is withheld from scrollback ([`has_open_inline`], wired into
+// [`crate::ui::StreamRender::commit`]) until it settles. ---
+
+/// One inline node of a prose line. `Bold`/`Italic`/`Strike`/`Link` nest (their
+/// content is itself parsed), so `**bold _and italic_**` is a `Bold` holding an
+/// `Italic`; `Code` and `Image` alt text are literal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Inline {
+    /// Literal text.
+    Text(String),
+    /// `**bold**` / `__bold__`.
+    Bold(Vec<Inline>),
+    /// `*italic*` / `_italic_`.
+    Italic(Vec<Inline>),
+    /// `~~strikethrough~~`.
+    Strike(Vec<Inline>),
+    /// `` `inline code` `` — rendered literally, in the code colour.
+    Code(String),
+    /// `[text](url)` — the text nests, the URL is shown after it.
+    Link {
+        /// The link's display text (parsed for nested emphasis).
+        text: Vec<Inline>,
+        /// The link target, rendered as ` (url)` after the text.
+        url: String,
+    },
+    /// `![alt](url)` — rendered as its alt text (the URL is dropped).
+    Image {
+        /// The image's alt text.
+        alt: String,
+    },
+}
+
+/// Parse a prose `line` into inline nodes (`docs/markdown.md`). Left-to-right,
+/// line-local: an unclosed or non-flanking marker stays literal, so the result
+/// of a **complete** line is final (prefix-stable once the line ends). Nesting is
+/// handled by recursing on each span's content.
+#[must_use]
+pub fn parse_inline(text: &str) -> Vec<Inline> {
+    let mut out: Vec<Inline> = Vec::new();
+    let mut plain = String::new();
+    let mut i = 0;
+    while i < text.len() {
+        if let Some((node, next)) = element_at(text, i) {
+            if !plain.is_empty() {
+                out.push(Inline::Text(std::mem::take(&mut plain)));
+            }
+            out.push(node);
+            i = next;
+        } else {
+            let ch = text[i..]
+                .chars()
+                .next()
+                .expect("i is a char boundary < len");
+            plain.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    if !plain.is_empty() {
+        out.push(Inline::Text(plain));
+    }
+    out
+}
+
+/// Whether `text` (a still-growing trailing line) holds an **unclosed** inline
+/// delimiter — an emphasis/strike run, a code span, or a link — that a later
+/// character could still close and thereby restyle already-emitted text. The
+/// streaming committer withholds such a line whole (like an in-code line) until
+/// it settles, keeping scrollback immutable. A non-flanking `*` (`2 * 3`), an
+/// intraword `_` (`foo_bar`), or a settled literal `[a]` is **not** open.
+#[must_use]
+pub fn has_open_inline(text: &str) -> bool {
+    let mut i = 0;
+    while i < text.len() {
+        if let Some((_, next)) = element_at(text, i) {
+            i = next; // a complete (closed) element — settled
+        } else if opener_at(text, i) {
+            return true; // a valid opener with no closer yet — unsettled
+        } else {
+            let ch = text[i..].chars().next().expect("char boundary");
+            i += ch.len_utf8();
+        }
+    }
+    false
+}
+
+/// If a **complete** inline element starts at byte `i`, return it and the byte
+/// index just past it. `None` for a plain char or an unclosed/invalid marker
+/// (which [`parse_inline`] then treats as literal text).
+fn element_at(text: &str, i: usize) -> Option<(Inline, usize)> {
+    let rest = &text[i..];
+    if rest.starts_with('`') {
+        return code_at(text, i);
+    }
+    if rest.starts_with("![") {
+        return image_at(text, i);
+    }
+    if rest.starts_with('[') {
+        return link_at(text, i);
+    }
+    for (marker, wrap) in EMPHASIS {
+        if rest.starts_with(marker) {
+            if let Some((inner, next)) = emphasis_at(text, i, marker) {
+                return Some((wrap(parse_inline(inner)), next));
+            }
+            // A valid opener with no closer, or a non-flanking marker: fall
+            // through so the marker char is taken as literal text.
+            return None;
+        }
+    }
+    None
+}
+
+/// Constructor for an emphasis span's parsed content (`Bold`/`Italic`/`Strike`).
+type EmphasisCtor = fn(Vec<Inline>) -> Inline;
+
+/// The emphasis/strike markers in precedence order (longest first, so `**` beats
+/// `*`), each paired with the [`Inline`] constructor for its parsed content.
+const EMPHASIS: &[(&str, EmphasisCtor)] = &[
+    ("~~", Inline::Strike),
+    ("**", Inline::Bold),
+    ("__", Inline::Bold),
+    ("*", Inline::Italic),
+    ("_", Inline::Italic),
+];
+
+/// Whether a delimiter that could still *open* an element starts at byte `i` — a
+/// backtick, a link `[`/`![`, or a flanking emphasis marker. Used by
+/// [`has_open_inline`] to tell an unsettled opener from a settled literal.
+fn opener_at(text: &str, i: usize) -> bool {
+    let rest = &text[i..];
+    if rest.starts_with('`') {
+        return true; // a backtick run could always close later
+    }
+    if rest.starts_with("![") || rest.starts_with('[') {
+        return link_openable(text, i);
+    }
+    EMPHASIS
+        .iter()
+        .any(|(marker, _)| rest.starts_with(marker) && emphasis_opener_ok(text, i, marker))
+}
+
+/// If a flanking emphasis run of `marker` at byte `i` has a matching closer,
+/// return its inner text and the byte index past the closing marker.
+fn emphasis_at<'a>(text: &'a str, i: usize, marker: &str) -> Option<(&'a str, usize)> {
+    if !emphasis_opener_ok(text, i, marker) {
+        return None;
+    }
+    let open_end = i + marker.len();
+    let mut search = open_end;
+    while let Some(rel) = text[search..].find(marker) {
+        let close = search + rel;
+        if close > open_end && emphasis_closer_ok(text, close, marker) {
+            return Some((&text[open_end..close], close + marker.len()));
+        }
+        search = close + marker.len();
+    }
+    None
+}
+
+/// Whether an emphasis run of `marker` at byte `i` can **open**: the char right
+/// after the run is non-whitespace (left-flanking), and — for `_`/`__` — the char
+/// before is not alphanumeric (no intraword underscore emphasis).
+fn emphasis_opener_ok(text: &str, i: usize, marker: &str) -> bool {
+    let open_end = i + marker.len();
+    match text[open_end..].chars().next() {
+        Some(c) if !c.is_whitespace() => {}
+        _ => return false,
+    }
+    if marker.starts_with('_')
+        && text[..i]
+            .chars()
+            .next_back()
+            .is_some_and(char::is_alphanumeric)
+    {
+        return false;
+    }
+    true
+}
+
+/// Whether a `marker` run ending a span at byte `close` can **close**: the char
+/// before it is non-whitespace (right-flanking), and — for `_`/`__` — the char
+/// after is not alphanumeric.
+fn emphasis_closer_ok(text: &str, close: usize, marker: &str) -> bool {
+    if text[..close]
+        .chars()
+        .next_back()
+        .is_none_or(char::is_whitespace)
+    {
+        return false;
+    }
+    if marker.starts_with('_')
+        && text[close + marker.len()..]
+            .chars()
+            .next()
+            .is_some_and(char::is_alphanumeric)
+    {
+        return false;
+    }
+    true
+}
+
+/// Parse a `` ` ``-delimited code span at byte `i`: a run of N backticks closed by
+/// the next run of **exactly** N. One leading/trailing space is stripped (unless
+/// the content is all spaces), per CommonMark.
+fn code_at(text: &str, i: usize) -> Option<(Inline, usize)> {
+    let run = text[i..].bytes().take_while(|&b| b == b'`').count();
+    let open_end = i + run;
+    let bytes = text.as_bytes();
+    let mut j = open_end;
+    while j < text.len() {
+        if bytes[j] == b'`' {
+            let rlen = text[j..].bytes().take_while(|&b| b == b'`').count();
+            if rlen == run {
+                return Some((Inline::Code(strip_code_span(&text[open_end..j])), j + rlen));
+            }
+            j += rlen;
+        } else {
+            j += 1;
+        }
+    }
+    None
+}
+
+/// Strip one leading and trailing space from a code span's content unless it is
+/// entirely spaces (CommonMark), so `` ` x ` `` → `x`.
+fn strip_code_span(content: &str) -> String {
+    if content.len() >= 2
+        && content.starts_with(' ')
+        && content.ends_with(' ')
+        && !content.trim().is_empty()
+    {
+        content[1..content.len() - 1].to_string()
+    } else {
+        content.to_string()
+    }
+}
+
+/// Parse a `[text](url)` link at byte `i` (`text[i] == '['`).
+fn link_at(text: &str, i: usize) -> Option<(Inline, usize)> {
+    let (label, after_label) = bracket_content(text, i)?;
+    let (url, next) = paren_content(text, after_label)?;
+    Some((
+        Inline::Link {
+            text: parse_inline(label),
+            url: url.to_string(),
+        },
+        next,
+    ))
+}
+
+/// Parse an `![alt](url)` image at byte `i` (`text[i..]` starts `![`).
+fn image_at(text: &str, i: usize) -> Option<(Inline, usize)> {
+    let (alt, after_alt) = bracket_content(text, i + 1)?;
+    let (_url, next) = paren_content(text, after_alt)?;
+    Some((
+        Inline::Image {
+            alt: alt.to_string(),
+        },
+        next,
+    ))
+}
+
+/// Whether a `[`/`![` at byte `i` could still grow into a link — its bracket is
+/// unclosed, or closed but the `(url)` part is still incomplete (or could yet
+/// begin). A `[a]` followed by a non-`(` char is settled literal, not openable.
+fn link_openable(text: &str, i: usize) -> bool {
+    let open = if text[i..].starts_with('!') { i + 1 } else { i };
+    let Some((_, after_label)) = bracket_content(text, open) else {
+        return true; // bracket still open
+    };
+    match text[after_label..].chars().next() {
+        None => true, // `[label]` at end — `(` could still follow
+        Some('(') => paren_content(text, after_label).is_none(), // `(url` unclosed
+        Some(_) => false, // `[label]x` — settled, not a link
+    }
+}
+
+/// The content between a `[` at byte `i` and its matching `]` (bracket-nesting
+/// aware, backslash-escape aware), plus the byte index just past the `]`.
+fn bracket_content(text: &str, i: usize) -> Option<(&str, usize)> {
+    delimited(text, i, b'[', b']')
+}
+
+/// The content between a `(` at byte `after_label` and its matching `)`, plus the
+/// byte index just past the `)`.
+fn paren_content(text: &str, i: usize) -> Option<(&str, usize)> {
+    if !text[i..].starts_with('(') {
+        return None;
+    }
+    delimited(text, i, b'(', b')')
+}
+
+/// The content between an `open` delimiter at byte `i` and its matching `close`
+/// (depth-tracked, `\`-escape aware), plus the index past the closer. Both
+/// delimiters are ASCII, so the byte walk only ever slices on char boundaries.
+fn delimited(text: &str, i: usize, open: u8, close: u8) -> Option<(&str, usize)> {
+    let bytes = text.as_bytes();
+    let start = i + 1;
+    let mut depth = 1usize;
+    let mut j = start;
+    while j < text.len() {
+        let b = bytes[j];
+        if b == b'\\' {
+            j += 2; // skip the escaped byte
+            continue;
+        }
+        if b == open {
+            depth += 1;
+        } else if b == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some((&text[start..j], j + 1));
+            }
+        }
+        j += 1;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_inline_keeps_plain_text_as_one_node() {
+        assert_eq!(
+            parse_inline("just plain text"),
+            vec![Inline::Text("just plain text".into())]
+        );
+        assert_eq!(parse_inline(""), vec![]);
+    }
+
+    #[test]
+    fn parse_inline_splits_bold_italic_strike() {
+        use Inline::{Bold, Italic, Strike, Text};
+        assert_eq!(
+            parse_inline("a **b** c"),
+            vec![
+                Text("a ".into()),
+                Bold(vec![Text("b".into())]),
+                Text(" c".into())
+            ]
+        );
+        assert_eq!(
+            parse_inline("*i* x"),
+            vec![Italic(vec![Text("i".into())]), Text(" x".into())]
+        );
+        assert_eq!(parse_inline("~~s~~"), vec![Strike(vec![Text("s".into())])]);
+        // Bold wins over italic on `**`.
+        assert_eq!(parse_inline("__b__"), vec![Bold(vec![Text("b".into())])]);
+    }
+
+    #[test]
+    fn parse_inline_handles_code_links_images() {
+        use Inline::{Code, Image, Link, Text};
+        assert_eq!(
+            parse_inline("run `x = 1` now"),
+            vec![
+                Text("run ".into()),
+                Code("x = 1".into()),
+                Text(" now".into())
+            ]
+        );
+        assert_eq!(
+            parse_inline("[docs](https://x.com)"),
+            vec![Link {
+                text: vec![Text("docs".into())],
+                url: "https://x.com".into()
+            }]
+        );
+        assert_eq!(
+            parse_inline("![alt text](https://img.png)"),
+            vec![Image {
+                alt: "alt text".into()
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_inline_leaves_unclosed_or_literal_markers_as_text() {
+        // Unclosed markers stay literal.
+        assert_eq!(parse_inline("a **b"), vec![Inline::Text("a **b".into())]);
+        assert_eq!(parse_inline("`open"), vec![Inline::Text("`open".into())]);
+        // Intraword underscores (snake_case) are not emphasis.
+        assert_eq!(
+            parse_inline("call foo_bar_baz()"),
+            vec![Inline::Text("call foo_bar_baz()".into())]
+        );
+        // A `*` flanked by spaces (multiplication) is not emphasis.
+        assert_eq!(
+            parse_inline("2 * 3 = 6"),
+            vec![Inline::Text("2 * 3 = 6".into())]
+        );
+    }
+
+    #[test]
+    fn parse_inline_nests_emphasis() {
+        use Inline::{Bold, Italic, Text};
+        assert_eq!(
+            parse_inline("**bold _and italic_**"),
+            vec![Bold(vec![
+                Text("bold ".into()),
+                Italic(vec![Text("and italic".into())]),
+            ])]
+        );
+    }
+
+    #[test]
+    fn has_open_inline_flags_unsettled_trailing_lines() {
+        // An unclosed delimiter could still restyle earlier text → withhold.
+        assert!(has_open_inline("a **b"));
+        assert!(has_open_inline("run `code"));
+        assert!(has_open_inline("see ~~strike"));
+        assert!(has_open_inline("a [link"));
+        assert!(has_open_inline("a [link](htt"));
+        assert!(has_open_inline("start *em"));
+        // Settled lines (closed, or no real openers) are safe to stream per row.
+        assert!(!has_open_inline("a **b** c"));
+        assert!(!has_open_inline("plain prose here"));
+        assert!(!has_open_inline("2 * 3 = 6"));
+        assert!(!has_open_inline("foo_bar_baz"));
+        assert!(!has_open_inline("[link](url) done"));
+        assert!(!has_open_inline(""));
+    }
 
     #[test]
     fn table_delimiter_parses_per_column_alignment() {
