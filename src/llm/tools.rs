@@ -8,7 +8,8 @@
 //! - the **argument** structs and their JSON parse ([`BashArgs`] etc.);
 //! - the **edit engine** ([`apply_edit`]) — exact `old_string`→`new_string`
 //!   replacement, Claude-Code's contract;
-//! - the **read formatter** ([`format_read`]) — `cat -n`-style numbered lines;
+//! - the **read formatter** ([`format_read`]) — numbered lines in the same
+//!   `{n:>W} {text}` gutter format as the write/edit bodies;
 //! - a small line **diff** ([`diff_lines`]) driving the `(+A −D)` summaries and
 //!   the diff-coloured cells;
 //! - the header **summaries** ([`summarize_call`], [`display_name`]) and the
@@ -427,10 +428,15 @@ pub fn apply_edit(
     }
 }
 
-/// Format a file's contents as `cat -n`-style numbered lines for the `read`
-/// tool, honouring a 1-based `offset` and a line `limit`. The number is
-/// right-aligned in a 6-column field then a tab, so line contents align.
-/// Returns a placeholder note when the range is empty (offset past EOF).
+/// Format a file's contents as numbered lines for the `read` tool, honouring a
+/// 1-based `offset` and a line `limit`. Each line is `{n:>W} {text}` — the
+/// number right-aligned to the widest one shown, a single space, then the text
+/// — the **same** gutter format as the `write`/`edit` bodies
+/// ([`render_numbered_content`]/[`render_numbered_diff`]). So the model reads
+/// consistent numbering it can cite back to `edit`, and the TUI renders `read`
+/// and `write`/`edit` as one numbered, syntax-highlighted cell
+/// (`ui::file_cell_lines`). Returns a placeholder note when the range is empty
+/// (offset past EOF).
 #[must_use]
 pub fn format_read(content: &str, offset: Option<usize>, limit: Option<usize>) -> String {
     let start = offset.unwrap_or(1).max(1); // 1-based
@@ -446,10 +452,14 @@ pub fn format_read(content: &str, offset: Option<usize>, limit: Option<usize>) -
         );
     }
     let end = start.saturating_add(limit).min(all.len() + 1);
+    // Right-align every number to the last (largest) one shown, so the gutter
+    // is exactly as wide as it needs to be — the same rule as the write/edit
+    // body, and what lets the two render identically.
+    let width = (end - 1).max(1).to_string().len();
     let mut out = String::new();
     for (i, line) in all[start - 1..end - 1].iter().enumerate() {
         let n = start + i;
-        out.push_str(&format!("{n:>6}\t{line}\n"));
+        out.push_str(&format!("{n:>width$} {line}\n"));
     }
     // Drop the trailing newline so the block ends cleanly.
     if out.ends_with('\n') {
@@ -919,14 +929,34 @@ mod tests {
 
     #[test]
     fn format_read_numbers_lines_from_one() {
+        // The same gutter format as the write/edit body: `{n:>W} {text}`, the
+        // number right-aligned to the widest shown, a single space, no tab —
+        // so the TUI renders read and write as one numbered, highlighted cell.
         let out = format_read("alpha\nbeta\ngamma", None, None);
-        assert_eq!(out, "     1\talpha\n     2\tbeta\n     3\tgamma");
+        assert_eq!(out, "1 alpha\n2 beta\n3 gamma");
+    }
+
+    #[test]
+    fn format_read_right_aligns_numbers_to_the_widest() {
+        let content: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+        let out = format_read(&content, None, None);
+        assert!(out.starts_with(" 1 line 1\n"), "single digits pad: {out}");
+        assert!(out.contains("\n10 line 10\n"), "two digits flush: {out}");
+        assert!(out.ends_with("\n12 line 12"), "got {out}");
     }
 
     #[test]
     fn format_read_honours_offset_and_limit() {
         let out = format_read("a\nb\nc\nd\ne", Some(2), Some(2));
-        assert_eq!(out, "     2\tb\n     3\tc");
+        assert_eq!(out, "2 b\n3 c");
+    }
+
+    #[test]
+    fn format_read_width_follows_the_last_line_number_shown() {
+        // A window ending at a 3-digit line pads every shown number to 3.
+        let content: String = (1..=120).map(|i| format!("l{i}\n")).collect();
+        let out = format_read(&content, Some(99), Some(2));
+        assert_eq!(out, " 99 l99\n100 l100");
     }
 
     #[test]

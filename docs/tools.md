@@ -191,13 +191,20 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 
 ## Rendering (codex's `diff_render`, in the `⎿` gutter)
 
-`read`/`bash` cells render like any tool: the coloured `● Read(path)` /
-`● Bash(cmd)` header + the dim `⎿` output peek (`docs/shell-command.md`'s gutter).
+A `bash` cell renders like any tool: the coloured `● Bash(cmd)` header + the dim
+`⎿` output peek (`docs/shell-command.md`'s gutter).
 
-A `write`/`edit` cell whose output is the numbered format above renders as the
-**codex/Claude-Code file cell** (`ui::file_cell_lines`):
+A `read`/`write`/`edit` cell whose output is the numbered format above renders as
+the **codex/Claude-Code file cell** (`ui::file_cell_lines`):
 
 ```
+● Read(index.html)
+  ⎿ Read 254 lines
+      1 <!DOCTYPE html>
+      2 <html lang="en">
+      …
+    … +244 lines (ctrl+o to expand)
+
 ● Write(index.html)
   ⎿ Created index.html (254 lines)
       1 <!DOCTYPE html>
@@ -216,13 +223,20 @@ A `write`/`edit` cell whose output is the numbered format above renders as the
      16 +   <span>Bruce Rivero</span>
 ```
 
-- The dim summary head sits on the `⎿` corner row, its `(+A -D)` counts
-  coloured green/red (codex's header counts — `file_summary_spans`).
+- The dim summary head sits on the `⎿` corner row: `Read {N} lines`,
+  `Created {path} ({N} lines)`, or `Updated {path} (+A -D)` with the `(+A -D)`
+  counts coloured green/red (codex's header counts — `file_summary_spans`). A
+  `read` cell has no head in its output, so `ui::parse_file_cell` synthesizes
+  the `Read {N} lines` line.
 - Body rows re-style the output's own gutter text: the right-aligned **line
-  number** dim, the `+`/`-` **sign** green/red, and the content
-  **syntax-highlighted** by the path's extension (`highlight::Highlighter`,
-  the fenced-code palette — the extension comes from the cell's `args`, and
-  the lexer state resets at each `⋮` gap like codex's per-hunk highlighting).
+  number** dim, the `+`/`-` **sign** green/red (a `read`/`created` body has no
+  sign column), and the content **syntax-highlighted** by the path's extension
+  (`highlight::Highlighter`, the fenced-code palette — the extension comes from
+  the cell's `args`, and the lexer state resets at each `⋮` gap like codex's
+  per-hunk highlighting). Because `format_read` now emits the **same**
+  `{n:>W} {text}` gutter as the write/edit bodies (dynamic-width numbers, a
+  single space — not the old fixed-width `cat -n` tab), all three parse and
+  render identically.
 - **Added rows** sit on a dark-green background tint and **removed rows**
   (their text dimmed) on a dark-red one — codex's dark-theme
   `#213A2B`/`#4A221D` tints — both padded to the full width like the
@@ -236,9 +250,10 @@ A `write`/`edit` cell whose output is the numbered format above renders as the
 
 All the styling is centralized `TOOL_DIFF_*`/`FILE_PEEK_LINES` consts in
 `ui.rs`. Output that **doesn't** parse as the numbered format — a rollout
-recorded before this format existed, or an error body — falls back to the
-legacy colouring (a line starting `+` green, `-` red, the rest dim), so old
-sessions keep rendering sensibly.
+recorded before this format existed, an error body, or a `read` placeholder
+like `(file is empty)` / offset-past-end — falls back to the legacy rendering
+(the `write`/`edit` first-char `+`/`-` colouring, or a `read`'s plain dim
+peek), so old sessions and edge cases keep rendering sensibly.
 
 ## Known limitations (v1)
 

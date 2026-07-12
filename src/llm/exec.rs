@@ -427,8 +427,8 @@ mod tests {
         let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
         std::fs::remove_file(&path).ok();
         assert!(out.ok);
-        assert!(out.output.contains("     1\talpha"), "got {}", out.output);
-        assert!(out.output.contains("     2\tbeta"));
+        assert!(out.output.contains("1 alpha"), "got {}", out.output);
+        assert!(out.output.contains("2 beta"));
     }
 
     #[test]

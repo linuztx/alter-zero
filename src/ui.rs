@@ -2409,28 +2409,55 @@ fn parse_file_row(line: &str, signed: bool) -> Option<FileRow> {
     }
 }
 
-/// Parse a `write`/`edit` cell's output as a numbered file change: the raw
-/// summary head line (`Created …`/`Updated …`) and the parsed body rows.
-/// `None` when the cell isn't a finished file tool or the output isn't in the
-/// `llm::tools` gutter format — the caller keeps the legacy rendering.
+/// Parse a `read`/`write`/`edit` cell's output as a numbered file change: the
+/// summary head line for the `⎿` corner and the parsed body rows. A
+/// `write`/`edit` cell carries its head in the output (`Created …`/`Updated
+/// …`) over a signed (edit) or unsigned (created) body; a `read` cell has
+/// **no** head — its whole output is unsigned numbered content, so the
+/// `Read N lines` summary is synthesized here. `None` when the cell isn't a
+/// finished file tool or the output isn't in the `llm::tools` gutter format (a
+/// placeholder like `(file is empty)`, an old rollout, an error body) — the
+/// caller keeps the legacy rendering.
 fn parse_file_cell(tool: &ToolCall) -> Option<(String, Vec<FileRow>)> {
-    if tool.shell
-        || tool.status == ToolStatus::Running
-        || !DIFF_TOOL_NAMES.contains(&tool.name.as_str())
-    {
+    if tool.shell || tool.status == ToolStatus::Running {
         return None;
     }
     let lines = tool_output_lines(tool);
-    let (head, body) = lines.split_first()?;
-    let signed = if head.starts_with("Updated ") {
-        true
-    } else if head.starts_with("Created ") {
-        false
-    } else {
-        return None;
-    };
-    let rows: Option<Vec<FileRow>> = body.iter().map(|l| parse_file_row(l, signed)).collect();
-    Some((head.clone(), rows?))
+    match tool.name.as_str() {
+        "Read" => {
+            if lines.is_empty() {
+                return None;
+            }
+            // Every line must parse as a numbered content row; a placeholder
+            // (`(file is empty)`, offset-past-end) doesn't, and falls back.
+            let rows: Vec<FileRow> = lines
+                .iter()
+                .map(|l| parse_file_row(l, false))
+                .collect::<Option<_>>()?;
+            if !rows.iter().all(|r| matches!(r, FileRow::Numbered { .. })) {
+                return None;
+            }
+            let n = lines.len();
+            let head = format!("Read {n} line{}", if n == 1 { "" } else { "s" });
+            Some((head, rows))
+        }
+        "Write" | "Edit" => {
+            let (head, body) = lines.split_first()?;
+            let signed = if head.starts_with("Updated ") {
+                true
+            } else if head.starts_with("Created ") {
+                false
+            } else {
+                return None;
+            };
+            let rows: Vec<FileRow> = body
+                .iter()
+                .map(|l| parse_file_row(l, signed))
+                .collect::<Option<_>>()?;
+            Some((head.clone(), rows))
+        }
+        _ => None,
+    }
 }
 
 /// The highlight language for a file cell — the extension of the path in the
@@ -2535,8 +2562,8 @@ fn numbered_row_lines(
         .collect()
 }
 
-/// Build the styled `⎿` block for a `write`/`edit` cell whose output is the
-/// numbered `llm::tools` format — codex's diff look in the existing gutter:
+/// Build the styled `⎿` block for a `read`/`write`/`edit` cell whose output is
+/// the numbered `llm::tools` format — codex's file look in the existing gutter:
 /// the dim summary head (its `(+A -D)` counts coloured) on the corner row,
 /// then every body row via [`numbered_row_lines`], the `⋮` hunk gaps and `…`
 /// notes dim. `peek` caps the body at [`FILE_PEEK_LINES`] display rows (whole
@@ -5279,6 +5306,85 @@ mod tests {
             .find(|s| s.content.as_ref() == "\"hi\"")
             .expect("string segment");
         assert_eq!(s.style.fg, Some(CODE_STRING_COLOR), "string coloured");
+    }
+
+    #[test]
+    fn read_cell_shows_numbered_syntax_highlighted_rows() {
+        // A `read` cell renders like a `write`: the `Read N lines` summary on
+        // the corner, then dim right-aligned line numbers with the content
+        // syntax-highlighted by the path's extension — no diff sign or tint.
+        let output = "1 def main():\n2     return 42";
+        let lines = tool_lines(&tool("Read", "app.py", ToolStatus::Ok, output), 80);
+        assert_eq!(plain(&lines[0]), "● Read(app.py)");
+        assert_eq!(plain(&lines[1]), "  ⎿ Read 2 lines");
+        let row = &lines[2];
+        assert_eq!(plain(row), "    1 def main():");
+        let num = &row.spans[1];
+        assert_eq!(num.content.as_ref(), "1 ");
+        assert_eq!(num.style.fg, Some(TOOL_DIM_COLOR), "line number is dim");
+        let kw = row
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "def")
+            .expect("keyword segment");
+        assert_eq!(kw.style.fg, Some(CODE_KEYWORD_COLOR));
+        let lit = lines[3]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "42")
+            .expect("number literal");
+        assert_eq!(lit.style.fg, Some(CODE_NUMBER_COLOR));
+        assert!(
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .all(|s| s.style.bg.is_none()),
+            "a read cell carries no diff background tint"
+        );
+    }
+
+    #[test]
+    fn read_cell_peek_caps_at_file_peek_lines_with_the_expand_hint() {
+        let body: String = (1..=30)
+            .map(|i| format!("{i:>2} row {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = tool_lines(&tool("Read", "big.txt", ToolStatus::Ok, &body), 80);
+        // header + summary + FILE_PEEK_LINES rows + the hint.
+        assert_eq!(lines.len(), 2 + FILE_PEEK_LINES + 1);
+        assert!(
+            plain(lines.last().unwrap())
+                .contains(&format!("+{} lines{EXPAND_HINT}", 30 - FILE_PEEK_LINES))
+        );
+    }
+
+    #[test]
+    fn read_cell_full_view_shows_every_row_uncapped() {
+        let body: String = (1..=30)
+            .map(|i| format!("{i:>2} row {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let lines = tool_full_lines(&tool("Read", "big.txt", ToolStatus::Ok, &body), 80);
+        assert_eq!(lines.len(), 2 + 30, "header + summary + every row");
+        assert!(plain(lines.last().unwrap()).contains("30 row 30"));
+    }
+
+    #[test]
+    fn read_cell_placeholder_output_falls_back_to_a_plain_peek() {
+        // The `(file is empty)` / offset-past-end placeholders aren't numbered,
+        // so the cell keeps the plain dim peek (no numbering, no crash).
+        let lines = tool_lines(
+            &tool("Read", "x.txt", ToolStatus::Ok, "(file x.txt is empty)"),
+            80,
+        );
+        assert_eq!(plain(&lines[0]), "● Read(x.txt)");
+        assert!(plain(&lines[1]).contains("(file x.txt is empty)"));
+        assert!(
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .all(|s| s.style.bg.is_none())
+        );
     }
 
     #[test]

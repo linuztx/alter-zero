@@ -614,15 +614,18 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   edit engine (`llm::tools`), the streamed `tool_calls` accumulator
   (`llm::openai::ToolCallAccumulator`), and the loop itself — are unit-tested;
   the executor's file/process I/O is boundary code. Tools are on by default,
-  off via `INLINE_TUI_TOOLS`. An `edit`/`write` cell renders its output as a
-  **numbered file change** (codex's `diff_render` look in the `⎿` gutter —
+  off via `INLINE_TUI_TOOLS`. A `read`/`edit`/`write` cell renders its output as
+  a **numbered file change** (codex's `diff_render` look in the `⎿` gutter —
   `ui.rs`'s `file_cell_lines`): the executor emits `Created {path} ({N} lines)`
-  over the numbered contents, or `Updated {path} (+A -D)` over numbered diff
+  over the numbered contents, `Updated {path} (+A -D)` over numbered diff
   **hunks** (3 context lines, `⋮` between distant hunks — the pure
-  `tools::render_numbered_content`/`render_numbered_diff`), and the cell
-  re-styles those rows — dim line numbers, green/red signs, the content
+  `tools::render_numbered_content`/`render_numbered_diff`), or — for `read` —
+  the file numbered by `tools::format_read` in the **same** `{n:>W} {text}`
+  gutter (dynamic-width numbers + a space, not the old `cat -n` tab; the UI
+  synthesizes the `Read {N} lines` corner). The cell re-styles those rows — dim
+  line numbers, green/red signs (`read`/`created` have none), the content
   syntax-highlighted by the path's extension, added/removed rows on
   dark-green/red background tints (`TOOL_DIFF_*_BG`), a 10-row inline peek
   (`FILE_PEEK_LINES`) with the `… +N lines` hint, everything in Ctrl+O;
-  unparseable output (old rollouts, error bodies) keeps the legacy first-char
-  `+`/`-` colouring.
+  unparseable output (old rollouts, error bodies, a `read` placeholder) keeps
+  the legacy rendering.
