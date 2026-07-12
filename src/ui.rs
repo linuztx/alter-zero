@@ -125,6 +125,14 @@ const INLINE_CODE_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
 /// A link's URL, shown as ` (url)` after its text — blue and underlined.
 const LINK_URL_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
 
+// --- List and blockquote styling (docs/markdown.md). Bullets keep `-`, ordered
+// items keep `N.` in an accent colour; a blockquote's `>` and text render dim.
+// Continuation rows hang under the item's text. ---
+/// The accent colour of an ordered list's `N.`/`N)` marker.
+const LIST_MARKER_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+/// A blockquote's `>` marker and text — dim, so a quote reads as secondary.
+const QUOTE_COLOR: Color = TOOL_DIM_COLOR;
+
 // Syntax-highlight palette (One Dark) — `highlight::Kind` → colour, mapped here
 // so all styling stays centralized in `ui.rs` (the tokenizer is colour-agnostic).
 /// Keywords — magenta.
@@ -1801,8 +1809,13 @@ impl AssistantRenderer {
                 .collect()
         } else if is_thematic_break(line, was_blank) {
             // Codex renders `---`/`***`/`___` as an unstyled `———` rule on its own
-            // row (`Event::Rule`). A single settled row, so prefix-stable.
+            // row (`Event::Rule`). A single settled row, so prefix-stable. Checked
+            // before lists so `- - -` / `* * *` stay rules, not bullets.
             vec![vec![Span::raw(THEMATIC_BREAK.to_string())]]
+        } else if let Some(inner) = markdown::block_quote(line) {
+            self.render_block_quote(inner)
+        } else if let Some(item) = markdown::list_item(line) {
+            self.render_list_item(&item)
         } else {
             // Plain prose: parse inline `**bold**`/`*italic*`/`~~strike~~`/
             // `` `code` ``/`[link](url)` into styled spans, then span-preserving
@@ -1812,6 +1825,62 @@ impl AssistantRenderer {
             let segs = inline_spans(&markdown::parse_inline(line), Style::default());
             wrap_inline(&segs, self.content_width)
         }
+    }
+
+    /// Render a list item (`docs/markdown.md`): the nesting indent, then the
+    /// marker (`-` for bullets, an accent-coloured `N.` for ordered items), then
+    /// the inline-parsed content span-wrapped with a **hanging indent** — every
+    /// continuation row aligns under the text, not the marker. Line-local, so
+    /// prefix-stable.
+    fn render_list_item(&self, item: &markdown::ListItem) -> Vec<Vec<Span<'static>>> {
+        let (marker_text, marker_style) = match item.marker {
+            markdown::ListMarker::Bullet => ("- ".to_string(), Style::default()),
+            markdown::ListMarker::Ordered(n, delim) => {
+                (format!("{n}{delim} "), Style::new().fg(LIST_MARKER_COLOR))
+            }
+        };
+        let hang = item.indent + cols(&marker_text);
+        let text_w = (self.content_width as usize).saturating_sub(hang).max(1) as u16;
+        let text_rows = wrap_inline(
+            &inline_spans(&markdown::parse_inline(item.content), Style::default()),
+            text_w,
+        );
+        text_rows
+            .into_iter()
+            .enumerate()
+            .map(|(i, mut text)| {
+                let mut row = Vec::new();
+                if i == 0 {
+                    if item.indent > 0 {
+                        row.push(Span::raw(" ".repeat(item.indent)));
+                    }
+                    row.push(Span::styled(marker_text.clone(), marker_style));
+                } else {
+                    row.push(Span::raw(" ".repeat(hang))); // hang under the text
+                }
+                row.append(&mut text);
+                row
+            })
+            .collect()
+    }
+
+    /// Render a blockquote (`docs/markdown.md`): a dim `> ` marker on every
+    /// wrapped row, the inline-parsed text dim. Line-local, so prefix-stable.
+    fn render_block_quote(&self, inner: &str) -> Vec<Vec<Span<'static>>> {
+        let marker = "> ";
+        let text_w = (self.content_width as usize)
+            .saturating_sub(cols(marker))
+            .max(1) as u16;
+        let base = Style::new().fg(QUOTE_COLOR);
+        let text_rows = wrap_inline(&inline_spans(&markdown::parse_inline(inner), base), text_w);
+        text_rows
+            .into_iter()
+            .map(|mut text| {
+                let mut row = vec![Span::styled(marker.to_string(), base)];
+                row.append(&mut text);
+                row
+            })
+            .collect()
     }
 
     /// Run the GFM-table state machine for a prose `line` (`docs/markdown.md`):
@@ -4618,6 +4687,7 @@ impl StreamRender {
             || markdown::is_partial_fence(tail_src)
             || markdown::is_partial_thematic_break(tail_src)
             || markdown::is_partial_heading(tail_src)
+            || markdown::is_partial_list_marker(tail_src)
             || markdown::has_open_inline(tail_src)
         {
             let stable = self.frozen.len();
@@ -5077,6 +5147,62 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn assistant_renders_bullet_and_ordered_lists() {
+        // Bullets keep the `-`, ordered items keep `N.`, and nesting indent
+        // survives (the earlier wrap_text-collapses-whitespace bug).
+        let text = "- first\n- second\n  - nested\n\n1. one\n2. two";
+        let rows: Vec<String> = message_lines(Role::Assistant, text, 40)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                "● - first",
+                "  - second",
+                "    - nested",
+                "  ",
+                "  1. one",
+                "  2. two",
+            ]
+        );
+    }
+
+    #[test]
+    fn ordered_list_number_is_colored() {
+        let lines = message_lines(Role::Assistant, "1. item", 40);
+        let num = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("1."))
+            .expect("the ordered marker span");
+        assert_eq!(num.style.fg, Some(LIST_MARKER_COLOR));
+    }
+
+    #[test]
+    fn assistant_renders_blockquote() {
+        let rows: Vec<String> = message_lines(Role::Assistant, "> quoted text", 40)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(rows, vec!["● > quoted text"]);
+    }
+
+    #[test]
+    fn list_item_wraps_with_a_hanging_indent() {
+        // A long bullet wraps under the text, not back to the marker column.
+        let rows: Vec<String> = message_lines(Role::Assistant, "- alpha beta gamma delta", 12)
+            .iter()
+            .map(plain)
+            .collect();
+        // content width 10: "- " marker leaves 8 for text.
+        assert_eq!(
+            rows,
+            vec!["● - alpha", "    beta", "    gamma", "    delta"]
+        );
     }
 
     #[test]
@@ -7420,6 +7546,16 @@ mod tests {
             "compute 2 * 3 and read foo_bar_baz then stop\ndone",
             // A strikethrough and inline code together, then a closing paragraph.
             "~~removed~~ and `kept` values differ\n\nsummary paragraph after a blank",
+            // --- Lists & blockquotes (docs/markdown.md): line-local, so frozen
+            // rows never restyle; the streamed commits must match batch at every
+            // prefix/width, incl. the `-`-vs-partial-thematic-break handoff, the
+            // hanging-indent wraps, and list text with inline emphasis. ---
+            "- first item\n- second item\n  - nested item\ndone",
+            "1. one\n2. two\n10. ten\ntail",
+            "> a quoted line\n> continued quote\n\nafter the quote",
+            "- a bullet with **bold** and `code` that wraps over rows\n- next item",
+            "intro\n\n- [x] done task\n- [ ] pending task\n\nafter",
+            "* star bullet\n+ plus bullet\ndone",
         ];
 
         for full in corpus {

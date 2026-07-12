@@ -859,9 +859,163 @@ fn delimited(text: &str, i: usize, open: u8, close: u8) -> Option<(&str, usize)>
     None
 }
 
+// --- List items and blockquotes (`docs/markdown.md`). Both are **line-local**
+// (classified by the line's own prefix), so a complete line's rendering is final
+// — prefix-stable while streaming, no holdback needed. [`crate::ui`] styles the
+// marker and hangs the wrapped continuation under the text. ---
+
+/// A list item's marker: a `-`/`*`/`+` bullet, or an ordered `N.`/`N)` number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListMarker {
+    /// `-`, `*`, or `+` (all rendered as a single bullet).
+    Bullet,
+    /// `N.` or `N)` — the number and its `.`/`)` delimiter.
+    Ordered(u64, char),
+}
+
+/// A parsed list item: its leading indent (nesting), marker, and the text after
+/// the marker (leading spaces trimmed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListItem<'a> {
+    /// Leading spaces before the marker — the nesting indent, kept on render.
+    pub indent: usize,
+    /// The bullet or ordered marker.
+    pub marker: ListMarker,
+    /// The item's content (inline-parsed and hang-wrapped by the renderer).
+    pub content: &'a str,
+}
+
+/// If `line` is a list item — after ≤3 leading spaces, a `-`/`*`/`+` bullet or an
+/// `N.`/`N)` ordered marker **followed by a space** (or nothing) — return its
+/// parts. A marker with no following space (`-x`, `1.x`) is prose; a bare `---`
+/// is a thematic break (its marker isn't space-separated), and 4+ spaces of
+/// indent is code. The caller checks [`thematic_break`] first, so `- - -` / `* * *`
+/// stay rules.
+#[must_use]
+pub fn list_item(line: &str) -> Option<ListItem<'_>> {
+    let trimmed = line.trim_start_matches(' ');
+    let indent = line.len() - trimmed.len();
+    if indent > 3 {
+        return None; // 4+ spaces is indented code
+    }
+    let first = trimmed.chars().next()?;
+    if matches!(first, '-' | '*' | '+') {
+        return list_content(&trimmed[1..]).map(|content| ListItem {
+            indent,
+            marker: ListMarker::Bullet,
+            content,
+        });
+    }
+    let digits: usize = trimmed.chars().take_while(char::is_ascii_digit).count();
+    if (1..=9).contains(&digits) {
+        let after = &trimmed[digits..];
+        let delim = after.chars().next()?;
+        if matches!(delim, '.' | ')') {
+            let num = trimmed[..digits].parse().ok()?;
+            return list_content(&after[1..]).map(|content| ListItem {
+                indent,
+                marker: ListMarker::Ordered(num, delim),
+                content,
+            });
+        }
+    }
+    None
+}
+
+/// The content after a list marker: `Some(text)` when what follows is empty or
+/// begins with a space (a real marker), `None` otherwise (`-x` is prose). Leading
+/// spaces are trimmed off the content.
+fn list_content(after_marker: &str) -> Option<&str> {
+    if after_marker.is_empty() {
+        return Some("");
+    }
+    after_marker
+        .strip_prefix(' ')
+        .map(|rest| rest.trim_start_matches(' '))
+}
+
+/// Whether `line` is a *partial* ordered-list marker — after ≤3 leading spaces, a
+/// bare run of 1–9 ASCII digits and nothing else. Such a line renders as prose
+/// now, but a following `.`/`)` would flip it into an ordered-list marker
+/// (recolouring the digits and, at a narrow width, collapsing their wrapped rows
+/// into one marker span) — so the streaming committer withholds it, exactly like
+/// [`is_partial_heading`]. A bullet's `-`/`*` is already covered by
+/// [`is_partial_thematic_break`]; `+` renders atomically, so neither needs this.
+#[must_use]
+pub fn is_partial_list_marker(line: &str) -> bool {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return false; // 4+ spaces is indented code
+    }
+    (1..=9).contains(&trimmed.len()) && trimmed.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// If `line` is a blockquote — after ≤3 leading spaces, a `>` — return its inner
+/// text (one optional space after the `>` stripped). A nested `> >` yields the
+/// inner `> …`, which the renderer shows as quoted text.
+#[must_use]
+pub fn block_quote(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 {
+        return None;
+    }
+    let rest = trimmed.strip_prefix('>')?;
+    Some(rest.strip_prefix(' ').unwrap_or(rest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn list_item_detects_bullets_and_ordered() {
+        let b = list_item("- hello").unwrap();
+        assert_eq!(b.indent, 0);
+        assert_eq!(b.marker, ListMarker::Bullet);
+        assert_eq!(b.content, "hello");
+        let n = list_item("  2) world").unwrap();
+        assert_eq!(n.indent, 2);
+        assert_eq!(n.marker, ListMarker::Ordered(2, ')'));
+        assert_eq!(n.content, "world");
+        assert_eq!(list_item("* star").unwrap().marker, ListMarker::Bullet);
+        assert_eq!(
+            list_item("10. ten").unwrap().marker,
+            ListMarker::Ordered(10, '.')
+        );
+        // Task-list items are ordinary bullets whose `[x]` stays literal text.
+        assert_eq!(list_item("- [x] done").unwrap().content, "[x] done");
+    }
+
+    #[test]
+    fn list_item_rejects_non_lists() {
+        assert!(list_item("---").is_none(), "thematic break, not a list");
+        assert!(list_item("1.no space").is_none());
+        assert!(list_item("-nospace").is_none());
+        assert!(list_item("    - too indented").is_none(), "4-space is code");
+        assert!(list_item("plain").is_none());
+    }
+
+    #[test]
+    fn is_partial_list_marker_flags_bare_digit_runs() {
+        assert!(is_partial_list_marker("1"));
+        assert!(is_partial_list_marker("10"));
+        assert!(is_partial_list_marker("  3"));
+        assert!(!is_partial_list_marker("1."), "a settled ordered marker");
+        assert!(!is_partial_list_marker("1 x"), "prose");
+        assert!(!is_partial_list_marker(""));
+        assert!(!is_partial_list_marker("    5"), "4-space indent is code");
+        assert!(!is_partial_list_marker("abc"));
+    }
+
+    #[test]
+    fn block_quote_strips_the_marker() {
+        assert_eq!(block_quote("> quoted"), Some("quoted"));
+        assert_eq!(block_quote(">no space"), Some("no space"));
+        assert_eq!(block_quote(">"), Some(""));
+        assert_eq!(block_quote("  > indented"), Some("indented"));
+        assert_eq!(block_quote("not a quote"), None);
+        assert_eq!(block_quote("    > code"), None, "4-space is code");
+    }
 
     #[test]
     fn parse_inline_keeps_plain_text_as_one_node() {
