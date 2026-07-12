@@ -109,6 +109,13 @@ fn is_thematic_break(line: &str, prev_blank: bool) -> bool {
     }
 }
 
+// --- Markdown table styling (docs/markdown.md). A GFM pipe table renders as a
+// box-drawing grid: dim borders, bold header cells. The block is held back until
+// complete — a later row can widen a column, so a table is not prefix-stable
+// (see `AssistantRenderer`/`StreamRender`). ---
+/// Dim colour of a table's box-drawing borders (`│ ─ ┌┬┐ ├┼┤ └┴┘`).
+const TABLE_BORDER_COLOR: Color = TOOL_DIM_COLOR;
+
 // Syntax-highlight palette (One Dark) — `highlight::Kind` → colour, mapped here
 // so all styling stays centralized in `ui.rs` (the tokenizer is colour-agnostic).
 /// Keywords — magenta.
@@ -1298,6 +1305,130 @@ fn code_content_rows(segments: &[(String, Color)], width: u16) -> Vec<Vec<Span<'
     rows
 }
 
+/// Render a buffered GFM pipe table into box-drawing content rows
+/// (`docs/markdown.md`). `lines[0]` is the header row, `lines[1]` the delimiter
+/// (its column count and [`markdown::Alignment`]s govern the grid) and `lines[2..]`
+/// the data rows. Column widths are each column's widest cell, shrunk to fit
+/// `width` when the natural grid overflows (cells then truncated with `…`).
+/// Borders render dim, header cells bold. A table is emitted **whole** — a later
+/// row can widen a column, so it is not prefix-stable and [`AssistantRenderer`]
+/// holds it back until it closes.
+fn table_content_rows(lines: &[String], width: u16) -> Vec<Vec<Span<'static>>> {
+    let aligns: Vec<markdown::Alignment> = lines
+        .get(1)
+        .and_then(|l| markdown::table_delimiter(l))
+        .unwrap_or_default();
+    if aligns.is_empty() {
+        return Vec::new(); // not a confirmed table (never reached in practice)
+    }
+    let ncols = aligns.len();
+
+    // Every row normalised to exactly `ncols` cells (pad short rows, drop extra).
+    let fit_row = |line: &str| -> Vec<String> {
+        let cells = markdown::table_cells(line);
+        (0..ncols)
+            .map(|i| cells.get(i).cloned().unwrap_or_default())
+            .collect()
+    };
+    let header = lines
+        .first()
+        .map_or_else(|| vec![String::new(); ncols], |l| fit_row(l));
+    let data: Vec<Vec<String>> = lines.iter().skip(2).map(|l| fit_row(l)).collect();
+
+    // Natural column widths = widest cell (header + data), at least one column.
+    let mut col_w = vec![1usize; ncols];
+    for row in std::iter::once(&header).chain(&data) {
+        for (i, cell) in row.iter().enumerate() {
+            col_w[i] = col_w[i].max(cols(cell));
+        }
+    }
+    shrink_table_columns(&mut col_w, width as usize);
+
+    let border = Style::new().fg(TABLE_BORDER_COLOR);
+    // A border row: `left` + per-column `─`×(w+2) joined by `mid`, then `right`.
+    let border_row = |left: char, mid: char, right: char| -> Vec<Span<'static>> {
+        let mut s = String::new();
+        s.push(left);
+        for (i, &w) in col_w.iter().enumerate() {
+            if i > 0 {
+                s.push(mid);
+            }
+            s.extend(std::iter::repeat_n('─', w + 2));
+        }
+        s.push(right);
+        vec![Span::styled(s, border)]
+    };
+    // A content row: `│`-separated cells, each single-space-margined and
+    // aligned/truncated to its column width. `cell_style` bolds the header.
+    let content_row = |row: &[String], cell_style: Style| -> Vec<Span<'static>> {
+        let mut spans = vec![Span::styled("│".to_string(), border)];
+        for (i, cell) in row.iter().enumerate() {
+            let body = pad_table_cell(cell, col_w[i], aligns[i]);
+            spans.push(Span::styled(format!(" {body} "), cell_style));
+            spans.push(Span::styled("│".to_string(), border));
+        }
+        spans
+    };
+
+    let mut rows = Vec::with_capacity(data.len() + 4);
+    rows.push(border_row('┌', '┬', '┐'));
+    rows.push(content_row(
+        &header,
+        Style::new().add_modifier(Modifier::BOLD),
+    ));
+    rows.push(border_row('├', '┼', '┤'));
+    for r in &data {
+        rows.push(content_row(r, Style::new()));
+    }
+    rows.push(border_row('└', '┴', '┘'));
+    rows
+}
+
+/// Fit `text` to `w` display columns (truncating with a trailing `…` when it
+/// overflows), then pad it to `w` per `align` for a table cell.
+fn pad_table_cell(text: &str, w: usize, align: markdown::Alignment) -> String {
+    let body = if cols(text) <= w {
+        text.to_string()
+    } else if w == 0 {
+        String::new()
+    } else {
+        let mut s = truncate_cols(text, w - 1);
+        s.push('…');
+        s
+    };
+    let pad = w.saturating_sub(cols(&body));
+    let (left, right) = match align {
+        markdown::Alignment::Right => (pad, 0),
+        markdown::Alignment::Center => (pad / 2, pad - pad / 2),
+        markdown::Alignment::Left | markdown::Alignment::None => (0, pad),
+    };
+    format!("{}{body}{}", " ".repeat(left), " ".repeat(right))
+}
+
+/// Shrink `col_w` in place until the full grid — `1 + Σ(w+2) + (ncols-1)` border
+/// and padding columns — fits `avail`, always trimming the widest column first
+/// and never below one column. Best-effort: if every column is already at the
+/// floor the grid may still overflow (unavoidable at tiny widths).
+fn shrink_table_columns(col_w: &mut [usize], avail: usize) {
+    let overhead = 1 + 3 * col_w.len(); // `│`×(n+1) plus two pad spaces × n
+    loop {
+        let total = col_w.iter().sum::<usize>() + overhead;
+        if total <= avail {
+            return;
+        }
+        let widest = col_w
+            .iter()
+            .enumerate()
+            .filter(|&(_, &w)| w > 1)
+            .max_by_key(|&(_, &w)| w)
+            .map(|(i, _)| i);
+        match widest {
+            Some(i) => col_w[i] -= 1,
+            None => return, // every column already at the floor
+        }
+    }
+}
+
 /// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`):
 /// [`markdown::parse_blocks`] splits prose from fenced code; prose word-wraps via
 /// [`wrap_text`] (ATX headings keep their `#`s and style per level, codex-style)
@@ -1318,6 +1449,10 @@ fn assistant_lines(text: &str, width: u16, bullet: &str, color: Color) -> Vec<Li
     for line in text.split('\n') {
         rows.extend(renderer.feed_line(line));
     }
+    // Flush a trailing table (one the reply ended on, with no closing line) — its
+    // rows were buffered pending a close that never came. The streaming
+    // `StreamRender::finish` flushes the same way, so the two never disagree.
+    rows.extend(renderer.flush());
     // Trim trailing blank rows (a model's `…\n\n` before a tool call, say): the
     // caller adds exactly one spacer, so trailing blanks would stack. Skipped
     // when the reply ends inside an open code fence — its blank lines are
@@ -1389,6 +1524,26 @@ struct AssistantRenderer {
     /// Whether the previous source line was blank — the gate that lets a `-` rule
     /// (`---`, ambiguous with a setext underline) render as an em-dash break.
     prev_blank: bool,
+    /// In-progress GFM table accumulation (`docs/markdown.md`). A table is not
+    /// prefix-stable — a later row can widen a column — so its source lines are
+    /// buffered here and rendered **whole** only when the block closes (a
+    /// non-table line, a code fence, or end-of-message via [`Self::flush`]).
+    table: TableState,
+}
+
+/// The [`AssistantRenderer`]'s GFM-table accumulator. A candidate header is held
+/// in `PendingHeader` until the next line confirms it (a matching
+/// [`markdown::table_delimiter`]) — the one-line lookahead a pipe table needs —
+/// then rows accumulate in `Active` until a non-table line closes the block.
+#[derive(Clone)]
+enum TableState {
+    /// Not inside a table.
+    None,
+    /// A row that *looks* like a table header, buffered pending its delimiter.
+    PendingHeader(String),
+    /// A confirmed table: `lines[0]` header, `lines[1]` delimiter, `lines[2..]`
+    /// data rows accumulated so far.
+    Active { lines: Vec<String> },
 }
 
 impl AssistantRenderer {
@@ -1401,6 +1556,7 @@ impl AssistantRenderer {
             highlighter: None,
             emitted_any: false,
             prev_blank: true, // start-of-message is a blank boundary
+            table: TableState::None,
         }
     }
 
@@ -1421,68 +1577,146 @@ impl AssistantRenderer {
     fn content_rows(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
         // Track blank-line boundaries for the `-` thematic-break gate below. This
         // mirrors the scanner's own `prev_blank` (used for indented code) but is
-        // kept here because the rule decision lives in this Prose branch, like
+        // kept here because the rule decision lives in the prose branch, like
         // headings.
         let was_blank = self.prev_blank;
         self.prev_blank = line.trim().is_empty();
         match self.scanner.classify(line) {
             markdown::LineKind::CodeStart(lang) => {
-                // The fence opens the block silently: it primes highlighting for
-                // the info-string language but emits no row (no gutter, no label).
+                // A fence can't sit inside a table, so it closes any in-progress
+                // one first; then it opens the block silently (primes highlighting
+                // for the info-string language, emits no row — no gutter, no label).
+                let out = self.flush_table();
                 self.highlighter = Some(highlight::Highlighter::new(lang.as_deref()));
-                Vec::new()
+                out
             }
             markdown::LineKind::CodeEnd => {
                 self.highlighter = None;
                 Vec::new()
             }
-            markdown::LineKind::Code => {
-                // Expand tabs to spaces first so tab-indented code (Go, Makefiles)
-                // keeps its indentation — a tab is zero-width and would collapse.
-                let expanded = expand_code_tabs(line);
-                let segs = match self.highlighter.as_mut() {
-                    Some(h) => h.line(&expanded),
-                    None => vec![highlight::Seg {
-                        text: expanded.into_owned(),
-                        kind: highlight::Kind::Plain,
-                    }],
-                };
-                let colored: Vec<(String, Color)> = segs
-                    .into_iter()
-                    .map(|s| (s.text, code_kind_color(s.kind)))
-                    .collect();
-                code_content_rows(&colored, self.content_width)
-            }
-            markdown::LineKind::Prose => {
-                if let Some((level, htext)) = markdown::heading_level(line) {
-                    // Codex keeps the `#` markers visible (`"#".repeat(level)`) and
-                    // styles the whole line per level — no colour, just modifiers.
-                    // We normalise the marker run + a single space like codex does,
-                    // then word-wrap the reconstructed heading.
-                    let style = heading_style(level);
-                    let hashes = "#".repeat(level as usize);
-                    let content = if htext.is_empty() {
-                        hashes
-                    } else {
-                        format!("{hashes} {htext}")
-                    };
-                    wrap_text(&content, self.content_width)
-                        .into_iter()
-                        .map(|l| vec![Span::styled(l, style)])
-                        .collect()
-                } else if is_thematic_break(line, was_blank) {
-                    // Codex renders `---`/`***`/`___` as an unstyled `———` rule on
-                    // its own row (`Event::Rule`). It's a single settled row, so
-                    // it stays prefix-stable while streaming.
-                    vec![vec![Span::raw(THEMATIC_BREAK.to_string())]]
+            // A code line never arrives with a table open (a fence flushed it, or
+            // the blank before indented code did), so no flush is needed here.
+            markdown::LineKind::Code => self.render_code_line(line),
+            markdown::LineKind::Prose => self.prose_or_table(line, was_blank),
+        }
+    }
+
+    /// Render a fenced/indented **code** line: tabs expanded so indentation
+    /// survives, syntax-highlighted by the open fence's language (plain for an
+    /// indented block), hard-broken on width.
+    fn render_code_line(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
+        let expanded = expand_code_tabs(line);
+        let segs = match self.highlighter.as_mut() {
+            Some(h) => h.line(&expanded),
+            None => vec![highlight::Seg {
+                text: expanded.into_owned(),
+                kind: highlight::Kind::Plain,
+            }],
+        };
+        let colored: Vec<(String, Color)> = segs
+            .into_iter()
+            .map(|s| (s.text, code_kind_color(s.kind)))
+            .collect();
+        code_content_rows(&colored, self.content_width)
+    }
+
+    /// Render a **non-table** prose line: an ATX heading (markers kept, styled per
+    /// level — codex parity), a thematic break (`———`), or word-wrapped plain
+    /// prose. Pure per-line, so it stays prefix-stable.
+    fn render_prose_line(&self, line: &str, was_blank: bool) -> Vec<Vec<Span<'static>>> {
+        if let Some((level, htext)) = markdown::heading_level(line) {
+            // Codex keeps the `#` markers visible (`"#".repeat(level)`) and styles
+            // the whole line per level — no colour, just modifiers. Normalise the
+            // marker run + a single space, then word-wrap the reconstructed heading.
+            let style = heading_style(level);
+            let hashes = "#".repeat(level as usize);
+            let content = if htext.is_empty() {
+                hashes
+            } else {
+                format!("{hashes} {htext}")
+            };
+            wrap_text(&content, self.content_width)
+                .into_iter()
+                .map(|l| vec![Span::styled(l, style)])
+                .collect()
+        } else if is_thematic_break(line, was_blank) {
+            // Codex renders `---`/`***`/`___` as an unstyled `———` rule on its own
+            // row (`Event::Rule`). A single settled row, so prefix-stable.
+            vec![vec![Span::raw(THEMATIC_BREAK.to_string())]]
+        } else {
+            wrap_text(line, self.content_width)
+                .into_iter()
+                .map(|l| vec![Span::raw(l)])
+                .collect()
+        }
+    }
+
+    /// Run the GFM-table state machine for a prose `line` (`docs/markdown.md`):
+    /// buffer a candidate header, confirm it against the next line's delimiter,
+    /// accumulate rows, and flush the finished table when a non-table line closes
+    /// it — recursing to render that closing line in place. Returns the rows to
+    /// emit now (empty while a row is being buffered).
+    fn prose_or_table(&mut self, line: &str, was_blank: bool) -> Vec<Vec<Span<'static>>> {
+        match std::mem::replace(&mut self.table, TableState::None) {
+            TableState::None => {
+                if markdown::is_table_row(line) {
+                    self.table = TableState::PendingHeader(line.to_string());
+                    Vec::new()
                 } else {
-                    wrap_text(line, self.content_width)
-                        .into_iter()
-                        .map(|l| vec![Span::raw(l)])
-                        .collect()
+                    self.render_prose_line(line, was_blank)
+                }
+            }
+            TableState::PendingHeader(header) => {
+                let ncols = markdown::table_cells(&header).len();
+                if markdown::table_delimiter(line).is_some_and(|a| a.len() == ncols) {
+                    // Header + a matching delimiter → a confirmed table.
+                    self.table = TableState::Active {
+                        lines: vec![header, line.to_string()],
+                    };
+                    Vec::new()
+                } else {
+                    // Not a table — the buffered header was ordinary prose (a line
+                    // with pipes is never a heading or rule, so `was_blank` is moot),
+                    // then process the current line (it may start a fresh table).
+                    let mut out = self.render_prose_line(&header, false);
+                    out.extend(self.prose_or_table(line, was_blank));
+                    out
+                }
+            }
+            TableState::Active { mut lines } => {
+                if markdown::is_table_row(line) {
+                    lines.push(line.to_string());
+                    self.table = TableState::Active { lines };
+                    Vec::new()
+                } else {
+                    // A non-table line closes the block: render the whole table,
+                    // then process the closing line in place.
+                    let mut out = table_content_rows(&lines, self.content_width);
+                    out.extend(self.prose_or_table(line, was_blank));
+                    out
                 }
             }
         }
+    }
+
+    /// Emit any buffered table as finished rows, clearing the accumulator — called
+    /// when a code fence closes an in-progress table (and by [`Self::flush`] at
+    /// end-of-message). A never-confirmed `PendingHeader` renders as the plain
+    /// prose line it actually was.
+    fn flush_table(&mut self) -> Vec<Vec<Span<'static>>> {
+        match std::mem::replace(&mut self.table, TableState::None) {
+            TableState::None => Vec::new(),
+            TableState::PendingHeader(header) => self.render_prose_line(&header, false),
+            TableState::Active { lines } => table_content_rows(&lines, self.content_width),
+        }
+    }
+
+    /// Flush any buffered table at end-of-message, stamping bullet/indent. Both
+    /// the batch [`assistant_lines`] and the streaming [`StreamRender::finish`]
+    /// call this, so a trailing table (one with no closing line) still renders.
+    fn flush(&mut self) -> Vec<Line<'static>> {
+        let rows = self.flush_table();
+        self.stamp(rows)
     }
 
     /// Whether the **next** line to be fed sits inside an open fenced code block.
@@ -1492,6 +1726,14 @@ impl AssistantRenderer {
     /// streaming committer uses this to withhold an in-progress code line whole.
     fn in_code(&self) -> bool {
         self.highlighter.is_some()
+    }
+
+    /// Whether an in-progress table is buffered (a `PendingHeader` or `Active`
+    /// block). Its rows are held back — a later row can widen a column, so the
+    /// block is not prefix-stable — so [`StreamRender`] withholds the trailing
+    /// line while this holds, exactly like [`Self::in_code`].
+    fn in_table(&self) -> bool {
+        !matches!(self.table, TableState::None)
     }
 
     /// Stamp the bullet (first row of the message) or `INDENT` (every later row)
@@ -4193,12 +4435,19 @@ impl StreamRender {
         //  - a **bare `#` run** (1–6 hashes): its heading *level* — and so its
         //    style — isn't settled (another `#` deepens it, a 7th flips it to
         //    prose), so at a width narrower than the run its wrapped rows must
-        //    not reach scrollback yet.
+        //    not reach scrollback yet; and
+        //  - a **table** being buffered (`in_table`), or a trailing line that is a
+        //    fresh table-row candidate (`is_table_row`): a later row can widen a
+        //    column, so the whole block is held back and committed at once when it
+        //    closes (`docs/markdown.md`). Its rows aren't in `frozen` yet, so this
+        //    branch commits only the settled pre-table rows.
         // Otherwise it's settled prose — only its still-growing *last* row is held
         // back. `tail_rows` (an O(one line) render) is computed only in that case,
         // never in the withhold path where it would be discarded.
         let tail_src = &text[self.consumed..];
         if self.renderer.in_code()
+            || self.renderer.in_table()
+            || markdown::is_table_row(tail_src)
             || markdown::is_partial_fence(tail_src)
             || markdown::is_partial_thematic_break(tail_src)
             || markdown::is_partial_heading(tail_src)
@@ -4251,7 +4500,10 @@ impl StreamRender {
     #[must_use]
     pub fn finish(&mut self, text: &str, width: u16) -> Vec<Line<'static>> {
         self.advance(text, width);
-        let tail = self.renderer.feed_line(&text[self.consumed..]);
+        let mut tail = self.renderer.feed_line(&text[self.consumed..]);
+        // Flush a table the reply ended on (its rows were buffered pending a close
+        // that never came), matching `assistant_lines`'s trailing `flush`.
+        tail.extend(self.renderer.flush());
         self.consumed = text.len();
         self.frozen.extend(tail);
         if self.frozen.is_empty() {
@@ -4310,7 +4562,11 @@ impl StreamRender {
         // rendered (a trailing `` ``` `` opens a fence, so a blank before it is
         // kept, not trimmed).
         let mut clone = self.renderer.clone();
-        let tail = clone.feed_line(&text[self.consumed..]);
+        let mut tail = clone.feed_line(&text[self.consumed..]);
+        // Flush a buffered table (or pending header) on the clone so the preview
+        // matches the batch render, which flushes at end-of-message; without this
+        // the strip would show the pre-table content while a table streams.
+        tail.extend(clone.flush());
         // The last rendered row, skipping trailing blank rows so the strip shows
         // content rather than a paragraph-break blank — matching the trimmed
         // batch render. Inside a fence blank lines are content, so keep as-is.
@@ -4520,6 +4776,114 @@ mod tests {
             texts: texts.iter().map(|s| (*s).to_string()).collect(),
             images: Vec::new(),
         }
+    }
+
+    // --- markdown tables (docs/markdown.md) ---
+
+    /// The plain text of each content row (span contents concatenated).
+    fn rows_text(rows: &[Vec<Span<'static>>]) -> Vec<String> {
+        rows.iter()
+            .map(|r| r.iter().map(|s| s.content.as_ref()).collect::<String>())
+            .collect()
+    }
+
+    #[test]
+    fn table_content_rows_draws_a_bordered_grid() {
+        let lines: Vec<String> = ["| Name | Type |", "|------|------|", "| Alpha | X |"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            rows_text(&table_content_rows(&lines, 80)),
+            vec![
+                "┌───────┬──────┐",
+                "│ Name  │ Type │",
+                "├───────┼──────┤",
+                "│ Alpha │ X    │",
+                "└───────┴──────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_content_rows_aligns_per_delimiter() {
+        // Left, right, and center alignment from the delimiter colons.
+        let lines: Vec<String> = ["| a | b | c |", "| :-- | --: | :-: |", "| x | yy | zzz |"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            rows_text(&table_content_rows(&lines, 80)),
+            vec![
+                "┌───┬────┬─────┐",
+                "│ a │  b │  c  │",
+                "├───┼────┼─────┤",
+                "│ x │ yy │ zzz │",
+                "└───┴────┴─────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_content_rows_pads_short_rows_to_the_column_count() {
+        // A data row with fewer cells than the header is padded with blanks;
+        // extra cells beyond the delimiter's column count are dropped.
+        let lines: Vec<String> = ["| a | b |", "|---|---|", "| x |"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            rows_text(&table_content_rows(&lines, 80)),
+            vec![
+                "┌───┬───┐",
+                "│ a │ b │",
+                "├───┼───┤",
+                "│ x │   │",
+                "└───┴───┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn assistant_message_renders_a_table_inline() {
+        // A table inside a reply: bullet on the first row, the grid indented under
+        // it, an interior blank kept between the prose and the table.
+        let text = "Here:\n\n| Name | Type |\n|------|------|\n| Alpha | String |";
+        let rows: Vec<String> = message_lines(Role::Assistant, text, 40)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                "● Here:",
+                "  ",
+                "  ┌───────┬────────┐",
+                "  │ Name  │ Type   │",
+                "  ├───────┼────────┤",
+                "  │ Alpha │ String │",
+                "  └───────┴────────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn stream_render_withholds_a_table_until_it_closes() {
+        // A table is not prefix-stable, so nothing is committed while it is open;
+        // `finish` flushes the whole block, matching the batch render exactly.
+        let width = 40;
+        let open = "| a | b |\n|---|---|\n| 1 | 2 |"; // header + delim + a row, unclosed
+        let mut render = StreamRender::new();
+        assert!(
+            render.commit(open, width).is_empty(),
+            "an open table commits nothing to scrollback"
+        );
+        let flushed = render.finish(open, width);
+        assert_eq!(
+            flushed,
+            message_lines(Role::Assistant, open, width),
+            "finish flushes the buffered table, matching the batch render"
+        );
     }
 
     // --- wrap_text ---
@@ -6786,6 +7150,25 @@ mod tests {
             // A blank line *inside* a still-open fence at the end is content, not
             // a trailing blank — it must survive (the `!in_code` trim gate).
             "intro\n```\ncode\n\n",
+            // --- GFM tables (docs/markdown.md): a table is buffered whole and
+            // committed only when the block closes, so the streamed commits must
+            // still match the batch render at every prefix and width (incl. the
+            // column shrink at tiny widths). ---
+            // A basic table between prose.
+            "intro\n\n| Name | Type | Notes |\n|------|------|-------|\n| Alpha | String | Example row |\n| Beta | Number | Another row |\n\nafter",
+            // A table the reply ends on (no closing line) — `finish` flushes it.
+            "here is data:\n| a | b |\n|:--|--:|\n| 1 | 2 |",
+            // Per-column alignment (left/center/right), then prose closes it.
+            "| L | C | R |\n| :-- | :-: | --: |\n| x | yy | zzz |\ntail",
+            // A pipe-carrying prose line that is NOT a table (no delimiter follows):
+            // rendered as plain prose, buffered one line then flushed.
+            "use a | b pipe here\nnext line of prose",
+            // A candidate header whose delimiter column count mismatches → all prose.
+            "| a | b | c |\n|---|---|\nnot a table",
+            // A table immediately followed by a code fence (flush on CodeStart).
+            "| a | b |\n|---|---|\n| 1 | 2 |\n```\ncode\n```",
+            // A single-column table, then prose.
+            "| Item |\n|------|\n| one |\n| two |\ndone",
         ];
 
         for full in corpus {

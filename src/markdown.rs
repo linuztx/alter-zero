@@ -402,9 +402,194 @@ pub fn heading_level(line: &str) -> Option<(u8, &str)> {
     Some((hashes as u8, after.trim_start_matches(' ').trim_end()))
 }
 
+// --- GFM pipe tables (`docs/markdown.md`). A table is a header row, a
+// **delimiter row** (`|---|:-:|`), and zero+ data rows — all pipe-delimited.
+// Detection needs one line of lookahead (a header is only a header if the next
+// line is a delimiter), and a new row can widen an already-emitted column, so
+// tables are **not** prefix-stable: the renderer buffers a table block whole and
+// commits it only once it closes ([`crate::ui::AssistantRenderer`]). These pure
+// helpers do the row/delimiter parsing. ---
+
+/// Per-column text alignment a table's delimiter row declares (GFM): `:--` left,
+/// `:-:` center, `--:` right, `---` unspecified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Alignment {
+    /// No colon — the renderer left-aligns.
+    None,
+    /// `:---` — explicitly left.
+    Left,
+    /// `:--:` — centered.
+    Center,
+    /// `---:` — right-aligned.
+    Right,
+}
+
+/// The line with its ≤3 leading spaces stripped, or `None` when it is indented
+/// ≥4 columns (a leading tab or 4 spaces is indented code, never a table) — the
+/// shared indent gate for every table helper here, mirroring [`fence_marker`].
+fn table_indent(line: &str) -> Option<&str> {
+    let trimmed = line.trim_start_matches(' ');
+    if line.len() - trimmed.len() > 3 || trimmed.starts_with('\t') {
+        return None;
+    }
+    Some(trimmed.trim_end())
+}
+
+/// Whether `s` holds a `|` that is **not** backslash-escaped — the cell separator
+/// that marks a candidate table row.
+fn has_unescaped_pipe(s: &str) -> bool {
+    let mut esc = false;
+    for ch in s.chars() {
+        if esc {
+            esc = false;
+        } else if ch == '\\' {
+            esc = true;
+        } else if ch == '|' {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether `line` is a *candidate* table row — after ≤3 leading spaces, it holds
+/// an unescaped `|`. This is only a candidate: a header row becomes a real table
+/// only when the **next** line is a [`table_delimiter`] (the one-line lookahead
+/// the renderer resolves by buffering — see `docs/markdown.md`).
+#[must_use]
+pub fn is_table_row(line: &str) -> bool {
+    table_indent(line).is_some_and(has_unescaped_pipe)
+}
+
+/// Split a table row into its **trimmed, unescaped** cell texts. Optional leading
+/// and trailing pipes are dropped; interior empty cells (`a || b`) are kept; a
+/// `\|` is an escaped literal pipe inside a cell, not a separator. Returns empty
+/// for an indented-code line (never a table row).
+#[must_use]
+pub fn table_cells(line: &str) -> Vec<String> {
+    match table_indent(line) {
+        Some(body) => split_cells(body),
+        None => Vec::new(),
+    }
+}
+
+/// Split an already-indent-stripped table row body into trimmed, unescaped cells.
+fn split_cells(body: &str) -> Vec<String> {
+    let body = body.strip_prefix('|').unwrap_or(body);
+    let mut cells: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut esc = false;
+    for ch in body.chars() {
+        if esc {
+            cur.push(ch); // the escaped char, backslash dropped
+            esc = false;
+        } else if ch == '\\' {
+            esc = true;
+        } else if ch == '|' {
+            cells.push(cur.trim().to_string());
+            cur.clear();
+        } else {
+            cur.push(ch);
+        }
+    }
+    // Push the final cell unless it is the empty remainder left by a trailing
+    // pipe (the optional closing delimiter). A pipe-free single cell still counts.
+    if !cur.trim().is_empty() || cells.is_empty() {
+        cells.push(cur.trim().to_string());
+    }
+    cells
+}
+
+/// If `line` is a table **delimiter row** — after ≤3 leading spaces, an unescaped
+/// pipe plus cells each matching `:?-+:?` (dashes with optional alignment colons)
+/// — return the per-column [`Alignment`]s, else `None`. Requiring a pipe keeps a
+/// bare `---` a [`thematic_break`], not a one-column delimiter (the renderer only
+/// consults this after a candidate header, so the header supplies the column
+/// count it must match).
+#[must_use]
+pub fn table_delimiter(line: &str) -> Option<Vec<Alignment>> {
+    let body = table_indent(line)?;
+    if !has_unescaped_pipe(body) {
+        return None;
+    }
+    let cells = split_cells(body);
+    if cells.is_empty() {
+        return None;
+    }
+    let mut aligns = Vec::with_capacity(cells.len());
+    for cell in &cells {
+        let left = cell.starts_with(':');
+        let right = cell.ends_with(':');
+        let dashes = cell.strip_prefix(':').unwrap_or(cell);
+        let dashes = dashes.strip_suffix(':').unwrap_or(dashes);
+        if dashes.is_empty() || !dashes.bytes().all(|b| b == b'-') {
+            return None;
+        }
+        aligns.push(match (left, right) {
+            (true, true) => Alignment::Center,
+            (true, false) => Alignment::Left,
+            (false, true) => Alignment::Right,
+            (false, false) => Alignment::None,
+        });
+    }
+    Some(aligns)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn table_delimiter_parses_per_column_alignment() {
+        use Alignment::{Center, Left, None as NoAlign, Right};
+        assert_eq!(table_delimiter("|---|---|"), Some(vec![NoAlign, NoAlign]));
+        assert_eq!(
+            table_delimiter("|:--|:-:|--:|"),
+            Some(vec![Left, Center, Right])
+        );
+        // Surrounding pipes are optional.
+        assert_eq!(table_delimiter("--- | ---"), Some(vec![NoAlign, NoAlign]));
+        assert_eq!(table_delimiter(" | :---: | "), Some(vec![Center]));
+        // Up to three leading spaces still count (block indent rule).
+        assert_eq!(table_delimiter("   |---|"), Some(vec![NoAlign]));
+    }
+
+    #[test]
+    fn table_delimiter_rejects_non_delimiter_rows() {
+        assert_eq!(table_delimiter("| a | b |"), None, "has text");
+        assert_eq!(table_delimiter("plain"), None, "no pipes");
+        assert_eq!(table_delimiter("| -x- |"), None, "non-dash content");
+        assert_eq!(table_delimiter("|::|"), None, "no dashes");
+        assert_eq!(table_delimiter(""), None);
+        assert_eq!(table_delimiter("    |---|"), None, "4-space indent is code");
+    }
+
+    #[test]
+    fn table_cells_splits_trims_and_unescapes() {
+        assert_eq!(table_cells("| a | b | c |"), vec!["a", "b", "c"]);
+        assert_eq!(table_cells("a | b"), vec!["a", "b"], "no surrounding pipes");
+        assert_eq!(table_cells("|  x  |"), vec!["x"], "cells are trimmed");
+        assert_eq!(
+            table_cells(r"| a \| b | c |"),
+            vec!["a | b", "c"],
+            "an escaped pipe stays inside its cell, unescaped"
+        );
+    }
+
+    #[test]
+    fn is_table_row_detects_pipe_lines() {
+        assert!(is_table_row("| a | b |"));
+        assert!(is_table_row("a | b"));
+        assert!(!is_table_row("no pipes here"));
+        assert!(!is_table_row(""));
+        assert!(
+            !is_table_row(r"escaped \| only"),
+            "a lone escaped pipe is prose"
+        );
+        assert!(
+            !is_table_row("    | a |"),
+            "4-space indent is code, not a table"
+        );
+    }
 
     fn code(lang: Option<&str>, lines: &[&str]) -> Block {
         Block::Code {
