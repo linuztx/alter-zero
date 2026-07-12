@@ -191,8 +191,22 @@ const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
 const TOOL_DIFF_ADD_COLOR: Color = TOOL_OK_COLOR;
 /// Red — a removed (`-`) line in an `edit`/`write` diff cell.
 const TOOL_DIFF_DEL_COLOR: Color = TOOL_FAIL_COLOR;
-/// The model tools whose output is a diff (so its `⎿` rows are `+`/`-`
-/// coloured). A `!` shell command is never one (its output is command output).
+/// Dark-green background tint of an added row in a numbered `edit`/`write`
+/// cell (codex's dark-theme add tint): the syntax-coloured text reads over it
+/// and the row pads to the full width, like the user-message block.
+const TOOL_DIFF_ADD_BG: Color = Color::Rgb(0x21, 0x3A, 0x2B);
+/// Dark-red background tint of a removed row (codex's dark-theme delete
+/// tint); the removed text is additionally dimmed, codex-style.
+const TOOL_DIFF_DEL_BG: Color = Color::Rgb(0x4A, 0x22, 0x1D);
+/// How many numbered body rows a `write`/`edit` cell shows inline before the
+/// `… +N lines (ctrl+o to expand)` hint (Claude-Code's ~10-row Write preview;
+/// other tools keep the tighter [`TOOL_PEEK_LINES`]).
+const FILE_PEEK_LINES: usize = 10;
+/// The model tools whose output is a file change — rendered as the numbered,
+/// syntax-highlighted codex-style cell when the output is in the
+/// `llm::tools` gutter format ([`file_cell_lines`]), or with the legacy
+/// first-char `+`/`-` colouring when it isn't (old sessions, error bodies).
+/// A `!` shell command is never one (its output is command output).
 const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
 
 /// The running placeholder for a tool — the shell-vs-backend casing rule
@@ -2330,6 +2344,255 @@ fn diff_result_row(index: usize, text: String) -> Line<'static> {
     gutter_row(index, text, color)
 }
 
+/// One parsed row of a numbered `Created …`/`Updated …` body — the
+/// `llm::tools` gutter format (`{n:>W} {text}` / `{n:>W} {sign}{text}`) a
+/// `write`/`edit` cell restyles ([`file_cell_lines`]).
+enum FileRow {
+    /// A numbered content line: the raw right-aligned number `gutter`, the
+    /// diff `sign` (`None` in a `Created` body, which has no sign column),
+    /// and the content `text`.
+    Numbered {
+        gutter: String,
+        sign: Option<char>,
+        text: String,
+    },
+    /// The `⋮` gap row between diff hunks (kept raw for display).
+    Gap(String),
+    /// A note row (the `… N more lines` cap tail) — rendered dim.
+    Note(String),
+}
+
+/// Parse one body row of a numbered file cell; `signed` follows the head line
+/// (`Updated` bodies carry a `+`/`-`/space sign column, `Created` bodies
+/// don't). `None` means the row isn't in the format — the whole cell then
+/// keeps the legacy first-char diff colouring (old sessions, error bodies).
+fn parse_file_row(line: &str, signed: bool) -> Option<FileRow> {
+    let trimmed = line.trim_start_matches(' ');
+    if trimmed.starts_with('…') {
+        return Some(FileRow::Note(line.to_string()));
+    }
+    if trimmed == "⋮" {
+        return Some(FileRow::Gap(line.to_string()));
+    }
+    let indent = line.len() - trimmed.len();
+    let digits = trimmed.chars().take_while(char::is_ascii_digit).count();
+    if digits == 0 {
+        return None;
+    }
+    let gutter = line[..indent + digits].to_string();
+    let rest = &line[indent + digits..];
+    if rest.is_empty() {
+        // An empty content row whose trailing spaces something stripped.
+        return Some(FileRow::Numbered {
+            gutter,
+            sign: signed.then_some(' '),
+            text: String::new(),
+        });
+    }
+    let rest = rest.strip_prefix(' ')?;
+    if signed {
+        let sign = rest.chars().next().unwrap_or(' ');
+        if !matches!(sign, '+' | '-' | ' ') {
+            return None;
+        }
+        Some(FileRow::Numbered {
+            gutter,
+            sign: Some(sign),
+            text: rest.get(1..).unwrap_or("").to_string(),
+        })
+    } else {
+        Some(FileRow::Numbered {
+            gutter,
+            sign: None,
+            text: rest.to_string(),
+        })
+    }
+}
+
+/// Parse a `write`/`edit` cell's output as a numbered file change: the raw
+/// summary head line (`Created …`/`Updated …`) and the parsed body rows.
+/// `None` when the cell isn't a finished file tool or the output isn't in the
+/// `llm::tools` gutter format — the caller keeps the legacy rendering.
+fn parse_file_cell(tool: &ToolCall) -> Option<(String, Vec<FileRow>)> {
+    if tool.shell
+        || tool.status == ToolStatus::Running
+        || !DIFF_TOOL_NAMES.contains(&tool.name.as_str())
+    {
+        return None;
+    }
+    let lines = tool_output_lines(tool);
+    let (head, body) = lines.split_first()?;
+    let signed = if head.starts_with("Updated ") {
+        true
+    } else if head.starts_with("Created ") {
+        false
+    } else {
+        return None;
+    };
+    let rows: Option<Vec<FileRow>> = body.iter().map(|l| parse_file_row(l, signed)).collect();
+    Some((head.clone(), rows?))
+}
+
+/// The highlight language for a file cell — the extension of the path in the
+/// cell's args (`index.html` → `html`); `None` (plain text) without one.
+fn file_cell_lang(args: &str) -> Option<&str> {
+    let name = args.rsplit(['/', '\\']).next().unwrap_or(args);
+    let (stem, ext) = name.rsplit_once('.')?;
+    (!stem.is_empty() && !ext.is_empty() && !ext.contains(' ')).then_some(ext)
+}
+
+/// The dim summary head of a file cell with its `(+A -D)` counts coloured
+/// green/red (codex's header counts); all-dim when there are no counts.
+fn file_summary_spans(head: &str) -> Vec<Span<'static>> {
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    if let Some(open) = head.rfind("(+") {
+        let counts = head[open..]
+            .strip_prefix("(+")
+            .and_then(|t| t.strip_suffix(')'))
+            .and_then(|t| t.split_once(" -"));
+        if let Some((a, d)) = counts
+            && !a.is_empty()
+            && !d.is_empty()
+            && a.chars().all(|c| c.is_ascii_digit())
+            && d.chars().all(|c| c.is_ascii_digit())
+        {
+            return vec![
+                Span::styled(format!("{}(", &head[..open]), dim),
+                Span::styled(format!("+{a}"), Style::new().fg(TOOL_DIFF_ADD_COLOR)),
+                Span::styled(" ".to_string(), dim),
+                Span::styled(format!("-{d}"), Style::new().fg(TOOL_DIFF_DEL_COLOR)),
+                Span::styled(")".to_string(), dim),
+            ];
+        }
+    }
+    vec![Span::styled(head.to_string(), dim)]
+}
+
+/// Build the display rows for one numbered source row: a dim right-aligned
+/// line number, the `+`/`-` sign in the diff colour, and the content
+/// syntax-highlighted — added rows on the dark-green tint, removed rows
+/// (their text dimmed) on the dark-red one, both padded to the full width.
+/// Long content wraps ([`code_content_rows`]); continuations indent under the
+/// content column and keep the tint.
+fn numbered_row_lines(
+    gutter: &str,
+    sign: Option<char>,
+    segs: &[highlight::Seg],
+    width: u16,
+) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let indent = " ".repeat(cols(TOOL_RESULT_PREFIX));
+    let (bg, dim_content) = match sign {
+        Some('+') => (Some(TOOL_DIFF_ADD_BG), false),
+        Some('-') => (Some(TOOL_DIFF_DEL_BG), true),
+        _ => (None, false),
+    };
+    let sign_style = match sign {
+        Some('+') => Style::new().fg(TOOL_DIFF_ADD_COLOR),
+        Some('-') => Style::new().fg(TOOL_DIFF_DEL_COLOR),
+        _ => dim,
+    };
+    let with_bg = |style: Style| bg.map_or(style, |b| style.bg(b));
+
+    let number = format!("{gutter} ");
+    let gutter_cols = cols(&number) + usize::from(sign.is_some());
+    let content_width = (width as usize)
+        .saturating_sub(cols(TOOL_RESULT_PREFIX) + gutter_cols)
+        .max(1);
+
+    let segments: Vec<(String, Color)> = segs
+        .iter()
+        .map(|seg| (seg.text.clone(), code_kind_color(seg.kind)))
+        .collect();
+    code_content_rows(&segments, content_width as u16)
+        .into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            let mut spans = vec![Span::raw(indent.clone())];
+            if i == 0 {
+                spans.push(Span::styled(number.clone(), with_bg(dim)));
+                if let Some(s) = sign {
+                    spans.push(Span::styled(s.to_string(), with_bg(sign_style)));
+                }
+            } else {
+                spans.push(Span::styled(" ".repeat(gutter_cols), with_bg(Style::new())));
+            }
+            let mut row_cols = 0usize;
+            for span in row {
+                row_cols += cols(&span.content);
+                let mut style = with_bg(span.style);
+                if dim_content {
+                    style = style.add_modifier(Modifier::DIM);
+                }
+                spans.push(Span::styled(span.content.into_owned(), style));
+            }
+            let pad = content_width.saturating_sub(row_cols);
+            if bg.is_some() && pad > 0 {
+                spans.push(Span::styled(" ".repeat(pad), with_bg(Style::new())));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// Build the styled `⎿` block for a `write`/`edit` cell whose output is the
+/// numbered `llm::tools` format — codex's diff look in the existing gutter:
+/// the dim summary head (its `(+A -D)` counts coloured) on the corner row,
+/// then every body row via [`numbered_row_lines`], the `⋮` hunk gaps and `…`
+/// notes dim. `peek` caps the body at [`FILE_PEEK_LINES`] display rows (whole
+/// source rows only) and appends the `… +N lines (ctrl+o to expand)` hint.
+/// `None` when the output isn't in the format — the caller falls back to the
+/// legacy rendering. See `docs/tools.md`.
+fn file_cell_lines(tool: &ToolCall, width: u16, peek: bool) -> Option<Vec<Line<'static>>> {
+    let (head, rows) = parse_file_cell(tool)?;
+    let lang = file_cell_lang(&tool.args);
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let indent = " ".repeat(cols(TOOL_RESULT_PREFIX));
+    let note_width = (width as usize).saturating_sub(indent.len()).max(1);
+
+    let mut summary = vec![Span::styled(TOOL_RESULT_PREFIX.to_string(), dim)];
+    summary.extend(file_summary_spans(&head));
+    let mut out = vec![Line::from(summary)];
+
+    let budget = if peek { FILE_PEEK_LINES } else { usize::MAX };
+    let mut used = 0usize;
+    let mut hidden = 0usize;
+    let mut hl = highlight::Highlighter::new(lang);
+    for (i, row) in rows.iter().enumerate() {
+        let display = match row {
+            FileRow::Gap(raw) => {
+                // Hunks re-synchronize at the gap; the lexer state resets too.
+                hl = highlight::Highlighter::new(lang);
+                vec![Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(truncate_cols(raw, note_width), dim),
+                ])]
+            }
+            FileRow::Note(raw) => vec![Line::from(vec![
+                Span::raw(indent.clone()),
+                Span::styled(truncate_cols(raw, note_width), dim),
+            ])],
+            FileRow::Numbered { gutter, sign, text } => {
+                let segs = hl.line(text);
+                numbered_row_lines(gutter, *sign, &segs, width)
+            }
+        };
+        if used + display.len() > budget && used > 0 {
+            hidden = rows[i..]
+                .iter()
+                .filter(|r| matches!(r, FileRow::Numbered { .. }))
+                .count();
+            break;
+        }
+        used += display.len();
+        out.extend(display);
+    }
+    if hidden > 0 {
+        out.push(more_hint_line(hidden));
+    }
+    Some(out)
+}
+
 /// The dim `… +N lines (ctrl+o to expand)` hint under a capped peek.
 fn more_hint_line(hidden: usize) -> Line<'static> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
@@ -2398,6 +2661,16 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         };
     }
 
+    // A `write`/`edit` cell in the numbered `llm::tools` format renders
+    // codex-style — numbers, hunk gaps, tints, syntax colour
+    // ([`file_cell_lines`]); output that doesn't parse (old sessions, error
+    // bodies) falls through to the legacy first-char colouring below.
+    if let Some(body) = file_cell_lines(tool, width, true) {
+        let mut lines = vec![tool_header(tool)];
+        lines.extend(body);
+        return lines;
+    }
+
     // An `edit`/`write` diff tool: coloured header + a multi-line `⎿` peek whose
     // `+`/`-` rows are diff-coloured (the codex trick shows inline, not just in
     // the Ctrl+O view). Other backend tools keep the single collapsed peek line.
@@ -2460,6 +2733,17 @@ fn result_peek_block(
 /// gutter. An over-cap shell output ([`ToolCall::truncated`]) appends a dim
 /// [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
 fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+    // A numbered `write`/`edit` cell renders wholesale (numbers, tints,
+    // syntax colour — [`file_cell_lines`], uncapped here); everything else
+    // goes through the plain row pipeline below.
+    if let Some(body) = file_cell_lines(tool, width, false) {
+        let mut lines = vec![tool_header(tool)];
+        lines.extend(body);
+        if tool.truncated {
+            lines.push(gutter_row(1, TOOL_TRUNCATED_MARKER.to_string(), None));
+        }
+        return lines;
+    }
     let running_word = tool_running_marker(tool.shell);
     // The body hangs under the `⎿` gutter, so it wraps to the width left of it
     // (like [`result_row`]'s continuation indent) — for a backend tool too, so
@@ -4967,6 +5251,201 @@ mod tests {
                 "every wrapped -row is red"
             );
         }
+    }
+
+    #[test]
+    fn write_cell_shows_numbered_syntax_highlighted_rows() {
+        // A `Created …` body (llm::tools::render_numbered_content) renders as
+        // Claude-Code's Write preview: dim right-aligned line numbers, the
+        // content syntax-highlighted by the path's extension.
+        let output = "Created hello.py (2 lines)\n1 def main():\n2     x = \"hi\"";
+        let lines = tool_lines(&tool("Write", "hello.py", ToolStatus::Ok, output), 80);
+        assert_eq!(plain(&lines[0]), "● Write(hello.py)");
+        assert_eq!(plain(&lines[1]), "  ⎿ Created hello.py (2 lines)");
+        let row1 = &lines[2];
+        assert_eq!(plain(row1), "    1 def main():");
+        let num = &row1.spans[1];
+        assert_eq!(num.content.as_ref(), "1 ");
+        assert_eq!(num.style.fg, Some(TOOL_DIM_COLOR), "line number is dim");
+        let kw = row1
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "def")
+            .expect("keyword segment");
+        assert_eq!(kw.style.fg, Some(CODE_KEYWORD_COLOR), "keyword coloured");
+        let s = lines[3]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "\"hi\"")
+            .expect("string segment");
+        assert_eq!(s.style.fg, Some(CODE_STRING_COLOR), "string coloured");
+    }
+
+    #[test]
+    fn edit_cell_shows_numbered_hunks_with_diff_tints() {
+        // An `Updated …` body (llm::tools::render_numbered_diff) renders as
+        // codex's diff cell: numbered rows, `+` rows on the dark-green tint,
+        // `-` rows dimmed on the dark-red tint, context syntax-highlighted.
+        let output =
+            "Updated a.rs (+1 -1)\n 9  before()\n10 -let x = 1;\n10 +let x = 2;\n11  after()";
+        let lines = tool_lines(&tool("Edit", "a.rs", ToolStatus::Ok, output), 80);
+        assert_eq!(plain(&lines[1]), "  ⎿ Updated a.rs (+1 -1)");
+        let del = lines.iter().find(|l| plain(l).contains("-let")).unwrap();
+        let add = lines.iter().find(|l| plain(l).contains("+let")).unwrap();
+        let ctx = lines
+            .iter()
+            .find(|l| plain(l).contains("before()"))
+            .unwrap();
+        // The sign spans carry the diff colours…
+        let del_sign = del
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "-")
+            .unwrap();
+        assert_eq!(del_sign.style.fg, Some(TOOL_DIFF_DEL_COLOR));
+        let add_sign = add
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "+")
+            .unwrap();
+        assert_eq!(add_sign.style.fg, Some(TOOL_DIFF_ADD_COLOR));
+        // …every span past the `⎿` indent sits on the row's background tint…
+        assert!(
+            del.spans
+                .iter()
+                .skip(1)
+                .all(|s| s.style.bg == Some(TOOL_DIFF_DEL_BG)),
+            "removed row is tinted red"
+        );
+        assert!(
+            add.spans
+                .iter()
+                .skip(1)
+                .all(|s| s.style.bg == Some(TOOL_DIFF_ADD_BG)),
+            "added row is tinted green"
+        );
+        // …the added text keeps its syntax colour, the removed text is dimmed,
+        // and context rows are highlighted with no tint.
+        let add_kw = add
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "let")
+            .unwrap();
+        assert_eq!(add_kw.style.fg, Some(CODE_KEYWORD_COLOR));
+        assert!(!add_kw.style.add_modifier.contains(Modifier::DIM));
+        let del_kw = del
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "let")
+            .unwrap();
+        assert!(del_kw.style.add_modifier.contains(Modifier::DIM));
+        let ctx_fn = ctx
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "before")
+            .unwrap();
+        assert_eq!(ctx_fn.style.fg, Some(CODE_FUNCTION_COLOR));
+        assert!(ctx.spans.iter().all(|s| s.style.bg.is_none()));
+    }
+
+    #[test]
+    fn edit_cell_colours_the_summary_counts() {
+        let output = "Updated a.rs (+6 -2)\n1 +x";
+        let lines = tool_lines(&tool("Edit", "a.rs", ToolStatus::Ok, output), 80);
+        let summary = &lines[1];
+        let plus = summary
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "+6")
+            .unwrap();
+        assert_eq!(plus.style.fg, Some(TOOL_DIFF_ADD_COLOR));
+        let minus = summary
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "-2")
+            .unwrap();
+        assert_eq!(minus.style.fg, Some(TOOL_DIFF_DEL_COLOR));
+    }
+
+    #[test]
+    fn edit_cell_renders_the_hunk_gap_dim() {
+        let output = "Updated a.rs (+2 -0)\n1 +first()\n  ⋮\n9 +second()";
+        let lines = tool_full_lines(&tool("Edit", "a.rs", ToolStatus::Ok, output), 80);
+        let gap = lines
+            .iter()
+            .find(|l| plain(l).trim_end().ends_with('⋮'))
+            .expect("the ⋮ gap row is rendered");
+        assert_eq!(gap.spans.last().unwrap().style.fg, Some(TOOL_DIM_COLOR));
+    }
+
+    #[test]
+    fn write_cell_peek_caps_at_file_peek_lines_with_the_expand_hint() {
+        let body: String = (1..=30)
+            .map(|i| format!("{i:>2} line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = format!("Created big.txt (30 lines)\n{body}");
+        let lines = tool_lines(&tool("Write", "big.txt", ToolStatus::Ok, &output), 80);
+        // header + summary + FILE_PEEK_LINES numbered rows + the hint.
+        assert_eq!(lines.len(), 2 + FILE_PEEK_LINES + 1);
+        let hint = plain(lines.last().unwrap());
+        assert!(
+            hint.contains(&format!("+{} lines{EXPAND_HINT}", 30 - FILE_PEEK_LINES)),
+            "got {hint}"
+        );
+    }
+
+    #[test]
+    fn write_cell_full_view_shows_every_numbered_row() {
+        let body: String = (1..=30)
+            .map(|i| format!("{i:>2} line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = format!("Created big.txt (30 lines)\n{body}");
+        let lines = tool_full_lines(&tool("Write", "big.txt", ToolStatus::Ok, &output), 80);
+        assert_eq!(lines.len(), 2 + 30, "header + summary + every row");
+        assert!(plain(lines.last().unwrap()).contains("30 line 30"));
+    }
+
+    #[test]
+    fn file_cell_wraps_long_rows_under_the_content_column() {
+        // A long numbered row wraps (not truncates); continuations align under
+        // the content column and keep the row's tint, and no row overflows.
+        let output = format!("Updated a.rs (+1 -0)\n1 +{}", "x".repeat(60));
+        let width = 30u16;
+        let lines = tool_full_lines(&tool("Edit", "a.rs", ToolStatus::Ok, &output), width);
+        let rows: Vec<_> = lines.iter().filter(|l| plain(l).contains('x')).collect();
+        assert!(rows.len() > 1, "the 60-char row wrapped");
+        let cont = plain(rows[1]);
+        // 4 (`⎿` indent) + cols("1 +") = 7 blank columns, then the content.
+        assert!(cont.starts_with("       x"), "got {cont:?}");
+        for r in &rows {
+            assert!(
+                r.spans
+                    .iter()
+                    .skip(1)
+                    .all(|s| s.style.bg == Some(TOOL_DIFF_ADD_BG)),
+                "every wrapped row keeps the add tint"
+            );
+            assert!(cols(&plain(r)) <= width as usize);
+        }
+    }
+
+    #[test]
+    fn a_bash_cell_with_a_created_looking_output_stays_dim() {
+        // Only Write/Edit cells opt into the numbered rendering — a bash
+        // command whose output mimics the format keeps the plain dim peek.
+        let lines = tool_lines(
+            &tool("Bash", "gen", ToolStatus::Ok, "Created x (1 line)\n1 hi"),
+            80,
+        );
+        assert!(
+            lines
+                .iter()
+                .flat_map(|l| l.spans.iter())
+                .all(|s| s.style.bg.is_none()),
+            "no diff tint on a bash cell"
+        );
     }
 
     #[test]

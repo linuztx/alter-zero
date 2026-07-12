@@ -240,24 +240,32 @@ fn run_edit(arguments: &str) -> ToolOutcome {
     ))
 }
 
-/// The model-facing summary of a `write`/`edit`: a `Created …`/`Updated …`
-/// header with the `(+A −D)` counts, and — for a change to existing content —
-/// the diff body (the `+`/`-` rows the TUI colours). A brand-new file just
-/// reports its line count (no point echoing the content the model just wrote).
+/// The model-facing result of a `write`/`edit` — also exactly what the cell
+/// shows (the TUI restyles the rows; see `docs/tools.md`). A brand-new file is
+/// a `Created {path} ({N} lines)` head over the numbered contents
+/// ([`tools::render_numbered_content`]); a change to existing content is an
+/// `Updated {path} (+A -D)` head over the numbered diff hunks
+/// ([`tools::render_numbered_diff`]). The numbers match the `read` tool's, so
+/// the model can cite them in a follow-up `edit`.
 fn describe_change(path: &str, old: &str, new: &str, created: bool) -> String {
     let diff = tools::diff_lines(old, new);
-    let summary = tools::diff_summary(diff.added, diff.removed);
     if created {
         let lines = new.lines().count();
-        return format!(
-            "Created {path} ({lines} line{}) {summary}",
+        let head = format!(
+            "Created {path} ({lines} line{})",
             if lines == 1 { "" } else { "s" }
         );
+        let body = tools::render_numbered_content(new);
+        if body.is_empty() {
+            return head;
+        }
+        return format!("{head}\n{body}");
     }
     if diff.added == 0 && diff.removed == 0 {
         return format!("No changes to {path}");
     }
-    let body = tools::render_diff(&diff);
+    let summary = tools::diff_summary(diff.added, diff.removed);
+    let body = tools::render_numbered_diff(&diff);
     format!("Updated {path} {summary}\n{body}")
 }
 
@@ -444,6 +452,10 @@ mod tests {
         assert_eq!(written, "one\ntwo\n");
         assert!(out.output.starts_with("Created"), "got {}", out.output);
         assert!(out.output.contains("2 lines"));
+        // The body echoes the new file as numbered lines (the TUI's preview
+        // and the model's reference for follow-up edits).
+        assert!(out.output.contains("1 one"), "got {}", out.output);
+        assert!(out.output.contains("2 two"));
     }
 
     #[test]
@@ -457,8 +469,9 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert!(out.ok);
         assert!(out.output.starts_with("Updated"), "got {}", out.output);
-        assert!(out.output.contains("-old"));
-        assert!(out.output.contains("+new"));
+        // The diff body carries line numbers (codex's numbered hunks).
+        assert!(out.output.contains("2 -old"), "got {}", out.output);
+        assert!(out.output.contains("2 +new"));
     }
 
     #[test]
@@ -476,7 +489,7 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert!(out.ok);
         assert_eq!(after, "let x = 42;\nlet y = 2;\n");
-        assert!(out.output.contains("+let x = 42;"));
+        assert!(out.output.contains("1 +let x = 42;"), "got {}", out.output);
     }
 
     #[test]

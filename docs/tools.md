@@ -40,8 +40,8 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 | --- | --- | --- |
 | `bash` | `command` (req), `timeout_ms` (opt, default 30 000, cap 600 000) | `sh -c command`, stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
 | `read` | `path` (req), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file, return `cat -n`-style numbered lines (so the model can cite line numbers to `edit`) |
-| `write` | `path` (req), `content` (req) | create parent dirs, write the file; report a `(+N −M)` diff vs the previous content |
-| `edit` | `path` (req), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; report the diff |
+| `write` | `path` (req), `content` (req) | create parent dirs, write the file; report `Created {path} ({N} lines)` over the numbered contents for a new file, or the numbered diff hunks vs the previous content |
+| `edit` | `path` (req), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; report `Updated {path} (+A -D)` over the numbered diff hunks |
 
 `read`/`write`/`edit` are separate JSON tools rather than one `apply_patch`
 grammar: they work on any function-calling model, and `edit`'s exact
@@ -144,10 +144,18 @@ cores in `llm::tools`:
   `Exit code: N` + the (truncated) output; a non-zero exit resolves the cell red.
 - **`read`** — reads the file, applies `offset`/`limit`, formats numbered lines
   (`format_read`, pure), byte-caps the result.
-- **`write`** — creates parent dirs, writes, returns `Wrote N lines to <path>` +
-  the `(+A −D)` diff vs the old content (pure `unified_diff`).
-- **`edit`** — the pure `apply_edit` engine does the exact replacement and returns
-  the new content + a diff; the executor writes it back.
+- **`write`** — creates parent dirs, writes, returns `describe_change`: a brand-new
+  file is a `Created <path> (N lines)` head over the **numbered contents**
+  (`render_numbered_content` — `{n:>W} {text}` rows, the numbers matching `read`'s
+  so the model can cite them to `edit`); overwriting is reported like an edit.
+- **`edit`** — the pure `apply_edit` engine does the exact replacement; the
+  executor writes it back and reports `Updated <path> (+A -D)` over the
+  **numbered diff hunks** (`render_numbered_diff` — only each change run plus
+  `DIFF_CONTEXT_LINES` (3) context lines each side, touching runs merged, distant
+  hunks separated by a `⋮` gap row; `{n:>W} {sign}{text}` rows — context/added
+  lines numbered by the *new* file, removed by the *old*, codex's
+  `diff_render` numbering). Both bodies cap at `DIFF_MAX_LINES` with a
+  `… N more lines` tail.
 
 Every failure is returned as a **non-ok `ToolOutcome`** with a human/model-readable
 message (never a panic) — the model sees the error string as the tool result and
@@ -181,15 +189,56 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 
 (It reads the proxy CA from `SSL_CERT_FILE`/`INLINE_TUI_CA_FILE` like the app.)
 
-## Rendering (codex's diff trick)
+## Rendering (codex's `diff_render`, in the `⎿` gutter)
 
 `read`/`bash` cells render like any tool: the coloured `● Read(path)` /
 `● Bash(cmd)` header + the dim `⎿` output peek (`docs/shell-command.md`'s gutter).
-`write`/`edit` cells additionally get **diff colouring**: an output line starting
-with `+` is green, `-` is red (the rest dim), so an edit reads as a real diff in
-both the collapsed peek and the Ctrl+O expansion — codex's `diff_render` look,
-adapted to the existing `⎿` gutter. The colours are centralized `TOOL_DIFF_*`
-consts in `ui.rs`.
+
+A `write`/`edit` cell whose output is the numbered format above renders as the
+**codex/Claude-Code file cell** (`ui::file_cell_lines`):
+
+```
+● Write(index.html)
+  ⎿ Created index.html (254 lines)
+      1 <!DOCTYPE html>
+      2 <html lang="en">
+      …
+    … +244 lines (ctrl+o to expand)
+
+● Edit(index.html)
+  ⎿ Updated index.html (+2 -2)
+      5     <meta name="viewport" …>
+      6 -   <title>Portfolio</title>
+      6 +   <title>Bruce Rivero</title>
+      7     <link rel="stylesheet" …>
+        ⋮
+     16 -   <span>Portfolio</span>
+     16 +   <span>Bruce Rivero</span>
+```
+
+- The dim summary head sits on the `⎿` corner row, its `(+A -D)` counts
+  coloured green/red (codex's header counts — `file_summary_spans`).
+- Body rows re-style the output's own gutter text: the right-aligned **line
+  number** dim, the `+`/`-` **sign** green/red, and the content
+  **syntax-highlighted** by the path's extension (`highlight::Highlighter`,
+  the fenced-code palette — the extension comes from the cell's `args`, and
+  the lexer state resets at each `⋮` gap like codex's per-hunk highlighting).
+- **Added rows** sit on a dark-green background tint and **removed rows**
+  (their text dimmed) on a dark-red one — codex's dark-theme
+  `#213A2B`/`#4A221D` tints — both padded to the full width like the
+  user-message block. Context rows carry no tint. The `⋮` gap and `…` note
+  rows stay dim.
+- Long rows **wrap** (`code_content_rows`), continuations indented under the
+  content column, keeping colour and tint.
+- The **inline peek** shows the first `FILE_PEEK_LINES` (10) body rows (whole
+  source rows only) then the `… +N lines (ctrl+o to expand)` hint; the Ctrl+O
+  transcript shows everything.
+
+All the styling is centralized `TOOL_DIFF_*`/`FILE_PEEK_LINES` consts in
+`ui.rs`. Output that **doesn't** parse as the numbered format — a rollout
+recorded before this format existed, or an error body — falls back to the
+legacy colouring (a line starting `+` green, `-` red, the rest dim), so old
+sessions keep rendering sensibly.
 
 ## Known limitations (v1)
 

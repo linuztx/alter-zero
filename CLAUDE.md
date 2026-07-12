@@ -615,4 +615,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`llm::openai::ToolCallAccumulator`), and the loop itself — are unit-tested;
   the executor's file/process I/O is boundary code. Tools are on by default,
   off via `INLINE_TUI_TOOLS`. An `edit`/`write` cell renders its output as a
-  diff (green `+` / red `-` rows in the `⎿` gutter — `ui.rs`'s `TOOL_DIFF_*`).
+  **numbered file change** (codex's `diff_render` look in the `⎿` gutter —
+  `ui.rs`'s `file_cell_lines`): the executor emits `Created {path} ({N} lines)`
+  over the numbered contents, or `Updated {path} (+A -D)` over numbered diff
+  **hunks** (3 context lines, `⋮` between distant hunks — the pure
+  `tools::render_numbered_content`/`render_numbered_diff`), and the cell
+  re-styles those rows — dim line numbers, green/red signs, the content
+  syntax-highlighted by the path's extension, added/removed rows on
+  dark-green/red background tints (`TOOL_DIFF_*_BG`), a 10-row inline peek
+  (`FILE_PEEK_LINES`) with the `… +N lines` hint, everything in Ctrl+O;
+  unparseable output (old rollouts, error bodies) keeps the legacy first-char
+  `+`/`-` colouring.

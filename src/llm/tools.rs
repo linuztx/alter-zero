@@ -587,33 +587,111 @@ pub fn diff_summary(added: usize, removed: usize) -> String {
     format!("(+{added} -{removed})")
 }
 
-/// Render a diff as prefixed text (`+`/`-`/space), capped at [`DIFF_MAX_LINES`]
-/// with a trailing `… (+A −D total)` note when it overflows. This is the
-/// `output` sent back to the model *and* shown in the cell (the TUI colours the
-/// `+`/`-` rows — see `ui.rs`).
-#[must_use]
-pub fn render_diff(diff: &Diff) -> String {
+/// How many unchanged context lines a numbered diff body shows around each
+/// change run (git's and codex's default), the runs merged into one hunk when
+/// their context ranges touch.
+pub const DIFF_CONTEXT_LINES: usize = 3;
+
+/// Render numbered gutter rows — `(line number, rest)` pairs, a `None` number
+/// for the `⋮` hunk-gap row — right-aligning every number to the widest one
+/// shown, capped at [`DIFF_MAX_LINES`] rows with a `… N more lines` tail note.
+/// The shared body format of [`render_numbered_content`] (`{n:>W} {text}`) and
+/// [`render_numbered_diff`] (`{n:>W} {sign}{text}`): what the model reads back
+/// *and* what the TUI re-styles into the codex-look cell (`ui::tool_lines`).
+fn render_gutter_rows(rows: &[(Option<usize>, String)]) -> String {
+    let shown = &rows[..rows.len().min(DIFF_MAX_LINES)];
+    let width = shown
+        .iter()
+        .filter_map(|(no, _)| *no)
+        .max()
+        .unwrap_or(1)
+        .to_string()
+        .len();
     let mut out = String::new();
-    for line in diff.lines.iter().take(DIFF_MAX_LINES) {
-        let rendered = match line {
-            DiffLine::Context(t) => format!(" {t}"),
-            DiffLine::Add(t) => format!("+{t}"),
-            DiffLine::Remove(t) => format!("-{t}"),
-        };
-        out.push_str(&rendered);
-        out.push('\n');
+    for (no, rest) in shown {
+        match no {
+            Some(n) => out.push_str(&format!("{n:>width$} {rest}\n")),
+            None => out.push_str(&format!("{:>width$} {rest}\n", "")),
+        }
     }
-    if diff.lines.len() > DIFF_MAX_LINES {
-        out.push_str(&format!(
-            "… {} more diff lines {}\n",
-            diff.lines.len() - DIFF_MAX_LINES,
-            diff_summary(diff.added, diff.removed)
-        ));
+    let hidden = rows[shown.len()..]
+        .iter()
+        .filter(|(no, _)| no.is_some())
+        .count();
+    if hidden > 0 {
+        out.push_str(&format!("… {hidden} more lines\n"));
     }
     if out.ends_with('\n') {
         out.pop();
     }
     out
+}
+
+/// Render a brand-new file's contents as numbered lines (`{n:>W} {text}`,
+/// Claude-Code's `Write` preview) — the body under the `Created …` head.
+/// Capped like the diff body; empty content renders as an empty string.
+#[must_use]
+pub fn render_numbered_content(content: &str) -> String {
+    let rows: Vec<(Option<usize>, String)> = content
+        .lines()
+        .enumerate()
+        .map(|(i, line)| (Some(i + 1), line.to_string()))
+        .collect();
+    render_gutter_rows(&rows)
+}
+
+/// Render a diff as numbered hunks (codex's `diff_render` body): only the
+/// change runs plus [`DIFF_CONTEXT_LINES`] of context each side, touching runs
+/// merged, distant hunks separated by a `⋮` gap row. Each row is
+/// `{n:>W} {sign}{text}` — sign `+`/`-`/space — context and added lines
+/// numbered by the **new** file, removed lines by the **old** one. This is the
+/// `output` sent back to the model *and* shown in the cell (the TUI restyles
+/// the rows — see `ui.rs`).
+#[must_use]
+pub fn render_numbered_diff(diff: &Diff) -> String {
+    // Number every diff line first; remember which are changes.
+    let mut numbered: Vec<(usize, char, &str, bool)> = Vec::with_capacity(diff.lines.len());
+    let (mut old_no, mut new_no) = (1usize, 1usize);
+    for line in &diff.lines {
+        match line {
+            DiffLine::Context(t) => {
+                numbered.push((new_no, ' ', t, false));
+                old_no += 1;
+                new_no += 1;
+            }
+            DiffLine::Add(t) => {
+                numbered.push((new_no, '+', t, true));
+                new_no += 1;
+            }
+            DiffLine::Remove(t) => {
+                numbered.push((old_no, '-', t, true));
+                old_no += 1;
+            }
+        }
+    }
+    // Hunks: each change's context range, merged while the ranges touch.
+    let mut hunks: Vec<(usize, usize)> = Vec::new();
+    for (i, &(_, _, _, changed)) in numbered.iter().enumerate() {
+        if !changed {
+            continue;
+        }
+        let start = i.saturating_sub(DIFF_CONTEXT_LINES);
+        let end = (i + DIFF_CONTEXT_LINES).min(numbered.len() - 1);
+        match hunks.last_mut() {
+            Some((_, last_end)) if start <= *last_end + 1 => *last_end = (*last_end).max(end),
+            _ => hunks.push((start, end)),
+        }
+    }
+    let mut rows: Vec<(Option<usize>, String)> = Vec::new();
+    for (h, &(start, end)) in hunks.iter().enumerate() {
+        if h > 0 {
+            rows.push((None, "⋮".to_string()));
+        }
+        for &(no, sign, text, _) in &numbered[start..=end] {
+            rows.push((Some(no), format!("{sign}{text}")));
+        }
+    }
+    render_gutter_rows(&rows)
 }
 
 /// Frame a `bash` command's captured output for the model the way codex does:
@@ -932,25 +1010,115 @@ mod tests {
     }
 
     #[test]
-    fn render_diff_prefixes_lines() {
-        let d = diff_lines("keep\nold", "keep\nnew");
-        let text = render_diff(&d);
-        assert!(text.contains(" keep"), "context line kept: {text}");
-        assert!(text.contains("-old"));
-        assert!(text.contains("+new"));
+    fn numbered_content_numbers_every_line() {
+        let out = render_numbered_content("alpha\nbeta\ngamma");
+        assert_eq!(out, "1 alpha\n2 beta\n3 gamma");
     }
 
     #[test]
-    fn render_diff_caps_a_huge_diff() {
+    fn numbered_content_right_aligns_the_numbers() {
+        let content: String = (1..=12).map(|i| format!("line {i}\n")).collect();
+        let out = render_numbered_content(&content);
+        assert!(out.starts_with(" 1 line 1\n"), "got {out}");
+        assert!(out.contains("\n10 line 10\n"), "got {out}");
+    }
+
+    #[test]
+    fn numbered_content_caps_a_huge_file() {
         let big: String = (0..DIFF_MAX_LINES + 50)
-            .map(|i| format!("line{i}\n"))
+            .map(|i| format!("l{i}\n"))
+            .collect();
+        let out = render_numbered_content(&big);
+        assert_eq!(out.lines().count(), DIFF_MAX_LINES + 1);
+        assert!(
+            out.ends_with("… 50 more lines"),
+            "tail = {}",
+            &out[out.len().saturating_sub(40)..]
+        );
+    }
+
+    #[test]
+    fn numbered_diff_shows_only_the_changed_hunk_with_context() {
+        let old: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        let new = old.replace("line 10\n", "line ten\n");
+        let d = diff_lines(&old, &new);
+        let out = render_numbered_diff(&d);
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows.len(), 8, "3 ctx + del + add + 3 ctx: {out}");
+        assert_eq!(rows[0], " 7  line 7");
+        assert_eq!(rows[3], "10 -line 10");
+        assert_eq!(rows[4], "10 +line ten");
+        assert_eq!(rows[7], "13  line 13");
+        assert!(!out.contains("line 1\n"), "far context is elided");
+    }
+
+    #[test]
+    fn numbered_diff_separates_distant_hunks_with_a_gap_row() {
+        let old: String = (1..=30).map(|i| format!("line {i}\n")).collect();
+        let new = old
+            .replace("line 5\n", "line five\n")
+            .replace("line 25\n", "line twentyfive\n");
+        let d = diff_lines(&old, &new);
+        let out = render_numbered_diff(&d);
+        assert!(out.contains(" ⋮\n"), "hunks separated by a gap row: {out}");
+        assert!(!out.contains("line 15"), "the unchanged middle is elided");
+        assert!(out.contains("25 -line 25"), "second hunk numbered: {out}");
+        assert!(out.contains("25 +line twentyfive"));
+    }
+
+    #[test]
+    fn numbered_diff_merges_touching_hunks() {
+        let old: String = (1..=20).map(|i| format!("line {i}\n")).collect();
+        let new = old
+            .replace("line 8\n", "line eight\n")
+            .replace("line 11\n", "line eleven\n");
+        let d = diff_lines(&old, &new);
+        let out = render_numbered_diff(&d);
+        assert!(
+            !out.contains('⋮'),
+            "changes two context-widths apart share a hunk: {out}"
+        );
+    }
+
+    #[test]
+    fn numbered_diff_clamps_context_at_the_file_edges() {
+        let d = diff_lines("first\nb\nc\n", "FIRST\nb\nc\n");
+        let out = render_numbered_diff(&d);
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows[0], "1 -first");
+        assert_eq!(rows[1], "1 +FIRST");
+        assert_eq!(rows.last().unwrap(), &"3  c");
+    }
+
+    #[test]
+    fn numbered_diff_numbers_context_and_adds_by_the_new_file() {
+        let d = diff_lines("a\nb\n", "a\nNEW\nb\n");
+        let out = render_numbered_diff(&d);
+        let rows: Vec<&str> = out.lines().collect();
+        assert_eq!(rows, vec!["1  a", "2 +NEW", "3  b"]);
+    }
+
+    #[test]
+    fn numbered_diff_numbers_removes_by_the_old_file() {
+        let d = diff_lines("a\nGONE\nb\n", "a\nb\n");
+        let out = render_numbered_diff(&d);
+        let rows: Vec<&str> = out.lines().collect();
+        // The context after the removal continues the NEW file's numbering.
+        assert_eq!(rows, vec!["1  a", "2 -GONE", "2  b"]);
+    }
+
+    #[test]
+    fn numbered_diff_caps_a_huge_change() {
+        let big: String = (0..DIFF_MAX_LINES + 50)
+            .map(|i| format!("l{i}\n"))
             .collect();
         let d = diff_lines("", &big);
-        let text = render_diff(&d);
+        let out = render_numbered_diff(&d);
+        assert_eq!(out.lines().count(), DIFF_MAX_LINES + 1);
+        let tail = out.lines().last().unwrap();
         assert!(
-            text.contains("more diff lines"),
-            "overflow noted: tail = {}",
-            &text[text.len().saturating_sub(60)..]
+            tail.starts_with('…') && tail.contains("more lines"),
+            "tail = {tail}"
         );
     }
 
