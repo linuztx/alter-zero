@@ -357,3 +357,18 @@ flip) at widths 3–40 and asserts the committed rows are always a stable prefix
 the batch render, the final flush reconstructs it exactly, and the preview equals
 the batch's last row. It is the guardrail for every construct here — extend it,
 never weaken it, when touching the renderer.
+
+### The preview row is never also committed
+
+The strip previews the reply's **last rendered row** while the box shows the
+input. That row must be exactly the row `commit` is *withholding* from scrollback
+— otherwise a line shows twice, once in scrollback and once in the strip, until
+the next chunk supersedes it (the **slow-stream duplicate-line bug**: a chunk
+ending in `\n` completes a line, and on a slow model the gap before the next
+chunk makes the duplicate linger). So `commit` withholds the **last non-blank
+row** (`StreamRender::stable_keeping_preview_row`), not merely the still-growing
+trailing line: a just-completed line stays in the preview and only commits once
+newer content arrives (or at `finish`). `preview` then always reports an
+uncommitted row. `ui::tests::preview_never_shows_a_committed_row_while_streaming`
+drives real streaming order (commit before the draw's preview) over every prefix
+and asserts the preview is never a row already committed.

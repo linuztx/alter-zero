@@ -4703,10 +4703,41 @@ impl StreamRender {
             self.take_rows(&[], stable)
         } else {
             let tail = self.tail_rows(text);
-            let stable = (self.frozen.len() + tail.len()).saturating_sub(1);
-            let stable = self.without_trailing_blanks(&tail, stable);
+            let total = self.frozen.len() + tail.len();
+            // Withhold the **last non-blank row** (and any trailing blanks): it is
+            // the row the strip previews, so committing it the moment its line ends
+            // with a newline would show it twice — once in scrollback, once in the
+            // preview — until the next chunk (the slow-stream duplicate-line bug).
+            // It commits on a later call once newer content supersedes it, or at
+            // `finish`. During active streaming the last row is the still-growing
+            // trailing line, so this matches the old "withhold the last row".
+            let stable = self.stable_keeping_preview_row(&tail, total);
             self.take_rows(&tail, stable)
         }
+    }
+
+    /// The commit boundary that **keeps the last non-blank row for the preview**:
+    /// the index of the last non-blank row of the virtual `frozen ++ tail` (never
+    /// below `committed`). Committing `[committed, boundary)` flushes every row
+    /// *above* the one the strip previews; that row and any trailing blanks stay
+    /// withheld. This is [`without_trailing_blanks`] backed off one further row, so
+    /// a completed line is never both in scrollback and the preview at once.
+    fn stable_keeping_preview_row(&self, tail: &[Line<'static>], total: usize) -> usize {
+        let frozen_len = self.frozen.len();
+        let mut s = total;
+        while s > self.committed {
+            let row = if s - 1 < frozen_len {
+                &self.frozen[s - 1]
+            } else {
+                &tail[s - 1 - frozen_len]
+            };
+            if row_is_blank(row) {
+                s -= 1; // withhold trailing blanks
+            } else {
+                return s - 1; // withhold this last non-blank row too (it previews)
+            }
+        }
+        self.committed
     }
 
     /// Back off `stable` over trailing blank rows of the virtual `frozen ++ tail`
@@ -7677,6 +7708,49 @@ mod tests {
         // "hi there" fits one line → nothing is stable yet.
         let mut render = StreamRender::new();
         assert!(render.commit("hi there", 80).is_empty());
+    }
+
+    #[test]
+    fn preview_never_shows_a_committed_row_while_streaming() {
+        // Regression for the slow-stream duplicate-line bug: a chunk ending in a
+        // newline completes a line, which `commit` must not flush to scrollback
+        // while the strip still previews it — otherwise the line shows twice (once
+        // committed, once previewed) until the next chunk arrives. Drive real
+        // streaming order (commit before the draw's preview) over every prefix and
+        // assert the preview is never a row already committed.
+        let styled = |l: &Line| -> Vec<(String, Option<Color>)> {
+            l.spans
+                .iter()
+                .map(|s| (s.content.to_string(), s.style.fg))
+                .collect()
+        };
+        let width = 24;
+        for full in [
+            "first line here\nsecond line here\n\nthird paragraph line",
+            "- bullet one\n- bullet two\n- bullet three\n",
+            "some words that wrap a little here\n\nnext paragraph body\n",
+            "## Heading Row\n\nbody text below it\n",
+        ] {
+            let mut render = StreamRender::new();
+            let mut committed: Vec<Vec<(String, Option<Color>)>> = Vec::new();
+            for end in 1..=full.len() {
+                if !full.is_char_boundary(end) {
+                    continue;
+                }
+                let prefix = &full[..end];
+                committed.extend(render.commit(prefix, width).iter().map(styled));
+                if let Some(p) = render.preview(prefix, width) {
+                    let p = styled(&p);
+                    // A non-blank preview row must not already sit in scrollback.
+                    if p.iter().any(|(t, _)| !t.trim().is_empty()) {
+                        assert!(
+                            !committed.contains(&p),
+                            "preview {p:?} duplicates a committed row streaming {full:?} at {prefix:?}"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
