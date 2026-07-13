@@ -1491,23 +1491,30 @@ fn table_content_rows(lines: &[String], width: u16) -> Vec<Vec<Span<'static>>> {
     }
     let ncols = aligns.len();
 
-    // Every row normalised to exactly `ncols` cells (pad short rows, drop extra).
-    let fit_row = |line: &str| -> Vec<String> {
+    // Every row normalised to exactly `ncols` cells (pad short rows, drop
+    // extra), each inline-parsed into styled segments so a cell's `` `code` ``
+    // and `**bold**` render like prose (docs/markdown.md). Header cells are bold.
+    let header_style = Style::new().add_modifier(Modifier::BOLD);
+    let fit_row = |line: &str, base: Style| -> Vec<Vec<(String, Style)>> {
         let cells = markdown::table_cells(line);
         (0..ncols)
-            .map(|i| cells.get(i).cloned().unwrap_or_default())
+            .map(|i| table_cell_segments(cells.get(i).map_or("", String::as_str), base))
             .collect()
     };
     let header = lines
         .first()
-        .map_or_else(|| vec![String::new(); ncols], |l| fit_row(l));
-    let data: Vec<Vec<String>> = lines.iter().skip(2).map(|l| fit_row(l)).collect();
+        .map_or_else(|| vec![Vec::new(); ncols], |l| fit_row(l, header_style));
+    let data: Vec<Vec<Vec<(String, Style)>>> = lines
+        .iter()
+        .skip(2)
+        .map(|l| fit_row(l, Style::new()))
+        .collect();
 
-    // Natural column widths = widest cell (header + data), at least one column.
+    // Natural column widths = widest *rendered* cell (markers stripped), ≥1.
     let mut col_w = vec![1usize; ncols];
     for row in std::iter::once(&header).chain(&data) {
         for (i, cell) in row.iter().enumerate() {
-            col_w[i] = col_w[i].max(cols(cell));
+            col_w[i] = col_w[i].max(segments_cols(cell));
         }
     }
     shrink_table_columns(&mut col_w, width as usize);
@@ -1527,12 +1534,13 @@ fn table_content_rows(lines: &[String], width: u16) -> Vec<Vec<Span<'static>>> {
         vec![Span::styled(s, border)]
     };
     // A content row: `│`-separated cells, each single-space-margined and
-    // aligned/truncated to its column width. `cell_style` bolds the header.
-    let content_row = |row: &[String], cell_style: Style| -> Vec<Span<'static>> {
+    // aligned/truncated to its column width, its styled segments preserved.
+    let content_row = |row: &[Vec<(String, Style)>]| -> Vec<Span<'static>> {
         let mut spans = vec![Span::styled("│".to_string(), border)];
         for (i, cell) in row.iter().enumerate() {
-            let body = pad_table_cell(cell, col_w[i], aligns[i]);
-            spans.push(Span::styled(format!(" {body} "), cell_style));
+            spans.push(Span::raw(" "));
+            spans.extend(fit_cell_spans(cell, col_w[i], aligns[i]));
+            spans.push(Span::raw(" "));
             spans.push(Span::styled("│".to_string(), border));
         }
         spans
@@ -1540,37 +1548,90 @@ fn table_content_rows(lines: &[String], width: u16) -> Vec<Vec<Span<'static>>> {
 
     let mut rows = Vec::with_capacity(data.len() + 4);
     rows.push(border_row('┌', '┬', '┐'));
-    rows.push(content_row(
-        &header,
-        Style::new().add_modifier(Modifier::BOLD),
-    ));
+    rows.push(content_row(&header));
     rows.push(border_row('├', '┼', '┤'));
     for r in &data {
-        rows.push(content_row(r, Style::new()));
+        rows.push(content_row(r));
     }
     rows.push(border_row('└', '┴', '┘'));
     rows
 }
 
-/// Fit `text` to `w` display columns (truncating with a trailing `…` when it
-/// overflows), then pad it to `w` per `align` for a table cell.
-fn pad_table_cell(text: &str, w: usize, align: markdown::Alignment) -> String {
-    let body = if cols(text) <= w {
-        text.to_string()
-    } else if w == 0 {
-        String::new()
-    } else {
-        let mut s = truncate_cols(text, w - 1);
-        s.push('…');
-        s
-    };
-    let pad = w.saturating_sub(cols(&body));
+/// A table cell's markdown inline-parsed into styled segments (markers removed),
+/// under `base` (bold for a header cell) — the rendered counterpart of the raw
+/// cell text, used both to size columns and to draw them.
+fn table_cell_segments(cell: &str, base: Style) -> Vec<(String, Style)> {
+    inline_spans(&markdown::parse_inline(cell), base)
+}
+
+/// Total display width of a cell's styled `segments` (the *rendered* width, so a
+/// column sizes to `foo.db`, not `` `foo.db` ``).
+fn segments_cols(segments: &[(String, Style)]) -> usize {
+    segments.iter().map(|(t, _)| cols(t)).sum()
+}
+
+/// Fit a cell's styled `segments` into `w` display columns for a table grid:
+/// truncate with a trailing `…` when they overflow, then pad with spaces per
+/// `align`. Returns the cell body spans (the caller adds the ` ` margins and
+/// `│` borders); padding is default-styled — an invisible space.
+fn fit_cell_spans(
+    segments: &[(String, Style)],
+    w: usize,
+    align: markdown::Alignment,
+) -> Vec<Span<'static>> {
+    let (fitted, body_w) = truncate_segments(segments, w);
+    let pad = w.saturating_sub(body_w);
     let (left, right) = match align {
         markdown::Alignment::Right => (pad, 0),
         markdown::Alignment::Center => (pad / 2, pad - pad / 2),
         markdown::Alignment::Left | markdown::Alignment::None => (0, pad),
     };
-    format!("{}{body}{}", " ".repeat(left), " ".repeat(right))
+    let mut spans = Vec::with_capacity(fitted.len() + 2);
+    if left > 0 {
+        spans.push(Span::raw(" ".repeat(left)));
+    }
+    spans.extend(fitted.into_iter().map(|(t, s)| Span::styled(t, s)));
+    if right > 0 {
+        spans.push(Span::raw(" ".repeat(right)));
+    }
+    spans
+}
+
+/// Truncate styled `segments` to at most `w` display columns, appending a `…`
+/// when they overflow (grapheme-aware, like [`truncate_cols`], but span-styled).
+/// Returns the kept pieces and their total display width (≤ `w`).
+fn truncate_segments(segments: &[(String, Style)], w: usize) -> (Vec<(String, Style)>, usize) {
+    let total = segments_cols(segments);
+    if total <= w {
+        return (segments.to_vec(), total);
+    }
+    if w == 0 {
+        return (Vec::new(), 0);
+    }
+    let limit = w - 1; // leave a column for the `…`
+    let mut out: Vec<(String, Style)> = Vec::new();
+    let mut used = 0usize;
+    // Stop at the first grapheme that doesn't fit — like [`truncate_cols`],
+    // preserving left-to-right order (never skip a too-wide grapheme to pull in
+    // a later narrow one, which would reorder the cell's content).
+    'outer: for (t, s) in segments {
+        let mut piece = String::new();
+        for g in t.graphemes(true) {
+            if used + cols(g) > limit {
+                if !piece.is_empty() {
+                    out.push((piece, *s));
+                }
+                break 'outer;
+            }
+            piece.push_str(g);
+            used += cols(g);
+        }
+        if !piece.is_empty() {
+            out.push((piece, *s));
+        }
+    }
+    out.push(("…".to_string(), Style::default()));
+    (out, used + 1)
 }
 
 /// Shrink `col_w` in place until the full grid — `1 + Σ(w+2) + (ncols-1)` border
@@ -5114,6 +5175,75 @@ mod tests {
     }
 
     #[test]
+    fn table_content_rows_renders_inline_markdown_in_cells() {
+        // Regression (the reported bug): a table cell's `` `code` `` and
+        // `**bold**` markers rendered literally instead of being inline-parsed
+        // like prose (docs/markdown.md). They must be styled — backticks and
+        // asterisks gone — and the column sized to the *rendered* width
+        // (`a.db`, not `` `a.db` ``).
+        let lines: Vec<String> = ["| Name  | When |", "|-------|------|", "| `a.db` | **X** |"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let rows = table_content_rows(&lines, 80);
+        assert_eq!(
+            rows_text(&rows),
+            vec![
+                "┌──────┬──────┐",
+                "│ Name │ When │",
+                "├──────┼──────┤",
+                "│ a.db │ X    │",
+                "└──────┴──────┘",
+            ]
+        );
+        // The code cell is cyan, the bold cell carries BOLD, and no raw markers
+        // survive anywhere in the grid.
+        let spans: Vec<(String, Modifier, Option<Color>)> = rows
+            .iter()
+            .flat_map(|r| r.iter())
+            .map(|s| (s.content.to_string(), s.style.add_modifier, s.style.fg))
+            .collect();
+        assert!(
+            spans
+                .iter()
+                .any(|(t, _, fg)| t == "a.db" && *fg == Some(INLINE_CODE_COLOR)),
+            "inline code cell is cyan: {spans:?}"
+        );
+        assert!(
+            spans
+                .iter()
+                .any(|(t, m, _)| t == "X" && m.contains(Modifier::BOLD)),
+            "bold cell carries BOLD: {spans:?}"
+        );
+        let joined: String = spans.iter().map(|(t, _, _)| t.as_str()).collect();
+        assert!(
+            !joined.contains("**") && !joined.contains('`'),
+            "no raw markers leak into the grid: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn truncate_segments_stops_at_a_too_wide_grapheme_boundary() {
+        // A wide (CJK) grapheme that can't fit the last column must STOP the
+        // truncation — like `truncate_cols` — not skip ahead and pull a later
+        // narrow grapheme in front of the `…`, which would reorder the cell.
+        let segs = vec![
+            ("世".to_string(), Style::default()),
+            ("x".to_string(), Style::default()),
+        ];
+        let (out, w) = truncate_segments(&segs, 2); // limit 1: 世 (width 2) can't fit
+        let text: String = out.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, "…", "wide grapheme dropped, order preserved: {out:?}");
+        assert_eq!(w, 1);
+        // A wide grapheme that DOES fit is kept, truncating the rest.
+        let segs = vec![("世界世".to_string(), Style::default())];
+        let (out, w) = truncate_segments(&segs, 4); // limit 3: 世(2) fits, 界 does not
+        let text: String = out.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(text, "世…");
+        assert_eq!(w, 3);
+    }
+
+    #[test]
     fn assistant_inline_emphasis_styles_spans() {
         let lines = message_lines(Role::Assistant, "a **b** _i_ ~~s~~ `c`", 80);
         let spans: Vec<(String, Modifier, Option<Color>)> = lines
@@ -7561,6 +7691,11 @@ mod tests {
             "| a | b |\n|---|---|\n| 1 | 2 |\n```\ncode\n```",
             // A single-column table, then prose.
             "| Item |\n|------|\n| one |\n| two |\ndone",
+            // A table whose cells carry inline markdown (`` `code` ``, **bold**):
+            // cells are inline-parsed like prose and the column sizes to the
+            // rendered width, so the withheld-whole grid's streamed commits must
+            // still match batch at every prefix/width (incl. the narrow shrink).
+            "files:\n\n| Database | Modified |\n|----------|----------|\n| `core.db` | **Jul 13** |\n| plain.db | today |\n\nend",
             // --- Inline emphasis (docs/markdown.md): line-local, so a complete
             // line's styling is final (its frozen rows never restyle) while a
             // trailing line with an open marker is withheld (has_open_inline). The

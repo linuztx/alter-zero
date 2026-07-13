@@ -309,6 +309,21 @@ alignment, width-shrunk with `…` truncation when the natural grid overflows). 
 *Prefix-stable holdback* — a table is buffered whole and committed only when it
 closes, because a later row can widen an already-emitted column.
 
+**Cell content is inline-parsed** — a cell's `` `code` ``, `**bold**`, `*italic*`,
+`~~strike~~`, `[text](url)` etc. render styled like prose (codex parity), not as
+literal markers (`ui::table_cell_segments` = `inline_spans(parse_inline(cell))`).
+Because the markers are stripped, a column is sized to the cell's **rendered**
+display width (`segments_cols`, so `` `foo.db` `` measures `foo.db` = 6, not 8),
+and `fit_cell_spans`/`truncate_segments` truncate (`…`) + pad the styled segments
+per alignment — the span-styled counterpart of the plain-string sizing the older
+`pad_table_cell` did. Header cells carry a **bold** base style that the inline
+styling composes onto. This is inside the whole-table render, so batch and
+streaming stay identical and the holdback keeps it prefix-stable (a table with
+inline-markdown cells is in the differential corpus, widths 3–40). *Detection*
+still requires the row shapes `markdown::is_table_row`/`table_delimiter` accept
+(a delimiter row must contain a pipe); a pipe-less GFM table is rendered as
+prose, unchanged by this.
+
 **Syntax highlighting is generic, not per-grammar.** No `syntect`/TextMate
 grammars, so a few shapes are approximate: multi-line backtick strings (Go raw
 strings, JS template literals) only colour their opening line — they don't carry
