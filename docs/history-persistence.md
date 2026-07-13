@@ -68,9 +68,10 @@ struct HistoryRecord { session_id: String, ts: u64, text: String }
 pub fn history_line(session_id: &str, ts: u64, text: &str) -> String;
 
 /// Parse a whole file's contents into the recorded texts, oldest-first (the
-/// order `InputHistory::entries` wants). Blank/malformed/unknown-shape lines are
-/// skipped (codex's forward-compatible reader), so a torn or future-version line
-/// never breaks the load.
+/// order `InputHistory::entries` wants). Blank/malformed/unknown-shape lines
+/// **and records whose `text` is empty** are skipped (codex's forward-compatible
+/// reader), so a torn or future-version line never breaks the load and a
+/// hand-edited empty entry never seeds a blank recall.
 pub fn parse_history(contents: &str) -> Vec<String>;
 ```
 
@@ -102,8 +103,12 @@ pub struct InputHistory {
   abandoned draft recalls this session but doesn't pollute cross-session history.
   (Every *sent* input — idle submit, `!command`, and mid-turn queued
   batches/shell — uses plain `record` and persists.)
-- `seed(entries)` — bulk-load from disk into `entries` at startup **without**
-  queuing them (they are already on disk). Called once on the fresh history.
+- `seed(entries)` — bulk-load from disk into `entries` at startup as a faithful
+  **replay of `record`** (each text runs the same blank-skip + adjacent-duplicate
+  collapse), so a messy or concurrently-written file seeds the same clean buffer
+  a fresh session would build. **Without** queuing them (they are already on
+  disk); the newest becomes the `last_persisted` dedup target. Called once on the
+  fresh history.
 - `take_unpersisted()` — drain the queue for the boundary to append.
 
 `App` exposes `seed_input_history(entries)` and `take_unpersisted_inputs()`
@@ -166,8 +171,9 @@ and `save_settings`):
 
 - `history` (unit): `history_line` round-trips through `parse_history`; a
   multi-line/`"`-containing/unicode text stays one physical line and round-trips;
-  blank lines, malformed JSON, and wrong-shape lines are skipped; extra unknown
-  fields still parse; order is preserved oldest-first; empty input → empty vec.
+  blank lines, malformed JSON, wrong-shape lines, **and empty-`text` records** are
+  skipped; extra unknown fields still parse; order is preserved oldest-first;
+  empty input → empty vec.
 - `app` (unit): `record` queues the text on `unpersisted` (drained by
   `take_unpersisted`) and a blank/adjacent-dup record queues nothing;
   `record_ephemeral` records to `entries` but queues nothing; `seed` fills
@@ -176,7 +182,8 @@ and `save_settings`):
   queued for disk); **a sent message that duplicates a cleared ephemeral draft is
   still persisted** (persist dedup is against `last_persisted`, not `entries`);
   an immediately re-sent message persists once; a submission equal to the newest
-  seeded entry isn't re-persisted.
+  seeded entry isn't re-persisted; **`seed` collapses adjacent duplicates** like
+  `record` (a messy/concurrent file seeds a clean buffer).
 - `main.rs` (smoke, Phase 37): submit a message in one process, quit, **append an
   invalid-UTF-8 line to the file**, start a **second** process against the same
   `INLINE_TUI_HISTORY_FILE`, and confirm ↑ recalls the previous session's message

@@ -50,9 +50,11 @@ pub fn history_line(session_id: &str, ts: u64, text: &str) -> String {
 }
 
 /// Parse a whole file's contents into the recorded texts, **oldest-first** (the
-/// order [`InputHistory::seed`] wants). Blank lines and lines that don't parse
-/// as a [`HistoryRecord`] are skipped — a torn last line or a future-version
-/// line never breaks the load (codex's forward-compatible reader).
+/// order [`InputHistory::seed`] wants). Blank lines, lines that don't parse as a
+/// [`HistoryRecord`], and records whose `text` is empty are skipped — a torn
+/// last line, a future-version line, or a hand-edited empty entry never breaks
+/// the load or seeds a blank recall entry (codex's forward-compatible reader;
+/// `record` never writes an empty text, but a hand-edited/future file could).
 ///
 /// [`InputHistory::seed`]: crate::app::InputHistory::seed
 #[must_use]
@@ -62,6 +64,7 @@ pub fn parse_history(contents: &str) -> Vec<String> {
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| serde_json::from_str::<HistoryRecord>(line).ok())
         .map(|record| record.text)
+        .filter(|text| !text.is_empty())
         .collect()
 }
 
@@ -113,6 +116,19 @@ mod tests {
             history_line("s", 2, "kept-b"),
         );
         assert_eq!(parse_history(&file), ["kept-a", "kept-b"]);
+    }
+
+    #[test]
+    fn an_empty_text_record_is_dropped() {
+        // `record` never writes an empty text, but a hand-edited or future file
+        // could carry one — it is not a recallable entry (a blank ↑ recall).
+        let file = format!(
+            "{}\n{}\n{}\n",
+            history_line("s", 1, "kept"),
+            r#"{"session_id":"s","ts":2,"text":""}"#,
+            history_line("s", 3, "also"),
+        );
+        assert_eq!(parse_history(&file), ["kept", "also"]);
     }
 
     #[test]

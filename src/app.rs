@@ -1054,16 +1054,22 @@ impl InputHistory {
     }
 
     /// Seed `entries` from the persistent history file at startup (oldest
-    /// first). These are already on disk, so they are **not** queued for
+    /// first), as a faithful **replay of [`record`]**: each text runs the same
+    /// blank-skip + adjacent-duplicate collapse, so a messy or concurrently
+    /// written file (adjacent dups) seeds the same clean buffer a fresh session
+    /// would build. These are already on disk, so they are **not** queued for
     /// persistence — but the newest seeded entry becomes the [`last_persisted`]
     /// dedup target, so a first submission identical to it isn't re-written.
     /// Both ↑/↓ recall and Ctrl+R search read `entries`, so seeding makes both
     /// span sessions with no other change. See `docs/history-persistence.md`.
     ///
+    /// [`record`]: InputHistory::record
     /// [`last_persisted`]: InputHistory::last_persisted
     pub fn seed(&mut self, entries: Vec<String>) {
-        self.last_persisted = entries.last().cloned();
-        self.entries = entries;
+        for text in entries {
+            self.record_inner(&text);
+        }
+        self.last_persisted = self.entries.last().cloned();
     }
 
     /// Drain the entries recorded this session that are not yet on disk, for
@@ -5069,6 +5075,20 @@ mod tests {
             app.take_unpersisted_inputs(),
             ["again"],
             "an immediately re-sent message is persisted once, not twice"
+        );
+    }
+
+    #[test]
+    fn seed_collapses_adjacent_duplicates_like_record() {
+        // A messy or concurrently-written file can carry adjacent duplicates;
+        // seeding replays them through record's collapse, so the buffer looks
+        // exactly as a fresh session would build it.
+        let mut app = App::new();
+        app.seed_input_history(vec!["a".to_string(), "a".to_string(), "b".to_string()]);
+        assert_eq!(
+            app.input_history.entries,
+            ["a", "b"],
+            "seed collapses adjacent duplicates like record"
         );
     }
 
