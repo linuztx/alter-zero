@@ -53,10 +53,11 @@ what was there before. A port of openai/codex's Ctrl+R search — the piece
   (`search_match` sets `history_cursor`/`last_history_text`), so **↑ right
   after accepting steps to the entry older than the accepted one**.
 - Codex's search also spans its **persistent cross-session history** with
-  async entry fetches (the Searching status / `Pending` result). We have no
-  persistent history, so that whole pending machine — and the Searching
-  status — drops out; everything is synchronous over
-  `InputHistory::entries`.
+  async entry fetches (the Searching status / `Pending` result). We keep the
+  search fully synchronous over `InputHistory::entries` — but `entries` is now
+  **seeded from an on-disk history file at startup** (`docs/history-persistence.md`),
+  so the search spans past sessions too, without codex's async pending machine:
+  the whole file is loaded up front instead of fetched per offset.
 
 ## The mapping onto this codebase
 

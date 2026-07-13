@@ -38,6 +38,7 @@ pub mod context;
 pub mod file_search;
 pub mod frame;
 pub mod highlight;
+pub mod history;
 pub mod llm;
 pub mod markdown;
 pub mod paste;

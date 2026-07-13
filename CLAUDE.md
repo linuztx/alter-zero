@@ -30,14 +30,16 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `textarea`, `file_search`, `clipboard`, `context`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `history`, `textarea`, `file_search`, `clipboard`, `context`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
-`app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`context` (plus the pure cores of `frame`/`paste`) so behavior
+`app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
-**and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read, and the
+**and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read, the
 `/resume` session recording + dir scan — `main.rs::SessionRecorder`/`list_sessions`,
-whose JSONL format/parse core is the pure `session` module) — verified via `scripts/smoke.sh`, not
+whose JSONL format/parse core is the pure `session` module — and the
+cross-session input-history file — `main.rs::InputHistoryStore`, whose JSONL
+format/parse core is the pure `history` module, `docs/history-persistence.md`) — verified via `scripts/smoke.sh`, not
 unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
 `docs/shift-enter.md`); `frame`'s async scheduler **task** is smoke-covered too
@@ -52,7 +54,10 @@ The design rationale lives in `docs/design.md`; the async-loop design in
 `docs/async-rewrite.md`; the editable input (textarea) design in
 `docs/textarea.md`; the Esc-interrupt design in `docs/interrupt.md`; the ↑/↓
 input-history recall in `docs/input-history.md`; the Ctrl+R reverse search over
-that history in `docs/history-search.md`; the `!` local shell commands in
+that history in `docs/history-search.md`; the **cross-session persistence** of
+that input history (an on-disk `history.jsonl` seeding `App::input_history` at
+startup, so ↑/↓ recall *and* Ctrl+R span sessions) in
+`docs/history-persistence.md`; the `!` local shell commands in
 `docs/shell-command.md`; the `?` shortcuts band in
 `docs/shortcuts.md`; the Shift+Enter / Ctrl+J newline keys in
 `docs/shift-enter.md`; the mid-turn message queue in `docs/queue.md`; the
@@ -78,7 +83,9 @@ terminal's real scrollback; a live region (a rule-framed input box — a codex-s
 rows, Home/End) with insert/delete at the cursor, growing as the input wraps;
 from an **empty composer (or an unedited recall) ↑/↓ instead step through
 previously submitted inputs** shell-style (`App::input_history`, codex's
-`ChatComposerHistory` — ↓ past the newest clears; see `docs/input-history.md`),
+`ChatComposerHistory` — ↓ past the newest clears; **persisted across sessions**
+in an on-disk `history.jsonl` seeded at startup, `docs/history-persistence.md`;
+see `docs/input-history.md`),
 and **Ctrl+R reverse-searches them** codex-style (`App::history_search` — the
 footer slot becomes a `reverse-i-search: {query}` line owning **every** key,
 the newest case-insensitive substring match previews in the composer with the

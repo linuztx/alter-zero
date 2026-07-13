@@ -56,6 +56,7 @@ use inline_tui::clipboard;
 use inline_tui::context;
 use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
+use inline_tui::history;
 use inline_tui::llm::{
     self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, Selection, Settings,
     backend::DEFAULT_SYSTEM_PROMPT,
@@ -109,6 +110,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // sees a clock. Recorded items are stamped with the local time; the stamp is
     // shown only in the Ctrl+O transcript (see docs/timestamps.md).
     app.set_clock(local_timestamp);
+    // The persistent input history (docs/history-persistence.md): load the
+    // JSONL file and seed `App::input_history` before the first paint, so ↑/↓
+    // recall and Ctrl+R search span past sessions. New submissions are appended
+    // per loop iteration below (`take_unpersisted_inputs` beside `recorder.sync`).
+    let hist_store = InputHistoryStore::new();
+    app.seed_input_history(hist_store.load());
     // The dummy's pre-stream pause so the status indicator shows first; the
     // pause is `STARTUP_DELAY` unless `INLINE_TUI_STARTUP_DELAY_MS` overrides it
     // (the smoke test runs with a short delay; one phase uses a longer one). A
@@ -958,6 +965,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         // nothing when unchanged — so streaming chunks (which never touch
         // history) cost no I/O.
         recorder.sync(&app.history);
+        // Flush any inputs recorded this iteration to the persistent history
+        // file (docs/history-persistence.md) — the drain is empty on iterations
+        // that recorded nothing, so streaming ticks cost no I/O.
+        hist_store.append(&app.take_unpersisted_inputs());
         // Reap detached backend threads (interrupt / `/clear` abandonments) that
         // have finished. `is_finished()` never blocks, so this can't stall the
         // loop; a thread still parked in its final network read is left until it
@@ -967,6 +978,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
 
     // The quit arms break before the loop-bottom sync — catch the last change.
     recorder.sync(&app.history);
+    hist_store.append(&app.take_unpersisted_inputs());
     // Stop any in-flight reply on the way out, but don't `join()` it: joining
     // would couple the terminal restore to the backend's worst case (the
     // interrupt-lag freeze, on the quit path). The process exits right after
@@ -2295,6 +2307,175 @@ fn session_id() -> String {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_nanos());
     format!("{nanos:x}-{:x}", std::process::id())
+}
+
+/// Seconds since the Unix epoch — the `ts` stamped into each history line.
+/// Impurity kept at the boundary (the `utc_stamp`/`session_id` pattern).
+fn unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs())
+}
+
+/// Entries kept in memory (and the file's target after compaction). Recall and
+/// Ctrl+R search are O(entries), so this bounds their cost no matter how big
+/// the file grew — a shell-style HISTSIZE. See `docs/history-persistence.md`.
+const HISTORY_MAX_ENTRIES: usize = 10_000;
+
+/// Compact the file only once it exceeds this many entries (hard cap), trimming
+/// back to [`HISTORY_MAX_ENTRIES`] (soft cap) — codex's hard-/soft-cap idea, so
+/// we don't rewrite on every startup while hovering at the cap.
+const HISTORY_COMPACT_AT: usize = HISTORY_MAX_ENTRIES + HISTORY_MAX_ENTRIES / 4;
+
+/// Don't persist an input longer than this many bytes. A large paste is
+/// **expanded** in the composer (`take_input` splices the payload back), so its
+/// full text would otherwise be written — and the entry-*count* cap alone
+/// wouldn't bound the file's byte size. A giant blob isn't a useful
+/// reverse-search target anyway; it still recalls **this** session (it lives in
+/// `InputHistory::entries`), it just isn't written to disk. codex bounds its
+/// file by `max_bytes` for the same reason. See `docs/history-persistence.md`.
+const HISTORY_MAX_ENTRY_BYTES: usize = 100 * 1024;
+
+/// Persists the composer's input history across sessions (codex's
+/// `history.jsonl`, sized down to this loop — see `docs/history-persistence.md`).
+///
+/// The pure format lives in [`history`]; this owns the impurities: the path
+/// from the environment, the clock for `ts`, and the file reads/appends/
+/// compaction. Best-effort — every failure is swallowed (persistence must never
+/// kill the TUI, like [`SessionRecorder`] and `save_settings`).
+struct InputHistoryStore {
+    /// The history file (`INLINE_TUI_HISTORY_FILE`, else
+    /// `{config_home}/history.jsonl` — beside `config.json`/`.env`, which
+    /// `INLINE_TUI_CONFIG_DIR` already redirects). `None` disables persistence
+    /// (no HOME and no override).
+    path: Option<PathBuf>,
+    /// This process's id, stamped into each record's `session_id` field. The
+    /// app never reads it back — it only labels who wrote the line.
+    session_id: String,
+}
+
+impl InputHistoryStore {
+    fn new() -> Self {
+        let path = std::env::var_os("INLINE_TUI_HISTORY_FILE")
+            .map(PathBuf::from)
+            .or_else(|| config_home().map(|dir| dir.join("history.jsonl")));
+        Self {
+            path,
+            session_id: session_id(),
+        }
+    }
+
+    /// Load the persisted entries (oldest first), capped to the last
+    /// [`HISTORY_MAX_ENTRIES`]. When the file has grown past the hard cap,
+    /// rewrite it down to the soft cap first (best-effort). A missing or
+    /// unreadable file yields no entries — a first run just starts empty.
+    fn load(&self) -> Vec<String> {
+        let Some(path) = &self.path else {
+            return Vec::new();
+        };
+        // Read bytes + lossy-decode (not `read_to_string`): a torn/interleaved
+        // append can leave invalid UTF-8 in the file, and `read_to_string`
+        // would error on it and discard the WHOLE history. Lossy decoding turns
+        // only the bad bytes into U+FFFD, so `parse_history` skips just that one
+        // line (and the compaction below can then repair the file). This mirrors
+        // the shell reader's lossy decode. See `docs/history-persistence.md`.
+        let Ok(bytes) = std::fs::read(path) else {
+            return Vec::new();
+        };
+        let contents = String::from_utf8_lossy(&bytes);
+        let mut texts = history::parse_history(&contents);
+        let over_hard_cap = texts.len() > HISTORY_COMPACT_AT;
+        if texts.len() > HISTORY_MAX_ENTRIES {
+            texts.drain(..texts.len() - HISTORY_MAX_ENTRIES);
+        }
+        if over_hard_cap {
+            self.compact(path, &texts);
+        }
+        texts
+    }
+
+    /// Append newly-recorded inputs as JSONL lines in a **single** `O_APPEND`
+    /// `write_all` (atomic up to `PIPE_BUF`, so concurrent instances don't
+    /// interleave), materializing the parent dir + a `0o600` file on the first
+    /// write. Failures are dropped.
+    fn append(&self, texts: &[String]) {
+        if texts.is_empty() {
+            return;
+        }
+        let Some(path) = &self.path else {
+            return;
+        };
+        let ts = unix_secs();
+        let mut buf = String::new();
+        for text in texts {
+            // Skip a giant (expanded large-paste) input — bounds the file's
+            // bytes, which the entry-count cap can't. It still recalls this
+            // session from `entries`.
+            if text.len() > HISTORY_MAX_ENTRY_BYTES {
+                continue;
+            }
+            buf.push_str(&history::history_line(&self.session_id, ts, text));
+            buf.push('\n');
+        }
+        if buf.is_empty() {
+            return; // every entry was skipped — nothing to write, don't touch the fs
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = append_history_bytes(path, buf.as_bytes());
+    }
+
+    /// Rewrite the file to just `texts` (the compaction tail), re-stamped with
+    /// this session (the `ts`/`session_id` fields are unused by the app — only
+    /// `text` is read back). Best-effort: a failure leaves the oversized file
+    /// in place, to be retried next startup.
+    fn compact(&self, path: &Path, texts: &[String]) {
+        let ts = unix_secs();
+        let mut buf = String::new();
+        for text in texts {
+            buf.push_str(&history::history_line(&self.session_id, ts, text));
+            buf.push('\n');
+        }
+        let _ = write_history_bytes(path, buf.as_bytes());
+    }
+}
+
+/// Append `bytes` to the history file in one `O_APPEND` write, creating a
+/// `0o600` file (the input may hold whatever the user typed — codex writes
+/// `history.jsonl` owner-only too).
+fn append_history_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.append(true).create(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    file.write_all(bytes)
+}
+
+/// Truncate-and-write the history file owner-only (`0o600` on unix) — the
+/// compaction rewrite. Tightens the mode on a pre-existing file, since
+/// `mode()` only applies at creation (like `write_key_store`).
+fn write_history_bytes(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    file.write_all(bytes)
 }
 
 /// Scan the sessions root for resumable rollout files, newest-modified first

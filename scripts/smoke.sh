@@ -71,7 +71,14 @@ SMOKE_STARTUP_MS="${SMOKE_STARTUP_MS:-200}"
 # and break the dummy-based assertions). Cleaned up on exit.
 SMOKE_CFG="$(mktemp -d)"
 CFG_ENV="INLINE_TUI_CONFIG_DIR=$SMOKE_CFG"
-APP="env $CFG_ENV INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+# Persistence (docs/history-persistence.md) seeds the input history from a file
+# on startup. Point the base app at /dev/null so every phase starts with an
+# EMPTY input history — the in-session ↑/↓ (Phase 10) and Ctrl+R (Phase 18)
+# assertions then behave exactly as before, unaffected by earlier phases'
+# submissions. Phase 37 overrides this with a real temp file to test that
+# persistence spans sessions.
+CFG_ENV_NOHIST="$CFG_ENV INLINE_TUI_HISTORY_FILE=/dev/null"
+APP="env $CFG_ENV_NOHIST INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 
 tmux new-session -d -s "$S" -x 80 -y 24 "$APP"
 sleep 0.4
@@ -1663,6 +1670,67 @@ sleep 0.4
 ctxdebug_returned="$(tmux capture-pane -t "$S36" -p)"
 tmux kill-session -t "$S36" 2>/dev/null
 
+# --- Phase 37: the input history PERSISTS across sessions (docs/history-persistence.md).
+# Submit a distinctive message in one process — written to an isolated
+# INLINE_TUI_HISTORY_FILE — then launch a SECOND process against the same file:
+# ↑ recalls the previous session's message and Ctrl+R finds it. Proves both the
+# ↑/↓ recall and the Ctrl+R search span sessions (the seed loads the file into
+# InputHistory::entries, which both read). ---
+HISTFILE="$(mktemp -u /tmp/inline-tui-smoke-hist-XXXXXX).jsonl"
+HAPP="env $CFG_ENV INLINE_TUI_HISTORY_FILE=$HISTFILE INLINE_TUI_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+PMSG="persist_across_sessions_42"
+S37="${S}_persist"
+tmux new-session -d -s "$S37" -x 80 -y 24 "$HAPP"
+sleep 0.5
+tmux send-keys -t "$S37" -l "$PMSG"
+sleep 0.2
+tmux send-keys -t "$S37" Enter
+# The submit is flushed to the history file at the next loop tick — poll the
+# file (this file's own rule: poll, don't fixed-sleep) rather than guessing.
+persist_written=""
+for _ in $(seq 1 40); do # up to ~4s
+	if [ -f "$HISTFILE" ] && grep -qF "$PMSG" "$HISTFILE"; then
+		persist_written="yes"
+		break
+	fi
+	sleep 0.1
+done
+persist_file_contents="$(cat "$HISTFILE" 2>/dev/null)"
+echo "==== Phase 37: history file after session A ===="
+printf '%s\n' "$persist_file_contents"
+tmux send-keys -t "$S37" C-c # empty composer → quit session A
+sleep 0.3
+tmux kill-session -t "$S37" 2>/dev/null
+
+# Corrupt the file's tail with an invalid-UTF-8 line (a torn/interleaved append
+# leaves such bytes): the lossy load must skip ONLY this line, not discard the
+# whole history — so session B's recall below still works. With the old
+# read_to_string load this single bad byte wiped all persisted history.
+printf '\377\376 torn-not-valid-utf8\n' >>"$HISTFILE"
+
+# Session B: a fresh process against the SAME history file.
+S37B="${S}_persist_b"
+tmux new-session -d -s "$S37B" -x 80 -y 24 "$HAPP"
+sleep 0.5
+tmux send-keys -t "$S37B" Up # recall from the persisted (cross-session) history
+sleep 0.3
+persist_recall="$(tmux capture-pane -t "$S37B" -p)"
+echo "==== Phase 37: session B — Up recalls the persisted message ===="
+printf '%s\n' "$persist_recall"
+tmux send-keys -t "$S37B" C-c # clears the recalled draft (non-empty composer)
+sleep 0.2
+tmux send-keys -t "$S37B" C-r # open reverse-i-search
+sleep 0.2
+tmux send-keys -t "$S37B" -l "persist_across"
+sleep 0.3
+persist_search="$(tmux capture-pane -t "$S37B" -p)"
+echo "==== Phase 37: session B — Ctrl+R finds the persisted message ===="
+printf '%s\n' "$persist_search"
+tmux send-keys -t "$S37B" Escape
+sleep 0.2
+tmux kill-session -t "$S37B" 2>/dev/null
+rm -f "$HISTFILE"
+
 # Exactly one input box on a captured screen: one bare prompt row (the composer's
 # `❯` — trailing blanks are trimmed by capture-pane; echoed messages are `❯ text`),
 # two horizontal rules (the box's frame), one session footer. Phantom stale boxes
@@ -2595,7 +2663,29 @@ if ! printf '%s' "$ctxdebug_returned" | grep -qF "Done for"; then
 	status=1
 fi
 
+# Phase 37: the input history persists across sessions (docs/history-persistence.md).
+if [ "$persist_written" != "yes" ]; then
+	echo "FAIL: Phase 37 — the submitted message was never written to the history file (append broken)" >&2
+	status=1
+fi
+if ! printf '%s' "$persist_file_contents" | grep -qF "\"text\":\"$PMSG\""; then
+	echo "FAIL: Phase 37 — the history file lacks the JSONL record for the submitted message" >&2
+	status=1
+fi
+if ! printf '%s' "$persist_recall" | grep -qF "$PMSG"; then
+	echo "FAIL: Phase 37 — Up in a FRESH session did not recall the previous session's message (seed/persistence broken)" >&2
+	status=1
+fi
+if ! printf '%s' "$persist_search" | grep -qF "reverse-i-search:"; then
+	echo "FAIL: Phase 37 — Ctrl+R did not open the reverse-i-search line in the fresh session" >&2
+	status=1
+fi
+if ! printf '%s' "$persist_search" | grep -qF "$PMSG"; then
+	echo "FAIL: Phase 37 — Ctrl+R search did not find the persisted message in the fresh session" >&2
+	status=1
+fi
+
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… (Ns) while it runs (no spinner status line — the elapsed rides the preview), no summary — a non-zero exit reports its status, Esc interrupts a long one (resolving ⎿ Interrupted by user with no 'Conversation interrupted' notice), multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary), and /resume picks up a saved session (every conversation records to a rollout JSONL file — session_meta line first, created lazily on the first user message — a later launch's /resume lists it in a full-screen picker with a humanized age and the first-user-message preview, Enter repaints the whole saved conversation inline and appends the turns that follow to the same file, /clear starts a fresh rollout so the next message lands in a new one, and the picker carries codex's Filter/Sort toolbar — 'Filter: [Cwd] All   Sort: [Updated] Created' on the search row, Tab + arrows toggling — with the selected row lit on a full-width background tint), and an Esc interrupt stays prompt even when the backend is slow to observe the cancel — under a stalled backend (INLINE_TUI_STALL_MS, ignoring the cancel for 3s) that streamed nothing, Esc undoes the no-output turn and settles within a frame (the status line clears and 'hello there' returns to the composer, no 'Conversation interrupted' notice) because the loop detaches the thread and swaps the reply channel instead of join()ing it (the interrupt-lag fix — no UI freeze), and slash-command confirmations and soft rejections surface as transient toasts above the box that self-clear after a few seconds instead of committing scrollback bullets (/copy confirms with a toast that then vanishes; /help and /resume run mid-turn are rejected with a toast; /model and /login now open their inline pickers mid-turn since they only swap the composer, never the running turn), and a resize reflow hides the hardware cursor before it homes/clears the screen and reshows it only at the prompt seat — so a terminal cursor-trail animation (kitty) can't streak from the top when the redraw drags the cursor around, and a mid-stream Ctrl+O round trip keeps the already-streamed partial reply on the restored screen (the repaint carries the stream's committed rows and catches up on what streamed under the overlay exactly once — no vanish, no flicker, no duplicate), and Ctrl+D opens the full-screen context-debug view showing the raw LLM context window (role-tagged entries, the conversation verbatim, tool calls in the provider-native wire format — an assistant '→ name(args)' request plus a 'tool:' result entry) with q returning to the repainted conversation"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… (Ns) while it runs (no spinner status line — the elapsed rides the preview), no summary — a non-zero exit reports its status, Esc interrupts a long one (resolving ⎿ Interrupted by user with no 'Conversation interrupted' notice), multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary), and /resume picks up a saved session (every conversation records to a rollout JSONL file — session_meta line first, created lazily on the first user message — a later launch's /resume lists it in a full-screen picker with a humanized age and the first-user-message preview, Enter repaints the whole saved conversation inline and appends the turns that follow to the same file, /clear starts a fresh rollout so the next message lands in a new one, and the picker carries codex's Filter/Sort toolbar — 'Filter: [Cwd] All   Sort: [Updated] Created' on the search row, Tab + arrows toggling — with the selected row lit on a full-width background tint), and an Esc interrupt stays prompt even when the backend is slow to observe the cancel — under a stalled backend (INLINE_TUI_STALL_MS, ignoring the cancel for 3s) that streamed nothing, Esc undoes the no-output turn and settles within a frame (the status line clears and 'hello there' returns to the composer, no 'Conversation interrupted' notice) because the loop detaches the thread and swaps the reply channel instead of join()ing it (the interrupt-lag fix — no UI freeze), and slash-command confirmations and soft rejections surface as transient toasts above the box that self-clear after a few seconds instead of committing scrollback bullets (/copy confirms with a toast that then vanishes; /help and /resume run mid-turn are rejected with a toast; /model and /login now open their inline pickers mid-turn since they only swap the composer, never the running turn), and a resize reflow hides the hardware cursor before it homes/clears the screen and reshows it only at the prompt seat — so a terminal cursor-trail animation (kitty) can't streak from the top when the redraw drags the cursor around, and a mid-stream Ctrl+O round trip keeps the already-streamed partial reply on the restored screen (the repaint carries the stream's committed rows and catches up on what streamed under the overlay exactly once — no vanish, no flicker, no duplicate), and Ctrl+D opens the full-screen context-debug view showing the raw LLM context window (role-tagged entries, the conversation verbatim, tool calls in the provider-native wire format — an assistant '→ name(args)' request plus a 'tool:' result entry) with q returning to the repainted conversation, and the input history PERSISTS across sessions (a message submitted in one process is written to an append-only history.jsonl and, in a fresh process against the same file, Up recalls it and Ctrl+R finds it — both ↑/↓ recall and reverse-search span sessions like codex)"
 fi
 exit "$status"

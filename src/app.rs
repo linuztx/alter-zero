@@ -993,19 +993,83 @@ pub struct InputHistory {
     ///
     /// [`should_navigate`]: InputHistory::should_navigate
     last_recall: Option<String>,
+    /// Entries recorded *this session* that the boundary has not yet flushed to
+    /// the persistent history file, newest last — the "core queues, boundary
+    /// does the I/O" pattern (like `insert_before`'s pending lines). Filled by
+    /// [`record`] on a genuine append, drained by [`take_unpersisted`]. Seeded
+    /// entries (already on disk) never land here. See `docs/history-persistence.md`.
+    ///
+    /// [`record`]: InputHistory::record
+    /// [`take_unpersisted`]: InputHistory::take_unpersisted
+    unpersisted: Vec<String>,
+    /// The last text queued for (or seeded from) the persistent file — the
+    /// dedup target for persistence, kept **separate** from `entries`'s
+    /// in-memory dedup so a never-persisted [`record_ephemeral`] draft can't
+    /// suppress a genuine submission's write. See `docs/history-persistence.md`.
+    ///
+    /// [`record_ephemeral`]: InputHistory::record_ephemeral
+    last_persisted: Option<String>,
 }
 
 impl InputHistory {
-    /// Record a submitted (or Ctrl+C-cleared) input and exit browsing. Blank
-    /// texts are ignored and an entry identical to the newest is collapsed,
-    /// like codex's `record_local_submission`.
+    /// Record a submitted input and exit browsing, **queuing it for the
+    /// persistent history file**. Blank texts are ignored and an entry
+    /// identical to the newest is collapsed in memory, like codex's
+    /// `record_local_submission`. The persist dedup is against
+    /// [`last_persisted`], **not** `entries` — so a never-persisted
+    /// [`record_ephemeral`] draft can't mask a genuine submission's write (the
+    /// file still collapses adjacent duplicates). See `docs/history-persistence.md`.
+    ///
+    /// [`last_persisted`]: InputHistory::last_persisted
+    /// [`record_ephemeral`]: InputHistory::record_ephemeral
     pub fn record(&mut self, text: &str) {
+        self.record_inner(text);
+        if text.is_empty() || self.last_persisted.as_deref() == Some(text) {
+            return;
+        }
+        self.last_persisted = Some(text.to_string());
+        self.unpersisted.push(text.to_string());
+    }
+
+    /// Record an input that should recall this session but **never persist** —
+    /// the Ctrl+C-cleared draft. codex keeps cleared drafts in its in-session
+    /// `local_history` only, so an abandoned draft doesn't pollute the
+    /// cross-session history file, and it never advances [`last_persisted`]
+    /// (`docs/history-persistence.md`).
+    ///
+    /// [`last_persisted`]: InputHistory::last_persisted
+    pub fn record_ephemeral(&mut self, text: &str) {
+        self.record_inner(text);
+    }
+
+    /// The shared record body: exit browsing, drop blanks and adjacent
+    /// duplicates, append otherwise.
+    fn record_inner(&mut self, text: &str) {
         self.cursor = None;
         self.last_recall = None;
         if text.is_empty() || self.entries.last().is_some_and(|prev| prev == text) {
             return;
         }
         self.entries.push(text.to_string());
+    }
+
+    /// Seed `entries` from the persistent history file at startup (oldest
+    /// first). These are already on disk, so they are **not** queued for
+    /// persistence — but the newest seeded entry becomes the [`last_persisted`]
+    /// dedup target, so a first submission identical to it isn't re-written.
+    /// Both ↑/↓ recall and Ctrl+R search read `entries`, so seeding makes both
+    /// span sessions with no other change. See `docs/history-persistence.md`.
+    ///
+    /// [`last_persisted`]: InputHistory::last_persisted
+    pub fn seed(&mut self, entries: Vec<String>) {
+        self.last_persisted = entries.last().cloned();
+        self.entries = entries;
+    }
+
+    /// Drain the entries recorded this session that are not yet on disk, for
+    /// the boundary to append. See `docs/history-persistence.md`.
+    pub fn take_unpersisted(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.unpersisted)
     }
 
     /// Should an ↑/↓ press browse history instead of moving the cursor? Yes
@@ -1449,6 +1513,22 @@ impl App {
         self.clock = Some(clock);
     }
 
+    /// Seed the input history from the persistent file at startup (called once
+    /// at the I/O boundary, the [`set_clock`] pattern): both ↑/↓ recall and
+    /// Ctrl+R search then span past sessions. See `docs/history-persistence.md`.
+    ///
+    /// [`set_clock`]: App::set_clock
+    pub fn seed_input_history(&mut self, entries: Vec<String>) {
+        self.input_history.seed(entries);
+    }
+
+    /// Drain the inputs recorded this session that are not yet on disk, for the
+    /// boundary to append to the persistent history file (called once per loop
+    /// iteration beside `recorder.sync`). See `docs/history-persistence.md`.
+    pub fn take_unpersisted_inputs(&mut self) -> Vec<String> {
+        self.input_history.take_unpersisted()
+    }
+
     /// Inject the session context shown in the footer under the input box
     /// (called once at the I/O boundary in `main.rs`, like [`set_clock`]):
     /// the backend's model name and the display-ready working directory.
@@ -1743,13 +1823,16 @@ impl App {
             if self.view == View::Conversation && !self.input.is_empty() {
                 // Record the cleared draft so ↑ can bring it back (codex's
                 // clear_for_ctrl_c does the same). A shell-mode draft re-gains
-                // its `!` so the recall re-enters the mode.
+                // its `!` so the recall re-enters the mode. Recorded
+                // *ephemerally*: a cleared, abandoned draft recalls this session
+                // but is not persisted (codex keeps cleared drafts in
+                // local_history only — docs/history-persistence.md).
                 let mut text = self.take_input();
                 if self.shell_mode {
                     self.shell_mode = false;
                     text = format!("!{text}");
                 }
-                self.input_history.record(&text);
+                self.input_history.record_ephemeral(&text);
                 self.command_menu = None; // an emptied input can't be a /token
                 self.file_search = None; // …nor an @token, so close the picker too
                 return Action::None;
@@ -4864,6 +4947,142 @@ mod tests {
         let mut history = InputHistory::default();
         history.record("");
         assert_eq!(history.up(), None, "nothing to recall");
+    }
+
+    #[test]
+    fn record_queues_the_entry_for_persistence() {
+        let mut history = InputHistory::default();
+        history.record("git status");
+        history.record("cargo test");
+        assert_eq!(
+            history.take_unpersisted(),
+            ["git status", "cargo test"],
+            "each genuine append queues its text for the boundary to flush"
+        );
+        assert!(
+            history.take_unpersisted().is_empty(),
+            "draining twice yields nothing the second time"
+        );
+    }
+
+    #[test]
+    fn blank_and_duplicate_records_queue_nothing() {
+        let mut history = InputHistory::default();
+        history.record("");
+        history.record("dup");
+        history.record("dup"); // adjacent duplicate, collapsed
+        assert_eq!(
+            history.take_unpersisted(),
+            ["dup"],
+            "only the one genuine append is queued (blanks + dups are not)"
+        );
+    }
+
+    #[test]
+    fn record_ephemeral_records_but_never_queues_for_disk() {
+        let mut history = InputHistory::default();
+        history.record_ephemeral("cleared draft");
+        assert_eq!(
+            history.up(),
+            Some("cleared draft".to_string()),
+            "an ephemerally-recorded draft still recalls this session"
+        );
+        assert!(
+            history.take_unpersisted().is_empty(),
+            "but it is never queued for the persistent file (codex parity)"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_cleared_draft_is_not_persisted() {
+        // The cleared draft recalls this session (see the test above) but must
+        // not reach disk — it goes through record_ephemeral.
+        let mut app = App::new();
+        app.input = TextArea::from_text("abandoned");
+        app.on_key(ctrl('c'));
+        assert!(
+            app.take_unpersisted_inputs().is_empty(),
+            "a Ctrl+C-cleared draft is recorded ephemerally, never persisted"
+        );
+    }
+
+    #[test]
+    fn submitted_and_queued_inputs_are_persisted() {
+        let mut app = App::new();
+        submit(&mut app, "sent message");
+        assert_eq!(
+            app.take_unpersisted_inputs(),
+            ["sent message"],
+            "an idle submit persists its text"
+        );
+    }
+
+    #[test]
+    fn seed_populates_entries_without_queuing_them() {
+        let mut app = App::new();
+        app.seed_input_history(vec!["old-a".to_string(), "old-b".to_string()]);
+        assert!(
+            app.take_unpersisted_inputs().is_empty(),
+            "seeded entries are already on disk — never re-queued"
+        );
+        // Both recall and search see the seeded entries.
+        app.on_key(key(KeyCode::Up));
+        assert_eq!(
+            app.input.text(),
+            "old-b",
+            "↑ recalls the newest seeded entry"
+        );
+        assert_eq!(
+            app.input_history.search("old"),
+            vec![1, 0],
+            "Ctrl+R search spans the seeded (cross-session) entries"
+        );
+    }
+
+    #[test]
+    fn a_sent_message_duplicating_a_cleared_draft_is_still_persisted() {
+        // A Ctrl+C-cleared draft is recorded ephemerally (not persisted). If the
+        // user then sends the SAME text, the persist dedup is against
+        // last_persisted (None here), NOT the ephemeral entries tail — so the
+        // genuine submission still reaches disk. (The in-memory entries collapse
+        // the visual duplicate; persistence does not.)
+        let mut app = App::new();
+        app.input = TextArea::from_text("deploy prod");
+        app.on_key(ctrl('c')); // ephemeral clear — nothing to persist
+        assert!(app.take_unpersisted_inputs().is_empty());
+        submit(&mut app, "deploy prod"); // the same text, genuinely sent
+        assert_eq!(
+            app.take_unpersisted_inputs(),
+            ["deploy prod"],
+            "a sent message is persisted even when it duplicates a cleared ephemeral draft"
+        );
+    }
+
+    #[test]
+    fn a_resent_message_is_not_re_persisted_adjacently() {
+        // The persist stream still collapses adjacent duplicates (like the file
+        // dedup): sending the same text twice in a row writes it once.
+        let mut app = App::new();
+        submit(&mut app, "again");
+        submit(&mut app, "again");
+        assert_eq!(
+            app.take_unpersisted_inputs(),
+            ["again"],
+            "an immediately re-sent message is persisted once, not twice"
+        );
+    }
+
+    #[test]
+    fn a_seeded_duplicate_of_the_first_submission_is_not_re_persisted() {
+        // Seed the last entry, then submit the same text: record collapses it
+        // (adjacent duplicate) and queues nothing, so it isn't written twice.
+        let mut app = App::new();
+        app.seed_input_history(vec!["repeat".to_string()]);
+        submit(&mut app, "repeat");
+        assert!(
+            app.take_unpersisted_inputs().is_empty(),
+            "a submission identical to the newest seeded entry is not re-persisted"
+        );
     }
 
     #[test]
