@@ -109,12 +109,19 @@ fn is_thematic_break(line: &str, prev_blank: bool) -> bool {
     }
 }
 
-// --- Markdown table styling (docs/markdown.md). A GFM pipe table renders as a
-// box-drawing grid: dim borders, bold header cells. The block is held back until
-// complete — a later row can widen a column, so a table is not prefix-stable
-// (see `AssistantRenderer`/`StreamRender`). ---
+// --- Markdown table styling (docs/markdown.md, docs/table-streaming.md). A GFM
+// pipe table renders as a box-drawing grid: dim borders, bold header cells.
+// Column widths are locked from the header + first data row (fit to the width),
+// so once the first row streams the block is prefix-stable and its rows commit
+// to scrollback one at a time; every cell **word-wraps** into its column (taller
+// rows) instead of truncating with `…` when the grid is narrow, matching codex.
+// See `AssistantRenderer`/`StreamRender`. ---
 /// Dim colour of a table's box-drawing borders (`│ ─ ┌┬┐ ├┼┤ └┴┘`).
 const TABLE_BORDER_COLOR: Color = TOOL_DIM_COLOR;
+/// The floor a table column shrinks to before its cells word-wrap (codex uses 3):
+/// a narrow column keeps at least this many display columns, and cells wrap into
+/// it across multiple rows rather than losing text to a `…`.
+const TABLE_MIN_COL: usize = 3;
 
 // --- Inline markdown styling (docs/markdown.md). A prose line's `**bold**`,
 // `*italic*`, `~~strike~~`, `` `code` `` and `[text](url)` render with these;
@@ -1473,87 +1480,219 @@ fn push_piece(row: &mut Vec<(String, Style)>, text: &str, style: Style) {
     row.push((text.to_string(), style));
 }
 
-/// Render a buffered GFM pipe table into box-drawing content rows
-/// (`docs/markdown.md`). `lines[0]` is the header row, `lines[1]` the delimiter
-/// (its column count and [`markdown::Alignment`]s govern the grid) and `lines[2..]`
-/// the data rows. Column widths are each column's widest cell, shrunk to fit
-/// `width` when the natural grid overflows (cells then truncated with `…`).
-/// Borders render dim, header cells bold. A table is emitted **whole** — a later
-/// row can widen a column, so it is not prefix-stable and [`AssistantRenderer`]
-/// holds it back until it closes.
-fn table_content_rows(lines: &[String], width: u16) -> Vec<Vec<Span<'static>>> {
-    let aligns: Vec<markdown::Alignment> = lines
-        .get(1)
-        .and_then(|l| markdown::table_delimiter(l))
-        .unwrap_or_default();
-    if aligns.is_empty() {
-        return Vec::new(); // not a confirmed table (never reached in practice)
-    }
-    let ncols = aligns.len();
+/// Normalise a raw table `line` to exactly `ncols` styled cells under `base`
+/// (bold for a header, plain for data): pad missing cells empty, drop extras,
+/// each inline-parsed like prose so `` `code` `` / `**bold**` render styled.
+fn normalize_row(line: &str, ncols: usize, base: Style) -> Vec<Vec<(String, Style)>> {
+    let cells = markdown::table_cells(line);
+    (0..ncols)
+        .map(|i| table_cell_segments(cells.get(i).map_or("", String::as_str), base))
+        .collect()
+}
 
-    // Every row normalised to exactly `ncols` cells (pad short rows, drop
-    // extra), each inline-parsed into styled segments so a cell's `` `code` ``
-    // and `**bold**` render like prose (docs/markdown.md). Header cells are bold.
-    let header_style = Style::new().add_modifier(Modifier::BOLD);
-    let fit_row = |line: &str, base: Style| -> Vec<Vec<(String, Style)>> {
-        let cells = markdown::table_cells(line);
-        (0..ncols)
-            .map(|i| table_cell_segments(cells.get(i).map_or("", String::as_str), base))
-            .collect()
-    };
-    let header = lines
-        .first()
-        .map_or_else(|| vec![Vec::new(); ncols], |l| fit_row(l, header_style));
-    let data: Vec<Vec<Vec<(String, Style)>>> = lines
+/// The per-column natural (unwrapped) width — the widest *rendered* cell over
+/// `rows` (each already `ncols` styled cells), floored at 1.
+fn natural_col_widths(rows: &[Vec<Vec<(String, Style)>>], ncols: usize) -> Vec<usize> {
+    let mut w = vec![1usize; ncols];
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            w[i] = w[i].max(segments_cols(cell));
+        }
+    }
+    w
+}
+
+/// Allocate the per-column widths for a grid that must fit `avail` display
+/// columns, given each column's `natural` (widest cell) width. When the natural
+/// grid fits, the natural widths are returned (a tight, one-row-per-line grid).
+/// When it overflows, the available content width is distributed across columns
+/// **proportionally to their natural width** — so a wide column stays wide, like
+/// codex/img2 — floored at [`TABLE_MIN_COL`]; those shrunk widths are **wrap**
+/// widths, so cells word-wrap into them (taller rows) rather than truncating
+/// with a `…` (docs/table-streaming.md).
+fn allocate_column_widths(natural: &[usize], avail: usize) -> Vec<usize> {
+    let n = natural.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let overhead = 3 * n + 1; // `│`×(n+1) plus two pad spaces × n
+    let content_avail = avail.saturating_sub(overhead);
+    let total: usize = natural.iter().sum();
+    if total == 0 || total <= content_avail {
+        return natural.to_vec();
+    }
+    let floor = TABLE_MIN_COL.min(content_avail / n).max(1);
+    let mut w: Vec<usize> = natural
         .iter()
-        .skip(2)
-        .map(|l| fit_row(l, Style::new()))
+        .map(|&nat| ((nat * content_avail) / total).max(floor))
         .collect();
-
-    // Natural column widths = widest *rendered* cell (markers stripped), ≥1.
-    let mut col_w = vec![1usize; ncols];
-    for row in std::iter::once(&header).chain(&data) {
-        for (i, cell) in row.iter().enumerate() {
-            col_w[i] = col_w[i].max(segments_cols(cell));
+    // Reconcile the sum to `content_avail`: the floored proportional shares may
+    // over- or undershoot. Trim the widest column above the floor when over;
+    // hand any slack to the widest-natural columns first when under (so the
+    // proportions the shrink was meant to preserve survive the rounding).
+    let mut sum: usize = w.iter().sum();
+    while sum > content_avail {
+        let Some(i) = w
+            .iter()
+            .enumerate()
+            .filter(|&(_, &x)| x > floor)
+            .max_by_key(|&(_, &x)| x)
+            .map(|(i, _)| i)
+        else {
+            break; // every column already at the floor — unavoidable at tiny widths
+        };
+        w[i] -= 1;
+        sum -= 1;
+    }
+    if sum < content_avail {
+        let mut order: Vec<usize> = (0..n).collect();
+        order.sort_by(|&a, &b| natural[b].cmp(&natural[a]));
+        let mut k = 0usize;
+        while sum < content_avail {
+            w[order[k % n]] += 1;
+            sum += 1;
+            k += 1;
         }
     }
-    shrink_table_columns(&mut col_w, width as usize);
+    w
+}
 
+/// A table border row: `left` + per-column `─`×(w+2) joined by `mid`, then
+/// `right` — e.g. `┌──┬──┐` / `├──┼──┤` / `└──┴──┘`, rendered dim.
+fn table_border_row(col_w: &[usize], left: char, mid: char, right: char) -> Vec<Span<'static>> {
+    let mut s = String::new();
+    s.push(left);
+    for (i, &w) in col_w.iter().enumerate() {
+        if i > 0 {
+            s.push(mid);
+        }
+        s.extend(std::iter::repeat_n('─', w + 2));
+    }
+    s.push(right);
+    vec![Span::styled(s, Style::new().fg(TABLE_BORDER_COLOR))]
+}
+
+/// Render one table row (its per-column styled `cells`) into box-drawing content
+/// rows, each cell **word-wrapped** into its column width via [`wrap_inline`]
+/// (which hard-breaks an over-wide token grapheme-by-grapheme, like codex/img2).
+/// Returns as many rows as the tallest wrapped cell — so a data row spans several
+/// rows when its cells wrap — each `│`-framed with single-space margins, its
+/// styled segments padded/aligned per column, blank where a shorter cell has no
+/// line for that row.
+fn table_row_lines(
+    cells: &[Vec<(String, Style)>],
+    col_w: &[usize],
+    aligns: &[markdown::Alignment],
+) -> Vec<Vec<Span<'static>>> {
     let border = Style::new().fg(TABLE_BORDER_COLOR);
-    // A border row: `left` + per-column `─`×(w+2) joined by `mid`, then `right`.
-    let border_row = |left: char, mid: char, right: char| -> Vec<Span<'static>> {
-        let mut s = String::new();
-        s.push(left);
-        for (i, &w) in col_w.iter().enumerate() {
-            if i > 0 {
-                s.push(mid);
+    let wrapped: Vec<Vec<Vec<Span<'static>>>> = cells
+        .iter()
+        .enumerate()
+        .map(|(i, cell)| wrap_inline(cell, col_w[i] as u16))
+        .collect();
+    let height = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    (0..height)
+        .map(|r| {
+            let mut spans = vec![Span::styled("│".to_string(), border)];
+            for (i, cell_rows) in wrapped.iter().enumerate() {
+                spans.push(Span::raw(" "));
+                let line = cell_rows.get(r).cloned().unwrap_or_default();
+                spans.extend(pad_cell_line(line, col_w[i], aligns[i]));
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled("│".to_string(), border));
             }
-            s.extend(std::iter::repeat_n('─', w + 2));
-        }
-        s.push(right);
-        vec![Span::styled(s, border)]
-    };
-    // A content row: `│`-separated cells, each single-space-margined and
-    // aligned/truncated to its column width, its styled segments preserved.
-    let content_row = |row: &[Vec<(String, Style)>]| -> Vec<Span<'static>> {
-        let mut spans = vec![Span::styled("│".to_string(), border)];
-        for (i, cell) in row.iter().enumerate() {
-            spans.push(Span::raw(" "));
-            spans.extend(fit_cell_spans(cell, col_w[i], aligns[i]));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled("│".to_string(), border));
-        }
-        spans
-    };
+            spans
+        })
+        .collect()
+}
 
-    let mut rows = Vec::with_capacity(data.len() + 4);
-    rows.push(border_row('┌', '┬', '┐'));
-    rows.push(content_row(&header));
-    rows.push(border_row('├', '┼', '┤'));
-    for r in &data {
-        rows.push(content_row(r));
+/// Pad a wrapped cell sub-line's `spans` to `w` columns per `align` — no
+/// truncation, since [`wrap_inline`] already fit it to `w`. Padding is
+/// default-styled (an invisible space).
+fn pad_cell_line(
+    spans: Vec<Span<'static>>,
+    w: usize,
+    align: markdown::Alignment,
+) -> Vec<Span<'static>> {
+    let body_w: usize = spans.iter().map(|s| cols(&s.content)).sum();
+    let pad = w.saturating_sub(body_w);
+    let (left, right) = match align {
+        markdown::Alignment::Right => (pad, 0),
+        markdown::Alignment::Center => (pad / 2, pad - pad / 2),
+        markdown::Alignment::Left | markdown::Alignment::None => (0, pad),
+    };
+    let mut out = Vec::with_capacity(spans.len() + 2);
+    if left > 0 {
+        out.push(Span::raw(" ".repeat(left)));
     }
-    rows.push(border_row('└', '┴', '┘'));
+    out.extend(spans);
+    if right > 0 {
+        out.push(Span::raw(" ".repeat(right)));
+    }
+    out
+}
+
+/// Lock the per-column widths for a table from its `header` (+ optional first
+/// data row) fit to `content_width` — the widths every row then wraps into. The
+/// streaming renderer locks at the first data row so later rows can't widen a
+/// column (keeping the block prefix-stable — docs/table-streaming.md).
+fn lock_widths_for(
+    header: &str,
+    first_row: Option<&str>,
+    ncols: usize,
+    content_width: u16,
+) -> Vec<usize> {
+    let header_style = Style::new().add_modifier(Modifier::BOLD);
+    let mut rows = vec![normalize_row(header, ncols, header_style)];
+    if let Some(r) = first_row {
+        rows.push(normalize_row(r, ncols, Style::default()));
+    }
+    allocate_column_widths(&natural_col_widths(&rows, ncols), content_width as usize)
+}
+
+/// The opening rows of a table: the top border, the (word-wrapped, bold) header
+/// row, and the header/body separator.
+fn table_open_rows(
+    header: &str,
+    col_w: &[usize],
+    aligns: &[markdown::Alignment],
+) -> Vec<Vec<Span<'static>>> {
+    let header_style = Style::new().add_modifier(Modifier::BOLD);
+    let header_cells = normalize_row(header, aligns.len(), header_style);
+    let mut out = vec![table_border_row(col_w, '┌', '┬', '┐')];
+    out.extend(table_row_lines(&header_cells, col_w, aligns));
+    out.push(table_border_row(col_w, '├', '┼', '┤'));
+    out
+}
+
+/// Render a **complete** GFM pipe table into box-drawing content rows
+/// (`docs/markdown.md`). `lines[0]` is the header, `lines[1]` the delimiter (its
+/// column count + [`markdown::Alignment`]s govern the grid) and `lines[2..]` the
+/// data rows. Column widths are locked from the header + first data row (fit to
+/// `width`) and cells word-wrap into them; the streaming [`AssistantRenderer`]
+/// emits the same rows incrementally through the same helpers, so batch and
+/// streaming never disagree (docs/table-streaming.md). A test-only convenience —
+/// production renders every table incrementally via [`AssistantRenderer`].
+#[cfg(test)]
+fn table_content_rows(lines: &[String], width: u16) -> Vec<Vec<Span<'static>>> {
+    let Some(aligns) = lines.get(1).and_then(|l| markdown::table_delimiter(l)) else {
+        return Vec::new(); // not a confirmed table (never reached in practice)
+    };
+    let ncols = aligns.len();
+    if ncols == 0 {
+        return Vec::new();
+    }
+    let header = lines.first().map_or("", String::as_str);
+    let col_w = lock_widths_for(header, lines.get(2).map(String::as_str), ncols, width);
+    let mut rows = table_open_rows(header, &col_w, &aligns);
+    for line in lines.iter().skip(2) {
+        rows.extend(table_row_lines(
+            &normalize_row(line, ncols, Style::default()),
+            &col_w,
+            &aligns,
+        ));
+    }
+    rows.push(table_border_row(&col_w, '└', '┴', '┘'));
     rows
 }
 
@@ -1568,94 +1707,6 @@ fn table_cell_segments(cell: &str, base: Style) -> Vec<(String, Style)> {
 /// column sizes to `foo.db`, not `` `foo.db` ``).
 fn segments_cols(segments: &[(String, Style)]) -> usize {
     segments.iter().map(|(t, _)| cols(t)).sum()
-}
-
-/// Fit a cell's styled `segments` into `w` display columns for a table grid:
-/// truncate with a trailing `…` when they overflow, then pad with spaces per
-/// `align`. Returns the cell body spans (the caller adds the ` ` margins and
-/// `│` borders); padding is default-styled — an invisible space.
-fn fit_cell_spans(
-    segments: &[(String, Style)],
-    w: usize,
-    align: markdown::Alignment,
-) -> Vec<Span<'static>> {
-    let (fitted, body_w) = truncate_segments(segments, w);
-    let pad = w.saturating_sub(body_w);
-    let (left, right) = match align {
-        markdown::Alignment::Right => (pad, 0),
-        markdown::Alignment::Center => (pad / 2, pad - pad / 2),
-        markdown::Alignment::Left | markdown::Alignment::None => (0, pad),
-    };
-    let mut spans = Vec::with_capacity(fitted.len() + 2);
-    if left > 0 {
-        spans.push(Span::raw(" ".repeat(left)));
-    }
-    spans.extend(fitted.into_iter().map(|(t, s)| Span::styled(t, s)));
-    if right > 0 {
-        spans.push(Span::raw(" ".repeat(right)));
-    }
-    spans
-}
-
-/// Truncate styled `segments` to at most `w` display columns, appending a `…`
-/// when they overflow (grapheme-aware, like [`truncate_cols`], but span-styled).
-/// Returns the kept pieces and their total display width (≤ `w`).
-fn truncate_segments(segments: &[(String, Style)], w: usize) -> (Vec<(String, Style)>, usize) {
-    let total = segments_cols(segments);
-    if total <= w {
-        return (segments.to_vec(), total);
-    }
-    if w == 0 {
-        return (Vec::new(), 0);
-    }
-    let limit = w - 1; // leave a column for the `…`
-    let mut out: Vec<(String, Style)> = Vec::new();
-    let mut used = 0usize;
-    // Stop at the first grapheme that doesn't fit — like [`truncate_cols`],
-    // preserving left-to-right order (never skip a too-wide grapheme to pull in
-    // a later narrow one, which would reorder the cell's content).
-    'outer: for (t, s) in segments {
-        let mut piece = String::new();
-        for g in t.graphemes(true) {
-            if used + cols(g) > limit {
-                if !piece.is_empty() {
-                    out.push((piece, *s));
-                }
-                break 'outer;
-            }
-            piece.push_str(g);
-            used += cols(g);
-        }
-        if !piece.is_empty() {
-            out.push((piece, *s));
-        }
-    }
-    out.push(("…".to_string(), Style::default()));
-    (out, used + 1)
-}
-
-/// Shrink `col_w` in place until the full grid — `1 + Σ(w+2) + (ncols-1)` border
-/// and padding columns — fits `avail`, always trimming the widest column first
-/// and never below one column. Best-effort: if every column is already at the
-/// floor the grid may still overflow (unavoidable at tiny widths).
-fn shrink_table_columns(col_w: &mut [usize], avail: usize) {
-    let overhead = 1 + 3 * col_w.len(); // `│`×(n+1) plus two pad spaces × n
-    loop {
-        let total = col_w.iter().sum::<usize>() + overhead;
-        if total <= avail {
-            return;
-        }
-        let widest = col_w
-            .iter()
-            .enumerate()
-            .filter(|&(_, &w)| w > 1)
-            .max_by_key(|&(_, &w)| w)
-            .map(|(i, _)| i);
-        match widest {
-            Some(i) => col_w[i] -= 1,
-            None => return, // every column already at the floor
-        }
-    }
 }
 
 /// Build an assistant reply's lines, markdown-aware (`docs/markdown.md`):
@@ -1760,19 +1811,31 @@ struct AssistantRenderer {
     table: TableState,
 }
 
-/// The [`AssistantRenderer`]'s GFM-table accumulator. A candidate header is held
-/// in `PendingHeader` until the next line confirms it (a matching
-/// [`markdown::table_delimiter`]) — the one-line lookahead a pipe table needs —
-/// then rows accumulate in `Active` until a non-table line closes the block.
+/// The [`AssistantRenderer`]'s GFM-table state machine (docs/table-streaming.md).
+/// A candidate header is held in `PendingHeader` until the next line confirms it
+/// (a matching [`markdown::table_delimiter`]) — the one-line lookahead a pipe
+/// table needs — then `AwaitingRow` waits for the first data row so column widths
+/// can be locked from the header **plus** that row. Once locked (`Streaming`),
+/// every row wraps into the fixed widths and is emitted immediately, so the block
+/// is prefix-stable and its rows commit to scrollback one at a time.
 #[derive(Clone)]
 enum TableState {
     /// Not inside a table.
     None,
     /// A row that *looks* like a table header, buffered pending its delimiter.
     PendingHeader(String),
-    /// A confirmed table: `lines[0]` header, `lines[1]` delimiter, `lines[2..]`
-    /// data rows accumulated so far.
-    Active { lines: Vec<String> },
+    /// Header + delimiter confirmed; awaiting the first data row to lock column
+    /// widths before any row is emitted. `aligns` are the delimiter's alignments.
+    AwaitingRow {
+        header: String,
+        aligns: Vec<markdown::Alignment>,
+    },
+    /// Column widths locked; each subsequent row streams immediately (a later row
+    /// wraps into `col_w`, never widening it). `col_w.len() == aligns.len()`.
+    Streaming {
+        col_w: Vec<usize>,
+        aligns: Vec<markdown::Alignment>,
+    },
 }
 
 impl AssistantRenderer {
@@ -1944,11 +2007,14 @@ impl AssistantRenderer {
             .collect()
     }
 
-    /// Run the GFM-table state machine for a prose `line` (`docs/markdown.md`):
-    /// buffer a candidate header, confirm it against the next line's delimiter,
-    /// accumulate rows, and flush the finished table when a non-table line closes
-    /// it — recursing to render that closing line in place. Returns the rows to
-    /// emit now (empty while a row is being buffered).
+    /// Run the GFM-table state machine for a prose `line`
+    /// (docs/table-streaming.md): buffer a candidate header, confirm it against
+    /// the next line's delimiter, then **lock column widths at the first data
+    /// row** and emit the opening + that row; each further row streams straight
+    /// away (wrapped into the locked widths), and a non-table line closes the
+    /// block with the bottom border — recursing to render that closing line in
+    /// place. Returns the rows to emit now (empty only while buffering the header
+    /// and delimiter, before the widths are locked).
     fn prose_or_table(&mut self, line: &str, was_blank: bool) -> Vec<Vec<Span<'static>>> {
         match std::mem::replace(&mut self.table, TableState::None) {
             TableState::None => {
@@ -1961,11 +2027,10 @@ impl AssistantRenderer {
             }
             TableState::PendingHeader(header) => {
                 let ncols = markdown::table_cells(&header).len();
-                if markdown::table_delimiter(line).is_some_and(|a| a.len() == ncols) {
-                    // Header + a matching delimiter → a confirmed table.
-                    self.table = TableState::Active {
-                        lines: vec![header, line.to_string()],
-                    };
+                if let Some(aligns) = markdown::table_delimiter(line).filter(|a| a.len() == ncols) {
+                    // Header + a matching delimiter → confirmed; wait for the
+                    // first data row before locking widths (and emitting anything).
+                    self.table = TableState::AwaitingRow { header, aligns };
                     Vec::new()
                 } else {
                     // Not a table — the buffered header was ordinary prose (a line
@@ -1976,15 +2041,43 @@ impl AssistantRenderer {
                     out
                 }
             }
-            TableState::Active { mut lines } => {
+            TableState::AwaitingRow { header, aligns } => {
                 if markdown::is_table_row(line) {
-                    lines.push(line.to_string());
-                    self.table = TableState::Active { lines };
-                    Vec::new()
+                    // The first data row: lock widths from header + this row, emit
+                    // the opening (top border, header, separator) then this row.
+                    let col_w =
+                        lock_widths_for(&header, Some(line), aligns.len(), self.content_width);
+                    let mut out = table_open_rows(&header, &col_w, &aligns);
+                    out.extend(table_row_lines(
+                        &normalize_row(line, aligns.len(), Style::default()),
+                        &col_w,
+                        &aligns,
+                    ));
+                    self.table = TableState::Streaming { col_w, aligns };
+                    out
                 } else {
-                    // A non-table line closes the block: render the whole table,
-                    // then process the closing line in place.
-                    let mut out = table_content_rows(&lines, self.content_width);
+                    // A header-only table (no data rows) — lock from the header,
+                    // emit the opening + bottom border, then the closing line.
+                    let col_w = lock_widths_for(&header, None, aligns.len(), self.content_width);
+                    let mut out = table_open_rows(&header, &col_w, &aligns);
+                    out.push(table_border_row(&col_w, '└', '┴', '┘'));
+                    out.extend(self.prose_or_table(line, was_blank));
+                    out
+                }
+            }
+            TableState::Streaming { col_w, aligns } => {
+                if markdown::is_table_row(line) {
+                    let out = table_row_lines(
+                        &normalize_row(line, aligns.len(), Style::default()),
+                        &col_w,
+                        &aligns,
+                    );
+                    self.table = TableState::Streaming { col_w, aligns };
+                    out
+                } else {
+                    // A non-table line closes the block with the bottom border,
+                    // then renders in place.
+                    let mut out = vec![table_border_row(&col_w, '└', '┴', '┘')];
                     out.extend(self.prose_or_table(line, was_blank));
                     out
                 }
@@ -1992,15 +2085,24 @@ impl AssistantRenderer {
         }
     }
 
-    /// Emit any buffered table as finished rows, clearing the accumulator — called
-    /// when a code fence closes an in-progress table (and by [`Self::flush`] at
-    /// end-of-message). A never-confirmed `PendingHeader` renders as the plain
-    /// prose line it actually was.
+    /// Emit any open table's remaining rows, clearing the state — called when a
+    /// code fence interrupts a table (and by [`Self::flush`] at end-of-message).
+    /// A never-confirmed `PendingHeader` renders as the plain prose line it
+    /// actually was; an `AwaitingRow` (header only) or a `Streaming` table emits
+    /// its (opening +) bottom border to close the grid.
     fn flush_table(&mut self) -> Vec<Vec<Span<'static>>> {
         match std::mem::replace(&mut self.table, TableState::None) {
             TableState::None => Vec::new(),
             TableState::PendingHeader(header) => self.render_prose_line(&header, false),
-            TableState::Active { lines } => table_content_rows(&lines, self.content_width),
+            TableState::AwaitingRow { header, aligns } => {
+                let col_w = lock_widths_for(&header, None, aligns.len(), self.content_width);
+                let mut out = table_open_rows(&header, &col_w, &aligns);
+                out.push(table_border_row(&col_w, '└', '┴', '┘'));
+                out
+            }
+            TableState::Streaming { col_w, .. } => {
+                vec![table_border_row(&col_w, '└', '┴', '┘')]
+            }
         }
     }
 
@@ -2009,6 +2111,29 @@ impl AssistantRenderer {
     /// call this, so a trailing table (one with no closing line) still renders.
     fn flush(&mut self) -> Vec<Line<'static>> {
         let rows = self.flush_table();
+        self.stamp(rows)
+    }
+
+    /// The open table's rows SO FAR for the streaming **preview** — like
+    /// [`flush_table`] but **without the closing bottom border**, because that
+    /// border isn't real until the block ends (emitting it mid-stream floated a
+    /// `└──┘` above the box). A `PendingHeader` shows the forming header as prose;
+    /// an `AwaitingRow` shows the top border + header + separator; a `Streaming`
+    /// table's rows already streamed, so it adds nothing here (docs/table-streaming.md).
+    fn flush_table_preview(&mut self) -> Vec<Vec<Span<'static>>> {
+        match std::mem::replace(&mut self.table, TableState::None) {
+            TableState::None | TableState::Streaming { .. } => Vec::new(),
+            TableState::PendingHeader(header) => self.render_prose_line(&header, false),
+            TableState::AwaitingRow { header, aligns } => {
+                let col_w = lock_widths_for(&header, None, aligns.len(), self.content_width);
+                table_open_rows(&header, &col_w, &aligns)
+            }
+        }
+    }
+
+    /// [`flush_table_preview`], stamped — the preview counterpart of [`flush`].
+    fn flush_preview(&mut self) -> Vec<Line<'static>> {
+        let rows = self.flush_table_preview();
         self.stamp(rows)
     }
 
@@ -2021,11 +2146,24 @@ impl AssistantRenderer {
         self.highlighter.is_some()
     }
 
-    /// Whether an in-progress table is buffered (a `PendingHeader` or `Active`
-    /// block). Its rows are held back — a later row can widen a column, so the
-    /// block is not prefix-stable — so [`StreamRender`] withholds the trailing
-    /// line while this holds, exactly like [`Self::in_code`].
+    /// Whether a table is still **buffering** before its column widths are locked
+    /// (`PendingHeader`/`AwaitingRow`) — the phase that emits no rows, so
+    /// [`StreamRender`] withholds the trailing line while it holds, like
+    /// [`Self::in_code`]. Once locked (`Streaming`) rows stream normally, so this
+    /// is `false` there — a partial trailing row is instead held back by the
+    /// [`markdown::is_table_row`] check in [`StreamRender::commit`].
     fn in_table(&self) -> bool {
+        matches!(
+            self.table,
+            TableState::PendingHeader(_) | TableState::AwaitingRow { .. }
+        )
+    }
+
+    /// Whether *any* table is open (buffering or streaming) — so feeding a blank
+    /// trailing line would close it and emit a bottom border. The streaming
+    /// [`StreamRender::preview`] uses this to avoid floating a premature `└──┘`
+    /// above the box on a chunk boundary (docs/table-streaming.md).
+    fn has_open_table(&self) -> bool {
         !matches!(self.table, TableState::None)
     }
 
@@ -4685,9 +4823,18 @@ impl StreamRender {
     }
 
     /// The rows of the still-growing trailing partial line, rendered without
-    /// disturbing the renderer's state (a cheap clone peek — O(one line)).
+    /// disturbing the renderer's state (a cheap clone peek — O(one line)). An
+    /// **empty** trailing line inside an open table is NOT fed: doing so would
+    /// close the table on the clone and pull its bottom border into `commit`'s
+    /// stable range (committing the last data row that the strip is previewing —
+    /// a duplicate). The border only becomes real at `finish` (docs/table-streaming.md).
     fn tail_rows(&self, text: &str) -> Vec<Line<'static>> {
-        self.renderer.clone().feed_line(&text[self.consumed..])
+        let tail_src = &text[self.consumed..];
+        let mut clone = self.renderer.clone();
+        if tail_src.is_empty() && clone.has_open_table() {
+            return Vec::new();
+        }
+        clone.feed_line(tail_src)
     }
 
     /// Take rows `[committed, stable)` of the virtual `frozen ++ tail`
@@ -4729,11 +4876,13 @@ impl StreamRender {
         //    style — isn't settled (another `#` deepens it, a 7th flips it to
         //    prose), so at a width narrower than the run its wrapped rows must
         //    not reach scrollback yet; and
-        //  - a **table** being buffered (`in_table`), or a trailing line that is a
-        //    fresh table-row candidate (`is_table_row`): a later row can widen a
-        //    column, so the whole block is held back and committed at once when it
-        //    closes (`docs/markdown.md`). Its rows aren't in `frozen` yet, so this
-        //    branch commits only the settled pre-table rows; and
+        //  - a **table still buffering** its header/delimiter before the widths
+        //    lock (`in_table`): no rows are emitted yet, so this commits only the
+        //    settled pre-table rows. Once the widths lock at the first data row
+        //    the block is prefix-stable and streams like prose — but a **partial
+        //    trailing table row** (`is_table_row`) is still withheld whole, since
+        //    committing an early wrapped row of a growing row could change once
+        //    the rest of the row arrives (docs/table-streaming.md); and
         //  - a trailing line with an **open inline marker** (`has_open_inline` —
         //    an unclosed `**`/`*`/`~~`/`` ` ``/`[`): its closer could still restyle
         //    an already-wrapped row, so the whole line is withheld until it settles
@@ -4892,11 +5041,26 @@ impl StreamRender {
         // rendered (a trailing `` ``` `` opens a fence, so a blank before it is
         // kept, not trimmed).
         let mut clone = self.renderer.clone();
-        let mut tail = clone.feed_line(&text[self.consumed..]);
-        // Flush a buffered table (or pending header) on the clone so the preview
-        // matches the batch render, which flushes at end-of-message; without this
-        // the strip would show the pre-table content while a table streams.
-        tail.extend(clone.flush());
+        // An empty trailing line (a chunk boundary that ended right after a
+        // newline) is *not* fed: feeding it would close an open table on the clone
+        // and float a premature `└──┘` bottom border above the box (the reported
+        // artifact). A streaming table's rows already commit to scrollback one at
+        // a time, so the last emitted row (in `frozen`) is the right thing to
+        // preview then. We also deliberately do **not** flush the clone — a
+        // table's closing border is only real once the block ends, so mid-stream
+        // the preview shows the last *content* row, never the bottom border
+        // (docs/table-streaming.md).
+        let tail_src = &text[self.consumed..];
+        let mut tail = if tail_src.is_empty() && clone.has_open_table() {
+            Vec::new()
+        } else {
+            clone.feed_line(tail_src)
+        };
+        // Render the open table SO FAR (its forming header/rows) without the
+        // not-yet-real closing bottom border, so the strip shows the streaming
+        // frontier rather than falling back to an already-committed pre-table
+        // line (or floating a premature `└──┘`) — docs/table-streaming.md.
+        tail.extend(clone.flush_preview());
         // The last rendered row, skipping trailing blank rows so the strip shows
         // content rather than a paragraph-break blank — matching the trimmed
         // batch render. Inside a fence blank lines are content, so keep as-is.
@@ -5117,6 +5281,19 @@ mod tests {
             .collect()
     }
 
+    /// Whether `prefix` ends inside an OPEN GFM table — its last non-blank source
+    /// line is still a table row/delimiter/header, so no non-table line has
+    /// closed the block. Used by the differential test to skip the preview
+    /// equality check exactly where the streaming preview intentionally shows the
+    /// last content row rather than the batch's flushed bottom border.
+    fn ends_in_open_table(prefix: &str) -> bool {
+        prefix
+            .split('\n')
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .is_some_and(markdown::is_table_row)
+    }
+
     #[test]
     fn table_content_rows_draws_a_bordered_grid() {
         let lines: Vec<String> = ["| Name | Type |", "|------|------|", "| Alpha | X |"]
@@ -5223,24 +5400,139 @@ mod tests {
     }
 
     #[test]
-    fn truncate_segments_stops_at_a_too_wide_grapheme_boundary() {
-        // A wide (CJK) grapheme that can't fit the last column must STOP the
-        // truncation — like `truncate_cols` — not skip ahead and pull a later
-        // narrow grapheme in front of the `…`, which would reorder the cell.
-        let segs = vec![
-            ("世".to_string(), Style::default()),
-            ("x".to_string(), Style::default()),
-        ];
-        let (out, w) = truncate_segments(&segs, 2); // limit 1: 世 (width 2) can't fit
-        let text: String = out.iter().map(|(t, _)| t.as_str()).collect();
-        assert_eq!(text, "…", "wide grapheme dropped, order preserved: {out:?}");
-        assert_eq!(w, 1);
-        // A wide grapheme that DOES fit is kept, truncating the rest.
-        let segs = vec![("世界世".to_string(), Style::default())];
-        let (out, w) = truncate_segments(&segs, 4); // limit 3: 世(2) fits, 界 does not
-        let text: String = out.iter().map(|(t, _)| t.as_str()).collect();
-        assert_eq!(text, "世…");
-        assert_eq!(w, 3);
+    fn table_cells_wrap_across_rows_instead_of_truncating() {
+        // A cell wider than its column WRAPS across rows (hard-breaking an
+        // unbreakable token grapheme-by-grapheme, wide CJK included) — never
+        // truncated with a `…`, so no cell content is ever lost.
+        let cells = vec![table_cell_segments("世界世界", Style::default())]; // 8 cols
+        let rows = table_row_lines(&cells, &[5], &[markdown::Alignment::None]);
+        let text = rows_text(&rows);
+        assert!(
+            rows.len() >= 2,
+            "a too-wide cell wraps into >1 row: {text:?}"
+        );
+        assert!(
+            !text.join("").contains('…'),
+            "cells wrap, never truncate: {text:?}"
+        );
+        let kept: String = text
+            .iter()
+            .flat_map(|r| r.chars())
+            .filter(|c| matches!(c, '世' | '界'))
+            .collect();
+        assert_eq!(
+            kept, "世界世界",
+            "no cell content lost to wrapping: {text:?}"
+        );
+    }
+
+    #[test]
+    fn allocate_column_widths_fits_naturally_or_shrinks_proportionally() {
+        use markdown::Alignment::None as A;
+        let _ = A; // (alignment isn't part of width allocation)
+        // Fits: the natural grid (2+3 content + 7 overhead = 12) is ≤ avail, so
+        // columns keep their natural widths.
+        assert_eq!(allocate_column_widths(&[2, 3], 40), vec![2, 3]);
+        // Overflows: avail 20 → content_avail 13 for naturals [8, 20] (total 28).
+        // Proportional: 8·13/28=3, 20·13/28=9 → sum 12, +1 slack to the widest
+        // (the 20-column) → [4, 9]. The wide column stays wide (codex/img2).
+        let w = allocate_column_widths(&[8, 20], 20);
+        assert_eq!(
+            w.iter().sum::<usize>(),
+            13,
+            "columns fill the content width"
+        );
+        assert!(
+            w[1] > w[0],
+            "the wider natural column keeps more room: {w:?}"
+        );
+        assert!(w.iter().all(|&c| c >= TABLE_MIN_COL), "floored: {w:?}");
+    }
+
+    #[test]
+    fn narrow_table_wraps_cells_into_taller_rows_no_ellipsis() {
+        // The reported fix (img1 → img2): when the natural grid overflows the
+        // width, cells WORD-WRAP into taller rows instead of truncating with `…`,
+        // so no content is ever lost.
+        let lines: Vec<String> = [
+            "| Name | Email |",
+            "|------|-------|",
+            "| John Doe | john.doe@example.com |",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let text = rows_text(&table_content_rows(&lines, 24));
+        assert!(
+            !text.join("").contains('…'),
+            "cells wrap, never truncate: {text:?}"
+        );
+        let mid = text.iter().position(|r| r.starts_with('├')).unwrap();
+        let bot = text.iter().position(|r| r.starts_with('└')).unwrap();
+        let data = &text[mid + 1..bot];
+        assert!(data.len() >= 2, "the data row wraps across rows: {text:?}");
+        // The email column's content survives intact across the wrapped rows
+        // (a spaceless token is only hard-broken, never dropped).
+        let email: String = data
+            .iter()
+            .map(|r| {
+                r.split('│')
+                    .nth(2)
+                    .map_or(String::new(), |c| c.trim().to_string())
+            })
+            .collect();
+        assert_eq!(
+            email, "john.doe@example.com",
+            "wrapped cell content is preserved: {text:?}"
+        );
+    }
+
+    #[test]
+    fn table_streams_row_by_row_to_scrollback() {
+        // The core new behavior (docs/table-streaming.md): a table's rows commit
+        // to scrollback AS THEY ARRIVE (like prose) instead of being buffered
+        // whole and dumped at the close — and the strip preview shows the last
+        // content row, never a floating `└──┘` bottom border (the reported bug).
+        let full = "here:\n| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n| 5 | 6 |\ndone";
+        let width = 40;
+        let batch: Vec<String> = message_lines(Role::Assistant, full, width)
+            .iter()
+            .map(plain)
+            .collect();
+        let mut render = StreamRender::new();
+        let mut committed: Vec<String> = Vec::new();
+        let mut opened_before_close = false;
+        let mut border_previewed = false;
+        for end in 1..=full.len() {
+            if !full.is_char_boundary(end) {
+                continue;
+            }
+            let prefix = &full[..end];
+            committed.extend(render.commit(prefix, width).iter().map(plain));
+            // In the OLD buffered-whole design the top border only reached
+            // scrollback at the close; here it commits well before `done`.
+            if !prefix.contains("done") && committed.iter().any(|r| r.contains('┌')) {
+                opened_before_close = true;
+            }
+            if let Some(p) = render.preview(prefix, width)
+                && plain(&p).trim_start().starts_with('└')
+            {
+                border_previewed = true;
+            }
+        }
+        committed.extend(render.finish(full, width).iter().map(plain));
+        assert_eq!(
+            committed, batch,
+            "streamed commits reconstruct the batch render"
+        );
+        assert!(
+            opened_before_close,
+            "the table's rows stream to scrollback as they arrive, not at the close"
+        );
+        assert!(
+            !border_previewed,
+            "the strip never previews a floating bottom border while streaming"
+        );
     }
 
     #[test]
@@ -7691,6 +7983,11 @@ mod tests {
             "| a | b |\n|---|---|\n| 1 | 2 |\n```\ncode\n```",
             // A single-column table, then prose.
             "| Item |\n|------|\n| one |\n| two |\ndone",
+            // A table with long cells that must WRAP into taller rows at the
+            // narrow widths (img2): the progressive streamed commits + the final
+            // flush must still equal the batch render at every prefix/width, so
+            // the row-by-row streaming and the cell wrapping stay prefix-stable.
+            "data:\n\n| Name | Email | Role |\n|------|-------|------|\n| John Doe | john.doe@example.com | Developer |\n| Jane Smith | jane@corp.io | Manager |\n\nend",
             // A table whose cells carry inline markdown (`` `code` ``, **bold**):
             // cells are inline-parsed like prose and the column sizes to the
             // rendered width, so the withheld-whole grid's streamed commits must
@@ -7742,15 +8039,28 @@ mod tests {
                         continue;
                     }
                     let prefix = &full[..end];
-                    // (c) preview == last row of the batch render of this prefix.
-                    let want_preview = message_lines(Role::Assistant, prefix, width)
-                        .pop()
-                        .map(|l| styled(&l));
-                    let got_preview = render.preview(prefix, width).map(|l| styled(&l));
-                    assert_eq!(
-                        got_preview, want_preview,
-                        "preview diverged at {prefix:?} (w={width})"
-                    );
+                    // (c) preview == last row of the batch render of this prefix —
+                    // EXCEPT while the prefix ends inside an OPEN table, where the
+                    // streaming preview intentionally shows the last streamed
+                    // content row rather than the batch's flushed `└──┘` bottom
+                    // border (that border only becomes real once the block ends —
+                    // docs/table-streaming.md). Its no-duplicate property is
+                    // covered by `preview_never_shows_a_committed_row_while_streaming`
+                    // and its content by `table_streams_row_by_row_to_scrollback`.
+                    if !ends_in_open_table(prefix) {
+                        let want_preview = message_lines(Role::Assistant, prefix, width)
+                            .pop()
+                            .map(|l| styled(&l));
+                        let got_preview = render.preview(prefix, width).map(|l| styled(&l));
+                        assert_eq!(
+                            got_preview, want_preview,
+                            "preview diverged at {prefix:?} (w={width})"
+                        );
+                    } else {
+                        // Still exercise the code path (advance/clone), just don't
+                        // pin its value against the flushed batch render.
+                        let _ = render.preview(prefix, width);
+                    }
                     // (a)/(b) commit rows extend a stable prefix of the final render.
                     committed.extend(render.commit(prefix, width).iter().map(styled));
                     assert_eq!(
@@ -7865,6 +8175,10 @@ mod tests {
             "- bullet one\n- bullet two\n- bullet three\n",
             "some words that wrap a little here\n\nnext paragraph body\n",
             "## Heading Row\n\nbody text below it\n",
+            // A streaming table: its rows commit progressively, so the preview
+            // (the last streamed content row) must never duplicate a committed
+            // one (docs/table-streaming.md).
+            "here:\n| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\ndone\n",
         ] {
             let mut render = StreamRender::new();
             let mut committed: Vec<Vec<(String, Option<Color>)>> = Vec::new();

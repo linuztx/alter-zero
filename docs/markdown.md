@@ -23,10 +23,12 @@ common set — matching the clean codex/Claude-Code look:
 The hard constraint throughout is **prefix-stability** (CLAUDE.md invariant 2):
 `StreamRender` flushes finished rows to the terminal's real scrollback as the
 reply streams, so a construct whose rendering depends on *later* text must be
-**held back** until it settles. Two constructs need this — **tables** (a later
-row can widen a column) and **inline emphasis** (a closing marker can restyle an
-already-wrapped row) — and both reuse the same withholding machinery the code
-blocks introduced (`AssistantRenderer::in_code`). See *Prefix-stable holdback*.
+**held back** until it settles. **Inline emphasis** needs this (a closing marker
+can restyle an already-wrapped row), reusing the same withholding machinery the
+code blocks introduced (`AssistantRenderer::in_code`). **Tables** used to need it
+too, but now **lock their column widths at the first data row and stream row-by-row**
+into scrollback (cells word-wrapping into the fixed widths) — see
+`docs/table-streaming.md`. See *Prefix-stable holdback*.
 
 ## What it looks like
 
@@ -304,25 +306,27 @@ render as bullets with a checkbox.
 
 **In — GFM pipe tables.** A header row, a **delimiter** row (`|---|:-:|`, its
 column count + alignments govern the grid), and data rows render as a box-drawing
-grid (`ui::table_content_rows` — dim borders, bold header cells, per-column
-alignment, width-shrunk with `…` truncation when the natural grid overflows). See
-*Prefix-stable holdback* — a table is buffered whole and committed only when it
-closes, because a later row can widen an already-emitted column.
+grid (dim borders, bold header cells, per-column alignment). The grid **streams
+row-by-row** into scrollback: `AssistantRenderer` locks the column widths at the
+first data row and emits each row as it arrives, cells **word-wrapping** into the
+fixed widths (taller rows) instead of truncating with `…` when the grid is narrow.
+See `docs/table-streaming.md` (the state machine, the width allocation, and the
+preview handling) — this replaced the old buffer-the-whole-table-then-`…`-shrink
+behavior.
 
 **Cell content is inline-parsed** — a cell's `` `code` ``, `**bold**`, `*italic*`,
 `~~strike~~`, `[text](url)` etc. render styled like prose (codex parity), not as
 literal markers (`ui::table_cell_segments` = `inline_spans(parse_inline(cell))`).
 Because the markers are stripped, a column is sized to the cell's **rendered**
 display width (`segments_cols`, so `` `foo.db` `` measures `foo.db` = 6, not 8),
-and `fit_cell_spans`/`truncate_segments` truncate (`…`) + pad the styled segments
-per alignment — the span-styled counterpart of the plain-string sizing the older
-`pad_table_cell` did. Header cells carry a **bold** base style that the inline
-styling composes onto. This is inside the whole-table render, so batch and
-streaming stay identical and the holdback keeps it prefix-stable (a table with
-inline-markdown cells is in the differential corpus, widths 3–40). *Detection*
-still requires the row shapes `markdown::is_table_row`/`table_delimiter` accept
-(a delimiter row must contain a pipe); a pipe-less GFM table is rendered as
-prose, unchanged by this.
+and `table_row_lines` word-wraps + pads the styled segments per alignment
+(`pad_cell_line`) — the span-styled counterpart of the plain-string sizing the
+older `pad_table_cell` did. Header cells carry a **bold** base style that the
+inline styling composes onto. Batch (`assistant_lines`) and streaming drive the
+one `AssistantRenderer`, so they render identically (a table with inline-markdown
+cells is in the differential corpus, widths 3–40). *Detection* still requires the
+row shapes `markdown::is_table_row`/`table_delimiter` accept (a delimiter row must
+contain a pipe); a pipe-less GFM table is rendered as prose, unchanged by this.
 
 **Syntax highlighting is generic, not per-grammar.** No `syntect`/TextMate
 grammars, so a few shapes are approximate: multi-line backtick strings (Go raw
@@ -337,20 +341,22 @@ within a line (a call's `(`) — see the *streaming* note above.
 
 `StreamRender` flushes finished rows to real scrollback as the reply streams, so
 anything whose rendering depends on *later* text must be **held back** until it
-settles. Two constructs need it, and both reuse the code-block withholding
-mechanism (`AssistantRenderer::in_code`, which `StreamRender::commit` already
-consults to keep an in-progress *code* line out of scrollback):
+settles. Inline emphasis needs it; tables need it only *briefly* now (until their
+widths lock). Both reuse the code-block withholding mechanism
+(`AssistantRenderer::in_code`, which `StreamRender::commit` already consults to
+keep an in-progress *code* line out of scrollback):
 
-- **Tables — block holdback.** `AssistantRenderer` buffers a table's source
-  lines (a candidate header confirmed by the next line's delimiter, then rows) in
-  a `TableState`, returning **no rows** until the block closes (a non-table line,
-  a code fence, or end-of-message via `flush`). `in_table()` exposes that state;
-  `StreamRender::commit` withholds the trailing line while `in_table()` (or the
-  trailing line is a fresh `is_table_row` candidate), so the whole grid reaches
-  scrollback **at once** with final column widths. Batch (`assistant_lines`) and
-  streaming share the one `AssistantRenderer`, so they render identically; the
-  batch of a *partial* prefix flushes the table-so-far, which the strip `preview`
-  matches by flushing its clone.
+- **Tables — lock, then stream (`docs/table-streaming.md`).** `AssistantRenderer`
+  buffers only the header + delimiter (`PendingHeader` → `AwaitingRow`, emitting
+  **no rows**); `in_table()` reports that pre-lock phase and `StreamRender::commit`
+  withholds the trailing line while it holds. At the **first data row** the column
+  widths lock (from header + that row, fit to the width) and the opening + that row
+  emit; every later row wraps into the fixed widths and streams straight to
+  scrollback (`Streaming`), so a table is prefix-stable the moment it locks. The
+  only remaining per-row holdback is a **partial trailing data row**
+  (`markdown::is_table_row(tail_src)`), and the strip `preview` shows the last
+  *content* row (never the not-yet-real `└──┘`). Batch (`assistant_lines`) and
+  streaming drive the one `AssistantRenderer`, so they render identically.
 - **Inline emphasis — line-newline gating.** Because emphasis is line-local, a
   *complete* line is always final; only the **trailing partial** line can restyle
   (an open `**` could still close). `markdown::has_open_inline` reports an
