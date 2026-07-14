@@ -259,6 +259,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // as it streams — O(reply) over the whole stream, not O(reply²). It also
     // renders the strip's cheap preview line. See `docs/markdown.md`.
     let mut render = ui::StreamRender::new();
+    // Caches the Ctrl+O overlay's built transcript so scrolling reuses it instead
+    // of re-highlighting all of history every keypress (freed on overlay exit).
+    let mut transcript = ui::TranscriptCache::new();
     // Detects a paste / fast-type burst so its redraw can be coalesced.
     let mut burst = PasteBurst::new();
     // The live status indicator's clocks (impurity kept here, at the boundary):
@@ -366,9 +369,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // Paint the overlay now rather than on the next
                                     // tick — the freshly-cleared alt screen would
                                     // show as a black flash for a frame otherwise.
-                                    draw_tool_view(term, &mut app)?;
+                                    draw_tool_view(term, &mut app, &mut transcript)?;
                                 } else {
                                     term.exit_overlay()?;
+                                    // Free the cached transcript build — the inline
+                                    // view is shown now, so don't retain its rows.
+                                    transcript.clear();
                                     // Catch the inline view up on whatever streamed
                                     // — or was dispatched off the queue — while the
                                     // overlay was showing (the reflow regenerates
@@ -906,7 +912,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         let preview = stream_preview_line(&app, &mut render, term.screen().width);
                         draw(term, &app, preview.as_ref())?;
                     }
-                    View::ToolOutput => draw_tool_view(term, &mut app)?,
+                    View::ToolOutput => draw_tool_view(term, &mut app, &mut transcript)?,
                     View::ResumePicker => draw_resume_picker(term, &app)?,
                     View::ContextDebug => draw_context_view(term, &mut app)?,
                 }
@@ -2065,19 +2071,28 @@ fn draw(term: &mut InlineViewport, app: &App, preview: Option<&Line<'static>>) -
 /// Render the full-screen tool-output overlay. Clamps the scroll to the current
 /// screen first (so the last line can reach the bottom but not scroll past it),
 /// then paints the view onto the alternate screen.
-fn draw_tool_view(term: &mut InlineViewport, app: &mut App) -> io::Result<()> {
+fn draw_tool_view(
+    term: &mut InlineViewport,
+    app: &mut App,
+    transcript: &mut ui::TranscriptCache,
+) -> io::Result<()> {
     let screen = term.screen();
     // A backtrack preview open/step requested a scroll to its highlighted
     // message (docs/backtrack.md): apply the pure decision once — consumed,
     // so it never fights the user's own scrolling — before the normal clamp.
-    if app.take_backtrack_scroll()
-        && let Some(scroll) = ui::backtrack_scroll(app, screen.width, screen.height)
-    {
-        app.apply_backtrack_scroll(scroll);
+    if app.take_backtrack_scroll() {
+        let selection = transcript.selection(app, screen.width);
+        if let Some(scroll) = ui::backtrack_scroll_for(selection, app.tool_scroll, screen.height) {
+            app.apply_backtrack_scroll(scroll);
+        }
     }
-    let max = ui::tool_view_max_scroll(app, screen.width, screen.height);
+    // Build the transcript at most once here (the cache skips even that while the
+    // user only scrolls): the same cached lines feed the clamp and the render, so
+    // a scroll keypress no longer re-highlights all of history (twice).
+    let max = ui::tool_view_max_scroll_for(transcript.line_count(app, screen.width), screen.height);
     app.settle_tool_scroll(max);
-    term.draw_overlay(|area, buf| ui::render_tool_view(area, buf, app))
+    let lines = transcript.lines(app, screen.width);
+    term.draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, lines))
 }
 
 /// Render the full-screen `/resume` session picker onto the alternate screen

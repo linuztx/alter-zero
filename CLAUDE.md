@@ -293,7 +293,17 @@ of bug:
    walks `history` (messages + each tool's *expanded* output) plus the live tail
    (in-progress reply / running tool) plus the still-queued backlog
    (`ui::queued_lines`' inset rows, so Ctrl+O never hides a queued message —
-   `docs/queue.md`). Only the **user** message shows its
+   `docs/queue.md`). That walk is **O(history)** and re-runs the markdown +
+   syntax highlighter over the whole transcript, so the loop drives it through a
+   **`ui::TranscriptCache`** (a `main.rs`-owned cache, like `StreamRender`): a
+   scroll changes only the viewport window, not the content, so the cache rebuilds
+   only when a cheap signature (history length, live-tail / running-tool /
+   queue lengths, backtrack selection, width) changes — a scroll keypress is then
+   a cache hit (O(viewport)), not a full re-highlight. `draw_tool_view` builds it
+   **once** per draw (shared by the scroll clamp and the render); it's freed on
+   overlay close. History is append-only while the overlay is up (a backtrack
+   rewind truncates it but also exits), which is what makes the length signature
+   exact. Only the **user** message shows its
    wall-clock `timestamp` (`hh:mm AM/PM`, no seconds): dim, **right-aligned on
    its own line below the message** — the *only* stamp displayed anywhere
    (AI/tool/summary stamps are recorded but never shown; never inline; the

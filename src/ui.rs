@@ -3729,15 +3729,127 @@ fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<
     (lines, selection)
 }
 
+/// The pager's scrolling-body height: the screen less the title + footer chrome.
+#[must_use]
+pub fn tool_view_body_rows(screen_height: u16) -> usize {
+    screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS + TOOL_VIEW_FOOTER_ROWS) as usize
+}
+
+/// The largest scroll offset for a transcript of `line_count` rows — the content
+/// height minus the body window, so the last line can reach the bottom but not
+/// past it. Pure over the count so the caller can reuse a cached line build (see
+/// [`TranscriptCache`]) instead of rebuilding just to clamp.
+#[must_use]
+pub fn tool_view_max_scroll_for(line_count: usize, screen_height: u16) -> usize {
+    line_count.saturating_sub(tool_view_body_rows(screen_height))
+}
+
 /// The largest the transcript scroll offset can be on a `screen_height`-row
-/// screen — the total content height minus the scrolling body (the screen less
-/// the pager's title and footer chrome) — so the last line can reach the
-/// bottom but not scroll past it. The loop clamps `App::tool_scroll` to this
-/// each draw.
+/// screen. Convenience over [`tool_view_max_scroll_for`] that builds the
+/// transcript itself (the draw loop instead reuses [`TranscriptCache`]).
 #[must_use]
 pub fn tool_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize {
-    let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS + TOOL_VIEW_FOOTER_ROWS) as usize;
-    transcript_lines(app, width).len().saturating_sub(body)
+    tool_view_max_scroll_for(transcript_lines(app, width).len(), screen_height)
+}
+
+/// Caches the Ctrl+O overlay's fully-built transcript so a **scroll** (which
+/// changes only the viewport window, not the content) doesn't rebuild and
+/// re-highlight all of `history` every keypress — that walk is O(history) and,
+/// with real grammar highlighting, cost ~200 ms per build on a long transcript
+/// (`draw_tool_view` ran it *twice* per keypress). Owned by the event loop like
+/// [`StreamRender`]; each draw asks for the lines and the build is skipped while
+/// the cheap [`TranscriptSig`] is unchanged.
+///
+/// Correctness rests on `history` being **append-only while the overlay is open**
+/// (no in-place item mutation; a backtrack rewind truncates it but also *exits*
+/// the overlay), so a signature of lengths + the volatile live-tail / queue /
+/// selection / width bits identifies the rendered content exactly. A streaming
+/// turn changes the signature every chunk (the content genuinely changed, so a
+/// rebuild is correct); an idle transcript is stable, so scrolling is O(viewport).
+#[derive(Default)]
+pub struct TranscriptCache {
+    sig: Option<TranscriptSig>,
+    lines: Vec<Line<'static>>,
+    selection: Option<Range<usize>>,
+    /// Test-only: how many times `refresh` actually rebuilt — so a test can
+    /// prove a scroll (unchanged signature) is a cache hit, not a rebuild.
+    #[cfg(test)]
+    builds: usize,
+}
+
+/// The cheap fingerprint of every input to [`transcript_build`] — see
+/// [`TranscriptCache`] for why lengths suffice (history is append-only here).
+#[derive(PartialEq, Eq)]
+struct TranscriptSig {
+    width: u16,
+    history_len: usize,
+    /// Live in-progress reply length (`None` when not streaming).
+    streaming_len: Option<usize>,
+    /// The running tool's output length (`None` when none runs) — a running cell
+    /// is otherwise static (`Running…`, empty output until it finishes into
+    /// history, which bumps `history_len`).
+    tool_output_len: Option<usize>,
+    queued_len: usize,
+    backtrack_selected: Option<usize>,
+}
+
+impl TranscriptSig {
+    fn of(app: &App, width: u16) -> Self {
+        Self {
+            width,
+            history_len: app.history.len(),
+            streaming_len: app.streaming_text().map(str::len),
+            tool_output_len: app.current_tool().map(|t| t.output.len()),
+            queued_len: app.queued.len(),
+            backtrack_selected: app.backtrack.selected,
+        }
+    }
+}
+
+impl TranscriptCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drop the cached build — used when the overlay closes so its (possibly
+    /// large) `Vec<Line>` isn't retained while the inline view is shown.
+    pub fn clear(&mut self) {
+        *self = Self::new();
+    }
+
+    /// Rebuild the transcript only if the signature changed since the last call.
+    fn refresh(&mut self, app: &App, width: u16) {
+        let sig = TranscriptSig::of(app, width);
+        if self.sig.as_ref() != Some(&sig) {
+            let (lines, selection) = transcript_build(app, width);
+            self.lines = lines;
+            self.selection = selection;
+            self.sig = Some(sig);
+            #[cfg(test)]
+            {
+                self.builds += 1;
+            }
+        }
+    }
+
+    /// The cached transcript rows, rebuilding first only if stale.
+    pub fn lines(&mut self, app: &App, width: u16) -> &[Line<'static>] {
+        self.refresh(app, width);
+        &self.lines
+    }
+
+    /// The cached row count (for the scroll clamp) — no borrow held.
+    pub fn line_count(&mut self, app: &App, width: u16) -> usize {
+        self.refresh(app, width);
+        self.lines.len()
+    }
+
+    /// The cached backtrack-preview selection range, rebuilding first if stale.
+    pub fn selection(&mut self, app: &App, width: u16) -> Option<Range<usize>> {
+        self.refresh(app, width);
+        self.selection.clone()
+    }
 }
 
 /// Where the transcript scroll must sit to show `target` in a `viewport`-row
@@ -3754,16 +3866,36 @@ fn scroll_into_view(current: usize, target: &Range<usize>, viewport: usize) -> u
     }
 }
 
+/// The `tool_scroll` that brings a backtrack preview's `selection` range into a
+/// `screen_height`-row pager, given the `current` scroll — or `None` when there
+/// is no selection. Pure over the range so the draw loop can pass a cached
+/// selection ([`TranscriptCache::selection`]) instead of rebuilding.
+#[must_use]
+pub fn backtrack_scroll_for(
+    selection: Option<Range<usize>>,
+    current: usize,
+    screen_height: u16,
+) -> Option<usize> {
+    let range = selection?;
+    Some(scroll_into_view(
+        current,
+        &range,
+        tool_view_body_rows(screen_height),
+    ))
+}
+
 /// The overlay draw's scroll decision while a backtrack preview is active:
 /// the `tool_scroll` that brings the highlighted user message into the
-/// pager's body window, or `None` with no selection. Pure —
-/// `main.rs::draw_tool_view` applies it (once per selection change, gated by
-/// [`App::take_backtrack_scroll`]). See `docs/backtrack.md`.
+/// pager's body window, or `None` with no selection. Convenience over
+/// [`backtrack_scroll_for`] that builds the selection itself (the draw loop
+/// reuses [`TranscriptCache`]). See `docs/backtrack.md`.
 #[must_use]
 pub fn backtrack_scroll(app: &App, width: u16, screen_height: u16) -> Option<usize> {
-    let range = transcript_selection(app, width)?;
-    let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS + TOOL_VIEW_FOOTER_ROWS) as usize;
-    Some(scroll_into_view(app.tool_scroll, &range, body))
+    backtrack_scroll_for(
+        transcript_selection(app, width),
+        app.tool_scroll,
+        screen_height,
+    )
 }
 
 /// The pager's title row: `/ ` tiled across the width (a `/` on every even
@@ -3822,7 +3954,7 @@ fn rule_with_label(width: u16, label: &str) -> Line<'static> {
 /// (clamped so it can't run past the end) with `~` filler on the body rows
 /// past its end, then the percentage separator and the dim key-hint rows.
 /// Pure — `term.rs` paints this onto the overlay.
-pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
+pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Line<'static>]) {
     let [title_area, body_area, sep_area, hints_area] = Layout::vertical([
         Constraint::Length(TOOL_VIEW_TITLE_ROWS),
         Constraint::Min(0),
@@ -3833,13 +3965,15 @@ pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App) {
 
     Paragraph::new(tool_view_header(area.width)).render(title_area, buf);
 
-    let lines = transcript_lines(app, body_area.width);
+    // `lines` is prebuilt (by the caller's `TranscriptCache`) at `area.width` —
+    // the vertical split above keeps the full width, so `body_area.width` matches.
     let max = lines.len().saturating_sub(body_area.height as usize);
     let scroll = app.tool_scroll.min(max);
     let mut visible: Vec<Line> = lines
-        .into_iter()
+        .iter()
         .skip(scroll)
         .take(body_area.height as usize)
+        .cloned()
         .collect();
     while (visible.len() as u16) < body_area.height {
         visible.push(Line::from(TOOL_VIEW_FILL));
@@ -6914,10 +7048,44 @@ mod tests {
     }
 
     #[test]
+    fn transcript_cache_reuses_the_build_while_scrolling_but_refreshes_on_change() {
+        // The Ctrl+O scroll-perf fix: repeated draws with the same content (a
+        // scroll only moves the viewport) must reuse the cached build, while any
+        // real change — new history, a width change — rebuilds. Correctness is
+        // that the cache always equals a fresh `transcript_lines`.
+        let mut app = transcript_fixture();
+        let mut cache = TranscriptCache::new();
+
+        assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+        assert_eq!(cache.builds, 1, "first access builds");
+
+        // Repeated accesses with unchanged state (scrolling) are cache hits.
+        cache.line_count(&app, 80);
+        cache.lines(&app, 80);
+        cache.selection(&app, 80);
+        assert_eq!(cache.builds, 1, "scrolling is a cache hit, not a rebuild");
+
+        // A new message changes the content → one rebuild, still correct.
+        app.record_user_message("a brand new question");
+        assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+        assert_eq!(cache.builds, 2, "a history change rebuilds");
+
+        // A width change (resize) also refreshes.
+        assert_eq!(cache.lines(&app, 40), transcript_lines(&app, 40).as_slice());
+        assert_eq!(cache.builds, 3, "a width change rebuilds");
+
+        // clear() drops the cache so the next access rebuilds.
+        cache.clear();
+        cache.lines(&app, 40);
+        assert_eq!(cache.builds, 1, "clear resets the build state");
+    }
+
+    #[test]
     fn render_tool_view_shows_the_title_messages_and_full_output() {
         let app = transcript_fixture();
         let mut buf = buffer(40, 16);
-        render_tool_view(buf.area, &mut buf, &app);
+        let tv_lines = transcript_lines(&app, buf.area.width);
+        render_tool_view(buf.area, &mut buf, &app, &tv_lines);
         let all: String = (0..16)
             .map(|y| row(&buf, y, 40))
             .collect::<Vec<_>>()
@@ -6943,7 +7111,8 @@ mod tests {
         // rows, and a final blank row.
         let app = transcript_fixture();
         let mut buf = buffer(40, 16);
-        render_tool_view(buf.area, &mut buf, &app);
+        let tv_lines = transcript_lines(&app, buf.area.width);
+        render_tool_view(buf.area, &mut buf, &app, &tv_lines);
         let header = row(&buf, 0, 40);
         assert!(
             header.starts_with("/ T R A N S C R I P T / / "),
@@ -6976,7 +7145,8 @@ mod tests {
         let mut app = App::new();
         app.record_user_message("hi");
         let mut buf = buffer(40, 12);
-        render_tool_view(buf.area, &mut buf, &app);
+        let tv_lines = transcript_lines(&app, buf.area.width);
+        render_tool_view(buf.area, &mut buf, &app, &tv_lines);
         // Content is two lines (message + spacer) in a 7-row body: rows 3..=7
         // are filler.
         assert!(row(&buf, 1, 40).contains("❯ hi"), "{:?}", row(&buf, 1, 40));
@@ -6996,12 +7166,14 @@ mod tests {
             .join("\n");
         app.end_tool(&output, true);
         let mut buf = buffer(40, 12);
-        render_tool_view(buf.area, &mut buf, &app);
+        let tv_lines = transcript_lines(&app, buf.area.width);
+        render_tool_view(buf.area, &mut buf, &app, &tv_lines);
         assert!(row(&buf, 8, 40).contains(" 0% "), "{:?}", row(&buf, 8, 40));
 
         app.tool_scroll = usize::MAX; // pinned to the bottom (clamped)
         let mut buf = buffer(40, 12);
-        render_tool_view(buf.area, &mut buf, &app);
+        let tv_lines = transcript_lines(&app, buf.area.width);
+        render_tool_view(buf.area, &mut buf, &app, &tv_lines);
         assert!(
             row(&buf, 8, 40).contains(" 100% "),
             "{:?}",
@@ -7021,7 +7193,8 @@ mod tests {
         app.view = crate::app::View::ToolOutput;
         app.tool_scroll = 9;
         let mut buf = buffer(40, 8);
-        render_tool_view(buf.area, &mut buf, &app);
+        let tv_lines = transcript_lines(&app, buf.area.width);
+        render_tool_view(buf.area, &mut buf, &app, &tv_lines);
         let all: String = (0..8)
             .map(|y| row(&buf, y, 40))
             .collect::<Vec<_>>()
@@ -9852,7 +10025,7 @@ mod tests {
                         // mirror the Ctrl+O overlay
                         let screen = Rect::new(0, 0, w, h);
                         let mut overlay = Buffer::empty(screen);
-                        render_tool_view(screen, &mut overlay, app);
+                        render_tool_view(screen, &mut overlay, app, &transcript_lines(app, w));
                         let _ = tool_view_max_scroll(app, w, h);
                     }));
                     assert!(
@@ -10568,13 +10741,15 @@ mod tests {
     fn tool_view_hints_swap_while_previewing() {
         let mut app = backtrack_app();
         let mut buf = buffer(80, 16);
-        render_tool_view(buf.area, &mut buf, &app);
+        let tv_lines = transcript_lines(&app, buf.area.width);
+        render_tool_view(buf.area, &mut buf, &app, &tv_lines);
         let idle: String = (0..16).map(|y| row(&buf, y, 80)).collect();
         assert!(idle.contains("q/esc/ctrl+o to quit"), "normal pager hints");
 
         app.backtrack.selected = Some(1);
         let mut buf = buffer(80, 16);
-        render_tool_view(buf.area, &mut buf, &app);
+        let tv_lines = transcript_lines(&app, buf.area.width);
+        render_tool_view(buf.area, &mut buf, &app, &tv_lines);
         let preview: String = (0..16)
             .map(|y| row(&buf, y, 80))
             .collect::<Vec<_>>()
