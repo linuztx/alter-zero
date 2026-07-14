@@ -121,20 +121,22 @@ const TABLE_BORDER_COLOR: Color = TOOL_DIM_COLOR;
 /// a narrow column keeps at least this many display columns, and cells wrap into
 /// it across multiple rows rather than losing text to a `…`.
 const TABLE_MIN_COL: usize = 3;
-/// Records fallback (`docs/table-streaming.md`, codex's key/value transpose): a
-/// column at least this wide is considered scannable, so it never triggers the
+/// Records fallback (`docs/table-streaming.md`, Claude Code's key/value transpose):
+/// a column at least this wide is considered scannable, so it never triggers the
 /// fallback even if its content wraps (it's a legitimately wide narrative column).
 const TABLE_SCANNABLE_COL: usize = 12;
 /// A cell that wraps into at least this many rows *in a narrow column* means the
 /// grid is growing tall because columns are starved — flip to vertical records.
 const TABLE_RECORDS_MIN_LINES: usize = 3;
-/// Records layout: spaces between the bold label column and its value.
-const TABLE_RECORD_GAP: usize = 2;
-/// The narrowest value column the *aligned* record form keeps; below this the
-/// field stacks (label on its own line, value indented beneath) — codex parity.
+/// The narrowest value column the inline `label: value` record form keeps; below
+/// this the field stacks (label on its own line, value indented beneath).
 const TABLE_RECORD_MIN_VALUE: usize = 12;
 /// A stacked record value's indent under its label line.
 const TABLE_RECORD_STACK_INDENT: usize = 2;
+/// The `─` rule between records caps at this many columns instead of spanning the
+/// full content width — Claude Code's shorter separator reads cleaner for the
+/// short key/value fields (a wide records table's full-width rule looked heavy).
+const TABLE_RECORD_SEPARATOR_WIDTH: usize = 40;
 
 // --- Inline markdown styling (docs/markdown.md). A prose line's `**bold**`,
 // `*italic*`, `~~strike~~`, `` `code` `` and `[text](url)` render with these;
@@ -1672,16 +1674,6 @@ fn normalize_raw_cells(line: &str, ncols: usize) -> Vec<String> {
     cells
 }
 
-/// The widest **rendered** (bold, inline-parsed) label width over the header
-/// cells — the records fallback's label-column width.
-fn table_label_width(labels: &[String]) -> usize {
-    labels
-        .iter()
-        .map(|l| segments_cols(&table_cell_segments(l, table_header_style())))
-        .max()
-        .unwrap_or(0)
-}
-
 /// Decide, at the width-lock point, whether the grid is too cramped to scan and
 /// should render as vertical key/value **records** instead (codex's key/value
 /// transpose, adapted to our first-data-row lock so it stays streaming +
@@ -1708,37 +1700,36 @@ fn table_should_use_records(header: &str, first_row: &str, col_w: &[usize]) -> b
     })
 }
 
-/// A `─`×`width` rule separating two records, dim like a table border.
+/// A `─` rule separating two records, dim like a table border. Capped at
+/// [`TABLE_RECORD_SEPARATOR_WIDTH`] (shrinking to fit a narrower `width`) rather
+/// than spanning the full content width — Claude Code's cleaner short separator.
 fn table_record_separator(width: usize) -> Vec<Span<'static>> {
+    let w = width.clamp(1, TABLE_RECORD_SEPARATOR_WIDTH);
     vec![Span::styled(
-        "─".repeat(width.max(1)),
+        "─".repeat(w),
         Style::new().fg(TABLE_BORDER_COLOR),
     )]
 }
 
-/// Render one data row as a vertical **key/value record** block (codex's
-/// fallback): for each column a `label  value` field — the bold label padded to
-/// `label_width`, the value inline-parsed and wrapped, continuation lines aligned
-/// under the value. When even the label plus a minimum value can't fit
-/// (`content_width` too small), the field **stacks**: the label on its own line,
-/// the value wrapped and indented beneath. No box drawing, nothing truncated.
-fn table_record_block(
-    labels: &[String],
-    row: &str,
-    label_width: usize,
-    content_width: u16,
-) -> Vec<Vec<Span<'static>>> {
+/// Render one data row as a vertical **key/value record** block (Claude Code's
+/// key/value transpose): for each column a `label: value` field — the bold label,
+/// a `: ` separator, then the value inline-parsed and wrapped into the remaining
+/// width, continuation lines aligned under the value. No aligned label column and
+/// no trailing padding, so it reads clean and compact. When even `label: ` plus a
+/// minimum value can't fit (`content_width` too small), the field **stacks**: the
+/// label (with its colon) on its own line, the value wrapped and indented beneath.
+/// No box drawing, nothing truncated.
+fn table_record_block(labels: &[String], row: &str, content_width: u16) -> Vec<Vec<Span<'static>>> {
     let ncols = labels.len();
     let row_cells = normalize_row(row, ncols, Style::default());
     let content_width = content_width as usize;
-    let aligned = label_width + TABLE_RECORD_GAP + TABLE_RECORD_MIN_VALUE <= content_width;
     let mut out: Vec<Vec<Span<'static>>> = Vec::new();
     for (label, value) in labels.iter().zip(&row_cells) {
         let label_segs = table_cell_segments(label, table_header_style());
-        if aligned {
-            let indent = label_width + TABLE_RECORD_GAP;
-            let value_width = content_width.saturating_sub(indent).max(1);
-            let lab_w = segments_cols(&label_segs);
+        // The `label: ` prefix — bold label, colon, single space.
+        let prefix_w = segments_cols(&label_segs) + cols(": ");
+        if prefix_w + TABLE_RECORD_MIN_VALUE <= content_width {
+            let value_width = content_width.saturating_sub(prefix_w).max(1);
             for (k, vrow) in wrap_inline(value, value_width as u16)
                 .into_iter()
                 .enumerate()
@@ -1746,23 +1737,21 @@ fn table_record_block(
                 let mut spans: Vec<Span<'static>> = Vec::new();
                 if k == 0 {
                     spans.extend(label_segs.iter().map(|(t, s)| Span::styled(t.clone(), *s)));
-                    spans.push(Span::raw(
-                        " ".repeat(label_width - lab_w + TABLE_RECORD_GAP),
-                    ));
+                    spans.push(Span::raw(": "));
                 } else {
-                    spans.push(Span::raw(" ".repeat(indent)));
+                    spans.push(Span::raw(" ".repeat(prefix_w)));
                 }
                 spans.extend(vrow);
                 out.push(spans);
             }
         } else {
-            // Stacked: the label on its own line, the value indented beneath.
-            out.push(
-                label_segs
-                    .iter()
-                    .map(|(t, s)| Span::styled(t.clone(), *s))
-                    .collect(),
-            );
+            // Stacked: the label (with colon) on its own line, value indented beneath.
+            let mut head: Vec<Span<'static>> = label_segs
+                .iter()
+                .map(|(t, s)| Span::styled(t.clone(), *s))
+                .collect();
+            head.push(Span::raw(":"));
+            out.push(head);
             let value_width = content_width
                 .saturating_sub(TABLE_RECORD_STACK_INDENT)
                 .max(1);
@@ -1948,15 +1937,11 @@ enum TableState {
         aligns: Vec<markdown::Alignment>,
     },
     /// The grid was too cramped to scan at the locked widths, so the block renders
-    /// as codex-style vertical **key/value records** instead (`label value` per
-    /// column, a `─` rule between rows). Chosen once at the lock — like the width
-    /// lock — so it streams row-by-row and stays prefix-stable. `labels` are the
-    /// normalized header cell texts (parsed per row); `label_width` the widest
-    /// rendered label. See `docs/table-streaming.md`.
-    Records {
-        labels: Vec<String>,
-        label_width: usize,
-    },
+    /// as Claude Code-style vertical **key/value records** instead (`label: value`
+    /// per column, a `─` rule between rows). Chosen once at the lock — like the
+    /// width lock — so it streams row-by-row and stays prefix-stable. `labels` are
+    /// the normalized header cell texts (parsed per row). See `docs/table-streaming.md`.
+    Records { labels: Vec<String> },
 }
 
 impl AssistantRenderer {
@@ -2169,13 +2154,8 @@ impl AssistantRenderer {
                         lock_widths_for(&header, Some(line), aligns.len(), self.content_width);
                     if table_should_use_records(&header, line, &col_w) {
                         let labels = normalize_raw_cells(&header, aligns.len());
-                        let label_width = table_label_width(&labels);
-                        let out =
-                            table_record_block(&labels, line, label_width, self.content_width);
-                        self.table = TableState::Records {
-                            labels,
-                            label_width,
-                        };
+                        let out = table_record_block(&labels, line, self.content_width);
+                        self.table = TableState::Records { labels };
                         out
                     } else {
                         // Grid: emit the opening (top border, header, separator)
@@ -2216,24 +2196,13 @@ impl AssistantRenderer {
                     out
                 }
             }
-            TableState::Records {
-                labels,
-                label_width,
-            } => {
+            TableState::Records { labels } => {
                 if markdown::is_table_row(line) {
                     // Each further record is preceded by a `─` rule (the first row
                     // was emitted at the lock). Streams row-by-row, prefix-stable.
                     let mut out = vec![table_record_separator(self.content_width as usize)];
-                    out.extend(table_record_block(
-                        &labels,
-                        line,
-                        label_width,
-                        self.content_width,
-                    ));
-                    self.table = TableState::Records {
-                        labels,
-                        label_width,
-                    };
+                    out.extend(table_record_block(&labels, line, self.content_width));
+                    self.table = TableState::Records { labels };
                     out
                 } else {
                     // Records have no bottom border — a non-table line just closes
@@ -5834,6 +5803,36 @@ mod tests {
             }),
             "a separator rule between records: {text:?}"
         );
+    }
+
+    #[test]
+    fn record_block_uses_colon_key_value_fields() {
+        // Records render as Claude Code-style `label: value` fields — a colon and
+        // a single space, no aligned label column, no trailing padding.
+        let labels = vec!["Name".to_string(), "Role".to_string()];
+        let block = table_record_block(&labels, "| Alice Johnson | Admin |", 40);
+        let rows: Vec<String> = block
+            .iter()
+            .map(|r| r.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+        assert_eq!(rows, vec!["Name: Alice Johnson", "Role: Admin"]);
+    }
+
+    #[test]
+    fn record_separator_caps_its_width() {
+        // The `─` rule between records caps at TABLE_RECORD_SEPARATOR_WIDTH rather
+        // than spanning the full content width (Claude Code's shorter separator),
+        // but still shrinks to fit a narrow content width.
+        let wide: String = table_record_separator(80)
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(cols(&wide), TABLE_RECORD_SEPARATOR_WIDTH);
+        let narrow: String = table_record_separator(15)
+            .iter()
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(cols(&narrow), 15);
     }
 
     #[test]

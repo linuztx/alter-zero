@@ -20,13 +20,20 @@ wrapped across lines, never `…`). See the before/after in the repo's issue ima
 
 **Very narrow → key/value records.** When even the wrapped grid is too cramped to
 scan — columns starved so narrow that cells fragment into a tall sliver — the block
-renders as codex's **key/value records** instead: each data row becomes a vertical
-`label  value` list (one field per column), rows divided by a dim `─` rule. This is
-codex's `table_key_value` transpose (`codex-rs/tui/src/markdown_render/table_key_value.rs`),
-adapted to our streaming model — the grid-vs-records choice is made **once, at the
-same first-data-row lock** as the column widths, so records stream row-by-row and
-stay prefix-stable too. Never `…`, always readable at any width. See *The records
-fallback* below.
+renders as **key/value records** instead: each data row becomes a vertical
+`label: value` list (one field per column), rows divided by a dim `─` rule. This is
+the key/value transpose (codex's `table_key_value.rs`, Claude Code's compact
+`label: value` look), adapted to our streaming model — the grid-vs-records choice
+is made **once, at the same first-data-row lock** as the column widths, so records
+stream row-by-row and stay prefix-stable too. Never `…`, always readable at any
+width. See *The records fallback* below.
+
+The field form is Claude Code's `label: value` — the **bold** label, a `: `
+separator, then the value; **no** aligned label column and **no** trailing padding,
+so short fields read clean and compact (rather than a padded `label⎵⎵value` grid).
+The inter-record `─` rule is **capped** at `TABLE_RECORD_SEPARATOR_WIDTH` (40)
+rather than spanning the full content width — a wide records table's full-width rule
+looked heavy; it still shrinks to fit a narrower content width.
 
 ## The idea: lock column widths at the first data row
 
@@ -53,7 +60,7 @@ PendingHeader ──(matching delimiter)──▶ AwaitingRow{header, aligns}   
              ──(not a delimiter)──────▶ render the header as prose, reprocess the line
 AwaitingRow  ──(first data row)───────▶ lock widths, then DECIDE:
                • scannable grid  ──▶ emit ┌header┤ + row1; ▶ Streaming{col_w, aligns}
-               • too cramped     ──▶ emit row1's record block; ▶ Records{labels, label_width}
+               • too cramped     ──▶ emit row1's record block; ▶ Records{labels}
              ──(non-table line)───────▶ header-only table: ┌header┤ + └──┘, reprocess the line
 Streaming    ──(data row)─────────────▶ wrap the row into col_w, emit it (stays Streaming)
              ──(non-table line)───────▶ emit └──┘ (close), reprocess the line
@@ -71,7 +78,7 @@ the one `AssistantRenderer` core and agree by construction — the differential 
 `stream_render_matches_batch_render_on_every_prefix` (extended with wrapping-table
 *and* records entries) still holds.
 
-### The records fallback (codex's key/value transpose)
+### The records fallback (key/value transpose)
 
 `table_should_use_records(header, first_row, col_w)` is the grid-vs-records
 decision, made at the lock from the header + first row (like the width lock, and
@@ -82,13 +89,15 @@ the grid is growing tall because columns are *starved*, not merely because one w
 cell is a legitimately long narrative (a wide column, `≥ 12`, never triggers it). A
 single-column table is a list, never records.
 
-`table_record_block(labels, row, label_width, content_width)` renders one row as a
-vertical record: for each column a `label  value` field — the **bold** label padded
-to `label_width`, the value inline-parsed and wrapped, continuation lines aligned
-under the value (`wrap_inline`, so nothing is ever `…`'d). When even
-`label_width + gap + TABLE_RECORD_MIN_VALUE` won't fit, the field **stacks** (label
-on its own line, value indented beneath) — codex's aligned-vs-stacked split. Between
-records a dim `─`×`content_width` rule (`table_record_separator`), emitted **before**
+`table_record_block(labels, row, content_width)` renders one row as a vertical
+record in Claude Code's compact form: for each column a `label: value` field — the
+**bold** label, a `: ` separator, then the value inline-parsed and wrapped, with the
+continuation lines of a wrapped value aligned under the value (`wrap_inline`, so
+nothing is ever `…`'d). There is **no** aligned label column and **no** trailing
+padding. When even `label: ` plus `TABLE_RECORD_MIN_VALUE` won't fit, the field
+**stacks** (label + `:` on its own line, value indented beneath). Between records a
+dim `─` rule (`table_record_separator`) **capped** at `TABLE_RECORD_SEPARATOR_WIDTH`
+(40, shrinking to fit a narrower content width), emitted **before**
 each non-first record (the first row emits at the lock), so the block streams
 row-by-row and is prefix-stable. `Records` is a post-lock state like `Streaming`, so
 `in_table()` is false there and a **partial trailing data row** is the only holdback
@@ -119,9 +128,9 @@ early wrapped row of a growing row could change once the rest of the row arrives
   the opening (top border + wrapped bold header + separator). `lock_widths_for`
   computes the locked widths from the header (+ optional first row).
 - `table_should_use_records` / `table_record_block` / `table_record_separator` —
-  the records fallback (above): the decision, one row's `label value` block, and
-  the inter-record `─` rule. `normalize_raw_cells` / `table_label_width` /
-  `table_header_style` are the small shared helpers.
+  the records fallback (above): the decision, one row's `label: value` block, and
+  the capped inter-record `─` rule. `normalize_raw_cells` / `table_header_style` are
+  the small shared helpers.
 
 `truncate_segments` / `fit_cell_spans` / `shrink_table_columns` are gone (no more
 `…`). `table_content_rows` survives only as a `#[cfg(test)]` convenience that

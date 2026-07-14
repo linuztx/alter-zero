@@ -327,9 +327,9 @@ row-by-row** into scrollback: `AssistantRenderer` locks the column widths at the
 first data row and emits each row as it arrives, cells **word-wrapping** into the
 fixed widths (taller rows) instead of truncating with `…` when the grid is narrow.
 At the lock it also decides grid vs. **key/value records**: when the grid would be
-too cramped to scan (columns starved narrow), each row instead renders as a codex-
-style vertical `label value` block with a `─` rule between rows — still streamed,
-still prefix-stable, never `…`. See `docs/table-streaming.md` (the state machine,
+too cramped to scan (columns starved narrow), each row instead renders as a Claude
+Code-style vertical `label: value` block (a capped `─` rule between rows) — still
+streamed, still prefix-stable, never `…`. See `docs/table-streaming.md` (the state machine,
 the width allocation, the records fallback, and the preview handling) — this
 replaced the old buffer-the-whole-table-then-`…`-shrink behavior.
 
