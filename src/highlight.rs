@@ -1,644 +1,322 @@
-//! Lightweight, dependency-free syntax highlighting for fenced code blocks
-//! (`docs/markdown.md`).
+//! Grammar-accurate syntax highlighting for fenced code blocks
+//! (`docs/markdown.md`), ported from codex's approach (`codex-rs/tui/src/render/
+//! highlight.rs`).
 //!
-//! Codex colours code with `syntect` (~250 TextMate grammars); this crate hand-
-//! rolls everything and takes no such dependency, so this is a **generic**
-//! tokenizer that classifies the token shapes common to mainstream languages:
-//! comments, strings, numbers, control/declaration keywords, and function calls.
-//! It is precise enough for the languages people actually paste (Python, JS/TS,
-//! Rust, Go, C/C++, Java, Ruby, shell) and degrades to plain text for anything
-//! it doesn't recognise. `ui` maps each [`Kind`] to a colour (the One Dark
-//! palette), keeping all styling centralized there.
+//! Codex colours code with [`syntect`] over the [`two_face`] grammar + theme
+//! bundles (~250 TextMate grammars, embedded CSS/JS-in-HTML, etc.). This module
+//! is the same stack — it **replaces** the earlier hand-rolled generic tokenizer
+//! (which had no real HTML/CSS grammar and mis-parsed a CSS `#id` selector as a
+//! `#` line comment). We use syntect's **fancy-regex** engine, not the C `onig`
+//! one codex ships, to keep the build pure-Rust like the rest of the crate
+//! (`rustls`, `arboard`).
 //!
-//! **Prefix-stable.** [`highlight`] is a left-to-right scan: a line's colouring
-//! is a pure function of the line's own text plus the multi-line [`Carry`] state
-//! (open triple-string / block-comment) entering it — which depends only on the
-//! lines *before* it. Appending text never recolours an already-finished line,
-//! so streaming-to-scrollback stays sound (CLAUDE.md invariant 2).
+//! Unlike codex — which highlights a whole code block in one call
+//! (`highlight_code_to_lines`) — this crate streams a reply line-by-line into
+//! scrollback (CLAUDE.md invariant 2), so highlighting here is **incremental**:
+//! [`Highlighter`] threads syntect's per-line [`ParseState`] + [`HighlightState`]
+//! across [`Highlighter::line`] calls exactly as syntect's own `HighlightLines`
+//! does internally. That keeps a growing code block O(new line) per chunk and,
+//! because both states are `Clone`, lets the streaming renderer cheaply *peek*
+//! an in-progress line without disturbing the state it resumes from.
+//!
+//! **Prefix-stable.** A completed line's segments are a pure function of the
+//! lines fed before it (the carried parse/highlight state) plus the line's own
+//! text — no lookahead past the line. Appending never recolours an
+//! already-emitted line, so streaming-to-scrollback stays sound. (An
+//! *in-progress* code line is withheld from scrollback entirely by the caller —
+//! `ui::AssistantRenderer::in_code` — since a grammar parses the whole line at
+//! once; only completed lines commit.)
+//!
+//! Styling lives with the theme (Catppuccin Mocha, codex's dark default), not as
+//! a `ui`-owned palette — the tokenizer is no longer colour-agnostic, because a
+//! real grammar's scopes carry far more distinction (tag vs attribute vs value)
+//! than a fixed six-colour enum could. `Seg` therefore carries a resolved
+//! [`Style`]; `ui` maps nothing.
 
-/// The token class a run of code text falls into (mapped to a colour by `ui`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
-    /// Identifiers, operators, punctuation — the default code colour.
-    Plain,
-    /// A language keyword (`if`, `def`, `fn`, `return`, `True`, …).
-    Keyword,
-    /// A string or character literal (single, double, triple, or backtick).
-    Str,
-    /// A comment (line or block).
-    Comment,
-    /// A numeric literal.
-    Number,
-    /// A name in call position — an identifier directly followed by `(`.
-    Function,
-}
+use ratatui::style::{Color, Modifier, Style};
+use std::sync::LazyLock;
+use syntect::highlighting::{
+    Color as SynColor, FontStyle, HighlightIterator, HighlightState, Highlighter as SynHighlighter,
+    Style as SynStyle, Theme,
+};
+use syntect::parsing::{ParseState, ScopeStack, SyntaxReference, SyntaxSet};
+use two_face::theme::EmbeddedThemeName;
 
-/// One coloured run of a code line.
+/// One styled run of a code line (the grammar's scope resolved to a colour +
+/// modifiers by the active theme).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Seg {
     /// The run's text.
     pub text: String,
-    /// Its token class.
-    pub kind: Kind,
+    /// Its resolved style (foreground colour, plus bold where the theme sets it;
+    /// italic/underline are dropped — see [`convert_style`]).
+    pub style: Style,
 }
 
-/// Multi-line lexer state carried between lines within a code block.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Carry {
-    None,
-    /// Inside a triple-quoted string opened with this quote char (`"` or `'`).
-    Triple(char),
-    /// Inside a `/* … */` block comment.
-    Block,
+// -- Process-global singletons (built once, immutable) ------------------------
+
+/// The ~250-language grammar database (newline-aware variants, required for the
+/// per-line [`ParseState::parse_line`] here).
+static SYNTAX_SET: LazyLock<SyntaxSet> = LazyLock::new(two_face::syntax::extra_newlines);
+
+/// The active colour theme — Catppuccin Mocha, codex's adaptive dark default.
+static THEME: LazyLock<Theme> = LazyLock::new(|| {
+    two_face::theme::extra()
+        .get(EmbeddedThemeName::CatppuccinMocha)
+        .clone()
+});
+
+/// The theme-bound highlighter that resolves a scope stack to a style.
+static HIGHLIGHTER: LazyLock<SynHighlighter<'static>> =
+    LazyLock::new(|| SynHighlighter::new(&THEME));
+
+// Syntect/bat encode ANSI palette semantics in the colour's alpha channel:
+// `a=0` => the RGB payload is an ANSI palette index, `a=1` => terminal default.
+// Catppuccin (an RGB theme) never uses these, but we honour them for robustness
+// in case the theme is ever swapped for an ANSI-family one — a direct port of
+// codex's `convert_syntect_color`.
+const ANSI_ALPHA_INDEX: u8 = 0x00;
+const ANSI_ALPHA_DEFAULT: u8 = 0x01;
+const OPAQUE_ALPHA: u8 = 0xFF;
+
+/// A pathological single line (a minified bundle pasted into a fence) is left
+/// unhighlighted rather than handed to the regex engine — bounds worst-case CPU
+/// on one line without a whole-block guard (the block streams line-by-line).
+const MAX_LINE_BYTES: usize = 100_000;
+
+/// The plain-code colour: the theme's default foreground, used for unhighlighted
+/// text (an unknown/`text` language, or an indented code block with no info
+/// string) so it matches the un-scoped tokens of a *highlighted* block.
+#[must_use]
+pub fn plain_style() -> Style {
+    static PLAIN: LazyLock<Style> = LazyLock::new(|| {
+        let fg = THEME
+            .settings
+            .foreground
+            .and_then(convert_syntect_color)
+            // Catppuccin Mocha's default foreground, if the theme omits one.
+            .unwrap_or(Color::Rgb(0xCD, 0xD6, 0xF4));
+        Style::default().fg(fg)
+    });
+    *PLAIN
 }
 
-/// Per-language lexical rules. Keywords/strings/numbers are language-agnostic;
-/// only comment syntax and a couple of string flavours vary.
-#[derive(Clone)]
-struct Syntax {
-    /// `#` starts a line comment (Python, shell, Ruby, …).
-    hash_comment: bool,
-    /// `//` starts a line comment and `/* */` a block comment (C-like).
-    slash_comment: bool,
-    /// `--` starts a line comment (SQL, Lua, Haskell).
-    dash_comment: bool,
-    /// Triple-quoted strings `"""`/`'''` (Python).
-    triple_strings: bool,
-    /// Backtick strings (JS template literals, Go raw strings).
-    backtick_strings: bool,
-    /// Single quotes are **char literals** (`'x'`), not strings — so a bare `'a`
-    /// is a Rust lifetime / label, not an unterminated string (C, Rust, Go, Java…).
-    char_literals: bool,
+// -- Syntax lookup (ported from codex's `find_syntax`) ------------------------
+
+/// Languages that should render **plain** (terminal output / prose fences), so a
+/// ```` ```text ```` or ```` ```console ```` block isn't syntax-coloured.
+fn is_plain_lang(lang: &str) -> bool {
+    matches!(
+        lang.trim().to_ascii_lowercase().as_str(),
+        "" | "text" | "txt" | "plain" | "plaintext" | "console" | "output" | "log"
+    )
 }
 
-impl Syntax {
-    /// The rules for `lang`, or `None` when it shouldn't be highlighted (unknown
-    /// info string, or a plain-text/console block).
-    fn for_lang(lang: &str) -> Option<Self> {
-        let lang = lang.trim().to_ascii_lowercase();
-        // Non-code / terminal-output blocks render plain.
-        if matches!(
-            lang.as_str(),
-            "" | "text" | "txt" | "plain" | "plaintext" | "console" | "output" | "log"
-        ) {
-            return None;
-        }
-        let hash = matches!(
-            lang.as_str(),
-            "python"
-                | "py"
-                | "python3"
-                | "sh"
-                | "bash"
-                | "shell"
-                | "zsh"
-                | "fish"
-                | "ruby"
-                | "rb"
-                | "perl"
-                | "r"
-                | "yaml"
-                | "yml"
-                | "toml"
-                | "ini"
-                | "makefile"
-                | "make"
-                | "dockerfile"
-                | "elixir"
-                | "ex"
-                | "exs"
-                | "coffee"
-                | "nim"
-                | "julia"
-                | "jl"
-                | "php"
-        );
-        let slash = matches!(
-            lang.as_str(),
-            "c" | "h"
-                | "cpp"
-                | "c++"
-                | "cc"
-                | "hpp"
-                | "cxx"
-                | "java"
-                | "js"
-                | "javascript"
-                | "jsx"
-                | "ts"
-                | "typescript"
-                | "tsx"
-                | "go"
-                | "golang"
-                | "rust"
-                | "rs"
-                | "swift"
-                | "kotlin"
-                | "kt"
-                | "scala"
-                | "csharp"
-                | "cs"
-                | "c#"
-                | "php"
-                | "dart"
-                | "zig"
-                | "json"
-        );
-        let dash = matches!(
-            lang.as_str(),
-            "sql" | "lua" | "haskell" | "hs" | "elm" | "ada"
-        );
-        let triple = matches!(lang.as_str(), "python" | "py" | "python3");
-        let backtick = matches!(
-            lang.as_str(),
-            "js" | "javascript" | "jsx" | "ts" | "typescript" | "tsx" | "go" | "golang"
-        );
-        // Languages where a single quote is a char literal (`'x'`) — so a bare
-        // `'a` is a lifetime/label, not a string (Rust especially).
-        let char_lit = matches!(
-            lang.as_str(),
-            "c" | "h"
-                | "cpp"
-                | "c++"
-                | "cc"
-                | "hpp"
-                | "cxx"
-                | "rust"
-                | "rs"
-                | "go"
-                | "golang"
-                | "java"
-                | "csharp"
-                | "cs"
-                | "c#"
-                | "swift"
-                | "kotlin"
-                | "kt"
-                | "scala"
-                | "zig"
-                | "dart"
-        );
-        // A recognised language matches at least one rule; otherwise fall back to
-        // a generic profile (hash + slash comments) so it still colours sensibly.
-        if hash || slash || dash || triple || backtick {
-            Some(Self {
-                hash_comment: hash,
-                slash_comment: slash,
-                dash_comment: dash,
-                triple_strings: triple,
-                backtick_strings: backtick,
-                char_literals: char_lit,
-            })
-        } else {
-            Some(Self {
-                hash_comment: true,
-                slash_comment: true,
-                dash_comment: false,
-                triple_strings: false,
-                backtick_strings: false,
-                char_literals: false,
-            })
-        }
+/// Resolve a fenced block's info-string language to a grammar, patching the few
+/// aliases two-face can't resolve on its own (codex parity). `None` for a
+/// plain/terminal language or an unrecognised one — the caller then renders the
+/// block plain.
+fn find_syntax(lang: &str) -> Option<&'static SyntaxReference> {
+    if is_plain_lang(lang) {
+        return None;
+    }
+    let ss = &*SYNTAX_SET;
+    let normalized = lang.to_ascii_lowercase();
+    let patched = match normalized.as_str() {
+        "csharp" | "c-sharp" => "c#",
+        "cppm" | "cxxm" | "ixx" => "cpp",
+        "golang" => "go",
+        "python3" => "python",
+        "shell" | "zsh" => "bash",
+        "rs" => "rust",
+        _ => lang,
+    };
+    if let Some(s) = ss.find_syntax_by_token(patched) {
+        return Some(s);
+    }
+    if let Some(s) = ss.find_syntax_by_name(patched) {
+        return Some(s);
+    }
+    let lower = patched.to_ascii_lowercase();
+    if let Some(s) = ss
+        .syntaxes()
+        .iter()
+        .find(|s| s.name.to_ascii_lowercase() == lower)
+    {
+        return Some(s);
+    }
+    ss.find_syntax_by_extension(lang)
+}
+
+// -- Style conversion (syntect -> ratatui), ported from codex -----------------
+
+/// Decode a syntect foreground colour into a ratatui colour, honouring bat's
+/// alpha-channel ANSI encoding. `None` ⇒ "use the terminal default".
+fn convert_syntect_color(color: SynColor) -> Option<Color> {
+    match color.a {
+        ANSI_ALPHA_INDEX => Some(ansi_palette_color(color.r)),
+        ANSI_ALPHA_DEFAULT => None,
+        OPAQUE_ALPHA => Some(Color::Rgb(color.r, color.g, color.b)),
+        _ => Some(Color::Rgb(color.r, color.g, color.b)),
     }
 }
 
-/// Control-flow / declaration / constant keywords shared across mainstream
-/// languages. Type and builtin names are deliberately excluded — `int(x)` should
-/// read as a call (blue), not a keyword (magenta), matching the reference look.
-const KEYWORDS: &[&str] = &[
-    // control flow
-    "if",
-    "else",
-    "elif",
-    "elsif",
-    "while",
-    "for",
-    "foreach",
-    "do",
-    "loop",
-    "switch",
-    "case",
-    "match",
-    "when",
-    "unless",
-    "until",
-    "break",
-    "continue",
-    "return",
-    "goto",
-    "then",
-    "end",
-    "begin",
-    "yield",
-    "await",
-    "async",
-    "defer",
-    "go",
-    // declarations
-    "def",
-    "fn",
-    "func",
-    "function",
-    "fun",
-    "class",
-    "struct",
-    "enum",
-    "trait",
-    "impl",
-    "interface",
-    "module",
-    "namespace",
-    "package",
-    "macro",
-    "lambda",
-    "let",
-    "var",
-    "val",
-    "const",
-    "mut",
-    "pub",
-    "static",
-    "final",
-    "public",
-    "private",
-    "protected",
-    "abstract",
-    "override",
-    "extern",
-    "inline",
-    "type",
-    "typedef",
-    "using",
-    // imports
-    "import",
-    "from",
-    "use",
-    "require",
-    "include",
-    // exceptions
-    "try",
-    "catch",
-    "except",
-    "finally",
-    "throw",
-    "throws",
-    "raise",
-    "rescue",
-    "ensure",
-    "panic",
-    "with",
-    // operators-as-words / misc
-    "and",
-    "or",
-    "not",
-    "in",
-    "is",
-    "as",
-    "new",
-    "delete",
-    "del",
-    "pass",
-    "global",
-    "nonlocal",
-    "assert",
-    "self",
-    "this",
-    "super",
-    "sizeof",
-    "typeof",
-    "instanceof",
-    // constants
-    "true",
-    "false",
-    "none",
-    "null",
-    "nil",
-    "True",
-    "False",
-    "None",
-];
+/// Map an ANSI palette index to ratatui's named/indexed colours (codex parity).
+fn ansi_palette_color(index: u8) -> Color {
+    match index {
+        0x00 => Color::Black,
+        0x01 => Color::Red,
+        0x02 => Color::Green,
+        0x03 => Color::Yellow,
+        0x04 => Color::Blue,
+        0x05 => Color::Magenta,
+        0x06 => Color::Cyan,
+        0x07 => Color::Gray,
+        n => Color::Indexed(n),
+    }
+}
+
+/// Convert a syntect style to a ratatui style: foreground colour + bold only.
+/// Background is skipped (the terminal's own bg shows through), and italic +
+/// underline are dropped — many terminals render italic poorly and some themes
+/// underline type scopes, both of which look wrong inline (codex parity).
+fn convert_style(syn: SynStyle) -> Style {
+    let mut style = Style::default();
+    if let Some(fg) = convert_syntect_color(syn.foreground) {
+        style = style.fg(fg);
+    }
+    if syn.font_style.contains(FontStyle::BOLD) {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    style
+}
+
+// -- Incremental highlighter --------------------------------------------------
+
+/// Syntect's per-line lexer + highlighter state, carried across the lines of one
+/// fenced block. `None` for a plain/unknown language (every line is one
+/// [`plain_style`] segment).
+#[derive(Clone)]
+struct State {
+    parse: ParseState,
+    highlight: HighlightState,
+}
 
 /// An **incremental** syntax highlighter for one fenced code block: feed source
 /// lines one at a time with [`Highlighter::line`], threading the multi-line
-/// [`Carry`] state (open triple-string / block-comment) across the calls exactly
-/// as the batch [`highlight`] does. This is what lets the streaming renderer
-/// colour a growing code block in O(new line) per chunk instead of re-highlighting
-/// the whole block every time (`docs/markdown.md`).
-///
-/// Prefix-stable: a line's segments depend only on the lines fed before it, so a
-/// line already emitted never recolours.
-///
-/// `Clone` lets the streaming renderer cheaply *peek* the highlight of an
-/// in-progress (not yet complete) code line without disturbing the carry state
-/// it will resume from once the line completes.
+/// parse/highlight state across the calls. `Clone` lets the streaming renderer
+/// *peek* an in-progress (not-yet-complete) line without disturbing the state it
+/// resumes from once the line completes. See the module docs.
 #[derive(Clone)]
 pub struct Highlighter {
-    /// The language's lexical rules, or `None` for a plain-text/unknown block
-    /// (every line is one [`Kind::Plain`] segment).
-    syntax: Option<Syntax>,
-    /// Open multi-line construct carried into the next line.
-    carry: Carry,
+    /// `None` ⇒ plain passthrough (unknown/`text` language, or indented code).
+    state: Option<State>,
 }
 
 impl Highlighter {
-    /// A highlighter for `lang` (see [`Syntax::for_lang`]). An unrecognised or
-    /// plain-text language yields one [`Kind::Plain`] segment per line.
+    /// A highlighter for `lang` (the fence info string). An unrecognised or
+    /// plain-text language yields one [`plain_style`] segment per line.
     #[must_use]
     pub fn new(lang: Option<&str>) -> Self {
-        Self {
-            syntax: lang.and_then(Syntax::for_lang),
-            carry: Carry::None,
-        }
+        let state = lang.and_then(find_syntax).map(|syntax| State {
+            parse: ParseState::new(syntax),
+            highlight: HighlightState::new(&HIGHLIGHTER, ScopeStack::new()),
+        });
+        Self { state }
     }
 
-    /// Highlight the next source `line`, advancing the multi-line carry state.
+    /// Highlight the next source `line` (without a trailing newline), advancing
+    /// the carried parse/highlight state.
     #[must_use]
     pub fn line(&mut self, line: &str) -> Vec<Seg> {
-        match &self.syntax {
-            Some(syntax) => highlight_line(line, syntax, &mut self.carry),
-            None => vec![Seg {
+        let Some(state) = self.state.as_mut() else {
+            return vec![Seg {
                 text: line.to_string(),
-                kind: Kind::Plain,
-            }],
+                style: plain_style(),
+            }];
+        };
+        if line.len() > MAX_LINE_BYTES {
+            return vec![Seg {
+                text: line.to_string(),
+                style: plain_style(),
+            }];
         }
+        // Grammars are line-based: many contexts anchor on `\n`, so syntect
+        // parses lines *with* their newline (codex uses `LinesWithEndings`).
+        // Our source lines arrive already split on `\n`, so re-append one, then
+        // strip it back off the emitted spans.
+        let with_nl = format!("{line}\n");
+        let ops = match state.parse.parse_line(&with_nl, &SYNTAX_SET) {
+            Ok(ops) => ops,
+            Err(_) => {
+                return vec![Seg {
+                    text: line.to_string(),
+                    style: plain_style(),
+                }];
+            }
+        };
+        let iter = HighlightIterator::new(&mut state.highlight, &ops, &with_nl, &HIGHLIGHTER);
+        let mut out: Vec<Seg> = Vec::new();
+        for (syn_style, text) in iter {
+            let text = text.trim_end_matches(['\n', '\r']);
+            if text.is_empty() {
+                continue;
+            }
+            push(&mut out, text, convert_style(syn_style));
+        }
+        if out.is_empty() {
+            out.push(Seg {
+                text: String::new(),
+                style: plain_style(),
+            });
+        }
+        out
     }
 }
 
-/// Highlight each of `lines` (a fenced code block's source) into coloured
-/// segments, threading the multi-line [`Carry`] state left-to-right. Every line
-/// concatenates back to the original text. `lang` selects the comment style; an
-/// unrecognised or plain-text language yields one [`Kind::Plain`] segment per
-/// line. Thin batch wrapper over the incremental [`Highlighter`].
-#[must_use]
-pub fn highlight(lines: &[&str], lang: Option<&str>) -> Vec<Vec<Seg>> {
-    let mut h = Highlighter::new(lang);
-    lines.iter().map(|line| h.line(line)).collect()
-}
-
-/// Append `text` as a `kind` run, merging into the previous run when the class
-/// matches so adjacent same-colour text is one span.
-fn push(out: &mut Vec<Seg>, text: &str, kind: Kind) {
-    if text.is_empty() {
-        return;
-    }
+/// Append `text` as a styled run, merging into the previous run when the style
+/// matches so adjacent same-style scopes coalesce into one span.
+fn push(out: &mut Vec<Seg>, text: &str, style: Style) {
     if let Some(last) = out.last_mut()
-        && last.kind == kind
+        && last.style == style
     {
         last.text.push_str(text);
         return;
     }
     out.push(Seg {
         text: text.to_string(),
-        kind,
+        style,
     });
 }
 
-/// Whether `word` is a keyword — an O(1) hash lookup over [`KEYWORDS`] built once
-/// (a linear scan ran per identifier, ~90 comparisons each, which dominated the
-/// highlight cost on code-dense replies).
-fn is_keyword(word: &str) -> bool {
-    use std::collections::HashSet;
-    use std::sync::OnceLock;
-    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    SET.get_or_init(|| KEYWORDS.iter().copied().collect())
-        .contains(word)
-}
-
-fn is_ident_start(c: char) -> bool {
-    c.is_alphabetic() || c == '_'
-}
-fn is_ident_continue(c: char) -> bool {
-    c.is_alphanumeric() || c == '_'
-}
-
-/// Highlight one source line given the incoming [`Carry`] state; updates `carry`
-/// for the next line.
-fn highlight_line(line: &str, syntax: &Syntax, carry: &mut Carry) -> Vec<Seg> {
-    let chars: Vec<char> = line.chars().collect();
-    let mut out: Vec<Seg> = Vec::new();
-    let mut i = 0usize;
-
-    // Resume an open multi-line construct from the previous line.
-    match *carry {
-        Carry::Triple(q) => {
-            let (end, closed) = scan_triple_body(&chars, 0, q);
-            push(&mut out, &collect(&chars, 0, end), Kind::Str);
-            if closed {
-                *carry = Carry::None;
-                i = end;
-            } else {
-                return out; // whole line is still inside the string
-            }
-        }
-        Carry::Block => {
-            let (end, closed) = scan_block_body(&chars, 0);
-            push(&mut out, &collect(&chars, 0, end), Kind::Comment);
-            if closed {
-                *carry = Carry::None;
-                i = end;
-            } else {
-                return out;
-            }
-        }
-        Carry::None => {}
-    }
-
-    let n = chars.len();
-    while i < n {
-        let c = chars[i];
-
-        // Line comments run to end-of-line.
-        if is_line_comment(&chars, i, syntax) {
-            push(&mut out, &collect(&chars, i, n), Kind::Comment);
-            break;
-        }
-        // Block comment `/* … */` (may carry to the next line).
-        if syntax.slash_comment && c == '/' && i + 1 < n && chars[i + 1] == '*' {
-            let (end, closed) = scan_block_body(&chars, i + 2);
-            push(&mut out, &collect(&chars, i, end), Kind::Comment);
-            i = end;
-            if !closed {
-                *carry = Carry::Block;
-                break;
-            }
-            continue;
-        }
-        // Triple-quoted string (Python) — may carry.
-        if syntax.triple_strings
-            && (c == '"' || c == '\'')
-            && i + 2 < n
-            && chars[i + 1] == c
-            && chars[i + 2] == c
-        {
-            let (end, closed) = scan_triple_body(&chars, i + 3, c);
-            push(&mut out, &collect(&chars, i, end), Kind::Str);
-            i = end;
-            if !closed {
-                *carry = Carry::Triple(c);
-                break;
-            }
-            continue;
-        }
-        // Double-quote / backtick strings.
-        if c == '"' || (c == '`' && syntax.backtick_strings) {
-            let end = scan_string(&chars, i + 1, c);
-            push(&mut out, &collect(&chars, i, end), Kind::Str);
-            i = end;
-            continue;
-        }
-        // Single quote: a string (Python/JS/shell) or a char literal (C/Rust/…),
-        // where a bare `'a` is a lifetime/label — plain, not a runaway string.
-        if c == '\'' {
-            let is_string = if syntax.char_literals {
-                // `'x'` or `'\x'` is a char literal; anything else is a lifetime.
-                if chars.get(i + 1) == Some(&'\\') {
-                    chars.get(i + 3) == Some(&'\'')
-                } else {
-                    chars.get(i + 2) == Some(&'\'')
-                }
-            } else {
-                true
-            };
-            if is_string {
-                let end = scan_string(&chars, i + 1, '\'');
-                push(&mut out, &collect(&chars, i, end), Kind::Str);
-                i = end;
-            } else {
-                push(&mut out, "'", Kind::Plain);
-                i += 1;
-            }
-            continue;
-        }
-        // Number literal (not part of an identifier). A `.` is only consumed when
-        // followed by a digit, so `1..100` (a range) and `3.method()` don't get
-        // swallowed into the number.
-        if c.is_ascii_digit() {
-            let mut j = i + 1;
-            while j < n
-                && (chars[j].is_ascii_alphanumeric()
-                    || chars[j] == '_'
-                    || (chars[j] == '.' && chars.get(j + 1).is_some_and(|d| d.is_ascii_digit())))
-            {
-                j += 1;
-            }
-            push(&mut out, &collect(&chars, i, j), Kind::Number);
-            i = j;
-            continue;
-        }
-        // Identifier / keyword / function call.
-        if is_ident_start(c) {
-            let mut j = i + 1;
-            while j < n && is_ident_continue(chars[j]) {
-                j += 1;
-            }
-            let word = collect(&chars, i, j);
-            let kind = if is_keyword(&word) {
-                Kind::Keyword
-            } else if j < n && chars[j] == '(' {
-                Kind::Function
-            } else {
-                Kind::Plain
-            };
-            push(&mut out, &word, kind);
-            i = j;
-            continue;
-        }
-        // Anything else (whitespace, operators, punctuation) is plain.
-        push(&mut out, &c.to_string(), Kind::Plain);
-        i += 1;
-    }
-    out
-}
-
-/// Whether a line comment starts at `i` under `syntax`.
-fn is_line_comment(chars: &[char], i: usize, syntax: &Syntax) -> bool {
-    let c = chars[i];
-    if syntax.hash_comment && c == '#' {
-        return true;
-    }
-    if syntax.slash_comment && c == '/' && chars.get(i + 1) == Some(&'/') {
-        return true;
-    }
-    if syntax.dash_comment && c == '-' && chars.get(i + 1) == Some(&'-') {
-        return true;
-    }
-    false
-}
-
-/// Scan a single-line string body from `start` (just past the opening quote) to
-/// just past the closing `quote`, honouring `\` escapes; an unterminated string
-/// ends at end-of-line (single-line strings don't carry).
-fn scan_string(chars: &[char], start: usize, quote: char) -> usize {
-    let mut i = start;
-    while i < chars.len() {
-        match chars[i] {
-            '\\' => i += 2, // skip the escaped char
-            c if c == quote => return i + 1,
-            _ => i += 1,
-        }
-    }
-    chars.len()
-}
-
-/// Scan a triple-quoted body from `start` to just past the closing `q q q`;
-/// returns `(end, closed)`.
-fn scan_triple_body(chars: &[char], start: usize, q: char) -> (usize, bool) {
-    let n = chars.len();
-    let mut i = start;
-    while i < n {
-        if chars[i] == '\\' {
-            i += 2;
-            continue;
-        }
-        if chars[i] == q && chars.get(i + 1) == Some(&q) && chars.get(i + 2) == Some(&q) {
-            return (i + 3, true);
-        }
-        i += 1;
-    }
-    (n, false)
-}
-
-/// Scan a block-comment body from `start` to just past the closing `*/`; returns
-/// `(end, closed)`.
-fn scan_block_body(chars: &[char], start: usize) -> (usize, bool) {
-    let n = chars.len();
-    let mut i = start;
-    while i < n {
-        if chars[i] == '*' && chars.get(i + 1) == Some(&'/') {
-            return (i + 2, true);
-        }
-        i += 1;
-    }
-    (n, false)
-}
-
-/// Collect `chars[a..b]` into a `String`.
-fn collect(chars: &[char], a: usize, b: usize) -> String {
-    chars[a..b].iter().collect()
+/// Highlight each of `lines` (a fenced code block's source) into styled
+/// segments, threading the multi-line state left-to-right. Every line
+/// concatenates back to the original text. Thin batch wrapper over the
+/// incremental [`Highlighter`].
+#[must_use]
+pub fn highlight(lines: &[&str], lang: Option<&str>) -> Vec<Vec<Seg>> {
+    let mut h = Highlighter::new(lang);
+    lines.iter().map(|line| h.line(line)).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Flatten one line's highlight into `(kind, text)` pairs for terse asserts.
-    fn segs(line: &str, lang: &str) -> Vec<(Kind, String)> {
-        highlight(&[line], Some(lang))
-            .pop()
-            .unwrap()
-            .into_iter()
-            .map(|s| (s.kind, s.text))
-            .collect()
+    /// The concatenated text of a line's segments.
+    fn joined(segs: &[Seg]) -> String {
+        segs.iter().map(|s| s.text.as_str()).collect()
     }
 
-    /// The kind covering the first occurrence of `needle` in `line`.
-    fn kind_of(line: &str, lang: &str, needle: &str) -> Kind {
-        for (kind, text) in segs(line, lang) {
-            if text.contains(needle) {
-                return kind;
+    /// The style covering the first segment whose text contains `needle`.
+    fn style_of(line: &str, lang: &str, needle: &str) -> Style {
+        let segs = highlight(&[line], Some(lang)).pop().unwrap();
+        for s in &segs {
+            if s.text.contains(needle) {
+                return s.style;
             }
         }
-        panic!("{needle:?} not found in {line:?}");
+        panic!("{needle:?} not found in {line:?} -> {segs:?}");
     }
 
     #[test]
@@ -649,157 +327,109 @@ mod tests {
             "x = random.randint(1, 100)",
             "return f\"got {n}\"",
         ] {
-            let joined: String = segs(line, "python").into_iter().map(|(_, t)| t).collect();
-            assert_eq!(joined, line, "round-trips");
+            let segs = highlight(&[line], Some("python")).pop().unwrap();
+            assert_eq!(joined(&segs), line, "round-trips");
         }
     }
 
     #[test]
-    fn keywords_are_classified() {
-        assert_eq!(kind_of("def f():", "python", "def"), Kind::Keyword);
-        assert_eq!(kind_of("import random", "python", "import"), Kind::Keyword);
-        assert_eq!(kind_of("while True:", "python", "while"), Kind::Keyword);
-        assert_eq!(kind_of("while True:", "python", "True"), Kind::Keyword);
-        assert_eq!(kind_of("return x", "python", "return"), Kind::Keyword);
+    fn keywords_strings_and_functions_get_distinct_colours() {
+        // We don't hardcode the theme's RGB (codex's test style): assert the
+        // tokens are *styled* and that the classes differ from each other, which
+        // is what proves real grammar-aware highlighting.
+        let kw = style_of("def f():", "python", "def").fg;
+        let func = style_of("def f():", "python", "f").fg;
+        let string = style_of("x = \"hi\"", "python", "\"hi\"").fg;
+        let number = style_of("x = 100", "python", "100").fg;
+        for (name, c) in [
+            ("keyword", kw),
+            ("function", func),
+            ("string", string),
+            ("number", number),
+        ] {
+            assert!(c.is_some(), "{name} should be coloured");
+        }
+        assert_ne!(kw, string, "keyword and string must differ");
+        assert_ne!(kw, number, "keyword and number must differ");
+        assert_ne!(string, func, "string and function must differ");
     }
 
     #[test]
-    fn calls_are_functions_but_keywords_win() {
-        // A name directly before '(' is a function call...
-        assert_eq!(kind_of("print(x)", "python", "print"), Kind::Function);
-        assert_eq!(
-            kind_of("guessing_game()", "python", "guessing_game"),
-            Kind::Function
-        );
-        assert_eq!(kind_of("int(guess)", "python", "int"), Kind::Function);
-        // ...but a keyword before '(' stays a keyword (e.g. `return(x)`).
-        assert_eq!(kind_of("return(x)", "python", "return"), Kind::Keyword);
-    }
-
-    #[test]
-    fn method_calls_after_a_dot_are_functions() {
-        // `random` is a plain identifier (it merges with the following `.`);
-        // `randint`, sitting before `(`, is a call.
-        assert_eq!(
-            kind_of("random.randint(1, 100)", "python", "random"),
-            Kind::Plain
-        );
-        assert_eq!(
-            kind_of("random.randint(1, 100)", "python", "randint"),
-            Kind::Function
-        );
-    }
-
-    #[test]
-    fn strings_numbers_and_comments() {
-        assert_eq!(kind_of("x = \"hello\"", "python", "\"hello\""), Kind::Str);
-        assert_eq!(kind_of("x = 100", "python", "100"), Kind::Number);
-        assert_eq!(kind_of("x = 3.14", "python", "3.14"), Kind::Number);
-        assert_eq!(kind_of("x = 1  # note", "python", "# note"), Kind::Comment);
-    }
-
-    #[test]
-    fn emoji_inside_a_string_stays_in_the_string() {
-        assert_eq!(
-            kind_of("print(\"🎮 Welcome!\")", "python", "🎮 Welcome!"),
-            Kind::Str
-        );
-    }
-
-    #[test]
-    fn python_slash_slash_is_not_a_comment() {
-        // `//` is floor division in Python, not a comment.
-        let s = segs("x = a // b", "python");
+    fn python_hash_is_a_comment_but_a_css_id_selector_is_not() {
+        // The regression the syntect port fixes: the old generic tokenizer
+        // treated a leading `#` as a line comment in *every* language, so a CSS
+        // `#id { … }` selector was dimmed as a comment. A real grammar knows the
+        // difference.
+        let py_comment = style_of("x = 1  # note", "python", "# note").fg;
+        let css_selector = style_of("#message { color: blue; }", "css", "message").fg;
+        assert!(py_comment.is_some(), "python # is a comment");
         assert!(
-            !s.iter().any(|(k, _)| *k == Kind::Comment),
-            "no comment in {s:?}"
+            css_selector.is_some(),
+            "CSS #id is styled (a selector), not a comment"
+        );
+        assert_ne!(
+            py_comment, css_selector,
+            "a CSS id selector must not be coloured like a comment"
         );
     }
 
     #[test]
-    fn c_like_uses_slash_comments_and_blocks() {
-        assert_eq!(kind_of("int x; // note", "c", "// note"), Kind::Comment);
-        let block = segs("a; /* mid */ b;", "c");
+    fn html_tags_are_highlighted_including_embedded_css() {
+        // Codex parity: HTML tags/attributes are coloured, and the CSS embedded
+        // in a <style> block is highlighted by the embedded grammar — the whole
+        // point of the port (the sample from the bug report).
+        let lines = [
+            "<!DOCTYPE html>",
+            "<style>",
+            "  #message { color: blue; }",
+            "</style>",
+        ];
+        let out = highlight(&lines, Some("html"));
+        // The `html` tag name in <!DOCTYPE html> is coloured…
         assert!(
-            block
+            out[0]
                 .iter()
-                .any(|(k, t)| *k == Kind::Comment && t == "/* mid */")
+                .any(|s| s.text.contains("html") && s.style.fg.is_some()),
+            "html tag name coloured: {:?}",
+            out[0]
         );
-    }
-
-    #[test]
-    fn a_block_comment_carries_across_lines() {
-        let lines = ["a /* start", "still comment", "end */ b"];
-        let out = highlight(&lines, Some("c"));
-        // Every segment of the middle line is a comment.
-        assert!(out[1].iter().all(|s| s.kind == Kind::Comment));
-        // The last line resumes code after `*/`.
+        // …and inside <style>, the `#message` selector and `color` property are
+        // coloured by the embedded CSS grammar, and NOT all as one comment run.
+        let colours: Vec<_> = out[2].iter().filter_map(|s| s.style.fg).collect();
         assert!(
+            colours.len() > 1,
+            "embedded CSS is multi-coloured: {:?}",
             out[2]
-                .iter()
-                .any(|s| s.kind == Kind::Plain && s.text.contains('b'))
         );
     }
 
     #[test]
-    fn a_triple_quoted_string_carries_across_lines() {
+    fn a_multiline_string_carries_across_lines() {
+        // syntect's ParseState carries an open triple-quoted string, so interior
+        // lines colour as string — same guarantee the old hand-rolled Carry gave.
         let lines = ["doc = \"\"\"", "multi", "line\"\"\"", "code = 1"];
         let out = highlight(&lines, Some("python"));
-        assert!(out[1].iter().all(|s| s.kind == Kind::Str), "{:?}", out[1]);
-        assert!(out[2].iter().any(|s| s.kind == Kind::Str));
-        // Code resumes after the closing triple quote.
-        assert!(out[3].iter().any(|s| s.kind == Kind::Number));
-    }
-
-    #[test]
-    fn number_stops_at_a_range_operator() {
-        // `1..100` (a Rust range) must not be one giant Number.
-        let s = segs("for i in 1..100 {", "rust");
-        assert!(s.iter().any(|(k, t)| *k == Kind::Number && t == "1"));
-        assert!(s.iter().any(|(k, t)| *k == Kind::Number && t == "100"));
+        let str_fg = style_of("x = \"hi\"", "python", "\"hi\"").fg;
         assert!(
-            !s.iter()
-                .any(|(k, t)| *k == Kind::Number && t.contains("..")),
-            "the `..` is not part of the number: {s:?}"
+            out[1].iter().all(|s| s.style.fg == str_fg),
+            "interior line is all string-coloured: {:?}",
+            out[1]
         );
+        assert_eq!(joined(&out[1]), "multi");
     }
 
     #[test]
-    fn rust_lifetimes_are_not_strings() {
-        let s = segs("impl<'a> Foo<'a> for Bar {", "rust");
-        assert!(
-            !s.iter().any(|(k, _)| *k == Kind::Str),
-            "a lifetime must not open a string: {s:?}"
-        );
-        // A real Rust char literal still highlights.
-        assert_eq!(kind_of("let c = 'x';", "rust", "'x'"), Kind::Str);
-        assert_eq!(kind_of("let c = '\\n';", "rust", "'\\n'"), Kind::Str);
-    }
-
-    #[test]
-    fn python_single_quoted_strings_still_work() {
-        // Python has no char literals — `'hello'` is a full string.
-        assert_eq!(
-            kind_of("x = 'hello world'", "python", "'hello world'"),
-            Kind::Str
-        );
-    }
-
-    #[test]
-    fn highlighter_line_by_line_equals_batch_highlight() {
+    fn incremental_line_by_line_equals_batch_highlight() {
         // The incremental `Highlighter` (one `.line()` per source line, threading
-        // its own carry) must produce byte-identical output to the batch
-        // `highlight()` — same multi-line string/comment carry, same segments.
+        // its own state) must produce byte-identical output to the batch
+        // `highlight()` — same multi-line carry, same styled segments.
         for (lang, lines) in [
             (
                 Some("python"),
                 &["x = \"\"\"", "multi", "line\"\"\"", "y = f(1)"][..],
             ),
-            (Some("c"), &["a /* start", "still comment", "end */ b"][..]),
-            (
-                Some("rust"),
-                &["impl<'a> Foo {", "    let c = 'x';", "}"][..],
-            ),
+            (Some("rust"), &["fn main() {", "    let c = 'x';", "}"][..]),
+            (Some("html"), &["<div>", "  <span>hi</span>", "</div>"][..]),
             (None, &["def f():", "    return 1"][..]),
             (Some("text"), &["plain", "output"][..]),
         ] {
@@ -812,31 +442,31 @@ mod tests {
 
     #[test]
     fn unknown_and_plain_languages_are_not_highlighted() {
-        assert_eq!(
-            highlight(&["def f():"], Some("text")),
-            vec![vec![Seg {
-                text: "def f():".into(),
-                kind: Kind::Plain
-            }]]
-        );
-        // No language at all → plain.
-        assert_eq!(highlight(&["def f():"], None)[0][0].kind, Kind::Plain);
+        // A `text` / unknown / no-language block renders as one plain segment per
+        // line, in the plain (theme-default) colour.
+        for lang in [Some("text"), Some("definitely-not-a-language"), None] {
+            let segs = highlight(&["def f():"], lang).pop().unwrap();
+            assert_eq!(
+                segs,
+                vec![Seg {
+                    text: "def f():".into(),
+                    style: plain_style()
+                }],
+                "lang={lang:?}"
+            );
+        }
     }
 
     #[test]
-    fn prefix_stability_a_committed_code_line_never_recolours() {
-        // Stream a Python block char-by-char and confirm that once a line is
-        // "complete" (a later line exists), its highlight is frozen — the model
-        // for stable_commit's all-but-last flush.
+    fn a_committed_line_never_recolours_when_more_lines_arrive() {
+        // Prefix stability: once a line is "complete" (a later line exists), its
+        // segments are frozen — the property `stable_commit` relies on.
         let full = "x = \"\"\"\nhello\nworld\n\"\"\"\ny = f(1)";
-        let rows_of = |t: &str| -> Vec<Vec<(Kind, String)>> {
+        let rows_of = |t: &str| -> Vec<Vec<Seg>> {
             let lines: Vec<&str> = t.split('\n').collect();
             highlight(&lines, Some("python"))
-                .into_iter()
-                .map(|segs| segs.into_iter().map(|s| (s.kind, s.text)).collect())
-                .collect()
         };
-        let mut committed: Vec<Vec<(Kind, String)>> = Vec::new();
+        let mut committed: Vec<Vec<Seg>> = Vec::new();
         for end in 1..=full.len() {
             if !full.is_char_boundary(end) {
                 continue;

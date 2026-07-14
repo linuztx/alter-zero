@@ -12,8 +12,9 @@
 //! - [`file_search`] — the `@` picker's pure primitives (token detection,
 //!   fuzzy match, ranking).
 //! - [`frame`]       — frame scheduling: coalesce redraw requests, 120 fps cap.
-//! - [`highlight`]   — dependency-free syntax highlighting for code blocks: a
-//!   generic tokenizer (keywords/strings/comments/numbers/calls), prefix-stable.
+//! - [`highlight`]   — grammar-accurate syntax highlighting for code blocks:
+//!   syntect + two_face (~250 TextMate grammars, Catppuccin Mocha theme — codex
+//!   parity), driven incrementally per line so it stays prefix-stable.
 //! - [`llm`]         — the real OpenAI-compatible backend: provider config, the
 //!   streaming client, the `/v1/models` listing, and the `ReplySource` bridge
 //!   (the I/O boundary for a real model; pure cores unit-tested).

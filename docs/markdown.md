@@ -66,10 +66,11 @@ raw markers, so we show them too. It is still a pure per-line transform, so
 prefix-stability and the batch/stream agreement are unchanged.
 
 Code sits under the assistant bullet (aligned with the wrapped-prose indent, no
-gutter) and is **syntax-highlighted** (One Dark palette — keywords magenta,
-strings green, comments dim, numbers orange, calls blue). Both the opening and
+gutter) and is **syntax-highlighted** by real TextMate grammars (Catppuccin
+Mocha theme — codex parity; tags/attributes/selectors coloured, embedded CSS/JS
+in HTML highlighted by their own grammars). Both the opening and
 closing ` ``` ` fences are hidden, and the info-string language is used only to
-pick the highlighter — it is **not** shown as a label.
+pick the grammar — it is **not** shown as a label.
 
 **Tabs are expanded to spaces** on the render path (`expand_code_tabs`, a fixed
 `CODE_TAB_WIDTH`-space substitution, like codex's `expand_tabs`). A tab is zero
@@ -80,14 +81,19 @@ tabs, so `/copy` is byte-exact. It is a pure per-line transform applied in the
 one `AssistantRenderer` core, so batch and streaming stay identical and
 prefix-stable (a tab-indented block is in the differential corpus).
 
-Highlighting is hand-rolled (`highlight.rs`) — codex uses `syntect` (~250
-TextMate grammars); this codebase takes no such dependency, so a **generic**
-tokenizer classifies the token shapes common to mainstream languages (comments,
-strings, numbers, control/declaration keywords, and function calls). It is
-precise for the languages people paste (Python, JS/TS, Rust, Go, C/C++, Java,
-Ruby, shell) and degrades to plain text for anything it doesn't recognise. The
-tokenizer is colour-agnostic; `ui` maps each `highlight::Kind` to a colour, so
-all styling stays centralized in `ui.rs`.
+Highlighting is a port of codex's stack (`highlight.rs`): **`syntect`** over the
+**`two_face`** grammar + theme bundles (~250 TextMate grammars) — the same thing
+codex uses (`codex-rs/tui/src/render/highlight.rs`). It **replaced** an earlier
+hand-rolled generic tokenizer that had no real HTML/CSS grammar (it mis-parsed a
+CSS `#id` selector as a `#` line comment and rendered tags as plain text). We use
+syntect's pure-Rust **fancy-regex** engine — not the C `onig` one codex ships —
+to keep the build free of system C libraries, matching the crate's `rustls` /
+`arboard` stance. The grammar's scopes are resolved to colours by the theme
+(`convert_style`: foreground + bold; italic/underline dropped, codex parity), so
+each `highlight::Seg` now carries a resolved `ratatui::Style` — the tokenizer is
+**no longer colour-agnostic** (a real grammar distinguishes far more than a fixed
+six-colour enum could), and `ui` maps nothing. An unknown or `text`/`console`
+language renders plain (the theme's default foreground).
 
 ## Architecture
 
@@ -98,13 +104,18 @@ all styling stays centralized in `ui.rs`.
   classifies a single prose line as an ATX heading. `BlockScanner` is the
   **incremental** counterpart: `classify(line) -> LineKind` runs the same fence
   state machine one line at a time (for `StreamRender`). No terminal, no styling.
-- **`src/highlight.rs`** — the pure, unit-tested syntax tokenizer.
-  `highlight(lines, lang) -> Vec<Vec<Seg>>` classifies each code line's runs into
-  `Kind`s (keyword / string / comment / number / function / plain), threading
-  multi-line string/comment state left-to-right. `Highlighter` is the
-  **incremental** counterpart (`line(text) -> Vec<Seg>`, threading the carry across
-  calls); `highlight` is a thin batch wrapper over it. Colour-agnostic — `ui` owns
-  the palette.
+- **`src/highlight.rs`** — the syntect-backed highlighter. `Highlighter::new(lang)`
+  resolves the info string to a `two_face` grammar (`find_syntax`, with codex's
+  alias patching) and holds syntect's per-line `ParseState` + `HighlightState`;
+  `Highlighter::line(text) -> Vec<Seg>` parses one source line (re-appending the
+  `\n` grammars anchor on, then stripping it) and resolves its scopes to styled
+  `Seg`s via the theme. The state carries multi-line constructs (open strings,
+  comments, HTML→CSS→JS context) across calls, and `Clone` lets `StreamRender`
+  peek an in-progress line. `highlight(lines, lang) -> Vec<Vec<Seg>>` is a thin
+  batch wrapper. Styling is baked in by the theme (not `ui`-owned); an unknown or
+  plain language yields one plain `Seg` per line (`plain_style` = theme default
+  foreground). The grammar DB, theme, and highlighter are process-global
+  `LazyLock` singletons built once.
 - **`ui::AssistantRenderer`** — the per-line render core: `feed_line(line) ->
   Vec<Line>` classifies via `BlockScanner`, highlights via `Highlighter`, wraps,
   and stamps the bullet (first row) / indent. Both **`ui::message_lines`** (the
@@ -328,14 +339,17 @@ cells is in the differential corpus, widths 3–40). *Detection* still requires 
 row shapes `markdown::is_table_row`/`table_delimiter` accept (a delimiter row must
 contain a pipe); a pipe-less GFM table is rendered as prose, unchanged by this.
 
-**Syntax highlighting is generic, not per-grammar.** No `syntect`/TextMate
-grammars, so a few shapes are approximate: multi-line backtick strings (Go raw
-strings, JS template literals) only colour their opening line — they don't carry
-across lines like `"""` does (a low-severity cosmetic limitation, still
-prefix-stable); string interpolation (`f"{x}"`, `${x}`) isn't parsed; and an
-unknown/`text` language renders plain. An in-progress code line is withheld from
-scrollback until it completes, because highlighting uses one-char lookahead
-within a line (a call's `(`) — see the *streaming* note above.
+**Syntax highlighting is grammar-accurate (`syntect` + `two_face`).** Real
+TextMate grammars, so per-language shapes (multi-line strings/comments, string
+interpolation, embedded languages like CSS/JS in HTML) are handled by the
+grammar itself and carry across lines via syntect's `ParseState`. An unknown or
+`text`/`console` language renders plain (theme default foreground). An
+in-progress code line is still withheld from scrollback until it completes
+(`AssistantRenderer::in_code`), because a grammar parses the whole line at once
+(scopes can change as later characters on the line arrive) — only completed
+lines commit; see the *streaming* note above. Guardrail: a single line over
+~100 KB (a minified bundle pasted into a fence) is left unhighlighted rather than
+handed to the regex engine.
 
 ## Prefix-stable holdback (tables + inline emphasis)
 

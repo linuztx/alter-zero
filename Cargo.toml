@@ -64,6 +64,17 @@ toml = "0.8"
 # `o200k_base` BPE ranks ship embedded in the crate, so counting is offline and
 # deterministic — no runtime fetch. See docs/status-indicator.md.
 tiktoken-rs = "0.12.0"
+# Grammar-accurate syntax highlighting for fenced code blocks (`highlight`
+# module, docs/markdown.md) — a port of codex's stack. `two-face` bundles ~250
+# TextMate grammars + 32 themes; `syntect` is the highlighting engine. We pin
+# the **fancy-regex** feature (`syntect-default-fancy` / `default-fancy`), NOT
+# the `onig` engine codex ships, so the build stays pure-Rust with no system C
+# library — matching the `rustls` / `arboard` stance elsewhere here. Used from
+# the pure `highlight` module (process-global grammar/theme singletons); the
+# per-line `ParseState`/`HighlightState` are threaded incrementally so streaming
+# stays prefix-stable (CLAUDE.md invariant 2).
+two-face = { version = "0.5", default-features = false, features = ["syntect-default-fancy"] }
+syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 
 # Bake the project's pre-commit gate into every build so it can't silently
 # regress (there is no CI yet). Mirrors `clippy --all-targets -- -D warnings`.

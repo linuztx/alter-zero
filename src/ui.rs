@@ -61,12 +61,11 @@ const BULLET_WIDTH: u16 = 2;
 // --- Assistant markdown rendering (fenced code blocks + ATX headings;
 // `docs/markdown.md`). Code sits under the bullet (no gutter, no language
 // label), rendered VERBATIM (indentation preserved, no word-wrap) — the fix
-// for code losing its indentation — and **syntax-highlighted** by the
-// hand-rolled `highlight` tokenizer (One Dark palette below). Headings keep
-// their `#` markers and style the line per level, matching codex
+// for code losing its indentation — and **syntax-highlighted** by the `highlight`
+// module (syntect + two_face grammars, Catppuccin Mocha theme — codex parity;
+// the theme owns the code palette now, so there are no `CODE_*_COLOR` consts).
+// Headings keep their `#` markers and style the line per level, matching codex
 // (`heading_style`). ---
-/// Code text — a neutral light grey, the default (unhighlighted) code colour.
-const CODE_TEXT_COLOR: Color = Color::Rgb(0xAB, 0xB2, 0xBF);
 /// A tab inside a code block expands to this many spaces **for display**. A tab
 /// is zero display columns (unicode-width treats it as a control char), so code
 /// rendered verbatim would lose all its tab indentation (Go, Makefiles, …
@@ -140,30 +139,11 @@ const LIST_MARKER_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
 /// A blockquote's `>` marker and text — dim, so a quote reads as secondary.
 const QUOTE_COLOR: Color = TOOL_DIM_COLOR;
 
-// Syntax-highlight palette (One Dark) — `highlight::Kind` → colour, mapped here
-// so all styling stays centralized in `ui.rs` (the tokenizer is colour-agnostic).
-/// Keywords — magenta.
-const CODE_KEYWORD_COLOR: Color = Color::Rgb(0xC6, 0x78, 0xDD);
-/// String / char literals — green.
-const CODE_STRING_COLOR: Color = Color::Rgb(0x98, 0xC3, 0x79);
-/// Comments — dim slate.
-const CODE_COMMENT_COLOR: Color = Color::Rgb(0x5C, 0x63, 0x70);
-/// Numbers — orange.
-const CODE_NUMBER_COLOR: Color = Color::Rgb(0xD1, 0x9A, 0x66);
-/// Names in call position — blue.
-const CODE_FUNCTION_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
-
-/// Map a highlighter [`highlight::Kind`] to its code colour.
-fn code_kind_color(kind: highlight::Kind) -> Color {
-    match kind {
-        highlight::Kind::Plain => CODE_TEXT_COLOR,
-        highlight::Kind::Keyword => CODE_KEYWORD_COLOR,
-        highlight::Kind::Str => CODE_STRING_COLOR,
-        highlight::Kind::Comment => CODE_COMMENT_COLOR,
-        highlight::Kind::Number => CODE_NUMBER_COLOR,
-        highlight::Kind::Function => CODE_FUNCTION_COLOR,
-    }
-}
+// Code syntax-highlight colours now come from the `highlight` module's theme
+// (syntect + two_face, Catppuccin Mocha — codex parity), baked into each
+// `highlight::Seg`'s `Style`. `ui` no longer owns a code palette or maps token
+// kinds to colours; it just renders the segments the grammar produced. See
+// `docs/markdown.md`.
 
 const USER_COLOR: Color = Color::Rgb(0x6E, 0x6E, 0x6E);
 const USER_BG_COLOR: Color = Color::Rgb(0x2D, 0x2D, 0x2D);
@@ -1287,42 +1267,42 @@ fn expand_code_tabs(line: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
-/// Hard-break a code line's **coloured** segments into display rows of at most
-/// `width` columns, preserving each run's colour across the break — the verbatim,
+/// Hard-break a code line's **styled** segments into display rows of at most
+/// `width` columns, preserving each run's style across the break — the verbatim,
 /// whitespace-preserving counterpart of [`wrap_verbatim`] that keeps syntax
-/// colours. Breaks on grapheme boundaries measured in display columns (an
-/// overflowing cluster is placed alone); adjacent same-colour graphemes coalesce
+/// styling. Breaks on grapheme boundaries measured in display columns (an
+/// overflowing cluster is placed alone); adjacent same-style graphemes coalesce
 /// into one span. An empty line yields a single empty row (just the bullet/indent,
 /// once stamped). Prefix-stable — appending only extends the last row.
-fn code_content_rows(segments: &[(String, Color)], width: u16) -> Vec<Vec<Span<'static>>> {
+fn code_content_rows(segments: &[(String, Style)], width: u16) -> Vec<Vec<Span<'static>>> {
     let width = (width as usize).max(1);
     let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
     let mut row: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
-    let mut run_color = CODE_TEXT_COLOR;
+    let mut run_style = Style::default();
     let mut w = 0usize;
-    let flush = |row: &mut Vec<Span<'static>>, run: &mut String, color: Color| {
+    let flush = |row: &mut Vec<Span<'static>>, run: &mut String, style: Style| {
         if !run.is_empty() {
-            row.push(Span::styled(std::mem::take(run), Style::new().fg(color)));
+            row.push(Span::styled(std::mem::take(run), style));
         }
     };
-    for (text, color) in segments {
+    for (text, style) in segments {
         for g in text.graphemes(true) {
             let gw = cols(g);
             if w > 0 && w + gw > width {
-                flush(&mut row, &mut run, run_color);
+                flush(&mut row, &mut run, run_style);
                 rows.push(std::mem::take(&mut row));
                 w = 0;
             }
-            if *color != run_color {
-                flush(&mut row, &mut run, run_color);
-                run_color = *color;
+            if *style != run_style {
+                flush(&mut row, &mut run, run_style);
+                run_style = *style;
             }
             run.push_str(g);
             w += gw;
         }
     }
-    flush(&mut row, &mut run, run_color);
+    flush(&mut row, &mut run, run_style);
     if !row.is_empty() || rows.is_empty() {
         rows.push(row);
     }
@@ -1902,14 +1882,11 @@ impl AssistantRenderer {
             Some(h) => h.line(&expanded),
             None => vec![highlight::Seg {
                 text: expanded.into_owned(),
-                kind: highlight::Kind::Plain,
+                style: highlight::plain_style(),
             }],
         };
-        let colored: Vec<(String, Color)> = segs
-            .into_iter()
-            .map(|s| (s.text, code_kind_color(s.kind)))
-            .collect();
-        code_content_rows(&colored, self.content_width)
+        let styled: Vec<(String, Style)> = segs.into_iter().map(|s| (s.text, s.style)).collect();
+        code_content_rows(&styled, self.content_width)
     }
 
     /// Render a **non-table** prose line: an ATX heading (markers kept, styled per
@@ -3200,9 +3177,9 @@ fn numbered_row_lines(
         .saturating_sub(cols(TOOL_RESULT_PREFIX) + gutter_cols)
         .max(1);
 
-    let segments: Vec<(String, Color)> = segs
+    let segments: Vec<(String, Style)> = segs
         .iter()
-        .map(|seg| (seg.text.clone(), code_kind_color(seg.kind)))
+        .map(|seg| (seg.text.clone(), seg.style))
         .collect();
     code_content_rows(&segments, content_width as u16)
         .into_iter()
@@ -6009,8 +5986,8 @@ mod tests {
         assert!(
             code.spans
                 .iter()
-                .any(|s| s.style.fg == Some(CODE_TEXT_COLOR)),
-            "code text uses the code colour"
+                .any(|s| s.style.fg == highlight::plain_style().fg),
+            "unhighlighted code text uses the plain (theme-default) code colour"
         );
     }
 
@@ -6180,21 +6157,36 @@ mod tests {
 
     #[test]
     fn assistant_code_is_syntax_highlighted() {
+        // We assert real, multi-colour highlighting without pinning the theme's
+        // exact RGB (codex's own test style): each token class is coloured, and
+        // the classes differ from one another and from plain prose.
         let lines = message_lines(
             Role::Assistant,
             "```python\ndef f():\n    x = \"hi\"  # note\n```",
             80,
         );
-        let color_of = |needle: &str, want: Color| {
+        let fg_of = |needle: &str| -> Option<Color> {
             lines
                 .iter()
                 .flat_map(|l| l.spans.iter())
-                .any(|s| s.content.contains(needle) && s.style.fg == Some(want))
+                .find(|s| s.content.contains(needle))
+                .and_then(|s| s.style.fg)
         };
-        assert!(color_of("def", CODE_KEYWORD_COLOR), "keyword magenta");
-        assert!(color_of("f", CODE_FUNCTION_COLOR), "call blue");
-        assert!(color_of("\"hi\"", CODE_STRING_COLOR), "string green");
-        assert!(color_of("# note", CODE_COMMENT_COLOR), "comment dim");
+        let kw = fg_of("def");
+        let func = fg_of("f");
+        let string = fg_of("\"hi\"");
+        let comment = fg_of("# note");
+        for (name, c) in [
+            ("def", kw),
+            ("f", func),
+            ("\"hi\"", string),
+            ("# note", comment),
+        ] {
+            assert!(c.is_some(), "{name} should be coloured");
+        }
+        assert_ne!(kw, string, "keyword and string differ");
+        assert_ne!(string, comment, "string and comment differ");
+        assert_ne!(kw, comment, "keyword and comment differ");
     }
 
     #[test]
@@ -6477,13 +6469,17 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "def")
             .expect("keyword segment");
-        assert_eq!(kw.style.fg, Some(CODE_KEYWORD_COLOR), "keyword coloured");
+        assert!(kw.style.fg.is_some(), "keyword coloured");
         let s = lines[3]
             .spans
             .iter()
             .find(|s| s.content.as_ref() == "\"hi\"")
             .expect("string segment");
-        assert_eq!(s.style.fg, Some(CODE_STRING_COLOR), "string coloured");
+        assert!(s.style.fg.is_some(), "string coloured");
+        assert_ne!(
+            kw.style.fg, s.style.fg,
+            "keyword and string are distinct colours"
+        );
     }
 
     #[test]
@@ -6505,13 +6501,17 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "def")
             .expect("keyword segment");
-        assert_eq!(kw.style.fg, Some(CODE_KEYWORD_COLOR));
+        assert!(kw.style.fg.is_some(), "keyword coloured");
         let lit = lines[3]
             .spans
             .iter()
             .find(|s| s.content.as_ref() == "42")
             .expect("number literal");
-        assert_eq!(lit.style.fg, Some(CODE_NUMBER_COLOR));
+        assert!(lit.style.fg.is_some(), "number coloured");
+        assert_ne!(
+            kw.style.fg, lit.style.fg,
+            "keyword and number are distinct colours"
+        );
         assert!(
             lines
                 .iter()
@@ -6615,7 +6615,10 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "let")
             .unwrap();
-        assert_eq!(add_kw.style.fg, Some(CODE_KEYWORD_COLOR));
+        assert!(
+            add_kw.style.fg.is_some(),
+            "added keyword keeps its syntax colour"
+        );
         assert!(!add_kw.style.add_modifier.contains(Modifier::DIM));
         let del_kw = del
             .spans
@@ -6628,7 +6631,10 @@ mod tests {
             .iter()
             .find(|s| s.content.as_ref() == "before")
             .unwrap();
-        assert_eq!(ctx_fn.style.fg, Some(CODE_FUNCTION_COLOR));
+        assert!(
+            ctx_fn.style.fg.is_some(),
+            "context row is syntax-highlighted"
+        );
         assert!(ctx.spans.iter().all(|s| s.style.bg.is_none()));
     }
 
