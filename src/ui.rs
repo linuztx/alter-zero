@@ -121,6 +121,20 @@ const TABLE_BORDER_COLOR: Color = TOOL_DIM_COLOR;
 /// a narrow column keeps at least this many display columns, and cells wrap into
 /// it across multiple rows rather than losing text to a `…`.
 const TABLE_MIN_COL: usize = 3;
+/// Records fallback (`docs/table-streaming.md`, codex's key/value transpose): a
+/// column at least this wide is considered scannable, so it never triggers the
+/// fallback even if its content wraps (it's a legitimately wide narrative column).
+const TABLE_SCANNABLE_COL: usize = 12;
+/// A cell that wraps into at least this many rows *in a narrow column* means the
+/// grid is growing tall because columns are starved — flip to vertical records.
+const TABLE_RECORDS_MIN_LINES: usize = 3;
+/// Records layout: spaces between the bold label column and its value.
+const TABLE_RECORD_GAP: usize = 2;
+/// The narrowest value column the *aligned* record form keeps; below this the
+/// field stacks (label on its own line, value indented beneath) — codex parity.
+const TABLE_RECORD_MIN_VALUE: usize = 12;
+/// A stacked record value's indent under its label line.
+const TABLE_RECORD_STACK_INDENT: usize = 2;
 
 // --- Inline markdown styling (docs/markdown.md). A prose line's `**bold**`,
 // `*italic*`, `~~strike~~`, `` `code` `` and `[text](url)` render with these;
@@ -1645,6 +1659,123 @@ fn table_open_rows(
     out
 }
 
+/// The bold header style shared by grid header cells and record labels.
+fn table_header_style() -> Style {
+    Style::new().add_modifier(Modifier::BOLD)
+}
+
+/// Split `line` into exactly `ncols` raw cell texts (padding/truncating), for the
+/// records fallback's stored labels.
+fn normalize_raw_cells(line: &str, ncols: usize) -> Vec<String> {
+    let mut cells = markdown::table_cells(line);
+    cells.resize(ncols, String::new());
+    cells
+}
+
+/// The widest **rendered** (bold, inline-parsed) label width over the header
+/// cells — the records fallback's label-column width.
+fn table_label_width(labels: &[String]) -> usize {
+    labels
+        .iter()
+        .map(|l| segments_cols(&table_cell_segments(l, table_header_style())))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Decide, at the width-lock point, whether the grid is too cramped to scan and
+/// should render as vertical key/value **records** instead (codex's key/value
+/// transpose, adapted to our first-data-row lock so it stays streaming +
+/// prefix-stable — the decision, like the width lock, is made from the header +
+/// first row). True when a column is both **narrow** (`< TABLE_SCANNABLE_COL`)
+/// **and** its header/first-row content wraps into `>= TABLE_RECORDS_MIN_LINES`
+/// rows at the locked width — i.e. the grid is growing tall because columns are
+/// starved, not because one wide cell is a legitimately long narrative. Never for
+/// a single-column table (it's just a list).
+fn table_should_use_records(header: &str, first_row: &str, col_w: &[usize]) -> bool {
+    let ncols = col_w.len();
+    if ncols < 2 {
+        return false;
+    }
+    let header_cells = normalize_row(header, ncols, table_header_style());
+    let row_cells = normalize_row(first_row, ncols, Style::default());
+    col_w.iter().enumerate().any(|(i, &w)| {
+        if w >= TABLE_SCANNABLE_COL {
+            return false;
+        }
+        let header_h = wrap_inline(&header_cells[i], w as u16).len();
+        let row_h = wrap_inline(&row_cells[i], w as u16).len();
+        header_h.max(row_h) >= TABLE_RECORDS_MIN_LINES
+    })
+}
+
+/// A `─`×`width` rule separating two records, dim like a table border.
+fn table_record_separator(width: usize) -> Vec<Span<'static>> {
+    vec![Span::styled(
+        "─".repeat(width.max(1)),
+        Style::new().fg(TABLE_BORDER_COLOR),
+    )]
+}
+
+/// Render one data row as a vertical **key/value record** block (codex's
+/// fallback): for each column a `label  value` field — the bold label padded to
+/// `label_width`, the value inline-parsed and wrapped, continuation lines aligned
+/// under the value. When even the label plus a minimum value can't fit
+/// (`content_width` too small), the field **stacks**: the label on its own line,
+/// the value wrapped and indented beneath. No box drawing, nothing truncated.
+fn table_record_block(
+    labels: &[String],
+    row: &str,
+    label_width: usize,
+    content_width: u16,
+) -> Vec<Vec<Span<'static>>> {
+    let ncols = labels.len();
+    let row_cells = normalize_row(row, ncols, Style::default());
+    let content_width = content_width as usize;
+    let aligned = label_width + TABLE_RECORD_GAP + TABLE_RECORD_MIN_VALUE <= content_width;
+    let mut out: Vec<Vec<Span<'static>>> = Vec::new();
+    for (label, value) in labels.iter().zip(&row_cells) {
+        let label_segs = table_cell_segments(label, table_header_style());
+        if aligned {
+            let indent = label_width + TABLE_RECORD_GAP;
+            let value_width = content_width.saturating_sub(indent).max(1);
+            let lab_w = segments_cols(&label_segs);
+            for (k, vrow) in wrap_inline(value, value_width as u16)
+                .into_iter()
+                .enumerate()
+            {
+                let mut spans: Vec<Span<'static>> = Vec::new();
+                if k == 0 {
+                    spans.extend(label_segs.iter().map(|(t, s)| Span::styled(t.clone(), *s)));
+                    spans.push(Span::raw(
+                        " ".repeat(label_width - lab_w + TABLE_RECORD_GAP),
+                    ));
+                } else {
+                    spans.push(Span::raw(" ".repeat(indent)));
+                }
+                spans.extend(vrow);
+                out.push(spans);
+            }
+        } else {
+            // Stacked: the label on its own line, the value indented beneath.
+            out.push(
+                label_segs
+                    .iter()
+                    .map(|(t, s)| Span::styled(t.clone(), *s))
+                    .collect(),
+            );
+            let value_width = content_width
+                .saturating_sub(TABLE_RECORD_STACK_INDENT)
+                .max(1);
+            for vrow in wrap_inline(value, value_width as u16) {
+                let mut spans = vec![Span::raw(" ".repeat(TABLE_RECORD_STACK_INDENT))];
+                spans.extend(vrow);
+                out.push(spans);
+            }
+        }
+    }
+    out
+}
+
 /// Render a **complete** GFM pipe table into box-drawing content rows
 /// (`docs/markdown.md`). `lines[0]` is the header, `lines[1]` the delimiter (its
 /// column count + [`markdown::Alignment`]s govern the grid) and `lines[2..]` the
@@ -1815,6 +1946,16 @@ enum TableState {
     Streaming {
         col_w: Vec<usize>,
         aligns: Vec<markdown::Alignment>,
+    },
+    /// The grid was too cramped to scan at the locked widths, so the block renders
+    /// as codex-style vertical **key/value records** instead (`label value` per
+    /// column, a `─` rule between rows). Chosen once at the lock — like the width
+    /// lock — so it streams row-by-row and stays prefix-stable. `labels` are the
+    /// normalized header cell texts (parsed per row); `label_width` the widest
+    /// rendered label. See `docs/table-streaming.md`.
+    Records {
+        labels: Vec<String>,
+        label_width: usize,
     },
 }
 
@@ -2020,18 +2161,34 @@ impl AssistantRenderer {
             }
             TableState::AwaitingRow { header, aligns } => {
                 if markdown::is_table_row(line) {
-                    // The first data row: lock widths from header + this row, emit
-                    // the opening (top border, header, separator) then this row.
+                    // The first data row locks the layout. Decide grid vs. records
+                    // from the header + this row (like the width lock itself): if
+                    // the grid would be too cramped to scan, render vertical
+                    // key/value records instead (docs/table-streaming.md).
                     let col_w =
                         lock_widths_for(&header, Some(line), aligns.len(), self.content_width);
-                    let mut out = table_open_rows(&header, &col_w, &aligns);
-                    out.extend(table_row_lines(
-                        &normalize_row(line, aligns.len(), Style::default()),
-                        &col_w,
-                        &aligns,
-                    ));
-                    self.table = TableState::Streaming { col_w, aligns };
-                    out
+                    if table_should_use_records(&header, line, &col_w) {
+                        let labels = normalize_raw_cells(&header, aligns.len());
+                        let label_width = table_label_width(&labels);
+                        let out =
+                            table_record_block(&labels, line, label_width, self.content_width);
+                        self.table = TableState::Records {
+                            labels,
+                            label_width,
+                        };
+                        out
+                    } else {
+                        // Grid: emit the opening (top border, header, separator)
+                        // then this row.
+                        let mut out = table_open_rows(&header, &col_w, &aligns);
+                        out.extend(table_row_lines(
+                            &normalize_row(line, aligns.len(), Style::default()),
+                            &col_w,
+                            &aligns,
+                        ));
+                        self.table = TableState::Streaming { col_w, aligns };
+                        out
+                    }
                 } else {
                     // A header-only table (no data rows) — lock from the header,
                     // emit the opening + bottom border, then the closing line.
@@ -2059,6 +2216,31 @@ impl AssistantRenderer {
                     out
                 }
             }
+            TableState::Records {
+                labels,
+                label_width,
+            } => {
+                if markdown::is_table_row(line) {
+                    // Each further record is preceded by a `─` rule (the first row
+                    // was emitted at the lock). Streams row-by-row, prefix-stable.
+                    let mut out = vec![table_record_separator(self.content_width as usize)];
+                    out.extend(table_record_block(
+                        &labels,
+                        line,
+                        label_width,
+                        self.content_width,
+                    ));
+                    self.table = TableState::Records {
+                        labels,
+                        label_width,
+                    };
+                    out
+                } else {
+                    // Records have no bottom border — a non-table line just closes
+                    // the block and renders in place.
+                    self.prose_or_table(line, was_blank)
+                }
+            }
         }
     }
 
@@ -2080,6 +2262,9 @@ impl AssistantRenderer {
             TableState::Streaming { col_w, .. } => {
                 vec![table_border_row(&col_w, '└', '┴', '┘')]
             }
+            // Records have no bottom border — the emitted blocks are the whole
+            // rendering, so a trailing records table closes with nothing.
+            TableState::Records { .. } => Vec::new(),
         }
     }
 
@@ -2099,7 +2284,10 @@ impl AssistantRenderer {
     /// table's rows already streamed, so it adds nothing here (docs/table-streaming.md).
     fn flush_table_preview(&mut self) -> Vec<Vec<Span<'static>>> {
         match std::mem::replace(&mut self.table, TableState::None) {
-            TableState::None | TableState::Streaming { .. } => Vec::new(),
+            // A `Streaming`/`Records` table's rows already streamed — nothing to add.
+            TableState::None | TableState::Streaming { .. } | TableState::Records { .. } => {
+                Vec::new()
+            }
             TableState::PendingHeader(header) => self.render_prose_line(&header, false),
             TableState::AwaitingRow { header, aligns } => {
                 let col_w = lock_widths_for(&header, None, aligns.len(), self.content_width);
@@ -5599,6 +5787,107 @@ mod tests {
     }
 
     #[test]
+    fn very_narrow_table_renders_as_key_value_records() {
+        // At a very narrow width the grid is too cramped to scan, so it flips to
+        // codex-style key/value records: no box-drawing, a `label value` field
+        // per column, a `─` rule between rows, nothing truncated.
+        let table = "| Name | Email | Role |\n|------|-------|------|\n\
+                     | Alice Johnson | alice@example.com | Administrator |\n\
+                     | Bob Smith | bob@example.com | Editor |";
+        let lines = message_lines(Role::Assistant, table, 24);
+        let text: Vec<String> = lines
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        let joined = text.join("\n");
+        // Records mode has NO grid box-drawing.
+        assert!(
+            !joined.contains('│') && !joined.contains('┌') && !joined.contains('┐'),
+            "records mode has no grid borders: {text:?}"
+        );
+        // Every column label appears as a field key (once per record).
+        for label in ["Name", "Email", "Role"] {
+            assert!(
+                text.iter().any(|r| r.contains(label)),
+                "label {label}: {text:?}"
+            );
+        }
+        // Nothing truncated; content survives even where a value wrapped.
+        assert!(!joined.contains('…'), "records never truncate: {text:?}");
+        let squished: String = joined.split_whitespace().collect();
+        for needle in [
+            "alice@example.com",
+            "Administrator",
+            "bob@example.com",
+            "BobSmith",
+        ] {
+            assert!(
+                squished.contains(needle),
+                "content preserved: {needle} in {text:?}"
+            );
+        }
+        // A `─` rule separates the two records (rows carry the bullet indent).
+        assert!(
+            text.iter().any(|r| {
+                let t = r.trim();
+                !t.is_empty() && t.chars().all(|c| c == '─')
+            }),
+            "a separator rule between records: {text:?}"
+        );
+    }
+
+    #[test]
+    fn moderately_narrow_table_stays_a_wrapping_grid() {
+        // Records must not over-trigger: a moderately narrow table still renders
+        // as a box-drawing grid (cells wrap into taller rows). Records only kick
+        // in when the grid is genuinely cramped (docs/table-streaming.md).
+        let table = "| Name | Email | Role |\n|------|-------|------|\n\
+                     | Alice Johnson | alice@example.com | Administrator |\n\
+                     | Bob Smith | bob@example.com | Editor |";
+        let joined: String = message_lines(Role::Assistant, table, 48)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            joined.contains('│') && joined.contains('┌'),
+            "a moderately narrow table stays a grid: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn table_should_use_records_only_when_narrow_and_cramped() {
+        let header = "| Name | Email | Role |";
+        let row = "| Alice Johnson | alice@example.com | Administrator |";
+        // Wide terminal → scannable grid, not records.
+        let wide = lock_widths_for(header, Some(row), 3, 80);
+        assert!(
+            !table_should_use_records(header, row, &wide),
+            "wide stays a grid"
+        );
+        // Very narrow → columns starved and cells wrap tall → records.
+        let narrow = lock_widths_for(header, Some(row), 3, 24);
+        assert!(
+            table_should_use_records(header, row, &narrow),
+            "narrow flips to records"
+        );
+        // A single-column table is just a list — never records.
+        let one_col = lock_widths_for(
+            "| X |",
+            Some("| a very long value that wraps a lot here |"),
+            1,
+            12,
+        );
+        assert!(
+            !table_should_use_records(
+                "| X |",
+                "| a very long value that wraps a lot here |",
+                &one_col
+            ),
+            "single-column never records"
+        );
+    }
+
+    #[test]
     fn table_streams_row_by_row_to_scrollback() {
         // The core new behavior (docs/table-streaming.md): a table's rows commit
         // to scrollback AS THEY ARRIVE (like prose) instead of being buffered
@@ -8172,6 +8461,13 @@ mod tests {
             // rendered width, so the withheld-whole grid's streamed commits must
             // still match batch at every prefix/width (incl. the narrow shrink).
             "files:\n\n| Database | Modified |\n|----------|----------|\n| `core.db` | **Jul 13** |\n| plain.db | today |\n\nend",
+            // A table whose cells are long enough that at the narrower sweep widths
+            // the grid is too cramped to scan and flips to codex-style key/value
+            // RECORDS (docs/table-streaming.md): the records stream row-by-row (a
+            // `─` rule before each non-first record), so the streamed commits + the
+            // final flush must still equal the batch render at every prefix/width —
+            // records must be prefix-stable just like the grid.
+            "summary:\n\n| Component | Description of the thing |\n|-----------|--------------------------|\n| Parser | Reads and validates the input tokens |\n| Renderer | Draws styled cells into the terminal |\n\ndone",
             // --- Inline emphasis (docs/markdown.md): line-local, so a complete
             // line's styling is final (its frozen rows never restyle) while a
             // trailing line with an open marker is withheld (has_open_inline). The

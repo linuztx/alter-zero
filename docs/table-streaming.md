@@ -18,6 +18,16 @@ codex renders tables (wide → a tight grid; narrow → the same grid with cells
 wrapped across lines, never `…`). See the before/after in the repo's issue images
 (img1 = the old `…` grid; img2 = the wrapped grid).
 
+**Very narrow → key/value records.** When even the wrapped grid is too cramped to
+scan — columns starved so narrow that cells fragment into a tall sliver — the block
+renders as codex's **key/value records** instead: each data row becomes a vertical
+`label  value` list (one field per column), rows divided by a dim `─` rule. This is
+codex's `table_key_value` transpose (`codex-rs/tui/src/markdown_render/table_key_value.rs`),
+adapted to our streaming model — the grid-vs-records choice is made **once, at the
+same first-data-row lock** as the column widths, so records stream row-by-row and
+stay prefix-stable too. Never `…`, always readable at any width. See *The records
+fallback* below.
+
 ## The idea: lock column widths at the first data row
 
 A table can't be prefix-stable *and* size its columns to every row — the later
@@ -41,20 +51,48 @@ Ctrl+O transcript — no reflow surprises.
 None ──(a table-row candidate)──▶ PendingHeader(header)
 PendingHeader ──(matching delimiter)──▶ AwaitingRow{header, aligns}      // emits nothing yet
              ──(not a delimiter)──────▶ render the header as prose, reprocess the line
-AwaitingRow  ──(first data row)───────▶ lock widths; emit ┌header┤ + row1; ▶ Streaming{col_w, aligns}
+AwaitingRow  ──(first data row)───────▶ lock widths, then DECIDE:
+               • scannable grid  ──▶ emit ┌header┤ + row1; ▶ Streaming{col_w, aligns}
+               • too cramped     ──▶ emit row1's record block; ▶ Records{labels, label_width}
              ──(non-table line)───────▶ header-only table: ┌header┤ + └──┘, reprocess the line
 Streaming    ──(data row)─────────────▶ wrap the row into col_w, emit it (stays Streaming)
              ──(non-table line)───────▶ emit └──┘ (close), reprocess the line
+Records      ──(data row)─────────────▶ emit a `─` rule + the row's record block (stays Records)
+             ──(non-table line)───────▶ close (no border), reprocess the line
 ```
 
 `flush()` (end-of-message / a code fence interrupting) closes an open table the
-same way: `AwaitingRow` → header-only grid, `Streaming` → the bottom border.
+same way: `AwaitingRow` → header-only grid, `Streaming` → the bottom border,
+`Records` → nothing (records have no bottom border).
 
 Because rows are emitted **incrementally** and flow through the normal `stamp` →
 `frozen` pipeline, `assistant_lines` (batch) and `StreamRender` (streaming) drive
 the one `AssistantRenderer` core and agree by construction — the differential test
 `stream_render_matches_batch_render_on_every_prefix` (extended with wrapping-table
-entries) still holds.
+*and* records entries) still holds.
+
+### The records fallback (codex's key/value transpose)
+
+`table_should_use_records(header, first_row, col_w)` is the grid-vs-records
+decision, made at the lock from the header + first row (like the width lock, and
+with the same "the first row is representative" trade-off). It returns true when a
+column is **both** narrow (`< TABLE_SCANNABLE_COL`, 12) **and** its header/first-row
+content wraps into `≥ TABLE_RECORDS_MIN_LINES` (3) rows at the locked width — i.e.
+the grid is growing tall because columns are *starved*, not merely because one wide
+cell is a legitimately long narrative (a wide column, `≥ 12`, never triggers it). A
+single-column table is a list, never records.
+
+`table_record_block(labels, row, label_width, content_width)` renders one row as a
+vertical record: for each column a `label  value` field — the **bold** label padded
+to `label_width`, the value inline-parsed and wrapped, continuation lines aligned
+under the value (`wrap_inline`, so nothing is ever `…`'d). When even
+`label_width + gap + TABLE_RECORD_MIN_VALUE` won't fit, the field **stacks** (label
+on its own line, value indented beneath) — codex's aligned-vs-stacked split. Between
+records a dim `─`×`content_width` rule (`table_record_separator`), emitted **before**
+each non-first record (the first row emits at the lock), so the block streams
+row-by-row and is prefix-stable. `Records` is a post-lock state like `Streaming`, so
+`in_table()` is false there and a **partial trailing data row** is the only holdback
+(the same `markdown::is_table_row` check `Streaming` uses).
 
 ### Holdback: only *before* the lock
 
@@ -80,10 +118,15 @@ early wrapped row of a growing row could change once the rest of the row arrives
 - `table_border_row` / `table_open_rows` — the `┌┬┐` / `├┼┤` / `└┴┘` borders and
   the opening (top border + wrapped bold header + separator). `lock_widths_for`
   computes the locked widths from the header (+ optional first row).
+- `table_should_use_records` / `table_record_block` / `table_record_separator` —
+  the records fallback (above): the decision, one row's `label value` block, and
+  the inter-record `─` rule. `normalize_raw_cells` / `table_label_width` /
+  `table_header_style` are the small shared helpers.
 
 `truncate_segments` / `fit_cell_spans` / `shrink_table_columns` are gone (no more
 `…`). `table_content_rows` survives only as a `#[cfg(test)]` convenience that
-renders a complete table through the same helpers.
+renders a complete **grid** table through the same helpers (it doesn't apply the
+records decision — tests exercise records through the real `AssistantRenderer`).
 
 ## The preview never floats a bottom border (`StreamRender::preview`)
 
@@ -110,6 +153,13 @@ trailing line and flush, so the real bottom border commits exactly once.
 
 - `narrow_table_wraps_cells_into_taller_rows_no_ellipsis` — narrow grid wraps, no
   `…`, cell content preserved across the wrapped rows.
+- `very_narrow_table_renders_as_key_value_records` — a very narrow table flips to
+  records: no box-drawing, every label present, content preserved (no `…`), a `─`
+  rule between rows.
+- `moderately_narrow_table_stays_a_wrapping_grid` — the fallback doesn't
+  over-trigger: a moderately narrow table is still a grid.
+- `table_should_use_records_only_when_narrow_and_cramped` — the pure decision
+  (wide → grid, very narrow → records, single-column → never).
 - `allocate_column_widths_fits_naturally_or_shrinks_proportionally` — the pure
   width math (fit vs. proportional shrink, floor).
 - `table_cells_wrap_across_rows_instead_of_truncating` — a too-wide (CJK) cell
