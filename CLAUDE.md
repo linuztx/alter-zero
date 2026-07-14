@@ -94,7 +94,11 @@ at the ends, Enter accepts the preview as an editable draft seating ↑ at it,
 Esc/Ctrl+C cancel restoring the pre-search draft and cursor; see
 `docs/history-search.md`) —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
-preview shows a running tool's blue header when one is executing), a blank gap row,
+preview shows a running tool's blue cell when one is executing — a backend tool's
+**whole** collapsed cell, the wrapped `● name(args)` header *plus* its `⎿ Running…`
+row, so a long command isn't clipped and the running state shows; the preview slot
+is sized by `ui::preview_rows`, a running `!` shell/streaming reply staying one
+row; `docs/tools.md`), a blank gap row,
 a codex-style **status line** (`(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
 Thinking for {m}s · esc to interrupt)` — opened by a comet spinner (a
 Larson-scanner sweep: a white head dragging a fading grey tail back and forth
@@ -385,7 +389,7 @@ while the call is produced, exactly like reasoning. The just-sent
 through the backend's **pre-stream pause** (`DummyAi` waits `STARTUP_DELAY`/3s
 before its first chunk so the indicator is visibly working first — overridable
 via `INLINE_TUI_STARTUP_DELAY_MS`; the strip reserves **no preview row** while
-there's nothing to preview — `ui::strip_has_preview` — so the pause is status +
+there's nothing to preview — `ui::preview_rows` 0 — so the pause is status +
 gap only, no stray empty line, like codex). Then `Chunk`s,
 `ThinkingChunk`s (counted via `App::push_thinking` — never rendered), the
 tool-call generation deltas, and a tool's
@@ -565,11 +569,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   can't spike memory; the dropped tail is gone, not saved) and the expanded cell
   appends a dim `TOOL_TRUNCATED_MARKER` (`…`) when `tool.truncated` —
   kept flush by `conversation_lines`), and
-  the live-region row geometry (`PREVIEW_ROWS`/`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
+  the live-region row geometry (`GAP_ROWS`/`STATUS_ROWS`/`STATUS_GAP_ROWS`/`INPUT_CHROME_ROWS`/`LIVE_MIN_HEIGHT`;
   the status + gap strip shows *while a turn is active*, and the preview + gap
   is added *only when there's content to preview* (`strip_rows(streaming,
-  has_preview)`/`strip_has_preview` — a running tool or a non-empty reply; the
-  pre-stream pause reserves **no** empty preview row, like codex) —
+  preview_rows)`/`preview_rows` — the **count** of preview content rows: 0 idle,
+  1 for a streaming reply or `!` shell run, N for a running backend tool's whole
+  cell; the pre-stream pause reserves **no** empty preview row, like codex) —
   (`render_live` draws the status line under the preview's gap, or at the strip
   top during the pause) — with the
   **queued messages stacked below the status, *above* the box** (`queued_rows`,

@@ -194,6 +194,30 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 A `bash` cell renders like any tool: the coloured `● Bash(cmd)` header + the dim
 `⎿` output peek (`docs/shell-command.md`'s gutter).
 
+**Long headers wrap, never clip** (`ui::tool_header_lines`). A long command —
+`● Bash(curl -s "wttr.in/…" 2>/dev/null || echo "…")` — used to run off the
+terminal edge and lose everything past the last column. Now the `(args)` **word-
+wrap** across continuation rows, each indented to align under the first argument
+(the width of `● Bash(`), so the whole command stays readable:
+
+```
+● Bash(curl -s "wttr.in/Warsaw?format=%C+%t+%w+%h" 2>/dev/null
+       || echo "wttr.in unavailable, trying alternative...")
+  ⎿ Partly cloudy +19°C ↓8km/h 83%
+```
+
+The wrap is shared by the inline peek (`tool_lines`) and the Ctrl+O transcript
+(`tool_full_lines`), so a resize/reflow re-wraps to the new width identically.
+
+**A running backend tool previews its whole cell.** While the model's tool runs,
+the streaming strip's preview slot shows the *full* collapsed cell — the wrapped
+header **plus** a `⎿ Running…` row — not just the header, so the running state is
+visible and a long command still isn't clipped mid-run. The preview slot is sized
+by `ui::preview_rows` (0 idle · 1 for a streaming reply / `!` shell run · N for a
+running backend tool's cell); the status line (spinner + token tally + `esc to
+interrupt`) stays below it. On `ToolEnd` the strip's cell is replaced by the
+committed scrollback cell (header + output peek) in place.
+
 A `read`/`write`/`edit` cell whose output is the numbered format above renders as
 the **codex/Claude-Code file cell** (`ui::file_cell_lines`):
 

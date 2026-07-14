@@ -1936,7 +1936,7 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
         screen.width,
         screen.height,
         ui::strip_has_status(app),
-        ui::strip_has_preview(app),
+        ui::preview_rows(app, screen.width),
         ui::queued_rows(app, screen.width),
         ui::toast_rows(app),
         band,

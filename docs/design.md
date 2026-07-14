@@ -55,10 +55,12 @@ unit-tested must be unit-tested.
   `INLINE_TUI_STARTUP_DELAY_MS`) so the indicator is visibly working first: the
   just-sent user message is counted up front (`App::count_user_input`, `↑`), so
   the pause shows `↑ N tokens` and the timer ticks. The strip reserves **no
-  preview row** while there is nothing to preview (`strip_has_preview` false —
+  preview row** while there is nothing to preview (`preview_rows` 0 —
   the status sits one blank below the user message, no stray empty line, like
-  codex); the preview row appears only once the reply streams (or a tool runs),
-  and the first chunk flips the arrow `↓`. While a
+  codex); the preview appears only once the reply streams (or a tool runs — a
+  running backend tool previews its whole `header + ⎿ Running…` cell, so a long
+  command isn't clipped, `docs/tools.md`), and the first chunk flips the arrow
+  `↓`. While a
   turn is active the draw branch re-arms an animation frame every 32 ms (codex's
   cadence), so the comet sweeps, the shimmer waves, and the timer moves even
   with no events. On
