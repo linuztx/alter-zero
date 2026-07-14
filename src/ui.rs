@@ -2408,11 +2408,19 @@ pub fn render_live_with_preview(
     // which hides the spinner status and shows its elapsed in the preview.
     // The preview line(s): a running backend tool's whole cell (wrapped header +
     // `⎿ Running…`), a shell run's `⎿ Running… (Ns)`, or the reply's last line —
-    // empty during the pre-stream pause / idle. Its row count sizes the strip's
-    // preview slot; it must equal `preview_rows(app, area.width)` (which the
-    // cursor + box geometry use) — same [`preview_lines`], same width.
+    // empty during the pre-stream pause / idle. `preview_rows` is the **single
+    // source of truth** the box + cursor geometry size by (`cursor_position`,
+    // `main.rs`); the strip layout here uses it too, and the drawn `preview_lines`
+    // must match it exactly — same state, same width, so they agree by
+    // construction. The `debug_assert` catches any future drift (a desync would
+    // reserve one height but paint another, unseating the box/cursor).
     let preview = preview_lines(app, area.width, stream_preview);
-    let preview_n = u16::try_from(preview.len()).unwrap_or(u16::MAX);
+    let preview_n = preview_rows(app, area.width);
+    debug_assert_eq!(
+        usize::from(preview_n),
+        preview.len(),
+        "preview_rows() must equal the drawn preview_lines()"
+    );
     let has_status = strip_has_status(app);
     let [strip, _, band_area, footer_area] =
         live_layout(area, has_status, preview_n, queued, toast, band, footer);
@@ -9448,6 +9456,54 @@ mod tests {
             all.contains('⎿') && all.contains("Running…"),
             "the strip shows the ⎿ Running… row: {all:?}"
         );
+    }
+
+    #[test]
+    fn render_live_grows_the_preview_to_fit_a_long_running_command() {
+        // A running backend tool with a *long* command previews its whole cell:
+        // the header wraps across rows (never clipped at the edge) AND the
+        // `⎿ Running…` row sits beneath the last header row — so the live preview
+        // grows past the usual two rows. Guards the header-wrap + running-row
+        // composition in the real render (not just `tool_lines` in isolation).
+        let cmd = "curl -s \"wttr.in/Warsaw?format=%C+%t+%w+%h\" 2>/dev/null \
+                   || echo \"wttr.in unavailable, trying alternative...\"";
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Bash", cmd);
+        let width = 40;
+        let pv = preview_rows(&app, width);
+        assert!(
+            pv > 2,
+            "a wrapped header + ⎿ Running… is more than two rows: {pv}"
+        );
+        let h = live_height(&app.input, width, 24, true, pv, 0, 0, 0, 0);
+        let mut buf = buffer(width, h);
+        render_live(buf.area, &mut buf, &app);
+        let rows: Vec<String> = (0..h).map(|y| row(&buf, y, width)).collect();
+        // The header wraps: row 0 opens it, and at least one later row is an
+        // indented continuation (aligned under `● Bash(`), before the ⎿ row.
+        assert!(
+            rows[0].starts_with("● Bash("),
+            "row 0 opens the header: {:?}",
+            rows[0]
+        );
+        let running_y = rows
+            .iter()
+            .position(|r| r.contains('⎿') && r.contains("Running…"))
+            .expect("a ⎿ Running… row is drawn");
+        assert!(running_y >= 2, "the header took ≥2 rows before ⎿: {rows:?}");
+        assert!(
+            rows[1].starts_with(&" ".repeat(cols("● Bash("))),
+            "the header's second row is an aligned continuation: {:?}",
+            rows[1]
+        );
+        // Nothing clipped: no drawn row exceeds the width.
+        for r in &rows {
+            assert!(
+                cols(r.trim_end()) <= width as usize,
+                "row within width: {r:?}"
+            );
+        }
     }
 
     // --- slash-command palette rendering + geometry ---
