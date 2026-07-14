@@ -86,9 +86,14 @@ Highlighting is a port of codex's stack (`highlight.rs`): **`syntect`** over the
 codex uses (`codex-rs/tui/src/render/highlight.rs`). It **replaced** an earlier
 hand-rolled generic tokenizer that had no real HTML/CSS grammar (it mis-parsed a
 CSS `#id` selector as a `#` line comment and rendered tags as plain text). We use
-syntect's pure-Rust **fancy-regex** engine — not the C `onig` one codex ships —
-to keep the build free of system C libraries, matching the crate's `rustls` /
-`arboard` stance. The grammar's scopes are resolved to colours by the theme
+syntect's **oniguruma** regex engine (`*-onig`), as codex does — the one C build
+dependency in the crate (`onig_sys` bundles + compiles the oniguruma C source, so
+a C compiler is needed to build). It's taken deliberately: syntect lazily compiles
+a grammar's regexes on first use and caches them in the shared `SyntaxSet`, and
+the pure-Rust `fancy-regex` alternative compiles that state far more heavily —
+measured at **187 MB RSS across 28 languages with fancy vs ~23 MB with onig**, an
+8x reduction. For a coding TUI where the model writes many languages, fancy's
+footprint was the memory-growth bug this fixed. The grammar's scopes are resolved to colours by the theme
 (`convert_style`: foreground + bold; italic/underline dropped, codex parity), so
 each `highlight::Seg` now carries a resolved `ratatui::Style` — the tokenizer is
 **no longer colour-agnostic** (a real grammar distinguishes far more than a fixed

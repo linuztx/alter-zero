@@ -6,9 +6,12 @@
 //! bundles (~250 TextMate grammars, embedded CSS/JS-in-HTML, etc.). This module
 //! is the same stack — it **replaces** the earlier hand-rolled generic tokenizer
 //! (which had no real HTML/CSS grammar and mis-parsed a CSS `#id` selector as a
-//! `#` line comment). We use syntect's **fancy-regex** engine, not the C `onig`
-//! one codex ships, to keep the build pure-Rust like the rest of the crate
-//! (`rustls`, `arboard`).
+//! `#` line comment). We use syntect's **oniguruma** regex engine, as codex does:
+//! it's the one C build dependency in the crate, taken deliberately because the
+//! pure-Rust `fancy-regex` alternative compiles each grammar into far heavier
+//! state — syntect lazily compiles a grammar's regexes on first use and caches
+//! them in the shared [`SyntaxSet`], and with fancy that reached 187 MB RSS
+//! across 28 languages vs ~23 MB with onig (`Cargo.toml`).
 //!
 //! Unlike codex — which highlights a whole code block in one call
 //! (`highlight_code_to_lines`) — this crate streams a reply line-by-line into
