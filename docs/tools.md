@@ -194,8 +194,13 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
 
 ## Rendering (codex's `diff_render`, in the `⎿` gutter)
 
-A `bash` cell renders like any tool: the coloured `● Bash(cmd)` header + the dim
-`⎿` output peek (`docs/shell-command.md`'s gutter).
+A `bash` cell renders like the `!` shell cell: the coloured `● Bash(cmd)` header
+over a **multi-line `⎿` output peek** — up to `TOOL_PEEK_LINES` lines of the
+output then `… +N lines (ctrl+o to expand)`. Its `Exit code: N` frame (kept in
+`tool.output` for the model / context replay) is stripped for display, so the
+cell reads like the real command output. **While it runs the cell streams and
+tails its output** — the header, the last lines, and a `+N lines (Ns)` footer —
+see `docs/tool-streaming.md`.
 
 **Long headers wrap, never clip** (`ui::tool_header_lines`). A long command —
 `● Bash(curl -s "wttr.in/…" 2>/dev/null || echo "…")` — used to run off the
@@ -213,13 +218,16 @@ The wrap is shared by the inline peek (`tool_lines`) and the Ctrl+O transcript
 (`tool_full_lines`), so a resize/reflow re-wraps to the new width identically.
 
 **A running backend tool previews its whole cell.** While the model's tool runs,
-the streaming strip's preview slot shows the *full* collapsed cell — the wrapped
-header **plus** a `⎿ Running…` row — not just the header, so the running state is
-visible and a long command still isn't clipped mid-run. The preview slot is sized
-by `ui::preview_rows` (0 idle · 1 for a streaming reply / `!` shell run · N for a
-running backend tool's cell); the status line (spinner + token tally + `esc to
-interrupt`) stays below it. On `ToolEnd` the strip's cell is replaced by the
-committed scrollback cell (header + output peek) in place.
+the streaming strip's preview slot shows the *full* live cell — the wrapped
+header **plus** its output. Before any output a `bash` cell shows `⎿ Running…`;
+once output streams it **tails** — the last `TOOL_PEEK_LINES` lines and a
+`+N lines (Ns)` footer (`ui::running_command_lines`; see
+`docs/tool-streaming.md`) — so the running state is visible and a long command
+still isn't clipped mid-run. The preview slot is sized by `ui::preview_rows`
+(0 idle · 1 for a streaming reply / `!` shell run · N for a running backend
+tool's cell); the status line (spinner + token tally + `esc to interrupt`) stays
+below it. On `ToolEnd` the strip's cell is replaced by the committed scrollback
+cell (header + the head peek) in place.
 
 A `read`/`write`/`edit` cell whose output is the numbered format above renders as
 the **codex/Claude-Code file cell** (`ui::file_cell_lines`):

@@ -243,6 +243,13 @@ const FILE_PEEK_LINES: usize = 10;
 /// A `!` shell command is never one (its output is command output).
 const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
 
+/// The model tools whose output is **command output** — a shell run, streamed
+/// and framed with an `Exit code: N` line. They render like the `!` shell cell
+/// (a multi-line `⎿` peek, the frame stripped for display) and **tail** their
+/// output live while running (`docs/tool-streaming.md`). Only `bash` today; a
+/// non-command generic tool keeps the single collapsed peek line.
+const COMMAND_TOOL_NAMES: [&str; 1] = ["Bash"];
+
 // --- Tool-output view (the Ctrl+O full-screen overlay) — codex's Ctrl+T
 // transcript pager: a slash-tiled dim title row over a scrolling body (the
 // full conversation transcript — every message plus every tool call's
@@ -2380,20 +2387,31 @@ fn preview_lines(
 /// The live tool queue rendered as preview rows: each call's collapsed cell,
 /// blank-line-separated so a **parallel batch** reads like the committed
 /// scrollback (the running call live, each not-yet-started sibling a dim
-/// `⎿ Waiting…` cell — `docs/parallel-tools.md`). A lone `!` shell run collapses
-/// to its single `⎿ Running… (Ns)` row (the elapsed rides the preview since a
-/// shell turn hides the status line); the shell is never batched, so it is
-/// always the only call. Shared by [`preview_lines`] (drawn) and [`preview_rows`]
-/// (sized) so the two agree by construction (the strip's `debug_assert`).
+/// `⎿ Waiting…` cell — `docs/parallel-tools.md`). A running backend `bash` cell
+/// that has streamed output **tails** it — the header + last lines + a
+/// `+N lines (Ns)` footer (`running_command_lines`; the mock,
+/// `docs/tool-streaming.md`) — before any output arrives it is the plain
+/// `⎿ Running…` peek. A lone `!` shell run collapses to its single
+/// `⎿ Running… (Ns)` row (the elapsed rides the preview since a shell turn hides
+/// the status line); the shell is never batched, so it is always the only call.
+/// Shared by [`preview_lines`] (drawn) and [`preview_rows`] (sized) so the two
+/// agree by construction (the strip's `debug_assert`).
 fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let elapsed = app.status().map_or(Duration::ZERO, |s| s.elapsed);
     let mut lines = Vec::new();
     for (i, tool) in app.tool_queue().iter().enumerate() {
         if i > 0 {
             lines.push(Line::default()); // blank row between batch cells
         }
         if tool.shell && tool.status == ToolStatus::Running {
-            let elapsed = app.status().map_or(Duration::ZERO, |s| s.elapsed);
             lines.push(shell_running_line(elapsed));
+        } else if is_command_tool(tool)
+            && tool.status == ToolStatus::Running
+            && !command_display_lines(tool).is_empty()
+        {
+            // A running backend command tool (bash) with streamed output tails it
+            // live; other running tools fall to their plain `⎿ Running…` peek.
+            lines.extend(running_command_lines(tool, elapsed, width));
         } else {
             lines.extend(tool_lines(tool, width));
         }
@@ -3202,6 +3220,14 @@ fn is_diff_tool(tool: &ToolCall) -> bool {
     !tool.shell && DIFF_TOOL_NAMES.contains(&tool.name.as_str())
 }
 
+/// Is this a model **command tool** (`bash`) — rendered like the `!` shell cell
+/// (a multi-line `⎿` peek, its `Exit code: N` frame stripped for display) and
+/// **tailed** live while running? Other generic backend tools keep the single
+/// collapsed peek line. See [`COMMAND_TOOL_NAMES`] and `docs/tool-streaming.md`.
+fn is_command_tool(tool: &ToolCall) -> bool {
+    !tool.shell && COMMAND_TOOL_NAMES.contains(&tool.name.as_str())
+}
+
 /// The diff colour for a source line by its leading marker — `+` green, `-`
 /// red, everything else (context, the summary header) dim (`None`).
 fn diff_line_color(line: &str) -> Option<Color> {
@@ -3525,11 +3551,17 @@ fn shell_running_line(elapsed: Duration) -> Line<'static> {
 /// together — while the stored output stays byte-exact, like the code-block
 /// render path.
 fn tool_output_lines(tool: &ToolCall) -> Vec<String> {
-    if tool.output.is_empty() {
+    split_display_lines(&tool.output)
+}
+
+/// Split display `text` into lines: tabs expanded ([`expand_code_tabs`] — a
+/// `'\t'` paints as zero cells otherwise), with a single trailing blank from a
+/// final newline dropped so a hidden-line count stays accurate.
+fn split_display_lines(text: &str) -> Vec<String> {
+    if text.is_empty() {
         return Vec::new();
     }
-    let mut out: Vec<String> = tool
-        .output
+    let mut out: Vec<String> = text
         .split('\n')
         .map(|line| expand_code_tabs(line).into_owned())
         .collect();
@@ -3537,6 +3569,61 @@ fn tool_output_lines(tool: &ToolCall) -> Vec<String> {
         out.pop();
     }
     out
+}
+
+/// `output` with a leading `Exit code: N` frame line dropped, for **display**
+/// — the frame stays in `tool.output` for the model / context replay
+/// (`context::context_messages`), but the cell reads like the real command
+/// output (the mock, `docs/tool-streaming.md`). Only fires when the line is
+/// actually present, so non-`bash` tools and old rollouts are untouched. A
+/// non-zero exit is signalled by the red bullet/gutter (its stderr, when any,
+/// is in the body), so no information the user needs is lost.
+fn command_display_output(output: &str) -> &str {
+    match output.strip_prefix("Exit code: ") {
+        // Drop through the first newline (the frame line); the body follows.
+        Some(rest) => match rest.find('\n') {
+            Some(nl) => &rest[nl + 1..],
+            // The whole output is just the frame (a failure with no body).
+            None => "",
+        },
+        None => output,
+    }
+}
+
+/// A command-style tool's output as display lines — [`tool_output_lines`] with
+/// the `Exit code: N` frame stripped ([`command_display_output`]).
+fn command_display_lines(tool: &ToolCall) -> Vec<String> {
+    split_display_lines(command_display_output(&tool.output))
+}
+
+/// The live preview for a **running** command-style backend tool (`bash`): the
+/// coloured `● name(args)` header, the **last** [`TOOL_PEEK_LINES`] output lines
+/// under the `⎿` gutter (the *tail* — what just streamed), then a
+/// `+{hidden} lines ({secs}s)` footer when any lines are hidden above it. This
+/// is Claude-Code's running-command look (the mock; `docs/tool-streaming.md`) —
+/// the asymmetric twin of the finished head peek in [`tool_lines`]. The
+/// `elapsed` is boundary-supplied (like the shell running row and the status
+/// timer), so this is drawn from [`preview_tool_lines`] where `App` is in hand.
+fn running_command_lines(tool: &ToolCall, elapsed: Duration, width: u16) -> Vec<Line<'static>> {
+    let mut lines = tool_header_lines(tool, width);
+    let peek_width = (width as usize)
+        .saturating_sub(cols(TOOL_RESULT_PREFIX))
+        .max(1);
+    let display = command_display_lines(tool);
+    let shown = display.len().min(TOOL_PEEK_LINES);
+    let start = display.len() - shown; // the tail window
+    for (i, line) in display[start..].iter().enumerate() {
+        lines.push(result_row(i, truncate_cols(line, peek_width)));
+    }
+    let hidden = display.len() - shown; // lines hidden *above* the tail
+    if hidden > 0 {
+        // A continuation row (index ≥ 1) so it indents under the content column.
+        lines.push(result_row(
+            shown,
+            format!("+{hidden} lines ({}s)", elapsed.as_secs()),
+        ));
+    }
+    lines
 }
 
 /// Build the styled lines for one tool call as shown **inline**.
@@ -3550,7 +3637,6 @@ fn tool_output_lines(tool: &ToolCall) -> Vec<String> {
 /// only rendered in the separate tool-output view, never here.
 #[must_use]
 pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -3589,8 +3675,37 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         return lines;
     }
 
-    // A backend tool: coloured header (wrapped when long) + a single collapsed
-    // peek line.
+    // A backend **command tool** (`bash`): coloured header (wrapped when long)
+    // over a multi-line `⎿` peek — the *head*, up to TOOL_PEEK_LINES lines, then
+    // `… +N lines (ctrl+o to expand)`, like the `!` shell cell (the mock's
+    // finished state). The `Exit code: N` frame is stripped for display
+    // (docs/tool-streaming.md); no output yet → the `⎿ Running…`/`Waiting…` row.
+    // The running *tail* (last lines + elapsed) is a separate live-only render
+    // (`running_command_lines`), used by the preview.
+    if is_command_tool(tool) {
+        let display = command_display_lines(tool);
+        let peek = match tool.status {
+            ToolStatus::Waiting => vec![result_row(0, TOOL_WAITING.to_string())],
+            _ if display.is_empty() => vec![result_row(
+                0,
+                if tool.status == ToolStatus::Running {
+                    TOOL_RUNNING.to_string()
+                } else {
+                    TOOL_NO_OUTPUT.to_string()
+                },
+            )],
+            _ => result_peek_block(&display, peek_width, result_row),
+        };
+        let mut lines = tool_header_lines(tool, width);
+        lines.extend(peek);
+        return lines;
+    }
+
+    // Any other backend tool (a `read`/`write`/`edit` cell whose output didn't
+    // parse as the numbered/diff format, or an unknown tool): coloured header
+    // (wrapped when long) + a single collapsed peek line, the rest behind the
+    // `… +N lines` hint.
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
     let peek = match tool.status {
         ToolStatus::Waiting => TOOL_WAITING.to_string(),
         ToolStatus::Running => TOOL_RUNNING.to_string(),
@@ -3677,11 +3792,21 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
             })
             .collect(),
         // Tabs expanded for display (they paint as zero cells otherwise —
-        // see `tool_output_lines`); the stored output stays byte-exact.
-        _ => wrap_verbatim(&expand_code_tabs(&tool.output), body_width)
-            .into_iter()
-            .map(|line| (line, None))
-            .collect(),
+        // see `tool_output_lines`); the stored output stays byte-exact. A
+        // backend command tool's `Exit code: N` frame is stripped for display
+        // (a `!` shell command's output is raw — never framed, never stripped;
+        // docs/tool-streaming.md).
+        _ => {
+            let body = if tool.shell {
+                tool.output.as_str()
+            } else {
+                command_display_output(&tool.output)
+            };
+            wrap_verbatim(&expand_code_tabs(body), body_width)
+                .into_iter()
+                .map(|line| (line, None))
+                .collect()
+        }
     };
     // The output was cut at the in-memory cap — mark the end so the user knows
     // more was dropped (it is not recoverable; nothing to expand to). Only the
@@ -6828,16 +6953,28 @@ mod tests {
     }
 
     #[test]
-    fn tool_lines_collapses_multiline_output_to_a_peek_plus_expand_hint() {
-        let lines = tool_lines(&tool("Read", "f", ToolStatus::Ok, "one\ntwo\nthree"), 80);
-        assert_eq!(lines.len(), 3, "header + peek + hint");
-        let peek = plain(&lines[1]);
-        assert!(
-            peek.contains("one"),
-            "peek shows the first output line: {peek:?}"
+    fn tool_lines_collapses_a_command_output_to_a_multiline_peek_plus_hint() {
+        // A finished command-style backend tool (bash) shows up to TOOL_PEEK_LINES
+        // of its output — the head, Claude-Code style — then a
+        // `… +N lines (ctrl+o to expand)` hint (docs/tool-streaming.md), like the
+        // `!` shell cell. (This is the mock's finished state.)
+        let out = "l1\nl2\nl3\nl4\nl5\nl6";
+        let lines = tool_lines(&tool("Bash", "seq 6", ToolStatus::Ok, out), 80);
+        assert_eq!(
+            lines.len(),
+            TOOL_PEEK_LINES + 2,
+            "header + {TOOL_PEEK_LINES} peek rows + hint: {:?}",
+            lines.iter().map(plain).collect::<Vec<_>>()
         );
-        assert!(!peek.contains("two"), "the rest is hidden inline: {peek:?}");
-        let hint = plain(&lines[2]);
+        assert!(
+            plain(&lines[1]).contains("l1"),
+            "peek opens at the first line"
+        );
+        assert!(
+            plain(&lines[TOOL_PEEK_LINES]).contains("l4"),
+            "peek shows up to the {TOOL_PEEK_LINES}th line"
+        );
+        let hint = plain(&lines[TOOL_PEEK_LINES + 1]);
         assert!(
             hint.contains("+2 lines"),
             "hint counts hidden lines: {hint:?}"
@@ -6845,6 +6982,144 @@ mod tests {
         assert!(
             hint.contains("ctrl+o to expand"),
             "hint mentions ctrl+o: {hint:?}"
+        );
+    }
+
+    #[test]
+    fn a_non_command_tool_with_raw_multiline_output_keeps_a_single_peek_line() {
+        // Only a command tool (bash) expands to a multi-line peek. A generic
+        // backend tool whose output isn't the numbered file-cell format (e.g. the
+        // dummy's canned `Read`, or an unknown tool) keeps the compact single
+        // peek line + hint — so its committed footprint is unchanged
+        // (docs/tool-streaming.md; guards the resize/reflow layout, smoke Phase 17).
+        let lines = tool_lines(&tool("Read", "f", ToolStatus::Ok, "one\ntwo\nthree"), 80);
+        assert_eq!(
+            lines.len(),
+            3,
+            "header + one peek line + hint: {:?}",
+            lines.iter().map(plain).collect::<Vec<_>>()
+        );
+        assert!(
+            plain(&lines[1]).contains("one"),
+            "peek shows the first line"
+        );
+        assert!(
+            !plain(&lines[1]).contains("two"),
+            "the rest stays hidden inline"
+        );
+        assert!(
+            plain(&lines[2]).contains("+2 lines"),
+            "the hint counts the rest"
+        );
+    }
+
+    #[test]
+    fn tool_lines_strips_the_leading_exit_code_frame_from_a_bash_cell() {
+        // `tool.output` stays framed (`Exit code: N\n…`) for the model / context
+        // replay, but the display drops that first line so the cell reads like
+        // the real command output (docs/tool-streaming.md).
+        let out = "Exit code: 0\nhello\nworld";
+        let lines = tool_lines(&tool("Bash", "echo", ToolStatus::Ok, out), 80);
+        let all: String = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(
+            !all.contains("Exit code"),
+            "the frame line is hidden: {all:?}"
+        );
+        assert!(
+            all.contains("hello") && all.contains("world"),
+            "the body shows: {all:?}"
+        );
+    }
+
+    #[test]
+    fn running_command_lines_tails_recent_output_with_the_elapsed() {
+        // The mock's running state: the header, the last TOOL_PEEK_LINES output
+        // lines (the *tail* — what just happened), and a `+N lines (Ns)` footer
+        // counting the lines hidden above plus the elapsed.
+        let out = (1..=9)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let t = tool("Bash", "ping -c 10 x", ToolStatus::Running, &out);
+        let lines = running_command_lines(&t, Duration::from_secs(9), 80);
+        assert_eq!(plain(&lines[0]), "● Bash(ping -c 10 x)");
+        let body: Vec<String> = lines[1..].iter().map(plain).collect();
+        assert!(
+            body[0].contains("line 6"),
+            "the tail starts at line 6: {body:?}"
+        );
+        assert!(
+            body[3].contains("line 9"),
+            "the tail ends at the newest line: {body:?}"
+        );
+        assert!(
+            !body.iter().any(|l| l.contains("line 4")),
+            "older lines are hidden above the tail: {body:?}"
+        );
+        assert_eq!(
+            body.last().unwrap().trim(),
+            "+5 lines (9s)",
+            "the footer counts hidden lines and the elapsed: {body:?}"
+        );
+    }
+
+    #[test]
+    fn running_command_lines_without_overflow_shows_no_footer() {
+        // Fewer lines than the window: show them all, no `+N lines` footer (the
+        // status line carries the timer).
+        let t = tool("Bash", "echo", ToolStatus::Running, "a\nb");
+        let lines = running_command_lines(&t, Duration::from_secs(1), 80);
+        assert_eq!(
+            lines.len(),
+            3,
+            "header + 2 output rows, no footer: {:?}",
+            lines.iter().map(plain).collect::<Vec<_>>()
+        );
+        assert!(
+            !lines.iter().any(|l| plain(l).contains("lines (")),
+            "no footer when nothing is hidden"
+        );
+    }
+
+    #[test]
+    fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
+        // End-to-end: streamed output accumulates on the running call and the
+        // live strip tails it — the newest line and the `+N lines (Ns)` footer
+        // both show (docs/tool-streaming.md).
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Bash", "ping -c 10 x");
+        for i in 1..=9 {
+            app.push_tool_output(&format!("line {i}\n"));
+        }
+        app.set_status_times(Duration::from_secs(9), None);
+        let pv = preview_rows(&app, 60);
+        let h = live_height(&app.input, 60, 24, true, pv, 0, 0, 0, 0);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 60))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("line 9"), "the newest line tails: {all:?}");
+        assert!(!all.contains("line 4"), "older lines are hidden: {all:?}");
+        assert!(all.contains("+5 lines (9s)"), "the footer shows: {all:?}");
+    }
+
+    #[test]
+    fn tool_full_lines_strips_the_exit_code_frame_from_a_bash_cell() {
+        // The Ctrl+O full view shows the whole body but, like the inline cell,
+        // drops the `Exit code: N` frame line (docs/tool-streaming.md).
+        let out = "Exit code: 0\nalpha\nbeta";
+        let lines = tool_full_lines(&tool("Bash", "echo", ToolStatus::Ok, out), 80);
+        let all: String = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(
+            !all.contains("Exit code"),
+            "the frame is hidden in the full view too: {all:?}"
+        );
+        assert!(
+            all.contains("alpha") && all.contains("beta"),
+            "the whole body shows: {all:?}"
         );
     }
 

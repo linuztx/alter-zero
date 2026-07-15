@@ -1790,6 +1790,14 @@ fn on_stream_event(
             }
             Ok(false)
         }
+        StreamEvent::ToolOutput(chunk) => {
+            // Live tool output: append it to the running call so the live cell
+            // tails it (docs/tool-streaming.md). No scrollback commit — the tail
+            // is live-only until the ToolEnd commits the finished cell; the next
+            // draw tick repaints the preview with the grown output.
+            app.push_tool_output(&chunk);
+            Ok(false)
+        }
         StreamEvent::ThinkingStart => {
             // Phase boundary: start the thinking clock so the status line
             // shows `Thinking for Ns`. No scrollback commit (thinking is live-only).

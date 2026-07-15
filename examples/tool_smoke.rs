@@ -77,6 +77,13 @@ fn main() {
             StreamEvent::ToolStart { name, args } => {
                 println!("\n\x1b[34m● {name}({args})\x1b[0m");
             }
+            StreamEvent::ToolOutput(chunk) => {
+                // Live output streamed while the tool runs — the TUI tails it in
+                // the running cell (docs/tool-streaming.md). Print it dim, inline.
+                print!("\x1b[90m{chunk}\x1b[0m");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+            }
             StreamEvent::ToolEnd {
                 output,
                 ok,

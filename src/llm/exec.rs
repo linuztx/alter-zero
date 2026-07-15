@@ -10,6 +10,7 @@
 use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use super::tools::{
@@ -24,7 +25,20 @@ pub trait ToolExecutor {
     /// Execute one tool call, returning the model-facing outcome. Never
     /// panics — every failure becomes a non-ok [`ToolOutcome`] the model reads
     /// and can recover from.
-    fn execute(&self, call: &ToolCallRequest, cancel: &CancelToken) -> ToolOutcome;
+    ///
+    /// `on_output` is a sink for the tool's **live output**: a streaming tool
+    /// (`bash`) calls it with each newly-completed line as the command runs, so
+    /// the TUI can tail the running cell (surfaced as
+    /// [`crate::stream::StreamEvent::ToolOutput`]; see `docs/tool-streaming.md`).
+    /// A tool that produces its result all at once (`read`/`write`/`edit`)
+    /// simply never calls it — the full result still comes back in the returned
+    /// [`ToolOutcome`].
+    fn execute(
+        &self,
+        call: &ToolCallRequest,
+        cancel: &CancelToken,
+        on_output: &mut dyn FnMut(&str),
+    ) -> ToolOutcome;
 }
 
 /// How often the `bash` runner polls a running child for completion, a cancel,
@@ -45,9 +59,14 @@ impl RealToolExecutor {
 }
 
 impl ToolExecutor for RealToolExecutor {
-    fn execute(&self, call: &ToolCallRequest, cancel: &CancelToken) -> ToolOutcome {
+    fn execute(
+        &self,
+        call: &ToolCallRequest,
+        cancel: &CancelToken,
+        on_output: &mut dyn FnMut(&str),
+    ) -> ToolOutcome {
         match call.name.as_str() {
-            "bash" => run_bash(&call.arguments, cancel),
+            "bash" => run_bash(&call.arguments, cancel, on_output),
             "read" => run_read(&call.arguments),
             "write" => run_write(&call.arguments),
             "edit" => run_edit(&call.arguments),
@@ -62,10 +81,12 @@ fn arg_error(err: String) -> ToolOutcome {
 }
 
 /// `bash`: run the command under `sh -c`, capture combined stdout+stderr
-/// (byte-capped), enforce the per-call timeout, and kill on cancel. The output
-/// is framed as codex does (`Exit code: N` + output); a non-zero exit or a
-/// timeout resolves the cell red.
-fn run_bash(arguments: &str, cancel: &CancelToken) -> ToolOutcome {
+/// (byte-capped, merged in arrival order), enforce the per-call timeout, and
+/// kill on cancel. As output arrives it is **streamed line-by-line** through
+/// `on_output` so the TUI tails the running cell (`docs/tool-streaming.md`); the
+/// full output is still framed as codex does (`Exit code: N` + output) for the
+/// model — a non-zero exit or a timeout resolves the cell red.
+fn run_bash(arguments: &str, cancel: &CancelToken, on_output: &mut dyn FnMut(&str)) -> ToolOutcome {
     let args: BashArgs = match tools::parse_args(arguments) {
         Ok(a) => a,
         Err(e) => return arg_error(e),
@@ -94,23 +115,45 @@ fn run_bash(arguments: &str, cancel: &CancelToken) -> ToolOutcome {
         Err(err) => return ToolOutcome::error(format!("failed to run command: {err}")),
     };
 
-    // Drain both pipes on their own threads so a chatty command can't deadlock
-    // on a full pipe; each retains at most the cap (codex's read_capped).
+    // Drain both pipes on their own threads (so a chatty command can't deadlock
+    // on a full pipe), forwarding raw chunks over a channel; the poll loop below
+    // merges them into the capped `combined` buffer in arrival order and streams
+    // each newly-completed line out via `on_output`.
     let cap = TOOL_OUTPUT_MAX_BYTES;
+    let (chunk_tx, chunk_rx) = mpsc::channel::<Vec<u8>>();
     let out_pipe = child.stdout.take();
-    let out_reader = std::thread::spawn(move || match out_pipe {
-        Some(pipe) => read_capped(pipe, cap),
-        None => (Vec::new(), false),
+    let out_tx = chunk_tx.clone();
+    let out_reader = std::thread::spawn(move || {
+        if let Some(pipe) = out_pipe {
+            drain_pipe(pipe, &out_tx);
+        }
     });
     let err_pipe = child.stderr.take();
-    let err_reader = std::thread::spawn(move || match err_pipe {
-        Some(pipe) => read_capped(pipe, cap),
-        None => (Vec::new(), false),
+    let err_tx = chunk_tx.clone();
+    let err_reader = std::thread::spawn(move || {
+        if let Some(pipe) = err_pipe {
+            drain_pipe(pipe, &err_tx);
+        }
     });
+    drop(chunk_tx); // only the readers hold senders now, so the channel ends at EOF
 
+    let mut combined: Vec<u8> = Vec::new();
+    let mut forwarded = 0usize; // bytes already streamed out via on_output
+    let mut truncated = false;
     let start = Instant::now();
     let mut timed_out = false;
     let status = loop {
+        // Absorb whatever output is available right now, streaming its lines.
+        while let Ok(chunk) = chunk_rx.try_recv() {
+            absorb_chunk(
+                &chunk,
+                &mut combined,
+                &mut forwarded,
+                cap,
+                &mut truncated,
+                on_output,
+            );
+        }
         if cancel.is_cancelled() {
             kill_process_group(&mut child);
             // The interrupt path owns the UI; return a terse outcome (the loop
@@ -125,7 +168,25 @@ fn run_bash(arguments: &str, cancel: &CancelToken) -> ToolOutcome {
         }
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
-            Ok(None) => std::thread::sleep(BASH_POLL_INTERVAL),
+            // Wait briefly for the next chunk (so we tail promptly) or wake to
+            // re-poll the cancel/timeout above; `Disconnected` (both readers done
+            // before the child is reaped) just paces the re-poll.
+            Ok(None) => match chunk_rx.recv_timeout(BASH_POLL_INTERVAL) {
+                Ok(chunk) => {
+                    absorb_chunk(
+                        &chunk,
+                        &mut combined,
+                        &mut forwarded,
+                        cap,
+                        &mut truncated,
+                        on_output,
+                    );
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    std::thread::sleep(BASH_POLL_INTERVAL);
+                }
+            },
             Err(err) => {
                 kill_process_group(&mut child);
                 return ToolOutcome::error(format!("error waiting on command: {err}"));
@@ -135,19 +196,29 @@ fn run_bash(arguments: &str, cancel: &CancelToken) -> ToolOutcome {
     // Even on a clean exit, reap any process the command backgrounded — it holds
     // the pipe open, so joining the readers below would otherwise block on it.
     kill_process_group(&mut child);
-
-    let (out_bytes, out_trunc) = out_reader.join().unwrap_or((Vec::new(), false));
-    let (err_bytes, err_trunc) = err_reader.join().unwrap_or((Vec::new(), false));
-    let mut combined = String::from_utf8_lossy(&out_bytes).into_owned();
-    let stderr = String::from_utf8_lossy(&err_bytes);
-    if !stderr.is_empty() {
-        if !combined.is_empty() && !combined.ends_with('\n') {
-            combined.push('\n');
-        }
-        combined.push_str(&stderr);
+    let _ = out_reader.join();
+    let _ = err_reader.join();
+    // Drain any output buffered after the last poll, then stream the trailing
+    // partial line (never newline-terminated) so `on_output` has seen it all.
+    while let Ok(chunk) = chunk_rx.try_recv() {
+        absorb_chunk(
+            &chunk,
+            &mut combined,
+            &mut forwarded,
+            cap,
+            &mut truncated,
+            on_output,
+        );
     }
+    if forwarded < combined.len() {
+        on_output(&String::from_utf8_lossy(&combined[forwarded..]));
+    }
+
+    let combined = String::from_utf8_lossy(&combined).into_owned();
+    // `combined` is already byte-capped; truncate_output only trims to a clean
+    // char boundary (and re-confirms the flag) so the framed body is valid UTF-8.
     let (combined, extra_trunc) = tools::truncate_output(&combined, cap);
-    let truncated = out_trunc || err_trunc || extra_trunc;
+    let truncated = truncated || extra_trunc;
 
     if timed_out {
         let body = tools::format_exec_output(None, &combined);
@@ -166,6 +237,57 @@ fn run_bash(arguments: &str, cancel: &CancelToken) -> ToolOutcome {
         output,
         ok,
         truncated,
+    }
+}
+
+/// Read `pipe` to EOF in chunks, forwarding each raw chunk over `tx` so the
+/// caller can merge and stream it. Draining to EOF (rather than stopping at a
+/// cap) keeps a chatty command from blocking on a full pipe; the caller bounds
+/// what it *retains*. Stops early if the receiver has hung up.
+fn drain_pipe(mut pipe: impl Read, tx: &mpsc::Sender<Vec<u8>>) {
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) => break, // EOF
+            Ok(n) => {
+                if tx.send(chunk[..n].to_vec()).is_err() {
+                    break; // receiver gone — stop draining
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+}
+
+/// Append `chunk` to the capped `combined` buffer (in arrival order) and stream
+/// every newly-**completed** line — `combined[forwarded ..= last '\n']` — out
+/// through `on_output`, advancing `forwarded`. Retaining and forwarding are both
+/// bounded by `cap` (setting `truncated` when it bites). Forwarding whole lines
+/// from the merged buffer means a multi-byte UTF-8 char is never split across a
+/// chunk boundary (a `'\n'` is never inside a char), so the tail never shows a
+/// stray replacement glyph.
+fn absorb_chunk(
+    chunk: &[u8],
+    combined: &mut Vec<u8>,
+    forwarded: &mut usize,
+    cap: usize,
+    truncated: &mut bool,
+    on_output: &mut dyn FnMut(&str),
+) {
+    if combined.len() < cap {
+        let take = (cap - combined.len()).min(chunk.len());
+        combined.extend_from_slice(&chunk[..take]);
+        if take < chunk.len() {
+            *truncated = true;
+        }
+    } else if !chunk.is_empty() {
+        *truncated = true;
+    }
+    if let Some(rel) = combined[*forwarded..].iter().rposition(|&b| b == b'\n') {
+        let upto = *forwarded + rel + 1;
+        on_output(&String::from_utf8_lossy(&combined[*forwarded..upto]));
+        *forwarded = upto;
     }
 }
 
@@ -306,34 +428,6 @@ fn kill_process_group(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-/// Read `reader` to EOF (so the child never blocks on a full pipe) but retain at
-/// most `cap` bytes; return the retained head and whether anything was dropped.
-/// Mirrors `main.rs::read_capped`.
-fn read_capped(mut reader: impl Read, cap: usize) -> (Vec<u8>, bool) {
-    let mut buf = Vec::new();
-    let mut chunk = vec![0u8; 64 * 1024];
-    let mut truncated = false;
-    loop {
-        match reader.read(&mut chunk) {
-            Ok(0) => break,
-            Ok(n) => {
-                if buf.len() < cap {
-                    let take = (cap - buf.len()).min(n);
-                    buf.extend_from_slice(&chunk[..take]);
-                    if take < n {
-                        truncated = true;
-                    }
-                } else {
-                    truncated = true;
-                }
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => {}
-            Err(_) => break,
-        }
-    }
-    (buf, truncated)
-}
-
 /// A unique temp path under the system temp dir for a test file.
 #[cfg(test)]
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -353,7 +447,44 @@ mod tests {
     }
 
     fn exec(name: &str, args: &str) -> ToolOutcome {
-        RealToolExecutor::new().execute(&call(name, args), &CancelToken::new())
+        RealToolExecutor::new().execute(&call(name, args), &CancelToken::new(), &mut |_| {})
+    }
+
+    #[test]
+    fn bash_streams_its_output_to_the_sink() {
+        // The live-output sink receives the command's output as it runs; by the
+        // time execute returns it has seen all of it, and the framed final still
+        // carries the same body (docs/tool-streaming.md).
+        let mut streamed = String::new();
+        let out = RealToolExecutor::new().execute(
+            &call("bash", r#"{"command":"printf 'a\nb\nc\n'"}"#),
+            &CancelToken::new(),
+            &mut |chunk| streamed.push_str(chunk),
+        );
+        assert!(out.ok, "got {}", out.output);
+        assert_eq!(
+            streamed, "a\nb\nc\n",
+            "the sink tails the full output as complete lines"
+        );
+        assert!(
+            out.output.contains("a\nb\nc"),
+            "the framed final still carries the body: {}",
+            out.output
+        );
+    }
+
+    #[test]
+    fn bash_streams_a_trailing_line_without_a_newline() {
+        // A final line with no trailing '\n' is still flushed to the sink once,
+        // at the end (before the ToolEnd overwrite), so the sink sees everything.
+        let mut streamed = String::new();
+        let out = RealToolExecutor::new().execute(
+            &call("bash", r#"{"command":"printf 'x\ny'"}"#),
+            &CancelToken::new(),
+            &mut |chunk| streamed.push_str(chunk),
+        );
+        assert!(out.ok, "got {}", out.output);
+        assert_eq!(streamed, "x\ny", "the partial trailing line is flushed too");
     }
 
     #[test]

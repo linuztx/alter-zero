@@ -3787,6 +3787,23 @@ impl App {
         }
     }
 
+    /// Append a chunk of live output to the **running** tool at the front of the
+    /// queue so its cell tails the output as it streams (the boundary's handler
+    /// for [`crate::stream::StreamEvent::ToolOutput`]; see
+    /// `docs/tool-streaming.md`). A no-op unless the front call is
+    /// [`ToolStatus::Running`] — a `Waiting` batch sibling has not started and an
+    /// empty queue has nothing to tail. Does **not** count tokens: the tally is
+    /// charged once from the authoritative `ToolEnd` output in
+    /// [`end_tool`](App::end_tool), which overwrites this partial, so the live
+    /// tail and the final cell never double-count.
+    pub fn push_tool_output(&mut self, chunk: &str) {
+        if let Some(tool) = self.tool_queue.front_mut()
+            && tool.status == ToolStatus::Running
+        {
+            tool.output.push_str(chunk);
+        }
+    }
+
     /// The tool currently at the front of the live queue — the running (or, in
     /// the brief gap between a batch's calls, about-to-run) call, if any.
     #[must_use]
@@ -6116,6 +6133,59 @@ mod tests {
         let mut app = App::new();
         app.set_tool_truncated(); // must not panic
         assert!(app.current_tool().is_none());
+    }
+
+    #[test]
+    fn push_tool_output_tails_the_running_tool() {
+        // Live streaming: each ToolOutput chunk appends to the running call's
+        // output so the cell tails it (docs/tool-streaming.md).
+        let mut app = App::new();
+        app.start_tool("Bash", "ping -c 2 x");
+        app.push_tool_output("line 1\n");
+        app.push_tool_output("line 2\n");
+        assert_eq!(app.current_tool().unwrap().output, "line 1\nline 2\n");
+    }
+
+    #[test]
+    fn push_tool_output_is_a_noop_when_no_tool_is_running() {
+        let mut app = App::new();
+        app.push_tool_output("stray"); // must not panic
+        assert!(app.current_tool().is_none());
+    }
+
+    #[test]
+    fn push_tool_output_does_not_tail_a_waiting_batch_sibling() {
+        // Only the front, *running* call tails output — a Waiting batch sibling
+        // (not yet executing) is never targeted, even though it is the front in
+        // the brief gap before start_tool flips it. The queue only ever runs its
+        // front, so streamed output belongs to the running call.
+        let mut app = App::new();
+        app.start_tool_batch(&ping_batch());
+        app.push_tool_output("early"); // front is Waiting, not Running yet
+        assert!(
+            app.current_tool().unwrap().output.is_empty(),
+            "a Waiting sibling does not accumulate output"
+        );
+    }
+
+    #[test]
+    fn push_tool_output_does_not_charge_the_token_tally() {
+        // The tally is charged once, from the authoritative ToolEnd output in
+        // end_tool — never from the streamed chunks (which would double-count).
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Bash", "echo hi");
+        app.push_tool_output("hi\n");
+        assert_eq!(
+            app.status().unwrap().tokens,
+            0,
+            "streaming does not charge tokens"
+        );
+        app.end_tool("Exit code: 0\nhi", true);
+        assert!(
+            app.status().unwrap().tokens > 0,
+            "end_tool charges the final output once"
+        );
     }
 
     #[test]

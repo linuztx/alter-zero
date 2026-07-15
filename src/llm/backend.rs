@@ -246,7 +246,7 @@ impl ReplySource for LlmBackend {
                 agent::MAX_TOOL_ITERATIONS,
                 messages,
                 |msgs| stream_round(&client, msgs, &tx, &cancel),
-                |call| executor.execute(call, &cancel),
+                |call, on_output| executor.execute(call, &cancel, on_output),
             );
         })
     }

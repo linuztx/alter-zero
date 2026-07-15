@@ -76,7 +76,11 @@ loads it back and appends the turns that follow to the same file) in
 `docs/resume.md`; the **parallel tool-call batch** (the model's several tool
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
-`docs/parallel-tools.md`.
+`docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
+tails its output — the last lines + a `+N lines (Ns)` footer — via a
+`StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
+(ctrl+o to expand)` when it finishes, Claude-Code style) in
+`docs/tool-streaming.md`.
 
 ### The runtime model and its invariants
 
@@ -98,8 +102,11 @@ Esc/Ctrl+C cancel restoring the pre-search draft and cursor; see
 `docs/history-search.md`) —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's blue cell when one is executing — a backend tool's
-**whole** collapsed cell, the wrapped `● name(args)` header *plus* its `⎿ Running…`
-row, so a long command isn't clipped and the running state shows; a **parallel
+**whole** collapsed cell, the wrapped `● name(args)` header *plus* its output;
+before any output a `⎿ Running…` row, and once a `bash` command **streams** it
+**tails** its output — the last `TOOL_PEEK_LINES` lines + a `+N lines (Ns)`
+footer (`ui::running_command_lines`, `docs/tool-streaming.md`) — so a long
+command isn't clipped and the running state shows; a **parallel
 batch** previews the *whole* `tool_queue` — the running call over each dim
 `⎿ Waiting…` sibling, blank-separated, `docs/parallel-tools.md`; the preview slot
 is sized by `ui::preview_rows`, a running `!` shell/streaming reply staying one
@@ -393,6 +400,8 @@ follow-ups and `!` commands iterate in order (Alt+Up pulls the **last entry**
 batch newline-joined, a `Shell` entry as `!command` re-entering shell mode —
 earlier entries stay queued; see `docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok,truncated}` pairs
+(with `ToolOutput(chunk)` **live-output** deltas streamed in between — the
+running `bash` cell tails them via `App::push_tool_output`, `docs/tool-streaming.md`)
 and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
 running (blue) then commits it collapsed (green/red), and flips its `thinking_start`
@@ -632,7 +641,10 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   stream `StreamEvent::ToolCallDelta(fragment)`s as the model *generates* the call
   (its `name`/`arguments` pieces — counted like reasoning so the tally ticks while
   the call is produced, the text never shown), then send a
-  `StreamEvent::ToolStart{name,args}` then a `ToolEnd{output,ok,truncated}`
+  `StreamEvent::ToolStart{name,args}`, optionally stream `ToolOutput(chunk)`
+  live-output deltas while the tool runs (the running cell tails them —
+  `docs/tool-streaming.md`; the real `bash` executor streams completed lines),
+  then a `ToolEnd{output,ok,truncated}`
   (`truncated: false` from a backend tool — only the `!` shell runner caps); wrap a reasoning
   phase in a `ThinkingStart`/`ThinkingEnd` pair to drive the `Thinking for Ns`
   status, streaming each reasoning delta as a `ThinkingChunk(text)` in between so

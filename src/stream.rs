@@ -62,6 +62,17 @@ pub enum StreamEvent {
         ok: bool,
         truncated: bool,
     },
+    /// A chunk of the **currently-running** tool's output, streamed live as it
+    /// is produced (one or more complete lines, stdout+stderr merged in arrival
+    /// order), between the call's [`StreamEvent::ToolStart`] and its
+    /// [`StreamEvent::ToolEnd`]. The loop appends it to the front running call
+    /// ([`crate::app::App::push_tool_output`]) so the live cell **tails** it —
+    /// Claude-Code's running-command look (see `docs/tool-streaming.md`). The
+    /// authoritative full output still arrives in `ToolEnd`, which overwrites
+    /// the tailed partial, so a dropped chunk never corrupts the final cell.
+    /// Only the real `bash` executor emits this today; a backend that never
+    /// streams simply omits it.
+    ToolOutput(String),
     /// The model began a "thinking" (reasoning) phase. The loop shows
     /// `· Thinking for Ns` in the live status line until the matching
     /// [`StreamEvent::ThinkingEnd`] arrives.
@@ -210,6 +221,19 @@ pub fn chunks(text: &str) -> Vec<String> {
     text.split_inclusive(' ').map(str::to_string).collect()
 }
 
+/// A canned tool output as per-line [`StreamEvent::ToolOutput`] chunks (each
+/// line keeping its `\n`), so the dummy streams a `Bash` cell's output the way
+/// the real executor does — the live cell **tails** it as it arrives, before the
+/// authoritative `ToolEnd`. Concatenated, the chunks equal `output`. See
+/// `docs/tool-streaming.md`.
+#[must_use]
+fn tool_output_events(output: &str) -> Vec<StreamEvent> {
+    output
+        .split_inclusive('\n')
+        .map(|line| StreamEvent::ToolOutput(line.to_string()))
+        .collect()
+}
+
 /// The dummy's leading acknowledgement for `count` pasted images, or `None` when
 /// none are attached. The dummy has no vision (see [`turn_events`]); this is a
 /// stand-in so the demo visibly reflects that the images reached the backend.
@@ -300,6 +324,9 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
                 name: "Bash".to_string(),
                 args: cmd.to_string(),
             });
+            // Stream the output line-by-line so the live cell tails it, then the
+            // authoritative ToolEnd commits the finished cell (docs/tool-streaming.md).
+            events.extend(tool_output_events(output));
             events.push(StreamEvent::ToolEnd {
                 output: output.to_string(),
                 ok,
@@ -330,6 +357,10 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
             name: "Bash".to_string(),
             args: DUMMY_BASH_CMD.to_string(),
         });
+        // Stream the output line-by-line so the live cell tails it (the Read
+        // above returns all at once, like the real executor). See
+        // `docs/tool-streaming.md`.
+        events.extend(tool_output_events(DUMMY_BASH_OUTPUT));
         events.push(StreamEvent::ToolEnd {
             output: DUMMY_BASH_OUTPUT.to_string(),
             ok: false,
@@ -483,6 +514,9 @@ impl ReplySource for DummyAi {
                 let pause = match &event {
                     StreamEvent::Chunk(_) => Some(CHUNK_DELAY),
                     StreamEvent::ToolStart { .. } => Some(TOOL_DELAY),
+                    // Each streamed output line pauses like a word so the live
+                    // cell visibly tails (docs/tool-streaming.md).
+                    StreamEvent::ToolOutput(_) => Some(CHUNK_DELAY),
                     StreamEvent::ThinkingStart
                     | StreamEvent::ThinkingChunk(_)
                     | StreamEvent::ToolCallDelta(_) => Some(THINK_CHUNK_DELAY),
@@ -882,18 +916,53 @@ mod tests {
     }
 
     #[test]
-    fn turn_events_each_tool_start_is_immediately_resolved() {
-        // Tools don't nest: every ToolStart is followed straight away by a
-        // ToolEnd, so the loop only ever tracks one running tool at a time.
+    fn turn_events_resolve_each_tool_before_the_next_starts() {
+        // Tools don't nest: after a ToolStart, only its live ToolOutput chunks
+        // may appear before the matching ToolEnd — never a second ToolStart — so
+        // the loop only ever tracks one running tool at a time. See
+        // `docs/tool-streaming.md`.
         let events = turn_events("anything", 0);
-        for (i, event) in events.iter().enumerate() {
-            if matches!(event, StreamEvent::ToolStart { .. }) {
-                assert!(
-                    matches!(events.get(i + 1), Some(StreamEvent::ToolEnd { .. })),
-                    "ToolStart at {i} is immediately followed by a ToolEnd"
-                );
+        let mut running = false;
+        for event in &events {
+            match event {
+                StreamEvent::ToolStart { .. } => {
+                    assert!(!running, "a tool starts only after the previous one ended");
+                    running = true;
+                }
+                StreamEvent::ToolEnd { .. } => {
+                    assert!(running, "a ToolEnd closes a running tool");
+                    running = false;
+                }
+                StreamEvent::ToolOutput(_) => {
+                    assert!(running, "live output only streams while a tool runs");
+                }
+                _ => {}
             }
         }
+        assert!(!running, "every tool that started also ended");
+    }
+
+    #[test]
+    fn turn_events_streams_each_bash_output_before_its_end() {
+        // Each Bash call streams its output as ToolOutput chunks between its
+        // ToolStart and ToolEnd; concatenated, they equal the ToolEnd output
+        // (the authoritative full cell). See `docs/tool-streaming.md`.
+        let events = turn_events("run three pings in parallel", 0);
+        let mut streamed = String::new();
+        let mut resolved = 0;
+        for event in &events {
+            match event {
+                StreamEvent::ToolOutput(chunk) => streamed.push_str(chunk),
+                StreamEvent::ToolEnd { output, .. } => {
+                    // Each Bash cell's streamed output equals its final output.
+                    assert_eq!(&streamed, output, "the tail reconstructs the final cell");
+                    streamed.clear();
+                    resolved += 1;
+                }
+                _ => {}
+            }
+        }
+        assert_eq!(resolved, 3, "all three Bash cells streamed then resolved");
     }
 
     #[test]
@@ -1024,6 +1093,7 @@ mod tests {
         let mut batched_calls = 0;
         let mut tool_starts = 0;
         let mut tool_ends = 0;
+        let mut tool_output_chunks = 0;
         let mut think_starts = 0;
         let mut think_chunks = 0;
         let mut think_ends = 0;
@@ -1039,6 +1109,7 @@ mod tests {
                 }
                 StreamEvent::ToolStart { .. } => tool_starts += 1,
                 StreamEvent::ToolEnd { .. } => tool_ends += 1,
+                StreamEvent::ToolOutput(_) => tool_output_chunks += 1,
                 StreamEvent::ThinkingStart => think_starts += 1,
                 StreamEvent::ThinkingChunk(_) => think_chunks += 1,
                 StreamEvent::ThinkingEnd => think_ends += 1,
@@ -1057,6 +1128,10 @@ mod tests {
         assert_eq!(streamed, expected, "chunks still reconstruct the reply");
         assert!(tool_starts >= 1, "the dummy streams at least one tool call");
         assert_eq!(tool_starts, tool_ends, "every tool that starts also ends");
+        assert!(
+            tool_output_chunks >= 1,
+            "the dummy streams live tool output (docs/tool-streaming.md)"
+        );
         assert_eq!(
             tool_batches, 1,
             "the dummy announces its parallel batch once"

@@ -54,7 +54,7 @@ pub fn run_agent(
     max_iterations: usize,
     mut messages: Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
-    mut execute: impl FnMut(&ToolCallRequest) -> ToolOutcome,
+    mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(&str)) -> ToolOutcome,
 ) {
     let mut iterations = 0usize;
     loop {
@@ -108,7 +108,14 @@ pub fn run_agent(
                         name: display_name(&call.name),
                         args: summarize_call(&call.name, &call.arguments),
                     });
-                    let outcome = execute(call);
+                    // Forward the tool's live output to the UI as it is produced,
+                    // so the running cell tails it (docs/tool-streaming.md). The
+                    // sink targets the front running call app-side; a tool that
+                    // does not stream (read/write/edit) simply never calls it.
+                    let mut on_output = |chunk: &str| {
+                        let _ = tx.send(StreamEvent::ToolOutput(chunk.to_string()));
+                    };
+                    let outcome = execute(call, &mut on_output);
                     let _ = tx.send(StreamEvent::ToolEnd {
                         output: outcome.output.clone(),
                         ok: outcome.ok,
@@ -171,7 +178,7 @@ mod tests {
             MAX_TOOL_ITERATIONS,
             vec![ChatMessage::user("hi")],
             |_msgs| RoundOutcome::Complete,
-            |_call| panic!("no tools should run"),
+            |_call, _sink| panic!("no tools should run"),
         );
         assert_eq!(drain(&mut rx), vec![StreamEvent::StreamDone]);
     }
@@ -199,7 +206,7 @@ mod tests {
                     RoundOutcome::Complete
                 }
             },
-            |c| ToolOutcome::ok(format!("ran {}", c.name)),
+            |c, _sink| ToolOutcome::ok(format!("ran {}", c.name)),
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -230,6 +237,67 @@ mod tests {
             2,
             "a second round produced the final answer"
         );
+    }
+
+    #[test]
+    fn a_tool_that_streams_output_emits_tooloutput_between_start_and_end() {
+        // The executor's `on_output` sink surfaces as ToolOutput events strictly
+        // between the call's ToolStart and ToolEnd, so the running cell tails the
+        // output as it is produced. See `docs/tool-streaming.md`.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bash", r#"{"command":"printf 'a\nb\n'"}"#)];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            vec![ChatMessage::user("run it")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |_c, sink| {
+                sink("a\n");
+                sink("b\n");
+                ToolOutcome::ok("Exit code: 0\na\nb")
+            },
+        );
+        let events = drain(&mut rx);
+        let start = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolStart { .. }))
+            .expect("the tool started");
+        let end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolEnd { .. }))
+            .expect("the tool ended");
+        let outputs: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolOutput(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            outputs,
+            vec!["a\n", "b\n"],
+            "the sink's chunks stream as ToolOutput: {events:?}"
+        );
+        let all_between = events
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| matches!(e, StreamEvent::ToolOutput(_)))
+            .all(|(i, _)| start < i && i < end);
+        assert!(all_between, "live output streams between start and end");
     }
 
     #[test]
@@ -264,7 +332,7 @@ mod tests {
                     RoundOutcome::Complete
                 }
             },
-            |c| ToolOutcome::ok(format!("ran {}", c.arguments)),
+            |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
         );
         let events = drain(&mut rx);
         // The very first event announces the batch, carrying all three calls in
@@ -341,7 +409,7 @@ mod tests {
                     RoundOutcome::Complete
                 }
             },
-            |_c| ToolOutcome::ok("file contents"),
+            |_c, _sink| ToolOutcome::ok("file contents"),
         );
         drain(&mut rx);
         // Round 1 saw [user]; round 2 saw [user, assistant(tool_calls), tool].
@@ -358,7 +426,7 @@ mod tests {
             MAX_TOOL_ITERATIONS,
             vec![ChatMessage::user("x")],
             |_msgs| RoundOutcome::Failed(LlmError::Http("boom".to_string())),
-            |_c| panic!("no tools"),
+            |_c, _sink| panic!("no tools"),
         );
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
@@ -375,7 +443,7 @@ mod tests {
             MAX_TOOL_ITERATIONS,
             vec![ChatMessage::user("x")],
             |_msgs| RoundOutcome::Cancelled,
-            |_c| panic!("no tools"),
+            |_c, _sink| panic!("no tools"),
         );
         assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
     }
@@ -391,7 +459,7 @@ mod tests {
             MAX_TOOL_ITERATIONS,
             vec![ChatMessage::user("x")],
             |_msgs| panic!("round should not run once cancelled"),
-            |_c| panic!("no tools"),
+            |_c, _sink| panic!("no tools"),
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -414,7 +482,7 @@ mod tests {
                 assistant: assistant_with(&calls),
                 calls: calls.clone(),
             },
-            |c| {
+            |c, _sink| {
                 *ran.borrow_mut() += 1;
                 // Cancel after the first tool runs.
                 cancel.cancel();
@@ -451,7 +519,7 @@ mod tests {
                 assistant: assistant_with(&calls),
                 calls: calls.clone(),
             },
-            |_c| ToolOutcome::ok("again"),
+            |_c, _sink| ToolOutcome::ok("again"),
         );
         let events = drain(&mut rx);
         let errors: Vec<_> = events
@@ -495,7 +563,7 @@ mod tests {
                     RoundOutcome::Complete
                 }
             },
-            |_c| ToolOutcome::ok("done"),
+            |_c, _sink| ToolOutcome::ok("done"),
         );
         let events = drain(&mut rx);
         assert!(

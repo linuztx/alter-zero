@@ -7,8 +7,11 @@ started render as dim `⎿ Waiting…` cells — Claude-Code's parallel-tool loo
 
 ```
 ● Bash(ping -c 20 google.com)
-  ⎿ 64 bytes from … icmp_seq=8 ttl=117 time=769 ms
-    … +8 lines
+  ⎿ 64 bytes from … icmp_seq=6 ttl=117 time=68.3 ms
+    64 bytes from … icmp_seq=7 ttl=117 time=247 ms
+    64 bytes from … icmp_seq=8 ttl=117 time=332 ms
+    64 bytes from … icmp_seq=9 ttl=117 time=144 ms
+    +5 lines (9s)
 
 ● Bash(ping -c 20 facebook.com)
   ⎿ Waiting…
@@ -16,6 +19,10 @@ started render as dim `⎿ Waiting…` cells — Claude-Code's parallel-tool loo
 ● Bash(ping -c 20 x.com)
   ⎿ Waiting…
 ```
+
+The running call **tails its live output** (the last lines + a `+N lines (Ns)`
+footer) as it streams — see `docs/tool-streaming.md`; the `⎿ Waiting…` siblings
+are unchanged.
 
 This lifts the old limitation (`docs/tools.md`, before this change: *"Parallel
 tool calls … are executed sequentially (the TUI shows one running tool at a
