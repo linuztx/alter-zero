@@ -16,6 +16,17 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::context::ContextMessage;
 
+/// One call in a [`StreamEvent::ToolBatch`] announcement: the `name` + short
+/// `args` summary the `● name(args)` header shows — the *same* two strings the
+/// call's own [`StreamEvent::ToolStart`] carries, so a `⎿ Waiting…` cell's header
+/// matches the header it shows once it starts running. Carries no output/status —
+/// those arrive later via `ToolStart`/`ToolEnd`. See `docs/parallel-tools.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCallSummary {
+    pub name: String,
+    pub args: String,
+}
+
 /// What a backend sends to the event loop. Only the *reply* travels this channel
 /// — keyboard input arrives separately via the terminal event stream (see
 /// `main.rs`). It is a tokio unbounded channel so the async loop can `select!` on
@@ -27,13 +38,13 @@ pub enum StreamEvent {
     /// The model requested a **parallel batch** of tool calls this round,
     /// announced up front — *before* the first [`StreamEvent::ToolStart`] — so the
     /// UI can show every requested call at once, the ones not yet executing as
-    /// dim `⎿ Waiting…` cells. Each tuple is the `(name, args)` the
+    /// dim `⎿ Waiting…` cells. Each [`ToolCallSummary`] is the `name`/`args` the
     /// `● name(args)` header shows (the same summary the matching `ToolStart`
     /// carries). Sequential execution then transitions the calls one at a time via
     /// [`StreamEvent::ToolStart`]/[`StreamEvent::ToolEnd`]. A backend that never
     /// batches (the `!` shell, the dummy's lone calls) simply omits this — a lone
     /// `ToolStart` still works. See `docs/parallel-tools.md`.
-    ToolBatch(Vec<(String, String)>),
+    ToolBatch(Vec<ToolCallSummary>),
     /// A tool call has started executing. The loop shows it live (blue) until the
     /// matching [`StreamEvent::ToolEnd`] arrives. `args` is a short summary for
     /// the `name(args)` header. When a [`StreamEvent::ToolBatch`] announced this
@@ -141,6 +152,32 @@ const DUMMY_READ_OUTPUT: &str = "fn main() -> io::Result<()> {\n    \
 const DUMMY_BASH_CMD: &str = "ping -c 3 x.invalid";
 const DUMMY_BASH_OUTPUT: &str = "ping: cannot resolve x.invalid: Unknown host\nexit status 68";
 
+/// The dummy's vivid **three-call parallel `Bash(ping …)` batch** — the user's
+/// example. Shown **only when the prompt mentions "parallel"** (opt-in), so the
+/// default turn keeps its compact two-call batch and every unrelated smoke phase
+/// keeps its footprint; the dedicated phase (and `cargo run` with a "parallel"
+/// prompt) triggers this. All three are announced up front, so while the first
+/// runs the other two show `⎿ Waiting…`; two resolve green, one red. Each entry
+/// is `(command, output, ok)`. See `docs/parallel-tools.md`.
+const DUMMY_PARALLEL_BATCH: &[(&str, &str, bool)] = &[
+    ("ping -c 20 google.com", DUMMY_PING_GOOGLE, true),
+    ("ping -c 20 facebook.com", DUMMY_PING_FACEBOOK, true),
+    ("ping -c 20 x.invalid", DUMMY_PING_FAIL, false),
+];
+
+const DUMMY_PING_GOOGLE: &str = "PING google.com (142.250.72.14): 56 data bytes\n\
+    64 bytes from 142.250.72.14: icmp_seq=0 ttl=117 time=12.3 ms\n\
+    64 bytes from 142.250.72.14: icmp_seq=1 ttl=117 time=11.8 ms\n\
+    64 bytes from 142.250.72.14: icmp_seq=2 ttl=117 time=12.0 ms\n\
+    --- google.com ping statistics ---\n\
+    3 packets transmitted, 3 packets received, 0.0% packet loss";
+const DUMMY_PING_FACEBOOK: &str = "PING facebook.com (157.240.1.35): 56 data bytes\n\
+    64 bytes from 157.240.1.35: icmp_seq=0 ttl=52 time=41.6 ms\n\
+    64 bytes from 157.240.1.35: icmp_seq=1 ttl=52 time=39.2 ms\n\
+    --- facebook.com ping statistics ---\n\
+    2 packets transmitted, 2 packets received, 0.0% packet loss";
+const DUMMY_PING_FAIL: &str = "ping: cannot resolve x.invalid: Unknown host\nexit status 68";
+
 /// Canned replies. One is chosen deterministically per prompt so the demo has
 /// a little variety without any real model behind it.
 const RESPONSES: &[&str] = &[
@@ -188,10 +225,14 @@ pub fn image_ack(count: usize) -> Option<String> {
 
 /// The full ordered sequence of events for one dummy turn, with a thinking phase
 /// and tool calls **interleaved** in the reply: stream the first half of the
-/// text, *think* for a moment, run a **parallel batch** of two calls announced up
-/// front — a `Read` (green) then a `Bash` (red) — so while the `Read` runs the
-/// `Bash` shows `⎿ Waiting…` (the visible batch; `docs/parallel-tools.md`), then
-/// stream the rest and finish.
+/// text, *think* for a moment, run a **parallel batch** announced up front — so
+/// its not-yet-run calls show `⎿ Waiting…` while the front one runs
+/// (`docs/parallel-tools.md`) — then stream the rest and finish.
+///
+/// The batch is **prompt-gated**: a prompt mentioning "parallel" runs the vivid
+/// three-call `Bash(ping …)` demo (the user's example); any other prompt runs the
+/// compact two-call `Read`+`Bash` batch (baseline footprint, so unrelated smoke
+/// phases keep their sizing, with the feature still visible every turn).
 ///
 /// The thinking phase sits after the first text segment (so the demo shows
 /// `↓ tokens · Thinking for Ns`) and before the tools. The batch is announced via
@@ -229,41 +270,72 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
             .map(StreamEvent::ThinkingChunk),
     );
     events.push(StreamEvent::ThinkingEnd);
-    // The model "generates" a small **parallel batch** (its fragments tick the
-    // token tally, like reasoning), announces both calls up front — so the
-    // not-yet-run one shows `⎿ Waiting…` while the other runs — then executes them
-    // in order: a `Read` (green, first so its cell sits near the top) then a
-    // `Bash` (red). Each ToolStart still lands immediately before its ToolEnd, so
-    // execution stays sequential (one running call at a time). Two calls, same
-    // committed footprint as the pre-batch demo. See `docs/parallel-tools.md`.
-    for frag in DUMMY_READ_CALL {
-        events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
+    // The model "generates" a **parallel batch** (its fragments tick the token
+    // tally, like reasoning) and announces every call up front — so the not-yet-run
+    // ones show `⎿ Waiting…` while the front one runs — then executes them in
+    // order. Each ToolStart still lands immediately before its ToolEnd, so
+    // execution stays sequential (one running call at a time; see
+    // `docs/parallel-tools.md`).
+    //
+    // A prompt mentioning **"parallel"** triggers the vivid three-call
+    // `Bash(ping …)` batch (the user's example); otherwise the default turn runs a
+    // compact two-call `Read`+`Bash` batch (baseline footprint — so unrelated
+    // smoke phases keep their sizing — with the feature still visible every turn).
+    let summary = |name: &str, args: &str| ToolCallSummary {
+        name: name.to_string(),
+        args: args.to_string(),
+    };
+    if prompt.to_lowercase().contains("parallel") {
+        for frag in DUMMY_BASH_CALL {
+            events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
+        }
+        events.push(StreamEvent::ToolBatch(
+            DUMMY_PARALLEL_BATCH
+                .iter()
+                .map(|&(cmd, _, _)| summary("Bash", cmd))
+                .collect(),
+        ));
+        for &(cmd, output, ok) in DUMMY_PARALLEL_BATCH {
+            events.push(StreamEvent::ToolStart {
+                name: "Bash".to_string(),
+                args: cmd.to_string(),
+            });
+            events.push(StreamEvent::ToolEnd {
+                output: output.to_string(),
+                ok,
+                truncated: false,
+            });
+        }
+    } else {
+        for frag in DUMMY_READ_CALL {
+            events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
+        }
+        for frag in DUMMY_BASH_CALL {
+            events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
+        }
+        events.push(StreamEvent::ToolBatch(vec![
+            summary("Read", "src/main.rs"),
+            summary("Bash", DUMMY_BASH_CMD),
+        ]));
+        events.push(StreamEvent::ToolStart {
+            name: "Read".to_string(),
+            args: "src/main.rs".to_string(),
+        });
+        events.push(StreamEvent::ToolEnd {
+            output: DUMMY_READ_OUTPUT.to_string(),
+            ok: true,
+            truncated: false,
+        });
+        events.push(StreamEvent::ToolStart {
+            name: "Bash".to_string(),
+            args: DUMMY_BASH_CMD.to_string(),
+        });
+        events.push(StreamEvent::ToolEnd {
+            output: DUMMY_BASH_OUTPUT.to_string(),
+            ok: false,
+            truncated: false,
+        });
     }
-    for frag in DUMMY_BASH_CALL {
-        events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
-    }
-    events.push(StreamEvent::ToolBatch(vec![
-        ("Read".to_string(), "src/main.rs".to_string()),
-        ("Bash".to_string(), DUMMY_BASH_CMD.to_string()),
-    ]));
-    events.push(StreamEvent::ToolStart {
-        name: "Read".to_string(),
-        args: "src/main.rs".to_string(),
-    });
-    events.push(StreamEvent::ToolEnd {
-        output: DUMMY_READ_OUTPUT.to_string(),
-        ok: true,
-        truncated: false,
-    });
-    events.push(StreamEvent::ToolStart {
-        name: "Bash".to_string(),
-        args: DUMMY_BASH_CMD.to_string(),
-    });
-    events.push(StreamEvent::ToolEnd {
-        output: DUMMY_BASH_OUTPUT.to_string(),
-        ok: false,
-        truncated: false,
-    });
     events.extend(chunks(&second).into_iter().map(StreamEvent::Chunk));
     events.push(StreamEvent::StreamDone);
     events
@@ -373,9 +445,10 @@ impl DummyAi {
 
 impl ReplySource for DummyAi {
     /// Plays back [`turn_events`]: streams the reply word-by-word (with
-    /// [`CHUNK_DELAY`] between words) with a **parallel batch** of a `Read` then a
-    /// `Bash` tool call interleaved (announced up front, so the `Bash` shows
-    /// `⎿ Waiting…` while the `Read` runs), pausing [`TOOL_DELAY`] after each
+    /// [`CHUNK_DELAY`] between words) with a **parallel batch** interleaved
+    /// (announced up front, so the not-yet-run calls show `⎿ Waiting…` while the
+    /// front one runs — three `Bash(ping …)` calls for a "parallel" prompt, else a
+    /// compact `Read`+`Bash` batch), pausing [`TOOL_DELAY`] after each
     /// `ToolStart` so the blue running state shows before it resolves, and ends with
     /// [`StreamEvent::StreamDone`]. Stops early — sending nothing further — if
     /// `cancel` is tripped or the receiver has hung up. With `images` attached the
@@ -681,11 +754,14 @@ mod tests {
             batch_pos < first_start,
             "the batch is announced before any call starts"
         );
-        // The batch entries equal the (name, args) of the ToolStarts that follow.
-        let following_starts: Vec<(String, String)> = events[batch_pos + 1..]
+        // The batch entries equal the name/args of the ToolStarts that follow.
+        let following_starts: Vec<ToolCallSummary> = events[batch_pos + 1..]
             .iter()
             .filter_map(|e| match e {
-                StreamEvent::ToolStart { name, args } => Some((name.clone(), args.clone())),
+                StreamEvent::ToolStart { name, args } => Some(ToolCallSummary {
+                    name: name.clone(),
+                    args: args.clone(),
+                }),
                 _ => None,
             })
             .take(items.len())
@@ -694,6 +770,51 @@ mod tests {
             *items, following_starts,
             "each announced call matches its ToolStart"
         );
+    }
+
+    #[test]
+    fn a_parallel_prompt_triggers_the_vivid_three_call_bash_batch() {
+        // A prompt mentioning "parallel" opts into the vivid demo: a single
+        // ToolBatch of three `Bash(ping …)` calls announced up front (so the
+        // not-yet-run ones show `⎿ Waiting…`), then run in order. The default turn
+        // keeps its compact two-call batch. See `docs/parallel-tools.md`.
+        let events = turn_events("run three pings in parallel", 0);
+        let StreamEvent::ToolBatch(items) = events
+            .iter()
+            .find(|e| matches!(e, StreamEvent::ToolBatch(_)))
+            .expect("a parallel prompt announces a batch")
+        else {
+            unreachable!()
+        };
+        assert_eq!(items.len(), 3, "three parallel calls: {items:?}");
+        assert!(
+            items
+                .iter()
+                .all(|s| s.name == "Bash" && s.args.contains("ping")),
+            "every call is a Bash ping: {items:?}"
+        );
+        let ends = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ToolEnd { .. }))
+            .count();
+        assert_eq!(ends, 3, "all three calls run");
+    }
+
+    #[test]
+    fn the_default_turn_keeps_the_compact_two_call_batch() {
+        // Without "parallel", the turn runs the compact Read+Bash batch (baseline
+        // footprint), not the three-ping demo — so unrelated smoke phases keep
+        // their sizing.
+        let events = turn_events("hello there", 0);
+        let StreamEvent::ToolBatch(items) = events
+            .iter()
+            .find(|e| matches!(e, StreamEvent::ToolBatch(_)))
+            .expect("the default turn still announces a batch")
+        else {
+            unreachable!()
+        };
+        assert_eq!(items.len(), 2, "two calls by default: {items:?}");
+        assert_eq!(items[0].name, "Read", "the Read runs first: {items:?}");
     }
 
     #[test]

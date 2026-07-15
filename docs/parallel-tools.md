@@ -42,14 +42,18 @@ right model is: announce the batch, run in order, show the rest waiting. This:
 
 ### Protocol (`stream.rs`)
 
-A new event announces the batch **before** the first `ToolStart`:
+A new event announces the batch **before** the first `ToolStart`, carrying a
+small named struct per call (`ToolCallSummary { name, args }` — the *same* two
+strings the call's own `ToolStart` carries, so a `⎿ Waiting…` header matches the
+header it shows once running):
 
 ```rust
+pub struct ToolCallSummary { pub name: String, pub args: String }
+
 /// The model requested a batch of tool calls this round, announced up front so
 /// the UI can show every call — the ones not yet executing as `⎿ Waiting…`.
-/// Each tuple is the `(name, args)` the `● name(args)` header shows. Sequential
-/// execution then transitions them one at a time via ToolStart/ToolEnd.
-ToolBatch(Vec<(String, String)>),
+/// Sequential execution then transitions them one at a time via ToolStart/ToolEnd.
+ToolBatch(Vec<ToolCallSummary>),
 ```
 
 The existing `ToolStart{name,args}` / `ToolEnd{output,ok,truncated}` pair is
@@ -101,11 +105,20 @@ shell is never batched (queue length 1, `shell` flag).
 
 ## Demo (the dummy backend)
 
-`stream::turn_events` scripts a **parallel `Bash` batch** (three ping-style
-commands, mixed ok/fail for colour) followed by a lone `Read` (the file-cell demo,
-exercising the no-batch path), so `cargo run` and `scripts/smoke.sh` show the
-`Waiting…` states offline without a real provider. A real backend gets the same
-display for free via the `ToolBatch` the agent loop emits.
+`stream::turn_events` is **prompt-gated** so the demo is vivid without bloating
+every turn's scrollback (which would push content off the fixed-size panes the
+smoke suite asserts against):
+
+- a prompt mentioning **"parallel"** runs the vivid three-call `Bash(ping …)`
+  batch — the user's example (two green, one red) — so `cargo run` with a
+  "parallel" prompt and `scripts/smoke.sh`'s dedicated phase show all three cells,
+  the running one live over two dim `⎿ Waiting…` siblings;
+- any **other** prompt runs a compact two-call `Read`+`Bash` batch (the `Bash`
+  waits while the `Read` runs) — the feature is still visible every turn, at the
+  **baseline scrollback footprint**, so unrelated smoke phases keep their sizing.
+
+A real backend gets the same display for free via the `ToolBatch` the agent loop
+emits, rendering however many parallel calls the model actually requests.
 
 ## Limitations
 

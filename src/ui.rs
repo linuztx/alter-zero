@@ -9519,11 +9519,15 @@ mod tests {
         // `docs/parallel-tools.md`.
         let mut app = App::new();
         app.begin_stream();
-        app.start_tool_batch(&[
-            ("Bash".to_string(), "ping google.com".to_string()),
-            ("Bash".to_string(), "ping facebook.com".to_string()),
-            ("Bash".to_string(), "ping x.com".to_string()),
-        ]);
+        let batch: Vec<crate::stream::ToolCallSummary> =
+            ["ping google.com", "ping facebook.com", "ping x.com"]
+                .iter()
+                .map(|cmd| crate::stream::ToolCallSummary {
+                    name: "Bash".to_string(),
+                    args: (*cmd).to_string(),
+                })
+                .collect();
+        app.start_tool_batch(&batch);
         app.start_tool("Bash", "ping google.com"); // the front call → Running
         // Three 2-row cells (header + peek) with two blank separators = 8 rows.
         assert_eq!(

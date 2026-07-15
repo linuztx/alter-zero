@@ -14,7 +14,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::tools::{ToolCallRequest, ToolOutcome, display_name, summarize_call};
 use super::{ChatMessage, LlmError};
-use crate::stream::{CancelToken, StreamEvent};
+use crate::stream::{CancelToken, StreamEvent, ToolCallSummary};
 
 /// The most rounds of tool calls one turn will run before giving up — a
 /// backstop against a model that loops forever. Generous enough for real
@@ -94,11 +94,9 @@ pub fn run_agent(
                 let _ = tx.send(StreamEvent::ToolBatch(
                     calls
                         .iter()
-                        .map(|call| {
-                            (
-                                display_name(&call.name),
-                                summarize_call(&call.name, &call.arguments),
-                            )
+                        .map(|call| ToolCallSummary {
+                            name: display_name(&call.name),
+                            args: summarize_call(&call.name, &call.arguments),
                         })
                         .collect(),
                 ));
@@ -211,7 +209,10 @@ mod tests {
                 // UI can show every requested call, the not-yet-run ones as
                 // `⎿ Waiting…`, before they execute in order. See
                 // `docs/parallel-tools.md`.
-                StreamEvent::ToolBatch(vec![("Bash".to_string(), "ls".to_string())]),
+                StreamEvent::ToolBatch(vec![ToolCallSummary {
+                    name: "Bash".to_string(),
+                    args: "ls".to_string(),
+                }]),
                 StreamEvent::ToolStart {
                     name: "Bash".to_string(),
                     args: "ls".to_string(),
@@ -268,12 +269,16 @@ mod tests {
         let events = drain(&mut rx);
         // The very first event announces the batch, carrying all three calls in
         // request order as their header `(name, args)`.
+        let summary = |cmd: &str| ToolCallSummary {
+            name: "Bash".to_string(),
+            args: cmd.to_string(),
+        };
         assert_eq!(
             events.first(),
             Some(&StreamEvent::ToolBatch(vec![
-                ("Bash".to_string(), "ping google.com".to_string()),
-                ("Bash".to_string(), "ping facebook.com".to_string()),
-                ("Bash".to_string(), "ping x.com".to_string()),
+                summary("ping google.com"),
+                summary("ping facebook.com"),
+                summary("ping x.com"),
             ])),
             "the batch is announced first, with every call: {events:?}"
         );

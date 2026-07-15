@@ -14,6 +14,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::file_search::{FileMatch, at_token};
 use crate::llm::ModelEntry;
 use crate::session::SessionSummary;
+use crate::stream::ToolCallSummary;
 use crate::textarea::TextArea;
 
 /// Who authored a message — selects its bullet and colour when rendered.
@@ -3724,19 +3725,20 @@ impl App {
     }
 
     /// Announce a **parallel batch** of tool calls the model requested this
-    /// round (each `(name, args)` for the `● name(args)` header), all queued as
-    /// [`ToolStatus::Waiting`] so the live region shows every call at once — the
-    /// ones not yet running as `⎿ Waiting…`. Sequential execution then flips them
-    /// to `Running` one at a time via [`start_tool`](App::start_tool). Called by
-    /// the boundary on a [`crate::stream::StreamEvent::ToolBatch`]; a backend that
-    /// never batches (the `!` shell, the dummy's lone calls) skips it and a lone
+    /// round (each [`ToolCallSummary`]'s `name`/`args` for the `● name(args)`
+    /// header), all queued as [`ToolStatus::Waiting`] so the live region shows
+    /// every call at once — the ones not yet running as `⎿ Waiting…`. Sequential
+    /// execution then flips them to `Running` one at a time via
+    /// [`start_tool`](App::start_tool). Called by the boundary on a
+    /// [`crate::stream::StreamEvent::ToolBatch`]; a backend that never batches
+    /// (the `!` shell, the dummy's lone calls) skips it and a lone
     /// [`start_tool`](App::start_tool) still works. See `docs/parallel-tools.md`.
-    pub fn start_tool_batch(&mut self, items: &[(String, String)]) {
+    pub fn start_tool_batch(&mut self, items: &[ToolCallSummary]) {
         self.tool_queue = items
             .iter()
-            .map(|(name, args)| ToolCall {
-                name: name.clone(),
-                args: args.clone(),
+            .map(|item| ToolCall {
+                name: item.name.clone(),
+                args: item.args.clone(),
                 status: ToolStatus::Waiting,
                 output: String::new(),
                 timestamp: String::new(), // stamped when it finishes (see end_tool)
@@ -5948,13 +5950,15 @@ mod tests {
         assert!(app.history.is_empty(), "a running tool is not yet history");
     }
 
-    /// A three-call parallel batch, as the header `(name, args)` summaries.
-    fn ping_batch() -> Vec<(String, String)> {
-        vec![
-            ("Bash".to_string(), "ping google.com".to_string()),
-            ("Bash".to_string(), "ping facebook.com".to_string()),
-            ("Bash".to_string(), "ping x.com".to_string()),
-        ]
+    /// A three-call parallel batch, as the header `name`/`args` summaries.
+    fn ping_batch() -> Vec<ToolCallSummary> {
+        ["ping google.com", "ping facebook.com", "ping x.com"]
+            .iter()
+            .map(|cmd| ToolCallSummary {
+                name: "Bash".to_string(),
+                args: (*cmd).to_string(),
+            })
+            .collect()
     }
 
     #[test]
@@ -6028,8 +6032,8 @@ mod tests {
         // order, committing three tools; the live queue ends empty.
         let mut app = App::new();
         app.start_tool_batch(&ping_batch());
-        for (name, args) in ping_batch() {
-            app.start_tool(&name, &args);
+        for item in ping_batch() {
+            app.start_tool(&item.name, &item.args);
             app.end_tool("done", true);
         }
         assert!(app.tool_queue().is_empty(), "the batch fully drained");

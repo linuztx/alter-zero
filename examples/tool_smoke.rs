@@ -67,8 +67,11 @@ fn main() {
                 // The model requested a batch of calls at once; the TUI shows the
                 // not-yet-run ones as `⎿ Waiting…` (docs/parallel-tools.md).
                 println!("\n\x1b[90m[batch of {} tool call(s)]\x1b[0m", items.len());
-                for (name, args) in &items {
-                    println!("\x1b[90m  ● {name}({args})  ⎿ Waiting…\x1b[0m");
+                for call in &items {
+                    println!(
+                        "\x1b[90m  ● {}({})  ⎿ Waiting…\x1b[0m",
+                        call.name, call.args
+                    );
                 }
             }
             StreamEvent::ToolStart { name, args } => {
