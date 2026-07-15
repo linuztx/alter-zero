@@ -86,6 +86,22 @@ pub fn run_agent(
                     return;
                 }
                 messages.push(assistant);
+                // Announce the whole batch up front — before any tool runs — so
+                // the UI shows every requested call at once, the ones not yet
+                // executing as `⎿ Waiting…`. Each entry's (name, args) equals the
+                // matching ToolStart's; execution below is still sequential. See
+                // `docs/parallel-tools.md`.
+                let _ = tx.send(StreamEvent::ToolBatch(
+                    calls
+                        .iter()
+                        .map(|call| {
+                            (
+                                display_name(&call.name),
+                                summarize_call(&call.name, &call.arguments),
+                            )
+                        })
+                        .collect(),
+                ));
                 for call in &calls {
                     if cancel.is_cancelled() {
                         return;
@@ -191,6 +207,11 @@ mod tests {
         assert_eq!(
             events,
             vec![
+                // The batch is announced up front (here a batch of one) so the
+                // UI can show every requested call, the not-yet-run ones as
+                // `⎿ Waiting…`, before they execute in order. See
+                // `docs/parallel-tools.md`.
+                StreamEvent::ToolBatch(vec![("Bash".to_string(), "ls".to_string())]),
                 StreamEvent::ToolStart {
                     name: "Bash".to_string(),
                     args: "ls".to_string(),
@@ -207,6 +228,86 @@ mod tests {
             *rounds.borrow(),
             2,
             "a second round produced the final answer"
+        );
+    }
+
+    #[test]
+    fn a_multi_call_round_announces_the_whole_batch_before_running_any() {
+        // A parallel batch: the model requests three calls at once. The loop
+        // announces the whole batch (all three, in order, as the display
+        // `(name, args)`) *before* the first ToolStart, so the UI can show every
+        // call — the not-yet-run ones as `⎿ Waiting…` — then runs them in order.
+        // See `docs/parallel-tools.md`.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![
+            call("c1", "bash", r#"{"command":"ping google.com"}"#),
+            call("c2", "bash", r#"{"command":"ping facebook.com"}"#),
+            call("c3", "bash", r#"{"command":"ping x.com"}"#),
+        ];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            vec![ChatMessage::user("ping them")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |c| ToolOutcome::ok(format!("ran {}", c.arguments)),
+        );
+        let events = drain(&mut rx);
+        // The very first event announces the batch, carrying all three calls in
+        // request order as their header `(name, args)`.
+        assert_eq!(
+            events.first(),
+            Some(&StreamEvent::ToolBatch(vec![
+                ("Bash".to_string(), "ping google.com".to_string()),
+                ("Bash".to_string(), "ping facebook.com".to_string()),
+                ("Bash".to_string(), "ping x.com".to_string()),
+            ])),
+            "the batch is announced first, with every call: {events:?}"
+        );
+        // Exactly one batch announce, then three Start/End pairs.
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::ToolBatch(_)))
+                .count(),
+            1,
+            "one batch announce for the round"
+        );
+        let starts = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ToolStart { .. }))
+            .count();
+        let ends = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ToolEnd { .. }))
+            .count();
+        assert_eq!((starts, ends), (3, 3), "all three calls run: {events:?}");
+        // The announce precedes every ToolStart (nothing runs before the batch
+        // is shown).
+        let batch_pos = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolBatch(_)))
+            .unwrap();
+        let first_start = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolStart { .. }))
+            .unwrap();
+        assert!(
+            batch_pos < first_start,
+            "the batch is announced before any call starts"
         );
     }
 

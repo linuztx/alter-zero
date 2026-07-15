@@ -24,9 +24,20 @@ use crate::context::ContextMessage;
 pub enum StreamEvent {
     /// A piece of the reply (typically one word).
     Chunk(String),
+    /// The model requested a **parallel batch** of tool calls this round,
+    /// announced up front — *before* the first [`StreamEvent::ToolStart`] — so the
+    /// UI can show every requested call at once, the ones not yet executing as
+    /// dim `⎿ Waiting…` cells. Each tuple is the `(name, args)` the
+    /// `● name(args)` header shows (the same summary the matching `ToolStart`
+    /// carries). Sequential execution then transitions the calls one at a time via
+    /// [`StreamEvent::ToolStart`]/[`StreamEvent::ToolEnd`]. A backend that never
+    /// batches (the `!` shell, the dummy's lone calls) simply omits this — a lone
+    /// `ToolStart` still works. See `docs/parallel-tools.md`.
+    ToolBatch(Vec<(String, String)>),
     /// A tool call has started executing. The loop shows it live (blue) until the
     /// matching [`StreamEvent::ToolEnd`] arrives. `args` is a short summary for
-    /// the `name(args)` header.
+    /// the `name(args)` header. When a [`StreamEvent::ToolBatch`] announced this
+    /// call, this flips its `⎿ Waiting…` cell to `⎿ Running…`.
     ToolStart { name: String, args: String },
     /// The in-flight tool call finished with this `output` and outcome (`ok` →
     /// green, else red). Always follows a [`StreamEvent::ToolStart`].
@@ -110,7 +121,7 @@ const DUMMY_THINKING: &str = "Let me look at the code first.";
 /// the call (like [`DUMMY_THINKING`] does for reasoning). See
 /// `docs/status-indicator.md`.
 const DUMMY_READ_CALL: &[&str] = &["read", "{\"path\":", "\"src/main.rs\"}"];
-const DUMMY_BASH_CALL: &[&str] = &["bash", "{\"command\":", "\"grep -n TODO\"}"];
+const DUMMY_BASH_CALL: &[&str] = &["bash", "{\"command\":", "\"ping x.invalid\"}"];
 
 /// Canned multi-line output for the dummy `Read` tool (resolves green).
 const DUMMY_READ_OUTPUT: &str = "fn main() -> io::Result<()> {\n    \
@@ -119,10 +130,16 @@ const DUMMY_READ_OUTPUT: &str = "fn main() -> io::Result<()> {\n    \
     let restored = term.restore();\n    \
     result.and(restored)\n}";
 
-/// Canned multi-line output for the dummy `Bash` tool (resolves red, to show
-/// the failure colour in the demo).
-const DUMMY_BASH_OUTPUT: &str = "grep: TODO: no matches found\n\
-    searched 14 files in src/\nexit status 1";
+/// The dummy's **parallel batch** command + output for the `Bash` half. The turn
+/// announces a two-call batch — a `Read` then this `Bash` — up front, so while
+/// the `Read` runs the `Bash` shows `⎿ Waiting…` (the visible batch, offline; see
+/// `docs/parallel-tools.md`). Kept to two calls with the same output footprint as
+/// the pre-batch demo so the committed scrollback is unchanged (a real backend
+/// renders however many parallel calls the model actually requests — the display
+/// scales to N). This `Bash` resolves **red** (an unresolvable host), so the demo
+/// still shows both a green (`Read`) and a red outcome.
+const DUMMY_BASH_CMD: &str = "ping -c 3 x.invalid";
+const DUMMY_BASH_OUTPUT: &str = "ping: cannot resolve x.invalid: Unknown host\nexit status 68";
 
 /// Canned replies. One is chosen deterministically per prompt so the demo has
 /// a little variety without any real model behind it.
@@ -171,14 +188,19 @@ pub fn image_ack(count: usize) -> Option<String> {
 
 /// The full ordered sequence of events for one dummy turn, with a thinking phase
 /// and tool calls **interleaved** in the reply: stream the first half of the
-/// text, *think* for a moment, run a `Read` tool (resolves green) and a `Bash`
-/// tool (resolves red, for colour variety), then stream the rest and finish.
+/// text, *think* for a moment, run a **parallel batch** of two calls announced up
+/// front — a `Read` (green) then a `Bash` (red) — so while the `Read` runs the
+/// `Bash` shows `⎿ Waiting…` (the visible batch; `docs/parallel-tools.md`), then
+/// stream the rest and finish.
 ///
 /// The thinking phase sits after the first text segment (so the demo shows
-/// `↓ tokens · Thinking for Ns`) and before the tools, so every `ToolStart` is
-/// still immediately followed by its `ToolEnd`. Between the pair the dummy
-/// streams [`DUMMY_THINKING`] word-by-word as [`StreamEvent::ThinkingChunk`]s,
-/// so the token tally keeps ticking while the thinking timer runs.
+/// `↓ tokens · Thinking for Ns`) and before the tools. The batch is announced via
+/// a [`StreamEvent::ToolBatch`] before its `ToolStart`s, and every `ToolStart` is
+/// still immediately followed by its `ToolEnd` — execution stays sequential (one
+/// running call at a time; see `docs/parallel-tools.md`). Between the thinking
+/// pair the dummy streams [`DUMMY_THINKING`] word-by-word as
+/// [`StreamEvent::ThinkingChunk`]s, so the token tally keeps ticking while the
+/// thinking timer runs.
 ///
 /// Pure and deterministic so it is unit-testable; [`DummyAi`] just plays it back
 /// on a thread with delays. The `Chunk` events still concatenate to exactly
@@ -207,12 +229,23 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
             .map(StreamEvent::ThinkingChunk),
     );
     events.push(StreamEvent::ThinkingEnd);
-    // Each tool call is "generated" first (its fragments tick the token tally,
-    // like reasoning) and then executed — the ToolStart still lands immediately
-    // before its ToolEnd, so the loop only ever tracks one running tool.
+    // The model "generates" a small **parallel batch** (its fragments tick the
+    // token tally, like reasoning), announces both calls up front — so the
+    // not-yet-run one shows `⎿ Waiting…` while the other runs — then executes them
+    // in order: a `Read` (green, first so its cell sits near the top) then a
+    // `Bash` (red). Each ToolStart still lands immediately before its ToolEnd, so
+    // execution stays sequential (one running call at a time). Two calls, same
+    // committed footprint as the pre-batch demo. See `docs/parallel-tools.md`.
     for frag in DUMMY_READ_CALL {
         events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
     }
+    for frag in DUMMY_BASH_CALL {
+        events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
+    }
+    events.push(StreamEvent::ToolBatch(vec![
+        ("Read".to_string(), "src/main.rs".to_string()),
+        ("Bash".to_string(), DUMMY_BASH_CMD.to_string()),
+    ]));
     events.push(StreamEvent::ToolStart {
         name: "Read".to_string(),
         args: "src/main.rs".to_string(),
@@ -222,12 +255,9 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
         ok: true,
         truncated: false,
     });
-    for frag in DUMMY_BASH_CALL {
-        events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
-    }
     events.push(StreamEvent::ToolStart {
         name: "Bash".to_string(),
-        args: "grep -n TODO".to_string(),
+        args: DUMMY_BASH_CMD.to_string(),
     });
     events.push(StreamEvent::ToolEnd {
         output: DUMMY_BASH_OUTPUT.to_string(),
@@ -343,9 +373,10 @@ impl DummyAi {
 
 impl ReplySource for DummyAi {
     /// Plays back [`turn_events`]: streams the reply word-by-word (with
-    /// [`CHUNK_DELAY`] between words) with a `Read` then a `Bash` tool call
-    /// interleaved, pausing [`TOOL_DELAY`] after each `ToolStart` so the blue
-    /// running state shows before it resolves, and ends with
+    /// [`CHUNK_DELAY`] between words) with a **parallel batch** of a `Read` then a
+    /// `Bash` tool call interleaved (announced up front, so the `Bash` shows
+    /// `⎿ Waiting…` while the `Read` runs), pausing [`TOOL_DELAY`] after each
+    /// `ToolStart` so the blue running state shows before it resolves, and ends with
     /// [`StreamEvent::StreamDone`]. Stops early — sending nothing further — if
     /// `cancel` is tripped or the receiver has hung up. With `images` attached the
     /// reply opens with an acknowledgement (the dummy has no vision; see
@@ -627,6 +658,45 @@ mod tests {
     }
 
     #[test]
+    fn turn_events_announces_a_parallel_batch_before_its_tools() {
+        // The dummy scripts a parallel `Bash` batch: a `ToolBatch` (>= 2 calls)
+        // is emitted *before* the first `ToolStart`, so the UI shows the
+        // not-yet-run calls as `⎿ Waiting…`. Each batch entry's `(name, args)`
+        // matches the `ToolStart` that runs it, in order. See
+        // `docs/parallel-tools.md`.
+        let events = turn_events("hi", 0);
+        let batch_pos = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolBatch(_)))
+            .expect("the dummy announces a parallel batch");
+        let StreamEvent::ToolBatch(items) = &events[batch_pos] else {
+            unreachable!()
+        };
+        assert!(items.len() >= 2, "the batch has several parallel calls");
+        let first_start = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolStart { .. }))
+            .expect("the batch runs its tools");
+        assert!(
+            batch_pos < first_start,
+            "the batch is announced before any call starts"
+        );
+        // The batch entries equal the (name, args) of the ToolStarts that follow.
+        let following_starts: Vec<(String, String)> = events[batch_pos + 1..]
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolStart { name, args } => Some((name.clone(), args.clone())),
+                _ => None,
+            })
+            .take(items.len())
+            .collect();
+        assert_eq!(
+            *items, following_starts,
+            "each announced call matches its ToolStart"
+        );
+    }
+
+    #[test]
     fn turn_events_includes_one_paired_thinking_phase_before_the_tools() {
         let events = turn_events("hi", 0);
         let starts = events
@@ -829,6 +899,8 @@ mod tests {
 
         let mut streamed = String::new();
         let mut saw_done = false;
+        let mut tool_batches = 0;
+        let mut batched_calls = 0;
         let mut tool_starts = 0;
         let mut tool_ends = 0;
         let mut think_starts = 0;
@@ -840,6 +912,10 @@ mod tests {
         while let Some(event) = rx.blocking_recv() {
             match event {
                 StreamEvent::Chunk(c) => streamed.push_str(&c),
+                StreamEvent::ToolBatch(items) => {
+                    tool_batches += 1;
+                    batched_calls = items.len();
+                }
                 StreamEvent::ToolStart { .. } => tool_starts += 1,
                 StreamEvent::ToolEnd { .. } => tool_ends += 1,
                 StreamEvent::ThinkingStart => think_starts += 1,
@@ -860,6 +936,14 @@ mod tests {
         assert_eq!(streamed, expected, "chunks still reconstruct the reply");
         assert!(tool_starts >= 1, "the dummy streams at least one tool call");
         assert_eq!(tool_starts, tool_ends, "every tool that starts also ends");
+        assert_eq!(
+            tool_batches, 1,
+            "the dummy announces its parallel batch once"
+        );
+        assert!(
+            batched_calls >= 2,
+            "the announced batch has several parallel calls"
+        );
         assert!(
             tool_call_deltas >= 1,
             "the dummy generates each tool call first (ticking the tally)"

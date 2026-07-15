@@ -62,9 +62,15 @@ pub struct Message {
 }
 
 /// The lifecycle of a tool call — selects its bullet colour when rendered:
-/// running is blue, success green, failure red.
+/// waiting is dim, running is blue, success green, failure red.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolStatus {
+    /// Queued in a parallel batch but not yet started — shown live as a dim
+    /// `⎿ Waiting…` cell alongside the running call, until its own `ToolStart`
+    /// flips it to [`Running`](ToolStatus::Running). Only a batched sibling is
+    /// ever `Waiting`; a lone tool (the `!` shell, the dummy's single calls)
+    /// starts `Running`. See `docs/parallel-tools.md`.
+    Waiting,
     /// Executing — shown live (blue) in the bottom region while it runs.
     Running,
     /// Finished successfully (green).
@@ -1349,10 +1355,16 @@ pub struct App {
     /// [`streaming_text`]: App::streaming_text
     /// [`is_streaming`]: App::is_streaming
     streaming: Option<String>,
-    /// The tool currently executing (status [`ToolStatus::Running`]), shown live
-    /// in the bottom region; `None` when no tool is in flight. Private: read
-    /// through [`current_tool`](App::current_tool).
-    current_tool: Option<ToolCall>,
+    /// The live tool calls of the current turn, front-first: the front is the
+    /// running (status [`ToolStatus::Running`]) or about-to-run call, and any
+    /// calls behind it are [`ToolStatus::Waiting`] siblings of a **parallel
+    /// batch** (`start_tool_batch`), shown as `⎿ Waiting…` until each starts.
+    /// Empty when no tool is in flight. A lone tool (the `!` shell, the dummy's
+    /// single calls) is a one-element queue. Execution is sequential, so at most
+    /// one call is ever `Running`, and it is always the front. Private: read the
+    /// active call through [`current_tool`](App::current_tool) and the whole
+    /// batch through [`tool_queue`](App::tool_queue). See `docs/parallel-tools.md`.
+    tool_queue: VecDeque<ToolCall>,
     /// Every finished message and tool call, oldest first — used to repaint after
     /// a resize or on returning from the tool-output view.
     pub history: Vec<HistoryItem>,
@@ -3711,10 +3723,46 @@ impl App {
         self.record_message(Role::Error, text);
     }
 
-    /// Begin a tool call: record it as the currently-running tool so the bottom
-    /// region can show it live (blue) before any output arrives.
+    /// Announce a **parallel batch** of tool calls the model requested this
+    /// round (each `(name, args)` for the `● name(args)` header), all queued as
+    /// [`ToolStatus::Waiting`] so the live region shows every call at once — the
+    /// ones not yet running as `⎿ Waiting…`. Sequential execution then flips them
+    /// to `Running` one at a time via [`start_tool`](App::start_tool). Called by
+    /// the boundary on a [`crate::stream::StreamEvent::ToolBatch`]; a backend that
+    /// never batches (the `!` shell, the dummy's lone calls) skips it and a lone
+    /// [`start_tool`](App::start_tool) still works. See `docs/parallel-tools.md`.
+    pub fn start_tool_batch(&mut self, items: &[(String, String)]) {
+        self.tool_queue = items
+            .iter()
+            .map(|(name, args)| ToolCall {
+                name: name.clone(),
+                args: args.clone(),
+                status: ToolStatus::Waiting,
+                output: String::new(),
+                timestamp: String::new(), // stamped when it finishes (see end_tool)
+                shell: false,
+                truncated: false,
+            })
+            .collect();
+    }
+
+    /// Begin a tool call: mark it the running (blue) call at the front of the
+    /// live queue so the bottom region shows it before any output arrives.
+    ///
+    /// If the front call is a `Waiting` batch sibling (`start_tool_batch`
+    /// announced it), it is flipped to `Running` — the batch's `(name, args)` are
+    /// authoritative and equal the ones passed here (both come from the same
+    /// backend summary), so only the status changes. Otherwise (an empty queue —
+    /// the `!` shell, the dummy's lone calls) a fresh `Running` call is pushed, so
+    /// the single-tool path is unchanged.
     pub fn start_tool(&mut self, name: &str, args: &str) {
-        self.current_tool = Some(ToolCall {
+        if let Some(front) = self.tool_queue.front_mut()
+            && front.status == ToolStatus::Waiting
+        {
+            front.status = ToolStatus::Running;
+            return;
+        }
+        self.tool_queue.push_back(ToolCall {
             name: name.to_string(),
             args: args.to_string(),
             status: ToolStatus::Running,
@@ -3732,23 +3780,34 @@ impl App {
     ///
     /// [`end_tool`]: App::end_tool
     pub fn set_tool_truncated(&mut self) {
-        if let Some(tool) = self.current_tool.as_mut() {
+        if let Some(tool) = self.tool_queue.front_mut() {
             tool.truncated = true;
         }
     }
 
-    /// The tool currently executing, if any.
+    /// The tool currently at the front of the live queue — the running (or, in
+    /// the brief gap between a batch's calls, about-to-run) call, if any.
     #[must_use]
     pub fn current_tool(&self) -> Option<&ToolCall> {
-        self.current_tool.as_ref()
+        self.tool_queue.front()
+    }
+
+    /// The whole live tool queue, front-first: the running/next call followed by
+    /// any [`ToolStatus::Waiting`] batch siblings. The renderer walks this to show
+    /// every call in a parallel batch (the running one live, the rest as
+    /// `⎿ Waiting…`). Empty when no tool is in flight. See `docs/parallel-tools.md`.
+    #[must_use]
+    pub fn tool_queue(&self) -> &VecDeque<ToolCall> {
+        &self.tool_queue
     }
 
     /// Finish the in-flight tool call with its final `output` and outcome
     /// (`ok` → [`ToolStatus::Ok`], else [`ToolStatus::Failed`]), record it in the
-    /// history, and clear the running slot. Returns the finished call (for the
+    /// history, and remove it from the front of the live queue — the next batch
+    /// sibling (if any) becomes the front. Returns the finished call (for the
     /// event loop to commit to scrollback), or `None` if no tool was running.
     pub fn end_tool(&mut self, output: &str, ok: bool) -> Option<ToolCall> {
-        let mut tool = self.current_tool.take()?;
+        let mut tool = self.tool_queue.pop_front()?;
         tool.output = output.to_string();
         tool.status = if ok {
             ToolStatus::Ok
@@ -3844,7 +3903,7 @@ impl App {
             retry: None,
         });
         self.start_tool(command, "");
-        if let Some(tool) = self.current_tool.as_mut() {
+        if let Some(tool) = self.tool_queue.front_mut() {
             tool.shell = true;
         }
     }
@@ -4018,6 +4077,10 @@ impl App {
             Some(streamed)
         };
         let tool = self.end_tool(ERROR_TOOL_OUTPUT, false);
+        // Any un-started `Waiting` batch siblings never ran — drop them (they
+        // only ever lived in the live region, never committed). See
+        // `docs/parallel-tools.md`.
+        self.tool_queue.clear();
         self.record_message(Role::Error, error);
         // An error is the turn's terminal state — clear the live status without a
         // "Done" summary; the red error notice is the summary.
@@ -4062,18 +4125,20 @@ impl App {
         // Take the partial first (empties the streaming buffer either way).
         let partial = self.streaming.take().filter(|text| !text.is_empty());
 
-        // No output produced (no partial, no running tool) and nothing queued
-        // behind it → undo the submission wholesale: roll the user's message(s)
-        // back into the composer and drop them from history, recording no
-        // notice. `current_tool` is peeked (not resolved) so the undo path
-        // never touches history or the token tally. A shell turn always has a
-        // running tool, so it can never land here — it takes the keep path
-        // below (and skips the notice there).
+        // No output produced (no partial, no running or waiting tool) and
+        // nothing queued behind it → undo the submission wholesale: roll the
+        // user's message(s) back into the composer and drop them from history,
+        // recording no notice. The tool queue is peeked (not resolved) so the
+        // undo path never touches history or the token tally. A shell turn
+        // always has a running tool, so it can never land here — it takes the
+        // keep path below (and skips the notice there); likewise any tool of a
+        // parallel batch (running *or* still `Waiting`) keeps the queue
+        // non-empty, so the undo can't fire mid-batch.
         //
         // The trailing-user-message guard is what makes this safe under the
         // real backend's **multi-round tool loop**: after an earlier round
         // committed an assistant segment + a tool, the streaming buffer is
-        // `Some("")` and `current_tool` is `None` again, so the three empties
+        // `Some("")` and the tool queue is empty again, so the three empties
         // alone would wrongly fire the undo mid-turn — dropping the notice,
         // orphaning the committed output, and (via `recall_input("")`) wiping a
         // typed draft. When the just-submitted user message(s) are still the
@@ -4084,7 +4149,7 @@ impl App {
             matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User);
         if submission_is_intact
             && partial.is_none()
-            && self.current_tool.is_none()
+            && self.tool_queue.is_empty()
             && self.queued.is_empty()
         {
             self.status = None;
@@ -4108,6 +4173,10 @@ impl App {
             self.record_message(Role::Assistant, text.clone());
         }
         let tool = self.end_tool(INTERRUPT_TOOL_OUTPUT, false);
+        // Any un-started `Waiting` batch siblings never ran — drop them (they
+        // only lived in the live region, never committed). See
+        // `docs/parallel-tools.md`.
+        self.tool_queue.clear();
         // A `!` shell turn's `⎿ Interrupted by user` cell is its own record —
         // committing a second `Conversation interrupted` line would be
         // redundant, so skip the notice for it.
@@ -4179,7 +4248,7 @@ impl App {
     fn clear_conversation(&mut self) {
         self.history.clear();
         self.streaming = None;
-        self.current_tool = None;
+        self.tool_queue.clear();
         self.status = None;
         // The wiped batches' image attachments will never dispatch — record
         // their temp files as discarded so the boundary removes them.
@@ -5701,6 +5770,38 @@ mod tests {
     }
 
     #[test]
+    fn interrupt_mid_batch_keeps_the_running_call_and_drops_waiting_siblings() {
+        // Esc during a parallel batch: the running (front) call resolves Failed
+        // and is recorded; the un-started `Waiting` siblings never ran, so they
+        // are dropped — no cell recorded, the live queue cleared. See
+        // `docs/parallel-tools.md`.
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool_batch(&ping_batch());
+        app.start_tool("Bash", "ping google.com"); // the front is now Running
+        let InterruptedTurn::Kept { tool, .. } = app.interrupt_turn().expect("a turn was active")
+        else {
+            panic!("a running tool means output streamed — kept, not undone");
+        };
+        let tool = tool.expect("the running call was resolved");
+        assert_eq!(tool.args, "ping google.com");
+        assert_eq!(tool.status, ToolStatus::Failed);
+        assert!(
+            app.tool_queue().is_empty(),
+            "the waiting siblings were dropped"
+        );
+        let recorded_tools = app
+            .history
+            .iter()
+            .filter(|i| matches!(i, HistoryItem::Tool(_)))
+            .count();
+        assert_eq!(
+            recorded_tools, 1,
+            "only the running call is recorded; waiting siblings leave no cell"
+        );
+    }
+
+    #[test]
     fn interrupt_turn_records_no_done_summary() {
         // An interrupt has no "Done for Ns" line — the notice is the
         // turn's terminal state, exactly like fail_stream.
@@ -5845,6 +5946,116 @@ mod tests {
         assert_eq!(tool.args, "cargo test");
         assert_eq!(tool.status, ToolStatus::Running);
         assert!(app.history.is_empty(), "a running tool is not yet history");
+    }
+
+    /// A three-call parallel batch, as the header `(name, args)` summaries.
+    fn ping_batch() -> Vec<(String, String)> {
+        vec![
+            ("Bash".to_string(), "ping google.com".to_string()),
+            ("Bash".to_string(), "ping facebook.com".to_string()),
+            ("Bash".to_string(), "ping x.com".to_string()),
+        ]
+    }
+
+    #[test]
+    fn start_tool_batch_queues_every_call_as_waiting() {
+        // A parallel batch registers all calls up front, all `Waiting`, so the
+        // live region can show each — the not-yet-run ones as `⎿ Waiting…`. The
+        // front is the first call (about to run); none are in history yet.
+        let mut app = App::new();
+        app.start_tool_batch(&ping_batch());
+        assert_eq!(app.tool_queue().len(), 3, "all three calls are live");
+        assert!(
+            app.tool_queue()
+                .iter()
+                .all(|t| t.status == ToolStatus::Waiting),
+            "every batched call starts Waiting"
+        );
+        let front = app
+            .current_tool()
+            .expect("the front call is the current one");
+        assert_eq!(front.args, "ping google.com");
+        assert!(app.history.is_empty(), "a queued batch is not yet history");
+    }
+
+    #[test]
+    fn start_tool_flips_the_front_waiting_call_to_running_without_adding_one() {
+        // Executing the first batch call flips the front `Waiting`→`Running` (it
+        // does not push a second call): the siblings stay `Waiting`.
+        let mut app = App::new();
+        app.start_tool_batch(&ping_batch());
+        app.start_tool("Bash", "ping google.com");
+        assert_eq!(app.tool_queue().len(), 3, "no extra call was pushed");
+        assert_eq!(app.current_tool().unwrap().status, ToolStatus::Running);
+        assert_eq!(
+            app.tool_queue()[1].status,
+            ToolStatus::Waiting,
+            "the siblings are still waiting"
+        );
+        assert_eq!(app.tool_queue()[2].status, ToolStatus::Waiting);
+    }
+
+    #[test]
+    fn end_tool_pops_the_front_and_the_next_batch_call_becomes_current() {
+        // Finishing the running call removes it from the live queue and records
+        // it; the next `Waiting` sibling becomes the front (about to run).
+        let mut app = App::new();
+        app.start_tool_batch(&ping_batch());
+        app.start_tool("Bash", "ping google.com");
+        let finished = app.end_tool("pong", true).expect("the front call finished");
+        assert_eq!(finished.args, "ping google.com");
+        assert_eq!(finished.status, ToolStatus::Ok);
+        assert_eq!(
+            app.tool_queue().len(),
+            2,
+            "the finished call left the queue"
+        );
+        assert_eq!(
+            app.current_tool().unwrap().args,
+            "ping facebook.com",
+            "the next sibling is now the front"
+        );
+        assert_eq!(app.current_tool().unwrap().status, ToolStatus::Waiting);
+        assert!(
+            matches!(app.history.last(), Some(HistoryItem::Tool(t)) if t.args == "ping google.com"),
+            "the finished call is recorded in history"
+        );
+    }
+
+    #[test]
+    fn a_full_batch_runs_in_order_leaving_three_history_tools_and_an_empty_queue() {
+        // Drive the whole batch: each call flips to Running then finishes, in
+        // order, committing three tools; the live queue ends empty.
+        let mut app = App::new();
+        app.start_tool_batch(&ping_batch());
+        for (name, args) in ping_batch() {
+            app.start_tool(&name, &args);
+            app.end_tool("done", true);
+        }
+        assert!(app.tool_queue().is_empty(), "the batch fully drained");
+        let tool_args: Vec<&str> = app
+            .history
+            .iter()
+            .filter_map(|i| match i {
+                HistoryItem::Tool(t) => Some(t.args.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            tool_args,
+            vec!["ping google.com", "ping facebook.com", "ping x.com"],
+            "all three committed, in request order"
+        );
+    }
+
+    #[test]
+    fn a_lone_start_tool_without_a_batch_pushes_a_running_call() {
+        // The single-tool path (the `!` shell, the dummy's lone Read) is
+        // unchanged: with no batch queued, start_tool pushes one Running call.
+        let mut app = App::new();
+        app.start_tool("Read", "src/main.rs");
+        assert_eq!(app.tool_queue().len(), 1);
+        assert_eq!(app.current_tool().unwrap().status, ToolStatus::Running);
     }
 
     #[test]

@@ -127,10 +127,13 @@ The event loop **already** interleaves `ToolStart`/`ToolEnd` with `Chunk`s — t
 dummy has scripted exactly this since day one (`stream::turn_events`), and
 `main.rs::on_stream_event` already flushes the text segment, shows the tool blue,
 commits it green/red, and records it into `history`. A real model driving those
-same events needs **no new event-loop code**. Interrupts, the Ctrl+O transcript,
-resize repaint, and `context_messages` replay (finished tools → the native
-`assistant tool_calls` + `tool` result pair on the next turn, matching this
-in-turn protocol — see `docs/context.md`) all work unchanged.
+same events needs almost **no new event-loop code** — the one addition is the
+`StreamEvent::ToolBatch` arm that registers a **parallel batch** up front (so its
+not-yet-run calls show `⎿ Waiting…`; see `docs/parallel-tools.md`), after which
+the same per-call `ToolStart`/`ToolEnd` flow runs unchanged. Interrupts, the
+Ctrl+O transcript, resize repaint, and `context_messages` replay (finished tools →
+the native `assistant tool_calls` + `tool` result pair on the next turn, matching
+this in-turn protocol — see `docs/context.md`) all work unchanged.
 
 ## The executor (`llm::exec::RealToolExecutor`)
 
@@ -284,7 +287,10 @@ peek), so old sessions and edge cases keep rendering sensibly.
 - No sandbox / approval prompts — the executor trusts the operator (env-gated).
 - `edit` requires a unique `old_string` (or `replace_all`); it does not do fuzzy
   context matching like codex's `apply_patch`.
-- Parallel tool calls in one assistant turn are executed **sequentially** (the
-  TUI shows one running tool at a time — invariant 4 in `CLAUDE.md`).
+- Parallel tool calls in one assistant turn are executed **sequentially** — but
+  the whole batch is now **visible**: it is announced up front (a
+  `StreamEvent::ToolBatch`), so the running call shows live while the not-yet-run
+  ones show `⎿ Waiting…`, each committing as it finishes (`docs/parallel-tools.md`;
+  invariant 4 in `CLAUDE.md`). True concurrent *execution* is still future work.
 - Token counts remain an app-side estimate (the protocol's `usage` is still not
   surfaced).

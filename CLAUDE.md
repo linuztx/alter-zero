@@ -73,7 +73,10 @@ previous user message: prime → transcript preview → rewind + prefill) in
 `docs/backtrack.md`; the **`/resume` session picker** (every conversation
 recorded to a rollout JSONL file, listed in a full-screen picker whose Enter
 loads it back and appends the turns that follow to the same file) in
-`docs/resume.md`.
+`docs/resume.md`; the **parallel tool-call batch** (the model's several tool
+calls in one round announced up front so the running one shows live while the
+not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
+`docs/parallel-tools.md`.
 
 ### The runtime model and its invariants
 
@@ -96,7 +99,9 @@ Esc/Ctrl+C cancel restoring the pre-search draft and cursor; see
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
 preview shows a running tool's blue cell when one is executing — a backend tool's
 **whole** collapsed cell, the wrapped `● name(args)` header *plus* its `⎿ Running…`
-row, so a long command isn't clipped and the running state shows; the preview slot
+row, so a long command isn't clipped and the running state shows; a **parallel
+batch** previews the *whole* `tool_queue` — the running call over each dim
+`⎿ Waiting…` sibling, blank-separated, `docs/parallel-tools.md`; the preview slot
 is sized by `ui::preview_rows`, a running `!` shell/streaming reply staying one
 row; `docs/tools.md`), a blank gap row,
 a codex-style **status line** (`(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens ·
@@ -284,7 +289,16 @@ of bug:
    finalises the run of text before a `ToolStart` as its own history message so the
    tool slots *after* it in order (the scrollback and the resize/return repaint
    must agree). Inline a tool is collapsed (`ui::tool_lines` — coloured bullet +
-   one-line peek). The Ctrl+O overlay (`ui::render_tool_view` on the alternate
+   one-line peek). When the model requests a **parallel batch** of calls in one
+   round, they are announced up front (`StreamEvent::ToolBatch` →
+   `App::start_tool_batch`, filling the `App::tool_queue` `VecDeque`) so the live
+   region shows *every* call at once — the running one live (blue), the not-yet-run
+   siblings as dim `⎿ Waiting…` cells (`ToolStatus::Waiting`), each committing to
+   scrollback as its `ToolEnd` arrives. Execution stays **sequential** (only the
+   front of the queue is ever `Running`, so the invariant is "at most one running
+   tool", not "at most one live tool"); an interrupt/error resolves the running
+   call and drops the un-started `Waiting` siblings (`docs/parallel-tools.md`). The
+   Ctrl+O overlay (`ui::render_tool_view` on the alternate
    screen) is codex's **Ctrl+T transcript pager** — a slash-tiled dim
    `/ T R A N S C R I P T` title row, the scrolling transcript body with
    vi-style `~` filler past its end, a `─` separator carrying the scroll
@@ -295,14 +309,17 @@ of bug:
    `docs/backtrack.md`) — showing the **full conversation
    transcript**: `ui::transcript_lines`
    walks `history` (messages + each tool's *expanded* output) plus the live tail
-   (in-progress reply / running tool) plus the still-queued backlog
+   (in-progress reply / the running tool **and any `⎿ Waiting…` batch siblings**,
+   the whole `tool_queue` in order) plus the still-queued backlog
    (`ui::queued_lines`' inset rows, so Ctrl+O never hides a queued message —
    `docs/queue.md`). That walk is **O(history)** and re-runs the markdown +
    syntax highlighter over the whole transcript, so the loop drives it through a
    **`ui::TranscriptCache`** (a `main.rs`-owned cache, like `StreamRender`): a
    scroll changes only the viewport window, not the content, so the cache rebuilds
-   only when a cheap signature (history length, live-tail / running-tool /
-   queue lengths, backtrack selection, width) changes — a scroll keypress is then
+   only when a cheap signature (history length, live-tail length, the tool
+   queue's shape — its length + front-call status, so a Waiting→Running flip or a
+   batch call committing invalidates it — queue length, backtrack selection,
+   width) changes — a scroll keypress is then
    a cache hit (O(viewport)), not a full re-highlight. `draw_tool_view` builds it
    **once** per draw (shared by the scroll clamp and the render); it's freed on
    overlay close. History is append-only while the overlay is up (a backtrack
@@ -510,7 +527,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 
 - **All styling is centralized** as `const`s at the top of `ui.rs` — bullets,
   prompt, colours (including the red error bullet and the cyan system bullet),
-  border, the tool-call styling (`TOOL_*` — blue/green/red status colours, the
+  border, the tool-call styling (`TOOL_*` — dim-waiting/blue/green/red status
+  colours (`TOOL_WAITING_COLOR` for a batch's not-yet-run `⎿ Waiting…` calls,
+  `docs/parallel-tools.md`), the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
   (`TOOL_VIEW_*`), the transcript timestamp (`TIMESTAMP_COLOR` — the dim
   `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,
@@ -574,7 +593,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   is added *only when there's content to preview* (`strip_rows(streaming,
   preview_rows)`/`preview_rows` — the **count** of preview content rows: 0 idle,
   1 for a streaming reply or `!` shell run, N for a running backend tool's whole
-  cell; the pre-stream pause reserves **no** empty preview row, like codex) —
+  cell (or the whole parallel `tool_queue`: every batched call's cell, running +
+  `⎿ Waiting…`, blank-separated — `docs/parallel-tools.md`); the pre-stream pause
+  reserves **no** empty preview row, like codex) —
   (`render_live` draws the status line under the preview's gap, or at the strip
   top during the pause) — with the
   **queued messages stacked below the status, *above* the box** (`queued_rows`,

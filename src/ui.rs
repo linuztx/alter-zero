@@ -200,9 +200,18 @@ const TOOL_NO_OUTPUT: &str = "(no output)";
 /// under a backend tool's `● name(args)` header (req 2: a running cell shows the
 /// header *and* this row, previewed live) and as the whole `!` shell cell.
 const TOOL_RUNNING: &str = "Running…";
+/// Placeholder body for a tool queued in a **parallel batch** but not yet
+/// started — the dim `⎿ Waiting…` row shown under a not-yet-running sibling's
+/// `● name(args)` header while another call in the batch executes. See
+/// `docs/parallel-tools.md`.
+const TOOL_WAITING: &str = "Waiting…";
 
 /// Blue — a tool that is still executing.
 const TOOL_RUNNING_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+/// Dim grey — a tool queued in a batch but not yet started (its `● name(args)`
+/// bullet and `⎿ Waiting…` row read muted, distinct from the blue running head,
+/// since it hasn't begun). Shares the argument/peek dim grey.
+const TOOL_WAITING_COLOR: Color = TOOL_DIM_COLOR;
 /// Green — a tool that finished successfully.
 const TOOL_OK_COLOR: Color = Color::Rgb(0x98, 0xC3, 0x79);
 /// Red — a tool that failed (shares the backend-error red).
@@ -729,14 +738,18 @@ const fn strip_rows(has_status: bool, preview_rows: u16) -> u16 {
 /// [`render_live`]/[`cursor_position`]/`main.rs` to feed `strip_rows`.
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
-    match app.current_tool() {
-        // A `!` shell run shows a single `⎿ Running… (Ns)` row (no header).
-        Some(tool) if tool.shell && tool.status == ToolStatus::Running => 1,
-        // A backend tool previews its full collapsed cell — cheap while running
-        // (header + one `⎿ Running…` row, no output yet).
-        Some(tool) => u16::try_from(tool_lines(tool, width).len()).unwrap_or(u16::MAX),
-        None if app.streaming_text().is_some_and(|t| !t.is_empty()) => 1,
-        None => 0,
+    // A live tool queue previews every call's cell (a **parallel batch** shows
+    // the running one + each `⎿ Waiting…` sibling, blank-separated); a `!` shell
+    // run its single `⎿ Running… (Ns)` row. Sized from the same walk the strip
+    // draws ([`preview_tool_lines`]) so the count and the paint agree.
+    if !app.tool_queue().is_empty() {
+        return u16::try_from(preview_tool_lines(app, width).len()).unwrap_or(u16::MAX);
+    }
+    // A streaming reply previews its last row; the pre-stream pause / idle none.
+    if app.streaming_text().is_some_and(|t| !t.is_empty()) {
+        1
+    } else {
+        0
     }
 }
 
@@ -2347,13 +2360,8 @@ fn preview_lines(
     width: u16,
     stream_preview: Option<&Line<'static>>,
 ) -> Vec<Line<'static>> {
-    if let Some(tool) = app.current_tool() {
-        if tool.shell && tool.status == ToolStatus::Running {
-            let elapsed = app.status().map_or(Duration::ZERO, |s| s.elapsed);
-            vec![shell_running_line(elapsed)]
-        } else {
-            tool_lines(tool, width)
-        }
+    if !app.tool_queue().is_empty() {
+        preview_tool_lines(app, width)
     } else if let Some(line) = stream_preview {
         vec![line.clone()]
     } else {
@@ -2367,6 +2375,30 @@ fn preview_lines(
             .into_iter()
             .collect()
     }
+}
+
+/// The live tool queue rendered as preview rows: each call's collapsed cell,
+/// blank-line-separated so a **parallel batch** reads like the committed
+/// scrollback (the running call live, each not-yet-started sibling a dim
+/// `⎿ Waiting…` cell — `docs/parallel-tools.md`). A lone `!` shell run collapses
+/// to its single `⎿ Running… (Ns)` row (the elapsed rides the preview since a
+/// shell turn hides the status line); the shell is never batched, so it is
+/// always the only call. Shared by [`preview_lines`] (drawn) and [`preview_rows`]
+/// (sized) so the two agree by construction (the strip's `debug_assert`).
+fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (i, tool) in app.tool_queue().iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::default()); // blank row between batch cells
+        }
+        if tool.shell && tool.status == ToolStatus::Running {
+            let elapsed = app.status().map_or(Duration::ZERO, |s| s.elapsed);
+            lines.push(shell_running_line(elapsed));
+        } else {
+            lines.extend(tool_lines(tool, width));
+        }
+    }
+    lines
 }
 
 /// [`render_live`], but with the streaming strip's assistant-preview line
@@ -3065,9 +3097,11 @@ pub fn display_cwd(cwd: &Path, home: Option<&Path>) -> String {
     cwd.display().to_string()
 }
 
-/// The bullet colour for a tool's lifecycle: blue running, green ok, red fail.
+/// The bullet colour for a tool's lifecycle: dim waiting, blue running, green
+/// ok, red fail.
 const fn tool_status_color(status: ToolStatus) -> Color {
     match status {
+        ToolStatus::Waiting => TOOL_WAITING_COLOR,
         ToolStatus::Running => TOOL_RUNNING_COLOR,
         ToolStatus::Ok => TOOL_OK_COLOR,
         ToolStatus::Failed => TOOL_FAIL_COLOR,
@@ -3527,6 +3561,9 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         // (Truncation of an over-cap output is marked only in the expanded view;
         // inline, the `… +N lines (ctrl+o to expand)` hint already signals more.)
         return match tool.status {
+            // A shell command is never batched, so it is never `Waiting`; the
+            // arm is here only to keep the match total and correct if it ever is.
+            ToolStatus::Waiting => vec![result_row(0, TOOL_WAITING.to_string())],
             ToolStatus::Running => vec![result_row(0, TOOL_RUNNING.to_string())],
             _ if out_lines.is_empty() => vec![result_row(0, TOOL_NO_OUTPUT.to_string())],
             _ => result_peek_block(&out_lines, peek_width, result_row),
@@ -3555,6 +3592,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // A backend tool: coloured header (wrapped when long) + a single collapsed
     // peek line.
     let peek = match tool.status {
+        ToolStatus::Waiting => TOOL_WAITING.to_string(),
         ToolStatus::Running => TOOL_RUNNING.to_string(),
         _ if out_lines.is_empty() => TOOL_NO_OUTPUT.to_string(),
         _ => truncate_cols(&out_lines[0], peek_width),
@@ -3625,6 +3663,7 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // added/removed colour instead of being mis-coloured by their own
     // (marker-less) first char. Every other tool's output is dim.
     let mut rows: Vec<(String, Option<Color>)> = match (tool.status, tool.output.is_empty()) {
+        (ToolStatus::Waiting, _) => vec![(TOOL_WAITING.to_string(), None)],
         (ToolStatus::Running, true) => vec![(TOOL_RUNNING.to_string(), None)],
         (_, true) => vec![(TOOL_NO_OUTPUT.to_string(), None)],
         _ if is_diff_tool(tool) => tool
@@ -3895,15 +3934,17 @@ fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<
             lines.push(Line::default());
         }
     }
-    // Live tail: the in-progress assistant text, then the running tool (only one
-    // is ever active given how a turn streams, but both are handled in order).
+    // Live tail: the in-progress assistant text, then every live tool call — the
+    // running one followed by any `⎿ Waiting…` siblings of a parallel batch, in
+    // order, so the overlay shows the full live picture and a waiting call is
+    // never hidden under Ctrl+O (docs/parallel-tools.md).
     if let Some(text) = app.streaming_text()
         && !text.is_empty()
     {
         lines.extend(message_lines(Role::Assistant, text, width));
         lines.push(Line::default());
     }
-    if let Some(tool) = app.current_tool() {
+    for tool in app.tool_queue() {
         lines.extend(tool_full_lines(tool, width));
         lines.push(Line::default());
     }
@@ -3981,21 +4022,25 @@ struct TranscriptSig {
     history_len: usize,
     /// Live in-progress reply length (`None` when not streaming).
     streaming_len: Option<usize>,
-    /// The running tool's output length (`None` when none runs) — a running cell
-    /// is otherwise static (`Running…`, empty output until it finishes into
-    /// history, which bumps `history_len`).
-    tool_output_len: Option<usize>,
+    /// The live tool queue's shape: `(number of live calls, front call status)`,
+    /// `None` when none run. A **parallel batch** shrinks as each call commits
+    /// (also bumping `history_len`) and the front flips `Waiting`→`Running` when
+    /// it starts — both change the transcript's live tail, and a running cell is
+    /// otherwise static (`Running…`/`Waiting…`, empty output until it finishes
+    /// into history). See `docs/parallel-tools.md`.
+    tool_queue: Option<(usize, ToolStatus)>,
     queued_len: usize,
     backtrack_selected: Option<usize>,
 }
 
 impl TranscriptSig {
     fn of(app: &App, width: u16) -> Self {
+        let queue = app.tool_queue();
         Self {
             width,
             history_len: app.history.len(),
             streaming_len: app.streaming_text().map(str::len),
-            tool_output_len: app.current_tool().map(|t| t.output.len()),
+            tool_queue: queue.front().map(|t| (queue.len(), t.status)),
             queued_len: app.queued.len(),
             backtrack_selected: app.backtrack.selected,
         }
@@ -6834,6 +6879,38 @@ mod tests {
     }
 
     #[test]
+    fn tool_lines_waiting_shows_a_waiting_peek() {
+        // A not-yet-started call in a parallel batch renders `● name(args)` over
+        // a dim `⎿ Waiting…` row — the queued-but-not-running state. See
+        // `docs/parallel-tools.md`.
+        let lines = tool_lines(&tool("Bash", "ping x.com", ToolStatus::Waiting, ""), 80);
+        assert_eq!(lines.len(), 2, "header + waiting peek");
+        assert!(
+            plain(&lines[0]).contains("Bash(ping x.com)"),
+            "the waiting call still shows its header: {:?}",
+            plain(&lines[0])
+        );
+        assert!(
+            plain(&lines[1]).contains("Waiting…"),
+            "a waiting call peeks as Waiting…: {:?}",
+            plain(&lines[1])
+        );
+    }
+
+    #[test]
+    fn tool_lines_colours_a_waiting_bullet_dim_not_blue() {
+        // The waiting bullet is dim grey (distinct from the blue running head),
+        // since the call hasn't started.
+        let lines = tool_lines(&tool("Bash", "ping x.com", ToolStatus::Waiting, ""), 80);
+        let bullet = lines[0].spans.first().expect("a bullet span");
+        assert_eq!(
+            bullet.style.fg,
+            Some(TOOL_WAITING_COLOR),
+            "the waiting bullet is dim, not the running blue"
+        );
+    }
+
+    #[test]
     fn tool_lines_wraps_a_long_header_instead_of_clipping() {
         // A long `Bash(…)` command must not run off the terminal edge: the args
         // word-wrap across continuation rows, indented to align under the first
@@ -9430,6 +9507,50 @@ mod tests {
             preview_rows(&app, 40),
             2,
             "a running backend tool previews header + ⎿ Running…"
+        );
+    }
+
+    #[test]
+    fn preview_shows_the_whole_parallel_batch_running_plus_waiting() {
+        // A parallel batch previews every call: the running one + each `Waiting`
+        // sibling, blank-separated. `preview_rows` counts them all, and
+        // `render_live` paints the running cell alongside the `⎿ Waiting…`
+        // siblings — so the batch is visible and clear. See
+        // `docs/parallel-tools.md`.
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool_batch(&[
+            ("Bash".to_string(), "ping google.com".to_string()),
+            ("Bash".to_string(), "ping facebook.com".to_string()),
+            ("Bash".to_string(), "ping x.com".to_string()),
+        ]);
+        app.start_tool("Bash", "ping google.com"); // the front call → Running
+        // Three 2-row cells (header + peek) with two blank separators = 8 rows.
+        assert_eq!(
+            preview_rows(&app, 40),
+            8,
+            "the whole batch (3 cells + 2 gaps) is previewed"
+        );
+        let pv = preview_rows(&app, 40);
+        let h = live_height(&app.input, 40, 30, true, pv, 0, 0, 0, 0);
+        let mut buf = buffer(40, h);
+        render_live(buf.area, &mut buf, &app);
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 40))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            all.contains("ping google.com") && all.contains("Running…"),
+            "the running call shows its header + Running…: {all:?}"
+        );
+        assert!(
+            all.contains("ping facebook.com") && all.contains("ping x.com"),
+            "the waiting siblings are shown: {all:?}"
+        );
+        assert_eq!(
+            all.matches("Waiting…").count(),
+            2,
+            "exactly the two not-yet-run siblings show Waiting…: {all:?}"
         );
     }
 

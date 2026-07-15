@@ -1725,11 +1725,32 @@ fn on_stream_event(
             }
             Ok(false)
         }
+        StreamEvent::ToolBatch(items) => {
+            // The model requested a batch of tool calls. Finalise the assistant
+            // text before them (so they slot after it in scrollback), then
+            // register the whole batch as `Waiting` in the live region — every
+            // call shows at once, the ones not yet running as `⎿ Waiting…`. No
+            // scrollback commit: the batch is live-only until each call ends. The
+            // subsequent per-call ToolStart flips its front `Waiting` to
+            // `Running`. See `docs/parallel-tools.md`.
+            if let Some(segment) = app.flush_streaming_segment()
+                && committing
+            {
+                term.insert_before(render.finish(&segment, width));
+                term.insert_before(vec![Line::default()]);
+            }
+            render.reset();
+            app.start_tool_batch(&items);
+            Ok(false)
+        }
         StreamEvent::ToolStart { name, args } => {
             // Finalise the current run of assistant text so the tool slots after
             // it in scrollback, then show the tool running (blue) in the live
             // region until its ToolEnd arrives. The flush always runs (it records
-            // history); only the commit is view-gated.
+            // history); only the commit is view-gated. For a batched call the
+            // flush already ran on ToolBatch (the buffer is empty, so this is a
+            // no-op) and `start_tool` flips the front `Waiting` to `Running`; a
+            // lone call (dummy/shell, no batch) pushes a fresh running call.
             if let Some(segment) = app.flush_streaming_segment()
                 && committing
             {
