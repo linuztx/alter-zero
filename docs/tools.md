@@ -286,7 +286,8 @@ the **codex/Claude-Code file cell** (`ui::file_cell_lines`):
      16 +   <span>Bruce Rivero</span>
 ```
 
-- The dim summary head sits on the `⎿` corner row: `Read {N} lines`,
+- The **white** summary head (`TOOL_OUTPUT_COLOR`, so it's as noticeable as the
+  output — not dim) sits on the `⎿` corner row: `Read {N} lines`,
   `Created {path} ({N} lines)`, or `Updated {path} (+A -D)` with the `(+A -D)`
   counts coloured green/red (codex's header counts — `file_summary_spans`). A
   `read` cell has no head in its output, so `ui::parse_file_cell` synthesizes

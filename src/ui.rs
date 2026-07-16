@@ -3452,10 +3452,12 @@ fn file_cell_lang(args: &str) -> Option<&str> {
     (!stem.is_empty() && !ext.is_empty() && !ext.contains(' ')).then_some(ext)
 }
 
-/// The dim summary head of a file cell with its `(+A -D)` counts coloured
-/// green/red (codex's header counts); all-dim when there are no counts.
+/// The summary head of a file cell (`Created …`/`Updated …`/`Read N lines`) in
+/// the white output colour ([`TOOL_OUTPUT_COLOR`]) so it's as noticeable as the
+/// output, with its `(+A -D)` counts coloured green/red (codex's header counts);
+/// all-white when there are no counts.
 fn file_summary_spans(head: &str) -> Vec<Span<'static>> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let text = Style::new().fg(TOOL_OUTPUT_COLOR);
     if let Some(open) = head.rfind("(+") {
         let counts = head[open..]
             .strip_prefix("(+")
@@ -3468,15 +3470,15 @@ fn file_summary_spans(head: &str) -> Vec<Span<'static>> {
             && d.chars().all(|c| c.is_ascii_digit())
         {
             return vec![
-                Span::styled(format!("{}(", &head[..open]), dim),
+                Span::styled(format!("{}(", &head[..open]), text),
                 Span::styled(format!("+{a}"), Style::new().fg(TOOL_DIFF_ADD_COLOR)),
-                Span::styled(" ".to_string(), dim),
+                Span::styled(" ".to_string(), text),
                 Span::styled(format!("-{d}"), Style::new().fg(TOOL_DIFF_DEL_COLOR)),
-                Span::styled(")".to_string(), dim),
+                Span::styled(")".to_string(), text),
             ];
         }
     }
-    vec![Span::styled(head.to_string(), dim)]
+    vec![Span::styled(head.to_string(), text)]
 }
 
 /// Build the display rows for one numbered source row: a dim right-aligned
@@ -3548,7 +3550,7 @@ fn numbered_row_lines(
 
 /// Build the styled `⎿` block for a `read`/`write`/`edit` cell whose output is
 /// the numbered `llm::tools` format — codex's file look in the existing gutter:
-/// the dim summary head (its `(+A -D)` counts coloured) on the corner row,
+/// the white summary head (its `(+A -D)` counts coloured) on the corner row,
 /// then every body row via [`numbered_row_lines`], the `⋮` hunk gaps and `…`
 /// notes dim. `peek` caps the body at [`FILE_PEEK_LINES`] display rows (whole
 /// source rows only) and appends the `… +N lines (ctrl+o to expand)` hint.
@@ -7815,6 +7817,71 @@ mod tests {
             .find(|s| s.content.as_ref() == "-2")
             .unwrap();
         assert_eq!(minus.style.fg, Some(TOOL_DIFF_DEL_COLOR));
+    }
+
+    #[test]
+    fn file_cell_summary_head_is_white_not_dim() {
+        // The `Created …`/`Updated …`/`Read N lines` summary head reads in the
+        // white output colour (noticeable) rather than dim grey — the `(+A -D)`
+        // counts still show green/red.
+        let write = tool_lines(
+            &tool(
+                "Write",
+                "f.txt",
+                ToolStatus::Ok,
+                "Created f.txt (2 lines)\n1 a\n2 b",
+            ),
+            80,
+        );
+        let w_head = write[1]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("Created"))
+            .expect("the Created summary span");
+        assert_eq!(
+            w_head.style.fg,
+            Some(TOOL_OUTPUT_COLOR),
+            "a write summary head is white"
+        );
+
+        let read = tool_lines(&tool("Read", "f.txt", ToolStatus::Ok, "1 a\n2 b"), 80);
+        let r_head = read[1]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("Read"))
+            .expect("the Read summary span");
+        assert_eq!(
+            r_head.style.fg,
+            Some(TOOL_OUTPUT_COLOR),
+            "a read summary head is white"
+        );
+
+        let edit = tool_lines(
+            &tool(
+                "Edit",
+                "a.rs",
+                ToolStatus::Ok,
+                "Updated a.rs (+1 -1)\n1 +x\n2 -y",
+            ),
+            80,
+        );
+        let e_head = edit[1]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("Updated"))
+            .expect("the Updated summary span");
+        assert_eq!(
+            e_head.style.fg,
+            Some(TOOL_OUTPUT_COLOR),
+            "an edit summary path is white"
+        );
+        // The counts still stand out green/red.
+        let plus = edit[1].spans.iter().find(|s| s.content == "+1").unwrap();
+        assert_eq!(
+            plus.style.fg,
+            Some(TOOL_DIFF_ADD_COLOR),
+            "counts stay green"
+        );
     }
 
     #[test]
