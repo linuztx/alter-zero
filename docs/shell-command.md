@@ -86,16 +86,16 @@ a `… +N lines (ctrl+o to expand)` hint when more is hidden:
 
 ```
 ! ls                           ← Role::Shell header: dark user-style line
-  ⎿ index.html                 ← first output line, under the ⎿ corner
-    script.js                  ← continuation lines aligned beneath it
-    styles.css
+  ⎿  index.html                ← first output line, under the ⎿ corner
+     script.js                 ← continuation lines aligned beneath it
+     styles.css
 
 ! tree .
-  ⎿ .
-    ├── index.html
-    ├── script.js
-    ├── styles.css
-    … +2 lines (ctrl+o to expand)   ← capped at TOOL_PEEK_LINES, rest in Ctrl+O
+  ⎿  .
+     ├── index.html
+     ├── script.js
+     ├── styles.css
+     … +2 lines (ctrl+o to expand)   ← capped at TOOL_PEEK_LINES, rest in Ctrl+O
 ```
 
 `begin_shell(command)` (pure) sets up the turn so the existing paths produce
@@ -172,15 +172,15 @@ after the last retained line:
 
 ```
 ! tree ~/
-  ⎿ /home/me/
-    ├── Codes
-    ├── Downloads
-    ├── Documents
-    … +18514 lines (ctrl+o to expand)   ← inline: the usual peek hint
+  ⎿  /home/me/
+     ├── Codes
+     ├── Downloads
+     ├── Documents
+     … +18514 lines (ctrl+o to expand)   ← inline: the usual peek hint
 
 (Ctrl+O view, pinned to the bottom)
-    …
-    └── zzz/last-retained-line
+     …
+     └── zzz/last-retained-line
     …                                   ← TOOL_TRUNCATED_MARKER: the cap cut here
 ```
 

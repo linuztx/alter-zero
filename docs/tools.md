@@ -226,7 +226,7 @@ the paren, not one column past it), so the whole command reads clean:
 ```
 ● Bash(curl -s "wttr.in/Warsaw?format=%C+%t+%w+%h" 2>/dev/null
       || echo "wttr.in unavailable, trying alternative...")
-  ⎿ Partly cloudy +19°C ↓8km/h 83%
+  ⎿  Partly cloudy +19°C ↓8km/h 83%
 ```
 
 **A very long header is capped inline** at `TOOL_HEADER_MAX_ROWS` (3) wrapped
@@ -258,32 +258,34 @@ below it. On `ToolEnd` the strip's cell is replaced by the committed scrollback
 cell (header + the head peek) in place.
 
 A `read`/`write`/`edit` cell whose output is the numbered format above renders as
-the **codex/Claude-Code file cell** (`ui::file_cell_lines`):
+the **codex/Claude-Code file cell** (`ui::file_cell_lines`) — the `⎿` corner is
+two spaces wide (`  ⎿  …`, corner content at column 5) and the numbered body
+sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
 
 ```
 ● Read(index.html)
-  ⎿ Read 254 lines
-      1 <!DOCTYPE html>
-      2 <html lang="en">
-      …
-    … +244 lines (ctrl+o to expand)
+  ⎿  Read 254 lines
+        1 <!DOCTYPE html>
+        2 <html lang="en">
+        …
+     … +244 lines (ctrl+o to expand)
 
 ● Write(index.html)
-  ⎿ Created index.html (254 lines)
-      1 <!DOCTYPE html>
-      2 <html lang="en">
-      …
-    … +244 lines (ctrl+o to expand)
+  ⎿  Created index.html (254 lines)
+        1 <!DOCTYPE html>
+        2 <html lang="en">
+        …
+     … +244 lines (ctrl+o to expand)
 
 ● Edit(index.html)
-  ⎿ Updated index.html (+2 -2)
-      5     <meta name="viewport" …>
-      6 -   <title>Portfolio</title>
-      6 +   <title>Bruce Rivero</title>
-      7     <link rel="stylesheet" …>
-        ⋮
-     16 -   <span>Portfolio</span>
-     16 +   <span>Bruce Rivero</span>
+  ⎿  Updated index.html (+2 -2)
+        5     <meta name="viewport" …>
+        6 -   <title>Portfolio</title>
+        6 +   <title>Bruce Rivero</title>
+        7     <link rel="stylesheet" …>
+          ⋮
+       16 -   <span>Portfolio</span>
+       16 +   <span>Bruce Rivero</span>
 ```
 
 - The **white** summary head (`TOOL_OUTPUT_COLOR`, so it's as noticeable as the

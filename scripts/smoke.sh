@@ -868,7 +868,7 @@ tmux send-keys -t "$S16" Enter
 shell_ran=""
 for _ in $(seq 1 60); do # up to ~6s
 	shell_ran="$(tmux capture-pane -t "$S16" -p -S -40)"
-	if printf '%s' "$shell_ran" | grep -qF "⎿ smoke_shell_ok"; then
+	if printf '%s' "$shell_ran" | grep -qF "⎿  smoke_shell_ok"; then
 		break
 	fi
 	sleep 0.1
@@ -1111,7 +1111,7 @@ printf '%s\n' "$shellqueue_band"
 shellqueue=""
 for _ in $(seq 1 160); do # up to ~24s: turn 1, turn 2 (world), then the LOCAL shell turn
 	shellqueue="$(tmux capture-pane -t "$S21" -p -S -100)"
-	if printf '%s' "$shellqueue" | grep -qF "⎿ smoke_queue_ok"; then
+	if printf '%s' "$shellqueue" | grep -qF "⎿  smoke_queue_ok"; then
 		break
 	fi
 	sleep 0.15
@@ -2322,7 +2322,7 @@ if ! printf '%s' "$shell_ran" | grep -qE "^! echo smoke_shell_ok"; then
 	echo "FAIL: the committed cell is missing its '! echo …' header line" >&2
 	status=1
 fi
-if ! printf '%s' "$shell_ran" | grep -qF "⎿ smoke_shell_ok"; then
+if ! printf '%s' "$shell_ran" | grep -qF "⎿  smoke_shell_ok"; then
 	echo "FAIL: the shell command's ⎿ output line is not in view" >&2
 	status=1
 fi
@@ -2336,7 +2336,7 @@ if ! printf '%s' "$shell_fail" | grep -qF "exit status: 3"; then
 fi
 # Req 3: a running !command shows the `⎿ Running…` preview with its elapsed and
 # NO spinner status line (its elapsed rides the preview instead).
-if ! printf '%s' "$shell_running" | grep -qE "⎿ Running… \([0-9]+s\)"; then
+if ! printf '%s' "$shell_running" | grep -qE "⎿  Running… \([0-9]+s\)"; then
 	echo "FAIL: a running !command did not show the '⎿ Running… (Ns)' preview" >&2
 	status=1
 fi
@@ -2379,7 +2379,7 @@ if ! printf '%s' "$delay_reply" | grep -qE "↓ [0-9]+ tokens"; then
 fi
 
 # Phase 22: a huge !output is capped in memory (no temp file), `…` marks the cut.
-if ! printf '%s' "$bigoutput" | grep -qF "⎿ 1"; then
+if ! printf '%s' "$bigoutput" | grep -qF "⎿  1"; then
 	echo "FAIL: a huge !output did not render its retained head (the '⎿ 1' first line)" >&2
 	status=1
 fi
@@ -2428,7 +2428,7 @@ if ! printf '%s' "$shellqueue" | grep -qE "^! echo smoke_queue_ok"; then
 	echo "FAIL: the queued !command did not commit its '! echo …' exec-cell header — did it run locally?" >&2
 	status=1
 fi
-if ! printf '%s' "$shellqueue" | grep -qF "⎿ smoke_queue_ok"; then
+if ! printf '%s' "$shellqueue" | grep -qF "⎿  smoke_queue_ok"; then
 	echo "FAIL: the queued !command produced no '⎿' output cell — it was not run locally as its own turn" >&2
 	status=1
 fi

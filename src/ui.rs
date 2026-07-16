@@ -178,12 +178,15 @@ const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
 /// Bullet prefixing a tool call (same glyph as the assistant, recoloured by
 /// status — see [`tool_status_color`]).
 const TOOL_BULLET: &str = "● ";
-/// Prefix for the first result line: indent + a turnstile glyph. Continuation
-/// lines are indented by its display width so a multi-line result aligns under
-/// it (see [`result_row`]).
-const TOOL_RESULT_PREFIX: &str = "  ⎿ ";
-/// Prefix for the "+N lines" hint line under a capped peek.
-const TOOL_MORE_PREFIX: &str = "    … ";
+/// Prefix for the first result line: indent + a turnstile glyph + two spaces
+/// (Claude-Code's two-space corner). Continuation lines are indented by its
+/// display width so a multi-line result aligns under the content (see
+/// [`result_row`]).
+const TOOL_RESULT_PREFIX: &str = "  ⎿  ";
+/// Prefix for the "+N lines" hint line under a capped peek — the `…` aligns
+/// under the corner content (the [`TOOL_RESULT_PREFIX`] width of leading
+/// spaces).
+const TOOL_MORE_PREFIX: &str = "     … ";
 /// Hint telling the user how to see the full output.
 const EXPAND_HINT: &str = " (ctrl+o to expand)";
 /// How many output lines a `!` shell command shows inline before collapsing the
@@ -3481,6 +3484,15 @@ fn file_summary_spans(head: &str) -> Vec<Span<'static>> {
     vec![Span::styled(head.to_string(), text)]
 }
 
+/// The left indent (display columns) of a numbered file cell's body — the
+/// line-number gutter sits **one column past** the `⎿` corner content
+/// ([`TOOL_RESULT_PREFIX`]), matching Claude-Code's file-change look (the
+/// numbers land just inside the corner). The `⋮` hunk gaps and `…` notes align
+/// here too. See `docs/tools.md`.
+fn file_body_indent() -> usize {
+    cols(TOOL_RESULT_PREFIX) + 1
+}
+
 /// Build the display rows for one numbered source row: a dim right-aligned
 /// line number, the `+`/`-` sign in the diff colour, and the content
 /// syntax-highlighted — added rows on the dark-green tint, removed rows
@@ -3494,7 +3506,8 @@ fn numbered_row_lines(
     width: u16,
 ) -> Vec<Line<'static>> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let indent = " ".repeat(cols(TOOL_RESULT_PREFIX));
+    let indent_cols = file_body_indent();
+    let indent = " ".repeat(indent_cols);
     let (bg, dim_content) = match sign {
         Some('+') => (Some(TOOL_DIFF_ADD_BG), false),
         Some('-') => (Some(TOOL_DIFF_DEL_BG), true),
@@ -3510,7 +3523,7 @@ fn numbered_row_lines(
     let number = format!("{gutter} ");
     let gutter_cols = cols(&number) + usize::from(sign.is_some());
     let content_width = (width as usize)
-        .saturating_sub(cols(TOOL_RESULT_PREFIX) + gutter_cols)
+        .saturating_sub(indent_cols + gutter_cols)
         .max(1);
 
     let segments: Vec<(String, Style)> = segs
@@ -3560,7 +3573,7 @@ fn file_cell_lines(tool: &ToolCall, width: u16, peek: bool) -> Option<Vec<Line<'
     let (head, rows) = parse_file_cell(tool)?;
     let lang = file_cell_lang(&tool.args);
     let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let indent = " ".repeat(cols(TOOL_RESULT_PREFIX));
+    let indent = " ".repeat(file_body_indent());
     let note_width = (width as usize).saturating_sub(indent.len()).max(1);
 
     let mut summary = vec![Span::styled(TOOL_RESULT_PREFIX.to_string(), dim)];
@@ -7620,9 +7633,9 @@ mod tests {
         let output = "Created hello.py (2 lines)\n1 def main():\n2     x = \"hi\"";
         let lines = tool_lines(&tool("Write", "hello.py", ToolStatus::Ok, output), 80);
         assert_eq!(plain(&lines[0]), "● Write(hello.py)");
-        assert_eq!(plain(&lines[1]), "  ⎿ Created hello.py (2 lines)");
+        assert_eq!(plain(&lines[1]), "  ⎿  Created hello.py (2 lines)");
         let row1 = &lines[2];
-        assert_eq!(plain(row1), "    1 def main():");
+        assert_eq!(plain(row1), "      1 def main():");
         let num = &row1.spans[1];
         assert_eq!(num.content.as_ref(), "1 ");
         assert_eq!(num.style.fg, Some(TOOL_DIM_COLOR), "line number is dim");
@@ -7645,6 +7658,43 @@ mod tests {
     }
 
     #[test]
+    fn file_cell_uses_claude_code_gutter_spacing() {
+        // Claude-Code's file-change look: the `⎿` corner is two spaces wide
+        // (`  ⎿  Created…`, content at col 5), and the numbered body sits one
+        // column further in so the gutter reads like Claude Code — for a
+        // two-digit file line `1` lands under the corner word's 3rd letter and
+        // its content under the 5th (number at col 7, content at col 9). The
+        // `… +N lines` hint keeps the corner-content column (col 5).
+        let body: String = (1..=12)
+            .map(|i| format!("{i:>2} line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let output = format!("Created f.txt (12 lines)\n{body}");
+        let lines = tool_lines(&tool("Write", "f.txt", ToolStatus::Ok, &output), 80);
+        assert_eq!(plain(&lines[1]), "  ⎿  Created f.txt (12 lines)");
+        assert_eq!(plain(&lines[2]), "       1 line 1");
+        assert_eq!(
+            plain(lines.last().unwrap()),
+            "     … +2 lines (ctrl+o to expand)"
+        );
+    }
+
+    #[test]
+    fn bash_cell_output_aligns_under_the_two_space_corner() {
+        // Claude-Code's bash cell: the corner is two spaces wide, so output
+        // opens at `  ⎿  {line}` (col 5) and the `… +N lines` hint aligns under
+        // it.
+        let out = "l1\nl2\nl3\nl4\nl5\nl6";
+        let lines = tool_lines(&tool("Bash", "seq 6", ToolStatus::Ok, out), 80);
+        assert_eq!(plain(&lines[0]), "● Bash(seq 6)");
+        assert_eq!(plain(&lines[1]), "  ⎿  l1");
+        assert_eq!(
+            plain(lines.last().unwrap()),
+            "     … +2 lines (ctrl+o to expand)"
+        );
+    }
+
+    #[test]
     fn read_cell_shows_numbered_syntax_highlighted_rows() {
         // A `read` cell renders like a `write`: the `Read N lines` summary on
         // the corner, then dim right-aligned line numbers with the content
@@ -7652,9 +7702,9 @@ mod tests {
         let output = "1 def main():\n2     return 42";
         let lines = tool_lines(&tool("Read", "app.py", ToolStatus::Ok, output), 80);
         assert_eq!(plain(&lines[0]), "● Read(app.py)");
-        assert_eq!(plain(&lines[1]), "  ⎿ Read 2 lines");
+        assert_eq!(plain(&lines[1]), "  ⎿  Read 2 lines");
         let row = &lines[2];
-        assert_eq!(plain(row), "    1 def main():");
+        assert_eq!(plain(row), "      1 def main():");
         let num = &row.spans[1];
         assert_eq!(num.content.as_ref(), "1 ");
         assert_eq!(num.style.fg, Some(TOOL_DIM_COLOR), "line number is dim");
@@ -7735,7 +7785,7 @@ mod tests {
         let output =
             "Updated a.rs (+1 -1)\n 9  before()\n10 -let x = 1;\n10 +let x = 2;\n11  after()";
         let lines = tool_lines(&tool("Edit", "a.rs", ToolStatus::Ok, output), 80);
-        assert_eq!(plain(&lines[1]), "  ⎿ Updated a.rs (+1 -1)");
+        assert_eq!(plain(&lines[1]), "  ⎿  Updated a.rs (+1 -1)");
         let del = lines.iter().find(|l| plain(l).contains("-let")).unwrap();
         let add = lines.iter().find(|l| plain(l).contains("+let")).unwrap();
         let ctx = lines
@@ -7934,8 +7984,8 @@ mod tests {
         let rows: Vec<_> = lines.iter().filter(|l| plain(l).contains('x')).collect();
         assert!(rows.len() > 1, "the 60-char row wrapped");
         let cont = plain(rows[1]);
-        // 4 (`⎿` indent) + cols("1 +") = 7 blank columns, then the content.
-        assert!(cont.starts_with("       x"), "got {cont:?}");
+        // 6 (numbered indent) + cols("1 +") = 9 blank columns, then the content.
+        assert!(cont.starts_with("         x"), "got {cont:?}");
         for r in &rows {
             assert!(
                 r.spans
@@ -8101,7 +8151,7 @@ mod tests {
         let lines: Vec<String> = tool_full_lines(&t, 80).iter().map(plain).collect();
         assert_eq!(
             lines,
-            vec!["  ⎿ /home/me", "    │   ├── a", "        indented   run",],
+            vec!["  ⎿  /home/me", "     │   ├── a", "         indented   run",],
             "every output line verbatim under the corner"
         );
     }
@@ -8126,7 +8176,7 @@ mod tests {
         .collect();
         assert_eq!(
             lines,
-            vec!["● Bash(ls -l)", "  ⎿ total 8", "    -rw-  1 user   42 a"],
+            vec!["● Bash(ls -l)", "  ⎿  total 8", "     -rw-  1 user   42 a"],
             "the gutter opens the body, continuation rows aligned, space runs kept"
         );
     }
@@ -9140,7 +9190,7 @@ mod tests {
 
         assert_eq!(
             row(&buf, 0, 40).trim_end(),
-            "  ⎿ Running… (3s)",
+            "  ⎿  Running… (3s)",
             "the running preview carries the elapsed the status line would have"
         );
         assert!(
@@ -11520,7 +11570,7 @@ mod tests {
         let mut t = tool("pwd", "", ToolStatus::Ok, "/home/user/inline-tui");
         t.shell = true;
         let lines = tool_lines(&t, 60);
-        assert_eq!(plain(&lines[0]), "  ⎿ /home/user/inline-tui");
+        assert_eq!(plain(&lines[0]), "  ⎿  /home/user/inline-tui");
         assert!(
             !plain(&lines[0]).contains("pwd"),
             "no `● pwd` header — the Shell message above is the header"
@@ -11532,7 +11582,7 @@ mod tests {
         let mut t = tool("sleep 5", "", ToolStatus::Running, "");
         t.shell = true;
         let lines = tool_lines(&t, 60);
-        assert_eq!(plain(&lines[0]), "  ⎿ Running…", "the mock's running cell");
+        assert_eq!(plain(&lines[0]), "  ⎿  Running…", "the mock's running cell");
     }
 
     #[test]
@@ -11552,7 +11602,7 @@ mod tests {
             .collect();
         assert_eq!(
             lines,
-            vec!["  ⎿ index.html", "    script.js", "    styles.css"],
+            vec!["  ⎿  index.html", "     script.js", "     styles.css"],
             "every line shown, continuation aligned under the first"
         );
     }
@@ -11576,12 +11626,12 @@ mod tests {
             TOOL_PEEK_LINES + 1,
             "capped lines + the hint row"
         );
-        assert_eq!(lines[0], "  ⎿ 1");
-        assert_eq!(lines[1], "    2", "continuation aligned, no corner");
+        assert_eq!(lines[0], "  ⎿  1");
+        assert_eq!(lines[1], "     2", "continuation aligned, no corner");
         let hidden = 6 - TOOL_PEEK_LINES;
         assert_eq!(
             lines[TOOL_PEEK_LINES],
-            format!("    … +{hidden} lines (ctrl+o to expand)")
+            format!("     … +{hidden} lines (ctrl+o to expand)")
         );
     }
 
@@ -11597,11 +11647,11 @@ mod tests {
             .iter()
             .map(|l| plain(l).trim_end().to_string())
             .collect();
-        assert_eq!(lines[0], "  ⎿ /home/me");
-        assert_eq!(lines[1], "    ├── a");
-        assert_eq!(lines[2], "    ├── b");
+        assert_eq!(lines[0], "  ⎿  /home/me");
+        assert_eq!(lines[1], "     ├── a");
+        assert_eq!(lines[2], "     ├── b");
         assert_eq!(
-            lines[3], "    …",
+            lines[3], "     …",
             "the truncation marker, aligned under the corner: {lines:?}"
         );
     }
@@ -11617,7 +11667,7 @@ mod tests {
             .collect();
         assert_eq!(
             lines,
-            vec!["  ⎿ a", "    b"],
+            vec!["  ⎿  a", "     b"],
             "no trailing marker: {lines:?}"
         );
     }
@@ -11655,9 +11705,9 @@ mod tests {
             !texts.iter().any(|t| t.starts_with("● ls")),
             "no bullet header in the overlay: {texts:?}"
         );
-        assert!(texts.contains(&"  ⎿ a".to_string()), "{texts:?}");
+        assert!(texts.contains(&"  ⎿  a".to_string()), "{texts:?}");
         assert!(
-            texts.contains(&"    f".to_string()),
+            texts.contains(&"     f".to_string()),
             "every output line, uncapped: {texts:?}"
         );
         assert!(
@@ -11685,7 +11735,7 @@ mod tests {
             .iter()
             .map(|l| plain(l).trim_end().to_string())
             .collect();
-        assert_eq!(texts, vec!["! pwd", "  ⎿ /home", ""]);
+        assert_eq!(texts, vec!["! pwd", "  ⎿  /home", ""]);
     }
 
     #[test]
@@ -11709,7 +11759,7 @@ mod tests {
             .iter()
             .map(|l| plain(l).trim_end().to_string())
             .collect();
-        assert_eq!(texts, vec!["! pwd", "  ⎿ /home", ""]);
+        assert_eq!(texts, vec!["! pwd", "  ⎿  /home", ""]);
     }
 
     #[test]
@@ -11728,7 +11778,7 @@ mod tests {
             .expect("the shell header is in the transcript");
         assert_eq!(
             texts[header + 1],
-            "  ⎿ Running…",
+            "  ⎿  Running…",
             "no blank between the header and the running peek: {texts:?}"
         );
     }
@@ -11770,7 +11820,7 @@ mod tests {
         render_live(buf.area, &mut buf, &app);
         assert_eq!(
             row(&buf, 0, 60).trim_end(),
-            "  ⎿ Running… (5s)",
+            "  ⎿  Running… (5s)",
             "the strip preview is the cell's running peek with its elapsed, flush \
              under the committed `! sleep 5` header just above the live region"
         );
