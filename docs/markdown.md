@@ -330,7 +330,11 @@ header **and every data row** — so a wide later row can never shatter the grid
 and a grid that overflows the width shrinks its **widest column first** (codex's
 fit: short cells keep their natural width, the wrapping lands on the wide
 content), cells **word-wrapping** into the allocated widths (taller rows)
-instead of truncating with `…`. While the block is open the strip
+instead of truncating with `…`. A **hard-wrapped row** — source carrying a
+line break mid-row, so a pipe-carrying fragment line (`96.4 ms |`) follows its
+leading-pipe row — **re-joins** the row it wrapped from instead of minting a
+phantom one-cell row (`ui::join_wrapped_table_row`, `docs/table-streaming.md`).
+While the block is open the strip
 **previews the entire forming table** (re-rendered per frame, widths re-fitting
 as rows arrive), so a table still streams start-to-finish visually. At the close
 it also decides grid vs. **key/value records**: when the grid would be too

@@ -90,6 +90,32 @@ widths from all rows, then either the box-drawing grid (`table_open_rows` +
 `table_row_lines` per row, a `├──┼──┤` rule between consecutive rows, + the
 bottom border) or the key/value records.
 
+### Hard-wrapped rows re-join
+
+A model echoing terminal-wrapped source can carry a line break **mid-row**, so
+one row arrives as a leading-pipe line plus a fragment —
+`| google.com | … | 86.8 / 89.8 /` ␤ `96.4 ms |` (a mid-cell wrap, the first
+piece unterminated) or `| facebook.com | … | 0% |` ␤ `15.0 / 16.4 / 17.9 ms |`
+(a wrap at the cell boundary, the first piece `|`-terminated but short). Strict
+GFM reads every line as a row, so each fragment minted a phantom one-cell row
+(the reported `│ 96.4 ms │ │ │ …` — GitHub renders this source just as broken).
+But in a leading-pipe table a genuine row *starts* with `|`: `Buffering`
+therefore **joins** a pipe-carrying line that doesn't start with `|` onto the
+previous buffered row (`join_wrapped_table_row`, space-separated) — provided
+the merged row still fits the delimiter's column count. A fragment that would
+overflow `ncols` is a real (style-mixed) row — `c | d` after a complete
+`| a | b |` stays its own row per GFM — and in a **no-leading-pipe** table no
+line ever looks like a fragment (its rows legitimately lack the `|`), so
+nothing there joins. Only confirmed data rows re-join: a hard-wrapped *header*
+still fails delimiter confirmation and renders as the prose it may well be
+(repairing `PendingHeader` would change how ordinary pipe-carrying prose
+renders). The join happens in the buffer, before any render, so widths, the
+records decision, batch, the strip preview, and the Ctrl+O transcript all see
+the repaired row — and since `Buffering` emits nothing, prefix-stability is
+untouched (the differential corpus includes a hard-wrapped table; a
+mid-fragment prefix simply previews the fragment as prose until its pipe
+arrives, matching the batch render of that prefix exactly).
+
 ## The records fallback (key/value transpose)
 
 When even the wrapped grid is too cramped to scan — a column **both** narrow
@@ -175,6 +201,11 @@ render fallback keep the old single-row behaviour), and the strip's
 - `assistant_table_sizes_columns_from_all_rows` — the reported bug: the weather
   table (empty header, narrow first row, wider later rows) renders with
   `Temperature` / `10.1 km/h from NNE (28°)` on single lines at width 80.
+- `assistant_table_joins_hard_wrapped_rows` — the phantom-row bug: the ping
+  table with both wrap flavours re-joins its rows (three data rows, whole RTT
+  cells, no `│ 96.4 ms` row); `wrapped_row_join_accepts_fragments_and_rejects_real_rows`
+  pins the join/reject rules (leading-pipe fragments join, declared rows and
+  `ncols` overflows don't, no-pipe style never joins).
 - `stream_render_withholds_a_table_until_it_closes` — an open table commits
   nothing; `finish` flushes the whole block, matching batch.
 - `table_commits_whole_and_previews_while_forming` — mid-stream: no table row

@@ -1832,6 +1832,24 @@ fn table_record_block(labels: &[String], row: &str, content_width: u16) -> Vec<V
     out
 }
 
+/// Re-join a hard-wrapped table row (docs/table-streaming.md). A model echoing
+/// terminal-wrapped source can carry a line break MID-ROW, so the row arrives
+/// as a leading-pipe line plus a fragment (`| google | … | 86.8 / 89.8 /` ␤
+/// `96.4 ms |`). Strict GFM reads the fragment as a row of its own — a phantom
+/// one-cell row — but in a leading-pipe table a genuine row *starts* with `|`;
+/// a pipe-carrying line that doesn't is really the previous row's tail. Returns
+/// the space-joined row when `prev` is a leading-pipe row, `line` isn't, and
+/// the merged row still fits the delimiter's `ncols` (a fragment that would
+/// overflow the column count is a real — if style-mixed — row, e.g. a no-pipe
+/// `c | d` after a complete `| a | b |`; GFM keeps it a row and so do we).
+fn join_wrapped_table_row(prev: &str, line: &str, ncols: usize) -> Option<String> {
+    if !prev.trim_start().starts_with('|') || line.trim_start().starts_with('|') {
+        return None;
+    }
+    let joined = format!("{} {}", prev.trim_end(), line.trim_start());
+    (markdown::table_cells(&joined).len() <= ncols).then_some(joined)
+}
+
 /// Render a complete GFM table block — the `header`, the delimiter's `aligns`,
 /// and the buffered data `rows` — into content rows (`docs/markdown.md`).
 /// Column widths are allocated from the header **and every data row** (fit to
@@ -2241,7 +2259,19 @@ impl AssistantRenderer {
                 mut rows,
             } => {
                 if markdown::is_table_row(line) {
-                    rows.push(line.to_string());
+                    // A pipe-carrying line that doesn't start with `|`, inside a
+                    // leading-pipe table, is the previous row's hard-wrapped tail
+                    // — re-join it instead of minting a phantom one-cell row.
+                    match rows
+                        .last()
+                        .and_then(|prev| join_wrapped_table_row(prev, line, aligns.len()))
+                    {
+                        Some(joined) => {
+                            rows.pop();
+                            rows.push(joined);
+                        }
+                        None => rows.push(line.to_string()),
+                    }
                     self.table = TableState::Buffering {
                         header,
                         aligns,
@@ -6552,6 +6582,72 @@ mod tests {
     }
 
     #[test]
+    fn assistant_table_joins_hard_wrapped_rows() {
+        // The reported bug: the model echoed a table whose source carries a
+        // terminal line break MID-ROW — google's RTT cell split
+        // (`… | 86.8 / 89.8 /` ␤ `96.4 ms |`, the first piece unterminated) and
+        // facebook's last cell wholly on the next line (`… | 0% |` ␤
+        // `15.0 / 16.4 / 17.9 ms |`). Strict GFM reads each line as a row, so
+        // the fragments became phantom one-cell rows (`│ 96.4 ms │ │ │ …`).
+        // Inside a leading-pipe table a genuine row starts with `|`; a
+        // pipe-carrying line that doesn't is the previous row's tail and must
+        // re-join it (docs/table-streaming.md).
+        let text = "All three pings completed in parallel. Here's the summary:\n\n\
+                    | Host | IP | Packets | Loss | RTT min/avg/max |\n\
+                    |------|----|---------|------|-----------------|\n\
+                    | **google.com** | 2404:6800:4017:809::200e | 10/10 | 0% | 86.8 / 89.8 /\n\
+                    96.4 ms |\n\
+                    | **facebook.com** | 2a03:2880:f372:1:face:b00c:0:25de | 10/10 | 0% |\n\
+                    15.0 / 16.4 / 17.9 ms |\n\
+                    | **x.com** | 162.159.140.229 | 10/10 | 0% | 14.4 / 15.5 / 16.2 ms |\n\n\
+                    done";
+        let rows: Vec<String> = message_lines(Role::Assistant, text, 120)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            rows.iter().any(|r| r.contains("86.8 / 89.8 / 96.4 ms")),
+            "google's split RTT cell is rejoined: {rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("│ 15.0 / 16.4 / 17.9 ms")),
+            "facebook's wrapped last cell lands in the RTT column: {rows:#?}"
+        );
+        assert!(
+            !rows.iter().any(|r| r.trim_start().starts_with("│ 96.4 ms")),
+            "no phantom row from a wrapped fragment: {rows:#?}"
+        );
+        assert_eq!(
+            rows.iter().filter(|r| r.contains('├')).count(),
+            3,
+            "three data rows → header rule + two inter-row rules: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn wrapped_row_join_accepts_fragments_and_rejects_real_rows() {
+        // A pipe-carrying fragment that doesn't start with `|` re-joins the
+        // previous row — the mid-cell wrap (unterminated first piece)…
+        assert_eq!(
+            join_wrapped_table_row("| a | b | 86.8 /", "96.4 ms |", 3).as_deref(),
+            Some("| a | b | 86.8 / 96.4 ms |")
+        );
+        // …and the at-cell-boundary wrap (first piece `|`-terminated but short).
+        assert_eq!(
+            join_wrapped_table_row("| a | b |", "c |", 3).as_deref(),
+            Some("| a | b | c |")
+        );
+        // A line that DECLARES itself a row (leading `|`) never joins.
+        assert_eq!(join_wrapped_table_row("| a | b | c /", "| d |", 3), None);
+        // A join that would overflow the column count is a real row, not a tail.
+        assert_eq!(join_wrapped_table_row("| a | b | c |", "d | e |", 3), None);
+        // In the no-leading-pipe row style, rows legitimately don't start with
+        // `|`, so a pipe-carrying follow-up is a row of its own — never joined
+        // even when the merged cell count would fit.
+        assert_eq!(join_wrapped_table_row("a | b", "c | d", 4), None);
+    }
+
+    #[test]
     fn stream_render_withholds_a_table_until_it_closes() {
         // A table is not prefix-stable, so nothing is committed while it is open;
         // `finish` flushes the whole block, matching the batch render exactly.
@@ -9526,6 +9622,13 @@ mod tests {
             // the streamed commits + the final flush must still equal the batch
             // render at every prefix/width.
             "summary:\n\n| Component | Description of the thing |\n|-----------|--------------------------|\n| Parser | Reads and validates the input tokens |\n| Renderer | Draws styled cells into the terminal |\n\ndone",
+            // HARD-WRAPPED rows (the model echoing terminal-wrapped source): the
+            // pipe-carrying fragments (`96.4 ms |`, `15.0 ms |`) don't start
+            // with `|` and re-join their rows (docs/table-streaming.md) — the
+            // streamed commits + preview must match the batch render at every
+            // prefix while the join forms (incl. mid-fragment prefixes, where
+            // the pipe hasn't arrived yet and the tail still reads as prose).
+            "pings:\n\n| Host | Loss | RTT |\n|------|------|-----|\n| google | 0% | 86.8 /\n96.4 ms |\n| fb | 0% |\n15.0 ms |\n\ndone",
             // --- Inline emphasis (docs/markdown.md): line-local, so a complete
             // line's styling is final (its frozen rows never restyle) while a
             // trailing line with an open marker is withheld (has_open_inline). The
