@@ -98,6 +98,37 @@ any, is in the body), so no information the user needs is lost. Stripping only
 fires when the line is actually present, so non-`bash` tools and old rollouts are
 untouched.
 
+## Live in the Ctrl+O overlay (ours streams; Claude Code doesn't)
+
+Claude Code's transcript pager shows a tool's output only once the tool
+**finishes**; while it runs the cell is a static spinner. Ours does better — the
+**Ctrl+O overlay updates live** as `bash` streams, so you can pop it open and
+watch a long command's output flow in the full-screen view (tail-followed to the
+frontier).
+
+Two pieces make this work, and both already existed except one:
+
+- **The loop keeps draining reply events while the overlay is up** (invariant 4)
+  and re-arms a ~30 fps draw whenever a turn is active, so `ToolOutput` deltas
+  reach `App::push_tool_output` and the overlay repaints — no overlay-specific
+  wiring needed.
+- **The `TranscriptCache` signature** (`ui::TranscriptSig`) must notice the
+  running call's output growing, or the cached transcript never rebuilds and the
+  overlay goes static. The signature's tool-queue term is
+  `(queue length, front status, **front output length**)` — the third field is
+  the fix: a lone running call's length and status don't change while it streams,
+  but its `output.len()` does, so each delta invalidates the cache and the
+  overlay re-renders (and, being **tail-following** by default —
+  `App::tool_follow` / `settle_tool_scroll`, engaged on open — scrolls the new
+  output into view). The unit test
+  `transcript_cache_rebuilds_as_a_running_bash_streams_output` locks it; smoke
+  Phase 40 proves it end-to-end (a running `Bash(ping)` cell streams into the
+  overlay while its siblings still show `⎿ Waiting…`).
+
+The overlay renders the running call's output through `tool_full_lines` (the
+*whole* streamed-so-far output, uncapped), the same walk that shows a finished
+tool — so a running cell and a finished one read identically, just growing.
+
 ## Demo (the dummy backend)
 
 `stream::turn_events` interleaves a few `ToolOutput` chunks between each `Bash`

@@ -4147,13 +4147,17 @@ struct TranscriptSig {
     history_len: usize,
     /// Live in-progress reply length (`None` when not streaming).
     streaming_len: Option<usize>,
-    /// The live tool queue's shape: `(number of live calls, front call status)`,
-    /// `None` when none run. A **parallel batch** shrinks as each call commits
-    /// (also bumping `history_len`) and the front flips `Waiting`→`Running` when
-    /// it starts — both change the transcript's live tail, and a running cell is
-    /// otherwise static (`Running…`/`Waiting…`, empty output until it finishes
-    /// into history). See `docs/parallel-tools.md`.
-    tool_queue: Option<(usize, ToolStatus)>,
+    /// The live tool queue's shape: `(number of live calls, front call status,
+    /// front output length)`, `None` when none run. A **parallel batch** shrinks
+    /// as each call commits (also bumping `history_len`) and the front flips
+    /// `Waiting`→`Running` when it starts. The **front output length** changes as
+    /// a running `bash` call **streams** its output
+    /// ([`crate::stream::StreamEvent::ToolOutput`]) — so the Ctrl+O overlay
+    /// rebuilds and tails the live output rather than showing a frozen snapshot
+    /// (`docs/tool-streaming.md`); without it a single streaming call leaves the
+    /// queue length and status unchanged and the overlay would go static. See
+    /// `docs/parallel-tools.md`.
+    tool_queue: Option<(usize, ToolStatus, usize)>,
     queued_len: usize,
     backtrack_selected: Option<usize>,
 }
@@ -4165,7 +4169,9 @@ impl TranscriptSig {
             width,
             history_len: app.history.len(),
             streaming_len: app.streaming_text().map(str::len),
-            tool_queue: queue.front().map(|t| (queue.len(), t.status)),
+            tool_queue: queue
+                .front()
+                .map(|t| (queue.len(), t.status, t.output.len())),
             queued_len: app.queued.len(),
             backtrack_selected: app.backtrack.selected,
         }
@@ -7817,6 +7823,44 @@ mod tests {
         cache.clear();
         cache.lines(&app, 40);
         assert_eq!(cache.builds, 1, "clear resets the build state");
+    }
+
+    #[test]
+    fn transcript_cache_rebuilds_as_a_running_bash_streams_output() {
+        // The Ctrl+O overlay must show a running `bash` tool's output LIVE, not a
+        // frozen snapshot: as the tool streams (`App::push_tool_output`), the
+        // cache signature has to notice the front call's output growing so the
+        // overlay rebuilds — and, since it tail-follows, scrolls the new output
+        // into view (docs/tool-streaming.md). Without the output length in the
+        // signature the overlay would stay static: a single running call's queue
+        // length and status don't change while it streams.
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Bash", "make");
+        let mut cache = TranscriptCache::new();
+        let _ = cache.lines(&app, 80); // first build — the running cell, no output yet
+        let builds = cache.builds;
+        app.push_tool_output("compiling module_a\n");
+        let lines = cache.lines(&app, 80).to_vec();
+        assert!(
+            cache.builds > builds,
+            "the cache rebuilds when the running tool streams output"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| plain(l).contains("compiling module_a")),
+            "the overlay shows the newly streamed output: {:?}",
+            lines.iter().map(plain).collect::<Vec<_>>()
+        );
+        // Each further chunk keeps it live and matches a fresh build.
+        let builds = cache.builds;
+        app.push_tool_output("compiling module_b\n");
+        assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+        assert!(
+            cache.builds > builds,
+            "each streamed chunk refreshes the overlay"
+        );
     }
 
     #[test]

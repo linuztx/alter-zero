@@ -324,8 +324,12 @@ of bug:
    **`ui::TranscriptCache`** (a `main.rs`-owned cache, like `StreamRender`): a
    scroll changes only the viewport window, not the content, so the cache rebuilds
    only when a cheap signature (history length, live-tail length, the tool
-   queue's shape — its length + front-call status, so a Waiting→Running flip or a
-   batch call committing invalidates it — queue length, backtrack selection,
+   queue's shape — its length + front-call status **+ front output length**, so a
+   Waiting→Running flip, a batch call committing, *or a running `bash` call
+   streaming its output* invalidates it — the last is what makes the overlay show
+   the **live streaming output** (unlike Claude Code, which only shows a tool's
+   output once it finishes; the overlay tail-follows the frontier,
+   `docs/tool-streaming.md`) — backtrack selection,
    width) changes — a scroll keypress is then
    a cache hit (O(viewport)), not a full re-highlight. `draw_tool_view` builds it
    **once** per draw (shared by the scroll clamp and the render); it's freed on
