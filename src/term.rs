@@ -286,6 +286,21 @@ impl InlineViewport {
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<Buffer> {
+        // The pending flush reserves `self.view.height` rows *below* the lines
+        // it writes ([`write_above_chunk`]'s scroll plan) — sync the tracked
+        // height to THIS frame's height first. A commit that lands in the same
+        // frame as a strip collapse — a forming table's whole block committing
+        // at its close, shrinking the multi-row preview to one row
+        // (docs/table-streaming.md) — would otherwise reserve the stale taller
+        // strip, land the viewport that much higher, and leave the vacated
+        // rows as a blank band under the box (invariant 3; the reported bug —
+        // the turn-end `set_view_height` reseat only covers the turn-end
+        // flush, not a mid-stream collapse). Gated on pending lines: without a
+        // flush the height change must flow through `ui::repin` below, whose
+        // shrink is what blanks the rows an in-place shrink vacates.
+        if !self.pending.is_empty() {
+            self.view.height = height;
+        }
         self.flush_pending()?;
         let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
         self.view = Rect::new(0, repin.top, self.screen.width, height);

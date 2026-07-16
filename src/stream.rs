@@ -189,6 +189,31 @@ const DUMMY_PING_FACEBOOK: &str = "PING facebook.com (157.240.1.35): 56 data byt
     2 packets transmitted, 2 packets received, 0.0% packet loss";
 const DUMMY_PING_FAIL: &str = "ping: cannot resolve x.invalid: Unknown host\nexit status 68";
 
+/// The dummy's **markdown table** demo reply, played for any prompt mentioning
+/// "table" (opt-in, like the "parallel" batch): prose, a 10-row GFM table whose
+/// cells carry `` `code` `` spans, then closing prose. Its turn is text-only —
+/// no thinking phase and no tool calls, which would split the reply around them
+/// and flush the block early — so the whole forming table previews in the strip
+/// and its block commits at the close (docs/table-streaming.md). This is the
+/// reported blank-band regression's shape: the strip collapses from the tall
+/// forming-table preview to one row in the same frame the block's rows flush,
+/// which the smoke suite guards (the box must stay flush at the bottom).
+const DUMMY_TABLE_REPLY: &str = "Here's a table with data that uses backticks:\n\n\
+| ID | Name | Code Snippet | Description |\n\
+|----|------|--------------|-------------|\n\
+| 1 | Hello World | `` `print(\"Hello\")` `` | Basic greeting function |\n\
+| 2 | SQL Query | `` `SELECT * FROM users` `` | Database selection query |\n\
+| 3 | Markdown | `` `**bold text**` `` | Formatting example |\n\
+| 4 | Shell Command | `` `ls -la` `` | List directory contents |\n\
+| 5 | JavaScript | `` `const x = 42;` `` | Variable declaration |\n\
+| 6 | Rust | `` `let mut vec = Vec::new();` `` | Mutable vector creation |\n\
+| 7 | Python | `` `def foo(): return None` `` | Empty function definition |\n\
+| 8 | HTML | `` `<div class=\"container\">` `` | Container element |\n\
+| 9 | CSS | `` `.class { color: red; }` `` | Style rule |\n\
+| 10 | Regex | `` `/^[A-Z]+$/` `` | Pattern matching |\n\n\
+The backticks are wrapped in double backticks (`` `code` ``) so they display \
+properly in Markdown.";
+
 /// Canned replies. One is chosen deterministically per prompt so the demo has
 /// a little variety without any real model behind it.
 const RESPONSES: &[&str] = &[
@@ -205,9 +230,14 @@ const RESPONSES: &[&str] = &[
 
 /// Pick a deterministic dummy reply for a prompt.
 ///
-/// Deterministic so it's testable; varied so the demo isn't monotonous.
+/// Deterministic so it's testable; varied so the demo isn't monotonous. A
+/// prompt mentioning **"table"** plays the markdown-table demo
+/// ([`DUMMY_TABLE_REPLY`], opt-in like the "parallel" batch).
 #[must_use]
 pub fn dummy_response(prompt: &str) -> String {
+    if prompt.to_lowercase().contains("table") {
+        return DUMMY_TABLE_REPLY.to_string();
+    }
     let index = prompt.chars().count() % RESPONSES.len();
     RESPONSES[index].to_string()
 }
@@ -285,6 +315,16 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
     // model would read the files instead. See `docs/image-paste.md`.
     if let Some(ack) = image_ack(image_count) {
         events.extend(chunks(&ack).into_iter().map(StreamEvent::Chunk));
+    }
+    // A "table" prompt plays the markdown-table demo as a **text-only** turn:
+    // no thinking pause and no tool batch — a tool call would split the reply
+    // around it, flushing the block early — so the whole table streams through
+    // the strip preview and its block commits at the close
+    // (docs/table-streaming.md).
+    if prompt.to_lowercase().contains("table") {
+        events.extend(chunks(&reply).into_iter().map(StreamEvent::Chunk));
+        events.push(StreamEvent::StreamDone);
+        return events;
     }
     events.extend(chunks(&first).into_iter().map(StreamEvent::Chunk));
     events.push(StreamEvent::ThinkingStart);
@@ -674,6 +714,41 @@ mod tests {
     #[test]
     fn dummy_response_is_deterministic() {
         assert_eq!(dummy_response("hello"), dummy_response("hello"));
+    }
+
+    #[test]
+    fn a_table_prompt_streams_a_pure_table_turn() {
+        // A prompt mentioning "table" plays the markdown-table demo: a
+        // text-only turn — no thinking phase, no tool calls (a tool would
+        // split the reply and flush the block early) — whose chunks
+        // concatenate to the reply, ending in StreamDone. The reply carries a
+        // multi-row GFM table with prose AFTER it, so the block closes
+        // mid-stream: the strip-collapse geometry the smoke suite guards
+        // (docs/table-streaming.md).
+        let events = turn_events("show me a table", 0);
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Chunk(c) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, dummy_response("show me a table"));
+        assert!(text.contains("| ID | Name |"), "carries the table: {text}");
+        assert!(
+            text.trim_end().ends_with("Markdown."),
+            "prose follows the table so the block closes mid-stream"
+        );
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                StreamEvent::ToolBatch(_)
+                    | StreamEvent::ToolStart { .. }
+                    | StreamEvent::ThinkingStart
+            )),
+            "a table turn is text-only"
+        );
+        assert!(matches!(events.last(), Some(StreamEvent::StreamDone)));
     }
 
     #[test]

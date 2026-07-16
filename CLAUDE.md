@@ -252,7 +252,11 @@ of bug:
    to reseat the viewport to its idle height *before* the final `insert_before`s —
    the queued lines flush with the *latest* tracked height, so skipping the reseat
    makes the flush over-scroll, the box rise off the bottom, and blank rows appear
-   beneath it (guarded by `smoke.sh` Phase 5). (`insert_before` itself only
+   beneath it (guarded by `smoke.sh` Phase 5; and because a strip collapse can now
+   coincide with a flush *mid-stream* too — a forming table's whole block commits
+   at its close while the multi-row preview drops to one row — `term::paint_live`
+   syncs the tracked height to the frame's height before `flush_pending` whenever
+   lines are pending, `docs/table-streaming.md`, guarded by Phase 41). (`insert_before` itself only
    **queues**: the next `term::draw` writes the lines and repaints the live region
    inside one synchronized update, so a commit can never flash a boxless frame —
    `docs/flicker.md`, guarded by `smoke.sh` Phase 15.) On **any** size change the

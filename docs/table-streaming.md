@@ -126,6 +126,23 @@ never records. Nothing is ever `…`'d.
   the screen tail-follows its frontier (the newest rows stay visible; the top
   border scrolls out of the strip and reappears when the block commits whole).
 
+### The close-flush must not strand the box (the blank-band bug)
+
+The moment the block closes, two things happen in one frame: the whole grid
+(often dozens of rows) lands in the pending scrollback queue, and the strip
+collapses from the tall forming-table preview to a single row. The pending
+flush (`term::write_above_chunk`) reserves the **tracked** viewport height
+below the lines it writes — if that still counted the tall strip, the flush
+landed the viewport a strip-height too high and the shrink blanked the vacated
+rows, leaving a blank band between the box and the screen bottom (the reported
+bug; the turn-end `set_view_height` reseat covers only the turn-end flush).
+`term::paint_live` therefore syncs the tracked height to the frame's height
+*before* `flush_pending` whenever lines are pending — the flush then reserves
+exactly the collapsed region and the box stays flush at the bottom. Without
+pending lines the height change still flows through `ui::repin`, whose shrink
+is what blanks rows an in-place shrink vacates. Guarded by `smoke.sh` Phase 41
+(the dummy's `"table"` demo reply streams a 10-row grid with prose after it).
+
 ### Geometry: the strip must reserve what the preview draws
 
 `ui::preview_rows` sizes the strip's preview slot, and `live_height` /
