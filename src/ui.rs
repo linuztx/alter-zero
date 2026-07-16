@@ -230,13 +230,19 @@ const TOOL_OK_COLOR: Color = Color::Rgb(0x3F, 0xB9, 0x50);
 const TOOL_FAIL_COLOR: Color = ERROR_COLOR;
 /// White — the tool's name.
 const TOOL_NAME_COLOR: Color = AI_COLOR;
-/// White (the normal assistant reply colour) + bold — a tool's argument summary
-/// *inside* the `(...)`, made as prominent as a normal reply (so a long `bash`
-/// command reads clearly) rather than the old dim grey. The delimiter parens
-/// themselves stay [`TOOL_DIM_COLOR`].
+/// White (the normal assistant reply colour) + bold — the whole `(...)` header
+/// body: the command/args text **and** its framing `(`/`)` (and a truncation
+/// `…`) alike, so a `bash` command and its brackets read as prominently as a
+/// normal reply rather than the old dim grey. Claude-Code's noticeable tool
+/// header; shared by every tool via [`tool_header_lines`].
 const TOOL_ARGS_COLOR: Color = AI_COLOR;
-/// Dim grey — a tool's collapsed peek/hint and the `(`/`)` delimiters framing
-/// its args.
+/// White (the normal reply colour) — a finished tool's **output** under the `⎿`
+/// gutter (command/shell output), so it's as legible as a normal message rather
+/// than dim grey. The `⎿` corner, the `Running…`/`Waiting…`/`(no output)`
+/// placeholders and the `… +N lines` hint all stay [`TOOL_DIM_COLOR`].
+const TOOL_OUTPUT_COLOR: Color = AI_COLOR;
+/// Dim grey — a tool's `⎿` gutter corner, its `Running…`/`Waiting…`/`(no output)`
+/// placeholders and the `… +N lines` hint.
 const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
 /// Green — an added (`+`) line in an `edit`/`write` diff cell (codex's diff
 /// look, adapted to the `⎿` gutter; see `docs/tools.md`).
@@ -3192,26 +3198,23 @@ fn tool_header_lines(tool: &ToolCall, width: u16, max_rows: Option<usize>) -> Ve
     if tool.args.is_empty() {
         return vec![Line::from(vec![bullet(), name()])];
     }
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
     let args_style = Style::new()
         .fg(TOOL_ARGS_COLOR)
         .add_modifier(Modifier::BOLD);
     // Continuation rows indent to align under the opening `(`, which sits right
-    // after `● {name}`; wrapping `(args)` as one run (dim parens framing the
-    // bold-white args) keeps every row — the first included — the same body
-    // width, so the wrapped rows land exactly beneath the `(`.
+    // after `● {name}`; wrapping `(args)` as one run — parens and args alike bold
+    // white (a uniform, noticeable header body) — keeps every row (the first
+    // included) the same body width, so the wrapped rows land exactly beneath the
+    // `(`.
     let indent_cols = cols(TOOL_BULLET) + cols(&tool.name);
     let body_width = (width as usize).saturating_sub(indent_cols).max(1);
     let mut rows = wrap_inline(
-        &[
-            ("(".to_string(), dim),
-            (tool.args.clone(), args_style),
-            (")".to_string(), dim),
-        ],
+        &[(format!("({})", tool.args), args_style)],
         body_width as u16,
     );
     // Cap a very long header: keep the first `max` rows and replace the tail with
-    // `…)` (fitted within the body width) — the whole command is still in Ctrl+O.
+    // `…)` (fitted within the body width, the same bold white) — the whole command
+    // is still in Ctrl+O.
     if let Some(max) = max_rows
         && rows.len() > max.max(1)
     {
@@ -3219,8 +3222,7 @@ fn tool_header_lines(tool: &ToolCall, width: u16, max_rows: Option<usize>) -> Ve
         if let Some(last) = rows.last_mut() {
             let keep = body_width.saturating_sub(cols(TOOL_HEADER_ELLIPSIS) + cols(")"));
             *last = truncate_spans(last, keep);
-            last.push(Span::styled(TOOL_HEADER_ELLIPSIS.to_string(), dim));
-            last.push(Span::styled(")".to_string(), dim));
+            last.push(Span::styled(format!("{TOOL_HEADER_ELLIPSIS})"), args_style));
         }
     }
     rows.into_iter()
@@ -3278,9 +3280,17 @@ fn gutter_row(index: usize, text: String, color: Option<Color>) -> Line<'static>
     ])
 }
 
-/// A dim `⎿` result row (the default: command output, non-diff tools).
+/// A dim `⎿` result row — for the `Running…`/`Waiting…`/`(no output)`
+/// placeholders and the `+N lines (Ns)` footer (meta, not output).
 fn result_row(index: usize, text: String) -> Line<'static> {
     gutter_row(index, text, None)
+}
+
+/// A `⎿` row for a finished tool's **output** — a dim corner over white content
+/// ([`TOOL_OUTPUT_COLOR`]), so command/shell output reads like a normal reply.
+/// The placeholders keep the dim [`result_row`].
+fn output_row(index: usize, text: String) -> Line<'static> {
+    gutter_row(index, text, Some(TOOL_OUTPUT_COLOR))
 }
 
 /// Is this a model tool whose output is a diff — so its `⎿` rows get `+`/`-`
@@ -3682,11 +3692,12 @@ fn running_command_lines(tool: &ToolCall, elapsed: Duration, width: u16) -> Vec<
     let shown = display.len().min(TOOL_PEEK_LINES);
     let start = display.len() - shown; // the tail window
     for (i, line) in display[start..].iter().enumerate() {
-        lines.push(result_row(i, truncate_cols(line, peek_width)));
+        lines.push(output_row(i, truncate_cols(line, peek_width)));
     }
     let hidden = display.len() - shown; // lines hidden *above* the tail
     if hidden > 0 {
-        // A continuation row (index ≥ 1) so it indents under the content column.
+        // A continuation row (index ≥ 1) so it indents under the content column;
+        // the `+N lines (Ns)` footer is meta, so it stays the dim `result_row`.
         lines.push(result_row(
             shown,
             format!("+{hidden} lines ({}s)", elapsed.as_secs()),
@@ -3721,7 +3732,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
             ToolStatus::Waiting => vec![result_row(0, TOOL_WAITING.to_string())],
             ToolStatus::Running => vec![result_row(0, TOOL_RUNNING.to_string())],
             _ if out_lines.is_empty() => vec![result_row(0, TOOL_NO_OUTPUT.to_string())],
-            _ => result_peek_block(&out_lines, peek_width, result_row),
+            _ => result_peek_block(&out_lines, peek_width, output_row),
         };
     }
 
@@ -3763,7 +3774,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
                     TOOL_NO_OUTPUT.to_string()
                 },
             )],
-            _ => result_peek_block(&display, peek_width, result_row),
+            _ => result_peek_block(&display, peek_width, output_row),
         };
         let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
         lines.extend(peek);
@@ -3772,20 +3783,15 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
 
     // Any other backend tool (a `read`/`write`/`edit` cell whose output didn't
     // parse as the numbered/diff format, or an unknown tool): coloured header
-    // (wrapped when long) + a single collapsed peek line, the rest behind the
-    // `… +N lines` hint.
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let peek = match tool.status {
-        ToolStatus::Waiting => TOOL_WAITING.to_string(),
-        ToolStatus::Running => TOOL_RUNNING.to_string(),
-        _ if out_lines.is_empty() => TOOL_NO_OUTPUT.to_string(),
-        _ => truncate_cols(&out_lines[0], peek_width),
-    };
+    // (wrapped when long) + a single collapsed peek line — white output content,
+    // dim placeholder — the rest behind the `… +N lines` hint.
     let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
-    lines.push(Line::from(vec![
-        Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
-        Span::styled(peek, dim),
-    ]));
+    lines.push(match tool.status {
+        ToolStatus::Waiting => result_row(0, TOOL_WAITING.to_string()),
+        ToolStatus::Running => result_row(0, TOOL_RUNNING.to_string()),
+        _ if out_lines.is_empty() => result_row(0, TOOL_NO_OUTPUT.to_string()),
+        _ => output_row(0, truncate_cols(&out_lines[0], peek_width)),
+    });
     let hidden = out_lines.len().saturating_sub(1);
     if hidden > 0 {
         lines.push(more_hint_line(hidden));
@@ -3874,7 +3880,7 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
             };
             wrap_verbatim(&expand_code_tabs(body), body_width)
                 .into_iter()
-                .map(|line| (line, None))
+                .map(|line| (line, Some(TOOL_OUTPUT_COLOR)))
                 .collect()
         }
     };
@@ -7327,10 +7333,10 @@ mod tests {
     }
 
     #[test]
-    fn tool_header_args_are_bold_and_normal_text_colour() {
-        // The command text inside `(...)` reads like a normal reply — bold + the
-        // white assistant colour — so it's noticeable, while the delimiter parens
-        // stay a dim structural grey.
+    fn tool_header_body_is_bold_white_parens_included() {
+        // The whole `(...)` header body — the command text AND its framing parens
+        // — reads like a normal reply (bold + the white assistant colour), so a
+        // bash command and its brackets are all noticeable rather than dim.
         let lines = tool_lines(&tool("Bash", "cargo test", ToolStatus::Ok, "out"), 80);
         let arg = lines[0]
             .spans
@@ -7346,15 +7352,26 @@ mod tests {
             arg.style.add_modifier.contains(Modifier::BOLD),
             "args are bold"
         );
+        // The opening `(` and closing `)` are the same bold white, not dim.
         let open = lines[0]
             .spans
             .iter()
-            .find(|s| s.content == "(")
-            .expect("an opening-paren span");
+            .find(|s| s.content.contains('('))
+            .expect("a span carrying the open paren");
         assert_eq!(
             open.style.fg,
-            Some(TOOL_DIM_COLOR),
-            "the opening paren stays a dim delimiter"
+            Some(TOOL_ARGS_COLOR),
+            "the opening paren is bold white too, not a dim delimiter"
+        );
+        let close = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains(')'))
+            .expect("a span carrying the close paren");
+        assert_eq!(
+            close.style.fg,
+            Some(TOOL_ARGS_COLOR),
+            "the closing paren is bold white too"
         );
     }
 
@@ -7386,6 +7403,21 @@ mod tests {
                 .ends_with(&format!("{TOOL_HEADER_ELLIPSIS})")),
             "the last shown row ends with the ellipsis + closing paren: {:?}",
             header.last().unwrap()
+        );
+        // The truncation `…` is the same bold white as the args, not dim grey.
+        let ell_line = lines
+            .iter()
+            .find(|l| plain(l).contains(TOOL_HEADER_ELLIPSIS))
+            .unwrap();
+        let ell = ell_line
+            .spans
+            .iter()
+            .find(|s| s.content.contains(TOOL_HEADER_ELLIPSIS))
+            .unwrap();
+        assert_eq!(
+            ell.style.fg,
+            Some(TOOL_ARGS_COLOR),
+            "the truncation … matches the args colour, not grey"
         );
         // Still no clipping past the width.
         for l in &lines {
@@ -7461,17 +7493,72 @@ mod tests {
     #[test]
     fn a_non_diff_tool_peek_is_not_diff_coloured() {
         // A `bash` cell whose output happens to start with `+`/`-` is NOT a diff
-        // tool, so its rows stay dim.
+        // tool, so its rows render as plain (white) output, never green/red.
         let lines = tool_lines(
             &tool("Bash", "diff a b", ToolStatus::Ok, "-removed\n+added"),
             80,
         );
-        let row = &lines[1];
+        let fg = lines[1].spans.last().unwrap().style.fg;
         assert_eq!(
-            row.spans.last().unwrap().style.fg,
-            Some(TOOL_DIM_COLOR),
-            "bash output is never diff-coloured"
+            fg,
+            Some(TOOL_OUTPUT_COLOR),
+            "bash output is the plain white output colour"
         );
+        assert_ne!(fg, Some(TOOL_DIFF_ADD_COLOR), "never diff-coloured");
+        assert_ne!(fg, Some(TOOL_DIFF_DEL_COLOR), "never diff-coloured");
+    }
+
+    #[test]
+    fn tool_output_content_is_white_the_corner_stays_dim() {
+        // A finished tool's output under the ⎿ gutter is the noticeable white
+        // output colour, while the ⎿ corner glyph itself stays a dim delimiter.
+        let lines = tool_lines(&tool("Bash", "echo hi", ToolStatus::Ok, "hello world"), 80);
+        let out = lines
+            .iter()
+            .find(|l| plain(l).contains("hello world"))
+            .expect("an output row");
+        let content = out
+            .spans
+            .iter()
+            .find(|s| s.content.contains("hello"))
+            .expect("the content span");
+        assert_eq!(
+            content.style.fg,
+            Some(TOOL_OUTPUT_COLOR),
+            "output content is the white output colour"
+        );
+        let corner = out
+            .spans
+            .iter()
+            .find(|s| s.content.contains('⎿'))
+            .expect("the ⎿ corner span");
+        assert_eq!(
+            corner.style.fg,
+            Some(TOOL_DIM_COLOR),
+            "the ⎿ corner stays a dim delimiter"
+        );
+    }
+
+    #[test]
+    fn tool_running_and_waiting_placeholders_stay_dim() {
+        // The `Running…`/`Waiting…` placeholders are meta, not output, so they
+        // keep the dim colour even though real output is now white.
+        for status in [ToolStatus::Running, ToolStatus::Waiting] {
+            let lines = tool_lines(&tool("Bash", "sleep 1", status, ""), 80);
+            let row = lines
+                .iter()
+                .find(|l| {
+                    let p = plain(l);
+                    p.contains("Running…") || p.contains("Waiting…")
+                })
+                .expect("a placeholder row");
+            let content = row.spans.last().unwrap();
+            assert_eq!(
+                content.style.fg,
+                Some(TOOL_DIM_COLOR),
+                "the {status:?} placeholder stays dim"
+            );
+        }
     }
 
     #[test]
@@ -7623,7 +7710,7 @@ mod tests {
     #[test]
     fn read_cell_placeholder_output_falls_back_to_a_plain_peek() {
         // The `(file is empty)` / offset-past-end placeholders aren't numbered,
-        // so the cell keeps the plain dim peek (no numbering, no crash).
+        // so the cell keeps the plain output peek (no numbering, no crash).
         let lines = tool_lines(
             &tool("Read", "x.txt", ToolStatus::Ok, "(file x.txt is empty)"),
             80,
@@ -7795,9 +7882,10 @@ mod tests {
     }
 
     #[test]
-    fn a_bash_cell_with_a_created_looking_output_stays_dim() {
+    fn a_bash_cell_with_a_created_looking_output_gets_no_diff_tint() {
         // Only Write/Edit cells opt into the numbered rendering — a bash
-        // command whose output mimics the format keeps the plain dim peek.
+        // command whose output mimics the format keeps the plain output peek
+        // (white content, no diff background tint).
         let lines = tool_lines(
             &tool("Bash", "gen", ToolStatus::Ok, "Created x (1 line)\n1 hi"),
             80,

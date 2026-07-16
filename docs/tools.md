@@ -202,11 +202,19 @@ cell reads like the real command output. **While it runs the cell streams and
 tails its output** — the header, the last lines, and a `+N lines (Ns)` footer —
 see `docs/tool-streaming.md`.
 
-**The args read like a normal reply.** The command text inside `(...)` is
-**bold + the white assistant colour** (`TOOL_ARGS_COLOR`), so a `bash` command is
-as legible as a normal message rather than the old muted grey; the framing
-`(`/`)` stay a dim [`TOOL_DIM_COLOR`] delimiter and the `●` bullet keeps its
-lifecycle colour.
+**The whole cell reads like a normal reply — Claude-Code's noticeable look.**
+The entire `(...)` header body — the command text, its framing `(`/`)`, **and** a
+truncation `…` — is **bold + the white assistant colour** (`TOOL_ARGS_COLOR`),
+and the **output** under the `⎿` gutter is the same white (`TOOL_OUTPUT_COLOR`),
+so a `bash` command and its output are as legible as a normal message rather than
+the old muted grey. Only the structural bits stay dim ([`TOOL_DIM_COLOR`]): the
+`⎿` corner glyph, the `Running…`/`Waiting…`/`(no output)` placeholders and the
+`… +N lines` / `+N lines (Ns)` hints. The `●` bullet keeps its lifecycle colour
+(blue running · vivid green ok · red fail). This is uniform across **every** tool
+— `bash`/`read`/`write`/`edit` and any future tool — because the header goes
+through the shared `tool_header_lines` and command/shell output through the
+shared `output_row`. (A `read`/`write`/`edit` numbered cell instead
+syntax-highlights its body — already vivid — see below.)
 
 **Long headers wrap, never clip** (`ui::tool_header_lines`). A long command —
 `● Bash(curl -s "wttr.in/…" 2>/dev/null || echo "…")` — used to run off the
