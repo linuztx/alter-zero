@@ -323,11 +323,14 @@ render as bullets with a checkbox.
 
 **In — GFM pipe tables.** A header row, a **delimiter** row (`|---|:-:|`, its
 column count + alignments govern the grid), and data rows render as a box-drawing
-grid (dim borders, bold header cells, per-column alignment). The block is
+grid (dim borders, bold header cells, per-column alignment, a `├──┼──┤` rule
+between every row — Claude Code's full grid). The block is
 **buffered whole** and renders when it closes, with column widths fit to the
 header **and every data row** — so a wide later row can never shatter the grid —
-cells **word-wrapping** into the allocated widths (taller rows) instead of
-truncating with `…` when the grid is narrow. While the block is open the strip
+and a grid that overflows the width shrinks its **widest column first** (codex's
+fit: short cells keep their natural width, the wrapping lands on the wide
+content), cells **word-wrapping** into the allocated widths (taller rows)
+instead of truncating with `…`. While the block is open the strip
 **previews the entire forming table** (re-rendered per frame, widths re-fitting
 as rows arrive), so a table still streams start-to-finish visually. At the close
 it also decides grid vs. **key/value records**: when the grid would be too

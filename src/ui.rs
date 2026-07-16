@@ -1571,11 +1571,15 @@ fn natural_col_widths(rows: &[Vec<Vec<(String, Style)>>], ncols: usize) -> Vec<u
 /// Allocate the per-column widths for a grid that must fit `avail` display
 /// columns, given each column's `natural` (widest cell) width. When the natural
 /// grid fits, the natural widths are returned (a tight, one-row-per-line grid).
-/// When it overflows, the available content width is distributed across columns
-/// **proportionally to their natural width** — so a wide column stays wide, like
-/// codex/img2 — floored at [`TABLE_MIN_COL`]; those shrunk widths are **wrap**
-/// widths, so cells word-wrap into them (taller rows) rather than truncating
-/// with a `…` (docs/table-streaming.md).
+/// When it overflows, the overflow is taken from the **widest column first**
+/// (one display column at a time, ties leftmost-first so equal columns level
+/// evenly), floored at [`TABLE_MIN_COL`] — codex's fit: a short cell
+/// (`facebook.com`, a `Packets` header) keeps its natural width, and the
+/// wrapping lands entirely on the genuinely wide content (a 33-column IPv6, a
+/// long description). The old proportional shrink starved *every* column when
+/// one was huge, breaking short words mid-cell (the reported bug). The shrunk
+/// widths are **wrap** widths, so cells word-wrap into them (taller rows)
+/// rather than truncating with a `…` (docs/table-streaming.md).
 fn allocate_column_widths(natural: &[usize], avail: usize) -> Vec<usize> {
     let n = natural.len();
     if n == 0 {
@@ -1587,38 +1591,27 @@ fn allocate_column_widths(natural: &[usize], avail: usize) -> Vec<usize> {
     if total == 0 || total <= content_avail {
         return natural.to_vec();
     }
-    let floor = TABLE_MIN_COL.min(content_avail / n).max(1);
+    // Pre-clamp to the whole content budget (a lone column can never usefully
+    // exceed it), bounding the loop below to O(content_avail · n) even for a
+    // pathological megabyte-wide cell — the preview re-renders per frame.
     let mut w: Vec<usize> = natural
         .iter()
-        .map(|&nat| ((nat * content_avail) / total).max(floor))
+        .map(|&x| x.min(content_avail.max(1)).max(1))
         .collect();
-    // Reconcile the sum to `content_avail`: the floored proportional shares may
-    // over- or undershoot. Trim the widest column above the floor when over;
-    // hand any slack to the widest-natural columns first when under (so the
-    // proportions the shrink was meant to preserve survive the rounding).
     let mut sum: usize = w.iter().sum();
     while sum > content_avail {
-        let Some(i) = w
-            .iter()
-            .enumerate()
-            .filter(|&(_, &x)| x > floor)
-            .max_by_key(|&(_, &x)| x)
-            .map(|(i, _)| i)
-        else {
+        // The first of the widest columns still above the floor.
+        let mut widest: Option<usize> = None;
+        for (i, &x) in w.iter().enumerate() {
+            if x > TABLE_MIN_COL && widest.is_none_or(|b| x > w[b]) {
+                widest = Some(i);
+            }
+        }
+        let Some(i) = widest else {
             break; // every column already at the floor — unavoidable at tiny widths
         };
         w[i] -= 1;
         sum -= 1;
-    }
-    if sum < content_avail {
-        let mut order: Vec<usize> = (0..n).collect();
-        order.sort_by(|&a, &b| natural[b].cmp(&natural[a]));
-        let mut k = 0usize;
-        while sum < content_avail {
-            w[order[k % n]] += 1;
-            sum += 1;
-            k += 1;
-        }
     }
     w
 }
@@ -1867,7 +1860,12 @@ fn table_block_rows(
         return out;
     }
     let mut out = table_open_rows(header, &col_w, aligns);
-    for row in rows {
+    for (i, row) in rows.iter().enumerate() {
+        // Claude Code's full grid: every data row is framed — a `├──┼──┤` rule
+        // between consecutive rows, not just under the header.
+        if i > 0 {
+            out.push(table_border_row(&col_w, '├', '┼', '┤'));
+        }
         out.extend(table_row_lines(
             &normalize_row(row, ncols, Style::default()),
             &col_w,
@@ -5962,6 +5960,66 @@ mod tests {
     }
 
     #[test]
+    fn table_grid_draws_separators_between_every_row() {
+        // Claude Code's grid look (the user's reference): every data row is
+        // framed — a `├──┼──┤` rule between consecutive rows, not just under
+        // the header (docs/table-streaming.md).
+        let lines: Vec<String> = ["| a | b |", "|---|---|", "| 1 | 2 |", "| 3 | 4 |"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(
+            rows_text(&table_content_rows(&lines, 80)),
+            vec![
+                "┌───┬───┐",
+                "│ a │ b │",
+                "├───┼───┤",
+                "│ 1 │ 2 │",
+                "├───┼───┤",
+                "│ 3 │ 4 │",
+                "└───┴───┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn allocate_column_widths_takes_from_the_widest_first() {
+        // The ping-summary fit bug: Host(12) IP(33) Packets(7) Loss(4) RTT(21)
+        // must fit avail 85 (content 69, 8 over). The old proportional shrink
+        // starved EVERY column ("facebook.co/m", "Packe/ts", "Los/s"); the fix
+        // takes the whole overflow from the widest column (the IPv6 one), so
+        // short cells keep their natural width — codex's fit.
+        assert_eq!(
+            allocate_column_widths(&[12, 33, 7, 4, 21], 85),
+            vec![12, 25, 7, 4, 21]
+        );
+    }
+
+    #[test]
+    fn narrow_table_keeps_short_cells_whole() {
+        // End-to-end (the reported screenshot): at a width where the natural
+        // grid overflows, "facebook.com" and the "Packets"/"Loss" headers stay
+        // on one line — the wrapping lands on the wide IP column instead.
+        let text = "| Host | IP | Packets | Loss | RTT min/avg/max |\n\
+                    |------|----|---------|------|-----------------|\n\
+                    | google.com | 2404:6800:4017:809::200e | 10/10 | 0% | 86.8 / 89.8 / 96.4 ms |\n\
+                    | facebook.com | 2a03:2880:f372:1:face:b00c:0:25de | 10/10 | 0% | 15.0 / 16.4 / 17.9 ms |\n\
+                    | x.com | 162.159.140.229 | 10/10 | 0% | 14.4 / 15.5 / 16.2 ms |";
+        let rows: Vec<String> = message_lines(Role::Assistant, text, 87)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            rows.iter().any(|r| r.contains(" facebook.com ")),
+            "a short host cell never breaks mid-word: {rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains(" Packets ")),
+            "a short header never breaks mid-word: {rows:#?}"
+        );
+    }
+
+    #[test]
     fn table_cells_wrap_across_rows_instead_of_truncating() {
         // A cell wider than its column WRAPS across rows (hard-breaking an
         // unbreakable token grapheme-by-grapheme, wide CJK included) — never
@@ -5989,15 +6047,16 @@ mod tests {
     }
 
     #[test]
-    fn allocate_column_widths_fits_naturally_or_shrinks_proportionally() {
+    fn allocate_column_widths_fits_naturally_or_levels_the_widest() {
         use markdown::Alignment::None as A;
         let _ = A; // (alignment isn't part of width allocation)
         // Fits: the natural grid (2+3 content + 7 overhead = 12) is ≤ avail, so
         // columns keep their natural widths.
         assert_eq!(allocate_column_widths(&[2, 3], 40), vec![2, 3]);
-        // Overflows: avail 20 → content_avail 13 for naturals [8, 20] (total 28).
-        // Proportional: 8·13/28=3, 20·13/28=9 → sum 12, +1 slack to the widest
-        // (the 20-column) → [4, 9]. The wide column stays wide (codex/img2).
+        // Overflows: avail 20 → content_avail 13 for naturals [8, 20] (total
+        // 28). The widest-first shrink levels both toward the budget — the
+        // wider natural column still ends with more room, and nothing drops
+        // below the floor.
         let w = allocate_column_widths(&[8, 20], 20);
         assert_eq!(
             w.iter().sum::<usize>(),
@@ -6015,7 +6074,9 @@ mod tests {
     fn narrow_table_wraps_cells_into_taller_rows_no_ellipsis() {
         // The reported fix (img1 → img2): when the natural grid overflows the
         // width, cells WORD-WRAP into taller rows instead of truncating with `…`,
-        // so no content is ever lost.
+        // so no content is ever lost. Width 28 keeps this a grid — the email
+        // column levels to 13 and wraps twice; any narrower and the records
+        // fallback (its own tests) takes over.
         let lines: Vec<String> = [
             "| Name | Email |",
             "|------|-------|",
@@ -6024,7 +6085,7 @@ mod tests {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        let text = rows_text(&table_content_rows(&lines, 24));
+        let text = rows_text(&table_content_rows(&lines, 28));
         assert!(
             !text.join("").contains('…'),
             "cells wrap, never truncate: {text:?}"

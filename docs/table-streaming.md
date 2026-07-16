@@ -30,9 +30,17 @@ user watches it form in the live region the whole time.**
   interrupting code fence, or end-of-message (`flush`). Column widths come from
   the header **and every data row** (`table_column_widths` →
   `allocate_column_widths`), so the grid always fits its real content: wide
-  terminal → a tight natural grid; narrow → proportional shrink with cells
-  word-wrapping into taller rows (never `…`). The grid-vs-records decision
-  (below) is made from the same full knowledge.
+  terminal → a tight natural grid; narrow → the overflow is taken from the
+  **widest column first** (ties leveled leftmost-first, floored at
+  `TABLE_MIN_COL`), so a short cell (`facebook.com`, a `Packets` header) keeps
+  its natural width and the wrapping lands on the genuinely wide content (a
+  33-column IPv6, a long description) — codex's fit; cells word-wrap into the
+  allocated widths (taller rows, never `…`). The old proportional shrink
+  starved *every* column when one was huge, breaking short words mid-cell.
+  The grid-vs-records decision (below) is made from the same full knowledge.
+- **Grid style**: Claude Code's full grid — every data row is framed, with a
+  `├──┼──┤` rule between consecutive rows (not just under the header), so each
+  cell reads as its own box.
 - **Streaming**: while the block is open, nothing of it commits to scrollback
   (scrollback is immutable; a committed row can't be re-widened). Instead the
   streaming **strip previews the entire forming table** — `StreamRender::preview`
@@ -79,7 +87,8 @@ whole block (a header-only table renders as the opening + bottom border).
 `table_block_rows(header, aligns, rows, width)` is THE table renderer — both the
 batch path and the close/flush/preview paths emit a table only through it:
 widths from all rows, then either the box-drawing grid (`table_open_rows` +
-`table_row_lines` per row + the bottom border) or the key/value records.
+`table_row_lines` per row, a `├──┼──┤` rule between consecutive rows, + the
+bottom border) or the key/value records.
 
 ## The records fallback (key/value transpose)
 
