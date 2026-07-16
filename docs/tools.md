@@ -202,20 +202,40 @@ cell reads like the real command output. **While it runs the cell streams and
 tails its output** — the header, the last lines, and a `+N lines (Ns)` footer —
 see `docs/tool-streaming.md`.
 
+**The args read like a normal reply.** The command text inside `(...)` is
+**bold + the white assistant colour** (`TOOL_ARGS_COLOR`), so a `bash` command is
+as legible as a normal message rather than the old muted grey; the framing
+`(`/`)` stay a dim [`TOOL_DIM_COLOR`] delimiter and the `●` bullet keeps its
+lifecycle colour.
+
 **Long headers wrap, never clip** (`ui::tool_header_lines`). A long command —
 `● Bash(curl -s "wttr.in/…" 2>/dev/null || echo "…")` — used to run off the
 terminal edge and lose everything past the last column. Now the `(args)` **word-
-wrap** across continuation rows, each indented to align under the first argument
-(the width of `● Bash(`), so the whole command stays readable:
+wrap** across continuation rows, each indented to align **under the opening `(`**
+(the width of `● Bash`, Claude-Code style — the wrapped rows sit directly beneath
+the paren, not one column past it), so the whole command reads clean:
 
 ```
 ● Bash(curl -s "wttr.in/Warsaw?format=%C+%t+%w+%h" 2>/dev/null
-       || echo "wttr.in unavailable, trying alternative...")
+      || echo "wttr.in unavailable, trying alternative...")
   ⎿ Partly cloudy +19°C ↓8km/h 83%
 ```
 
-The wrap is shared by the inline peek (`tool_lines`) and the Ctrl+O transcript
-(`tool_full_lines`), so a resize/reflow re-wraps to the new width identically.
+**A very long header is capped inline** at `TOOL_HEADER_MAX_ROWS` (3) wrapped
+rows, the remainder replaced by `…)` (`TOOL_HEADER_ELLIPSIS`, fitted within the
+width) so a huge command can't flood the cell:
+
+```
+● Bash(for i in {1..5}; do echo "=== Iteration $i ===" && echo "Current
+      time: $(date)" && echo "System uptime: $(uptime)" && echo "Memory
+      usage: $(free -h | grep Mem)…)
+```
+
+The wrap + alignment is shared by the inline peek (`tool_lines`) and the Ctrl+O
+transcript (`tool_full_lines`), so a resize/reflow re-wraps to the new width
+identically — but only the inline peek (and the live preview) passes the row cap
+(`Some(TOOL_HEADER_MAX_ROWS)`); the Ctrl+O view passes `None` and shows the
+**whole** command untruncated.
 
 **A running backend tool previews its whole cell.** While the model's tool runs,
 the streaming strip's preview slot shows the *full* live cell — the wrapped

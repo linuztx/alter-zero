@@ -190,6 +190,15 @@ const EXPAND_HINT: &str = " (ctrl+o to expand)";
 /// rest behind a `… +N lines (ctrl+o to expand)` hint (Claude-Code's exec-cell
 /// preview). The full output is always in the Ctrl+O view.
 const TOOL_PEEK_LINES: usize = 4;
+/// How many wrapped rows a tool's `● name(args)` header shows **inline** (and in
+/// the live preview) before the rest is cut with [`TOOL_HEADER_ELLIPSIS`] — so a
+/// very long `bash` command doesn't flood the cell. The Ctrl+O transcript view
+/// (`tool_full_lines`) passes `None` and renders the whole command. Claude-Code's
+/// truncated command header.
+const TOOL_HEADER_MAX_ROWS: usize = 3;
+/// The marker spliced in (before the closing `)`) when a header is truncated at
+/// [`TOOL_HEADER_MAX_ROWS`].
+const TOOL_HEADER_ELLIPSIS: &str = "…";
 /// Dim marker appended at the end of a `!` shell command's **expanded** output
 /// (`tool_full_lines`) when it was cut at the in-memory cap (`tool.truncated`),
 /// to show that more output was dropped. See `docs/shell-command.md`.
@@ -212,13 +221,22 @@ const TOOL_RUNNING_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
 /// bullet and `⎿ Waiting…` row read muted, distinct from the blue running head,
 /// since it hasn't begun). Shares the argument/peek dim grey.
 const TOOL_WAITING_COLOR: Color = TOOL_DIM_COLOR;
-/// Green — a tool that finished successfully.
-const TOOL_OK_COLOR: Color = Color::Rgb(0x98, 0xC3, 0x79);
+/// Green — a tool that finished successfully. A vivid, saturated green (rather
+/// than the old muted `#98C379`) so the `●` success bullet clearly stands out,
+/// Claude-Code style. Shared by the `+`-line diff colour, the active-model tick
+/// and the context view's assistant tag ([`TOOL_DIFF_ADD_COLOR`] etc.).
+const TOOL_OK_COLOR: Color = Color::Rgb(0x3F, 0xB9, 0x50);
 /// Red — a tool that failed (shares the backend-error red).
 const TOOL_FAIL_COLOR: Color = ERROR_COLOR;
 /// White — the tool's name.
 const TOOL_NAME_COLOR: Color = AI_COLOR;
-/// Dim grey — a tool's argument summary and its collapsed peek/hint.
+/// White (the normal assistant reply colour) + bold — a tool's argument summary
+/// *inside* the `(...)`, made as prominent as a normal reply (so a long `bash`
+/// command reads clearly) rather than the old dim grey. The delimiter parens
+/// themselves stay [`TOOL_DIM_COLOR`].
+const TOOL_ARGS_COLOR: Color = AI_COLOR;
+/// Dim grey — a tool's collapsed peek/hint and the `(`/`)` delimiters framing
+/// its args.
 const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
 /// Green — an added (`+`) line in an `edit`/`write` diff cell (codex's diff
 /// look, adapted to the `⎿` gutter; see `docs/tools.md`).
@@ -3146,17 +3164,23 @@ fn truncate_cols(s: &str, max: usize) -> String {
     out
 }
 
-/// The coloured bullet header line for a tool: `● name(args)`, the bullet
-/// recoloured by lifecycle (blue/green/red). Shared by the inline collapsed view
-/// ([`tool_lines`]) and the full-screen transcript ([`tool_full_lines`]).
-/// The header row(s) for a backend tool call: `● {name}({args})`. When the whole
-/// header would overflow `width` the args **word-wrap** across continuation rows,
-/// each indented to align under the first argument (the width of `● {name}(`), so
-/// a long command is never clipped at the terminal edge — Claude-Code's wrapped
-/// `Bash(…)` header (the user's "show it on newlines, don't lose context"). A `!`
-/// shell command is a tool with no args (name = the command), so it stays a bare
-/// single `● {command}` line.
-fn tool_header_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+/// The coloured bullet header row(s) for a backend tool call: `● {name}({args})`,
+/// the bullet recoloured by lifecycle (blue/green/red) and the args made bold +
+/// the normal reply white ([`TOOL_ARGS_COLOR`]) so a `bash` command reads
+/// clearly, the framing `(`/`)` left a dim [`TOOL_DIM_COLOR`] delimiter. Shared
+/// by the inline collapsed view ([`tool_lines`]) and the full-screen transcript
+/// ([`tool_full_lines`]).
+///
+/// When the header overflows `width` the args **word-wrap** across continuation
+/// rows, each indented to align **under the opening `(`** (the width of
+/// `● {name}`), so a long command reads clean and is never clipped at the
+/// terminal edge — Claude-Code's wrapped `Bash(…)` header. `max_rows` caps how
+/// many rows are shown: `Some(n)` (the inline peek and the live preview) keeps
+/// the first `n` and splices [`TOOL_HEADER_ELLIPSIS`] + `)` onto the last so a
+/// huge command doesn't flood the cell; `None` (the Ctrl+O transcript) renders
+/// the whole thing. A `!` shell command is a tool with no args (name = the
+/// command), so it stays a bare single `● {command}` line.
+fn tool_header_lines(tool: &ToolCall, width: u16, max_rows: Option<usize>) -> Vec<Line<'static>> {
     let bullet_style = Style::new()
         .fg(tool_status_color(tool.status))
         .add_modifier(Modifier::BOLD);
@@ -3169,25 +3193,70 @@ fn tool_header_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         return vec![Line::from(vec![bullet(), name()])];
     }
     let dim = Style::new().fg(TOOL_DIM_COLOR);
-    // `● {name}(` opens the first row; continuation rows indent to align under it,
-    // so both the first row's args and the wrapped ones share the same body width.
-    let prefix_cols = cols(TOOL_BULLET) + cols(&tool.name) + cols("(");
-    let body_width = (width as usize).saturating_sub(prefix_cols).max(1);
-    // Wrap the args + closing `)` as one dim run, so the paren rides the last row.
-    let body = format!("{})", tool.args);
-    wrap_inline(&[(body, dim)], body_width as u16)
-        .into_iter()
+    let args_style = Style::new()
+        .fg(TOOL_ARGS_COLOR)
+        .add_modifier(Modifier::BOLD);
+    // Continuation rows indent to align under the opening `(`, which sits right
+    // after `● {name}`; wrapping `(args)` as one run (dim parens framing the
+    // bold-white args) keeps every row — the first included — the same body
+    // width, so the wrapped rows land exactly beneath the `(`.
+    let indent_cols = cols(TOOL_BULLET) + cols(&tool.name);
+    let body_width = (width as usize).saturating_sub(indent_cols).max(1);
+    let mut rows = wrap_inline(
+        &[
+            ("(".to_string(), dim),
+            (tool.args.clone(), args_style),
+            (")".to_string(), dim),
+        ],
+        body_width as u16,
+    );
+    // Cap a very long header: keep the first `max` rows and replace the tail with
+    // `…)` (fitted within the body width) — the whole command is still in Ctrl+O.
+    if let Some(max) = max_rows
+        && rows.len() > max.max(1)
+    {
+        rows.truncate(max.max(1));
+        if let Some(last) = rows.last_mut() {
+            let keep = body_width.saturating_sub(cols(TOOL_HEADER_ELLIPSIS) + cols(")"));
+            *last = truncate_spans(last, keep);
+            last.push(Span::styled(TOOL_HEADER_ELLIPSIS.to_string(), dim));
+            last.push(Span::styled(")".to_string(), dim));
+        }
+    }
+    rows.into_iter()
         .enumerate()
         .map(|(i, mut body_spans)| {
             let mut spans = if i == 0 {
-                vec![bullet(), name(), Span::styled("(".to_string(), dim)]
+                vec![bullet(), name()]
             } else {
-                vec![Span::raw(" ".repeat(prefix_cols))]
+                vec![Span::raw(" ".repeat(indent_cols))]
             };
             spans.append(&mut body_spans);
             Line::from(spans)
         })
         .collect()
+}
+
+/// Keep the leading graphemes of `spans` that fit within `max` display columns,
+/// preserving each span's style (a span-aware [`truncate_cols`]). Used to make
+/// room for the `…)` when a header is truncated at [`TOOL_HEADER_MAX_ROWS`].
+fn truncate_spans(spans: &[Span<'static>], max: usize) -> Vec<Span<'static>> {
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let w = cols(&span.content);
+        if used + w <= max {
+            out.push(span.clone());
+            used += w;
+        } else {
+            let kept = truncate_cols(&span.content, max - used);
+            if !kept.is_empty() {
+                out.push(Span::styled(kept, span.style));
+            }
+            break;
+        }
+    }
+    out
 }
 
 /// A `⎿` gutter row with an explicit content colour (`None` → dim): the
@@ -3605,7 +3674,7 @@ fn command_display_lines(tool: &ToolCall) -> Vec<String> {
 /// `elapsed` is boundary-supplied (like the shell running row and the status
 /// timer), so this is drawn from [`preview_tool_lines`] where `App` is in hand.
 fn running_command_lines(tool: &ToolCall, elapsed: Duration, width: u16) -> Vec<Line<'static>> {
-    let mut lines = tool_header_lines(tool, width);
+    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -3661,7 +3730,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // ([`file_cell_lines`]); output that doesn't parse (old sessions, error
     // bodies) falls through to the legacy first-char colouring below.
     if let Some(body) = file_cell_lines(tool, width, true) {
-        let mut lines = tool_header_lines(tool, width);
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
         lines.extend(body);
         return lines;
     }
@@ -3670,7 +3739,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // `+`/`-` rows are diff-coloured (the codex trick shows inline, not just in
     // the Ctrl+O view). Other backend tools keep the single collapsed peek line.
     if is_diff_tool(tool) && tool.status != ToolStatus::Running && !out_lines.is_empty() {
-        let mut lines = tool_header_lines(tool, width);
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
         lines.extend(result_peek_block(&out_lines, peek_width, diff_result_row));
         return lines;
     }
@@ -3696,7 +3765,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
             )],
             _ => result_peek_block(&display, peek_width, result_row),
         };
-        let mut lines = tool_header_lines(tool, width);
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
         lines.extend(peek);
         return lines;
     }
@@ -3712,7 +3781,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         _ if out_lines.is_empty() => TOOL_NO_OUTPUT.to_string(),
         _ => truncate_cols(&out_lines[0], peek_width),
     };
-    let mut lines = tool_header_lines(tool, width);
+    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
     lines.push(Line::from(vec![
         Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
         Span::styled(peek, dim),
@@ -3761,7 +3830,8 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // syntax colour — [`file_cell_lines`], uncapped here); everything else
     // goes through the plain row pipeline below.
     if let Some(body) = file_cell_lines(tool, width, false) {
-        let mut lines = tool_header_lines(tool, width);
+        // The Ctrl+O transcript view never truncates the header (`None`).
+        let mut lines = tool_header_lines(tool, width, None);
         lines.extend(body);
         if tool.truncated {
             lines.push(gutter_row(1, TOOL_TRUNCATED_MARKER.to_string(), None));
@@ -3824,7 +3894,8 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     if tool.shell {
         result.collect()
     } else {
-        let mut lines = tool_header_lines(tool, width);
+        // The Ctrl+O transcript view shows the whole command (`None`).
+        let mut lines = tool_header_lines(tool, width, None);
         lines.extend(result);
         lines
     }
@@ -7192,35 +7263,51 @@ mod tests {
     }
 
     #[test]
-    fn tool_lines_wraps_a_long_header_instead_of_clipping() {
+    fn tool_lines_wraps_a_long_header_aligned_under_the_open_paren() {
         // A long `Bash(…)` command must not run off the terminal edge: the args
-        // word-wrap across continuation rows, indented to align under the first
-        // argument (under `● Bash(`), so no part of the command is lost.
+        // word-wrap across continuation rows, each indented to align **under the
+        // opening `(`** (Claude-Code's wrapped header) so the wrap reads clean and
+        // no part of the command is lost.
         let cmd = "curl -s \"wttr.in/Warsaw?format=%C+%t+%w+%h\" 2>/dev/null \
                    || echo \"wttr.in unavailable, trying alternative...\"";
-        let lines = tool_lines(&tool("Bash", cmd, ToolStatus::Ok, "out"), 40);
-        // The header spans more than one row.
+        let lines = tool_lines(&tool("Bash", cmd, ToolStatus::Ok, "out"), 80);
         let header: Vec<String> = lines
             .iter()
             .take_while(|l| !plain(l).contains('⎿'))
             .map(plain)
             .collect();
-        assert!(header.len() >= 2, "long header wraps: {header:?}");
+        // The header spans more than one row but stays within the inline cap.
+        assert!(
+            (2..=TOOL_HEADER_MAX_ROWS).contains(&header.len()),
+            "long header wraps: {header:?}"
+        );
         // No row exceeds the width — nothing is clipped.
         for l in &lines {
             assert!(
-                cols(&plain(l)) <= 40,
+                cols(&plain(l)) <= 80,
                 "row stays within the width: {:?}",
                 plain(l)
             );
         }
-        // The first row opens the header; continuation rows indent to align under
-        // the first argument (the width of `● Bash(`).
+        // Row 0 opens the header; the `(` sits at `cols("● Bash")`.
         assert!(header[0].starts_with("● Bash("), "row 0 opens the header");
-        let indent = " ".repeat(cols("● Bash("));
+        let paren_col = cols("● Bash");
+        assert_eq!(
+            header[0].chars().nth(paren_col),
+            Some('('),
+            "the open paren sits at cols(\"● Bash\")"
+        );
+        // The continuation is indented by exactly that many spaces, so its first
+        // character lands directly under the `(` — not one column past it.
         assert!(
-            header[1].starts_with(&indent),
-            "continuation aligns under the args: {:?}",
+            header[1].starts_with(&" ".repeat(paren_col)),
+            "continuation is indented to the open paren: {:?}",
+            header[1]
+        );
+        assert_ne!(
+            header[1].chars().nth(paren_col),
+            Some(' '),
+            "the continuation's content begins right under the (: {:?}",
             header[1]
         );
         // Nothing is lost — the command's start and end both survive.
@@ -7235,6 +7322,113 @@ mod tests {
         );
         assert!(
             joined.contains("alternative...\")"),
+            "keeps the command tail and closing paren: {joined:?}"
+        );
+    }
+
+    #[test]
+    fn tool_header_args_are_bold_and_normal_text_colour() {
+        // The command text inside `(...)` reads like a normal reply — bold + the
+        // white assistant colour — so it's noticeable, while the delimiter parens
+        // stay a dim structural grey.
+        let lines = tool_lines(&tool("Bash", "cargo test", ToolStatus::Ok, "out"), 80);
+        let arg = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("cargo"))
+            .expect("an args span");
+        assert_eq!(
+            arg.style.fg,
+            Some(TOOL_ARGS_COLOR),
+            "args use the normal reply colour"
+        );
+        assert!(
+            arg.style.add_modifier.contains(Modifier::BOLD),
+            "args are bold"
+        );
+        let open = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content == "(")
+            .expect("an opening-paren span");
+        assert_eq!(
+            open.style.fg,
+            Some(TOOL_DIM_COLOR),
+            "the opening paren stays a dim delimiter"
+        );
+    }
+
+    #[test]
+    fn tool_lines_truncates_a_very_long_header_with_an_ellipsis() {
+        // A very long command is capped inline at TOOL_HEADER_MAX_ROWS wrapped
+        // rows, the remainder replaced by `…)` (Claude-Code's truncated command);
+        // the whole thing is still shown in the Ctrl+O view.
+        let cmd = "for i in {1..5}; do echo \"=== Iteration $i ===\" \
+                   && echo \"Current time: $(date)\" \
+                   && echo \"System uptime: $(uptime)\" \
+                   && echo \"Memory usage: $(free -h | grep Mem)\"; done";
+        let lines = tool_lines(&tool("Bash", cmd, ToolStatus::Ok, "out"), 50);
+        let header: Vec<String> = lines
+            .iter()
+            .take_while(|l| !plain(l).contains('⎿'))
+            .map(plain)
+            .collect();
+        assert_eq!(
+            header.len(),
+            TOOL_HEADER_MAX_ROWS,
+            "header caps at the row limit: {header:?}"
+        );
+        assert!(
+            header
+                .last()
+                .unwrap()
+                .trim_end()
+                .ends_with(&format!("{TOOL_HEADER_ELLIPSIS})")),
+            "the last shown row ends with the ellipsis + closing paren: {:?}",
+            header.last().unwrap()
+        );
+        // Still no clipping past the width.
+        for l in &lines {
+            assert!(
+                cols(&plain(l)) <= 50,
+                "row stays within the width: {:?}",
+                plain(l)
+            );
+        }
+        // The continuations still align under the `(`.
+        let paren_col = cols("● Bash");
+        assert!(header[1].starts_with(&" ".repeat(paren_col)));
+    }
+
+    #[test]
+    fn tool_full_lines_keeps_the_whole_header_untruncated() {
+        // The Ctrl+O transcript view shows the entire command — no `…)` cap —
+        // however many rows it wraps to.
+        let cmd = "for i in {1..5}; do echo \"=== Iteration $i ===\" \
+                   && echo \"Current time: $(date)\" \
+                   && echo \"System uptime: $(uptime)\" \
+                   && echo \"Memory usage: $(free -h | grep Mem)\"; done";
+        let lines = tool_full_lines(&tool("Bash", cmd, ToolStatus::Ok, "out"), 50);
+        let header: Vec<String> = lines
+            .iter()
+            .take_while(|l| !plain(l).contains('⎿'))
+            .map(plain)
+            .collect();
+        assert!(
+            header.len() > TOOL_HEADER_MAX_ROWS,
+            "full view shows every header row: {header:?}"
+        );
+        let joined: String = header
+            .iter()
+            .map(|r| r.trim())
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(
+            !joined.contains('…'),
+            "no ellipsis truncation in the full view: {joined:?}"
+        );
+        assert!(
+            joined.trim_end().ends_with(')') && joined.contains("done"),
             "keeps the command tail and closing paren: {joined:?}"
         );
     }
@@ -9925,7 +10119,7 @@ mod tests {
         render_live(buf.area, &mut buf, &app);
         let rows: Vec<String> = (0..h).map(|y| row(&buf, y, width)).collect();
         // The header wraps: row 0 opens it, and at least one later row is an
-        // indented continuation (aligned under `● Bash(`), before the ⎿ row.
+        // indented continuation (aligned under the opening `(`), before the ⎿ row.
         assert!(
             rows[0].starts_with("● Bash("),
             "row 0 opens the header: {:?}",
@@ -9937,8 +10131,8 @@ mod tests {
             .expect("a ⎿ Running… row is drawn");
         assert!(running_y >= 2, "the header took ≥2 rows before ⎿: {rows:?}");
         assert!(
-            rows[1].starts_with(&" ".repeat(cols("● Bash("))),
-            "the header's second row is an aligned continuation: {:?}",
+            rows[1].starts_with(&" ".repeat(cols("● Bash"))),
+            "the header's second row aligns under the (: {:?}",
             rows[1]
         );
         // Nothing clipped: no drawn row exceeds the width.
