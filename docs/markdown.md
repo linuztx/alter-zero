@@ -25,10 +25,11 @@ The hard constraint throughout is **prefix-stability** (CLAUDE.md invariant 2):
 reply streams, so a construct whose rendering depends on *later* text must be
 **held back** until it settles. **Inline emphasis** needs this (a closing marker
 can restyle an already-wrapped row), reusing the same withholding machinery the
-code blocks introduced (`AssistantRenderer::in_code`). **Tables** used to need it
-too, but now **lock their column widths at the first data row and stream row-by-row**
-into scrollback (cells word-wrapping into the fixed widths) — see
-`docs/table-streaming.md`. See *Prefix-stable holdback*.
+code blocks introduced (`AssistantRenderer::in_code`). **Tables** need it for
+their whole block (a later row can re-fit every column, so the grid renders only
+when it closes) — but the strip **previews the entire forming table live**, so
+they still stream visually — see `docs/table-streaming.md`. See *Prefix-stable
+holdback*.
 
 ## What it looks like
 
@@ -322,16 +323,20 @@ render as bullets with a checkbox.
 
 **In — GFM pipe tables.** A header row, a **delimiter** row (`|---|:-:|`, its
 column count + alignments govern the grid), and data rows render as a box-drawing
-grid (dim borders, bold header cells, per-column alignment). The grid **streams
-row-by-row** into scrollback: `AssistantRenderer` locks the column widths at the
-first data row and emits each row as it arrives, cells **word-wrapping** into the
-fixed widths (taller rows) instead of truncating with `…` when the grid is narrow.
-At the lock it also decides grid vs. **key/value records**: when the grid would be
-too cramped to scan (columns starved narrow), each row instead renders as a Claude
-Code-style vertical `label: value` block (a capped `─` rule between rows) — still
-streamed, still prefix-stable, never `…`. See `docs/table-streaming.md` (the state machine,
-the width allocation, the records fallback, and the preview handling) — this
-replaced the old buffer-the-whole-table-then-`…`-shrink behavior.
+grid (dim borders, bold header cells, per-column alignment). The block is
+**buffered whole** and renders when it closes, with column widths fit to the
+header **and every data row** — so a wide later row can never shatter the grid —
+cells **word-wrapping** into the allocated widths (taller rows) instead of
+truncating with `…` when the grid is narrow. While the block is open the strip
+**previews the entire forming table** (re-rendered per frame, widths re-fitting
+as rows arrive), so a table still streams start-to-finish visually. At the close
+it also decides grid vs. **key/value records**: when the grid would be too
+cramped to scan (columns starved narrow), each row instead renders as a Claude
+Code-style vertical `label: value` block (a capped `─` rule between rows) —
+never `…`. See `docs/table-streaming.md` (the state machine, the width
+allocation, the records fallback, and the multi-row preview) — this replaced the
+lock-widths-at-the-first-data-row streaming, whose guessed widths wrapped any
+wider later row into slivers (the reported issue).
 
 **Cell content is inline-parsed** — a cell's `` `code` ``, `**bold**`, `*italic*`,
 `~~strike~~`, `[text](url)` etc. render styled like prose (codex parity), not as
@@ -363,21 +368,20 @@ handed to the regex engine.
 
 `StreamRender` flushes finished rows to real scrollback as the reply streams, so
 anything whose rendering depends on *later* text must be **held back** until it
-settles. Inline emphasis needs it; tables need it only *briefly* now (until their
-widths lock). Both reuse the code-block withholding mechanism
-(`AssistantRenderer::in_code`, which `StreamRender::commit` already consults to
-keep an in-progress *code* line out of scrollback):
+settles. Inline emphasis and tables both need it, reusing the code-block
+withholding mechanism (`AssistantRenderer::in_code`, which `StreamRender::commit`
+already consults to keep an in-progress *code* line out of scrollback):
 
-- **Tables — lock, then stream (`docs/table-streaming.md`).** `AssistantRenderer`
-  buffers only the header + delimiter (`PendingHeader` → `AwaitingRow`, emitting
-  **no rows**); `in_table()` reports that pre-lock phase and `StreamRender::commit`
-  withholds the trailing line while it holds. At the **first data row** the column
-  widths lock (from header + that row, fit to the width) and the opening + that row
-  emit; every later row wraps into the fixed widths and streams straight to
-  scrollback (`Streaming`), so a table is prefix-stable the moment it locks. The
-  only remaining per-row holdback is a **partial trailing data row**
-  (`markdown::is_table_row(tail_src)`), and the strip `preview` shows the last
-  *content* row (never the not-yet-real `└──┘`). Batch (`assistant_lines`) and
+- **Tables — buffer the block, preview it whole (`docs/table-streaming.md`).**
+  `AssistantRenderer` buffers the whole block (`PendingHeader` → `Buffering`,
+  emitting **no rows**); `in_table()` reports any open table and
+  `StreamRender::commit` withholds the trailing line while it holds (plus a
+  trailing table-row *candidate*, `markdown::is_table_row(tail_src)`, before the
+  renderer has consumed it). Because the buffering states emit nothing, no table
+  row can commit before the block closes — at which point it renders whole, with
+  column widths fit to **every** row. The strip `preview` meanwhile shows the
+  entire forming table (the batch render's uncommitted tail — a multi-row
+  preview), so the table still streams visually. Batch (`assistant_lines`) and
   streaming drive the one `AssistantRenderer`, so they render identically.
 - **Inline emphasis — line-newline gating.** Because emphasis is line-local, a
   *complete* line is always final; only the **trailing partial** line can restyle
@@ -397,9 +401,11 @@ The differential test `ui::tests::stream_render_matches_batch_render_on_every_pr
 drives `StreamRender` over **every char-prefix** of a large corpus (tables,
 inline emphasis, nested lists, blockquotes, links, task lists, the marker-reveal
 flip) at widths 3–40 and asserts the committed rows are always a stable prefix of
-the batch render, the final flush reconstructs it exactly, and the preview equals
-the batch's last row. It is the guardrail for every construct here — extend it,
-never weaken it, when touching the renderer.
+the batch render, the final flush reconstructs it exactly, and the preview is a
+**suffix** of the batch render — its last row outside tables, the whole
+uncommitted tail (with `committed + preview` spanning the entire render) while a
+table is open. It is the guardrail for every construct here — extend it, never
+weaken it, when touching the renderer.
 
 ### The preview row is never also committed
 
@@ -411,7 +417,9 @@ ending in `\n` completes a line, and on a slow model the gap before the next
 chunk makes the duplicate linger). So `commit` withholds the **last non-blank
 row** (`StreamRender::stable_keeping_preview_row`), not merely the still-growing
 trailing line: a just-completed line stays in the preview and only commits once
-newer content arrives (or at `finish`). `preview` then always reports an
-uncommitted row. `ui::tests::preview_never_shows_a_committed_row_while_streaming`
-drives real streaming order (commit before the draw's preview) over every prefix
-and asserts the preview is never a row already committed.
+newer content arrives (or at `finish`). `preview` then always reports
+uncommitted rows — one outside a table, the whole forming block while one is
+open (`docs/table-streaming.md`).
+`ui::tests::preview_never_shows_a_committed_row_while_streaming` drives real
+streaming order (commit before the draw's preview) over every prefix and asserts
+no preview row is already committed.

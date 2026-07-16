@@ -77,7 +77,7 @@ fn part_a() {
                 let _ = r.commit(&reply[..split], WIDTH);
                 let start = Instant::now();
                 let _ = r.commit(&reply, WIDTH);
-                let _ = r.preview(&reply, WIDTH);
+                let _ = r.preview(&reply, WIDTH, usize::MAX);
                 start.elapsed()
             },
             5,
@@ -111,7 +111,7 @@ fn part_a() {
         i = end;
         let t = Instant::now();
         let _ = render.commit(&buf, WIDTH);
-        let _ = render.preview(&buf, WIDTH);
+        let _ = render.preview(&buf, WIDTH, usize::MAX);
         new_total += t.elapsed();
         chunks += 1;
     }
@@ -158,7 +158,7 @@ fn part_a() {
                     .unwrap();
                 let _ = r.commit(&reply[..split], WIDTH);
                 let start = Instant::now();
-                let _ = r.preview(&reply, WIDTH);
+                let _ = r.preview(&reply, WIDTH, usize::MAX);
                 start.elapsed()
             },
             5,
@@ -235,7 +235,7 @@ fn part_b() {
         let commit = t0.elapsed();
 
         let t1 = Instant::now();
-        let _ = render.preview(&buf, WIDTH);
+        let _ = render.preview(&buf, WIDTH, usize::MAX);
         let preview = t1.elapsed();
 
         commit_total += commit;

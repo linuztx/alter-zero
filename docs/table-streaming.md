@@ -1,191 +1,176 @@
-# Streaming GFM tables (progressive, wrapping grid)
+# Streaming GFM tables (buffered whole, previewed live)
 
-GFM pipe tables (`docs/markdown.md`) used to be **buffered whole** and committed
-to scrollback only once the block closed — a later row can widen a column, so the
-grid wasn't prefix-stable (CLAUDE.md invariant 2). Two problems fell out of that:
+GFM pipe tables (`docs/markdown.md`) went through two designs before this one:
 
-1. **They didn't stream.** While a long table generated, the strip preview showed
-   `clone.flush()`'s *last* row — the `└──┴──┘` bottom border — floating above the
-   box, and the whole grid popped into scrollback at the close. For a big table
-   that's a long stare at a lonely border.
-2. **Narrow tables truncated with `…`.** When the natural grid overflowed the
-   width, columns shrank and cells were cut with a trailing `…` (`fit_cell_spans`
-   / `truncate_segments` / `shrink_table_columns`). Content was lost.
+1. **Buffered whole, invisible while forming.** The block committed to scrollback
+   only at the close (a later row can widen a column, so a grid isn't
+   prefix-stable — CLAUDE.md invariant 2). Correct, but the strip preview was one
+   row, so a long table was a blank stare at its last row until the whole grid
+   popped in at the close.
+2. **Column widths locked at the first data row, streamed row-by-row.** Each row
+   committed as it arrived, wrapping into widths locked from the header + first
+   data row. That made tables *stream*, but the lock is a guess about rows that
+   haven't arrived: whenever a later row is wider than the first, its cells
+   wrap into slivers. The reported issue is the canonical failure — a key/value
+   weather table whose header is **empty** (`| | |`) and whose first row is the
+   narrow `| **Time** | 03:00 (CEST, GMT+2) |`: the widths locked at [4, 19]
+   and every later row shattered (`Temp`/`erat`/`ure`, `10.1 km/h from NNE`/
+   `(28°)`). No early lock can be right in general, and because batch and
+   streaming share one renderer, the resize/Ctrl+O repaint showed the same
+   broken grid.
 
-This change makes tables **stream row-by-row into scrollback** (like prose) and
-**word-wrap their cells into taller rows** instead of truncating — matching how
-codex renders tables (wide → a tight grid; narrow → the same grid with cells
-wrapped across lines, never `…`). See the before/after in the repo's issue images
-(img1 = the old `…` grid; img2 = the wrapped grid).
+This design keeps the correctness of (1) and the streaming feel of (2), the way
+Claude Code does it: **the table renders only when its widths are final, but the
+user watches it form in the live region the whole time.**
 
-**Very narrow → key/value records.** When even the wrapped grid is too cramped to
-scan — columns starved so narrow that cells fragment into a tall sliver — the block
-renders as **key/value records** instead: each data row becomes a vertical
-`label: value` list (one field per column), rows divided by a dim `─` rule. This is
-the key/value transpose (codex's `table_key_value.rs`, Claude Code's compact
-`label: value` look), adapted to our streaming model — the grid-vs-records choice
-is made **once, at the same first-data-row lock** as the column widths, so records
-stream row-by-row and stay prefix-stable too. Never `…`, always readable at any
-width. See *The records fallback* below.
+## The idea: buffer the block, preview the whole forming table
 
-The field form is Claude Code's `label: value` — the **bold** label, a `: `
-separator, then the value; **no** aligned label column and **no** trailing padding,
-so short fields read clean and compact (rather than a padded `label⎵⎵value` grid).
-The inter-record `─` rule is **capped** at `TABLE_RECORD_SEPARATOR_WIDTH` (40)
-rather than spanning the full content width — a wide records table's full-width rule
-looked heavy; it still shrinks to fit a narrower content width.
+- **Rendering**: a table's source lines are buffered (`TableState::Buffering`)
+  and the block renders **whole** when it closes — a non-table line, an
+  interrupting code fence, or end-of-message (`flush`). Column widths come from
+  the header **and every data row** (`table_column_widths` →
+  `allocate_column_widths`), so the grid always fits its real content: wide
+  terminal → a tight natural grid; narrow → proportional shrink with cells
+  word-wrapping into taller rows (never `…`). The grid-vs-records decision
+  (below) is made from the same full knowledge.
+- **Streaming**: while the block is open, nothing of it commits to scrollback
+  (scrollback is immutable; a committed row can't be re-widened). Instead the
+  streaming **strip previews the entire forming table** — `StreamRender::preview`
+  returns the batch render's *uncommitted tail*, which during a table is the
+  whole block rendered from the rows seen so far (a partial trailing `| cell…`
+  row included). The strip is a live region redrawn every frame, so the grid
+  visibly grows row-by-row and its columns re-fit as wider cells arrive —
+  exactly the Claude Code experience. On the close, the finished block (identical
+  to the last preview) commits in one shot and the strip empties: visually the
+  table "freezes" in place.
 
-## The idea: lock column widths at the first data row
+The preview generalizes from "the last rendered row" (one row) to "the batch
+render's uncommitted tail" (n rows) only while a table is open; prose, code, and
+every other construct keep the old single-row preview. A running tool's cell
+already previews multi-row, so the strip machinery was ready for this.
 
-A table can't be prefix-stable *and* size its columns to every row — the later
-rows aren't known when the early ones commit. So we **lock the column widths once,
-at the first data row**, from the header + that row (fit to the width). After the
-lock the grid is a pure left-to-right render: every subsequent row **wraps into
-the fixed widths** (never widening them), so its rows are prefix-stable and commit
-to scrollback one at a time, exactly like prose lines.
+### Why this is prefix-stable by construction
 
-The trade-off (accepted deliberately): in a **wide** terminal, if a *later* row
-has an unusually wide cell it wraps into the header+row-1 width rather than forcing
-the whole column wider. In practice the first data row is representative, and this
-is the price of true streaming with immutable scrollback. The batch renderer uses
-the **same** lock rule (it drives the same `AssistantRenderer`), so a table looks
-identical whether it streamed, was repainted after a resize, or is shown in the
-Ctrl+O transcript — no reflow surprises.
+`StreamRender::commit` withholds the trailing line while the renderer is inside
+an open table (`AssistantRenderer::in_table`, every table state) or while the
+trailing line is a table-row candidate (`markdown::is_table_row`). Since the
+buffering states emit **no rows**, `frozen` simply doesn't grow while the table
+accumulates — there is no committed table row to invalidate. The whole block
+lands in `frozen` at the close (or `finish`), after which it commits like any
+settled rows. Batch (`assistant_lines`) and streaming drive the one
+`AssistantRenderer`, so scrollback, the strip, the resize repaint, and the
+Ctrl+O transcript agree by construction.
 
 ## The state machine (`ui::AssistantRenderer` / `TableState`)
 
 ```
 None ──(a table-row candidate)──▶ PendingHeader(header)
-PendingHeader ──(matching delimiter)──▶ AwaitingRow{header, aligns}      // emits nothing yet
+PendingHeader ──(matching delimiter)──▶ Buffering{header, aligns, rows: []}
              ──(not a delimiter)──────▶ render the header as prose, reprocess the line
-AwaitingRow  ──(first data row)───────▶ lock widths, then DECIDE:
-               • scannable grid  ──▶ emit ┌header┤ + row1; ▶ Streaming{col_w, aligns}
-               • too cramped     ──▶ emit row1's record block; ▶ Records{labels}
-             ──(non-table line)───────▶ header-only table: ┌header┤ + └──┘, reprocess the line
-Streaming    ──(data row)─────────────▶ wrap the row into col_w, emit it (stays Streaming)
-             ──(non-table line)───────▶ emit └──┘ (close), reprocess the line
-Records      ──(data row)─────────────▶ emit a `─` rule + the row's record block (stays Records)
-             ──(non-table line)───────▶ close (no border), reprocess the line
+Buffering    ──(data row)─────────────▶ rows.push(line)            // emits nothing
+             ──(non-table line)───────▶ emit table_block_rows(header, aligns, rows),
+                                        reprocess the line
 ```
 
 `flush()` (end-of-message / a code fence interrupting) closes an open table the
-same way: `AwaitingRow` → header-only grid, `Streaming` → the bottom border,
-`Records` → nothing (records have no bottom border).
+same way: `PendingHeader` → the prose line it actually was, `Buffering` → the
+whole block (a header-only table renders as the opening + bottom border).
 
-Because rows are emitted **incrementally** and flow through the normal `stamp` →
-`frozen` pipeline, `assistant_lines` (batch) and `StreamRender` (streaming) drive
-the one `AssistantRenderer` core and agree by construction — the differential test
-`stream_render_matches_batch_render_on_every_prefix` (extended with wrapping-table
-*and* records entries) still holds.
+`table_block_rows(header, aligns, rows, width)` is THE table renderer — both the
+batch path and the close/flush/preview paths emit a table only through it:
+widths from all rows, then either the box-drawing grid (`table_open_rows` +
+`table_row_lines` per row + the bottom border) or the key/value records.
 
-### The records fallback (key/value transpose)
+## The records fallback (key/value transpose)
 
-`table_should_use_records(header, first_row, col_w)` is the grid-vs-records
-decision, made at the lock from the header + first row (like the width lock, and
-with the same "the first row is representative" trade-off). It returns true when a
-column is **both** narrow (`< TABLE_SCANNABLE_COL`, 12) **and** its header/first-row
-content wraps into `≥ TABLE_RECORDS_MIN_LINES` (3) rows at the locked width — i.e.
-the grid is growing tall because columns are *starved*, not merely because one wide
-cell is a legitimately long narrative (a wide column, `≥ 12`, never triggers it). A
-single-column table is a list, never records.
+When even the wrapped grid is too cramped to scan — a column **both** narrow
+(`< TABLE_SCANNABLE_COL`, 12) **and** holding a cell that wraps into
+`≥ TABLE_RECORDS_MIN_LINES` (3) rows at its allocated width — the block renders
+as vertical **key/value records** instead (Claude Code's compact `label: value`
+form, codex's `table_key_value.rs`): each data row becomes one record — per
+column a **bold** label, `: `, the value wrapped with continuation lines aligned
+under it (stacking label-over-value when even that won't fit) — records divided
+by a dim `─` rule capped at `TABLE_RECORD_SEPARATOR_WIDTH` (40). The decision
+(`table_should_use_records`) now checks **every** buffered row, not just the
+first — full knowledge, same as the widths. A single-column table is a list,
+never records. Nothing is ever `…`'d.
 
-`table_record_block(labels, row, content_width)` renders one row as a vertical
-record in Claude Code's compact form: for each column a `label: value` field — the
-**bold** label, a `: ` separator, then the value inline-parsed and wrapped, with the
-continuation lines of a wrapped value aligned under the value (`wrap_inline`, so
-nothing is ever `…`'d). There is **no** aligned label column and **no** trailing
-padding. When even `label: ` plus `TABLE_RECORD_MIN_VALUE` won't fit, the field
-**stacks** (label + `:` on its own line, value indented beneath). Between records a
-dim `─` rule (`table_record_separator`) **capped** at `TABLE_RECORD_SEPARATOR_WIDTH`
-(40, shrinking to fit a narrower content width), emitted **before**
-each non-first record (the first row emits at the lock), so the block streams
-row-by-row and is prefix-stable. `Records` is a post-lock state like `Streaming`, so
-`in_table()` is false there and a **partial trailing data row** is the only holdback
-(the same `markdown::is_table_row` check `Streaming` uses).
+## The multi-row preview (`StreamRender::preview`)
 
-### Holdback: only *before* the lock
+`preview(text, width, max_rows)` returns the strip's preview **lines**:
 
-`AssistantRenderer::in_table()` now reports **only** the pre-lock buffering states
-(`PendingHeader` / `AwaitingRow`) — the phase that emits no rows. `StreamRender::commit`
-withholds the trailing line while that holds (as before). Once `Streaming`, the
-emitted rows commit through the normal prose path; the only thing still held back
-is a **partial trailing data row** (`markdown::is_table_row(tail_src)`), because an
-early wrapped row of a growing row could change once the rest of the row arrives.
+- Outside a table: the old single row — the last non-blank rendered row (the one
+  `commit` withholds via `stable_keeping_preview_row`, so a completed line is
+  never in scrollback and the strip at once), with the bullet-home fallback for
+  a zero-row reply.
+- While a table is open (the renderer's state entering the trailing line, or the
+  clone's state after feeding it): **every uncommitted row** — `frozen` past
+  `committed` (e.g. the withheld blank between the pre-table prose and the
+  table), the trailing line fed to a clone, then the clone's `flush()` rendering
+  the block-so-far, closing border included. That is exactly the batch render's
+  tail, so `committed ++ preview == assistant_lines(prefix)` — the whole reply
+  is visible at every moment, split between scrollback and the strip.
+  An **empty** trailing line is *not* fed to the clone (a chunk boundary right
+  after a newline would close the block early); the flush renders the buffered
+  rows either way.
+- The result is capped to its **last** `max_rows` rows, so a table taller than
+  the screen tail-follows its frontier (the newest rows stay visible; the top
+  border scrolls out of the strip and reappears when the block commits whole).
 
-## Column allocation + cell wrapping (`ui.rs`)
+### Geometry: the strip must reserve what the preview draws
 
-- `allocate_column_widths(natural, avail)` — fits the natural grid when it fits;
-  otherwise distributes the content width across columns **proportionally to their
-  natural width** (so a wide column stays wide, like img2's email column), floored
-  at `TABLE_MIN_COL` (3). The shrunk widths are **wrap** widths, not truncation
-  widths.
-- `table_row_lines(cells, col_w, aligns)` — word-wraps each cell into its column
-  (`wrap_inline`, which hard-breaks an over-wide token grapheme-by-grapheme, so a
-  long email or a CJK run still fits by wrapping, never `…`). A data row spans as
-  many rows as the tallest wrapped cell; each sub-row is `│`-framed, per-column
-  padded/aligned, blank where a shorter cell has no line.
-- `table_border_row` / `table_open_rows` — the `┌┬┐` / `├┼┤` / `└┴┘` borders and
-  the opening (top border + wrapped bold header + separator). `lock_widths_for`
-  computes the locked widths from the header (+ optional first row).
-- `table_should_use_records` / `table_record_block` / `table_record_separator` —
-  the records fallback (above): the decision, one row's `label: value` block, and
-  the capped inter-record `─` rule. `normalize_raw_cells` / `table_header_style` are
-  the small shared helpers.
+`ui::preview_rows` sizes the strip's preview slot, and `live_height` /
+`cursor_position` / `render_live_with_preview` all consume it — but only the
+boundary's `StreamRender` knows the forming table's height. The boundary
+computes the preview once per frame (`main.rs::stream_preview_lines`, passing
+`ui::stream_preview_max_rows(screen.height)` as the cap — the screen minus the
+strip/box/footer chrome, floored) and injects its row count into the pure state
+via `App::set_stream_preview_rows` — the `set_status_times` /`set_clock`
+boundary-injection pattern. `preview_rows` reports that count while a reply
+streams (1 when nothing multi-row was injected, so unit tests and the
+render fallback keep the old single-row behaviour), and the strip's
+`debug_assert` still pins drawn-lines == reserved-rows.
 
-`truncate_segments` / `fit_cell_spans` / `shrink_table_columns` are gone (no more
-`…`). `table_content_rows` survives only as a `#[cfg(test)]` convenience that
-renders a complete **grid** table through the same helpers (it doesn't apply the
-records decision — tests exercise records through the real `AssistantRenderer`).
+## Trade-offs (accepted deliberately)
 
-## The preview never floats a bottom border (`StreamRender::preview`)
-
-The strip preview is one row. While a table streams it must show the last **content**
-row, never the not-yet-real `└──┘`. So `preview`:
-
-- does **not** flush the clone (a `Streaming` table's rows already committed; its
-  bottom border only becomes real at `finish`);
-- does **not** feed an *empty* trailing line into an open table (a chunk boundary
-  that ended right after a newline would otherwise close it and emit the border) —
-  the last emitted row (in `frozen`) previews instead;
-- renders the *forming* table for the pre-lock states via `flush_table_preview`
-  (`PendingHeader` → the header as prose; `AwaitingRow` → the top border + header +
-  separator), so it shows the table taking shape rather than falling back to an
-  already-committed pre-table line (which would duplicate it).
-
-`tail_rows` (which `commit`'s stable-boundary math uses) carries the **same**
-empty-trailing-in-a-table guard, so `commit` and `preview` agree on where the
-frontier is — otherwise `commit` would close the table and commit the last data row
-that the strip is previewing (a duplicate). `finish` (end-of-turn) *does* feed the
-trailing line and flush, so the real bottom border commits exactly once.
+- A table's rows reach **scrollback** only at the close. They are never
+  invisible — the strip shows every row the moment it arrives, correctly laid
+  out — but terminal scrollback (and anything reading it, e.g. tmux copy mode)
+  sees the block appear at once. That is the price of immutable scrollback +
+  correct widths, and it is how Claude Code behaves.
+- While forming, the grid's columns may visibly re-fit as wider rows arrive
+  (the strip re-renders per frame). That is the point: the *committed* grid is
+  final and correct.
+- A table taller than `stream_preview_max_rows` previews only its newest rows
+  while forming (tail-follow). The committed block is always complete.
 
 ## Tests
 
-- `narrow_table_wraps_cells_into_taller_rows_no_ellipsis` — narrow grid wraps, no
-  `…`, cell content preserved across the wrapped rows.
-- `very_narrow_table_renders_as_key_value_records` — a very narrow table flips to
-  records: no box-drawing, every label present, content preserved (no `…`), a `─`
-  rule between rows.
-- `moderately_narrow_table_stays_a_wrapping_grid` — the fallback doesn't
-  over-trigger: a moderately narrow table is still a grid.
-- `table_should_use_records_only_when_narrow_and_cramped` — the pure decision
-  (wide → grid, very narrow → records, single-column → never).
-- `allocate_column_widths_fits_naturally_or_shrinks_proportionally` — the pure
-  width math (fit vs. proportional shrink, floor).
-- `table_cells_wrap_across_rows_instead_of_truncating` — a too-wide (CJK) cell
-  wraps grapheme-by-grapheme, nothing lost.
-- `table_streams_row_by_row_to_scrollback` — the top border + rows commit **before**
-  the table closes (progressive), and the preview never shows a `└──┘` mid-stream.
-- `stream_render_matches_batch_render_on_every_prefix` — extended with a
-  wrapping-table entry; streamed commits + `finish` still reconstruct the batch
-  render at every prefix/width (prefix-stability).
-- `preview_never_shows_a_committed_row_while_streaming` — extended with a table;
-  the progressive preview never duplicates a committed row.
+- `assistant_table_sizes_columns_from_all_rows` — the reported bug: the weather
+  table (empty header, narrow first row, wider later rows) renders with
+  `Temperature` / `10.1 km/h from NNE (28°)` on single lines at width 80.
+- `stream_render_withholds_a_table_until_it_closes` — an open table commits
+  nothing; `finish` flushes the whole block, matching batch.
+- `table_commits_whole_and_previews_while_forming` — mid-stream: no table row
+  in scrollback, the preview shows the forming grid (borders + rows so far),
+  and `committed ++ preview` equals the batch render of every prefix; at the
+  close the whole grid commits.
+- `table_preview_caps_to_its_newest_rows` — the `max_rows` cap keeps the tail.
+- `stream_render_matches_batch_render_on_every_prefix` — the differential
+  guardrail, strengthened: the preview is now asserted to be a **suffix** of the
+  batch render at every prefix/width (and, while a table is open,
+  `committed + preview` to be the *whole* batch render).
+- `preview_never_shows_a_committed_row_while_streaming` — unchanged property,
+  now over every preview row.
+- The pure helpers keep their tests (`allocate_column_widths_*`,
+  `table_cells_wrap_*`, records deciders/renderers, `table_content_rows_*`).
 
 ## What's unchanged
 
-A table wrapped in a code fence (```` ```table ```` ) is still **verbatim code**,
-not a grid — code blocks take precedence (`CodeStart` flushes any open table).
-Detection is still `markdown::is_table_row` / `table_delimiter`; a pipe-less or
-column-mismatched "table" is still prose. Verified end-to-end against a real model
-(`openai/gpt-4o-mini` via OpenRouter): a bare GFM table streams as a progressive
-wrapped grid; a fenced one renders as code.
+A table wrapped in a code fence is still verbatim code (a `CodeStart` flushes
+any open table first). Detection is still `markdown::is_table_row` /
+`table_delimiter`; a pipe-less or column-mismatched "table" is still prose.
+Cells are still inline-parsed and columns sized to *rendered* widths
+(`docs/markdown.md`). Verified end-to-end against a real model via OpenRouter:
+the issue's weather table streams as a live forming grid and commits with
+columns fit to every row; a fenced one renders as code.

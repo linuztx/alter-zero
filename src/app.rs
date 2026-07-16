@@ -1356,6 +1356,16 @@ pub struct App {
     /// [`streaming_text`]: App::streaming_text
     /// [`is_streaming`]: App::is_streaming
     streaming: Option<String>,
+    /// The streaming strip preview's row count, injected by the boundary before
+    /// each draw ([`set_stream_preview_rows`], the [`set_status_times`]
+    /// pattern): 1 for a normal reply's single-row preview, the forming block's
+    /// height while a table streams — so `ui::preview_rows` reserves exactly
+    /// the rows `ui::StreamRender::preview` renders. See
+    /// `docs/table-streaming.md`.
+    ///
+    /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
+    /// [`set_status_times`]: App::set_status_times
+    stream_preview_rows: u16,
     /// The live tool calls of the current turn, front-first: the front is the
     /// running (status [`ToolStatus::Running`]) or about-to-run call, and any
     /// calls behind it are [`ToolStatus::Waiting`] siblings of a **parallel
@@ -3869,6 +3879,9 @@ impl App {
     /// start the live turn status (pick this turn's verbs, reset the tally).
     pub fn begin_stream(&mut self) {
         self.streaming = Some(String::new());
+        // A fresh turn starts with the single-row preview; the boundary
+        // re-injects the real count each frame (a forming table grows it).
+        self.stream_preview_rows = 1;
         let verb = WORKING_VERBS[self.turn_count % WORKING_VERBS.len()];
         let done_verb = DONE_VERBS[self.turn_count % DONE_VERBS.len()];
         self.turn_count = self.turn_count.wrapping_add(1);
@@ -4027,6 +4040,28 @@ impl App {
             status.elapsed = elapsed;
             status.thinking = thinking;
         }
+    }
+
+    /// Inject the streaming strip preview's row count before a draw (the
+    /// [`set_status_times`] pattern): only the boundary's `ui::StreamRender`
+    /// knows how many rows the preview renders — one for a normal reply, the
+    /// whole forming block while a table streams — and `ui::preview_rows` /
+    /// `ui::live_height` / `ui::cursor_position` must all reserve exactly what
+    /// the strip draws. See `docs/table-streaming.md`.
+    ///
+    /// [`set_status_times`]: App::set_status_times
+    pub fn set_stream_preview_rows(&mut self, rows: u16) {
+        self.stream_preview_rows = rows;
+    }
+
+    /// The boundary-injected streaming-preview row count (see
+    /// [`set_stream_preview_rows`]; 0 until a draw injects one — consumers
+    /// floor at 1, the single-row preview).
+    ///
+    /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
+    #[must_use]
+    pub const fn stream_preview_rows(&self) -> u16 {
+        self.stream_preview_rows
     }
 
     /// The reply text accumulated so far, or `None` when idle.

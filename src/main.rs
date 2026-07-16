@@ -322,7 +322,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // the main screen underneath — invariant 3).
                                     repaint_conversation(
                                         term,
-                                        &app,
+                                        &mut app,
                                         &mut render,
                                         overlay_return_clear(&mut overlay_resized),
                                     )?;
@@ -384,7 +384,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // resize landed under the overlay, which forces
                                     // the purge-rebuild every resize gets.
                                     repaint_conversation(
-                                        term, &app, &mut render,
+                                        term, &mut app, &mut render,
                                         overlay_return_clear(&mut overlay_resized),
                                     )?;
                                 }
@@ -398,7 +398,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 } else {
                                     term.exit_overlay()?;
                                     repaint_conversation(
-                                        term, &app, &mut render,
+                                        term, &mut app, &mut render,
                                         overlay_return_clear(&mut overlay_resized),
                                     )?;
                                 }
@@ -467,7 +467,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // the old conversation must be gone from
                                 // scrollback too, so scrolling up shows nothing.
                                 repaint_conversation(
-                                    term, &app, &mut render, ReflowClear::Purge,
+                                    term, &mut app, &mut render, ReflowClear::Purge,
                                 )?;
                             }
                             Action::Interrupt => {
@@ -507,7 +507,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         // the empty queue is the undo's
                                         // precondition. See docs/interrupt.md.
                                         repaint_conversation(
-                                            term, &app, &mut render, ReflowClear::Purge,
+                                            term, &mut app, &mut render, ReflowClear::Purge,
                                         )?;
                                     }
                                     Some(InterruptedTurn::Kept { partial, tool, notice }) => {
@@ -559,7 +559,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // overlay and repaint, the Ctrl+O return.
                                 term.exit_overlay()?;
                                 repaint_conversation(
-                                    term, &app, &mut render,
+                                    term, &mut app, &mut render,
                                     overlay_return_clear(&mut overlay_resized),
                                 )?;
                             }
@@ -597,13 +597,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         // record (its earlier turns were never
                                         // scrollback-committed in this run).
                                         repaint_conversation(
-                                            term, &app, &mut render, ReflowClear::Purge,
+                                            term, &mut app, &mut render, ReflowClear::Purge,
                                         )?;
                                     }
                                     None => {
                                         app.close_resume_picker();
                                         term.exit_overlay()?;
-                                        repaint_conversation(term, &app, &mut render, clear)?;
+                                        repaint_conversation(term, &mut app, &mut render, clear)?;
                                         commit_error_notice(
                                             term, &mut app, &mut render,
                                             &format!(
@@ -813,7 +813,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         // screen).
                         if size_changed && app.view == View::Conversation {
                             repaint_conversation(
-                                term, &app, &mut render, ReflowClear::Purge,
+                                term, &mut app, &mut render, ReflowClear::Purge,
                             )?;
                         } else if size_changed {
                             // Under an overlay the inline view can't reflow
@@ -906,11 +906,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 }
                 match app.view {
                     View::Conversation => {
-                        // Compute the strip preview cheaply (O(one line)) once per
-                        // frame, so the status animation never re-renders the whole
-                        // reply. See `docs/markdown.md`.
-                        let preview = stream_preview_line(&app, &mut render, term.screen().width);
-                        draw(term, &app, preview.as_ref())?;
+                        // Compute the strip preview cheaply once per frame (O(one
+                        // line); a forming table re-renders just its own block),
+                        // so the status animation never re-renders the whole
+                        // reply — and inject its row count so the layout reserves
+                        // it. See `docs/markdown.md`, `docs/table-streaming.md`.
+                        let preview = stream_preview_lines(&mut app, &mut render, term.screen());
+                        draw(term, &app, preview.as_deref())?;
                     }
                     View::ToolOutput => draw_tool_view(term, &mut app, &mut transcript)?,
                     View::ResumePicker => draw_resume_picker(term, &app)?,
@@ -2008,22 +2010,27 @@ const RESIZE_REFLOW_MAX_ROWS: usize = 10_000;
 /// [`InPlace`]: ReflowClear::InPlace
 fn repaint_conversation(
     term: &mut InlineViewport,
-    app: &App,
+    app: &mut App,
     render: &mut ui::StreamRender,
     clear: ReflowClear,
 ) -> io::Result<()> {
     let screen = term.screen();
-    let height = live_region_height(app, screen);
-    let budget = match clear {
-        ReflowClear::Purge => RESIZE_REFLOW_MAX_ROWS,
-        ReflowClear::InPlace => ui::repaint_budget(screen.height, height),
-    };
     if clear == ReflowClear::Purge {
         // The purge drops every committed row (screen and scrollback alike),
         // so nothing is "already committed" any more: reset, and let the
         // catch-up below re-commit the whole partial at the current width.
         render.reset();
     }
+    // The preview comes FIRST: it injects the strip's preview row count
+    // (`set_stream_preview_rows` — a forming table previews multi-row) that
+    // `live_region_height` below must reserve (docs/table-streaming.md).
+    let preview = stream_preview_lines(app, render, screen);
+    let app: &App = app;
+    let height = live_region_height(app, screen);
+    let budget = match clear {
+        ReflowClear::Purge => RESIZE_REFLOW_MAX_ROWS,
+        ReflowClear::InPlace => ui::repaint_budget(screen.height, height),
+    };
     let tail = ui::repaint_tail(
         &app.history,
         app.streaming_text(),
@@ -2031,12 +2038,11 @@ fn repaint_conversation(
         screen.width,
         budget,
     );
-    let preview = stream_preview_line(app, render, screen.width);
     term.reflow(
         tail,
         height,
         clear,
-        |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_ref()),
+        |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
         app,
     )?;
     // Catch scrollback up on what streamed while the overlay was showing (or,
@@ -2063,30 +2069,45 @@ fn overlay_return_clear(overlay_resized: &mut bool) -> ReflowClear {
     }
 }
 
-/// The strip's streaming preview: the reply's last rendered line, computed
-/// cheaply by [`ui::StreamRender::preview`] (O(one line)) — or `None` when idle
-/// or while a tool runs (the tool's own header previews instead). Called before
-/// every conversation-view draw so the status animation never pays to re-render
-/// the whole reply. See `docs/markdown.md`.
-fn stream_preview_line(
-    app: &App,
+/// The strip's streaming preview: the reply's last rendered line — or, while a
+/// table is forming, the whole forming block (capped to
+/// [`ui::stream_preview_max_rows`] so its frontier tail-follows on a small
+/// screen) — computed cheaply by [`ui::StreamRender::preview`]; `None` when
+/// idle or while a tool runs (the tool's own header previews instead). Called
+/// before every conversation-view draw so the status animation never pays to
+/// re-render the whole reply, and **injects the row count into `App`**
+/// ([`App::set_stream_preview_rows`]) so `ui::preview_rows` — and with it
+/// `live_region_height`, the strip layout, and the cursor seat — reserve
+/// exactly the rows the strip draws. See `docs/markdown.md`,
+/// `docs/table-streaming.md`.
+fn stream_preview_lines(
+    app: &mut App,
     render: &mut ui::StreamRender,
-    width: u16,
-) -> Option<Line<'static>> {
-    match app.streaming_text() {
-        Some(text) if !text.is_empty() && app.current_tool().is_none() => {
-            render.preview(text, width)
-        }
+    screen: Rect,
+) -> Option<Vec<Line<'static>>> {
+    let preview = match app.streaming_text() {
+        Some(text) if !text.is_empty() && app.current_tool().is_none() => Some(render.preview(
+            text,
+            screen.width,
+            ui::stream_preview_max_rows(screen.height),
+        )),
         _ => None,
-    }
+    };
+    app.set_stream_preview_rows(
+        preview
+            .as_ref()
+            .map_or(1, |p| u16::try_from(p.len()).unwrap_or(u16::MAX)),
+    );
+    preview
 }
 
 /// Render the live region at its current grown height and place the cursor.
 /// The composer keeps its cursor even while a reply streams (codex-style —
 /// typing mid-turn edits the draft, Enter queues it); only the Ctrl+O overlay
 /// hides it (`enter_overlay`). `preview` is the streaming strip's precomputed
-/// last line (see [`stream_preview_line`]).
-fn draw(term: &mut InlineViewport, app: &App, preview: Option<&Line<'static>>) -> io::Result<()> {
+/// line(s) (see [`stream_preview_lines`], which also injected their count so
+/// `live_region_height` here reserves what the strip draws).
+fn draw(term: &mut InlineViewport, app: &App, preview: Option<&[Line<'static>]>) -> io::Result<()> {
     let height = live_region_height(app, term.screen());
     // `term` places the cursor from the final (content-anchored) viewport via
     // `ui::cursor_position`, which mirrors render_live's layout exactly.
