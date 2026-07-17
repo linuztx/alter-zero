@@ -463,7 +463,8 @@ const MODEL_ACTIVE_MARK: &str = " ✓";
 /// The label opening the friendly-name line under the list.
 const MODEL_NAME_LABEL: &str = "Model Name: ";
 /// The most model rows shown at once; longer lists scroll to keep the selection
-/// visible (`menu_window`), like the palette.
+/// **centered** (`centered_window`) so the user sees the models above and below
+/// it, not just up to the edge it last crossed.
 const MODEL_MENU_MAX_ROWS: u16 = 10;
 /// The list placeholder while the fetch is in flight.
 const MODEL_LOADING: &str = "Loading models…";
@@ -501,7 +502,8 @@ const LOGIN_KEY_PLACEHOLDER: &str = "paste your API key, then press Enter";
 const LOGIN_MASK_CHAR: char = '•';
 /// The list placeholder when the provider filter matches nothing.
 const LOGIN_NO_MATCH: &str = "No matching providers";
-/// The most provider rows shown at once (longer lists scroll, like the palette).
+/// The most provider rows shown at once (longer lists scroll to keep the
+/// selection **centered**, like the `/model` list — `centered_window`).
 const LOGIN_MENU_MAX_ROWS: u16 = 8;
 /// Fixed rows framing the **provider** step (headerless): top rule, gap, search,
 /// gap, (list), counter, gap, hint, gap, bottom rule.
@@ -2774,6 +2776,29 @@ pub fn menu_window(len: usize, selected: usize, max: usize) -> usize {
     }
 }
 
+/// The scroll offset (first visible match index) that keeps `selected`
+/// **centered** in a window of `max` rows: the selection rides the middle row
+/// (`max/2`) while there is room on both sides, so the user always sees as much
+/// of the list *above and below* the highlight as fits — the "broad view" the
+/// `/model` and `/login` pickers want. Near the ends the window can't center
+/// (there aren't enough rows on one side), so it anchors: the top for the first
+/// `max/2` selections, the bottom (flush with the tail) for the last. Clamped to
+/// `[0, len - max]`.
+///
+/// Unlike [`menu_window`] — which only scrolls once the selection would leave
+/// the window, pinning it to whichever edge it exited — this recenters on every
+/// move, which is what stops the highlight getting stuck against the bottom row
+/// of a long model list.
+#[must_use]
+pub fn centered_window(len: usize, selected: usize, max: usize) -> usize {
+    if max == 0 || len <= max {
+        return 0;
+    }
+    // Put the selection on the middle row, then clamp so the window never runs
+    // off either end (`len - max` is safe: `len > max` here).
+    selected.saturating_sub(max / 2).min(len - max)
+}
+
 /// One palette row: `/name` padded out to [`MENU_DESC_COL`] columns, then its
 /// description. The selection is shown by **colour** — the selected row lights up
 /// whole in cyan (name *and* description the same colour, name bold), the others
@@ -4937,9 +4962,9 @@ fn model_row(entry: &ModelEntry, selected: bool, active: bool, width: u16) -> Li
 }
 
 /// The picker's list lines: a single placeholder while loading / errored /
-/// empty, else the model rows windowed ([`menu_window`]) to keep the selection
-/// visible and capped at [`MODEL_MENU_MAX_ROWS`]. Its length equals
-/// [`model_list_rows`] so the reserved height and painted rows agree.
+/// empty, else the model rows windowed ([`centered_window`]) to keep the
+/// selection **centered** and capped at [`MODEL_MENU_MAX_ROWS`]. Its length
+/// equals [`model_list_rows`] so the reserved height and painted rows agree.
 fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     match &picker.status {
         ModelLoad::Loading => vec![model_placeholder_row(
@@ -4988,7 +5013,7 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
             }
             let max = MODEL_MENU_MAX_ROWS as usize;
             let selected = picker.selected.min(matches.len() - 1);
-            let offset = menu_window(matches.len(), selected, max);
+            let offset = centered_window(matches.len(), selected, max);
             matches
                 .iter()
                 .enumerate()
@@ -5195,10 +5220,10 @@ fn login_provider_row(choice: &ProviderChoice, selected: bool, width: u16) -> Li
 }
 
 /// The `/login` provider list: a single `No matching providers` placeholder when
-/// the filter matches nothing, else the rows windowed ([`menu_window`]) to keep
-/// the selection visible and capped at [`LOGIN_MENU_MAX_ROWS`]. Its length
-/// equals [`login_provider_list_rows`] so the reserved height and painted rows
-/// agree.
+/// the filter matches nothing, else the rows windowed ([`centered_window`]) to
+/// keep the selection **centered** and capped at [`LOGIN_MENU_MAX_ROWS`]. Its
+/// length equals [`login_provider_list_rows`] so the reserved height and painted
+/// rows agree.
 fn login_provider_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
     let matches = onboarding.matches();
     if matches.is_empty() {
@@ -5210,7 +5235,7 @@ fn login_provider_list_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line
     }
     let max = LOGIN_MENU_MAX_ROWS as usize;
     let selected = onboarding.selected.min(matches.len() - 1);
-    let offset = menu_window(matches.len(), selected, max);
+    let offset = centered_window(matches.len(), selected, max);
     matches
         .iter()
         .enumerate()
@@ -11027,6 +11052,45 @@ mod tests {
     }
 
     #[test]
+    fn centered_window_keeps_the_selection_centered() {
+        // Everything fits in one window — never scrolls.
+        assert_eq!(
+            centered_window(3, 2, 10),
+            0,
+            "no scroll when everything fits"
+        );
+        assert_eq!(centered_window(10, 9, 10), 0, "an exact fit never scrolls");
+        // Near the top of a long list the window is anchored at the top (it can't
+        // center a selection with too few rows above it); the highlight walks down
+        // to the middle row (max/2).
+        assert_eq!(centered_window(445, 0, 10), 0, "top of the list");
+        assert_eq!(
+            centered_window(445, 4, 10),
+            0,
+            "still climbing to the middle"
+        );
+        assert_eq!(
+            centered_window(445, 5, 10),
+            0,
+            "reaches the middle row (max/2)"
+        );
+        // In the interior the window follows the selection so it stays centered —
+        // the fix: broad view above *and* below, not pinned to the bottom edge.
+        assert_eq!(centered_window(445, 20, 10), 15, "stays centered mid-list");
+        assert_eq!(centered_window(445, 60, 10), 55, "stays centered mid-list");
+        // Near the end the window clamps flush with the tail; the highlight rides
+        // down from the middle to the bottom row (it can't center past the end).
+        assert_eq!(
+            centered_window(445, 440, 10),
+            435,
+            "clamped to the last window"
+        );
+        assert_eq!(centered_window(445, 444, 10), 435, "last row sits flush");
+        // A degenerate zero-height window never panics.
+        assert_eq!(centered_window(5, 3, 0), 0, "zero window");
+    }
+
+    #[test]
     fn menu_rows_is_zero_when_the_palette_is_closed() {
         assert_eq!(menu_rows(&App::new()), 0);
     }
@@ -13077,6 +13141,42 @@ mod tests {
         // A trailing blank gap (the user's mock), then the bottom rule last.
         assert!(row(&buf, 10, 60).trim().is_empty(), "trailing gap");
         assert!(row(&buf, 11, 60).starts_with('─'), "bottom rule");
+    }
+
+    #[test]
+    fn model_list_keeps_the_selection_centered_not_pinned_to_an_edge() {
+        // A long list (30 models) with a deep-interior selection (15) that has
+        // plenty of room on both sides — the case the old bottom-anchored window
+        // got wrong (it pinned the highlight to the last visible row).
+        let models: Vec<ModelEntry> = (0..30)
+            .map(|i| {
+                model_entry(
+                    &format!("openrouter/model-{i:02}"),
+                    "openrouter",
+                    &format!("Model {i}"),
+                )
+            })
+            .collect();
+        let picker = model_picker(models, 15, "x");
+        let mut buf = buffer(60, 20);
+        render_model_picker(buf.area, &mut buf, &picker);
+        // The list spans rows 4..14 — top(0) gap(1) search(2) gap(3) then 10 rows.
+        let list: Vec<String> = (4..14).map(|y| row(&buf, y, 60)).collect();
+        // The highlight lands on the middle row of the window (max/2), carrying
+        // the `→` marker — centered, not jammed against the bottom edge.
+        let middle = &list[MODEL_MENU_MAX_ROWS as usize / 2];
+        assert!(
+            middle.contains("model-15") && middle.contains('→'),
+            "selection sits centered: {middle:?}"
+        );
+        let joined = list.join("\n");
+        // Models both above *and* below the selection are on screen — the broad
+        // view the fix restores.
+        assert!(joined.contains("model-11"), "rows above show: {joined:?}");
+        assert!(
+            joined.contains("model-19"),
+            "rows below show (the old window hid these): {joined:?}"
+        );
     }
 
     #[test]
