@@ -2111,7 +2111,17 @@ fn on_stream_event(
             let elapsed = clocks
                 .turn_start
                 .map_or(0, |start| start.elapsed().as_secs());
-            let summary = app.end_turn(elapsed);
+            // Clear the status and BUILD the summary, but don't record it yet:
+            // a background completion still pending at turn end (a shell that
+            // finished during this final text, with no tool call after it to
+            // settle at) must land its notice ABOVE the "Done for Ns" summary
+            // — the same placement a mid-turn tool boundary gives it — in both
+            // history and scrollback (invariant 3). So the order is: reseat to
+            // idle (the status is now cleared), commit the final reply, settle
+            // the held completions, THEN record + commit the summary. The
+            // common case (nothing pending) is unchanged — `settle_bg_completions`
+            // is then a no-op. See `docs/background.md`.
+            let summary = app.take_turn_summary(elapsed);
             if committing {
                 // The reply just ended, so the streaming strip (preview + gap +
                 // status, drawn *above* the box) is gone. Reseat the viewport to
@@ -2124,7 +2134,13 @@ fn on_stream_event(
                     term.insert_before(render.finish(&text, width));
                     term.insert_before(vec![Line::default()]); // blank spacer
                 }
-                if let Some(summary) = summary {
+            }
+            // Settle before recording the summary — history-gated commit inside
+            // (invariant 4), so the notice sits above the summary either way.
+            settle_bg_completions(term, app);
+            if let Some(summary) = summary {
+                app.record_turn_summary(summary.clone());
+                if committing {
                     term.insert_before(ui::summary_lines(&summary, width));
                     term.insert_before(vec![Line::default()]); // blank spacer
                 }

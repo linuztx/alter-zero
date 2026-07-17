@@ -4590,22 +4590,41 @@ impl App {
     ///
     /// [`finish_stream`]: App::finish_stream
     pub fn end_turn(&mut self, elapsed_secs: u64) -> Option<TurnSummary> {
+        let summary = self.take_turn_summary(elapsed_secs)?;
+        self.record_turn_summary(summary.clone());
+        Some(summary)
+    }
+
+    /// Clear the live status and **build** (but do not record) the turn's
+    /// `"{done verb} for {n}s"` summary. Split out of [`end_turn`] so the
+    /// boundary can settle a background completion that was still pending at
+    /// turn end **between** clearing the status and recording the summary —
+    /// landing that notice above the `Done for Ns` summary in both history
+    /// and scrollback (invariant 3), the same placement a mid-turn tool
+    /// boundary gives it (`docs/background.md`). Returns `None` (still
+    /// clearing the status) for an idle composer or a `!` shell turn, whose
+    /// committed cell is its own record (`docs/shell-command.md`).
+    pub fn take_turn_summary(&mut self, elapsed_secs: u64) -> Option<TurnSummary> {
         let status = self.status.take()?;
-        // A `!` shell turn ends without a summary: its committed cell
-        // (`! cmd` + `⎿ output`) is the record (docs/shell-command.md).
         if status.shell {
             return None;
         }
-        let summary = TurnSummary {
+        Some(TurnSummary {
             verb: status.done_verb,
             secs: elapsed_secs,
             timestamp: self.now_stamp(),
             // Snapshot the running background shells for the `· {n} shells
-            // still running` suffix (docs/background.md).
+            // still running` suffix (docs/background.md). A shell that just
+            // finished has already left `self.background` (at `bg_exited`),
+            // so settling its notice next doesn't change this count.
             shells: self.background.len(),
-        };
-        self.history.push(HistoryItem::Summary(summary.clone()));
-        Some(summary)
+        })
+    }
+
+    /// Record a summary built by [`take_turn_summary`] into history (so it
+    /// survives a resize and lists in the transcript).
+    pub fn record_turn_summary(&mut self, summary: TurnSummary) {
+        self.history.push(HistoryItem::Summary(summary));
     }
 
     /// End the in-progress stream because the backend reported an error.
@@ -8152,6 +8171,90 @@ mod tests {
         let mut app = App::new();
         assert!(app.end_turn(3).is_none());
         assert!(app.history.is_empty());
+    }
+
+    #[test]
+    fn take_turn_summary_builds_without_recording_then_record_pushes() {
+        // The split behind end_turn (docs/background.md): take_turn_summary
+        // clears the status and builds the summary but does NOT record it, so
+        // the boundary can settle a background completion pending at turn end
+        // *between* the two — landing the notice above the Done summary in
+        // history. record_turn_summary then pushes it.
+        let mut app = App::new();
+        app.begin_stream();
+        let summary = app.take_turn_summary(5).expect("a turn was active");
+        assert!(!app.turn_active(), "the status is cleared");
+        assert!(
+            !app.history
+                .iter()
+                .any(|i| matches!(i, HistoryItem::Summary(_))),
+            "take_turn_summary does not record the summary"
+        );
+        app.record_turn_summary(summary.clone());
+        assert_eq!(
+            app.history.last(),
+            Some(&HistoryItem::Summary(summary)),
+            "record_turn_summary pushes it into history"
+        );
+    }
+
+    #[test]
+    fn take_turn_summary_is_none_for_an_idle_or_shell_turn() {
+        let mut idle = App::new();
+        assert!(idle.take_turn_summary(1).is_none(), "no turn active");
+        let mut shell = App::new();
+        shell.begin_shell("sleep 1");
+        assert!(
+            shell.take_turn_summary(1).is_none(),
+            "a `!` shell turn has no Done summary — its cell is the record"
+        );
+        assert!(!shell.turn_active(), "but the status still clears");
+    }
+
+    #[test]
+    fn a_completion_pending_at_turn_end_records_above_the_summary() {
+        // The turn-end settle ordering (docs/background.md): a background
+        // shell that finished during the final assistant text — with no tool
+        // call after it to settle at — must still land its notice ABOVE the
+        // Done summary, in both history and (via the same order) scrollback,
+        // matching the mid-turn tool-boundary placement. This replays the
+        // exact app-call sequence the StreamDone arm runs.
+        let mut app = App::new();
+        app.set_clock(|| STAMP.to_string());
+        app.record_user_message("start the server then stop it");
+        app.begin_stream();
+        app.bg_started(
+            "bash_1",
+            "python3 server.py",
+            Some("API server".into()),
+            true,
+        );
+        let completion = app.bg_exited("bash_1", None, false).expect("it finished");
+        app.defer_bg_completion(completion);
+        app.push_chunk("Done — the server was stopped.");
+        let _ = app.finish_stream();
+        // The StreamDone sequence: build the summary (status cleared, not yet
+        // recorded), settle the held completion, then record the summary.
+        let summary = app.take_turn_summary(7).expect("a turn was active");
+        for completion in app.take_pending_bg_completions() {
+            app.record_background_notice(&completion);
+        }
+        app.record_turn_summary(summary);
+        let kinds: Vec<&str> = app
+            .history
+            .iter()
+            .map(|item| match item {
+                HistoryItem::Message(_) => "message",
+                HistoryItem::Tool(_) => "tool",
+                HistoryItem::Background(_) => "background",
+                HistoryItem::Summary(_) => "summary",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            vec!["message", "message", "background", "summary"],
+            "user, assistant reply, THEN the notice, THEN the Done summary"
+        );
     }
 
     #[test]

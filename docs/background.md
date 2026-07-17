@@ -121,6 +121,16 @@ swapped on every interrupt/`/clear`, and these events must survive that.
   and immediately while idle. `BgCompletion::context_text` is byte-identical
   to the settled notice's `context_text`, so the note the agent injects and
   the one later contexts replay never diverge.
+- At **turn end** the settle is placed *above* the `Done for Ns` summary — a
+  completion that landed during the final assistant text (no tool call after
+  it) gets the same placement a mid-turn tool boundary would give it, in both
+  history and scrollback (invariant 3). `StreamDone` splits the old
+  `App::end_turn` into `take_turn_summary` (clear the status → idle height,
+  **build** the summary) and `record_turn_summary` (push it), settling the
+  held completions between the two: reseat, commit the final reply, settle,
+  then record + commit the summary. The `TurnSummary::shells` count is
+  unaffected — a finished shell already left `App::background` at `bg_exited`,
+  before the count is snapshotted.
 - Settling a completion: record `HistoryItem::Background(BackgroundNotice)`
   (the green/red `●` one-liner; the output tail rides the item for the model,
   never rendered). The **automatic turn** is the boundary dispatch's job now:
