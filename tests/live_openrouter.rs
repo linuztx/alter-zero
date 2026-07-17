@@ -255,6 +255,88 @@ fn live_vision_survives_a_large_image_upload() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
+    // The Ctrl+B path end-to-end (docs/background.md): the model runs a
+    // FOREGROUND bash command (it expects the full output); the user moves it
+    // to the background mid-run (the registry latch, raised here when the
+    // ToolStart arrives). The tool result the model reads must lead with the
+    // user-moved handoff text — not the run_in_background launch
+    // acknowledgement — so the model knows why the output stopped arriving
+    // and does not re-run the command or poll for it.
+    let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = std::env::temp_dir().join(format!("inline-tui-live-ctrlb-{}", std::process::id()));
+    let registry = inline_tui::background::BackgroundRegistry::new(bg_tx, dir);
+    let backend = backend().with_background(registry.clone());
+
+    let prompt = "Use the bash tool exactly once to run this command in the foreground \
+                  (do NOT set run_in_background): sh -c 'echo started; sleep 8; echo finished'. \
+                  After the tool result arrives, reply with just the task ID it reported.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+
+    let mut backgrounded: Option<(String, String)> = None;
+    let mut reply = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            // The user's Ctrl+B, as the loop performs it (Action::MoveToBackground):
+            // raise the latch once the command is running; the executor's poll
+            // loop consumes it and adopts the child mid-run.
+            StreamEvent::ToolStart { .. } => registry.request_background(),
+            StreamEvent::ToolBackgrounded { id, output } => backgrounded = Some((id, output)),
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("model replied: {reply:?}");
+
+    let (id, output) = backgrounded.expect("the call resolved as backgrounded");
+    assert!(
+        output.starts_with("The user moved this command to the background"),
+        "the tool result says the user moved it: {output}"
+    );
+    assert!(
+        output.contains(&format!("ID: {id}")),
+        "the handoff text still names the task: {output}"
+    );
+    // The turn completed with a text reply (the model kept going off the
+    // handoff text instead of wedging on the missing output); the adopted
+    // command finishes on its own and the registry reports the lifecycle.
+    let mut streamed = String::new();
+    let mut exited = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        match bg_rx.try_recv() {
+            Ok(inline_tui::background::BgEvent::Started { id: started, .. }) => {
+                assert_eq!(started, id);
+            }
+            Ok(inline_tui::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
+            Ok(inline_tui::background::BgEvent::Exited { code, killed, .. }) => {
+                assert_eq!(code, Some(0));
+                assert!(!killed);
+                exited = true;
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+    assert!(exited, "the adopted command completed on its own");
+    assert!(
+        streamed.contains("started"),
+        "the pre-handoff output replayed into the background stream: {streamed:?}"
+    );
+    assert!(
+        streamed.contains("finished"),
+        "the post-handoff tail kept streaming: {streamed:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_run_in_background_resolves_and_completes() {
     // The full production background path (docs/background.md): the model is
     // told to run a command with run_in_background — the agent loop resolves

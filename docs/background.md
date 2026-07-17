@@ -20,6 +20,18 @@ automatically told the result in a new turn.
   `output` is the *model-facing* text (task id + interim-output file path); the
   cell never shows it — it renders the fixed
   `⎿ Running in the background (↓ to manage)` row.
+- That text differs by **who** backgrounded the call. A `run_in_background`
+  launch gets the plain acknowledgement (`exec::background_launch_text` — the
+  model asked, so the id + interim path + notification promise suffice). A
+  **Ctrl+B handoff** gets `exec::background_handoff_text`: the same facts led
+  by `The user moved this command to the background …` and closed with a
+  don't-re-run/don't-poll steer — the model requested a *foreground* run, and
+  without being told the user moved it, it expects the full output and
+  re-reads the interim file round after round waiting for it. The recorded
+  `tool.output` is this same text, so `context::context_messages` replays the
+  explanation into every later turn's context too. The `bash` tool
+  description also warns the model up front that the user may background a
+  running command mid-run.
 - `ToolStatus::Backgrounded` is the resolved status: green header bullet, the
   fixed row as its body inline, in the preview, and in the Ctrl+O transcript.
   The wire/tool-result content in the derived context stays `tool.output`
@@ -107,7 +119,8 @@ running `!` shell cell gets the same row. Ctrl+B returns
 the registry flag; the runner (executor `run_bash` or `spawn_shell_command`)
 consumes it mid-poll, `adopt`s the child, and resolves the call as
 backgrounded — the model bash via `ToolBackgrounded` (the agent loop keeps
-going with the tool result), the `!` shell via its normal
+going with the **handoff text** as the tool result — the user-moved preamble
+over the launch facts, see Protocol above), the `!` shell via its normal
 `ToolEnd`+`StreamDone` with the cell resolving to the backgrounded row.
 
 ### Persistence (`session`)

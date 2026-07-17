@@ -148,7 +148,11 @@ fn bash_spec() -> Value {
          edit it. Long output is truncated; a non-zero exit status is reported. \
          Set `run_in_background` for long-running commands: the call returns \
          immediately with a task ID and an interim-output file path, and you \
-         are notified with the final output when the command completes.",
+         are notified with the final output when the command completes. \
+         The user may also move a running command to the background \
+         themselves mid-run: the tool result then says so and reports the \
+         same task ID and notification promise — do not run the command again \
+         or wait for it, just continue.",
         json!({
             "type": "object",
             "properties": {
@@ -811,6 +815,21 @@ mod tests {
                 Value::Bool(false)
             );
         }
+    }
+
+    #[test]
+    fn bash_description_warns_the_user_may_background_a_running_command() {
+        // The model should know IN ADVANCE that the user can move its
+        // foreground command to the background mid-run (Ctrl+B): the tool
+        // result then says so, and the model must not run the command again
+        // (docs/background.md).
+        let specs = tool_specs();
+        let desc = specs[0]["function"]["description"].as_str().unwrap();
+        assert!(
+            desc.contains("The user may also move a running command to the background"),
+            "got {desc}"
+        );
+        assert!(desc.contains("do not run the command again"), "got {desc}");
     }
 
     #[test]

@@ -105,6 +105,30 @@ pub fn background_launch_text(task: &crate::background::LaunchedTask) -> String 
     )
 }
 
+/// The model-facing result of a **Ctrl+B handoff** — the *user* moved a
+/// foreground `bash` call to the background mid-run. Unlike
+/// [`background_launch_text`] (a `run_in_background` launch the model asked
+/// for), the model here requested a foreground run and expects the full
+/// output in this result — so the text must say who moved it and steer the
+/// model off waiting, or it treats the acknowledgement as an anomaly and
+/// re-reads the interim file round after round. The launch facts (task id,
+/// interim path, notification promise) are embedded verbatim so the two
+/// variants can never drift. See `docs/background.md`.
+#[must_use]
+pub fn background_handoff_text(task: &crate::background::LaunchedTask) -> String {
+    format!(
+        "The user moved this command to the background while it was running — \
+         it has not failed and keeps running there, so its remaining output \
+         will not arrive in this result.\n\
+         {}\n\
+         Do not run the command again, and do not wait for it by repeatedly \
+         reading the interim file — continue with the rest of the task (or \
+         end the turn) and the completion notification will bring the final \
+         output.",
+        background_launch_text(task),
+    )
+}
+
 /// A one-tool argument-parse error → a model-facing failure outcome.
 fn arg_error(err: String) -> ToolOutcome {
     ToolOutcome::error(err)
@@ -219,8 +243,10 @@ fn run_bash(
         // replays what we already read (`combined`) and keeps streaming from
         // our pipe channel; the detached reader threads keep feeding it and
         // exit at EOF on their own. The call resolves as backgrounded, and
-        // the agent loop keeps going with the launch text as the tool result.
-        // See `docs/background.md`.
+        // the agent loop keeps going with the HANDOFF text as the tool result
+        // — the model asked for a foreground run, so it must be told the user
+        // moved the command (not read a launch acknowledgement it never
+        // requested). See `docs/background.md`.
         if let Some(registry) = background
             && registry.take_background_request()
         {
@@ -232,7 +258,7 @@ fn run_bash(
                 chunk_rx,
                 combined,
             );
-            return ToolOutcome::backgrounded(task.id.clone(), background_launch_text(&task));
+            return ToolOutcome::backgrounded(task.id.clone(), background_handoff_text(&task));
         }
         if start.elapsed() >= timeout {
             kill_process_group(&mut child);
@@ -731,6 +757,31 @@ mod tests {
 
     // ===== background (docs/background.md) =====
 
+    #[test]
+    fn background_handoff_text_leads_with_the_user_move_over_the_launch_facts() {
+        // Ctrl+B: the model expected a foreground run's full output, so the
+        // handoff must say the USER moved the command, carry the launch facts
+        // (task id + interim path + notification promise) verbatim, and steer
+        // the model off re-running/polling (docs/background.md).
+        let task = crate::background::LaunchedTask {
+            id: "bash_7".to_string(),
+            output_path: std::path::PathBuf::from("/tmp/tasks/bash_7.output"),
+        };
+        let text = background_handoff_text(&task);
+        assert!(
+            text.starts_with("The user moved this command to the background"),
+            "got {text}"
+        );
+        assert!(
+            text.contains(&background_launch_text(&task)),
+            "the launch facts ride along verbatim: {text}"
+        );
+        assert!(
+            text.contains("Do not run the command again"),
+            "the model is steered off re-running/waiting: {text}"
+        );
+    }
+
     fn test_registry() -> (
         crate::background::BackgroundRegistry,
         tokio::sync::mpsc::UnboundedReceiver<crate::background::BgEvent>,
@@ -767,6 +818,11 @@ mod tests {
         assert!(
             out.output.contains("ID: bash_1") && out.output.contains(".output"),
             "the model gets the task id + interim file: {}",
+            out.output
+        );
+        assert!(
+            !out.output.contains("user moved"),
+            "a launch the model asked for must not claim a user action: {}",
             out.output
         );
         // The registry reports the launch and, later, the completion.
@@ -838,6 +894,21 @@ mod tests {
         raiser.join().unwrap();
         assert!(out.ok, "got {}", out.output);
         assert_eq!(out.background.as_deref(), Some("bash_1"));
+        // The model asked for a FOREGROUND run — the result must say the
+        // *user* moved it (not read like a run_in_background acknowledgement),
+        // or the model keeps waiting for the full output and polls the interim
+        // file round after round (docs/background.md).
+        assert!(
+            out.output
+                .starts_with("The user moved this command to the background"),
+            "the model is told the user moved it: {}",
+            out.output
+        );
+        assert!(
+            out.output.contains("ID: bash_1") && out.output.contains(".output"),
+            "the task id + interim file still ride the handoff text: {}",
+            out.output
+        );
         assert!(streamed.contains("early"), "the foreground tail ran first");
         // The adopted task replays the prior output and finishes on its own.
         let mut replayed = String::new();
