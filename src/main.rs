@@ -49,10 +49,10 @@ use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
 use inline_tui::app::{
-    Action, App, BackgroundNotice, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, InterruptedTurn,
-    ProviderChoice, QueuedTurn, Role, ToastKind, View,
+    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, InterruptedTurn, ProviderChoice,
+    QueuedTurn, Role, ToastKind, View,
 };
-use inline_tui::background::{BackgroundRegistry, BgEvent};
+use inline_tui::background::{BackgroundRegistry, BgEvent, PendingNotice};
 use inline_tui::clipboard;
 use inline_tui::context;
 use inline_tui::file_search::{FileMatch, rank_files};
@@ -501,8 +501,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // A fresh slate kills the background shells too
                                 // (clear_conversation already forgot them, so
                                 // their Exited events find nothing and owe no
-                                // notice — docs/background.md).
+                                // notice — docs/background.md). Notes already
+                                // posted for the wiped conversation are dropped
+                                // with it, else the next turn end would start a
+                                // phantom follow-up turn about them.
                                 registry.kill_all();
+                                let _ = registry.take_pending_notices();
                                 // A cleared conversation starts a fresh session
                                 // file (codex's /new); the old one keeps what it
                                 // had (docs/resume.md).
@@ -919,13 +923,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 if on_stream_event(
                     term, &mut app, &mut render, &mut clocks, stream_event,
                 )? {
-                    // The stream ended. Settle any background completions that
-                    // landed mid-turn (their notices commit here, at the turn
-                    // boundary), then send the next queued batch as the
-                    // following turn (`None` when nothing is queued) — Enter
-                    // messages batch into one turn, while Tab-opened follow-up
-                    // batches each flush at their own turn-end, so they iterate in
-                    // order; with nothing queued, a model-launched completion
+                    // The stream ended. Settle any background completions
+                    // still held (most settle earlier, at a tool boundary —
+                    // this catches ones that landed during the final text),
+                    // then send the next queued batch as the following turn
+                    // (`None` when nothing is queued) — Enter messages batch
+                    // into one turn, while Tab-opened follow-up batches each
+                    // flush at their own turn-end, so they iterate in order;
+                    // with nothing queued, a model-launched completion the
+                    // agent never heard about (its note untaken on the board)
                     // dispatches the automatic follow-up turn instead
                     // (docs/background.md). This runs under the Ctrl+O overlay
                     // too (codex's queue drains at turn end regardless of its
@@ -1039,10 +1045,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             // 7. A background-shell event from the registry's monitors
             //    (docs/background.md). Its channel is never swapped (unlike
             //    the reply channel), so shells survive interrupts and /clear
-            //    kills them explicitly. An exit mid-turn is held for the
-            //    turn-end settle; an exit while idle settles immediately —
-            //    the notice commits and, for a model-launched shell, the
-            //    automatic follow-up turn starts.
+            //    kills them explicitly. An exit posts its model-facing note
+            //    onto the registry's board at once (the in-flight agent takes
+            //    it before its next round, so a mid-turn kill is known to the
+            //    model within the same turn) and defers the TUI notice to the
+            //    next safe boundary — a tool resolution mid-turn, or here and
+            //    now while idle, where a note still on the board (no agent
+            //    read it) starts the automatic follow-up turn for a
+            //    model-launched shell.
             Some(bg_event) = bg_rx.recv() => {
                 match bg_event {
                     BgEvent::Started { id, command, description, from_model } => {
@@ -1053,6 +1063,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     BgEvent::Exited { id, code, killed } => {
                         bg_clocks.remove(&id);
                         if let Some(completion) = app.bg_exited(&id, code, killed) {
+                            registry.post_notice(
+                                completion.context_text(),
+                                completion.from_model,
+                            );
                             app.defer_bg_completion(completion);
                             if !app.turn_active() {
                                 inflight = dispatch_after_turn(
@@ -1594,48 +1608,43 @@ fn run_shell(
     Ok((cancel, handle))
 }
 
-/// Settle the background completions held during the turn (empty when none
-/// landed): record + commit each [`BackgroundNotice`] in arrival order —
-/// commits are view-gated (invariant 4: history always records; an overlay
-/// return repaints from it). Returns the notices and whether any completed
-/// shell was model-launched (the automatic follow-up turn's trigger). See
+/// Settle the background completions held so far (empty when none landed):
+/// record + commit each [`BackgroundNotice`] in arrival order — commits are
+/// view-gated (invariant 4: history always records; an overlay return
+/// repaints from it). Runs at every **safe boundary** — each tool
+/// resolution / segment flush mid-turn, every turn end, and the idle
+/// arrival — points where the streaming buffer is empty, so a notice cell
+/// can never split a committed reply (invariants 2/3). See
 /// `docs/background.md`.
-fn settle_bg_completions(
-    term: &mut InlineViewport,
-    app: &mut App,
-    render: &mut ui::StreamRender,
-) -> (Vec<BackgroundNotice>, bool) {
-    let completions = app.take_pending_bg_completions();
-    let mut notices = Vec::with_capacity(completions.len());
-    let mut any_from_model = false;
-    for completion in &completions {
-        any_from_model |= completion.from_model;
-        let notice = app.record_background_notice(completion);
+fn settle_bg_completions(term: &mut InlineViewport, app: &mut App) {
+    for completion in app.take_pending_bg_completions() {
+        let notice = app.record_background_notice(&completion);
         if app.view == View::Conversation {
             let width = term.screen().width;
             // A completion can settle right after a turn whose strip just
             // collapsed — reseat the viewport like every post-stream commit
             // so the notice replaces the strip's rows in place (invariant 3).
+            // Mid-turn this re-asserts the current strip-aware height (a
+            // no-op sync; `paint_live` re-syncs before any pending flush).
             term.set_view_height(live_region_height(app, term.screen()));
-            let _ = render; // the stream is settled; nothing mid-flight to flush
             term.insert_before(ui::background_notice_lines(&notice, width));
             term.insert_before(vec![Line::default()]);
         }
-        notices.push(notice);
     }
-    (notices, any_from_model)
 }
 
 /// The every-turn-end dispatch (docs/background.md, docs/queue.md): settle
 /// held background completions, then send the next queued entry — or, with
-/// nothing queued and a model-launched completion among the settled ones,
-/// start the **automatic follow-up turn** that tells the model its command
-/// finished (the notices are already in history, so they ride the derived
-/// context either way — a queued user batch simply carries them along with
-/// no extra request). Returns the new in-flight handle, or `None` when
-/// nothing dispatched. Shared by every turn-end site (`StreamDone`, `Error`,
-/// both Esc-interrupt outcomes) *and* the idle completion arrival, so the
-/// paths can never drift.
+/// nothing queued and a model-launched completion **the in-flight agent
+/// never heard about** (its note still on the registry's board — an agent
+/// that read it mid-turn owes no follow-up), start the **automatic
+/// follow-up turn** that tells the model its command finished (the notices
+/// are already in history, so they ride the derived context either way — a
+/// queued user batch simply carries them along with no extra request).
+/// Returns the new in-flight handle, or `None` when nothing dispatched.
+/// Shared by every turn-end site (`StreamDone`, `Error`, both Esc-interrupt
+/// outcomes) *and* the idle completion arrival, so the paths can never
+/// drift.
 #[allow(clippy::too_many_arguments)] // the start_turn plumbing, plus the registry
 fn dispatch_after_turn(
     term: &mut InlineViewport,
@@ -1646,35 +1655,36 @@ fn dispatch_after_turn(
     render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
 ) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
-    let (notices, any_from_model) = settle_bg_completions(term, app, render);
+    settle_bg_completions(term, app);
+    let unheard = registry.take_pending_notices();
     let mut next = flush_next_queued(term, app, tx, backend, registry, render, clocks)?;
-    if next.is_none() && any_from_model {
+    if next.is_none() && unheard.iter().any(|note| note.from_model) {
         next = Some(start_background_turn(
-            app, tx, backend, &notices, render, clocks,
+            app, tx, backend, &unheard, render, clocks,
         ));
     }
     Ok(next)
 }
 
-/// Start the automatic follow-up turn for freshly settled background
-/// completions: like [`start_turn`] but with **no new user message** — the
-/// just-recorded notices are the turn's cause and already sit in history, so
-/// the derived context carries them (the prompt text is their context form,
-/// for the empty-context fallback / the dummy). The model then reports the
-/// result, exactly like the user's example transcript. See
-/// `docs/background.md`.
+/// Start the automatic follow-up turn for background completions the model
+/// has not heard about: like [`start_turn`] but with **no new user
+/// message** — the just-settled notices are the turn's cause and already
+/// sit in history, so the derived context carries them (the prompt text is
+/// their context form, for the empty-context fallback / the dummy). The
+/// model then reports the result, exactly like the user's example
+/// transcript. See `docs/background.md`.
 fn start_background_turn(
     app: &mut App,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     backend: &dyn ReplySource,
-    notices: &[BackgroundNotice],
+    notices: &[PendingNotice],
     render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
 ) -> (CancelToken, JoinHandle<()>) {
     app.begin_stream();
     let prompt = notices
         .iter()
-        .map(BackgroundNotice::context_text)
+        .map(|note| note.context.as_str())
         .collect::<Vec<_>>()
         .join("\n\n");
     app.count_user_input(&prompt);
@@ -1985,6 +1995,10 @@ fn on_stream_event(
                 term.insert_before(vec![Line::default()]);
             }
             render.reset();
+            // The flush left the streaming buffer empty — a safe boundary for
+            // background completions that landed while the text streamed
+            // (docs/background.md), committed before the batch goes live.
+            settle_bg_completions(term, app);
             app.start_tool_batch(&items);
             Ok(false)
         }
@@ -2003,6 +2017,9 @@ fn on_stream_event(
                 term.insert_before(vec![Line::default()]);
             }
             render.reset();
+            // Same safe boundary as ToolBatch: the buffer is empty, so any
+            // held completions commit ahead of the tool (docs/background.md).
+            settle_bg_completions(term, app);
             app.start_tool(&name, &args);
             Ok(false)
         }
@@ -2033,6 +2050,11 @@ fn on_stream_event(
                 term.insert_before(ui::tool_lines(&tool, width));
                 term.insert_before(vec![Line::default()]);
             }
+            // A tool resolution is a settle point: completions that landed
+            // while the call ran (often a `kill` this very command issued)
+            // commit right after its cell — the user's example order — not
+            // at the turn's distant end (docs/background.md).
+            settle_bg_completions(term, app);
             Ok(false)
         }
         StreamEvent::ToolBackgrounded { id: _, output } => {
@@ -2048,6 +2070,9 @@ fn on_stream_event(
                 term.insert_before(ui::tool_lines(&tool, width));
                 term.insert_before(vec![Line::default()]);
             }
+            // A resolution boundary like ToolEnd — completions held during
+            // the launch settle here (docs/background.md).
+            settle_bg_completions(term, app);
             Ok(false)
         }
         StreamEvent::ToolOutput(chunk) => {

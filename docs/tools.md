@@ -89,9 +89,12 @@ The heart of the feature is a **pure, generic driver** — like `llm::retry`'s
 `run_stream` — so the whole loop is unit-tested with fakes and no network:
 
 ```
-run_agent(tx, cancel, max_iterations, round, execute):
+run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
   loop:
     if cancel: return                       # silent — the UI owns the interrupt notice
+    for note in pending_notices():          # background completions since the last
+      messages.push(user(note))             # round — a killed shell is known to the
+                                            # model within the turn (docs/background.md)
     match round(&messages):                 # one streaming request (with its own retry)
       Complete            => tx.send(StreamDone); return
       Cancelled           => return
@@ -118,6 +121,10 @@ run_agent(tx, cancel, max_iterations, round, execute):
 - `execute` is the real executor (below). Both are plain closures in the tests, a
   real streamer + real executor in production.
 - `max_iterations` (`MAX_TOOL_ITERATIONS`, 20) bounds a runaway tool loop.
+- `pending_notices` takes the background registry's completion notice board
+  (`LlmBackend` wires it; empty without a registry) — each note a user-role
+  message appended after the prior round's tool results, exactly where the
+  settled history item replays it for later turns (`docs/background.md`).
 - **Cancellation** is checked between rounds, after each tool, and inside the tool
   itself — so Esc reaps promptly, same contract as the plain stream.
 

@@ -42,12 +42,23 @@ pub enum RoundOutcome {
 
 /// Drive one agentic turn to completion, sending the terminal `StreamDone` /
 /// `Error` (or nothing on a cancel) and the per-tool `ToolStart`/`ToolEnd`
-/// events. Generic over `round` (one streaming request) and `execute` (running
-/// a tool) so it is fully unit-tested with fakes.
+/// events. Generic over `round` (one streaming request), `execute` (running
+/// a tool), and `pending_notices` (the background-completion notes to
+/// inject) so it is fully unit-tested with fakes.
 ///
 /// `messages` is the initial request list (system prompt + conversation
 /// context); it grows in place with each assistant/tool message as the loop
 /// runs, so every round sees the full history.
+///
+/// `pending_notices` is taken at the top of **every** round: background
+/// shells that finished since the last request — a completion, or a kill the
+/// model itself just ran (`kill`/`pkill` in a bash call, or the user's `x`
+/// in the ↓ manager) — reach the model *within the same turn*, each appended
+/// as a user-role message after the prior round's tool results (the same
+/// form `context::context_messages` replays into later turns' contexts).
+/// The take sits after the cancel check so an abandoned turn can't steal
+/// notes owed to the boundary's automatic follow-up turn. See
+/// `docs/background.md`.
 pub fn run_agent(
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
@@ -55,11 +66,15 @@ pub fn run_agent(
     mut messages: Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(&str)) -> ToolOutcome,
+    mut pending_notices: impl FnMut() -> Vec<String>,
 ) {
     let mut iterations = 0usize;
     loop {
         if cancel.is_cancelled() {
             return;
+        }
+        for note in pending_notices() {
+            messages.push(ChatMessage::user(note));
         }
         match round(&messages) {
             RoundOutcome::Complete => {
@@ -193,6 +208,7 @@ mod tests {
             vec![ChatMessage::user("hi")],
             |_msgs| RoundOutcome::Complete,
             |_call, _sink| panic!("no tools should run"),
+            Vec::new,
         );
         assert_eq!(drain(&mut rx), vec![StreamEvent::StreamDone]);
     }
@@ -221,6 +237,7 @@ mod tests {
                 }
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.name)),
+            Vec::new,
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -284,6 +301,7 @@ mod tests {
                 sink("b\n");
                 ToolOutcome::ok("Exit code: 0\na\nb")
             },
+            Vec::new,
         );
         let events = drain(&mut rx);
         let start = events
@@ -347,6 +365,7 @@ mod tests {
                 }
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
+            Vec::new,
         );
         let events = drain(&mut rx);
         // The very first event announces the batch, carrying all three calls in
@@ -424,6 +443,7 @@ mod tests {
                 }
             },
             |_c, _sink| ToolOutcome::ok("file contents"),
+            Vec::new,
         );
         drain(&mut rx);
         // Round 1 saw [user]; round 2 saw [user, assistant(tool_calls), tool].
@@ -441,6 +461,7 @@ mod tests {
             vec![ChatMessage::user("x")],
             |_msgs| RoundOutcome::Failed(LlmError::Http("boom".to_string())),
             |_c, _sink| panic!("no tools"),
+            Vec::new,
         );
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
@@ -458,6 +479,7 @@ mod tests {
             vec![ChatMessage::user("x")],
             |_msgs| RoundOutcome::Cancelled,
             |_c, _sink| panic!("no tools"),
+            Vec::new,
         );
         assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
     }
@@ -474,6 +496,7 @@ mod tests {
             vec![ChatMessage::user("x")],
             |_msgs| panic!("round should not run once cancelled"),
             |_c, _sink| panic!("no tools"),
+            Vec::new,
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -502,6 +525,7 @@ mod tests {
                 cancel.cancel();
                 ToolOutcome::ok(format!("ran {}", c.arguments))
             },
+            Vec::new,
         );
         assert_eq!(
             *ran.borrow(),
@@ -534,6 +558,7 @@ mod tests {
                 calls: calls.clone(),
             },
             |_c, _sink| ToolOutcome::ok("again"),
+            Vec::new,
         );
         let events = drain(&mut rx);
         let errors: Vec<_> = events
@@ -578,6 +603,7 @@ mod tests {
                 }
             },
             |_c, _sink| ToolOutcome::ok("done"),
+            Vec::new,
         );
         let events = drain(&mut rx);
         assert!(
@@ -588,6 +614,128 @@ mod tests {
             !events.iter().any(|e| matches!(e, StreamEvent::Error(_))),
             "no cap error for a turn that answered: {events:?}"
         );
+    }
+
+    /// The plain text of a message, for order assertions.
+    fn text_of(msg: &ChatMessage) -> String {
+        match &msg.content {
+            crate::llm::MessageContent::Text(t) => t.clone(),
+            crate::llm::MessageContent::Parts(_) => panic!("no multimodal messages here"),
+        }
+    }
+
+    #[test]
+    fn notices_posted_between_rounds_inject_as_user_messages() {
+        // A background shell that exits mid-turn — killed by the model's own
+        // bash `kill`, the manager's `x`, or a natural death — must reach the
+        // model WITHIN the turn: the loop takes the pending notes at the top
+        // of each round and appends each as a user-role message, after the
+        // prior round's tool results (the same form `context_messages`
+        // replays into later turns), so the very next request already carries
+        // the outcome. See docs/background.md.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bash", r#"{"command":"kill 408085; sleep 1"}"#)];
+        let seen_round2: RefCell<Vec<(String, String)>> = RefCell::new(Vec::new());
+        let note = "[background] Background command \"Start the API server\" \
+                    (id bvyo7tkbe) was terminated by a signal.";
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            vec![ChatMessage::user("kill the server")],
+            |msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    *seen_round2.borrow_mut() =
+                        msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
+                    RoundOutcome::Complete
+                }
+            },
+            |_c, _sink| ToolOutcome::ok("Exit code: 0"),
+            || {
+                // The exit landed while the kill command ran: the board has
+                // the note by the time round 2's request is built.
+                if *rounds.borrow() == 1 {
+                    vec![note.to_string()]
+                } else {
+                    Vec::new()
+                }
+            },
+        );
+        drain(&mut rx);
+        let seen = seen_round2.borrow();
+        assert_eq!(
+            seen.last(),
+            Some(&("user".to_string(), note.to_string())),
+            "the note is the round's last message — a user-role entry after \
+             the tool results: {seen:?}"
+        );
+        assert_eq!(
+            seen.iter()
+                .map(|(role, _)| role.as_str())
+                .collect::<Vec<_>>(),
+            vec!["user", "assistant", "tool", "user"],
+            "user → assistant(tool_calls) → tool result → the injected note"
+        );
+    }
+
+    #[test]
+    fn a_notice_pending_at_turn_start_rides_the_first_round() {
+        // A completion that landed between the turn's dispatch and its first
+        // request is picked up at the very first loop top — the model needs
+        // no tool round to hear about it.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let pending = RefCell::new(Some("[background] note".to_string()));
+        let seen = RefCell::new(Vec::new());
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            vec![ChatMessage::user("hi")],
+            |msgs| {
+                *seen.borrow_mut() = msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
+                RoundOutcome::Complete
+            },
+            |_c, _sink| panic!("no tools requested"),
+            || pending.borrow_mut().take().into_iter().collect(),
+        );
+        drain(&mut rx);
+        assert_eq!(
+            *seen.borrow(),
+            vec![
+                ("user".to_string(), "hi".to_string()),
+                ("user".to_string(), "[background] note".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_turn_takes_no_notices() {
+        // The take sits AFTER the cancel check: an abandoned (Esc'd) turn's
+        // detached thread must not steal notes owed to the boundary's
+        // automatic follow-up turn.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            vec![ChatMessage::user("x")],
+            |_msgs| panic!("no round once cancelled"),
+            |_c, _sink| panic!("no tools"),
+            || panic!("no notice take once cancelled"),
+        );
+        assert!(drain(&mut rx).is_empty());
     }
 
     #[test]
@@ -624,6 +772,7 @@ mod tests {
                 }
             },
             |_c, _sink| ToolOutcome::backgrounded("bash_1", "Command running with ID: bash_1"),
+            Vec::new,
         );
         let events = drain(&mut rx);
         assert!(

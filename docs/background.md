@@ -4,9 +4,15 @@ Claude-Code-style background command execution: the model can launch a `bash`
 command that keeps running while the conversation continues, the user can move
 a running command to the background with **Ctrl+B**, and a **↓ manager band**
 (opened from an empty composer) lists the running shells, streams a selected
-shell's output live, and can stop one. When a background shell finishes, a
-notice cell is committed and — for model-launched shells — the model is
-automatically told the result in a new turn.
+shell's output live, and can stop one. When a background shell finishes, the
+feedback is **immediate** — mid-turn, its model-facing note is posted onto the
+registry's notice board (the in-flight agent takes the board before each round,
+so a shell the model just `kill`ed — or the user just `x`-stopped — is known to
+it *within the same turn*, right after the tool result that did the deed) and
+the notice cell commits at the next safe boundary (a tool resolution), not the
+turn's distant end; while idle, the notice commits at once and — for a
+model-launched shell whose note no agent read — the model is automatically
+told the result in a new turn.
 
 ## The pieces
 
@@ -73,6 +79,26 @@ executor (`llm::exec`), and the `!` shell runner:
 - `kill(id)` / `kill_all()` send `SIGKILL` to the process **group** directly
   (synchronously — quit must not depend on monitor-thread scheduling) after
   marking the task killed, so the monitor reports `killed: true`.
+- The **completion notice board** (`PendingNotice { context, from_model }`,
+  `post_notice`/`take_pending_notices`): the event loop posts a finished
+  shell's model-facing note (`BgCompletion::context_text` — the same text the
+  settled notice replays into later contexts) the moment it handles the
+  `Exited` event. Two consumers race, each taking a note exactly once:
+  - the **in-flight agent** — `llm::agent::run_agent` takes the board at the
+    top of every round (after its cancel check, so an abandoned turn can't
+    steal notes) and appends each note as a user-role message after the prior
+    round's tool results, so the model hears "was terminated by a signal"
+    right after the tool result of the very `kill` it ran, within the same
+    turn (the `LlmBackend::spawn` wiring; the note lands ephemeral in that
+    turn's request list exactly where the settled history item replays it for
+    later turns);
+  - the **turn-boundary dispatch** (`main.rs::dispatch_after_turn`) — notes
+    still on the board at a turn end were never heard by a model: a
+    model-launched one (with nothing queued) starts the automatic follow-up
+    turn; an agent that already read the note owes no follow-up, so a
+    deliberate mid-turn kill no longer triggers a redundant extra turn.
+  `/clear` takes-and-drops the board alongside `kill_all()` (a wiped
+  conversation owes no phantom follow-up).
 
 Events travel a dedicated tokio channel (`BgEvent`) — a sixth `select!`
 source — because background shells outlive turns: the reply channel is
@@ -86,15 +112,24 @@ swapped on every interrupt/`/clear`, and these events must survive that.
   boundary-injected per frame (the `set_status_times` pattern — the clocks
   live in `main.rs`).
 - `bg_started` / `bg_output` / `bg_exited` apply `BgEvent`s. `bg_exited`
-  returns a `BgCompletion`; the loop defers it (`pending_bg`) while a turn is
-  active and settles all pending completions at turn end.
+  returns a `BgCompletion`; the loop posts its `context_text()` onto the
+  registry board at once, defers the completion (`pending_bg`), and settles
+  all pending completions at the **next safe boundary**: every tool
+  resolution (`ToolEnd`/`ToolBackgrounded`) and segment-flush point
+  (`ToolBatch`/`ToolStart`) mid-turn — the streaming buffer is empty there,
+  so a notice cell can never split a committed reply — plus every turn end,
+  and immediately while idle. `BgCompletion::context_text` is byte-identical
+  to the settled notice's `context_text`, so the note the agent injects and
+  the one later contexts replay never diverge.
 - Settling a completion: record `HistoryItem::Background(BackgroundNotice)`
   (the green/red `●` one-liner; the output tail rides the item for the model,
-  never rendered) and — when any completed shell was **model-launched** and no
-  queued turn dispatches — start an automatic turn. The notice is a history
-  item, so when a queued user batch dispatches instead, the notice simply
-  rides that turn's derived context (no extra request). User-launched (`!` +
-  Ctrl+B) shells commit the notice only — the model learns on the next turn.
+  never rendered). The **automatic turn** is the boundary dispatch's job now:
+  at turn end, an untaken **model-launched** note on the board (the agent
+  never heard it) with no queued turn dispatching starts one. The notice is a
+  history item, so when a queued user batch dispatches instead, the notice
+  simply rides that turn's derived context (no extra request). User-launched
+  (`!` + Ctrl+B) shells commit the notice only — the model learns mid-turn
+  via the board if one is in flight, else on the next turn.
 - `TurnSummary::shells` snapshots the running count at `end_turn`, rendering
   `Done for Ns · N shells still running` (not persisted — a resumed session's
   shells are gone).
@@ -148,9 +183,19 @@ over the launch facts, see Protocol above), the `!` shell via its normal
 
 - Background shells are **turn-independent**: Esc-interrupt, `fail_stream`,
   and channel swaps never touch them (their events ride their own channel).
-- Completion notices are committed only at turn boundaries (never mid-stream —
-  a foreign cell inside a streaming reply would corrupt the committed-row
-  order, invariant 2/3), and only in the conversation view (invariant 4);
-  history always records them, so overlay returns/resizes repaint them.
+- Completion notices are committed only at **safe boundaries** — tool
+  resolutions / segment flushes (where the streaming buffer is empty) and
+  turn ends — never inside a streaming text run: a foreign cell inside a
+  streaming reply would corrupt the committed-row order (invariant 2/3). A
+  completion that lands mid-text therefore waits for the next such boundary
+  (its board note still reaches the agent immediately). Commits happen only
+  in the conversation view (invariant 4); history always records them, so
+  overlay returns/resizes repaint them.
+- The board and `pending_bg` are parallel queues over the same completions —
+  the board feeds the **model** (taken by the agent or the boundary
+  dispatch), `pending_bg` feeds the **TUI/history** (drained at settle
+  points). A note can reach the model before its cell commits (the agent
+  drains between the loop's settle points) and vice versa; both always land,
+  each exactly once.
 - The band is inline state, not a `View` — all four alternate-screen views
   and the resize repaint behave exactly as before.

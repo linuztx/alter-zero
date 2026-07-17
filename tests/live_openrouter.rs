@@ -337,6 +337,98 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_killed_background_task_is_known_to_the_model_within_the_turn() {
+    // The immediate-feedback path end to end (docs/background.md): the model
+    // launches a background heartbeat, then kills it with pkill in a second
+    // bash call. The boundary (simulated here exactly as `main.rs` does)
+    // posts the completion's context note onto the registry board the moment
+    // the Exited event lands; the agent loop takes the board before its next
+    // round — so the model can quote the "[background] … was terminated by a
+    // signal" note in its final reply of the SAME turn, without any
+    // follow-up turn.
+    let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = std::env::temp_dir().join(format!("inline-tui-live-kill-{}", std::process::id()));
+    let registry = inline_tui::background::BackgroundRegistry::new(bg_tx, dir);
+    let backend = backend().with_background(registry.clone());
+
+    // The boundary simulator: apply the registry's events to the pure App
+    // state and, on Exited, post the completion's note — the `main.rs`
+    // Exited-arm dance (docs/background.md).
+    let post_registry = registry.clone();
+    let boundary = std::thread::spawn(move || {
+        let mut app = inline_tui::app::App::new();
+        let mut posted = None;
+        while let Some(event) = bg_rx.blocking_recv() {
+            match event {
+                inline_tui::background::BgEvent::Started {
+                    id,
+                    command,
+                    description,
+                    from_model,
+                } => app.bg_started(&id, &command, description, from_model),
+                inline_tui::background::BgEvent::Output { id, chunk } => {
+                    app.bg_output(&id, &chunk);
+                }
+                inline_tui::background::BgEvent::Exited { id, code, killed } => {
+                    let completion = app.bg_exited(&id, code, killed).expect("a known shell");
+                    post_registry.post_notice(completion.context_text(), completion.from_model);
+                    posted = Some(completion);
+                    break;
+                }
+            }
+        }
+        posted
+    });
+
+    // The pkill pattern spells one char as a [c]lass so the killer's own
+    // command line never matches it — only the heartbeat dies. The trailing
+    // sleep holds the tool open long enough for the Exited event to land and
+    // post, exactly like the user's real `kill …; sleep 1; …` pattern.
+    let prompt = "Do exactly this, step by step. \
+                  1) Use the bash tool with run_in_background set to true, description \
+                  'Heartbeat loop', to run: while true; do echo mark_ABC; sleep 0.2; done \
+                  2) After its result arrives, use the bash tool again (foreground) to run \
+                  exactly: pkill -f 'do echo mark_[A]BC'; sleep 2 \
+                  3) You will then receive a message starting with [background]. Reply with \
+                  that message's first line verbatim and nothing else. Do not run any more \
+                  tools after step 2.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+
+    let mut reply = String::new();
+    let mut tool_ends = 0;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::ToolEnd { .. } => tool_ends += 1,
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    let completion = boundary.join().expect("boundary thread joins");
+    println!("model replied: {reply:?}");
+
+    let completion = completion.expect("the heartbeat exited");
+    assert!(
+        completion.code.is_none(),
+        "pkill's SIGTERM reads as a signal death: {completion:?}"
+    );
+    assert!(tool_ends >= 1, "the kill ran as a foreground bash call");
+    // The proof of same-turn injection: the reply quotes the note's outcome —
+    // wording that exists nowhere in the prompt, only in the injected
+    // "[background] … was terminated by a signal" message.
+    assert!(
+        reply.contains("was terminated by a signal"),
+        "the model heard the kill within the turn, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_run_in_background_resolves_and_completes() {
     // The full production background path (docs/background.md): the model is
     // told to run a command with run_in_background — the agent loop resolves

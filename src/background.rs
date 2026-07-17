@@ -63,6 +63,23 @@ pub struct LaunchedTask {
     pub output_path: PathBuf,
 }
 
+/// A completed shell's model-facing note on the registry's notice board,
+/// waiting to be delivered: the event loop posts one the moment it handles a
+/// shell's `Exited` event, and the **in-flight agent** takes the board before
+/// each of its rounds — so a `kill`ed server is known to the model within the
+/// same turn — while notes still on the board at a turn boundary (the model
+/// never saw them) drive the automatic follow-up turn instead. See
+/// `docs/background.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingNotice {
+    /// The full context note (`BgCompletion::context_text` — the same text
+    /// the settled notice replays into every later turn's derived context).
+    pub context: String,
+    /// Whether the model launched the shell (an untaken note from one is what
+    /// warrants the automatic follow-up turn).
+    pub from_model: bool,
+}
+
 /// The base36 alphabet task ids are drawn from.
 const TASK_ID_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
 
@@ -159,6 +176,8 @@ struct Inner {
     /// The Ctrl+B latch: the loop raises it while a foreground command runs;
     /// the runner's poll loop consumes it (see `docs/background.md`).
     background_request: bool,
+    /// The completion notice board (see [`PendingNotice`]).
+    pending_notices: Vec<PendingNotice>,
     /// Where the `{id}.output` interim files live.
     dir: PathBuf,
 }
@@ -186,6 +205,7 @@ impl BackgroundRegistry {
                 next_id: 0,
                 tasks: HashMap::new(),
                 background_request: false,
+                pending_notices: Vec::new(),
                 dir,
             })),
             events,
@@ -384,6 +404,28 @@ impl BackgroundRegistry {
     /// starts, so a press that missed one command can't background the next.
     pub fn clear_background_request(&self) {
         self.inner.lock().expect("registry lock").background_request = false;
+    }
+
+    /// Post a completed shell's model-facing note onto the notice board (the
+    /// event loop, as it handles the shell's `Exited` event).
+    pub fn post_notice(&self, context: String, from_model: bool) {
+        self.inner
+            .lock()
+            .expect("registry lock")
+            .pending_notices
+            .push(PendingNotice {
+                context,
+                from_model,
+            });
+    }
+
+    /// Take every posted note, in arrival order, each delivered exactly once —
+    /// the in-flight agent before each round, or the turn-boundary dispatch
+    /// (whose untaken, model-launched notes warrant the automatic follow-up
+    /// turn). `/clear` takes-and-drops so a wiped conversation owes nothing.
+    #[must_use]
+    pub fn take_pending_notices(&self) -> Vec<PendingNotice> {
+        std::mem::take(&mut self.inner.lock().expect("registry lock").pending_notices)
     }
 }
 
@@ -713,6 +755,37 @@ mod tests {
             }
         }
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn posted_notices_are_taken_once_in_order() {
+        // The completion notice board (docs/background.md): the loop posts a
+        // finished shell's model-facing note the moment its Exited event is
+        // handled; the in-flight agent (or the turn-boundary dispatch —
+        // whoever gets there first) takes them, each exactly once, in
+        // arrival order, with the from_model flag riding along for the
+        // auto-follow-up-turn decision.
+        let (reg, _rx) = registry();
+        assert!(reg.take_pending_notices().is_empty(), "starts empty");
+        reg.post_notice("[background] a terminated".to_string(), true);
+        reg.post_notice("[background] b completed".to_string(), false);
+        assert_eq!(
+            reg.take_pending_notices(),
+            vec![
+                PendingNotice {
+                    context: "[background] a terminated".to_string(),
+                    from_model: true,
+                },
+                PendingNotice {
+                    context: "[background] b completed".to_string(),
+                    from_model: false,
+                },
+            ]
+        );
+        assert!(
+            reg.take_pending_notices().is_empty(),
+            "a take drains the board — nothing is delivered twice"
+        );
     }
 
     #[test]

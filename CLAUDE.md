@@ -87,10 +87,16 @@ running model-`bash`/`!` command to the background mid-run (the live cell hints
 it); the cell resolves `⎿ Running in the background (↓ to manage)`, the footer
 counts `· N shells`, **↓ from an empty composer opens the inline manager band**
 (list → per-shell details with a live-tailing output box → `x` stops), and a
-completion commits a green/red `● Background command "…" completed` notice at
-the turn boundary — auto-starting a follow-up turn that tells the model the
-result when nothing else is queued, `Done for Ns · N shells still running` on
-the summary) in `docs/background.md`.
+completion is **immediate feedback**: its model-facing note posts onto the
+registry's notice board the moment it exits (the in-flight agent takes the
+board before each round, so a shell the model just `kill`ed is known to it
+within the same turn, right after the killing call's tool result) and the
+green/red `● Background command "…" completed` notice cell commits at the next
+safe boundary — a tool resolution mid-turn, else the turn end — while a
+model-launched note **no agent read** auto-starts a follow-up turn that tells
+the model the result when nothing else is queued (an agent that already heard
+it mid-turn owes no follow-up), `Done for Ns · N shells still running` on the
+summary) in `docs/background.md`.
 
 ### The runtime model and its invariants
 

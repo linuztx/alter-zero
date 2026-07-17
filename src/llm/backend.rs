@@ -247,6 +247,7 @@ impl ReplySource for LlmBackend {
             // thread so a large image never stalls the event loop.
             let messages = build_messages(system.as_deref(), &prompt, &context, image_data_url);
             let mut executor = RealToolExecutor::new();
+            let notices = background.clone();
             if let Some(registry) = background {
                 executor = executor.with_background(registry);
             }
@@ -257,7 +258,11 @@ impl ReplySource for LlmBackend {
             // terminal StreamDone/Error itself. Each round retries transient
             // failures internally (see `stream_round`). With tools disabled the
             // model never asks for any, so this collapses to a single round —
-            // the old plain-stream behaviour. See `docs/tools.md`.
+            // the old plain-stream behaviour. See `docs/tools.md`. Before each
+            // round it takes the registry's completion notice board, so a
+            // background shell that finished (or was killed) since the last
+            // request is known to the model within this same turn
+            // (docs/background.md).
             agent::run_agent(
                 &tx,
                 &cancel,
@@ -265,6 +270,14 @@ impl ReplySource for LlmBackend {
                 messages,
                 |msgs| stream_round(&client, msgs, &tx, &cancel),
                 |call, on_output| executor.execute(call, &cancel, on_output),
+                || match &notices {
+                    Some(registry) => registry
+                        .take_pending_notices()
+                        .into_iter()
+                        .map(|note| note.context)
+                        .collect(),
+                    None => Vec::new(),
+                },
             );
         })
     }

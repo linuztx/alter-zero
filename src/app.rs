@@ -659,10 +659,12 @@ const BG_NOTICE_TAIL_MAX_BYTES: usize = 4 * 1024;
 const BG_NOTICE_TAIL_MAX_LINES: usize = 30;
 
 /// What a background shell left behind when it exited ([`App::bg_exited`]) —
-/// held in [`App::pending_bg`] while a turn is in flight and settled at turn
-/// end: the loop records a [`BackgroundNotice`] for it and, for a
-/// model-launched shell with nothing queued, starts the automatic follow-up
-/// turn. See `docs/background.md`.
+/// held in [`App::pending_bg`] and settled at the next **safe boundary**
+/// (a tool resolution / segment flush mid-turn, else the turn end; at once
+/// while idle): the loop records a [`BackgroundNotice`] for it, its
+/// [`context_text`](BgCompletion::context_text) having already been posted
+/// onto the registry's notice board for the in-flight agent. See
+/// `docs/background.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BgCompletion {
     pub id: String,
@@ -683,6 +685,24 @@ impl BgCompletion {
     #[must_use]
     pub fn display_description(&self) -> &str {
         self.description.as_deref().unwrap_or(&self.command)
+    }
+
+    /// The model-facing context note — byte-identical to the
+    /// [`BackgroundNotice::context_text`] the settle later records for this
+    /// completion, so the note the in-flight agent injects mid-turn and the
+    /// one every later turn's derived context replays never diverge (the
+    /// timestamp, stamped only at settle, plays no part in the text).
+    #[must_use]
+    pub fn context_text(&self) -> String {
+        BackgroundNotice {
+            description: self.display_description().to_string(),
+            id: self.id.clone(),
+            code: self.code,
+            killed: self.killed,
+            output_tail: self.output_tail.clone(),
+            timestamp: String::new(),
+        }
+        .context_text()
     }
 }
 
@@ -4178,7 +4198,7 @@ impl App {
 
     /// A background shell exited (the registry's `BgEvent::Exited`): remove it
     /// from the list and return its completion for the loop to settle —
-    /// deferred to turn end while a turn is in flight
+    /// deferred to the next safe boundary while a turn is in flight
     /// ([`defer_bg_completion`](App::defer_bg_completion)), else settled at
     /// once. A details view watching this shell falls back to the list (and
     /// the list selection re-clamps); `None` for an unknown id (already
@@ -4208,14 +4228,15 @@ impl App {
         })
     }
 
-    /// Hold a completion that landed mid-turn for the turn-end settle.
+    /// Hold a completion that landed mid-turn for the next boundary settle.
     pub fn defer_bg_completion(&mut self, completion: BgCompletion) {
         self.pending_bg.push_back(completion);
     }
 
-    /// Drain the completions held during the turn (empty when none landed) —
-    /// the loop settles them at every turn end (`StreamDone`, `Error`, and
-    /// the Esc interrupt alike). See `docs/background.md`.
+    /// Drain the held completions (empty when none landed) — the loop
+    /// settles them at every safe boundary: each tool resolution and
+    /// segment-flush point mid-turn, and every turn end (`StreamDone`,
+    /// `Error`, and the Esc interrupt alike). See `docs/background.md`.
     pub fn take_pending_bg_completions(&mut self) -> Vec<BgCompletion> {
         self.pending_bg.drain(..).collect()
     }
@@ -10607,6 +10628,34 @@ mod tests {
             ..notice
         };
         assert!(silent.context_text().ends_with("(no output)"));
+    }
+
+    #[test]
+    fn completion_context_text_matches_the_recorded_notices() {
+        // The Exited arm posts the completion's context note to the registry
+        // board the moment it lands, so the in-flight agent can inject it into
+        // its next round (docs/background.md); the settle later records a
+        // BackgroundNotice for the same completion. Both must read
+        // identically, or the model would see one text mid-turn and a
+        // different one in every later turn's derived context.
+        let mut app = App::new();
+        app.bg_started(
+            "bash_1",
+            "python3 server.py",
+            Some("Start the API".into()),
+            true,
+        );
+        app.bg_output("bash_1", "listening on 8888\n");
+        let completion = app.bg_exited("bash_1", None, false).unwrap();
+        let notice = app.record_background_notice(&completion);
+        assert_eq!(completion.context_text(), notice.context_text());
+        assert!(
+            completion
+                .context_text()
+                .contains("was terminated by a signal"),
+            "a signal death reads as terminated: {}",
+            completion.context_text()
+        );
     }
 
     #[test]
