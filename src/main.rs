@@ -35,7 +35,7 @@
 //! visible conversation needs re-wrapping, so `App` retains a `history` and we
 //! repaint from it — see [`repaint_conversation`].
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::thread::JoinHandle;
@@ -49,9 +49,10 @@ use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
 use inline_tui::app::{
-    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, InterruptedTurn, ProviderChoice,
-    QueuedTurn, Role, ToastKind, View,
+    Action, App, BackgroundNotice, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, InterruptedTurn,
+    ProviderChoice, QueuedTurn, Role, ToastKind, View,
 };
+use inline_tui::background::{BackgroundRegistry, BgEvent};
 use inline_tui::clipboard;
 use inline_tui::context;
 use inline_tui::file_search::{FileMatch, rank_files};
@@ -124,6 +125,22 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         .ok()
         .and_then(|ms| ms.parse::<u64>().ok())
         .map_or(stream::STARTUP_DELAY, Duration::from_millis);
+    // The background-shell registry (docs/background.md): processes launched
+    // by the model's `run_in_background` bash calls (or moved back with
+    // Ctrl+B) report on their own channel — a dedicated `select!` source,
+    // because they outlive turns and the reply channel is swapped on every
+    // interrupt/`/clear`. Interim output tees to per-task files under the
+    // temp dir so the model can `read` progress mid-run. The started clocks
+    // live here at the boundary (the `set_status_times` pattern); the pure
+    // `App` sees only computed runtimes.
+    let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel::<BgEvent>();
+    let registry = BackgroundRegistry::new(
+        bg_tx,
+        std::env::temp_dir()
+            .join(format!("inline-tui-{}", std::process::id()))
+            .join("tasks"),
+    );
+    let mut bg_clocks: HashMap<String, Instant> = HashMap::new();
     // The reply backend. The dummy is the default (and the fallback) so the app
     // always runs offline; a real OpenAI-compatible model activates only when a
     // provider, a model, and an API key all resolve and `INLINE_TUI_DUMMY` isn't
@@ -193,6 +210,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             temperature,
             system_prompt.clone(),
             startup_delay,
+            &registry,
         )
     };
     let mut active_model = backend.model_name();
@@ -358,9 +376,22 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // handle, so the status strip, Esc-interrupt, and
                                 // resize repaint all work exactly like an AI turn.
                                 inflight = Some(run_shell(
-                                    term, &mut app, &tx, command,
+                                    term, &mut app, &tx, command, &registry,
                                     &mut render, &mut clocks,
                                 )?);
+                            }
+                            Action::KillBackground(id) => {
+                                // `x` in the ↓ manager: stop the task. The
+                                // registry's Exited event then removes the row
+                                // and commits the stopped notice
+                                // (docs/background.md).
+                                registry.kill(&id);
+                            }
+                            Action::MoveToBackground => {
+                                // Ctrl+B on a running command: raise the latch
+                                // the runner's poll loop consumes to hand its
+                                // child off (docs/background.md).
+                                registry.request_background();
                             }
                             Action::ToggleToolView => {
                                 // on_key already flipped app.view; sync the overlay.
@@ -458,6 +489,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 clocks.turn_start = None;
                                 clocks.thinking_start = None;
                                 render.reset();
+                                // A fresh slate kills the background shells too
+                                // (clear_conversation already forgot them, so
+                                // their Exited events find nothing and owe no
+                                // notice — docs/background.md).
+                                registry.kill_all();
                                 // A cleared conversation starts a fresh session
                                 // file (codex's /new); the old one keeps what it
                                 // had (docs/resume.md).
@@ -505,9 +541,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         // history, like /clear — it resets `render`
                                         // itself). No notice, and no queue flush —
                                         // the empty queue is the undo's
-                                        // precondition. See docs/interrupt.md.
+                                        // precondition — but background
+                                        // completions held during the turn still
+                                        // settle (docs/background.md).
                                         repaint_conversation(
                                             term, &mut app, &mut render, ReflowClear::Purge,
+                                        )?;
+                                        inflight = dispatch_after_turn(
+                                            term, &mut app, &tx, backend.as_ref(), &registry,
+                                            &mut render, &mut clocks,
                                         )?;
                                     }
                                     Some(InterruptedTurn::Kept { partial, tool, notice }) => {
@@ -529,9 +571,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         // front entry — the first queue — goes out now
                                         // (a text batch to the model, or a `!` command
                                         // run locally); any later batches iterate at
-                                        // the following turn-ends.
-                                        inflight = flush_next_queued(
-                                            term, &mut app, &tx, backend.as_ref(),
+                                        // the following turn-ends. Held background
+                                        // completions settle first, like every
+                                        // turn end (docs/background.md).
+                                        inflight = dispatch_after_turn(
+                                            term, &mut app, &tx, backend.as_ref(), &registry,
                                             &mut render, &mut clocks,
                                         )?;
                                     }
@@ -687,10 +731,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     &providers, &env_file, &provider, &id, temperature,
                                 ) {
                                     Some(cfg) if cfg.is_usable() => {
-                                        backend = Box::new(LlmBackend::with_system_prompt(
-                                            cfg,
-                                            system_prompt.clone(),
-                                        ));
+                                        backend = Box::new(
+                                            LlmBackend::with_system_prompt(
+                                                cfg,
+                                                system_prompt.clone(),
+                                            )
+                                            .with_background(registry.clone()),
+                                        );
                                         active_provider = Some(provider.clone());
                                         active_model = id.clone();
                                         app.set_session_info(
@@ -863,19 +910,24 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 if on_stream_event(
                     term, &mut app, &mut render, &mut clocks, stream_event,
                 )? {
-                    // The stream ended. Send the next queued batch as the
+                    // The stream ended. Settle any background completions that
+                    // landed mid-turn (their notices commit here, at the turn
+                    // boundary), then send the next queued batch as the
                     // following turn (`None` when nothing is queued) — Enter
                     // messages batch into one turn, while Tab-opened follow-up
                     // batches each flush at their own turn-end, so they iterate in
-                    // order. This runs under the Ctrl+O overlay too (codex's
-                    // queue drains at turn end regardless of its Ctrl+T view, the
-                    // transcript following along): dispatching only records
-                    // history and *queues* the user bubbles — `term` never
-                    // flushes pending lines into the alternate screen, and the
-                    // return's reflow drops + regenerates them from history —
-                    // so invariant 4 holds.
-                    inflight = flush_next_queued(
-                        term, &mut app, &tx, backend.as_ref(), &mut render, &mut clocks,
+                    // order; with nothing queued, a model-launched completion
+                    // dispatches the automatic follow-up turn instead
+                    // (docs/background.md). This runs under the Ctrl+O overlay
+                    // too (codex's queue drains at turn end regardless of its
+                    // Ctrl+T view, the transcript following along): dispatching
+                    // only records history and *queues* the user bubbles —
+                    // `term` never flushes pending lines into the alternate
+                    // screen, and the return's reflow drops + regenerates them
+                    // from history — so invariant 4 holds.
+                    inflight = dispatch_after_turn(
+                        term, &mut app, &tx, backend.as_ref(), &registry,
+                        &mut render, &mut clocks,
                     )?;
                 }
                 frame.schedule_frame();
@@ -890,6 +942,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             //    stops by itself on the first draw after the turn ends.
             Some(()) = draw_rx.recv() => {
                 update_status_times(&mut app, &clocks);
+                // Inject each background shell's runtime (the boundary owns
+                // the started clocks — docs/background.md), so the manager's
+                // details view ticks.
+                for (id, started) in &bg_clocks {
+                    app.set_background_runtime(id, started.elapsed());
+                }
                 // Expire the transient toast when its deadline passes (so this
                 // very frame paints without it); while it still lingers, keep a
                 // frame pending for the eventual clear — a coalesced keystroke
@@ -918,7 +976,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     View::ResumePicker => draw_resume_picker(term, &app)?,
                     View::ContextDebug => draw_context_view(term, &mut app)?,
                 }
-                if app.turn_active() {
+                // The ↓ manager band re-arms frames like an active turn: its
+                // details view's Runtime ticks with no events otherwise.
+                if app.turn_active() || app.background_view.is_some() {
                     frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
                 }
             }
@@ -963,6 +1023,36 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 match result {
                     Ok(models) => app.add_models(models),
                     Err(reason) => app.add_model_error(label, reason),
+                }
+                frame.schedule_frame();
+            }
+
+            // 7. A background-shell event from the registry's monitors
+            //    (docs/background.md). Its channel is never swapped (unlike
+            //    the reply channel), so shells survive interrupts and /clear
+            //    kills them explicitly. An exit mid-turn is held for the
+            //    turn-end settle; an exit while idle settles immediately —
+            //    the notice commits and, for a model-launched shell, the
+            //    automatic follow-up turn starts.
+            Some(bg_event) = bg_rx.recv() => {
+                match bg_event {
+                    BgEvent::Started { id, command, description, from_model } => {
+                        bg_clocks.insert(id.clone(), Instant::now());
+                        app.bg_started(&id, &command, description, from_model);
+                    }
+                    BgEvent::Output { id, chunk } => app.bg_output(&id, &chunk),
+                    BgEvent::Exited { id, code, killed } => {
+                        bg_clocks.remove(&id);
+                        if let Some(completion) = app.bg_exited(&id, code, killed) {
+                            app.defer_bg_completion(completion);
+                            if !app.turn_active() {
+                                inflight = dispatch_after_turn(
+                                    term, &mut app, &tx, backend.as_ref(), &registry,
+                                    &mut render, &mut clocks,
+                                )?;
+                            }
+                        }
+                    }
                 }
                 frame.schedule_frame();
             }
@@ -1013,6 +1103,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     if let Some(cancel) = model_fetch_cancel.take() {
         cancel.cancel();
     }
+    // Kill every background shell on the way out — the sweep is synchronous
+    // (direct process-group kills), so quitting can't orphan a `ping`
+    // (docs/background.md).
+    registry.kill_all();
     Ok(())
 }
 
@@ -1210,6 +1304,7 @@ fn save_settings(path: Option<&Path>, provider: &str, model: &str) {
 /// Pick the reply backend: the dummy unless a real provider/model/key all
 /// resolve (and `INLINE_TUI_DUMMY` isn't forcing the dummy). The dummy is the
 /// safe fallback so the app always runs offline. See `docs/llm.md`.
+#[allow(clippy::too_many_arguments)] // a flat list of independent config knobs
 fn build_backend(
     providers: &ProvidersFile,
     env_file: &EnvFile,
@@ -1218,13 +1313,16 @@ fn build_backend(
     temperature: Option<f32>,
     system_prompt: Option<String>,
     startup_delay: Duration,
+    registry: &BackgroundRegistry,
 ) -> Box<dyn ReplySource> {
     if !dummy_forced()
         && let (Some(provider), Some(model)) = (provider, model)
         && let Some(cfg) = model_config_for(providers, env_file, provider, model, temperature)
         && cfg.is_usable()
     {
-        return Box::new(LlmBackend::with_system_prompt(cfg, system_prompt));
+        return Box::new(
+            LlmBackend::with_system_prompt(cfg, system_prompt).with_background(registry.clone()),
+        );
     }
     Box::new(DummyAi::with_startup_delay(startup_delay))
 }
@@ -1468,6 +1566,7 @@ fn run_shell(
     app: &mut App,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     command: String,
+    registry: &BackgroundRegistry,
     render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
 ) -> io::Result<(CancelToken, JoinHandle<()>)> {
@@ -1482,8 +1581,101 @@ fn run_shell(
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
     let cancel = CancelToken::new();
-    let handle = spawn_shell_command(command, tx.clone(), cancel.clone());
+    let handle = spawn_shell_command(command, tx.clone(), cancel.clone(), registry.clone());
     Ok((cancel, handle))
+}
+
+/// Settle the background completions held during the turn (empty when none
+/// landed): record + commit each [`BackgroundNotice`] in arrival order —
+/// commits are view-gated (invariant 4: history always records; an overlay
+/// return repaints from it). Returns the notices and whether any completed
+/// shell was model-launched (the automatic follow-up turn's trigger). See
+/// `docs/background.md`.
+fn settle_bg_completions(
+    term: &mut InlineViewport,
+    app: &mut App,
+    render: &mut ui::StreamRender,
+) -> (Vec<BackgroundNotice>, bool) {
+    let completions = app.take_pending_bg_completions();
+    let mut notices = Vec::with_capacity(completions.len());
+    let mut any_from_model = false;
+    for completion in &completions {
+        any_from_model |= completion.from_model;
+        let notice = app.record_background_notice(completion);
+        if app.view == View::Conversation {
+            let width = term.screen().width;
+            // A completion can settle right after a turn whose strip just
+            // collapsed — reseat the viewport like every post-stream commit
+            // so the notice replaces the strip's rows in place (invariant 3).
+            term.set_view_height(live_region_height(app, term.screen()));
+            let _ = render; // the stream is settled; nothing mid-flight to flush
+            term.insert_before(ui::background_notice_lines(&notice, width));
+            term.insert_before(vec![Line::default()]);
+        }
+        notices.push(notice);
+    }
+    (notices, any_from_model)
+}
+
+/// The every-turn-end dispatch (docs/background.md, docs/queue.md): settle
+/// held background completions, then send the next queued entry — or, with
+/// nothing queued and a model-launched completion among the settled ones,
+/// start the **automatic follow-up turn** that tells the model its command
+/// finished (the notices are already in history, so they ride the derived
+/// context either way — a queued user batch simply carries them along with
+/// no extra request). Returns the new in-flight handle, or `None` when
+/// nothing dispatched. Shared by every turn-end site (`StreamDone`, `Error`,
+/// both Esc-interrupt outcomes) *and* the idle completion arrival, so the
+/// paths can never drift.
+#[allow(clippy::too_many_arguments)] // the start_turn plumbing, plus the registry
+fn dispatch_after_turn(
+    term: &mut InlineViewport,
+    app: &mut App,
+    tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    backend: &dyn ReplySource,
+    registry: &BackgroundRegistry,
+    render: &mut ui::StreamRender,
+    clocks: &mut StatusClocks,
+) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
+    let (notices, any_from_model) = settle_bg_completions(term, app, render);
+    let mut next = flush_next_queued(term, app, tx, backend, registry, render, clocks)?;
+    if next.is_none() && any_from_model {
+        next = Some(start_background_turn(
+            app, tx, backend, &notices, render, clocks,
+        ));
+    }
+    Ok(next)
+}
+
+/// Start the automatic follow-up turn for freshly settled background
+/// completions: like [`start_turn`] but with **no new user message** — the
+/// just-recorded notices are the turn's cause and already sit in history, so
+/// the derived context carries them (the prompt text is their context form,
+/// for the empty-context fallback / the dummy). The model then reports the
+/// result, exactly like the user's example transcript. See
+/// `docs/background.md`.
+fn start_background_turn(
+    app: &mut App,
+    tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    backend: &dyn ReplySource,
+    notices: &[BackgroundNotice],
+    render: &mut ui::StreamRender,
+    clocks: &mut StatusClocks,
+) -> (CancelToken, JoinHandle<()>) {
+    app.begin_stream();
+    let prompt = notices
+        .iter()
+        .map(BackgroundNotice::context_text)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    app.count_user_input(&prompt);
+    render.reset();
+    clocks.turn_start = Some(Instant::now());
+    clocks.thinking_start = None;
+    let cancel = CancelToken::new();
+    let context = context::context_messages(&app.history);
+    let handle = backend.spawn(prompt, Vec::new(), context, tx.clone(), cancel.clone());
+    (cancel, handle)
 }
 
 /// Flush the next queued turn, if any, dispatching by its kind: a text batch
@@ -1497,6 +1689,7 @@ fn flush_next_queued(
     app: &mut App,
     tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     backend: &dyn ReplySource,
+    registry: &BackgroundRegistry,
     render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
 ) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
@@ -1513,9 +1706,9 @@ fn flush_next_queued(
             render,
             clocks,
         )?)),
-        Some(QueuedTurn::Shell(command)) => {
-            Ok(Some(run_shell(term, app, tx, command, render, clocks)?))
-        }
+        Some(QueuedTurn::Shell(command)) => Ok(Some(run_shell(
+            term, app, tx, command, registry, render, clocks,
+        )?)),
         None => Ok(None),
     }
 }
@@ -1523,27 +1716,42 @@ fn flush_next_queued(
 /// Run `command` under `sh -c` on a background thread, streaming the result back
 /// on the reply channel as a `ToolEnd`/`StreamDone` pair (the command was
 /// already shown as the running tool by [`App::begin_shell`]). Reader threads
-/// drain stdout/stderr so a chatty command can't deadlock on a full pipe; the
-/// loop polls `cancel` so an Esc interrupt kills the child and reaps it. Output
-/// is stdout then stderr; a non-zero exit appends `[exit status: N]` and
-/// resolves the cell red. The I/O boundary — verified by `scripts/smoke.sh`
-/// (Phase 19), not unit tests. See `docs/shell-command.md`.
+/// drain stdout/stderr so a chatty command can't deadlock on a full pipe,
+/// forwarding raw chunks the wait loop merges **in arrival order** into a
+/// capped buffer (`read_capped`'s memory bound, the `llm::exec` merge shape);
+/// the loop polls `cancel` so an Esc interrupt kills the child and reaps it,
+/// and the registry's Ctrl+B latch so a running command can be **adopted into
+/// the background** mid-run — resolving as `ToolBackgrounded` instead
+/// (docs/background.md). The child leads its own process group (like the
+/// model-bash executor), so kills reap backgrounded grandchildren too. A
+/// non-zero exit appends `[exit status: N]` and resolves the cell red. The
+/// I/O boundary — verified by `scripts/smoke.sh` (Phase 19), not unit tests.
+/// See `docs/shell-command.md`.
 fn spawn_shell_command(
     command: String,
     tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
     cancel: CancelToken,
+    registry: BackgroundRegistry,
 ) -> JoinHandle<()> {
     use std::process::{Command, Stdio};
 
     std::thread::spawn(move || {
-        let mut child = match Command::new("sh")
-            .arg("-c")
+        // A Ctrl+B pressed before this command started belongs to nothing.
+        registry.clear_background_request();
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c")
             .arg(&command)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+            .stderr(Stdio::piped());
+        // Its own process group so a kill (Esc, quit, the registry) reaps the
+        // whole tree — the `llm::exec` pattern.
+        #[cfg(unix)]
         {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(err) => {
                 let _ = tx.send(StreamEvent::ToolEnd {
@@ -1557,43 +1765,66 @@ fn spawn_shell_command(
         };
 
         // Drain both pipes on their own threads so a command that writes more
-        // than the pipe buffer can't block (and thus never exit) while we wait.
-        // Each reader *caps* what it retains (`read_capped`) so a command with
-        // huge output (e.g. `tree ~/`) can't spike memory — it keeps draining
-        // the pipe but only the first `SHELL_OUTPUT_MAX_BYTES` are kept.
+        // than the pipe buffer can't block (and thus never exit) while we
+        // wait; the loop below *caps* what it retains so a command with huge
+        // output (e.g. `tree ~/`) can't spike memory.
         let cap = SHELL_OUTPUT_MAX_BYTES;
-        let out_pipe = child.stdout.take();
-        let out_reader = std::thread::spawn(move || match out_pipe {
-            Some(pipe) => read_capped(pipe, cap),
-            None => (Vec::new(), false),
-        });
-        let err_pipe = child.stderr.take();
-        let err_reader = std::thread::spawn(move || match err_pipe {
-            Some(pipe) => read_capped(pipe, cap),
-            None => (Vec::new(), false),
-        });
+        let (chunk_tx, chunk_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        if let Some(pipe) = child.stdout.take() {
+            let tx = chunk_tx.clone();
+            std::thread::spawn(move || drain_shell_pipe(pipe, &tx));
+        }
+        if let Some(pipe) = child.stderr.take() {
+            let tx = chunk_tx.clone();
+            std::thread::spawn(move || drain_shell_pipe(pipe, &tx));
+        }
+        drop(chunk_tx);
 
-        // Wait for the child, polling so an Esc interrupt (cancel) kills it.
+        let mut combined: Vec<u8> = Vec::new();
+        let mut truncated = false;
+        // Wait for the child, polling so an Esc interrupt (cancel) or a Ctrl+B
+        // background request acts promptly.
         let status = loop {
+            while let Ok(chunk) = chunk_rx.try_recv() {
+                append_capped(&mut combined, &chunk, cap, &mut truncated);
+            }
             if cancel.is_cancelled() {
-                let _ = child.kill();
-                let _ = child.wait();
                 // The interrupt path (App::interrupt_turn) owns the UI from
-                // here — resolve the tool failed, commit the notice. Send
-                // nothing and return at once so the loop's `handle.join()`
-                // unblocks promptly. We deliberately do **not** join the reader
-                // threads: killing `sh` can leave a reparented grandchild (e.g.
-                // `sleep`) holding the pipe's write end, so `read_to_string`
-                // would block until *it* dies. Detached, the readers finish
-                // harmlessly when that happens (they only drop a buffer).
+                // here — resolve the tool failed, commit the notice. Kill the
+                // whole group (a reparented grandchild would otherwise hold
+                // the pipe open), send nothing, and return at once so the
+                // quit path's bounded wait unblocks promptly. The detached
+                // readers finish at EOF on their own.
+                kill_shell_group(&mut child);
+                return;
+            }
+            // Ctrl+B: hand the run to the background registry mid-flight —
+            // it replays what we read so far and keeps streaming from our
+            // pipe channel. The cell resolves as backgrounded; the shell turn
+            // ends with no summary as usual (docs/background.md).
+            if registry.take_background_request() {
+                let task = registry.adopt(&command, None, false, child, chunk_rx, combined);
+                let _ = tx.send(StreamEvent::ToolBackgrounded {
+                    id: task.id.clone(),
+                    output: format!(
+                        "[moved to background as task {}; final output will follow when it completes]",
+                        task.id
+                    ),
+                });
+                let _ = tx.send(StreamEvent::StreamDone);
                 return;
             }
             match child.try_wait() {
                 Ok(Some(status)) => break status,
-                Ok(None) => std::thread::sleep(SHELL_POLL_INTERVAL),
+                Ok(None) => match chunk_rx.recv_timeout(SHELL_POLL_INTERVAL) {
+                    Ok(chunk) => append_capped(&mut combined, &chunk, cap, &mut truncated),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        std::thread::sleep(SHELL_POLL_INTERVAL);
+                    }
+                },
                 Err(err) => {
-                    let _ = out_reader.join();
-                    let _ = err_reader.join();
+                    kill_shell_group(&mut child);
                     let _ = tx.send(StreamEvent::ToolEnd {
                         output: format!("error waiting on command: {err}"),
                         ok: false,
@@ -1604,30 +1835,18 @@ fn spawn_shell_command(
                 }
             }
         };
+        // Even on a clean exit, reap any process the command backgrounded —
+        // it holds the pipes open, which used to delay the cell until the
+        // straggler died; then absorb whatever the readers still buffered
+        // (they hit EOF once the group is gone).
+        kill_shell_group(&mut child);
+        while let Ok(chunk) = chunk_rx.recv_timeout(SHELL_POLL_INTERVAL) {
+            append_capped(&mut combined, &chunk, cap, &mut truncated);
+        }
 
-        let (out_bytes, out_trunc) = out_reader.join().unwrap_or((Vec::new(), false));
-        let (err_bytes, err_trunc) = err_reader.join().unwrap_or((Vec::new(), false));
-        // Lossy UTF-8: a command may emit non-UTF-8 bytes (read_to_string used to
-        // error on those); the cap may also cut a multi-byte char (→ one U+FFFD).
-        let mut output = String::from_utf8_lossy(&out_bytes).into_owned();
-        let stderr = String::from_utf8_lossy(&err_bytes);
-        if !stderr.is_empty() {
-            if !output.is_empty() && !output.ends_with('\n') {
-                output.push('\n');
-            }
-            output.push_str(&stderr);
-        }
-        let mut truncated = out_trunc || err_trunc;
-        // stdout + stderr together can exceed the cap even if neither did alone;
-        // keep the retained output bounded (cut on a char boundary).
-        if output.len() > cap {
-            let mut cut = cap;
-            while cut > 0 && !output.is_char_boundary(cut) {
-                cut -= 1;
-            }
-            output.truncate(cut);
-            truncated = true;
-        }
+        // Lossy UTF-8: a command may emit non-UTF-8 bytes; the cap may also
+        // cut a multi-byte char (→ one U+FFFD).
+        let mut output = String::from_utf8_lossy(&combined).into_owned();
         let ok = status.success();
         if !ok {
             let code = status
@@ -1647,38 +1866,53 @@ fn spawn_shell_command(
     })
 }
 
-/// Read `reader` to EOF — so the child never blocks on a full pipe — but retain
-/// at most `cap` bytes in memory; bytes past the cap are drained and dropped.
-/// Returns the retained head and whether anything was dropped (the output was
-/// truncated). This bounds peak memory regardless of how much a command emits
-/// (codex's `read_capped`/`append_capped` pattern), so `! tree ~/` can't spike
-/// RSS by buffering its whole output. See `docs/shell-command.md`.
-fn read_capped(mut reader: impl io::Read, cap: usize) -> (Vec<u8>, bool) {
-    let mut buf = Vec::new();
+/// Read `pipe` to EOF, forwarding raw chunks for the wait loop to merge (the
+/// `llm::exec` drain shape). Stops early if the receiver hung up.
+fn drain_shell_pipe(mut pipe: impl io::Read, tx: &std::sync::mpsc::Sender<Vec<u8>>) {
     let mut chunk = vec![0u8; 64 * 1024];
-    let mut truncated = false;
     loop {
-        match reader.read(&mut chunk) {
+        match pipe.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => {
-                if buf.len() < cap {
-                    let take = (cap - buf.len()).min(n);
-                    buf.extend_from_slice(&chunk[..take]);
-                    if take < n {
-                        truncated = true;
-                    }
-                } else {
-                    truncated = true;
+                if tx.send(chunk[..n].to_vec()).is_err() {
+                    break;
                 }
-                // Past the cap we keep looping (draining) but retain nothing.
             }
-            // Retry a signal-interrupted read (as `read_to_string` does); any
-            // other error means the pipe is done.
             Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
             Err(_) => break,
         }
     }
-    (buf, truncated)
+}
+
+/// Append `chunk` to the capped `buf`, marking `truncated` when the cap bites —
+/// bounds peak memory regardless of how much a command emits (codex's
+/// `append_capped` pattern; see `docs/shell-command.md`).
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize, truncated: &mut bool) {
+    if buf.len() < cap {
+        let take = (cap - buf.len()).min(chunk.len());
+        buf.extend_from_slice(&chunk[..take]);
+        if take < chunk.len() {
+            *truncated = true;
+        }
+    } else if !chunk.is_empty() {
+        *truncated = true;
+    }
+}
+
+/// Kill a `!` command's whole process group and reap the direct child — the
+/// `llm::exec::kill_process_group` pattern (the crate forbids `unsafe`, so the
+/// shell's POSIX `kill` handles the negative-pgid form). Best-effort.
+fn kill_shell_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    {
+        let pgid = child.id();
+        let _ = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(format!("kill -KILL -{pgid} 2>/dev/null"))
+            .status();
+    }
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// How often [`spawn_shell_command`] polls a running child for completion while
@@ -1786,6 +2020,21 @@ fn on_stream_event(
                 // back-to-back StreamDone can't flush against the stale
                 // strip-inflated height and over-scroll the box off the
                 // bottom (invariant 3).
+                term.set_view_height(live_region_height(app, term.screen()));
+                term.insert_before(ui::tool_lines(&tool, width));
+                term.insert_before(vec![Line::default()]);
+            }
+            Ok(false)
+        }
+        StreamEvent::ToolBackgrounded { id: _, output } => {
+            // The call resolved by moving to the background: commit its cell
+            // with the fixed `⎿ Running in the background (↓ to manage)` row
+            // (the stored output is the model-facing launch text). The process
+            // itself now reports through the background channel. Mirrors the
+            // ToolEnd commit dance (docs/background.md).
+            if let Some(tool) = app.background_tool(&output)
+                && committing
+            {
                 term.set_view_height(live_region_height(app, term.screen()));
                 term.insert_before(ui::tool_lines(&tool, width));
                 term.insert_before(vec![Line::default()]);
@@ -1952,13 +2201,16 @@ fn local_timestamp() -> String {
 /// the next [`draw`] will use. Shared so a post-stream commit can reserve that same
 /// idle height before flushing the final lines (see [`InlineViewport::set_view_height`]).
 fn live_region_height(app: &App, screen: Rect) -> u16 {
-    // The inline `/model` picker and `/login` flow each replace the whole region
-    // with their own framed body (see docs/llm.md); the open one's height stands
-    // in for the composer's.
+    // The inline `/model` picker, `/login` flow, and ↓ background manager each
+    // replace the whole region with their own framed body (see docs/llm.md /
+    // docs/background.md); the open one's height stands in for the composer's.
     if let Some(height) = ui::model_picker_height(app, screen.height) {
         return height;
     }
     if let Some(height) = ui::key_onboarding_height(app, screen.height) {
+        return height;
+    }
+    if let Some(height) = ui::background_view_height(app, screen.height) {
         return height;
     }
     let band = ui::band_rows(app);
@@ -2800,18 +3052,18 @@ fn dispatch_file_search(
 
 // `main.rs` is the terminal I/O boundary (smoke-covered, not unit-tested) —
 // except the odd pure helper with no terminal in it, like `term.rs`'s
-// `keyboard_enhancement_disabled`. `read_capped` is that helper here: pure,
-// reader-generic drain/cap logic, tested with in-memory readers.
+// `keyboard_enhancement_disabled`. The `!` runner's drain/cap pair is that
+// here: `append_capped` (pure cap logic) and `drain_shell_pipe`
+// (reader-generic chunk forwarding), tested with in-memory readers.
 #[cfg(test)]
 mod tests {
     use std::io;
 
-    use super::read_capped;
+    use super::{append_capped, drain_shell_pipe};
 
-    /// Serves its chunks one per `read` call (each far smaller than
-    /// `read_capped`'s 64 KiB buffer, so every chunk arrives whole), then EOF —
-    /// letting a test control exactly how the input splits across reads,
-    /// independent of `read_capped`'s internal chunk size.
+    /// Serves its chunks one per `read` call (each far smaller than the
+    /// drain's 64 KiB buffer, so every chunk arrives whole), then EOF —
+    /// letting a test control exactly how the input splits across reads.
     struct ChunkedReader {
         chunks: Vec<Vec<u8>>,
         served: usize,
@@ -2860,9 +3112,22 @@ mod tests {
         }
     }
 
+    /// Run `reader` through the drain + cap pair the runner's wait loop uses.
+    fn drain_capped(reader: impl io::Read, cap: usize) -> (Vec<u8>, bool) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        drain_shell_pipe(reader, &tx);
+        drop(tx);
+        let mut buf = Vec::new();
+        let mut truncated = false;
+        while let Ok(chunk) = rx.try_recv() {
+            append_capped(&mut buf, &chunk, cap, &mut truncated);
+        }
+        (buf, truncated)
+    }
+
     #[test]
     fn empty_input_reads_nothing_and_is_not_truncated() {
-        let (out, truncated) = read_capped(io::Cursor::new(Vec::new()), 10);
+        let (out, truncated) = drain_capped(io::Cursor::new(Vec::<u8>::new()), 10);
         assert!(out.is_empty());
         assert!(!truncated);
     }
@@ -2870,14 +3135,14 @@ mod tests {
     #[test]
     fn output_landing_exactly_at_the_cap_is_not_truncated() {
         // Nothing was dropped, so the cell must not gain a `…` marker.
-        let (out, truncated) = read_capped(io::Cursor::new(vec![b'a'; 10]), 10);
+        let (out, truncated) = drain_capped(io::Cursor::new(vec![b'a'; 10]), 10);
         assert_eq!(out, vec![b'a'; 10]);
         assert!(!truncated);
     }
 
     #[test]
     fn one_byte_over_the_cap_truncates_to_exactly_the_cap() {
-        let (out, truncated) = read_capped(io::Cursor::new(vec![b'a'; 11]), 10);
+        let (out, truncated) = drain_capped(io::Cursor::new(vec![b'a'; 11]), 10);
         assert_eq!(out.len(), 10);
         assert!(truncated);
     }
@@ -2886,7 +3151,7 @@ mod tests {
     fn a_mid_chunk_cut_keeps_the_head_and_marks_truncation() {
         // One read serves 8 bytes but only 5 fit under the cap: the head is
         // retained byte-for-byte and the cut inside the chunk flags truncated.
-        let (out, truncated) = read_capped(io::Cursor::new(b"abcdefgh".to_vec()), 5);
+        let (out, truncated) = drain_capped(io::Cursor::new(b"abcdefgh".to_vec()), 5);
         assert_eq!(out, b"abcde");
         assert!(truncated);
     }
@@ -2896,7 +3161,7 @@ mod tests {
         // The first chunk lands exactly at the cap (no mid-chunk cut), so only
         // the keep-draining loop can flag the later chunks as dropped.
         let mut reader = ChunkedReader::new(&[b"abcd", b"efgh", b"ijkl"]);
-        let (out, truncated) = read_capped(&mut reader, 4);
+        let (out, truncated) = drain_capped(&mut reader, 4);
         assert_eq!(out, b"abcd");
         assert!(truncated);
         // … and the reader really was drained to EOF (so the child can't block
@@ -2906,9 +3171,9 @@ mod tests {
 
     #[test]
     fn input_larger_than_the_read_buffer_drains_across_reads() {
-        // Bigger than read_capped's 64 KiB chunk, so the drain spans several
-        // real reads; only the first `cap` bytes are retained.
-        let (out, truncated) = read_capped(io::Cursor::new(vec![b'x'; 200_000]), 100);
+        // Bigger than the drain's 64 KiB chunk, so it spans several real
+        // reads; only the first `cap` bytes are retained.
+        let (out, truncated) = drain_capped(io::Cursor::new(vec![b'x'; 200_000]), 100);
         assert_eq!(out, vec![b'x'; 100]);
         assert!(truncated);
     }
@@ -2919,7 +3184,7 @@ mod tests {
             data: b"abc".to_vec(),
             calls: 0,
         };
-        let (out, truncated) = read_capped(reader, 10);
+        let (out, truncated) = drain_capped(reader, 10);
         assert_eq!(out, b"abc");
         assert!(!truncated);
     }

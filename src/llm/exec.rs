@@ -17,6 +17,7 @@ use super::tools::{
     self, BashArgs, EditArgs, ReadArgs, TOOL_OUTPUT_MAX_BYTES, ToolCallRequest, ToolOutcome,
     WriteArgs,
 };
+use crate::background::BackgroundRegistry;
 use crate::stream::CancelToken;
 
 /// Runs the model's tool calls. Implemented by [`RealToolExecutor`] in
@@ -48,13 +49,26 @@ const BASH_POLL_INTERVAL: Duration = Duration::from_millis(20);
 /// The real executor: runs commands under `sh -c` and touches the filesystem in
 /// the app's working directory. Stateless — paths resolve against the process
 /// cwd, the same trust model as the `!` shell (`docs/shell-command.md`).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RealToolExecutor;
+/// An attached [`BackgroundRegistry`] enables `run_in_background` and the
+/// Ctrl+B handoff for `bash` (see `docs/background.md`); without one those
+/// resolve as recoverable errors / are unavailable.
+#[derive(Debug, Clone, Default)]
+pub struct RealToolExecutor {
+    background: Option<BackgroundRegistry>,
+}
 
 impl RealToolExecutor {
     #[must_use]
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Attach the shared background registry (the production path — `main.rs`
+    /// threads it through the backend). See `docs/background.md`.
+    #[must_use]
+    pub fn with_background(mut self, registry: BackgroundRegistry) -> Self {
+        self.background = Some(registry);
+        self
     }
 }
 
@@ -66,13 +80,29 @@ impl ToolExecutor for RealToolExecutor {
         on_output: &mut dyn FnMut(&str),
     ) -> ToolOutcome {
         match call.name.as_str() {
-            "bash" => run_bash(&call.arguments, cancel, on_output),
+            "bash" => run_bash(&call.arguments, cancel, self.background.as_ref(), on_output),
             "read" => run_read(&call.arguments),
             "write" => run_write(&call.arguments),
             "edit" => run_edit(&call.arguments),
             other => ToolOutcome::error(format!("unknown tool: {other}")),
         }
     }
+}
+
+/// The model-facing result of a backgrounded `bash` call — what the tool
+/// result says (the cell shows the fixed backgrounded row instead). Mirrors
+/// Claude Code's launch acknowledgement: the task id to refer to it by, the
+/// interim-output file to `read` mid-run, and the promise of a completion
+/// notification. See `docs/background.md`.
+#[must_use]
+pub fn background_launch_text(task: &crate::background::LaunchedTask) -> String {
+    format!(
+        "Command running in background with ID: {}.\n\
+         Interim output is streaming to {} — read that file to check progress.\n\
+         You will be notified with the final output when the command completes.",
+        task.id,
+        task.output_path.display(),
+    )
 }
 
 /// A one-tool argument-parse error → a model-facing failure outcome.
@@ -86,11 +116,35 @@ fn arg_error(err: String) -> ToolOutcome {
 /// `on_output` so the TUI tails the running cell (`docs/tool-streaming.md`); the
 /// full output is still framed as codex does (`Exit code: N` + output) for the
 /// model — a non-zero exit or a timeout resolves the cell red.
-fn run_bash(arguments: &str, cancel: &CancelToken, on_output: &mut dyn FnMut(&str)) -> ToolOutcome {
+fn run_bash(
+    arguments: &str,
+    cancel: &CancelToken,
+    background: Option<&BackgroundRegistry>,
+    on_output: &mut dyn FnMut(&str),
+) -> ToolOutcome {
     let args: BashArgs = match tools::parse_args(arguments) {
         Ok(a) => a,
         Err(e) => return arg_error(e),
     };
+    // A Ctrl+B pressed before this command started belongs to nothing — drop
+    // it so it can't instantly background us (docs/background.md).
+    if let Some(registry) = background {
+        registry.clear_background_request();
+    }
+    // `run_in_background`: hand the whole run to the registry and return the
+    // launch text at once — the model gets the task id + interim-output path,
+    // the completion notification follows when the command exits.
+    if args.run_in_background {
+        let Some(registry) = background else {
+            return ToolOutcome::error(
+                "run_in_background is not available here — run the command in the foreground",
+            );
+        };
+        return match registry.launch(&args.command, args.description.clone(), true) {
+            Ok(task) => ToolOutcome::backgrounded(task.id.clone(), background_launch_text(&task)),
+            Err(err) => ToolOutcome::error(err),
+        };
+    }
     let timeout = Duration::from_millis(args.timeout_ms());
 
     let mut command = Command::new("sh");
@@ -160,6 +214,25 @@ fn run_bash(arguments: &str, cancel: &CancelToken, on_output: &mut dyn FnMut(&st
             // discards it — the channel is already swapped). The group kill has
             // reaped any straggler, so the detached readers finish on their own.
             return ToolOutcome::error("Interrupted by user");
+        }
+        // Ctrl+B: hand the run off to the background registry mid-flight — it
+        // replays what we already read (`combined`) and keeps streaming from
+        // our pipe channel; the detached reader threads keep feeding it and
+        // exit at EOF on their own. The call resolves as backgrounded, and
+        // the agent loop keeps going with the launch text as the tool result.
+        // See `docs/background.md`.
+        if let Some(registry) = background
+            && registry.take_background_request()
+        {
+            let task = registry.adopt(
+                &args.command,
+                args.description.clone(),
+                true,
+                child,
+                chunk_rx,
+                combined,
+            );
+            return ToolOutcome::backgrounded(task.id.clone(), background_launch_text(&task));
         }
         if start.elapsed() >= timeout {
             kill_process_group(&mut child);
@@ -237,6 +310,7 @@ fn run_bash(arguments: &str, cancel: &CancelToken, on_output: &mut dyn FnMut(&st
         output,
         ok,
         truncated,
+        background: None,
     }
 }
 
@@ -653,5 +727,159 @@ mod tests {
         let out = exec("bash", "not json");
         assert!(!out.ok);
         assert!(out.output.contains("invalid tool arguments"));
+    }
+
+    // ===== background (docs/background.md) =====
+
+    fn test_registry() -> (
+        crate::background::BackgroundRegistry,
+        tokio::sync::mpsc::UnboundedReceiver<crate::background::BgEvent>,
+    ) {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let dir = std::env::temp_dir().join(format!(
+            "inline-tui-exec-bg-test-{}-{seq}",
+            std::process::id()
+        ));
+        (crate::background::BackgroundRegistry::new(tx, dir), rx)
+    }
+
+    #[test]
+    fn run_in_background_returns_a_backgrounded_launch_at_once() {
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let start = std::time::Instant::now();
+        let out = executor.execute(
+            &call(
+                "bash",
+                r#"{"command":"sleep 0.2; printf done","run_in_background":true,"description":"nap"}"#,
+            ),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_millis(150),
+            "the call returns before the command finishes"
+        );
+        assert!(out.ok);
+        assert_eq!(out.background.as_deref(), Some("bash_1"));
+        assert!(
+            out.output.contains("ID: bash_1") && out.output.contains(".output"),
+            "the model gets the task id + interim file: {}",
+            out.output
+        );
+        // The registry reports the launch and, later, the completion.
+        let mut saw_started = false;
+        let mut saw_exit = false;
+        for _ in 0..500 {
+            match rx.try_recv() {
+                Ok(crate::background::BgEvent::Started {
+                    id,
+                    from_model,
+                    description,
+                    ..
+                }) => {
+                    assert_eq!(id, "bash_1");
+                    assert!(from_model, "an executor launch is model-launched");
+                    assert_eq!(description.as_deref(), Some("nap"));
+                    saw_started = true;
+                }
+                Ok(crate::background::BgEvent::Exited { code, killed, .. }) => {
+                    assert_eq!(code, Some(0));
+                    assert!(!killed);
+                    saw_exit = true;
+                    break;
+                }
+                Ok(crate::background::BgEvent::Output { .. }) => {}
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        assert!(
+            saw_started && saw_exit,
+            "the registry reported the lifecycle"
+        );
+    }
+
+    #[test]
+    fn run_in_background_without_a_registry_is_a_recoverable_error() {
+        let out = exec("bash", r#"{"command":"echo hi","run_in_background":true}"#);
+        assert!(!out.ok);
+        assert!(out.background.is_none());
+        assert!(
+            out.output.contains("not available"),
+            "the model is told to run it in the foreground: {}",
+            out.output
+        );
+    }
+
+    #[test]
+    fn a_background_request_hands_a_running_command_off_mid_run() {
+        // The Ctrl+B path: raise the latch mid-run; the poll loop consumes it
+        // and adopts the child — the outcome flips to backgrounded and the
+        // already-produced output replays into the background stream.
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new().with_background(registry.clone());
+        let flag = registry.clone();
+        // Raise the latch shortly after the command starts producing output.
+        let raiser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            flag.request_background();
+        });
+        let mut streamed = String::new();
+        let out = executor.execute(
+            &call(
+                "bash",
+                r#"{"command":"printf 'early\n'; sleep 3; printf 'late\n'","timeout_ms":30000}"#,
+            ),
+            &CancelToken::new(),
+            &mut |chunk| streamed.push_str(chunk),
+        );
+        raiser.join().unwrap();
+        assert!(out.ok, "got {}", out.output);
+        assert_eq!(out.background.as_deref(), Some("bash_1"));
+        assert!(streamed.contains("early"), "the foreground tail ran first");
+        // The adopted task replays the prior output and finishes on its own.
+        let mut replayed = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match rx.try_recv() {
+                Ok(crate::background::BgEvent::Output { chunk, .. }) => replayed.push_str(&chunk),
+                Ok(crate::background::BgEvent::Exited { code, .. }) => {
+                    assert_eq!(code, Some(0));
+                    break;
+                }
+                Ok(crate::background::BgEvent::Started { .. }) => {}
+                Err(_) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the adopted task finishes on its own"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+        assert!(
+            replayed.contains("early") && replayed.contains("late"),
+            "prior output replays and the tail keeps streaming: {replayed:?}"
+        );
+    }
+
+    #[test]
+    fn a_stale_background_request_is_cleared_when_a_command_starts() {
+        // A Ctrl+B that missed its command must not background the next one.
+        let (registry, _rx) = test_registry();
+        registry.request_background();
+        let executor = RealToolExecutor::new().with_background(registry);
+        let out = executor.execute(
+            &call("bash", r#"{"command":"echo hi"}"#),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        assert!(out.ok);
+        assert!(
+            out.background.is_none(),
+            "the stale request was dropped, the command ran in the foreground"
+        );
     }
 }

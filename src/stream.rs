@@ -62,6 +62,15 @@ pub enum StreamEvent {
         ok: bool,
         truncated: bool,
     },
+    /// The in-flight tool call resolved by **moving to the background**
+    /// (a `run_in_background` bash call, or Ctrl+B on a running command) —
+    /// sent **in place of** [`StreamEvent::ToolEnd`]. `id` is the registry
+    /// task id; `output` is the model-facing launch text (the task id +
+    /// interim-output path) that becomes the tool result — the cell instead
+    /// renders the fixed `⎿ Running in the background (↓ to manage)` row
+    /// ([`crate::app::ToolStatus::Backgrounded`]). The process itself reports
+    /// through the separate background channel. See `docs/background.md`.
+    ToolBackgrounded { id: String, output: String },
     /// A chunk of the **currently-running** tool's output, streamed live as it
     /// is produced (one or more complete lines, stdout+stderr merged in arrival
     /// order), between the call's [`StreamEvent::ToolStart`] and its
@@ -1194,6 +1203,9 @@ mod tests {
                     break;
                 }
                 StreamEvent::Retrying { .. } => panic!("the dummy never retries"),
+                StreamEvent::ToolBackgrounded { .. } => {
+                    panic!("the dummy never backgrounds a tool")
+                }
                 StreamEvent::Error(e) => panic!("dummy never errors, got {e:?}"),
             }
         }

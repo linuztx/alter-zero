@@ -116,11 +116,25 @@ pub fn run_agent(
                         let _ = tx.send(StreamEvent::ToolOutput(chunk.to_string()));
                     };
                     let outcome = execute(call, &mut on_output);
-                    let _ = tx.send(StreamEvent::ToolEnd {
-                        output: outcome.output.clone(),
-                        ok: outcome.ok,
-                        truncated: outcome.truncated,
-                    });
+                    // A backgrounded call resolves via its own event — the
+                    // cell shows the fixed backgrounded row while the launch
+                    // text still becomes the tool result the model reads
+                    // (docs/background.md).
+                    match &outcome.background {
+                        Some(id) => {
+                            let _ = tx.send(StreamEvent::ToolBackgrounded {
+                                id: id.clone(),
+                                output: outcome.output.clone(),
+                            });
+                        }
+                        None => {
+                            let _ = tx.send(StreamEvent::ToolEnd {
+                                output: outcome.output.clone(),
+                                ok: outcome.ok,
+                                truncated: outcome.truncated,
+                            });
+                        }
+                    }
                     messages.push(ChatMessage::tool_result(&call.id, &outcome.output));
                 }
                 // A cancel that landed during a tool run reaps us here rather
@@ -574,5 +588,60 @@ mod tests {
             !events.iter().any(|e| matches!(e, StreamEvent::Error(_))),
             "no cap error for a turn that answered: {events:?}"
         );
+    }
+
+    #[test]
+    fn a_backgrounded_outcome_emits_tool_backgrounded_and_still_feeds_the_result() {
+        // `run_in_background` (or a Ctrl+B handoff): the executor returns a
+        // background outcome — the loop resolves the cell via ToolBackgrounded
+        // (never ToolEnd) while the launch text still becomes the tool-result
+        // message the next round reads (docs/background.md).
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let seen_lens = RefCell::new(Vec::new());
+        let calls = vec![call(
+            "c1",
+            "bash",
+            r#"{"command":"ping x.com","run_in_background":true}"#,
+        )];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            vec![ChatMessage::user("ping in background")],
+            |msgs| {
+                seen_lens.borrow_mut().push(msgs.len());
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |_c, _sink| ToolOutcome::backgrounded("bash_1", "Command running with ID: bash_1"),
+        );
+        let events = drain(&mut rx);
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                StreamEvent::ToolBackgrounded { id, output }
+                    if id == "bash_1" && output.contains("bash_1")
+            )),
+            "the call resolves as backgrounded: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+            "no ToolEnd for a backgrounded call: {events:?}"
+        );
+        assert!(events.iter().any(|e| matches!(e, StreamEvent::StreamDone)));
+        // Round 2 saw [user, assistant(tool_calls), tool result] — the loop kept going.
+        assert_eq!(*seen_lens.borrow(), vec![1, 3]);
     }
 }

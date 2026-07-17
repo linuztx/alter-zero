@@ -19,10 +19,10 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{
-    App, HistoryItem, HistorySearch, KeyOnboarding, KeyStep, ModelLoad, ModelPicker,
-    ProviderChoice, QueuedTurn, ResumeControl, ResumeFilter, ResumePicker, ResumeSort, Role,
-    SearchState, SlashCommand, ToastKind, TokenArrow, ToolCall, ToolStatus, TurnStatus,
-    TurnSummary, command_query, matching_commands,
+    App, BackgroundShell, BackgroundView, HistoryItem, HistorySearch, KeyOnboarding, KeyStep,
+    ModelLoad, ModelPicker, ProviderChoice, QueuedTurn, ResumeControl, ResumeFilter, ResumePicker,
+    ResumeSort, Role, SearchState, SlashCommand, ToastKind, TokenArrow, ToolCall, ToolStatus,
+    TurnStatus, TurnSummary, command_query, matching_commands,
 };
 use crate::file_search::FileMatch;
 use crate::highlight;
@@ -208,6 +208,57 @@ const TOOL_HEADER_ELLIPSIS: &str = "…";
 const TOOL_TRUNCATED_MARKER: &str = "…";
 /// Placeholder body for a finished tool that produced no output.
 const TOOL_NO_OUTPUT: &str = "(no output)";
+
+// ---------------------------------------------------------------------------
+// Background shells (docs/background.md): the backgrounded cell's fixed row,
+// the running-command Ctrl+B hint, the ↓ manager band, and the footer count.
+// ---------------------------------------------------------------------------
+
+/// The fixed `⎿` body of a call resolved as [`ToolStatus::Backgrounded`] —
+/// the stored output (the model-facing launch text) is never shown.
+const TOOL_BACKGROUNDED: &str = "Running in the background (↓ to manage)";
+/// The dim live-only hint under a running command's preview cell: Ctrl+B
+/// moves it to the background. Never committed to scrollback.
+const TOOL_BACKGROUND_HINT: &str = "(ctrl+b to run in background)";
+/// The ↓ manager's list title.
+const BG_TITLE: &str = "Background";
+/// The details page's title.
+const BG_DETAILS_TITLE: &str = "Shell details";
+/// The list's empty state — shown when every shell has finished.
+const BG_EMPTY: &str = "No tasks currently running";
+/// The list page's key hints.
+const BG_LIST_HINTS: &str = "↑/↓ to select · Enter to view · x to stop · Esc to close";
+/// The empty state's key hints (nothing to stop).
+const BG_EMPTY_HINTS: &str = "↑/↓ to select · Enter to view · Esc to close";
+/// The details page's key hints.
+const BG_DETAILS_HINTS: &str = "← to go back · Esc/Enter/Space to close · x to stop";
+/// The `(running)` suffix on a list row.
+const BG_ROW_SUFFIX: &str = " (running)";
+/// The band's two-space inset (the picker/footer indent).
+const BG_INDENT: &str = "  ";
+/// The selected list row's marker (the resume picker's `❯`).
+const BG_MARKER: &str = "❯ ";
+/// At most this many list rows show at once (the window follows the
+/// selection, like the pickers).
+const BG_MENU_MAX_ROWS: usize = 8;
+/// The details output box's interior height: the last rows of the live
+/// output tail, blank-padded (the mock's fixed box).
+const BG_OUTPUT_ROWS: usize = 10;
+/// The details page's field labels, padded to one column.
+const BG_FIELD_STATUS: &str = "Status:   ";
+const BG_FIELD_RUNTIME: &str = "Runtime:  ";
+const BG_FIELD_COMMAND: &str = "Command:  ";
+/// The details page's output-box heading.
+const BG_OUTPUT_LABEL: &str = "Output:";
+/// The value of the status field while listed (an exited shell leaves the
+/// manager, so a listed one is always running).
+const BG_STATUS_RUNNING: &str = "running";
+/// The manager's title/selection accent (the palette accent) and dim text.
+const BG_SELECTED_COLOR: Color = MENU_SELECTED_COLOR;
+const BG_DIM_COLOR: Color = TOOL_DIM_COLOR;
+/// The notice bullet colours: green success, red failure/stop.
+const BG_NOTICE_OK_COLOR: Color = TOOL_OK_COLOR;
+const BG_NOTICE_FAIL_COLOR: Color = TOOL_FAIL_COLOR;
 /// Placeholder body for a still-executing tool — the `⎿ Running…` row, shown
 /// under a backend tool's `● name(args)` header (req 2: a running cell shows the
 /// header *and* this row, previewed live) and as the whole `!` shell cell.
@@ -936,6 +987,20 @@ fn model_list_rows(picker: &ModelPicker) -> u16 {
 pub fn model_picker_height(app: &App, term_height: u16) -> Option<u16> {
     let picker = app.model_picker.as_ref()?;
     Some((model_chrome_rows(picker) + model_list_rows(picker)).min(term_height.max(1)))
+}
+
+/// The inline live-region height when the ↓ background manager band is open,
+/// or `None` when it isn't (the caller falls back to [`live_height`]). Like
+/// the `/model` picker it **replaces** the composer. The band's rows never
+/// wrap (every line is truncated to the width), so the height is
+/// width-independent — it is simply the built line count
+/// ([`background_view_lines`]), clamped to the terminal. See
+/// `docs/background.md`.
+#[must_use]
+pub fn background_view_height(app: &App, term_height: u16) -> Option<u16> {
+    app.background_view.as_ref()?;
+    let rows = background_view_lines(app, 80).len() as u16;
+    Some(rows.min(term_height.max(1)))
 }
 
 /// How many rows the `/login` provider list occupies: the match count capped at
@@ -2432,6 +2497,13 @@ fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         } else {
             lines.extend(tool_lines(tool, width));
         }
+        // A running command (a model `bash` call or the `!` shell) can be
+        // moved to the background with Ctrl+B — hint it under the live cell.
+        // Live-only by construction: this renderer never feeds scrollback
+        // commits, so the hint is never committed (docs/background.md).
+        if tool.status == ToolStatus::Running && (tool.shell || is_command_tool(tool)) {
+            lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));
+        }
     }
     lines
 }
@@ -2461,6 +2533,12 @@ pub fn render_live_with_preview(
     // The inline `/login` onboarding flow likewise replaces the whole region.
     if let Some(onboarding) = &app.key_onboarding {
         render_key_onboarding(area, buf, onboarding);
+        return;
+    }
+    // The ↓ background manager band likewise replaces the whole region. See
+    // `docs/background.md`.
+    if app.background_view.is_some() {
+        render_background_view(area, buf, app);
         return;
     }
     // The band below the box holds the palette, the shortcuts overview, *or* the
@@ -3008,11 +3086,19 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         return Line::default();
     };
     let dim = Style::new().fg(FOOTER_COLOR);
-    let segments = [
+    let mut segments = vec![
         Span::styled(session.model.clone(), dim),
         Span::styled(FOOTER_SEPARATOR.to_string(), dim),
         Span::styled(session.cwd.clone(), dim),
     ];
+    // Running background shells append a `· {n} shell(s)` count — the ↓
+    // manager's ambient reminder (docs/background.md).
+    let shells = app.background().len();
+    if shells > 0 {
+        let plural = if shells == 1 { "" } else { "s" };
+        segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));
+        segments.push(Span::styled(format!("{shells} shell{plural}"), dim));
+    }
     let mut budget = (width as usize).saturating_sub(cols(FOOTER_INDENT));
     let mut spans = vec![Span::raw(FOOTER_INDENT)];
     if segments.iter().map(|s| cols(&s.content)).sum::<usize>() <= budget {
@@ -3135,12 +3221,13 @@ pub fn display_cwd(cwd: &Path, home: Option<&Path>) -> String {
 }
 
 /// The bullet colour for a tool's lifecycle: dim waiting, blue running, green
-/// ok, red fail.
+/// ok, red fail — and green for a call that resolved by moving to the
+/// background (the launch succeeded; see `docs/background.md`).
 const fn tool_status_color(status: ToolStatus) -> Color {
     match status {
         ToolStatus::Waiting => TOOL_WAITING_COLOR,
         ToolStatus::Running => TOOL_RUNNING_COLOR,
-        ToolStatus::Ok => TOOL_OK_COLOR,
+        ToolStatus::Ok | ToolStatus::Backgrounded => TOOL_OK_COLOR,
         ToolStatus::Failed => TOOL_FAIL_COLOR,
     }
 }
@@ -3729,6 +3816,20 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         .max(1);
     let out_lines = tool_output_lines(tool);
 
+    // A call resolved by moving to the background shows the fixed
+    // `⎿ Running in the background (↓ to manage)` row — its stored output is
+    // the model-facing launch text, never displayed (docs/background.md). A
+    // `!` shell cell stays headerless like its other states.
+    if tool.status == ToolStatus::Backgrounded {
+        let row = result_row(0, TOOL_BACKGROUNDED.to_string());
+        if tool.shell {
+            return vec![row];
+        }
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
+        lines.push(row);
+        return lines;
+    }
+
     if tool.shell {
         // The running/empty single-row states; else up to TOOL_PEEK_LINES rows.
         // (Truncation of an over-cap output is marked only in the expanded view;
@@ -3839,6 +3940,18 @@ fn result_peek_block(
 /// gutter. An over-cap shell output ([`ToolCall::truncated`]) appends a dim
 /// [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
 fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+    // A backgrounded call shows its fixed row in the transcript too — the
+    // live output belongs to the ↓ manager, and the final output arrives as
+    // the completion notice (docs/background.md).
+    if tool.status == ToolStatus::Backgrounded {
+        let row = result_row(0, TOOL_BACKGROUNDED.to_string());
+        if tool.shell {
+            return vec![row];
+        }
+        let mut lines = tool_header_lines(tool, width, None);
+        lines.push(row);
+        return lines;
+    }
     // A numbered `write`/`edit` cell renders wholesale (numbers, tints,
     // syntax colour — [`file_cell_lines`], uncapped here); everything else
     // goes through the plain row pipeline below.
@@ -4048,15 +4161,57 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
 }
 
 /// The committed turn summary: a single dim, bullet-less `"{verb} for {secs}s"`
-/// line. Shown inline (it flows into scrollback) and in the transcript like any
-/// other [`HistoryItem`]; `width` is unused (the line never wraps) but kept for a
-/// uniform `*_lines` signature.
+/// line — with a `· {n} shells still running` suffix when background shells
+/// were running at turn end (`docs/background.md`). Shown inline (it flows into
+/// scrollback) and in the transcript like any other [`HistoryItem`]; `width` is
+/// unused (the line never wraps) but kept for a uniform `*_lines` signature.
 #[must_use]
 pub fn summary_lines(summary: &TurnSummary, _width: u16) -> Vec<Line<'static>> {
+    let mut text = format!("{} for {}s", summary.verb, summary.secs);
+    if summary.shells > 0 {
+        let plural = if summary.shells == 1 { "" } else { "s" };
+        text.push_str(&format!(
+            " · {} shell{plural} still running",
+            summary.shells
+        ));
+    }
     vec![Line::from(Span::styled(
-        format!("{} for {}s", summary.verb, summary.secs),
+        text,
         Style::new().fg(STATUS_DONE_COLOR),
     ))]
+}
+
+/// A background shell's completion notice as committed lines: the coloured
+/// `●` bullet — green for a clean exit, red for a failure or a user stop —
+/// over the wrapped one-line headline (`Background command "{description}"
+/// completed (exit code 0)`). The output tail the notice carries is
+/// context-only and never rendered. See `docs/background.md`.
+#[must_use]
+pub fn background_notice_lines(
+    notice: &crate::app::BackgroundNotice,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let color = if notice.ok() {
+        BG_NOTICE_OK_COLOR
+    } else {
+        BG_NOTICE_FAIL_COLOR
+    };
+    let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
+    let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
+    wrap_text(&notice.headline(), content_width)
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                Line::from(vec![
+                    Span::styled(AI_BULLET.to_string(), bullet_style),
+                    Span::raw(line),
+                ])
+            } else {
+                Line::from(vec![Span::raw(INDENT.to_string()), Span::raw(line)])
+            }
+        })
+        .collect()
 }
 
 /// The stamp footer under a **user** message in the transcript: a blank row,
@@ -4134,6 +4289,7 @@ fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<
             }
             HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
+            HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
         }
         // Blank spacer after every item — except a shell command's header
         // ([`is_shell_header`]): its tool's `⎿` output sits flush below it,
@@ -5197,6 +5353,180 @@ fn render_login_key_step(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboardin
     Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
 }
 
+/// A dim, `BG_INDENT`-inset single line for the ↓ manager band, truncated to
+/// the width.
+fn bg_dim_line(text: &str, width: u16) -> Line<'static> {
+    bg_line(text, Style::new().fg(BG_DIM_COLOR), width)
+}
+
+/// A `BG_INDENT`-inset single line in `style`, truncated to the width.
+fn bg_line(text: &str, style: Style, width: u16) -> Line<'static> {
+    let room = (width as usize).saturating_sub(cols(BG_INDENT)).max(1);
+    Line::from(vec![
+        Span::raw(BG_INDENT),
+        Span::styled(truncate_cols(text, room), style),
+    ])
+}
+
+/// One row of the manager's shell list: `❯ {command} (running)` — the
+/// selected row lights up in the palette accent (marker and text alike), the
+/// others are dim, mirroring the slash-command palette's colour-only
+/// selection.
+fn bg_list_row(shell: &BackgroundShell, selected: bool, width: u16) -> Line<'static> {
+    let marker = if selected { BG_MARKER } else { "  " };
+    let style = if selected {
+        Style::new().fg(BG_SELECTED_COLOR)
+    } else {
+        Style::new().fg(BG_DIM_COLOR)
+    };
+    let room = (width as usize)
+        .saturating_sub(cols(BG_INDENT) + cols(BG_MARKER) + cols(BG_ROW_SUFFIX))
+        .max(1);
+    Line::from(vec![
+        Span::raw(BG_INDENT),
+        Span::styled(marker.to_string(), style),
+        Span::styled(truncate_cols(&shell.command, room), style),
+        Span::styled(BG_ROW_SUFFIX.to_string(), style),
+    ])
+}
+
+/// The manager's **list** page (or its empty state): title, `{n} active
+/// shells`, the windowed selectable rows, and the key hints — all framed by
+/// the picker rules. See `docs/background.md`.
+fn bg_list_lines(app: &App, selected: usize, width: u16) -> Vec<Line<'static>> {
+    let shells = app.background();
+    let mut lines = vec![
+        model_rule(width),
+        Line::default(),
+        bg_line(BG_TITLE, Style::new().fg(AI_COLOR), width),
+    ];
+    if shells.is_empty() {
+        lines.push(Line::default());
+        lines.push(bg_dim_line(BG_EMPTY, width));
+        lines.push(Line::default());
+        lines.push(bg_dim_line(BG_EMPTY_HINTS, width));
+    } else {
+        let plural = if shells.len() == 1 { "" } else { "s" };
+        lines.push(bg_dim_line(
+            &format!("{} active shell{plural}", shells.len()),
+            width,
+        ));
+        lines.push(Line::default());
+        let selected = selected.min(shells.len() - 1);
+        let offset = menu_window(shells.len(), selected, BG_MENU_MAX_ROWS);
+        for (i, shell) in shells
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(BG_MENU_MAX_ROWS)
+        {
+            lines.push(bg_list_row(shell, i == selected, width));
+        }
+        lines.push(Line::default());
+        lines.push(bg_dim_line(BG_LIST_HINTS, width));
+    }
+    lines.push(Line::default());
+    lines.push(model_rule(width));
+    lines
+}
+
+/// The manager's **details** page for one shell: the status/runtime/command
+/// fields, the rounded output box tailing the last [`BG_OUTPUT_ROWS`] lines
+/// of the live output (streaming in as the shell runs), a `Showing N lines`
+/// caption, and the key hints. See `docs/background.md`.
+fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(BG_DIM_COLOR);
+    let value = Style::new().fg(AI_COLOR);
+    let field = |label: &str, text: &str| {
+        let room = (width as usize)
+            .saturating_sub(cols(BG_INDENT) + cols(label))
+            .max(1);
+        Line::from(vec![
+            Span::raw(BG_INDENT),
+            Span::styled(label.to_string(), dim),
+            Span::styled(truncate_cols(text, room), value),
+        ])
+    };
+    let mut lines = vec![
+        model_rule(width),
+        Line::default(),
+        bg_line(BG_DETAILS_TITLE, Style::new().fg(AI_COLOR), width),
+        Line::default(),
+        field(BG_FIELD_STATUS, BG_STATUS_RUNNING),
+        field(BG_FIELD_RUNTIME, &format!("{}s", shell.runtime.as_secs())),
+        field(BG_FIELD_COMMAND, &shell.command),
+        Line::default(),
+        bg_dim_line(BG_OUTPUT_LABEL, width),
+    ];
+    // The output box: rounded corners, one space of padding, the last
+    // BG_OUTPUT_ROWS lines top-aligned over blank padding rows.
+    let box_width = (width as usize).saturating_sub(cols(BG_INDENT) + 2).max(6);
+    let inner = box_width - 2; // less the │ borders
+    let text_room = inner.saturating_sub(2).max(1); // less one space each side
+    let horizontal = "─".repeat(inner);
+    lines.push(Line::from(vec![
+        Span::raw(BG_INDENT),
+        Span::styled(format!("╭{horizontal}╮"), dim),
+    ]));
+    let output = shell.output.trim_end_matches('\n');
+    let all: Vec<&str> = if output.is_empty() {
+        Vec::new()
+    } else {
+        output.split('\n').collect()
+    };
+    let shown = all.len().min(BG_OUTPUT_ROWS);
+    let tail = &all[all.len() - shown..];
+    for row in 0..BG_OUTPUT_ROWS {
+        let text = tail.get(row).copied().unwrap_or("");
+        let clipped = truncate_cols(text, text_room);
+        let pad = " ".repeat(text_room.saturating_sub(cols(&clipped)));
+        lines.push(Line::from(vec![
+            Span::raw(BG_INDENT),
+            Span::styled("│ ".to_string(), dim),
+            Span::styled(clipped, Style::new().fg(TOOL_OUTPUT_COLOR)),
+            Span::raw(pad),
+            Span::styled(" │".to_string(), dim),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::raw(BG_INDENT),
+        Span::styled(format!("╰{horizontal}╯"), dim),
+    ]));
+    let plural = if shown == 1 { "" } else { "s" };
+    lines.push(bg_dim_line(&format!("Showing {shown} line{plural}"), width));
+    lines.push(Line::default());
+    lines.push(bg_dim_line(BG_DETAILS_HINTS, width));
+    lines.push(Line::default());
+    lines.push(model_rule(width));
+    lines
+}
+
+/// Every line of the open ↓ manager band, top rule to bottom rule — the
+/// single source [`render_background_view`] paints and
+/// [`background_view_height`] counts (no row ever wraps, so the count is
+/// width-independent). Empty when the band is closed. See
+/// `docs/background.md`.
+#[must_use]
+pub fn background_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    match &app.background_view {
+        None => Vec::new(),
+        Some(BackgroundView::List { selected }) => bg_list_lines(app, *selected, width),
+        Some(BackgroundView::Details { id }) => match app.background_shell(id) {
+            Some(shell) => bg_details_lines(shell, width),
+            // The watched shell is gone (bg_exited retargets the view, so
+            // this is a defensive fallback): show the list.
+            None => bg_list_lines(app, 0, width),
+        },
+    }
+}
+
+/// Render the **inline** ↓ background manager band into the live region, in
+/// place of the composer — the `/model` picker pattern (see
+/// `docs/background.md`). Pure — `render_live` paints this.
+pub fn render_background_view(area: Rect, buf: &mut Buffer, app: &App) {
+    Paragraph::new(background_view_lines(app, area.width)).render(area, buf);
+}
+
 /// Render the full-screen `/resume` session picker — codex's resume picker,
 /// sized down (docs/resume.md): the slash-tiled title, the type-to-search
 /// line, the dense session rows (windowed to keep the selection visible, the
@@ -5696,6 +6026,7 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
+            HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
         }
         // Blank spacer after every item — except a shell command's header:
         // its cell stays flush ([`is_shell_header`]).
@@ -5771,6 +6102,14 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
         let y = area.y + MODEL_SEARCH_ROW.min(area.height.saturating_sub(1));
+        return (x, y);
+    }
+    // The ↓ background manager band has no text entry at all — park the
+    // (shown-once-per-frame) cursor in the band's far corner where it reads
+    // as chrome, not input.
+    if app.background_view.is_some() {
+        let x = area.x + area.width.saturating_sub(1);
+        let y = area.y + area.height.saturating_sub(1);
         return (x, y);
     }
     // The inline `/login` flow parks the cursor at the end of its active `>`
@@ -8907,6 +9246,7 @@ mod tests {
                 verb: "Done",
                 secs: 12,
                 timestamp: STAMP.to_string(),
+                shells: 0,
             }),
         ];
         let all: String = transcript_lines(&app, 60)
@@ -9271,6 +9611,7 @@ mod tests {
             verb: "Done",
             secs: 20,
             timestamp: String::new(),
+            shells: 0,
         };
         let lines = summary_lines(&summary, 80);
         assert_eq!(lines.len(), 1, "one line");
@@ -9287,6 +9628,7 @@ mod tests {
                 verb: "Done",
                 secs: 7,
                 timestamp: String::new(),
+                shells: 0,
             }),
         ];
         let texts: Vec<String> = conversation_lines(&history, 80)
@@ -9444,12 +9786,13 @@ mod tests {
     fn render_live_shell_run_shows_running_elapsed_and_hides_the_status_line() {
         // A `!` shell run suppresses the spinner status line entirely and shows
         // its elapsed in the `⎿ Running… (Ns)` preview (req 3): the strip is
-        // just preview + gap (2 rows), then the box's top rule — no status row,
-        // no `esc to interrupt` hint. See docs/shell-command.md.
+        // the preview cell — the running row + the live-only Ctrl+B hint
+        // (docs/background.md) — plus its gap, then the box's top rule — no
+        // status row, no `esc to interrupt` hint. See docs/shell-command.md.
         let mut app = App::new();
         app.begin_shell("sleep 30");
         app.set_status_times(Duration::from_secs(3), None);
-        let mut buf = buffer(40, 5); // preview + gap + (two rules + one input)
+        let mut buf = buffer(40, 6); // preview (2) + gap + (two rules + one input)
         render_live(buf.area, &mut buf, &app);
 
         assert_eq!(
@@ -9457,16 +9800,21 @@ mod tests {
             "  ⎿  Running… (3s)",
             "the running preview carries the elapsed the status line would have"
         );
+        assert_eq!(
+            row(&buf, 1, 40).trim(),
+            "(ctrl+b to run in background)",
+            "the live cell hints the Ctrl+B background handoff"
+        );
         assert!(
-            row(&buf, 1, 40).trim().is_empty(),
+            row(&buf, 2, 40).trim().is_empty(),
             "blank gap row below the preview"
         );
         assert_eq!(
-            buf[(0, 2)].symbol(),
+            buf[(0, 3)].symbol(),
             "─",
             "the box's top rule sits right under the preview gap — no status line between"
         );
-        let all: String = (0..5).map(|y| row(&buf, y, 40)).collect();
+        let all: String = (0..6).map(|y| row(&buf, y, 40)).collect();
         assert!(
             !all.contains("esc to interrupt"),
             "a shell run shows no status line (and so no interrupt hint): {all:?}"
@@ -10510,8 +10858,8 @@ mod tests {
         app.start_tool("Bash", "sleep 1");
         assert_eq!(
             preview_rows(&app, 40),
-            2,
-            "a running backend tool previews header + ⎿ Running…"
+            3,
+            "a running backend tool previews header + ⎿ Running… + the Ctrl+B hint"
         );
     }
 
@@ -10534,11 +10882,12 @@ mod tests {
                 .collect();
         app.start_tool_batch(&batch);
         app.start_tool("Bash", "ping google.com"); // the front call → Running
-        // Three 2-row cells (header + peek) with two blank separators = 8 rows.
+        // Three 2-row cells (header + peek) with two blank separators, plus
+        // the running cell's Ctrl+B hint row = 9 rows.
         assert_eq!(
             preview_rows(&app, 40),
-            8,
-            "the whole batch (3 cells + 2 gaps) is previewed"
+            9,
+            "the whole batch (3 cells + 2 gaps + the running cell's hint) is previewed"
         );
         let pv = preview_rows(&app, 40);
         let h = live_height(&app.input, 40, 30, true, pv, 0, 0, 0, 0);
@@ -13147,5 +13496,329 @@ mod tests {
             texts.iter().any(|l| l.contains(&format!("{tab}cc -o x"))),
             "the recipe keeps its indentation: {texts:?}"
         );
+    }
+
+    // --- background shells (docs/background.md) ---
+
+    fn bg_notice(code: Option<i32>, killed: bool) -> crate::app::BackgroundNotice {
+        crate::app::BackgroundNotice {
+            description: "Ping x.com 200 times".to_string(),
+            id: "bash_1".to_string(),
+            code,
+            killed,
+            output_tail: "tail".to_string(),
+            timestamp: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
+        // The stored output is the model-facing launch text — the cell (inline
+        // and expanded alike) shows the fixed backgrounded row instead, under
+        // a green header bullet (the launch succeeded).
+        let tool = ToolCall {
+            name: "Bash".to_string(),
+            args: "ping -c 50 google.com".to_string(),
+            status: ToolStatus::Backgrounded,
+            output: "Command running in background with ID: bash_1.".to_string(),
+            timestamp: String::new(),
+            shell: false,
+            truncated: false,
+        };
+        for lines in [tool_lines(&tool, 60), tool_full_lines(&tool, 60)] {
+            let texts: Vec<String> = lines.iter().map(plain).collect();
+            assert_eq!(texts.len(), 2, "header + the fixed row: {texts:?}");
+            assert!(texts[0].contains("Bash(ping -c 50 google.com)"));
+            assert_eq!(
+                texts[1].trim(),
+                "⎿  Running in the background (↓ to manage)"
+            );
+            assert!(
+                !texts.join("\n").contains("Command running"),
+                "the model-facing text never renders: {texts:?}"
+            );
+        }
+        assert_eq!(
+            tool_lines(&tool, 60)[0].spans[0].style.fg,
+            Some(TOOL_OK_COLOR),
+            "a backgrounded launch gets the green bullet"
+        );
+    }
+
+    #[test]
+    fn a_backgrounded_shell_cell_is_the_headerless_fixed_row() {
+        let tool = ToolCall {
+            name: "ping x.com".to_string(),
+            args: String::new(),
+            status: ToolStatus::Backgrounded,
+            output: "[moved to background as task bash_1]".to_string(),
+            timestamp: String::new(),
+            shell: true,
+            truncated: false,
+        };
+        let texts: Vec<String> = tool_lines(&tool, 60).iter().map(plain).collect();
+        assert_eq!(texts.len(), 1);
+        assert_eq!(
+            texts[0].trim(),
+            "⎿  Running in the background (↓ to manage)"
+        );
+    }
+
+    #[test]
+    fn the_running_preview_hints_ctrl_b_but_the_committed_cell_does_not() {
+        // The hint is live-only: the preview renderer appends it under the
+        // running cell; the committed `tool_lines` never carry it.
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Bash", "ping google.com -c 50");
+        let preview: Vec<String> = preview_tool_lines(&app, 60).iter().map(plain).collect();
+        assert!(
+            preview
+                .iter()
+                .any(|l| l.trim() == "(ctrl+b to run in background)"),
+            "the running preview hints Ctrl+B: {preview:?}"
+        );
+        let committed: Vec<String> = tool_lines(app.current_tool().unwrap(), 60)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            !committed.iter().any(|l| l.contains("ctrl+b")),
+            "the commit-path cell never carries the hint: {committed:?}"
+        );
+    }
+
+    #[test]
+    fn a_waiting_batch_sibling_gets_no_ctrl_b_hint() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool_batch(&[
+            crate::stream::ToolCallSummary {
+                name: "Bash".to_string(),
+                args: "a".to_string(),
+            },
+            crate::stream::ToolCallSummary {
+                name: "Bash".to_string(),
+                args: "b".to_string(),
+            },
+        ]);
+        app.start_tool("Bash", "a");
+        let preview: Vec<String> = preview_tool_lines(&app, 60).iter().map(plain).collect();
+        let hints = preview.iter().filter(|l| l.contains("ctrl+b")).count();
+        assert_eq!(hints, 1, "only the running call hints: {preview:?}");
+    }
+
+    #[test]
+    fn summary_lines_append_the_still_running_shell_count() {
+        let mut summary = TurnSummary {
+            verb: "Done",
+            secs: 22,
+            timestamp: String::new(),
+            shells: 3,
+        };
+        assert_eq!(
+            plain(&summary_lines(&summary, 80)[0]),
+            "Done for 22s · 3 shells still running"
+        );
+        summary.shells = 1;
+        assert_eq!(
+            plain(&summary_lines(&summary, 80)[0]),
+            "Done for 22s · 1 shell still running",
+            "singular for one shell"
+        );
+        summary.shells = 0;
+        assert_eq!(plain(&summary_lines(&summary, 80)[0]), "Done for 22s");
+    }
+
+    #[test]
+    fn the_footer_appends_the_running_shell_count() {
+        let mut app = App::new();
+        app.set_session_info("kimi-k2", "~/repo");
+        assert_eq!(
+            plain(&footer_line(&app, 80)).trim_end(),
+            "  kimi-k2 · ~/repo"
+        );
+        app.bg_started("bash_1", "ping x.com", None, true);
+        assert_eq!(
+            plain(&footer_line(&app, 80)).trim_end(),
+            "  kimi-k2 · ~/repo · 1 shell"
+        );
+        app.bg_started("bash_2", "ping y.com", None, true);
+        assert_eq!(
+            plain(&footer_line(&app, 80)).trim_end(),
+            "  kimi-k2 · ~/repo · 2 shells"
+        );
+    }
+
+    #[test]
+    fn background_notice_lines_render_the_headline_with_outcome_colours() {
+        let ok = background_notice_lines(&bg_notice(Some(0), false), 80);
+        assert_eq!(
+            plain(&ok[0]),
+            "● Background command \"Ping x.com 200 times\" completed (exit code 0)"
+        );
+        assert_eq!(ok[0].spans[0].style.fg, Some(TOOL_OK_COLOR), "green bullet");
+        let failed = background_notice_lines(&bg_notice(Some(2), false), 80);
+        assert_eq!(
+            failed[0].spans[0].style.fg,
+            Some(TOOL_FAIL_COLOR),
+            "red bullet on failure"
+        );
+        let stopped = background_notice_lines(&bg_notice(None, true), 80);
+        assert!(plain(&stopped[0]).contains("was stopped by the user"));
+        assert!(
+            !plain(&ok[0]).contains("tail"),
+            "the output tail is context-only, never rendered"
+        );
+    }
+
+    #[test]
+    fn conversation_and_transcript_walks_render_background_notices() {
+        let mut app = App::new();
+        app.history
+            .push(HistoryItem::Background(bg_notice(Some(0), false)));
+        let inline: Vec<String> = conversation_lines(&app.history, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            inline.iter().any(|l| l.contains("completed (exit code 0)")),
+            "the inline repaint shows the notice: {inline:?}"
+        );
+        let transcript: Vec<String> = transcript_lines(&app, 80).iter().map(plain).collect();
+        assert!(
+            transcript
+                .iter()
+                .any(|l| l.contains("completed (exit code 0)")),
+            "the Ctrl+O transcript shows the notice: {transcript:?}"
+        );
+    }
+
+    #[test]
+    fn the_manager_list_shows_title_count_rows_and_hints() {
+        let mut app = App::new();
+        for (i, cmd) in [
+            "ping -c 100 x.com",
+            "ping -c 100 facebook.com",
+            "ping -c 100 google.com",
+        ]
+        .iter()
+        .enumerate()
+        {
+            app.bg_started(&format!("bash_{}", i + 1), cmd, None, true);
+        }
+        app.open_background_view();
+        let texts: Vec<String> = background_view_lines(&app, 74)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(texts[0], "─".repeat(74), "top rule");
+        assert_eq!(texts[1], "");
+        assert_eq!(texts[2], "  Background");
+        assert_eq!(texts[3], "  3 active shells");
+        assert_eq!(texts[4], "");
+        assert_eq!(texts[5], "  ❯ ping -c 100 x.com (running)");
+        assert_eq!(texts[6], "    ping -c 100 facebook.com (running)");
+        assert_eq!(texts[7], "    ping -c 100 google.com (running)");
+        assert_eq!(texts[8], "");
+        assert_eq!(
+            texts[9],
+            "  ↑/↓ to select · Enter to view · x to stop · Esc to close"
+        );
+        assert_eq!(texts[10], "");
+        assert_eq!(texts[11], "─".repeat(74), "bottom rule");
+        assert_eq!(texts.len(), 12);
+        // The height helper reserves exactly the painted rows.
+        assert_eq!(background_view_height(&app, 40), Some(12));
+    }
+
+    #[test]
+    fn the_manager_empty_state_says_no_tasks_running() {
+        let mut app = App::new();
+        app.bg_started("bash_1", "ping x.com", None, true);
+        app.bg_exited("bash_1", Some(0), false);
+        app.open_background_view();
+        let texts: Vec<String> = background_view_lines(&app, 60)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(texts[2], "  Background");
+        assert_eq!(texts[4], "  No tasks currently running");
+        assert_eq!(texts[6], "  ↑/↓ to select · Enter to view · Esc to close");
+        assert!(
+            !texts.iter().any(|l| l.contains("x to stop")),
+            "nothing to stop in the empty state: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn the_manager_details_page_shows_fields_and_the_output_box() {
+        let mut app = App::new();
+        app.bg_started("bash_1", "ping -c 120 x.com", None, true);
+        for i in 1..=12 {
+            app.bg_output("bash_1", &format!("64 bytes from x.com seq={i}\n"));
+        }
+        app.set_background_runtime("bash_1", Duration::from_secs(3));
+        app.background_view = Some(BackgroundView::Details {
+            id: "bash_1".to_string(),
+        });
+        let texts: Vec<String> = background_view_lines(&app, 74)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(texts[2], "  Shell details");
+        assert_eq!(texts[4], "  Status:   running");
+        assert_eq!(texts[5], "  Runtime:  3s");
+        assert_eq!(texts[6], "  Command:  ping -c 120 x.com");
+        assert_eq!(texts[8], "  Output:");
+        assert!(texts[9].starts_with("  ╭") && texts[9].ends_with('╮'));
+        // The box tails the LAST rows: seq=3..=12 fill its 10 interior rows.
+        assert!(
+            texts[10].contains("seq=3"),
+            "tails the newest lines: {texts:?}"
+        );
+        assert!(texts[19].contains("seq=12"));
+        assert!(texts[20].starts_with("  ╰") && texts[20].ends_with('╯'));
+        assert_eq!(texts[21], "  Showing 10 lines");
+        assert_eq!(texts[22], "");
+        assert_eq!(
+            texts[23],
+            "  ← to go back · Esc/Enter/Space to close · x to stop"
+        );
+        assert_eq!(background_view_height(&app, 40), Some(texts.len() as u16));
+    }
+
+    #[test]
+    fn the_manager_band_replaces_the_composer_in_render_live() {
+        let mut app = App::new();
+        app.bg_started("bash_1", "ping x.com", None, true);
+        app.open_background_view();
+        let h = background_view_height(&app, 30).unwrap();
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        let all: String = (0..h)
+            .map(|y| row(&buf, y, 60))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("Background"), "the band renders: {all}");
+        assert!(all.contains("1 active shell"));
+        assert!(
+            !all.contains('❯') || all.contains("❯ ping"),
+            "no composer prompt — the band replaced it: {all}"
+        );
+    }
+
+    #[test]
+    fn details_of_a_vanished_shell_fall_back_to_the_list() {
+        let mut app = App::new();
+        app.bg_started("bash_1", "ping x.com", None, true);
+        // A Details view pointing at an unknown id renders the list instead
+        // (bg_exited retargets, so this is the defensive path).
+        app.background_view = Some(BackgroundView::Details {
+            id: "ghost".to_string(),
+        });
+        let texts: Vec<String> = background_view_lines(&app, 60).iter().map(plain).collect();
+        assert!(texts.iter().any(|l| l.contains("Background")));
+        assert!(!texts.iter().any(|l| l.contains("Shell details")));
     }
 }

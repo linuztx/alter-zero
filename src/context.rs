@@ -305,6 +305,14 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
                 out.push(ContextMessage::tool_result(id, tool.output.clone()));
             }
             HistoryItem::Summary(_) => {} // TUI chrome, not conversation
+            // A background shell's completion: a bracketed user-role note
+            // carrying the outcome AND the output tail — the model reads the
+            // result here (the rendered cell shows only the one-line headline).
+            // User-role like the other notices: strict providers reject
+            // mid-conversation system messages. See docs/background.md.
+            HistoryItem::Background(notice) => {
+                push_text(&mut out, ContextRole::User, notice.context_text(), vec![]);
+            }
         }
     }
     out
@@ -645,8 +653,56 @@ mod tests {
             verb: "Done",
             secs: 3,
             timestamp: String::new(),
+            shells: 0,
         })];
         assert!(context_messages(&history).is_empty());
+    }
+
+    #[test]
+    fn a_background_notice_becomes_a_bracketed_note_with_the_output_tail() {
+        // The completion notice reaches the model as a user-role note carrying
+        // the outcome and the final output tail — that's how the model can
+        // summarise the result in the automatic follow-up turn
+        // (docs/background.md). The rendered cell shows only the headline.
+        let history = vec![HistoryItem::Background(crate::app::BackgroundNotice {
+            description: "Ping x.com 200 times".to_string(),
+            id: "bash_1".to_string(),
+            code: Some(0),
+            killed: false,
+            output_tail: "64 bytes from x.com\n200 packets transmitted".to_string(),
+            timestamp: String::new(),
+        })];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 1);
+        assert_eq!(ctx[0].role, ContextRole::User);
+        assert_eq!(
+            ctx[0].text,
+            "[background] Background command \"Ping x.com 200 times\" (id bash_1) \
+             completed (exit code 0).\nFinal output (tail):\n\
+             64 bytes from x.com\n200 packets transmitted"
+        );
+    }
+
+    #[test]
+    fn a_backgrounded_tool_replays_its_model_facing_launch_text() {
+        // A backgrounded bash call is still a native tool-call pair — the
+        // stored output IS the model-facing launch text (task id + interim
+        // file), so no special casing is needed.
+        let history = vec![tool(
+            "Bash",
+            "ping -c 200 x.com",
+            "Command running in the background with ID: bash_1.",
+            ToolStatus::Backgrounded,
+            false,
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(
+            ctx[1],
+            ContextMessage::tool_result(
+                "call_0",
+                "Command running in the background with ID: bash_1."
+            )
+        );
     }
 
     #[test]

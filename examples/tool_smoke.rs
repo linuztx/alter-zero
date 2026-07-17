@@ -63,6 +63,9 @@ fn main() {
                 let _ = std::io::stdout().flush();
                 reply.push_str(&c);
             }
+            StreamEvent::ToolBackgrounded { id, output } => {
+                println!("\n\x1b[90m[backgrounded as {id}]\x1b[0m\n{output}");
+            }
             StreamEvent::ToolBatch(items) => {
                 // The model requested a batch of calls at once; the TUI shows the
                 // not-yet-run ones as `⎿ Waiting…` (docs/parallel-tools.md).

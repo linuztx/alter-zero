@@ -93,6 +93,7 @@ enum ItemRecord {
     Message(MessageRecord),
     Tool(ToolRecord),
     Summary(SummaryRecord),
+    Background(BackgroundRecord),
 }
 
 /// A [`Message`] on disk. `role` is the lowercase role name; an unknown role
@@ -116,7 +117,10 @@ struct MessageRecord {
 }
 
 /// A finished [`ToolCall`] on disk. Only finished statuses exist in history,
-/// so the status collapses to `ok: bool`.
+/// so the status collapses to `ok: bool` — plus `backgrounded` for a call
+/// resolved by moving to the background ([`ToolStatus::Backgrounded`]);
+/// omitted when false, so files written before the field keep their shape and
+/// still parse (`docs/background.md`).
 #[derive(Serialize, Deserialize)]
 struct ToolRecord {
     name: String,
@@ -126,6 +130,23 @@ struct ToolRecord {
     timestamp: String,
     shell: bool,
     truncated: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    backgrounded: bool,
+}
+
+/// A [`BackgroundNotice`] on disk — a background shell's completion notice
+/// (`docs/background.md`). Old builds skip the unknown record type (the
+/// forward-compatibility contract).
+///
+/// [`BackgroundNotice`]: crate::app::BackgroundNotice
+#[derive(Serialize, Deserialize)]
+struct BackgroundRecord {
+    description: String,
+    id: String,
+    code: Option<i32>,
+    killed: bool,
+    output_tail: String,
+    timestamp: String,
 }
 
 /// A [`TurnSummary`] on disk. `verb` maps back to its [`DONE_VERBS`] static on
@@ -207,20 +228,30 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
                 .collect(),
         }),
         // Only finished tools reach history, so status collapses to ok/failed
-        // (a Running status — impossible here — would record as failed).
+        // (a Running status — impossible here — would record as failed), plus
+        // the backgrounded marker (recorded ok: a launch that handed off).
         HistoryItem::Tool(tool) => ItemRecord::Tool(ToolRecord {
             name: tool.name.clone(),
             args: tool.args.clone(),
-            ok: matches!(tool.status, ToolStatus::Ok),
+            ok: matches!(tool.status, ToolStatus::Ok | ToolStatus::Backgrounded),
             output: tool.output.clone(),
             timestamp: tool.timestamp.clone(),
             shell: tool.shell,
             truncated: tool.truncated,
+            backgrounded: matches!(tool.status, ToolStatus::Backgrounded),
         }),
         HistoryItem::Summary(summary) => ItemRecord::Summary(SummaryRecord {
             verb: summary.verb.to_string(),
             secs: summary.secs,
             timestamp: summary.timestamp.clone(),
+        }),
+        HistoryItem::Background(notice) => ItemRecord::Background(BackgroundRecord {
+            description: notice.description.clone(),
+            id: notice.id.clone(),
+            code: notice.code,
+            killed: notice.killed,
+            output_tail: notice.output_tail.clone(),
+            timestamp: notice.timestamp.clone(),
         }),
     };
     line(stamp, record)
@@ -262,7 +293,9 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
             ItemRecord::Tool(tool) => items.push(HistoryItem::Tool(ToolCall {
                 name: tool.name,
                 args: tool.args,
-                status: if tool.ok {
+                status: if tool.backgrounded {
+                    ToolStatus::Backgrounded
+                } else if tool.ok {
                     ToolStatus::Ok
                 } else {
                     ToolStatus::Failed
@@ -276,7 +309,20 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 verb: done_verb(&summary.verb),
                 secs: summary.secs,
                 timestamp: summary.timestamp,
+                // Not persisted: a resumed session's shells are gone, so the
+                // suffix must not claim they still run (docs/background.md).
+                shells: 0,
             })),
+            ItemRecord::Background(notice) => {
+                items.push(HistoryItem::Background(crate::app::BackgroundNotice {
+                    description: notice.description,
+                    id: notice.id,
+                    code: notice.code,
+                    killed: notice.killed,
+                    output_tail: notice.output_tail,
+                    timestamp: notice.timestamp,
+                }));
+            }
         }
     }
     meta.map(|meta| (meta, items))
@@ -524,6 +570,7 @@ mod tests {
             verb: DONE_VERBS[2],
             secs: 7,
             timestamp: "03:22 PM".into(),
+            shells: 0,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
         assert_eq!(parsed, vec![summary]);
@@ -641,5 +688,100 @@ mod tests {
             rollout_rel_path((2026, 7, 6), (3, 4, 5), "1a2b-3c"),
             PathBuf::from("2026/07/06/rollout-2026-07-06T03-04-05-1a2b-3c.jsonl"),
         );
+    }
+
+    // ===== background shells (docs/background.md) =====
+
+    #[test]
+    fn a_backgrounded_tool_round_trips_its_status() {
+        let tool = HistoryItem::Tool(ToolCall {
+            name: "Bash".into(),
+            args: "ping -c 200 x.com".into(),
+            status: ToolStatus::Backgrounded,
+            output: "Command running in background with ID: bash_1.".into(),
+            timestamp: "03:20 PM".into(),
+            shell: false,
+            truncated: false,
+        });
+        let line = item_line(&tool, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["payload"]["backgrounded"], true);
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&tool))).expect("parses");
+        assert_eq!(parsed, vec![tool]);
+    }
+
+    #[test]
+    fn a_normal_tool_line_omits_the_backgrounded_field() {
+        // Files written before the feature keep their exact shape — and old
+        // lines (without the field) still parse as not-backgrounded.
+        let tool = HistoryItem::Tool(ToolCall {
+            name: "Bash".into(),
+            args: "ls".into(),
+            status: ToolStatus::Ok,
+            output: "Exit code: 0".into(),
+            timestamp: String::new(),
+            shell: false,
+            truncated: false,
+        });
+        let line = item_line(&tool, "t");
+        assert!(
+            !line.contains("backgrounded"),
+            "the field is skipped when false: {line}"
+        );
+        let old_line = r#"{"timestamp":"t","type":"tool","payload":{"name":"Bash","args":"ls","ok":true,"output":"Exit code: 0","timestamp":"","shell":false,"truncated":false}}"#;
+        let text = format!("{}\n{old_line}\n", meta_line(&meta(), "t0"));
+        let (_, parsed) = parse_session(&text).expect("parses");
+        assert_eq!(parsed, vec![tool]);
+    }
+
+    #[test]
+    fn a_background_notice_round_trips() {
+        let notice = HistoryItem::Background(crate::app::BackgroundNotice {
+            description: "Ping x.com 200 times".into(),
+            id: "bash_1".into(),
+            code: Some(0),
+            killed: false,
+            output_tail: "64 bytes from x.com\n200 packets transmitted".into(),
+            timestamp: "03:21 PM".into(),
+        });
+        let line = item_line(&notice, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "background");
+        assert_eq!(value["payload"]["id"], "bash_1");
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&notice))).expect("parses");
+        assert_eq!(parsed, vec![notice]);
+    }
+
+    #[test]
+    fn a_killed_signal_notice_round_trips_the_none_code() {
+        let notice = HistoryItem::Background(crate::app::BackgroundNotice {
+            description: "sleep 100".into(),
+            id: "bash_2".into(),
+            code: None,
+            killed: true,
+            output_tail: String::new(),
+            timestamp: String::new(),
+        });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&notice))).expect("parses");
+        assert_eq!(parsed, vec![notice]);
+    }
+
+    #[test]
+    fn summary_shells_are_not_persisted() {
+        // A resumed session's shells are gone — the parsed summary must not
+        // claim they still run.
+        let summary = HistoryItem::Summary(TurnSummary {
+            verb: DONE_VERBS[0],
+            secs: 22,
+            timestamp: String::new(),
+            shells: 3,
+        });
+        let line = item_line(&summary, "t");
+        assert!(!line.contains("shells"), "not recorded: {line}");
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
+        let HistoryItem::Summary(parsed) = &parsed[0] else {
+            panic!("a summary parses back");
+        };
+        assert_eq!(parsed.shells, 0);
     }
 }

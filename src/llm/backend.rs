@@ -40,6 +40,10 @@ pub struct LlmBackend {
     model: String,
     system_prompt: Option<String>,
     tools_enabled: bool,
+    /// The shared background-shell registry, when the boundary attached one —
+    /// enables the `bash` tool's `run_in_background` and Ctrl+B handoff
+    /// (`docs/background.md`).
+    background: Option<crate::background::BackgroundRegistry>,
 }
 
 impl LlmBackend {
@@ -85,7 +89,17 @@ impl LlmBackend {
             model,
             system_prompt,
             tools_enabled,
+            background: None,
         }
+    }
+
+    /// Attach the shared background-shell registry so the executor can launch
+    /// and adopt background tasks (`docs/background.md`). The boundary calls
+    /// this on every backend it builds; tests and offline tools skip it.
+    #[must_use]
+    pub fn with_background(mut self, registry: crate::background::BackgroundRegistry) -> Self {
+        self.background = Some(registry);
+        self
     }
 
     /// Whether the `bash`/`read`/`write`/`edit` tools are offered to the model.
@@ -227,11 +241,15 @@ impl ReplySource for LlmBackend {
     ) -> JoinHandle<()> {
         let client = self.client.clone();
         let system = self.system_prompt.clone();
+        let background = self.background.clone();
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop.
             let messages = build_messages(system.as_deref(), &prompt, &context, image_data_url);
-            let executor = RealToolExecutor::new();
+            let mut executor = RealToolExecutor::new();
+            if let Some(registry) = background {
+                executor = executor.with_background(registry);
+            }
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the
             // ToolStart/ToolEnd pair the TUI renders), appends the results, and

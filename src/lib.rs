@@ -4,6 +4,9 @@
 //! real logic lives in pure, unit-testable functions. See `docs/design.md`.
 //!
 //! - [`app`]         — conversation state and the pure key/stream update logic.
+//! - [`background`]  — background shell processes: the registry behind
+//!   `run_in_background`, Ctrl+B, and the ↓ manager (boundary; see
+//!   `docs/background.md`).
 //! - [`clipboard`]   — Ctrl+V image reads and the `/copy` write (arboard +
 //!   OSC 52); the base64 framing is the tested pure core, the rest is I/O.
 //! - [`context`]     — the per-session LLM conversation context: derive the
@@ -34,6 +37,7 @@
 //!   region).
 
 pub mod app;
+pub mod background;
 pub mod clipboard;
 pub mod context;
 pub mod file_search;

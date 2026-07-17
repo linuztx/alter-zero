@@ -30,7 +30,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `history`, `textarea`, `file_search`, `clipboard`, `context`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`) so behavior
@@ -80,7 +80,17 @@ not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 tails its output — the last lines + a `+N lines (Ns)` footer — via a
 `StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
 (ctrl+o to expand)` when it finishes, Claude-Code style) in
-`docs/tool-streaming.md`.
+`docs/tool-streaming.md`; and the **background shells** (the `bash` tool's
+`run_in_background` arg — the call resolves at once with a task id while a
+`BackgroundRegistry` process streams on its own channel; **Ctrl+B** moves a
+running model-`bash`/`!` command to the background mid-run (the live cell hints
+it); the cell resolves `⎿ Running in the background (↓ to manage)`, the footer
+counts `· N shells`, **↓ from an empty composer opens the inline manager band**
+(list → per-shell details with a live-tailing output box → `x` stops), and a
+completion commits a green/red `● Background command "…" completed` notice at
+the turn boundary — auto-starting a follow-up turn that tells the model the
+result when nothing else is queued, `Done for Ns · N shells still running` on
+the summary) in `docs/background.md`.
 
 ### The runtime model and its invariants
 

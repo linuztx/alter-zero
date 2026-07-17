@@ -53,12 +53,19 @@ pub struct ToolCallRequest {
 
 /// The result of executing one tool: the `output` sent back to the model, the
 /// `ok` outcome (green vs red cell), and whether the output was `truncated` at
-/// the byte cap. Mirrors the `StreamEvent::ToolEnd` payload the loop emits.
+/// the byte cap. Mirrors the `StreamEvent::ToolEnd` payload the loop emits —
+/// except a `background: Some(id)` outcome, which the agent loop surfaces as
+/// `StreamEvent::ToolBackgrounded` instead (see `docs/background.md`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolOutcome {
     pub output: String,
     pub ok: bool,
     pub truncated: bool,
+    /// `Some(task_id)` when the call resolved by moving to the background
+    /// (`run_in_background`, or a Ctrl+B handoff): `output` then holds the
+    /// model-facing launch text, and the cell renders the fixed backgrounded
+    /// row. `None` for every normal outcome.
+    pub background: Option<String>,
 }
 
 impl ToolOutcome {
@@ -69,6 +76,7 @@ impl ToolOutcome {
             output: output.into(),
             ok: true,
             truncated: false,
+            background: None,
         }
     }
 
@@ -80,6 +88,20 @@ impl ToolOutcome {
             output: output.into(),
             ok: false,
             truncated: false,
+            background: None,
+        }
+    }
+
+    /// A call resolved by moving to the background: `output` is the
+    /// model-facing launch text (task id + interim-output path). See
+    /// `docs/background.md`.
+    #[must_use]
+    pub fn backgrounded(id: impl Into<String>, output: impl Into<String>) -> Self {
+        Self {
+            output: output.into(),
+            ok: true,
+            truncated: false,
+            background: Some(id.into()),
         }
     }
 
@@ -123,7 +145,10 @@ fn bash_spec() -> Value {
          return its combined stdout and stderr. Use this for exploring the \
          project (ls, grep, find, cat), running builds and tests, and git. \
          Prefer the `read` tool over `cat` when you want to inspect a file to \
-         edit it. Long output is truncated; a non-zero exit status is reported.",
+         edit it. Long output is truncated; a non-zero exit status is reported. \
+         Set `run_in_background` for long-running commands: the call returns \
+         immediately with a task ID and an interim-output file path, and you \
+         are notified with the final output when the command completes.",
         json!({
             "type": "object",
             "properties": {
@@ -134,7 +159,25 @@ fn bash_spec() -> Value {
                 "timeout_ms": {
                     "type": "number",
                     "description": "Maximum runtime in milliseconds before the \
-                        command is killed. Defaults to 30000; capped at 600000."
+                        command is killed. Defaults to 30000; capped at 600000. \
+                        Ignored when run_in_background is true."
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Set to true to run this command in the \
+                        background: the tool returns at once with a task ID \
+                        while the command keeps running, and you receive a \
+                        notification with the final output when it completes. \
+                        Use for long-running commands (servers, watchers, \
+                        long benchmarks); read the reported interim-output \
+                        file to check progress mid-run. Defaults to false."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "A short human-readable description of what \
+                        the command does (e.g. \"Ping google.com 200 times\"), \
+                        shown in the UI and in background-completion \
+                        notifications."
                 }
             },
             "required": ["command"],
@@ -238,6 +281,12 @@ pub struct BashArgs {
     pub command: String,
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Run the command as a background task (`docs/background.md`).
+    #[serde(default)]
+    pub run_in_background: bool,
+    /// A short human description, shown in the UI and completion notices.
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 impl BashArgs {

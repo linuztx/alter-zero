@@ -78,6 +78,13 @@ pub enum ToolStatus {
     Ok,
     /// Finished with an error (red).
     Failed,
+    /// Resolved by moving to the **background** (a `run_in_background` bash
+    /// call, or Ctrl+B on a running command): the process keeps running under
+    /// the [`App::background`] registry while the cell resolves with a green
+    /// bullet and the fixed `⎿ Running in the background (↓ to manage)` row —
+    /// the stored `output` is the model-facing text (task id + interim-output
+    /// path), never displayed. See `docs/background.md`.
+    Backgrounded,
 }
 
 /// One tool invocation: its `name`, a short `args` summary, its lifecycle
@@ -191,6 +198,84 @@ pub struct TurnSummary {
     /// Wall-clock stamp of when the turn finished. Recorded but not currently
     /// displayed — only user-message stamps show. See `docs/timestamps.md`.
     pub timestamp: String,
+    /// How many background shells were still running when the turn ended —
+    /// rendered as a `· {n} shells still running` suffix when non-zero
+    /// (`Done for 22s · 3 shells still running`). Snapshotted at
+    /// [`App::end_turn`]; not persisted to the session file (a resumed
+    /// session's shells are gone). See `docs/background.md`.
+    pub shells: usize,
+}
+
+/// One background shell's completion, committed to history as a one-line
+/// notice cell (`● Background command "{description}" completed (exit code
+/// 0)` — green bullet on success, red on failure or a user stop). The
+/// `output_tail` rides the item for the model's context
+/// ([`crate::context::context_messages`]) but is never rendered — the model
+/// summarises it in the automatic follow-up turn. See `docs/background.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundNotice {
+    /// The human description shown in the headline: the model-supplied
+    /// `description` argument, falling back to the command line.
+    pub description: String,
+    /// The registry task id (`bash_1`, …) — lets the model pair the notice to
+    /// the launch result it received.
+    pub id: String,
+    /// The exit code, or `None` when the process died to a signal.
+    pub code: Option<i32>,
+    /// Whether the user stopped it (the manager's `x` / a `/clear` sweep).
+    pub killed: bool,
+    /// The last lines of output at exit — context-only, never rendered.
+    pub output_tail: String,
+    /// Wall-clock stamp of when the completion was recorded. Recorded but not
+    /// displayed, like tool stamps. See `docs/timestamps.md`.
+    pub timestamp: String,
+}
+
+impl BackgroundNotice {
+    /// Did the command succeed (exit code 0, not stopped by the user)? Picks
+    /// the notice bullet colour: green for success, red otherwise.
+    #[must_use]
+    pub fn ok(&self) -> bool {
+        !self.killed && self.code == Some(0)
+    }
+
+    /// The rendered one-liner: `Background command "{description}" {outcome}`.
+    #[must_use]
+    pub fn headline(&self) -> String {
+        let outcome = self.outcome_phrase();
+        format!("Background command \"{}\" {outcome}", self.description)
+    }
+
+    /// The outcome clause of the headline / context note.
+    #[must_use]
+    pub fn outcome_phrase(&self) -> String {
+        if self.killed {
+            return "was stopped by the user".to_string();
+        }
+        match self.code {
+            Some(0) => "completed (exit code 0)".to_string(),
+            Some(code) => format!("failed (exit code {code})"),
+            None => "was terminated by a signal".to_string(),
+        }
+    }
+
+    /// The model-facing context note: the headline plus the output tail (the
+    /// bracketed user-role form `context::context_messages` sends). Also the
+    /// automatic follow-up turn's prompt text.
+    #[must_use]
+    pub fn context_text(&self) -> String {
+        let tail = if self.output_tail.trim().is_empty() {
+            "(no output)"
+        } else {
+            self.output_tail.trim_end_matches('\n')
+        };
+        format!(
+            "[background] Background command \"{}\" (id {}) {}.\nFinal output (tail):\n{tail}",
+            self.description,
+            self.id,
+            self.outcome_phrase(),
+        )
+    }
 }
 
 /// One ordered entry of finished conversation history: a [`Message`], a
@@ -203,6 +288,8 @@ pub enum HistoryItem {
     Message(Message),
     Tool(ToolCall),
     Summary(TurnSummary),
+    /// A background shell's completion notice (`docs/background.md`).
+    Background(BackgroundNotice),
 }
 
 /// The whimsical working verbs, one chosen per turn (by [`App::turn_count`]) for
@@ -444,6 +531,18 @@ pub enum Action {
         /// The API key the user entered.
         key: String,
     },
+    /// `x` on a shell in the ↓ background manager: stop the background task
+    /// with this registry id. The decision is pure; the loop kills the
+    /// process group via the `background::BackgroundRegistry`, and the
+    /// resulting `Exited` event removes the row / commits the stopped notice.
+    /// See `docs/background.md`.
+    KillBackground(String),
+    /// Ctrl+B while a command is running (a model `bash` call or a `!` shell
+    /// turn): move it to the background. The loop raises the registry's
+    /// background request; the runner's poll loop consumes it, hands the
+    /// child off, and resolves the cell as
+    /// [`ToolStatus::Backgrounded`]. See `docs/background.md`.
+    MoveToBackground,
     /// The user asked to quit.
     Quit,
 }
@@ -518,6 +617,91 @@ pub enum QueuedTurn {
     ///
     /// [`Messages`]: QueuedTurn::Messages
     Shell(String),
+}
+
+/// One **running** background shell, as the pure state sees it (the process
+/// itself lives in the boundary's `background::BackgroundRegistry`; its
+/// events — start, output lines, exit — are applied here). An exited shell
+/// leaves the list ([`App::bg_exited`]): the completion notice is the record.
+/// See `docs/background.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundShell {
+    /// The registry task id (`bash_1`, …).
+    pub id: String,
+    /// The command line, shown in the ↓ manager's list and details view.
+    pub command: String,
+    /// The model-supplied description (notices fall back to the command).
+    pub description: Option<String>,
+    /// Whether the model launched it — its completion then auto-starts a
+    /// follow-up turn; a user-launched (`!` + Ctrl+B) shell only commits the
+    /// notice.
+    pub from_model: bool,
+    /// The live output **tail** (capped at [`BG_TAIL_MAX_BYTES`], trimmed to
+    /// line boundaries) — what the details view's output box tails and the
+    /// completion notice snapshots. The full output is teed to the task's
+    /// interim-output file at the boundary.
+    pub output: String,
+    /// How long the shell has been running — boundary-injected before each
+    /// draw ([`App::set_background_runtime`], the `set_status_times` pattern).
+    pub runtime: Duration,
+}
+
+/// The retained size of a background shell's in-memory output tail. Trimmed
+/// from the **front** on line boundaries, so the details view / completion
+/// notice always see the newest lines.
+const BG_TAIL_MAX_BYTES: usize = 16 * 1024;
+
+/// How much of a finished shell's tail rides its completion notice into the
+/// model's context — enough to summarise from without bloating every later
+/// turn (the full output is still in the task's interim-output file).
+const BG_NOTICE_TAIL_MAX_BYTES: usize = 4 * 1024;
+/// …and at most this many lines of it.
+const BG_NOTICE_TAIL_MAX_LINES: usize = 30;
+
+/// What a background shell left behind when it exited ([`App::bg_exited`]) —
+/// held in [`App::pending_bg`] while a turn is in flight and settled at turn
+/// end: the loop records a [`BackgroundNotice`] for it and, for a
+/// model-launched shell with nothing queued, starts the automatic follow-up
+/// turn. See `docs/background.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BgCompletion {
+    pub id: String,
+    pub command: String,
+    pub description: Option<String>,
+    pub from_model: bool,
+    /// Exit code, or `None` when the process died to a signal.
+    pub code: Option<i32>,
+    /// Whether the user stopped it (`x` in the manager, or a kill sweep).
+    pub killed: bool,
+    /// The output tail at exit (already capped for the notice).
+    pub output_tail: String,
+}
+
+impl BgCompletion {
+    /// The notice's display description: the model's `description` argument,
+    /// falling back to the command line.
+    #[must_use]
+    pub fn display_description(&self) -> &str {
+        self.description.as_deref().unwrap_or(&self.command)
+    }
+}
+
+/// Which page of the ↓ background manager band is showing. The band is
+/// **inline** (it replaces the composer, exactly like the `/model` picker —
+/// never an alternate-screen [`View`]) and owns every key while open. See
+/// `docs/background.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BackgroundView {
+    /// The shell list (`Background` / `{n} active shells` / selectable rows),
+    /// or the `No tasks currently running` empty state.
+    List {
+        /// The highlighted row (clamped as shells exit).
+        selected: usize,
+    },
+    /// One shell's details: status/runtime/command fields over a live output
+    /// box. Keyed by id so a *different* shell exiting never retargets the
+    /// view; when this shell exits the view falls back to the list.
+    Details { id: String },
 }
 
 /// How many lines PageUp/PageDown move the tool-output view.
@@ -1520,6 +1704,30 @@ pub struct App {
     /// [`history`]: App::history
     /// [`take_trailing_user_messages`]: App::take_trailing_user_messages
     undo_floor: usize,
+    /// The **running** background shells, oldest first — fed by the
+    /// boundary's `BgEvent`s ([`bg_started`]/[`bg_output`]/[`bg_exited`]).
+    /// Drives the footer's `· {n} shells` count, the `Done for Ns · {n}
+    /// shells still running` summary suffix, and the ↓ manager band. See
+    /// `docs/background.md`.
+    ///
+    /// [`bg_started`]: App::bg_started
+    /// [`bg_output`]: App::bg_output
+    /// [`bg_exited`]: App::bg_exited
+    background: Vec<BackgroundShell>,
+    /// Whether any background shell has ever started this session — the ↓
+    /// gate: once true, ↓ from an empty composer opens the manager (showing
+    /// the `No tasks currently running` empty state after they all finish).
+    /// Reset by `/clear` (which also kills the shells).
+    had_background: bool,
+    /// The open ↓ background manager band; `None` when closed. Inline like
+    /// [`model_picker`](Self::model_picker) — it replaces the composer and
+    /// owns every key while open. See `docs/background.md`.
+    pub background_view: Option<BackgroundView>,
+    /// Completions that landed while a turn was in flight, awaiting the turn
+    /// end: the loop settles them there — notices committed in arrival order,
+    /// and (for model-launched shells with nothing queued) the automatic
+    /// follow-up turn dispatched. See `docs/background.md`.
+    pending_bg: VecDeque<BgCompletion>,
 }
 
 impl App {
@@ -1836,6 +2044,11 @@ impl App {
         // same way the `/model` picker does. See `docs/llm.md`.
         if self.view == View::Conversation && self.key_onboarding.is_some() {
             return self.on_key_key_onboarding(key);
+        }
+        // The ↓ background manager band owns every key while open, the same
+        // way the pickers do. See `docs/background.md`.
+        if self.view == View::Conversation && self.background_view.is_some() {
+            return self.on_key_background(key);
         }
         // Ctrl+C: in the conversation, a first press with text in the input
         // clears the draft instead of quitting (codex's composer-clear step —
@@ -2184,8 +2397,26 @@ impl App {
                     self.recall_input(&text);
                     return Action::None;
                 }
+                // ↓ from an empty composer opens the background manager once
+                // any shell has run (`docs/background.md`) — history recall
+                // was tried first, so a mid-recall ↓ still steps the history.
+                if self.background_openable() {
+                    self.open_background_view();
+                    return Action::None;
+                }
                 self.input.move_down();
                 Action::None
+            }
+            // Ctrl+B moves the running command (a model `bash` call or a `!`
+            // shell turn) to the background — the loop raises the registry
+            // request the runner's poll loop consumes. A no-op when nothing
+            // backgroundable is running. See `docs/background.md`.
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.can_move_to_background() {
+                    Action::MoveToBackground
+                } else {
+                    Action::None
+                }
             }
             KeyCode::Home => {
                 self.input.move_home();
@@ -3836,22 +4067,264 @@ impl App {
     /// sibling (if any) becomes the front. Returns the finished call (for the
     /// event loop to commit to scrollback), or `None` if no tool was running.
     pub fn end_tool(&mut self, output: &str, ok: bool) -> Option<ToolCall> {
-        let mut tool = self.tool_queue.pop_front()?;
-        tool.output = output.to_string();
-        tool.status = if ok {
+        let status = if ok {
             ToolStatus::Ok
         } else {
             ToolStatus::Failed
         };
+        self.resolve_front_tool(output, status)
+    }
+
+    /// Resolve the in-flight tool call as **moved to the background** (a
+    /// `run_in_background` bash call, or Ctrl+B on a running command):
+    /// [`ToolStatus::Backgrounded`], with `output` holding the model-facing
+    /// launch text (task id + interim-output path) that the cell never shows —
+    /// it renders the fixed `⎿ Running in the background (↓ to manage)` row.
+    /// The boundary's handler for `StreamEvent::ToolBackgrounded`. See
+    /// `docs/background.md`.
+    pub fn background_tool(&mut self, output: &str) -> Option<ToolCall> {
+        self.resolve_front_tool(output, ToolStatus::Backgrounded)
+    }
+
+    /// The shared tail of [`end_tool`]/[`background_tool`]: pop the front
+    /// call, stamp + record it with `status`, and fold its output into the
+    /// token tally (arrow up — uploaded back; the count is *added to*, never
+    /// reset — see `docs/status-indicator.md`).
+    ///
+    /// [`end_tool`]: App::end_tool
+    /// [`background_tool`]: App::background_tool
+    fn resolve_front_tool(&mut self, output: &str, status: ToolStatus) -> Option<ToolCall> {
+        let mut tool = self.tool_queue.pop_front()?;
+        tool.output = output.to_string();
+        tool.status = status;
         tool.timestamp = self.now_stamp();
-        // Fold the tool's output into the cumulative tally (arrow up — uploaded
-        // back); the count is *added to*, never reset (see docs/status-indicator.md).
-        if let Some(status) = self.status.as_mut() {
-            status.tokens += count_tokens(output);
-            status.arrow = TokenArrow::Up;
+        if let Some(turn) = self.status.as_mut() {
+            turn.tokens += count_tokens(output);
+            turn.arrow = TokenArrow::Up;
         }
         self.history.push(HistoryItem::Tool(tool.clone()));
         Some(tool)
+    }
+
+    /// The running background shells, oldest first (see `docs/background.md`).
+    #[must_use]
+    pub fn background(&self) -> &[BackgroundShell] {
+        &self.background
+    }
+
+    /// The running background shell with this registry id, if it still runs.
+    #[must_use]
+    pub fn background_shell(&self, id: &str) -> Option<&BackgroundShell> {
+        self.background.iter().find(|shell| shell.id == id)
+    }
+
+    /// Has any background shell ever started this session? The ↓ manager
+    /// opens once true (showing the empty state after they all finish).
+    #[must_use]
+    pub const fn background_ever(&self) -> bool {
+        self.had_background
+    }
+
+    /// A background shell started (the registry's `BgEvent::Started`): list it
+    /// so the footer count, the summary suffix, and the ↓ manager see it.
+    pub fn bg_started(
+        &mut self,
+        id: &str,
+        command: &str,
+        description: Option<String>,
+        from_model: bool,
+    ) {
+        self.had_background = true;
+        self.background.push(BackgroundShell {
+            id: id.to_string(),
+            command: command.to_string(),
+            description,
+            from_model,
+            output: String::new(),
+            runtime: Duration::ZERO,
+        });
+    }
+
+    /// Append a chunk of a background shell's live output (the registry's
+    /// `BgEvent::Output`), keeping only the newest [`BG_TAIL_MAX_BYTES`] —
+    /// trimmed from the front on line boundaries so the details view always
+    /// tails whole lines. Unknown ids (a chunk racing its shell's removal)
+    /// are dropped.
+    pub fn bg_output(&mut self, id: &str, chunk: &str) {
+        let Some(shell) = self.background.iter_mut().find(|shell| shell.id == id) else {
+            return;
+        };
+        shell.output.push_str(chunk);
+        if shell.output.len() > BG_TAIL_MAX_BYTES {
+            let cut = shell.output.len() - BG_TAIL_MAX_BYTES;
+            // Trim to the next line boundary past the cut so the tail never
+            // opens mid-line (fall back to a char boundary when one line
+            // exceeds the whole cap).
+            let boundary = shell.output[cut..]
+                .find('\n')
+                .map_or_else(|| ceil_char_boundary(&shell.output, cut), |nl| cut + nl + 1);
+            shell.output.drain(..boundary);
+        }
+    }
+
+    /// Inject a background shell's runtime before a draw (the
+    /// [`set_status_times`](App::set_status_times) pattern — the started
+    /// clocks live at the boundary). Unknown ids are ignored.
+    pub fn set_background_runtime(&mut self, id: &str, runtime: Duration) {
+        if let Some(shell) = self.background.iter_mut().find(|shell| shell.id == id) {
+            shell.runtime = runtime;
+        }
+    }
+
+    /// A background shell exited (the registry's `BgEvent::Exited`): remove it
+    /// from the list and return its completion for the loop to settle —
+    /// deferred to turn end while a turn is in flight
+    /// ([`defer_bg_completion`](App::defer_bg_completion)), else settled at
+    /// once. A details view watching this shell falls back to the list (and
+    /// the list selection re-clamps); `None` for an unknown id (already
+    /// swept — e.g. by `/clear` — so no notice is owed).
+    pub fn bg_exited(&mut self, id: &str, code: Option<i32>, killed: bool) -> Option<BgCompletion> {
+        let index = self.background.iter().position(|shell| shell.id == id)?;
+        let shell = self.background.remove(index);
+        match &mut self.background_view {
+            Some(BackgroundView::Details { id: watched }) if *watched == id => {
+                self.background_view = Some(BackgroundView::List {
+                    selected: index.min(self.background.len().saturating_sub(1)),
+                });
+            }
+            Some(BackgroundView::List { selected }) => {
+                *selected = (*selected).min(self.background.len().saturating_sub(1));
+            }
+            _ => {}
+        }
+        Some(BgCompletion {
+            id: shell.id,
+            command: shell.command,
+            description: shell.description,
+            from_model: shell.from_model,
+            code,
+            killed,
+            output_tail: notice_tail(&shell.output),
+        })
+    }
+
+    /// Hold a completion that landed mid-turn for the turn-end settle.
+    pub fn defer_bg_completion(&mut self, completion: BgCompletion) {
+        self.pending_bg.push_back(completion);
+    }
+
+    /// Drain the completions held during the turn (empty when none landed) —
+    /// the loop settles them at every turn end (`StreamDone`, `Error`, and
+    /// the Esc interrupt alike). See `docs/background.md`.
+    pub fn take_pending_bg_completions(&mut self) -> Vec<BgCompletion> {
+        self.pending_bg.drain(..).collect()
+    }
+
+    /// Record a completion's [`BackgroundNotice`] in history (stamped like
+    /// every recorded item) and return it for the loop to commit to
+    /// scrollback. The notice is what repaints on resize, lists in the Ctrl+O
+    /// transcript, and rides the derived context to the model.
+    pub fn record_background_notice(&mut self, completion: &BgCompletion) -> BackgroundNotice {
+        let notice = BackgroundNotice {
+            description: completion.display_description().to_string(),
+            id: completion.id.clone(),
+            code: completion.code,
+            killed: completion.killed,
+            output_tail: completion.output_tail.clone(),
+            timestamp: self.now_stamp(),
+        };
+        self.history.push(HistoryItem::Background(notice.clone()));
+        notice
+    }
+
+    /// Can Ctrl+B move the current command to the background? True while the
+    /// front tool is a **running command** — a model `bash` call or a `!`
+    /// shell turn — the only runners that poll the registry's background
+    /// request. See `docs/background.md`.
+    #[must_use]
+    pub fn can_move_to_background(&self) -> bool {
+        self.tool_queue.front().is_some_and(|tool| {
+            tool.status == ToolStatus::Running && (tool.shell || tool.name == "Bash")
+        })
+    }
+
+    /// Should ↓ open the background manager? Only from an idle-looking
+    /// composer — empty, not in shell mode, no palette/file band open — and
+    /// only once a background shell has ever run ([`background_ever`]), so ↓
+    /// keeps its history-recall/cursor meaning otherwise.
+    ///
+    /// [`background_ever`]: App::background_ever
+    fn background_openable(&self) -> bool {
+        self.had_background
+            && self.input.is_empty()
+            && !self.shell_mode
+            && self.command_menu.is_none()
+            && self.file_search.is_none()
+    }
+
+    /// Open the ↓ manager band on the shell list, dismissing whatever shared
+    /// the composer (the shortcuts band; the pickers own their keys, so they
+    /// can't be open here).
+    pub fn open_background_view(&mut self) {
+        self.shortcuts_open = false;
+        self.backtrack = Backtrack::default();
+        self.background_view = Some(BackgroundView::List { selected: 0 });
+    }
+
+    /// Close the ↓ manager band; the composer returns on the next draw.
+    pub fn close_background_view(&mut self) {
+        self.background_view = None;
+    }
+
+    /// Keys while the ↓ background manager band is open — it owns **every**
+    /// key (routed at the top of [`on_key`](App::on_key)), like the `/model`
+    /// picker. List: ↑/↓ move, Enter views the highlighted shell, `x` stops
+    /// it, Esc/Ctrl+C close. Details: ← back to the list, Esc/Enter/Space
+    /// close, `x` stops. See `docs/background.md`.
+    fn on_key_background(&mut self, key: KeyEvent) -> Action {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.close_background_view();
+            return Action::None;
+        }
+        let Some(view) = self.background_view.as_mut() else {
+            return Action::None;
+        };
+        match view {
+            BackgroundView::List { selected } => {
+                let last = self.background.len().saturating_sub(1);
+                match key.code {
+                    KeyCode::Up => *selected = selected.saturating_sub(1),
+                    KeyCode::Down => *selected = (*selected + 1).min(last),
+                    KeyCode::Enter => {
+                        if let Some(shell) = self.background.get(*selected) {
+                            let id = shell.id.clone();
+                            self.background_view = Some(BackgroundView::Details { id });
+                        }
+                    }
+                    KeyCode::Char('x') => {
+                        if let Some(shell) = self.background.get(*selected) {
+                            return Action::KillBackground(shell.id.clone());
+                        }
+                    }
+                    KeyCode::Esc => self.close_background_view(),
+                    _ => {}
+                }
+            }
+            BackgroundView::Details { id } => match key.code {
+                KeyCode::Left => {
+                    let selected = self
+                        .background
+                        .iter()
+                        .position(|shell| shell.id == *id)
+                        .unwrap_or(0);
+                    self.background_view = Some(BackgroundView::List { selected });
+                }
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char(' ') => self.close_background_view(),
+                KeyCode::Char('x') => return Action::KillBackground(id.clone()),
+                _ => {}
+            },
+        }
+        Action::None
     }
 
     /// Finalise the current run of assistant text as a history message so a
@@ -4106,6 +4579,9 @@ impl App {
             verb: status.done_verb,
             secs: elapsed_secs,
             timestamp: self.now_stamp(),
+            // Snapshot the running background shells for the `· {n} shells
+            // still running` suffix (docs/background.md).
+            shells: self.background.len(),
         };
         self.history.push(HistoryItem::Summary(summary.clone()));
         Some(summary)
@@ -4316,7 +4792,46 @@ impl App {
         self.undo_floor = 0;
         // A cleared slate shows nothing lingering above the box.
         self.toast = None;
+        // The background shells go too — the loop's Clear arm kills their
+        // processes; wiping the state here means the late Exited events find
+        // nothing and owe no notice (docs/background.md).
+        self.background.clear();
+        self.background_view = None;
+        self.pending_bg.clear();
+        self.had_background = false;
     }
+}
+
+/// The completion-notice tail of a shell's output: the last
+/// [`BG_NOTICE_TAIL_MAX_LINES`] lines, additionally capped at
+/// [`BG_NOTICE_TAIL_MAX_BYTES`] (front-trimmed on line, then char,
+/// boundaries) — what rides the notice into the model's context.
+fn notice_tail(output: &str) -> String {
+    let trimmed = output.trim_end_matches('\n');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    let lines: Vec<&str> = trimmed.split('\n').collect();
+    let keep = lines.len().min(BG_NOTICE_TAIL_MAX_LINES);
+    let mut tail = lines[lines.len() - keep..].join("\n");
+    if tail.len() > BG_NOTICE_TAIL_MAX_BYTES {
+        let cut = tail.len() - BG_NOTICE_TAIL_MAX_BYTES;
+        let boundary = tail[cut..]
+            .find('\n')
+            .map_or_else(|| ceil_char_boundary(&tail, cut), |nl| cut + nl + 1);
+        tail.drain(..boundary);
+    }
+    tail
+}
+
+/// The smallest char boundary in `s` at or after `at` (a dependency-free
+/// `str::ceil_char_boundary`, which is still unstable).
+fn ceil_char_boundary(s: &str, at: usize) -> usize {
+    let mut at = at.min(s.len());
+    while at < s.len() && !s.is_char_boundary(at) {
+        at += 1;
+    }
+    at
 }
 
 /// How many earlier occurrences of the placeholder at `span` precede it in
@@ -4360,7 +4875,7 @@ mod tests {
             .iter()
             .filter_map(|item| match item {
                 HistoryItem::Message(m) => Some(m.role),
-                HistoryItem::Tool(_) | HistoryItem::Summary(_) => None,
+                _ => None,
             })
             .collect()
     }
@@ -4369,9 +4884,7 @@ mod tests {
     fn message_at(app: &App, i: usize) -> &Message {
         match &app.history[i] {
             HistoryItem::Message(m) => m,
-            HistoryItem::Tool(_) | HistoryItem::Summary(_) => {
-                panic!("expected a message at history[{i}]")
-            }
+            _ => panic!("expected a message at history[{i}]"),
         }
     }
 
@@ -7314,6 +7827,7 @@ mod tests {
                 HistoryItem::Message(m) => &m.timestamp,
                 HistoryItem::Tool(t) => &t.timestamp,
                 HistoryItem::Summary(s) => &s.timestamp,
+                HistoryItem::Background(n) => &n.timestamp,
             };
             assert_eq!(ts, STAMP, "every recorded item carries the clock's stamp");
         }
@@ -9971,5 +10485,376 @@ mod tests {
         assert_eq!(app.input.text(), "new");
         assert_eq!(roles(&app), vec![Role::User]);
         assert_eq!(message_at(&app, 0).text, "first");
+    }
+
+    // --- background shells (docs/background.md) ---
+
+    /// A registered running shell for the manager tests.
+    fn app_with_shells(commands: &[&str]) -> App {
+        let mut app = App::new();
+        for (i, cmd) in commands.iter().enumerate() {
+            app.bg_started(&format!("bash_{}", i + 1), cmd, None, true);
+        }
+        app
+    }
+
+    #[test]
+    fn bg_started_lists_the_shell_and_sets_the_ever_gate() {
+        let mut app = App::new();
+        assert!(!app.background_ever());
+        app.bg_started("bash_1", "ping x.com", Some("Ping x".into()), true);
+        assert!(app.background_ever());
+        assert_eq!(app.background().len(), 1);
+        let shell = &app.background()[0];
+        assert_eq!(shell.id, "bash_1");
+        assert_eq!(shell.command, "ping x.com");
+        assert_eq!(shell.description.as_deref(), Some("Ping x"));
+        assert!(shell.from_model);
+    }
+
+    #[test]
+    fn bg_output_appends_and_caps_the_tail_on_line_boundaries() {
+        let mut app = app_with_shells(&["cmd"]);
+        app.bg_output("bash_1", "hello\n");
+        app.bg_output("bash_1", "world\n");
+        assert_eq!(app.background()[0].output, "hello\nworld\n");
+        // Overflow the cap: the retained tail starts on a line boundary.
+        let long = "x".repeat(1024);
+        for _ in 0..32 {
+            app.bg_output("bash_1", &format!("{long}\n"));
+        }
+        let tail = &app.background()[0].output;
+        assert!(tail.len() <= 16 * 1024, "tail stays capped: {}", tail.len());
+        assert!(
+            !tail.starts_with('x') || tail.split('\n').next().unwrap().len() == 1024,
+            "the tail opens on a whole line"
+        );
+        // Output for an unknown id is dropped, not panicking.
+        app.bg_output("nope", "zzz");
+    }
+
+    #[test]
+    fn bg_exited_removes_the_shell_and_returns_its_completion() {
+        let mut app = App::new();
+        app.bg_started("bash_1", "ping x.com", Some("Ping x".into()), true);
+        app.bg_output("bash_1", "64 bytes\n");
+        let completion = app.bg_exited("bash_1", Some(0), false).expect("completes");
+        assert!(
+            app.background().is_empty(),
+            "the exited shell leaves the list"
+        );
+        assert_eq!(completion.id, "bash_1");
+        assert_eq!(completion.code, Some(0));
+        assert!(!completion.killed);
+        assert!(completion.from_model);
+        assert_eq!(completion.output_tail, "64 bytes");
+        assert_eq!(completion.display_description(), "Ping x");
+        // An unknown id (already swept by /clear) owes nothing.
+        assert!(app.bg_exited("bash_1", Some(0), false).is_none());
+    }
+
+    #[test]
+    fn completion_notice_headline_covers_every_outcome() {
+        let mut notice = BackgroundNotice {
+            description: "Ping x".into(),
+            id: "bash_1".into(),
+            code: Some(0),
+            killed: false,
+            output_tail: String::new(),
+            timestamp: String::new(),
+        };
+        assert!(notice.ok());
+        assert_eq!(
+            notice.headline(),
+            "Background command \"Ping x\" completed (exit code 0)"
+        );
+        notice.code = Some(2);
+        assert!(!notice.ok());
+        assert_eq!(
+            notice.headline(),
+            "Background command \"Ping x\" failed (exit code 2)"
+        );
+        notice.killed = true;
+        assert_eq!(
+            notice.headline(),
+            "Background command \"Ping x\" was stopped by the user"
+        );
+        notice.killed = false;
+        notice.code = None;
+        assert_eq!(
+            notice.headline(),
+            "Background command \"Ping x\" was terminated by a signal"
+        );
+    }
+
+    #[test]
+    fn completion_notice_context_text_carries_the_tail() {
+        let notice = BackgroundNotice {
+            description: "Ping x".into(),
+            id: "bash_1".into(),
+            code: Some(0),
+            killed: false,
+            output_tail: "line1\nline2".into(),
+            timestamp: String::new(),
+        };
+        assert_eq!(
+            notice.context_text(),
+            "[background] Background command \"Ping x\" (id bash_1) completed (exit code 0).\n\
+             Final output (tail):\nline1\nline2"
+        );
+        let silent = BackgroundNotice {
+            output_tail: String::new(),
+            ..notice
+        };
+        assert!(silent.context_text().ends_with("(no output)"));
+    }
+
+    #[test]
+    fn record_background_notice_lands_in_history_stamped() {
+        let mut app = App::new();
+        app.set_clock(|| "01:02 PM".to_string());
+        app.bg_started("bash_1", "ping x.com", None, true);
+        let completion = app.bg_exited("bash_1", Some(0), false).unwrap();
+        let notice = app.record_background_notice(&completion);
+        assert_eq!(
+            notice.description, "ping x.com",
+            "falls back to the command"
+        );
+        assert_eq!(notice.timestamp, "01:02 PM");
+        assert_eq!(
+            app.history.last(),
+            Some(&HistoryItem::Background(notice)),
+            "the notice is a history item — it repaints and rides the context"
+        );
+    }
+
+    #[test]
+    fn completions_defer_and_drain_in_arrival_order() {
+        let mut app = app_with_shells(&["a", "b"]);
+        let first = app.bg_exited("bash_1", Some(0), false).unwrap();
+        let second = app.bg_exited("bash_2", Some(1), false).unwrap();
+        app.defer_bg_completion(first.clone());
+        app.defer_bg_completion(second.clone());
+        assert_eq!(app.take_pending_bg_completions(), vec![first, second]);
+        assert!(app.take_pending_bg_completions().is_empty(), "drained once");
+    }
+
+    #[test]
+    fn down_from_an_empty_composer_opens_the_manager_once_a_shell_ever_ran() {
+        let mut app = App::new();
+        // Before any shell: ↓ keeps its old meaning (a cursor no-op here).
+        app.on_key(key(KeyCode::Down));
+        assert!(app.background_view.is_none());
+        app.bg_started("bash_1", "ping x.com", None, true);
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(
+            app.background_view,
+            Some(BackgroundView::List { selected: 0 })
+        );
+        // …and it opens on the empty state even after every shell finished.
+        app.close_background_view();
+        app.bg_exited("bash_1", Some(0), false);
+        app.on_key(key(KeyCode::Down));
+        assert!(app.background_view.is_some(), "the empty state still opens");
+    }
+
+    #[test]
+    fn down_with_a_draft_or_in_shell_mode_never_opens_the_manager() {
+        let mut app = App::new();
+        app.bg_started("bash_1", "ping x.com", None, true);
+        app.input = TextArea::from_text("draft");
+        app.on_key(key(KeyCode::Down));
+        assert!(
+            app.background_view.is_none(),
+            "a draft keeps ↓ for the cursor"
+        );
+        app.input.clear();
+        app.on_key(key(KeyCode::Char('!')));
+        app.on_key(key(KeyCode::Down));
+        assert!(app.background_view.is_none(), "shell mode keeps ↓ too");
+    }
+
+    #[test]
+    fn manager_list_keys_select_view_stop_and_close() {
+        let mut app = app_with_shells(&["a", "b", "c"]);
+        app.open_background_view();
+        // ↓/↑ move and clamp.
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(
+            app.background_view,
+            Some(BackgroundView::List { selected: 2 }),
+            "the selection clamps at the last row"
+        );
+        // x stops the highlighted shell (the view stays).
+        let action = app.on_key(key(KeyCode::Char('x')));
+        assert_eq!(action, Action::KillBackground("bash_3".into()));
+        assert!(app.background_view.is_some());
+        // Enter opens the details of the highlighted shell.
+        app.on_key(key(KeyCode::Up));
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            app.background_view,
+            Some(BackgroundView::Details {
+                id: "bash_2".into()
+            })
+        );
+        // ← goes back to the list, seated on that shell.
+        app.on_key(key(KeyCode::Left));
+        assert_eq!(
+            app.background_view,
+            Some(BackgroundView::List { selected: 1 })
+        );
+        // Esc closes the band.
+        app.on_key(key(KeyCode::Esc));
+        assert!(app.background_view.is_none());
+    }
+
+    #[test]
+    fn manager_details_keys_close_and_stop() {
+        let mut app = app_with_shells(&["a"]);
+        app.open_background_view();
+        app.on_key(key(KeyCode::Enter));
+        assert!(matches!(
+            app.background_view,
+            Some(BackgroundView::Details { .. })
+        ));
+        // x stops this shell.
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('x'))),
+            Action::KillBackground("bash_1".into())
+        );
+        // Space closes outright (Esc and Enter do too — spec).
+        app.on_key(key(KeyCode::Char(' ')));
+        assert!(app.background_view.is_none());
+        app.open_background_view();
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Enter));
+        assert!(app.background_view.is_none(), "Enter closes the details");
+        // Ctrl+C closes from either page.
+        app.open_background_view();
+        app.on_key(ctrl('c'));
+        assert!(app.background_view.is_none());
+    }
+
+    #[test]
+    fn a_details_view_falls_back_to_the_list_when_its_shell_exits() {
+        let mut app = app_with_shells(&["a", "b"]);
+        app.open_background_view();
+        app.on_key(key(KeyCode::Enter)); // details of bash_1
+        app.bg_exited("bash_1", Some(0), false);
+        assert_eq!(
+            app.background_view,
+            Some(BackgroundView::List { selected: 0 }),
+            "the watched shell exited — back to the (re-clamped) list"
+        );
+        // The last shell exiting leaves the empty-state list open.
+        app.bg_exited("bash_2", Some(0), false);
+        assert!(matches!(
+            app.background_view,
+            Some(BackgroundView::List { .. })
+        ));
+    }
+
+    #[test]
+    fn ctrl_b_moves_only_a_running_command_to_the_background() {
+        let mut app = App::new();
+        assert_eq!(app.on_key(ctrl('b')), Action::None, "idle: nothing to move");
+        // A running model bash call can move.
+        app.begin_stream();
+        app.start_tool("Bash", "ping x.com");
+        assert!(app.can_move_to_background());
+        assert_eq!(app.on_key(ctrl('b')), Action::MoveToBackground);
+        app.end_tool("done", true);
+        // A running non-command tool can't.
+        app.start_tool("Read", "src/main.rs");
+        assert!(!app.can_move_to_background());
+        assert_eq!(app.on_key(ctrl('b')), Action::None);
+    }
+
+    #[test]
+    fn ctrl_b_moves_a_running_shell_turn_too() {
+        let mut app = App::new();
+        app.begin_shell("ping x.com");
+        assert!(app.can_move_to_background());
+        assert_eq!(app.on_key(ctrl('b')), Action::MoveToBackground);
+    }
+
+    #[test]
+    fn background_tool_resolves_the_front_call_as_backgrounded() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Bash", "ping x.com");
+        let tool = app
+            .background_tool("Command running in background with ID: bash_1.")
+            .expect("resolves the running call");
+        assert_eq!(tool.status, ToolStatus::Backgrounded);
+        assert_eq!(
+            tool.output,
+            "Command running in background with ID: bash_1."
+        );
+        assert!(
+            app.current_tool().is_none(),
+            "the live queue is empty again"
+        );
+        assert_eq!(
+            app.history.last(),
+            Some(&HistoryItem::Tool(tool)),
+            "the backgrounded cell is history — it repaints and rides context"
+        );
+    }
+
+    #[test]
+    fn end_turn_snapshots_the_running_shell_count() {
+        let mut app = app_with_shells(&["a", "b", "c"]);
+        app.begin_stream();
+        let summary = app.end_turn(22).expect("a summary");
+        assert_eq!(summary.shells, 3, "Done for 22s · 3 shells still running");
+        // With none running the suffix stays off.
+        let mut idle = App::new();
+        idle.begin_stream();
+        assert_eq!(idle.end_turn(2).unwrap().shells, 0);
+    }
+
+    #[test]
+    fn clear_conversation_wipes_the_background_state() {
+        let mut app = app_with_shells(&["a"]);
+        let completion = app.bg_exited("bash_1", Some(0), false).unwrap();
+        app.bg_started("bash_2", "b", None, false);
+        app.defer_bg_completion(completion);
+        // Run /clear the real way: type it (the palette opens) and Enter.
+        for c in "/clear".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
+        assert!(app.background().is_empty());
+        assert!(app.background_view.is_none());
+        assert!(app.take_pending_bg_completions().is_empty());
+        assert!(!app.background_ever(), "the ↓ gate resets with the slate");
+    }
+
+    #[test]
+    fn set_background_runtime_targets_one_shell() {
+        let mut app = app_with_shells(&["a", "b"]);
+        app.set_background_runtime("bash_2", Duration::from_secs(7));
+        assert_eq!(app.background()[0].runtime, Duration::ZERO);
+        assert_eq!(app.background()[1].runtime, Duration::from_secs(7));
+        app.set_background_runtime("nope", Duration::from_secs(9)); // no panic
+    }
+
+    #[test]
+    fn the_manager_band_owns_every_key_while_open() {
+        let mut app = app_with_shells(&["a"]);
+        app.open_background_view();
+        // Typing does not reach the composer.
+        app.on_key(key(KeyCode::Char('h')));
+        assert!(app.input.is_empty());
+        // Enter does not submit — it navigates to the details page instead.
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::None);
+        assert!(matches!(
+            app.background_view,
+            Some(BackgroundView::Details { .. })
+        ));
     }
 }
