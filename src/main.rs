@@ -134,11 +134,20 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // live here at the boundary (the `set_status_times` pattern); the pure
     // `App` sees only computed runtimes.
     let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel::<BgEvent>();
+    // Claude Code's tasks layout: a stable per-user root, the cwd as one
+    // dashed segment, and a per-session dir —
+    // `{tmp}/inline-tui-{uid}/-home-user-proj/{session}/tasks/{id}.output`
+    // (the pure `background::tasks_dir`; the uid/cwd/session injected here at
+    // the boundary).
+    let cwd = std::env::current_dir().unwrap_or_default();
     let registry = BackgroundRegistry::new(
         bg_tx,
-        std::env::temp_dir()
-            .join(format!("inline-tui-{}", std::process::id()))
-            .join("tasks"),
+        inline_tui::background::tasks_dir(
+            &std::env::temp_dir(),
+            process_uid(),
+            &cwd,
+            &session_id(),
+        ),
     );
     let mut bg_clocks: HashMap<String, Instant> = HashMap::new();
     // The reply backend. The dummy is the default (and the fallback) so the app
@@ -215,9 +224,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     };
     let mut active_model = backend.model_name();
     // Session context for the footer under the box — the backend's model name
-    // and the cwd — formatted here at the boundary (the set_clock pattern: the
-    // pure core never reads the environment). See docs/footer.md.
-    let cwd = std::env::current_dir().unwrap_or_default();
+    // and the cwd (shared with the tasks-dir derivation above) — formatted
+    // here at the boundary (the set_clock pattern: the pure core never reads
+    // the environment). See docs/footer.md.
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let cwd_display = ui::display_cwd(&cwd, home.as_deref());
     // The `~`-relative `.env` path shown in the `/login` provider-step hint, so
@@ -2614,6 +2623,23 @@ fn utc_stamp() -> String {
     chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")
         .to_string()
+}
+
+/// This process's uid — the stable per-user segment of the background tasks
+/// root (Claude Code's `claude-{uid}` pattern, `background::tasks_dir`). Read
+/// from `/proc/self`'s owner: this crate forbids `unsafe`, so no `libc`
+/// getuid. Falls back to 0 where `/proc` is absent (macOS) — `temp_dir()` is
+/// already per-user there.
+#[cfg(unix)]
+fn process_uid() -> u32 {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::metadata("/proc/self").map_or(0, |meta| meta.uid())
+}
+
+/// Non-unix fallback: no uid concept to read — 0 keeps the path shape.
+#[cfg(not(unix))]
+fn process_uid() -> u32 {
+    0
 }
 
 /// A unique-enough session id: nanos since the epoch plus the pid, in hex.

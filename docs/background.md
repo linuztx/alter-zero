@@ -42,6 +42,20 @@ automatically told the result in a new turn.
 `BackgroundRegistry` is a cloneable handle shared by the event loop, the
 executor (`llm::exec`), and the `!` shell runner:
 
+- Task ids are **Claude-Code-style** — a `b` prefix + 8 lowercase base36
+  chars (`bvyo7tkbe`), rolled per launch from a splitmix64-mixed entropy seed
+  (nanos ⊕ pid ⊕ a launch counter — `main.rs::session_id`'s no-`rand`
+  pattern) with a collision re-roll against the running set. The pure
+  `task_id(seed)` pins the format.
+- The interim files live in **Claude Code's tasks layout** — the pure
+  `tasks_dir(temp, uid, cwd, session)`:
+  `{tmp}/inline-tui-{uid}/{cwd, non-alphanumerics dashed}/{session}/tasks/{id}.output`
+  (e.g. `/tmp/inline-tui-0/-home-user-proj/18f…-4e2/tasks/bvyo7tkbe.output`) —
+  a stable per-user root, the project cwd as one dashed segment, and a
+  per-session dir keeping concurrent instances apart. The boundary injects
+  the uid (`main.rs::process_uid` — `/proc/self`'s owner; no `libc` in a
+  `forbid(unsafe)` crate), cwd, and session id.
+
 - `launch(command, description, from_model)` spawns `sh -c` in its own process
   group (the `llm::exec` pattern) and a **monitor thread** that merges
   stdout/stderr in arrival order, streams completed lines as

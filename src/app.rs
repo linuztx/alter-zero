@@ -217,8 +217,8 @@ pub struct BackgroundNotice {
     /// The human description shown in the headline: the model-supplied
     /// `description` argument, falling back to the command line.
     pub description: String,
-    /// The registry task id (`bash_1`, …) — lets the model pair the notice to
-    /// the launch result it received.
+    /// The registry task id (`bvyo7tkbe`, …) — lets the model pair the notice
+    /// to the launch result it received.
     pub id: String,
     /// The exit code, or `None` when the process died to a signal.
     pub code: Option<i32>,
@@ -626,7 +626,7 @@ pub enum QueuedTurn {
 /// See `docs/background.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BackgroundShell {
-    /// The registry task id (`bash_1`, …).
+    /// The registry task id (`bvyo7tkbe`, …).
     pub id: String,
     /// The command line, shown in the ↓ manager's list and details view.
     pub command: String,

@@ -57,10 +57,74 @@ pub enum BgEvent {
 /// A successfully launched background task, for the model-facing tool result.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LaunchedTask {
-    /// The task id (`bash_1`, …) the model uses to refer to it.
+    /// The task id (`bvyo7tkbe`, …) the model uses to refer to it.
     pub id: String,
     /// Where the interim output streams — the model can `read` it mid-run.
     pub output_path: PathBuf,
+}
+
+/// The base36 alphabet task ids are drawn from.
+const TASK_ID_ALPHABET: &[u8; 36] = b"0123456789abcdefghijklmnopqrstuvwxyz";
+
+/// A Claude-Code-style task id — a `b` prefix + 8 lowercase base36 chars
+/// (`bvyo7tkbe`). Deterministic in `seed` (pure, so the format is testable);
+/// the registry feeds it fresh entropy per launch and re-rolls the rare
+/// collision. See `docs/background.md`.
+fn task_id(seed: u64) -> String {
+    let mut mixed = splitmix64(seed);
+    let mut id = String::with_capacity(9);
+    id.push('b');
+    for _ in 0..8 {
+        id.push(TASK_ID_ALPHABET[(mixed % 36) as usize] as char);
+        mixed /= 36;
+    }
+    id
+}
+
+/// Fresh entropy for one id roll: wall-clock nanos ⊕ pid ⊕ the launch
+/// counter — the `session_id` pattern (unique-enough, no rand dependency);
+/// the counter keeps two rolls inside one clock tick apart, and
+/// [`splitmix64`] makes them look unrelated.
+fn entropy_seed(counter: u64) -> u64 {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    let folded = (nanos as u64) ^ ((nanos >> 64) as u64);
+    folded ^ (u64::from(std::process::id()) << 32) ^ counter
+}
+
+/// SplitMix64 — the classic one-shot mixer: consecutive seeds (the launch
+/// counter) come out looking unrelated, so ids never read as a sequence.
+fn splitmix64(seed: u64) -> u64 {
+    let mut z = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// The tasks directory, in Claude Code's layout:
+/// `{temp}/inline-tui-{uid}/{cwd, non-alphanumerics dashed}/{session}/tasks`
+/// — a stable per-user root (Claude Code's `claude-{uid}`), the project's
+/// cwd as one dashed segment (`/home/user/proj` → `-home-user-proj`), and a
+/// per-session dir keeping concurrent instances off each other's files. Pure
+/// — the boundary injects the temp dir, uid, cwd, and session id (the
+/// `set_session_info` pattern). See `docs/background.md`.
+#[must_use]
+pub fn tasks_dir(
+    temp: &std::path::Path,
+    uid: u32,
+    cwd: &std::path::Path,
+    session: &str,
+) -> PathBuf {
+    let dashed: String = cwd
+        .to_string_lossy()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    temp.join(format!("inline-tui-{uid}"))
+        .join(dashed)
+        .join(session)
+        .join("tasks")
 }
 
 /// How often a monitor thread wakes to poll its child / kill flag when no
@@ -88,6 +152,8 @@ struct Task {
 }
 
 struct Inner {
+    /// The launch counter — mixed into each id roll's entropy seed so two
+    /// launches inside one clock tick still differ.
     next_id: u64,
     tasks: HashMap<String, Task>,
     /// The Ctrl+B latch: the loop raises it while a foreground command runs;
@@ -214,8 +280,15 @@ impl BackgroundRegistry {
         let kill = CancelToken::new();
         let (id, output_path) = {
             let mut inner = self.inner.lock().expect("registry lock");
-            inner.next_id += 1;
-            let id = format!("bash_{}", inner.next_id);
+            // Roll a fresh Claude-Code-style id, re-rolling the (vanishingly
+            // rare) collision with a task that is still running.
+            let id = loop {
+                inner.next_id += 1;
+                let candidate = task_id(entropy_seed(inner.next_id));
+                if !inner.tasks.contains_key(&candidate) {
+                    break candidate;
+                }
+            };
             let path = inner.dir.join(format!("{id}.output"));
             inner.tasks.insert(
                 id.clone(),
@@ -442,8 +515,9 @@ mod tests {
         BackgroundRegistry,
         tokio::sync::mpsc::UnboundedReceiver<BgEvent>,
     ) {
-        // A unique dir per test: the suite runs in parallel and every fresh
-        // registry starts its ids at `bash_1`, so a shared dir would collide.
+        // A unique dir per test: the suite runs in parallel, so give every
+        // registry its own tee-file dir (ids are collision-rolled per
+        // registry, not globally).
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -464,18 +538,82 @@ mod tests {
     }
 
     #[test]
+    fn task_id_is_a_deterministic_b_plus_eight_base36() {
+        // Claude Code's id shape (`bvyo7tkbe`): a `b` prefix + 8 lowercase
+        // base36 chars. Pure in the seed — the registry feeds it fresh
+        // entropy per launch (docs/background.md).
+        assert_eq!(task_id(42), task_id(42), "pure in the seed");
+        assert_ne!(task_id(1), task_id(2), "seeds differentiate");
+        for seed in 0..64 {
+            let id = task_id(seed);
+            assert_eq!(id.len(), 9, "b + 8 chars: {id}");
+            assert!(id.starts_with('b'), "the b prefix: {id}");
+            assert!(
+                id[1..]
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()),
+                "a base36 body: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn tasks_dir_mirrors_claude_codes_layout() {
+        // `{temp}/inline-tui-{uid}/{sanitized cwd}/{session}/tasks` — the
+        // shape of Claude Code's
+        // `/tmp/claude-0/-home-user-proj/{session}/tasks/{id}.output`: a
+        // stable per-user root, the cwd with every non-alphanumeric char
+        // dashed, and a per-session dir isolating concurrent instances.
+        let dir = tasks_dir(
+            std::path::Path::new("/tmp"),
+            0,
+            std::path::Path::new("/home/user/inline-tui"),
+            "1f0a2b3c-4d5e",
+        );
+        assert_eq!(
+            dir,
+            PathBuf::from("/tmp/inline-tui-0/-home-user-inline-tui/1f0a2b3c-4d5e/tasks")
+        );
+    }
+
+    #[test]
+    fn launched_ids_are_claude_code_style_and_unique() {
+        // A launch mints a `bvyo7tkbe`-style id (never a counter like the old
+        // `bash_1`), a second launch never repeats it, and the interim file is
+        // named after it (docs/background.md).
+        let (reg, _rx) = registry();
+        let a = reg.launch("true", None, false).expect("launches");
+        let b = reg.launch("true", None, false).expect("launches");
+        assert_ne!(a.id, b.id, "two launches never share an id");
+        for id in [&a.id, &b.id] {
+            assert_eq!(id.len(), 9, "b + 8 chars: {id}");
+            assert!(id.starts_with('b'), "the b prefix: {id}");
+            assert!(
+                id[1..]
+                    .chars()
+                    .all(|c| c.is_ascii_digit() || c.is_ascii_lowercase()),
+                "a base36 body: {id}"
+            );
+        }
+        assert!(
+            a.output_path.ends_with(format!("{}.output", a.id)),
+            "the interim file is named after the id: {}",
+            a.output_path.display()
+        );
+    }
+
+    #[test]
     fn launch_streams_started_output_and_a_clean_exit() {
         let (reg, mut rx) = registry();
         let task = reg
             .launch("printf 'a\\nb\\n'", Some("print two lines".into()), true)
             .expect("launches");
-        assert_eq!(task.id, "bash_1");
 
         let started = next(&mut rx);
         assert_eq!(
             started,
             BgEvent::Started {
-                id: "bash_1".into(),
+                id: task.id.clone(),
                 command: "printf 'a\\nb\\n'".into(),
                 description: Some("print two lines".into()),
                 from_model: true,
@@ -486,11 +624,11 @@ mod tests {
         loop {
             match next(&mut rx) {
                 BgEvent::Output { id, chunk } => {
-                    assert_eq!(id, "bash_1");
+                    assert_eq!(id, task.id);
                     output.push_str(&chunk);
                 }
                 BgEvent::Exited { id, code, killed } => {
-                    assert_eq!(id, "bash_1");
+                    assert_eq!(id, task.id);
                     assert_eq!(code, Some(0));
                     assert!(!killed);
                     break;

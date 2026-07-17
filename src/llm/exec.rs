@@ -814,9 +814,16 @@ mod tests {
             "the call returns before the command finishes"
         );
         assert!(out.ok);
-        assert_eq!(out.background.as_deref(), Some("bash_1"));
+        let task_id = out
+            .background
+            .clone()
+            .expect("the outcome carries the task id");
         assert!(
-            out.output.contains("ID: bash_1") && out.output.contains(".output"),
+            task_id.starts_with('b') && task_id.len() == 9,
+            "a claude-code-style id: {task_id}"
+        );
+        assert!(
+            out.output.contains(&format!("ID: {task_id}")) && out.output.contains(".output"),
             "the model gets the task id + interim file: {}",
             out.output
         );
@@ -836,7 +843,7 @@ mod tests {
                     description,
                     ..
                 }) => {
-                    assert_eq!(id, "bash_1");
+                    assert_eq!(id, task_id);
                     assert!(from_model, "an executor launch is model-launched");
                     assert_eq!(description.as_deref(), Some("nap"));
                     saw_started = true;
@@ -893,7 +900,14 @@ mod tests {
         );
         raiser.join().unwrap();
         assert!(out.ok, "got {}", out.output);
-        assert_eq!(out.background.as_deref(), Some("bash_1"));
+        let task_id = out
+            .background
+            .clone()
+            .expect("the outcome carries the task id");
+        assert!(
+            task_id.starts_with('b') && task_id.len() == 9,
+            "a claude-code-style id: {task_id}"
+        );
         // The model asked for a FOREGROUND run — the result must say the
         // *user* moved it (not read like a run_in_background acknowledgement),
         // or the model keeps waiting for the full output and polls the interim
@@ -905,7 +919,7 @@ mod tests {
             out.output
         );
         assert!(
-            out.output.contains("ID: bash_1") && out.output.contains(".output"),
+            out.output.contains(&format!("ID: {task_id}")) && out.output.contains(".output"),
             "the task id + interim file still ride the handoff text: {}",
             out.output
         );
