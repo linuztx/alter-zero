@@ -220,6 +220,12 @@ const TOOL_BACKGROUNDED: &str = "Running in the background (↓ to manage)";
 /// The dim live-only hint under a running command's preview cell: Ctrl+B
 /// moves it to the background. Never committed to scrollback.
 const TOOL_BACKGROUND_HINT: &str = "(ctrl+b to run in background)";
+/// How long a command must have been running before its preview shows the
+/// `(ctrl+b to run in background)` hint — Claude-Code-style, so a command that
+/// finishes right away never flashes it (Ctrl+B itself still works the whole
+/// time; only the discoverability hint waits). Gated on the boundary-injected
+/// [`App::command_elapsed`]. See `docs/background.md`.
+const TOOL_BACKGROUND_HINT_DELAY: Duration = Duration::from_secs(3);
 /// The ↓ manager's list title.
 const BG_TITLE: &str = "Background";
 /// The details page's title.
@@ -2498,10 +2504,20 @@ fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             lines.extend(tool_lines(tool, width));
         }
         // A running command (a model `bash` call or the `!` shell) can be
-        // moved to the background with Ctrl+B — hint it under the live cell.
-        // Live-only by construction: this renderer never feeds scrollback
-        // commits, so the hint is never committed (docs/background.md).
-        if tool.status == ToolStatus::Running && (tool.shell || is_command_tool(tool)) {
+        // moved to the background with Ctrl+B — hint it under the live cell,
+        // but only once the command has been running a few seconds
+        // (`TOOL_BACKGROUND_HINT_DELAY`), Claude-Code-style: a command that
+        // finishes right away never flashes the hint (Ctrl+B still works the
+        // whole time — only the hint waits). The command's own elapsed is
+        // boundary-injected each frame (`App::command_elapsed`). Live-only by
+        // construction: this renderer never feeds scrollback commits, so the
+        // hint is never committed (docs/background.md).
+        if tool.status == ToolStatus::Running
+            && (tool.shell || is_command_tool(tool))
+            && app
+                .command_elapsed()
+                .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
+        {
             lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));
         }
     }
@@ -9792,6 +9808,8 @@ mod tests {
         let mut app = App::new();
         app.begin_shell("sleep 30");
         app.set_status_times(Duration::from_secs(3), None);
+        // Past the hint delay so the Ctrl+B hint row shows (docs/background.md).
+        app.set_command_elapsed(Some(Duration::from_secs(3)));
         let mut buf = buffer(40, 6); // preview (2) + gap + (two rules + one input)
         render_live(buf.area, &mut buf, &app);
 
@@ -10856,6 +10874,8 @@ mod tests {
             "a streaming reply previews one row"
         );
         app.start_tool("Bash", "sleep 1");
+        // Past the hint delay so the Ctrl+B hint row is part of the preview.
+        app.set_command_elapsed(Some(Duration::from_secs(3)));
         assert_eq!(
             preview_rows(&app, 40),
             3,
@@ -10882,6 +10902,8 @@ mod tests {
                 .collect();
         app.start_tool_batch(&batch);
         app.start_tool("Bash", "ping google.com"); // the front call → Running
+        // Past the hint delay so the running cell's Ctrl+B hint row shows.
+        app.set_command_elapsed(Some(Duration::from_secs(3)));
         // Three 2-row cells (header + peek) with two blank separators, plus
         // the running cell's Ctrl+B hint row = 9 rows.
         assert_eq!(
@@ -13567,10 +13589,12 @@ mod tests {
     #[test]
     fn the_running_preview_hints_ctrl_b_but_the_committed_cell_does_not() {
         // The hint is live-only: the preview renderer appends it under the
-        // running cell; the committed `tool_lines` never carry it.
+        // running cell; the committed `tool_lines` never carry it. The hint
+        // waits a few seconds (see below), so inject an elapsed past the delay.
         let mut app = App::new();
         app.begin_stream();
         app.start_tool("Bash", "ping google.com -c 50");
+        app.set_command_elapsed(Some(Duration::from_secs(5)));
         let preview: Vec<String> = preview_tool_lines(&app, 60).iter().map(plain).collect();
         assert!(
             preview
@@ -13589,6 +13613,61 @@ mod tests {
     }
 
     #[test]
+    fn the_ctrl_b_hint_waits_a_few_seconds_before_showing() {
+        // Like Claude Code: a command that finishes right away never shows the
+        // Ctrl+B hint (it isn't needed) — the hint appears only once the
+        // command has been running a few seconds. The boundary injects the
+        // running command's own elapsed each frame (`set_command_elapsed`);
+        // the preview gates the hint on it (docs/background.md).
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Bash", "ping google.com -c 50");
+        let shows_hint = |app: &App| {
+            preview_tool_lines(app, 60)
+                .iter()
+                .map(plain)
+                .any(|l| l.trim() == TOOL_BACKGROUND_HINT)
+        };
+
+        // Freshly started — no elapsed injected yet: no hint.
+        assert!(!shows_hint(&app), "no hint the instant the command starts");
+        // Under the delay: still no hint (a fast command stays clean).
+        app.set_command_elapsed(Some(TOOL_BACKGROUND_HINT_DELAY - Duration::from_millis(1)));
+        assert!(
+            !shows_hint(&app),
+            "no hint before the command has run a few seconds"
+        );
+        // At/past the delay: the hint appears.
+        app.set_command_elapsed(Some(TOOL_BACKGROUND_HINT_DELAY));
+        assert!(
+            shows_hint(&app),
+            "the hint shows once the command has run a few seconds"
+        );
+    }
+
+    #[test]
+    fn a_running_shell_only_hints_ctrl_b_after_the_delay() {
+        // The `!` shell run is the same: its own elapsed rides the status
+        // (turn == command for a shell), so a quick `!` command never flashes
+        // the hint, and a long one shows it after the delay.
+        let mut app = App::new();
+        app.begin_shell("sleep 30");
+        let shows_hint = |app: &App| {
+            preview_tool_lines(app, 60)
+                .iter()
+                .map(plain)
+                .any(|l| l.trim() == TOOL_BACKGROUND_HINT)
+        };
+        app.set_command_elapsed(Some(Duration::from_secs(1)));
+        assert!(!shows_hint(&app), "a fast `!` command shows no hint");
+        app.set_command_elapsed(Some(Duration::from_secs(4)));
+        assert!(
+            shows_hint(&app),
+            "a long `!` command hints Ctrl+B after the delay"
+        );
+    }
+
+    #[test]
     fn a_waiting_batch_sibling_gets_no_ctrl_b_hint() {
         let mut app = App::new();
         app.begin_stream();
@@ -13603,6 +13682,9 @@ mod tests {
             },
         ]);
         app.start_tool("Bash", "a");
+        // Past the hint delay so the running call shows its hint — the point
+        // here is that the `⎿ Waiting…` sibling still gets none.
+        app.set_command_elapsed(Some(Duration::from_secs(5)));
         let preview: Vec<String> = preview_tool_lines(&app, 60).iter().map(plain).collect();
         let hints = preview.iter().filter(|l| l.contains("ctrl+b")).count();
         assert_eq!(hints, 1, "only the running call hints: {preview:?}");

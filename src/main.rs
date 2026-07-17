@@ -1381,6 +1381,12 @@ fn spawn_model_fetch(
 struct StatusClocks {
     turn_start: Option<Instant>,
     thinking_start: Option<Instant>,
+    /// When the **current running command** (a model `bash` call, set at its
+    /// `ToolStart`; or a `!` shell run, set in `run_shell`) began — cleared
+    /// when it resolves (`ToolEnd`/`ToolBackgrounded`) and at each turn start.
+    /// Drives the delayed `(ctrl+b to run in background)` hint via
+    /// `App::set_command_elapsed` (docs/background.md).
+    command_start: Option<Instant>,
 }
 
 /// Stop tracking the in-flight turn **without blocking the event loop**, and
@@ -1469,6 +1475,9 @@ fn start_turn(
     // Start the turn clock; the draw branch keeps the status animated from here.
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
+    // No command runs yet — a model `bash` call starts its own hint clock at
+    // its ToolStart (docs/background.md).
+    clocks.command_start = None;
     let cancel = CancelToken::new();
     // The whole conversation — the just-recorded user message included — rides
     // the request so a real model keeps its context across turns; the image
@@ -1603,6 +1612,9 @@ fn run_shell(
     render.reset();
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
+    // The `!` shell run IS the command (no separate ToolStart), so start its
+    // Ctrl+B-hint clock here — a quick `!` command never flashes the hint.
+    clocks.command_start = Some(Instant::now());
     let cancel = CancelToken::new();
     let handle = spawn_shell_command(command, tx.clone(), cancel.clone(), registry.clone());
     Ok((cancel, handle))
@@ -1691,6 +1703,8 @@ fn start_background_turn(
     render.reset();
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
+    // A follow-up turn about background completions — text, no command yet.
+    clocks.command_start = None;
     let cancel = CancelToken::new();
     let context = context::context_messages(&app.history);
     let handle = backend.spawn(prompt, Vec::new(), context, tx.clone(), cancel.clone());
@@ -2021,6 +2035,10 @@ fn on_stream_event(
             // held completions commit ahead of the tool (docs/background.md).
             settle_bg_completions(term, app);
             app.start_tool(&name, &args);
+            // Start this command's own clock — the delayed Ctrl+B hint waits
+            // on it, so a fast command never flashes the hint (a model tool
+            // that starts deep into a turn can't inherit the turn's elapsed).
+            clocks.command_start = Some(Instant::now());
             Ok(false)
         }
         StreamEvent::ToolEnd {
@@ -2055,6 +2073,9 @@ fn on_stream_event(
             // commit right after its cell — the user's example order — not
             // at the turn's distant end (docs/background.md).
             settle_bg_completions(term, app);
+            // The command resolved — stop its Ctrl+B-hint clock (the turn may
+            // continue with more text/tools).
+            clocks.command_start = None;
             Ok(false)
         }
         StreamEvent::ToolBackgrounded { id: _, output } => {
@@ -2073,6 +2094,8 @@ fn on_stream_event(
             // A resolution boundary like ToolEnd — completions held during
             // the launch settle here (docs/background.md).
             settle_bg_completions(term, app);
+            // The command moved to the background — stop its hint clock.
+            clocks.command_start = None;
             Ok(false)
         }
         StreamEvent::ToolOutput(chunk) => {
@@ -2237,6 +2260,9 @@ fn update_status_times(app: &mut App, clocks: &StatusClocks) {
         .map_or(Duration::ZERO, |start| start.elapsed());
     let thinking = clocks.thinking_start.map(|start| start.elapsed());
     app.set_status_times(elapsed, thinking);
+    // The current running command's own elapsed (None when none is running),
+    // gating the delayed Ctrl+B hint (docs/background.md).
+    app.set_command_elapsed(clocks.command_start.map(|start| start.elapsed()));
 }
 
 /// Local wall-clock stamp for recorded items: 12-hour time, no seconds, e.g.

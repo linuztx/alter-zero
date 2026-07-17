@@ -1748,6 +1748,14 @@ pub struct App {
     /// and (for model-launched shells with nothing queued) the automatic
     /// follow-up turn dispatched. See `docs/background.md`.
     pending_bg: VecDeque<BgCompletion>,
+    /// How long the **current running command** (a model `bash` call or a `!`
+    /// shell run) has been executing — boundary-injected each frame
+    /// ([`set_command_elapsed`](App::set_command_elapsed), the
+    /// [`set_status_times`](App::set_status_times) pattern; the clock lives in
+    /// `main.rs`). `None` when no command is running. Gates the delayed
+    /// `(ctrl+b to run in background)` preview hint so a fast command never
+    /// flashes it (`docs/background.md`).
+    command_elapsed: Option<Duration>,
 }
 
 impl App {
@@ -4534,6 +4542,23 @@ impl App {
             status.elapsed = elapsed;
             status.thinking = thinking;
         }
+    }
+
+    /// Inject the current running command's elapsed each frame (the
+    /// [`set_status_times`](App::set_status_times) pattern — the clock lives at
+    /// the boundary). `None` when no command is running. Read by the preview to
+    /// delay the `(ctrl+b to run in background)` hint until a command has run a
+    /// few seconds, so a fast command never flashes it (`docs/background.md`).
+    pub fn set_command_elapsed(&mut self, elapsed: Option<Duration>) {
+        self.command_elapsed = elapsed;
+    }
+
+    /// How long the current running command has executed, or `None` when no
+    /// command is running (the boundary hasn't injected one). See
+    /// [`set_command_elapsed`](App::set_command_elapsed).
+    #[must_use]
+    pub fn command_elapsed(&self) -> Option<Duration> {
+        self.command_elapsed
     }
 
     /// Inject the streaming strip preview's row count before a draw (the

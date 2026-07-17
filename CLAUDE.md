@@ -84,7 +84,11 @@ tails its output — the last lines + a `+N lines (Ns)` footer — via a
 `run_in_background` arg — the call resolves at once with a task id while a
 `BackgroundRegistry` process streams on its own channel; **Ctrl+B** moves a
 running model-`bash`/`!` command to the background mid-run (the live cell hints
-it); the cell resolves `⎿ Running in the background (↓ to manage)`, the footer
+it with a dim `(ctrl+b to run in background)` row that waits a few seconds —
+`ui::TOOL_BACKGROUND_HINT_DELAY`, gated on the command's own boundary-injected
+`App::command_elapsed` — so a fast command never flashes it, Claude-Code-style;
+Ctrl+B itself works the whole time); the cell resolves `⎿ Running in the
+background (↓ to manage)`, the footer
 counts `· N shells`, **↓ from an empty composer opens the inline manager band**
 (list → per-shell details with a live-tailing output box → `x` stops), and a
 completion is **immediate feedback**: its model-facing note posts onto the

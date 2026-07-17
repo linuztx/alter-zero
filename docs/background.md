@@ -173,7 +173,18 @@ picker (never an alternate-screen overlay): `Option<BackgroundView>` with
 
 The running `bash` cell's live preview appends a dim
 `(ctrl+b to run in background)` row (live-only — never committed); the
-running `!` shell cell gets the same row. Ctrl+B returns
+running `!` shell cell gets the same row. The hint is **delayed**,
+Claude-Code-style: it appears only once the command has been running for
+`ui::TOOL_BACKGROUND_HINT_DELAY` (3s), so a command that finishes right away
+never flashes it (it isn't needed for a fast command). The gate is the
+command's **own** elapsed — `App::command_elapsed`, boundary-injected each
+frame from `StatusClocks::command_start` (the `set_status_times` pattern): a
+model `bash` call's clock starts at its `ToolStart`, a `!` shell run's in
+`run_shell`, cleared at the command's resolution and each turn start. Turn
+elapsed won't do — a model tool can start deep into a turn. **Ctrl+B itself
+works the whole time** (`can_move_to_background` is ungated); only the
+discoverability hint waits, so pressing it on a still-fresh command still
+backgrounds it. Ctrl+B returns
 `Action::MoveToBackground` when a running command is on screen; the loop sets
 the registry flag; the runner (executor `run_bash` or `spawn_shell_command`)
 consumes it mid-poll, `adopt`s the child, and resolves the call as
