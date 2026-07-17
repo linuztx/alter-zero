@@ -252,3 +252,69 @@ fn live_vision_survives_a_large_image_upload() {
         "the model should see the red centre square, got: {reply:?}"
     );
 }
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_run_in_background_resolves_and_completes() {
+    // The full production background path (docs/background.md): the model is
+    // told to run a command with run_in_background — the agent loop resolves
+    // the call via ToolBackgrounded (the launch text as the tool result, the
+    // turn finishing while the process runs), and the shared registry reports
+    // Started → Output → Exited on its own channel.
+    let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = std::env::temp_dir().join(format!("inline-tui-live-bg-{}", std::process::id()));
+    let registry = inline_tui::background::BackgroundRegistry::new(bg_tx, dir);
+    let backend = backend().with_background(registry);
+
+    let prompt = "Use the bash tool exactly once to run this command in the background \
+                  (set run_in_background to true): sh -c 'echo live_bg_marker; sleep 1; echo done'. \
+                  After the tool result arrives, reply with just the task ID it reported.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+
+    let mut backgrounded: Option<(String, String)> = None;
+    let mut reply = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolBackgrounded { id, output } => backgrounded = Some((id, output)),
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("model replied: {reply:?}");
+
+    let (id, output) = backgrounded.expect("the call resolved as backgrounded");
+    assert!(
+        output.contains(&format!("ID: {id}")),
+        "the model-facing launch text names the task: {output}"
+    );
+    // The registry reported the whole lifecycle on its own channel.
+    let mut streamed = String::new();
+    let mut exited = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        match bg_rx.try_recv() {
+            Ok(inline_tui::background::BgEvent::Started { id: started, .. }) => {
+                assert_eq!(started, id);
+            }
+            Ok(inline_tui::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
+            Ok(inline_tui::background::BgEvent::Exited { code, killed, .. }) => {
+                assert_eq!(code, Some(0));
+                assert!(!killed);
+                exited = true;
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+    assert!(exited, "the background command completed");
+    assert!(
+        streamed.contains("live_bg_marker"),
+        "the background output streamed: {streamed:?}"
+    );
+}
