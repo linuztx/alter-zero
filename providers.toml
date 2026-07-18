@@ -26,9 +26,12 @@ api_model_base = "https://api.venice.ai/api/v1"
 [providers.a0_venice.kwargs]
 api_base = "https://api.agent-zero.ai/venice/v1"
 
+# No static `disable_thinking` here: the Shift+Tab thinking mode drives it per
+# request (docs/reasoning.md). The table itself must stay — its presence is how
+# the payload builder knows this is a Venice-family provider whose
+# `disable_thinking` toggle must track the mode.
 [providers.a0_venice.kwargs.venice_parameters]
 include_venice_system_prompt = false
-disable_thinking = true
 
 [providers.openrouter]
 name = "OpenRouter"

@@ -12,7 +12,7 @@ use std::time::Duration;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::file_search::{FileMatch, at_token};
-use crate::llm::ModelEntry;
+use crate::llm::{ModelEntry, ReasoningSupport, ThinkingMode};
 use crate::session::SessionSummary;
 use crate::stream::ToolCallSummary;
 use crate::textarea::TextArea;
@@ -511,7 +511,21 @@ pub enum Action {
     /// Enter in the model picker: switch the active backend to this
     /// provider/model. The loop rebuilds the backend, updates the footer
     /// ([`App::set_session_info`]), and collapses the picker. See `docs/llm.md`.
-    SelectModel { provider: String, id: String },
+    /// `reasoning` is the picked entry's parsed thinking capability (from the
+    /// same `/v1/models` fetch that listed it), so a successful switch seeds
+    /// the Shift+Tab cycle without refetching — `None` for a model with no
+    /// reasoning. See `docs/reasoning.md`.
+    SelectModel {
+        provider: String,
+        id: String,
+        reasoning: Option<ReasoningSupport>,
+    },
+    /// Shift+Tab cycled the thinking mode ([`App::thinking`] already advanced
+    /// to the carried mode). The loop rebinds the *next* turn's backend to it,
+    /// persists the choice, and presents the `Thinking: {mode}` toast (arming
+    /// its expiry — why this isn't a direct `show_toast`). See
+    /// `docs/reasoning.md`.
+    SetThinking(ThinkingMode),
     /// `/login` from an idle composer: open the inline API-key onboarding flow.
     /// The *loop* builds the provider choices (which need boundary key
     /// resolution to mark the already-configured ones) and hands them to
@@ -1460,6 +1474,19 @@ pub enum SearchState {
     NoMatch,
 }
 
+/// The active model's reasoning state: what the `/v1/models` record said it
+/// supports and the mode the user has cycled to (Shift+Tab). Lives on
+/// [`App::thinking`]; the footer shows `mode.label()` beside the model name
+/// and the boundary threads the mode into each request. See
+/// `docs/reasoning.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThinkingState {
+    /// The capability parsed from the provider's model record.
+    pub support: ReasoningSupport,
+    /// The currently selected mode (defaults to medium where offered).
+    pub mode: ThinkingMode,
+}
+
 /// The session context shown in the footer under the input box: the backend's
 /// model name and the (display-ready, home-relativized) working directory.
 /// Plain strings — `main.rs` formats them at the I/O boundary
@@ -1655,6 +1682,15 @@ pub struct App {
     /// ([`App::set_session_info`]). `None` — the unit-test default — means no
     /// footer row. See `docs/footer.md`.
     pub session: Option<SessionInfo>,
+    /// The active model's reasoning capability and chosen thinking mode —
+    /// `None` when the model doesn't support reasoning (or support is
+    /// unknown, e.g. the dummy backend). Injected at the boundary
+    /// ([`App::set_thinking`], the [`set_session_info`] pattern), cycled by
+    /// Shift+Tab, and shown beside the model name in the footer. See
+    /// `docs/reasoning.md`.
+    ///
+    /// [`set_session_info`]: App::set_session_info
+    pub thinking: Option<ThinkingState>,
     /// Real text behind each large-paste placeholder currently in the composer,
     /// as `(placeholder, real_text)` pairs in insertion order (codex's
     /// `pending_pastes`). A paste over [`crate::paste::LARGE_PASTE_CHAR_THRESHOLD`]
@@ -1804,6 +1840,33 @@ impl App {
             model: model.into(),
             cwd: cwd.into(),
         });
+    }
+
+    /// Inject the active model's reasoning capability + mode (a `/model`
+    /// switch, the startup seed, or the boundary's support probe) — `None`
+    /// for a model with no reasoning, which also blanks the footer's mode and
+    /// makes Shift+Tab explain instead of cycle. See `docs/reasoning.md`.
+    pub fn set_thinking(&mut self, thinking: Option<(ReasoningSupport, ThinkingMode)>) {
+        self.thinking = thinking.map(|(support, mode)| ThinkingState { support, mode });
+    }
+
+    /// Shift+Tab: advance the thinking mode through the model's cycle and
+    /// hand the loop the new mode ([`Action::SetThinking`]) — or, on a model
+    /// with no reasoning, an explanatory transient toast.
+    fn cycle_thinking(&mut self) -> Action {
+        match self.thinking.as_mut() {
+            Some(state) => {
+                state.mode = state.support.next_mode(state.mode);
+                Action::SetThinking(state.mode)
+            }
+            None => {
+                let model = self
+                    .session
+                    .as_ref()
+                    .map_or("This model", |s| s.model.as_str());
+                Action::Toast(format!("{model} does not support thinking"))
+            }
+        }
     }
 
     /// Raise a transient [`Toast`] above the box (replacing any current one). The
@@ -2239,6 +2302,14 @@ impl App {
                 self.move_file_selection(1);
                 Action::None
             }
+            // Shift+Tab cycles the thinking mode (docs/reasoning.md). Legacy
+            // terminals report it as BackTab (`ESC[Z`), the kitty protocol can
+            // report Tab+SHIFT — both bind (the Shift+Enter pattern), and the
+            // Tab+SHIFT arm sits before every plain-Tab arm so a shifted Tab
+            // never queues or completes. Like /model, cycling never touches a
+            // running turn — the mode rides the *next* request.
+            KeyCode::BackTab => self.cycle_thinking(),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.cycle_thinking(),
             KeyCode::Tab if menu_open => self.run_selected_command(),
             // Tab/Enter accept the highlighted file when the picker is open and
             // a match is selected (codex's accept) — replacing the `@token` with
@@ -3517,6 +3588,7 @@ impl App {
                     let action = Action::SelectModel {
                         provider: model.provider.clone(),
                         id: model.id.clone(),
+                        reasoning: model.reasoning.clone(),
                     };
                     self.close_model_picker();
                     return action;
@@ -9900,6 +9972,7 @@ mod tests {
             id: id.into(),
             provider: provider.into(),
             display_name: name.into(),
+            reasoning: None,
         }
     }
 
@@ -9931,6 +10004,168 @@ mod tests {
                 "MoonshotAI: Kimi K2.6",
             ),
         ]
+    }
+
+    // ===== Shift+Tab thinking mode (docs/reasoning.md) =====
+
+    use crate::llm::ReasoningEffort;
+
+    /// The common support shape: the low/medium/high ladder, disableable.
+    fn trio_support() -> ReasoningSupport {
+        ReasoningSupport {
+            efforts: vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+            ],
+            can_disable: true,
+            default_effort: None,
+        }
+    }
+
+    fn backtab() -> KeyEvent {
+        key(KeyCode::BackTab)
+    }
+
+    #[test]
+    fn set_thinking_seeds_the_state() {
+        let mut app = App::new();
+        assert!(app.thinking.is_none(), "unknown/unsupported by default");
+        app.set_thinking(Some((
+            trio_support(),
+            ThinkingMode::Effort(ReasoningEffort::Medium),
+        )));
+        let state = app.thinking.as_ref().expect("seeded");
+        assert_eq!(state.mode, ThinkingMode::Effort(ReasoningEffort::Medium));
+        assert_eq!(state.support, trio_support());
+        app.set_thinking(None);
+        assert!(
+            app.thinking.is_none(),
+            "a switch to a non-reasoner clears it"
+        );
+    }
+
+    #[test]
+    fn backtab_cycles_the_thinking_mode() {
+        let mut app = App::new();
+        app.set_thinking(Some((
+            trio_support(),
+            ThinkingMode::Effort(ReasoningEffort::Medium),
+        )));
+        assert_eq!(
+            app.on_key(backtab()),
+            Action::SetThinking(ThinkingMode::Effort(ReasoningEffort::High)),
+            "medium steps to high"
+        );
+        assert_eq!(
+            app.thinking.as_ref().unwrap().mode,
+            ThinkingMode::Effort(ReasoningEffort::High),
+            "the state advanced too"
+        );
+        assert_eq!(
+            app.on_key(backtab()),
+            Action::SetThinking(ThinkingMode::Off),
+            "high wraps to off"
+        );
+        assert_eq!(
+            app.on_key(backtab()),
+            Action::SetThinking(ThinkingMode::Effort(ReasoningEffort::Low)),
+            "off steps to low"
+        );
+    }
+
+    #[test]
+    fn shift_tab_reported_as_tab_plus_shift_also_cycles() {
+        // Terminals differ: legacy sends BackTab (ESC[Z), the kitty protocol
+        // can report Tab+SHIFT — both must cycle (the shift-enter pattern).
+        let mut app = App::new();
+        app.set_thinking(Some((
+            trio_support(),
+            ThinkingMode::Effort(ReasoningEffort::Low),
+        )));
+        let shift_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
+        assert_eq!(
+            app.on_key(shift_tab),
+            Action::SetThinking(ThinkingMode::Effort(ReasoningEffort::Medium))
+        );
+    }
+
+    #[test]
+    fn backtab_keeps_the_draft_intact() {
+        let mut app = App::new();
+        app.set_thinking(Some((trio_support(), ThinkingMode::Off)));
+        type_chars(&mut app, "keep me");
+        app.on_key(backtab());
+        assert_eq!(app.input.text(), "keep me");
+    }
+
+    #[test]
+    fn backtab_without_support_raises_an_info_toast() {
+        // A model with no reasoning (or the dummy backend): Shift+Tab explains
+        // instead of dying silently. The *loop* presents the toast (arming its
+        // expiry), so this is an Action, not a direct show_toast.
+        let mut app = App::new();
+        app.set_session_info("dummy_model_name", "~/repo");
+        assert_eq!(
+            app.on_key(backtab()),
+            Action::Toast("dummy_model_name does not support thinking".into())
+        );
+        assert!(app.thinking.is_none());
+    }
+
+    #[test]
+    fn backtab_mid_turn_cycles_for_the_next_turn() {
+        // Like /model, the cycle never touches the running turn — the new mode
+        // simply rides the next request.
+        let mut app = App::new();
+        app.set_thinking(Some((
+            trio_support(),
+            ThinkingMode::Effort(ReasoningEffort::Medium),
+        )));
+        app.begin_stream();
+        assert_eq!(
+            app.on_key(backtab()),
+            Action::SetThinking(ThinkingMode::Effort(ReasoningEffort::High))
+        );
+        assert!(app.turn_active(), "the turn keeps running underneath");
+    }
+
+    #[test]
+    fn backtab_with_the_model_picker_open_is_inert() {
+        // The picker owns every key while open — BackTab must not cycle the
+        // mode out from under it.
+        let mut app = model_app(&sample_models());
+        app.set_thinking(Some((
+            trio_support(),
+            ThinkingMode::Effort(ReasoningEffort::Medium),
+        )));
+        assert_eq!(app.on_key(backtab()), Action::None);
+        assert_eq!(
+            app.thinking.as_ref().unwrap().mode,
+            ThinkingMode::Effort(ReasoningEffort::Medium),
+            "unchanged"
+        );
+    }
+
+    #[test]
+    fn selecting_a_model_carries_its_reasoning_support() {
+        // Enter on a picker row hands the loop the entry's parsed support, so
+        // a successful switch can seed the cycle without refetching /models.
+        let mut with_support = model("thinker", "openrouter", "Thinker");
+        with_support.reasoning = Some(trio_support());
+        let mut app = model_app(&[
+            model("anthropic/claude-3.5-haiku", "openrouter", "Haiku"),
+            with_support,
+        ]);
+        type_chars(&mut app, "thinker");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::SelectModel {
+                provider: "openrouter".into(),
+                id: "thinker".into(),
+                reasoning: Some(trio_support()),
+            }
+        );
     }
 
     #[test]
@@ -10215,6 +10450,7 @@ mod tests {
             Action::SelectModel {
                 provider: "openrouter".into(),
                 id: "moonshotai/kimi-k2.6".into(),
+                reasoning: None,
             }
         );
         assert!(app.model_picker.is_none(), "selecting closes the picker");

@@ -29,8 +29,9 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | `llm/keystore.rs` | `EnvFile` — the `.env` reader/writer the `/login` flow persists keys through | **pure** |
 | `llm/settings.rs` | `Settings` — the `config.json` reader/writer persisting the `/model` selection across runs | **pure** |
 | `llm/thinking.rs` | `ThinkingSplitter` — peels `<think>`/`<reasoning>` tags (and native `reasoning` deltas) out of the stream | **pure** |
+| `llm/reasoning.rs` | `ThinkingMode`/`ReasoningSupport` — the Shift+Tab thinking-mode cycle + its request body (`docs/reasoning.md`) | **pure** |
 | `llm/openai.rs` | `OpenAiClient` — endpoint/payload build (pure) + the blocking SSE stream (boundary) | split |
-| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary) | split |
+| `llm/models.rs` | `/v1/models` response → `Vec<ModelEntry>` (parse pure; fetch boundary; each entry carries its model's reasoning capability — `docs/reasoning.md`) | split |
 | `llm/backend.rs` | `LlmBackend: ReplySource` — bridges the SSE deltas to `StreamEvent`s | boundary |
 
 ### Why blocking `reqwest`, a transport thread, and a hand-rolled SSE reader
@@ -241,7 +242,11 @@ the bottom rule — the shape of the user's mock):
   provider list scrolls the same way.
 - On select, the loop rebuilds the backend for the new provider/model, updates the
   footer (`App::set_session_info`), and **persists the choice to `config.json`**
-  (so it's the default next run), then collapses the picker.
+  (so it's the default next run), then collapses the picker. The picked entry's
+  **reasoning capability** rides the selection (`Action::SelectModel`'s
+  `reasoning`), seeding the Shift+Tab thinking-mode cycle — and the persisted
+  settings carry the thinking state beside the selection. See
+  `docs/reasoning.md`.
 
 - The picker is **headerless** — the old "Showing models…" banner was dropped, so
   the `❯` search line sits directly under the top rule; the selection marker is `→`.

@@ -61,7 +61,12 @@ startup, so ↑/↓ recall *and* Ctrl+R span sessions) in
 `docs/shell-command.md`; the `?` shortcuts band in
 `docs/shortcuts.md`; the Shift+Enter / Ctrl+J newline keys in
 `docs/shift-enter.md`; the mid-turn message queue in `docs/queue.md`; the
-session-context footer in `docs/footer.md`; the flicker-free frame pipeline
+session-context footer in `docs/footer.md`; the **Shift+Tab thinking-mode
+cycle** (a reasoning-capable model's effort — detected per model from the
+provider's `/v1/models`, shown beside the model name in the footer, cycled
+with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`
+parameter, persisted beside the `/model` selection) in `docs/reasoning.md`;
+the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
 `docs/flicker.md`; the `@` file-path picker (async walk+rank file search below
 the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
@@ -205,7 +210,9 @@ and its expiry is timed at the boundary (`main.rs`'s `toast_deadline` +
 `docs/toast.md`; plus a one-row
 **session footer** on the region's last row —
 codex's footer status line, `{model} · {cwd}` dim and two-space inset
-(`dummy_model_name · ~/repo`) — whenever no band is open (the palette/shortcuts
+(`dummy_model_name · ~/repo`; a reasoning-capable model carries its Shift+Tab
+thinking mode beside the name — `{model} {mode} · {cwd}`, `docs/reasoning.md`)
+— whenever no band is open (the palette/shortcuts
 band displaces it, and the Ctrl+R search line / `!` shell-mode hint take its
 slot; `App::set_session_info` injects the strings at the boundary
 like the clock, the model name coming from `ReplySource::model_name`; see

@@ -40,6 +40,7 @@ fn main() {
             model: model.clone(),
             api_key: Some(key),
             temperature: Some(0.0),
+            thinking: None,
         })
         .expect("openrouter is a built-in provider");
 

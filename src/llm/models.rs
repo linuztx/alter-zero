@@ -7,6 +7,7 @@ use std::io::Read;
 use serde::Deserialize;
 
 use super::config::ModelConfig;
+use super::reasoning::{ReasoningEffort, ReasoningSupport};
 use super::{LlmError, Result};
 use crate::stream::CancelToken;
 
@@ -21,6 +22,10 @@ pub struct ModelEntry {
     /// The friendly name (the response's `name` field, else the id) — shown in
     /// the picker's `Model Name:` line.
     pub display_name: String,
+    /// The model's reasoning ("thinking") capability, when the record
+    /// advertises one — drives the Shift+Tab mode cycle. `None` for a model
+    /// with no reasoning. See `docs/reasoning.md`.
+    pub reasoning: Option<ReasoningSupport>,
 }
 
 /// The OpenAI `/models` envelope: `{ "data": [ { "id", "name"? } ] }`. Each
@@ -60,11 +65,106 @@ pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
                 id: id.to_string(),
                 provider: provider.to_string(),
                 display_name: display_name.to_string(),
+                reasoning: reasoning_support_of(record),
             })
         })
         .collect();
     out.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(out)
+}
+
+/// The effort ladder offered when a provider says "reasoning-capable" without
+/// enumerating levels (OpenRouter's null `supported_efforts` means "all
+/// accepted"; Venice's `supportsReasoningEffort` names none) — the three
+/// levels every effort-taking provider accepts.
+const DEFAULT_EFFORTS: [ReasoningEffort; 3] = [
+    ReasoningEffort::Low,
+    ReasoningEffort::Medium,
+    ReasoningEffort::High,
+];
+
+/// Read one `/models` record's reasoning capability, sniffing both provider
+/// shapes (per record, so a custom OpenAI-compatible provider using either
+/// works unconfigured):
+///
+/// - **OpenRouter**: a `reasoning` object — `supported_efforts` (canonically
+///   re-ordered; an offered `"none"` marks the off switch, not a rung; null
+///   means "all accepted" → the default ladder), `mandatory` (no Off), and
+///   `default_effort`. Absent that object, `"reasoning"`/`"reasoning_effort"`
+///   in `supported_parameters` still marks support (default ladder).
+/// - **Venice**: `model_spec.capabilities.supportsReasoning` (+
+///   `supportsReasoningEffort` for the ladder; without it the model is an
+///   on/off-only reasoner — efforts empty).
+///
+/// `None` when the record advertises no reasoning at all.
+fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> {
+    // The OpenRouter `reasoning` object.
+    if let Some(reasoning) = record.get("reasoning").filter(|r| r.is_object()) {
+        let mandatory = reasoning
+            .get("mandatory")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let (efforts, offers_none) = match reasoning
+            .get("supported_efforts")
+            .and_then(serde_json::Value::as_array)
+        {
+            Some(list) => {
+                let labels: Vec<&str> = list.iter().filter_map(|v| v.as_str()).collect();
+                let mut efforts: Vec<ReasoningEffort> = labels
+                    .iter()
+                    .filter_map(|l| ReasoningEffort::parse(l))
+                    .collect();
+                efforts.sort_by_key(|e| ReasoningEffort::LADDER.iter().position(|l| l == e));
+                efforts.dedup();
+                let offers_none = labels.iter().any(|l| l.eq_ignore_ascii_case("none"));
+                (efforts, offers_none)
+            }
+            None => (DEFAULT_EFFORTS.to_vec(), false),
+        };
+        let default_effort = reasoning
+            .get("default_effort")
+            .and_then(serde_json::Value::as_str)
+            .and_then(ReasoningEffort::parse);
+        return Some(ReasoningSupport {
+            efforts,
+            can_disable: !mandatory || offers_none,
+            default_effort,
+        });
+    }
+    // OpenRouter's supported_parameters, when no reasoning object was sent.
+    if let Some(params) = record
+        .get("supported_parameters")
+        .and_then(serde_json::Value::as_array)
+    {
+        let has = |name: &str| params.iter().any(|p| p.as_str() == Some(name));
+        if has("reasoning") || has("reasoning_effort") {
+            return Some(ReasoningSupport {
+                efforts: DEFAULT_EFFORTS.to_vec(),
+                can_disable: true,
+                default_effort: None,
+            });
+        }
+    }
+    // Venice's model_spec.capabilities booleans.
+    let capabilities = record.get("model_spec")?.get("capabilities")?;
+    let flag = |name: &str| {
+        capabilities
+            .get(name)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
+    if !flag("supportsReasoning") {
+        return None;
+    }
+    Some(ReasoningSupport {
+        efforts: if flag("supportsReasoningEffort") {
+            DEFAULT_EFFORTS.to_vec()
+        } else {
+            Vec::new()
+        },
+        can_disable: true,
+        default_effort: None,
+    })
 }
 
 /// The `/models` endpoint for a config: `{api_model_base}/models`.
@@ -186,6 +286,158 @@ mod tests {
         let models = parse_models(body, "p").unwrap();
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["aaa", "mmm", "zzz"]);
+    }
+
+    use crate::llm::reasoning::ReasoningEffort;
+
+    #[test]
+    fn openrouter_reasoning_object_parses_efforts_and_default() {
+        // The OpenRouter record shape: a `reasoning` object naming the
+        // accepted efforts (arbitrary order) and the model's default.
+        let body = r#"{"data":[{
+            "id":"anthropic/claude-sonnet-5",
+            "supported_parameters":["reasoning","tools"],
+            "reasoning":{"mandatory":false,"supported_efforts":["max","xhigh","high","medium","low"],"default_effort":"medium"}
+        }]}"#;
+        let models = parse_models(body, "openrouter").unwrap();
+        let support = models[0].reasoning.as_ref().expect("reasoning-capable");
+        assert_eq!(
+            support.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High,
+                ReasoningEffort::XHigh,
+                ReasoningEffort::Max,
+            ],
+            "canonically ordered regardless of the wire order"
+        );
+        assert!(support.can_disable);
+        assert_eq!(support.default_effort, Some(ReasoningEffort::Medium));
+    }
+
+    #[test]
+    fn openrouter_mandatory_reasoning_cannot_be_disabled() {
+        let body = r#"{"data":[{
+            "id":"moonshotai/kimi-k3",
+            "reasoning":{"mandatory":true,"supported_efforts":["max"]}
+        }]}"#;
+        let models = parse_models(body, "openrouter").unwrap();
+        let support = models[0].reasoning.as_ref().unwrap();
+        assert_eq!(support.efforts, vec![ReasoningEffort::Max]);
+        assert!(!support.can_disable);
+    }
+
+    #[test]
+    fn a_none_effort_maps_to_disable_not_a_level() {
+        // Some records list "none" among the efforts — that's the off switch,
+        // not a ladder rung.
+        let body = r#"{"data":[{
+            "id":"openai/gpt-5.6",
+            "reasoning":{"mandatory":true,"supported_efforts":["high","medium","low","none"]}
+        }]}"#;
+        let models = parse_models(body, "openrouter").unwrap();
+        let support = models[0].reasoning.as_ref().unwrap();
+        assert_eq!(
+            support.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High
+            ]
+        );
+        assert!(
+            support.can_disable,
+            "an offered \"none\" overrides the mandatory flag"
+        );
+    }
+
+    #[test]
+    fn a_reasoning_object_without_efforts_gets_the_default_ladder() {
+        // OpenRouter documents a null/absent supported_efforts as "all
+        // accepted" — offer the standard trio rather than nothing.
+        let body = r#"{"data":[{
+            "id":"deepseek/deepseek-v3.2",
+            "reasoning":{"mandatory":false,"default_enabled":false}
+        }]}"#;
+        let models = parse_models(body, "openrouter").unwrap();
+        let support = models[0].reasoning.as_ref().unwrap();
+        assert_eq!(
+            support.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High
+            ]
+        );
+        assert!(support.can_disable);
+        assert_eq!(support.default_effort, None);
+    }
+
+    #[test]
+    fn supported_parameters_alone_marks_reasoning_support() {
+        // A record with no `reasoning` object but "reasoning" among its
+        // supported parameters still gets the default ladder.
+        let body = r#"{"data":[
+            {"id":"thinker","supported_parameters":["reasoning","max_tokens"]},
+            {"id":"plain","supported_parameters":["max_tokens","tools"]}
+        ]}"#;
+        let models = parse_models(body, "openrouter").unwrap();
+        let thinker = models.iter().find(|m| m.id == "thinker").unwrap();
+        let support = thinker.reasoning.as_ref().expect("supported");
+        assert_eq!(support.efforts.len(), 3);
+        assert!(support.can_disable);
+        let plain = models.iter().find(|m| m.id == "plain").unwrap();
+        assert!(plain.reasoning.is_none());
+    }
+
+    #[test]
+    fn venice_capabilities_parse_both_reasoning_shapes() {
+        // Venice's shape: model_spec.capabilities booleans. With
+        // supportsReasoningEffort the standard ladder applies; without it the
+        // model is an on/off-only reasoner (efforts empty).
+        let body = r#"{"data":[
+            {"id":"qwen","model_spec":{"capabilities":{"supportsReasoning":true,"supportsReasoningEffort":true}}},
+            {"id":"claude","model_spec":{"capabilities":{"supportsReasoning":true,"supportsReasoningEffort":false}}},
+            {"id":"plain","model_spec":{"capabilities":{"supportsReasoning":false,"supportsReasoningEffort":false}}}
+        ]}"#;
+        let models = parse_models(body, "a0_venice").unwrap();
+        let by_id = |id: &str| models.iter().find(|m| m.id == id).unwrap();
+        let qwen = by_id("qwen").reasoning.as_ref().expect("effort-capable");
+        assert_eq!(
+            qwen.efforts,
+            vec![
+                ReasoningEffort::Low,
+                ReasoningEffort::Medium,
+                ReasoningEffort::High
+            ]
+        );
+        assert!(qwen.can_disable);
+        let claude = by_id("claude").reasoning.as_ref().expect("on/off-only");
+        assert!(claude.efforts.is_empty());
+        assert!(claude.can_disable);
+        assert!(by_id("plain").reasoning.is_none());
+    }
+
+    #[test]
+    fn unknown_effort_labels_are_skipped_not_fatal() {
+        let body = r#"{"data":[{
+            "id":"x",
+            "reasoning":{"supported_efforts":["medium","turbo-think","high"]}
+        }]}"#;
+        let models = parse_models(body, "p").unwrap();
+        let support = models[0].reasoning.as_ref().unwrap();
+        assert_eq!(
+            support.efforts,
+            vec![ReasoningEffort::Medium, ReasoningEffort::High]
+        );
+    }
+
+    #[test]
+    fn a_record_without_reasoning_hints_has_no_support() {
+        let body = r#"{"data":[{"id":"gpt-4o-mini"}]}"#;
+        let models = parse_models(body, "openai").unwrap();
+        assert!(models[0].reasoning.is_none());
     }
 
     #[test]

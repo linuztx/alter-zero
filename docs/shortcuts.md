@@ -73,12 +73,13 @@ bindings, codex's phrasing and two-column layout, keys cyan and labels dim
 alt+enter for newline     ctrl+o for tool output
 esc to quit               ctrl+c to quit
 alt+↑ to edit queue       tab to queue next turn
-ctrl+v for image paste
+ctrl+v for image paste    ctrl+d for llm context
+shift+tab to cycle thinking
 ```
 
 (The `SHORTCUTS` const in `ui.rs` is the single source of truth — entries laid
 out two per row in declaration order, so the band is
-`SHORTCUTS.len().div_ceil(2)` rows tall; currently 11 entries → 6 rows.)
+`SHORTCUTS.len().div_ceil(2)` rows tall; currently 13 entries → 7 rows.)
 
 The Esc entry is three-way context-sensitive (codex's quit entry): `esc to
 interrupt` while a turn is in flight, `esc esc to edit previous`

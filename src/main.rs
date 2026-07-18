@@ -59,8 +59,8 @@ use inline_tui::file_search::{FileMatch, rank_files};
 use inline_tui::frame::{self, FrameRequester};
 use inline_tui::history;
 use inline_tui::llm::{
-    self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, Selection, Settings,
-    backend::DEFAULT_SYSTEM_PROMPT,
+    self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, ReasoningSupport, Selection,
+    Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
 use inline_tui::paste::{self, PasteBurst};
 use inline_tui::session::{self, SessionMeta, SessionSummary};
@@ -168,6 +168,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // each successful switch; real env vars still win over it. See `docs/llm.md`.
     let settings_path = settings_file_path();
     let saved = load_settings(settings_path.as_deref());
+    // The (provider, model) pair config.json currently records — updated when
+    // a /model switch rewrites it. Thinking-state writes (the probe, a
+    // Shift+Tab cycle) attach to THIS pair only: an env-overridden selection
+    // is never written back (env always wins, never sticks), so persisting
+    // its thinking would hijack the saved default. See docs/reasoning.md.
+    let mut persisted_selection: Option<(String, String)> =
+        saved.provider.clone().zip(saved.model.clone());
     let temperature = std::env::var("INLINE_TUI_TEMPERATURE")
         .ok()
         .and_then(|t| t.trim().parse::<f32>().ok());
@@ -208,6 +215,19 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let stall_ms = std::env::var("INLINE_TUI_STALL_MS")
         .ok()
         .and_then(|ms| ms.parse::<u64>().ok());
+    // The saved thinking blob describes the saved (provider, model) pairing —
+    // like saved_model it applies only when that exact selection resolved.
+    // Outer None = support unknown (the probe below finds out); Some(None) =
+    // known non-reasoner; Some(Some(state)) = seed the Shift+Tab cycle.
+    // See docs/reasoning.md.
+    let saved_thinking: Option<Option<(ReasoningSupport, ThinkingMode)>> = saved
+        .thinking
+        .as_ref()
+        .filter(|_| {
+            active_provider == saved.provider && env_model.is_some() && env_model == saved.model
+        })
+        .map(ThinkingSettings::to_seed);
+    let startup_thinking = saved_thinking.clone().flatten();
     let mut backend: Box<dyn ReplySource> = if let Some(ms) = stall_ms {
         Box::new(stream::StallAi::new(Duration::from_millis(ms)))
     } else {
@@ -217,12 +237,27 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             active_provider.as_deref(),
             env_model.as_deref(),
             temperature,
+            startup_thinking.as_ref().map(|(_, mode)| *mode),
             system_prompt.clone(),
             startup_delay,
             &registry,
         )
     };
     let mut active_model = backend.model_name();
+    // Whether the *real* backend activated (vs the dummy fallback) — the
+    // thinking state and its probe only make sense against a live provider.
+    let real_backend = stall_ms.is_none()
+        && !dummy_forced()
+        && active_provider
+            .as_deref()
+            .zip(env_model.as_deref())
+            .is_some_and(|(p, m)| {
+                model_config_for(&providers, &env_file, p, m, temperature, None)
+                    .is_some_and(|cfg| cfg.is_usable())
+            });
+    if real_backend {
+        app.set_thinking(startup_thinking.clone());
+    }
     // Session context for the footer under the box — the backend's model name
     // and the cwd (shared with the tasks-dir derivation above) — formatted
     // here at the boundary (the set_clock pattern: the pure core never reads
@@ -263,6 +298,25 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // — not a stdin reader (invariant 1).
     let (model_tx, mut model_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
     let mut model_fetch_cancel: Option<CancelToken> = None;
+    // The thinking-support probe (docs/reasoning.md): when the real backend is
+    // active but the saved settings don't say whether its model reasons (an
+    // env-selected model, or the first run since the upgrade that added the
+    // blob), fetch the provider's `/models` once in the background and read
+    // the active model's record out of it. A dedicated channel so a
+    // concurrently-open `/model` picker can't confuse the results; the worker
+    // only *sends* (invariant 1). `pending` gates the select! branch and is
+    // cleared by the first result — or by a `/model` switch, which learns the
+    // support first-hand from the picked entry.
+    let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
+    let mut thinking_probe_pending = false;
+    if real_backend
+        && saved_thinking.is_none()
+        && let Some((p, m)) = active_provider.as_deref().zip(env_model.as_deref())
+    {
+        let cfg = model_config_for(&providers, &env_file, p, m, temperature, None);
+        thinking_probe_pending = true;
+        spawn_model_fetch(p.to_string(), cfg, CancelToken::new(), probe_tx);
+    }
     // The in-flight reply's cancel token + thread handle, so a quit mid-stream
     // can stop it cleanly. `None` whenever no reply is streaming.
     let mut inflight: Option<(CancelToken, JoinHandle<()>)> = None;
@@ -710,7 +764,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     for choice in &configured {
                                         let cfg = model_config_for(
                                             &providers, &env_file, &choice.id, &active_model,
-                                            temperature,
+                                            temperature, None,
                                         );
                                         spawn_model_fetch(
                                             choice.name.clone(),
@@ -729,7 +783,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     c.cancel();
                                 }
                             }
-                            Action::SelectModel { provider, id } => {
+                            Action::SelectModel { provider, id, reasoning } => {
                                 // Enter on a picker row: rebuild the backend for the
                                 // chosen provider/model (docs/llm.md). The picker is
                                 // already closed (on_key did it); cancel any pending
@@ -740,8 +794,16 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 if let Some(c) = model_fetch_cancel.take() {
                                     c.cancel();
                                 }
+                                // The picked entry's reasoning support seeds the
+                                // Shift+Tab cycle at its default mode (medium
+                                // where offered) — docs/reasoning.md.
+                                let thinking = reasoning.map(|support| {
+                                    let mode = support.default_mode();
+                                    (support, mode)
+                                });
                                 match model_config_for(
                                     &providers, &env_file, &provider, &id, temperature,
+                                    thinking.as_ref().map(|(_, mode)| *mode),
                                 ) {
                                     Some(cfg) if cfg.is_usable() => {
                                         backend = Box::new(
@@ -758,9 +820,21 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                             cwd_display.clone(),
                                         );
                                         app.set_system_prompt(backend.system_prompt());
-                                        // Persist the choice so it's the default
-                                        // next run (docs/llm.md).
-                                        save_settings(settings_path.as_deref(), &provider, &id);
+                                        // The switch knows its support first-hand —
+                                        // a still-in-flight startup probe is stale.
+                                        thinking_probe_pending = false;
+                                        app.set_thinking(thinking.clone());
+                                        // Persist the choice (and its reasoning
+                                        // state) so it's the default next run
+                                        // (docs/llm.md, docs/reasoning.md).
+                                        persisted_selection =
+                                            Some((provider.clone(), id.clone()));
+                                        save_settings(
+                                            settings_path.as_deref(),
+                                            &provider,
+                                            &id,
+                                            Some(thinking_settings_of(thinking.as_ref())),
+                                        );
                                         present_toast(
                                             &mut app,
                                             &mut toast_deadline,
@@ -782,6 +856,53 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         );
                                     }
                                 }
+                            }
+                            Action::SetThinking(mode) => {
+                                // Shift+Tab advanced the thinking mode (the pure
+                                // state already moved — docs/reasoning.md). Rebind
+                                // the *next* turn's backend so the mode rides its
+                                // request (the running turn streams on its own
+                                // thread, untouched — the /model pattern), persist
+                                // the choice beside the model selection, and
+                                // confirm with a transient toast.
+                                if let Some(provider) = active_provider.as_deref()
+                                    && let Some(cfg) = model_config_for(
+                                        &providers, &env_file, provider, &active_model,
+                                        temperature, Some(mode),
+                                    )
+                                    && cfg.is_usable()
+                                {
+                                    backend = Box::new(
+                                        LlmBackend::with_system_prompt(
+                                            cfg,
+                                            system_prompt.clone(),
+                                        )
+                                        .with_background(registry.clone()),
+                                    );
+                                }
+                                if let Some(provider) = active_provider.as_deref()
+                                    && persisted_selection.as_ref().is_some_and(|(p, m)| {
+                                        p == provider && *m == active_model
+                                    })
+                                {
+                                    let thinking = app
+                                        .thinking
+                                        .as_ref()
+                                        .map(|t| (t.support.clone(), t.mode));
+                                    save_settings(
+                                        settings_path.as_deref(),
+                                        provider,
+                                        &active_model,
+                                        Some(thinking_settings_of(thinking.as_ref())),
+                                    );
+                                }
+                                present_toast(
+                                    &mut app,
+                                    &mut toast_deadline,
+                                    &frame,
+                                    format!("Thinking: {}", mode.label()),
+                                    ToastKind::Info,
+                                );
                             }
                             Action::OpenKeyOnboarding => {
                                 // /login from an idle composer (docs/llm.md): open
@@ -1042,6 +1163,59 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 frame.schedule_frame();
             }
 
+            // 6b. The startup thinking-support probe answered
+            //     (docs/reasoning.md): find the active model's record, seed
+            //     the Shift+Tab cycle at its default mode, rebind the next
+            //     turn's backend so the mode rides its request, and persist —
+            //     so later startups seed from the file instead of probing.
+            //     Guarded so a `/model` switch that raced the probe (and
+            //     already knows its support first-hand) wins; a failed fetch
+            //     just leaves the support unknown (no toast — this is
+            //     background bookkeeping the user never asked for).
+            Some((provider, result)) = probe_rx.recv(), if thinking_probe_pending => {
+                thinking_probe_pending = false;
+                if let Ok(models) = result
+                    && active_provider.as_deref() == Some(provider.as_str())
+                {
+                    let thinking = models
+                        .iter()
+                        .find(|m| m.id == active_model)
+                        .and_then(|entry| entry.reasoning.clone())
+                        .map(|support| {
+                            let mode = support.default_mode();
+                            (support, mode)
+                        });
+                    if let Some((_, mode)) = &thinking
+                        && let Some(cfg) = model_config_for(
+                            &providers, &env_file, &provider, &active_model, temperature,
+                            Some(*mode),
+                        )
+                        && cfg.is_usable()
+                    {
+                        backend = Box::new(
+                            LlmBackend::with_system_prompt(cfg, system_prompt.clone())
+                                .with_background(registry.clone()),
+                        );
+                    }
+                    app.set_thinking(thinking.clone());
+                    // Persist only onto the recorded selection: an
+                    // env-overridden model never writes config.json (env
+                    // always wins, never sticks), so that combination just
+                    // re-probes next run.
+                    if persisted_selection.as_ref()
+                        == Some(&(provider.clone(), active_model.clone()))
+                    {
+                        save_settings(
+                            settings_path.as_deref(),
+                            &provider,
+                            &active_model,
+                            Some(thinking_settings_of(thinking.as_ref())),
+                        );
+                    }
+                    frame.schedule_frame();
+                }
+            }
+
             // 7. A background-shell event from the registry's monitors
             //    (docs/background.md). Its channel is never swapped (unlike
             //    the reply channel), so shells survive interrupts and /clear
@@ -1203,20 +1377,25 @@ fn resolve_api_key(
         .or_else(|| resolve_env(env_file, "INLINE_TUI_API_KEY"))
 }
 
-/// Build the resolved [`ModelConfig`] for a provider/model (with the resolved key
-/// + temperature merged in), or `None` when the provider isn't in the file.
+/// Build the resolved [`ModelConfig`] for a provider/model (with the resolved
+/// key + temperature + thinking mode merged in), or `None` when the provider
+/// isn't in the file. `thinking` is the mode riding the request payload —
+/// `None` for a model with no reasoning (or a fetch that doesn't care, like
+/// the `/models` listing). See `docs/reasoning.md`.
 fn model_config_for(
     providers: &ProvidersFile,
     env_file: &EnvFile,
     provider: &str,
     model: &str,
     temperature: Option<f32>,
+    thinking: Option<ThinkingMode>,
 ) -> Option<ModelConfig> {
     let sel = Selection {
         provider_id: provider.to_string(),
         model: model.to_string(),
         api_key: resolve_api_key(providers, env_file, provider),
         temperature,
+        thinking,
     };
     providers.model_config(&sel)
 }
@@ -1310,18 +1489,40 @@ fn load_settings(path: Option<&Path>) -> Settings {
         .unwrap_or_default()
 }
 
-/// Persist the chosen provider/model to `config.json`, creating the config home
-/// first. Best-effort — a write failure is swallowed (like the session
-/// recorder) so it can never kill the TUI; a `None` path (no config home)
-/// no-ops. See `docs/llm.md`.
-fn save_settings(path: Option<&Path>, provider: &str, model: &str) {
+/// Persist the chosen provider/model — plus the model's reasoning state, so
+/// the Shift+Tab cycle needs no refetch next run (`docs/reasoning.md`) — to
+/// `config.json`, creating the config home first. Best-effort — a write
+/// failure is swallowed (like the session recorder) so it can never kill the
+/// TUI; a `None` path (no config home) no-ops. See `docs/llm.md`.
+fn save_settings(
+    path: Option<&Path>,
+    provider: &str,
+    model: &str,
+    thinking: Option<ThinkingSettings>,
+) {
     let Some(path) = path else {
         return;
     };
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(path, Settings::for_selection(provider, model).to_json());
+    let _ = std::fs::write(
+        path,
+        Settings::for_selection(provider, model)
+            .with_thinking(thinking)
+            .to_json(),
+    );
+}
+
+/// The [`ThinkingSettings`] blob recording a *definitively known* reasoning
+/// state — a real state, or the "no thinking" marker for a model whose record
+/// said so (so startup doesn't re-probe it). Use only when the support is
+/// known; an unknown (probe pending/failed) should persist `None` instead.
+fn thinking_settings_of(thinking: Option<&(ReasoningSupport, ThinkingMode)>) -> ThinkingSettings {
+    match thinking {
+        Some((support, mode)) => ThinkingSettings::from_state(support, *mode),
+        None => ThinkingSettings::unsupported(),
+    }
 }
 
 /// Pick the reply backend: the dummy unless a real provider/model/key all
@@ -1334,13 +1535,15 @@ fn build_backend(
     provider: Option<&str>,
     model: Option<&str>,
     temperature: Option<f32>,
+    thinking: Option<ThinkingMode>,
     system_prompt: Option<String>,
     startup_delay: Duration,
     registry: &BackgroundRegistry,
 ) -> Box<dyn ReplySource> {
     if !dummy_forced()
         && let (Some(provider), Some(model)) = (provider, model)
-        && let Some(cfg) = model_config_for(providers, env_file, provider, model, temperature)
+        && let Some(cfg) =
+            model_config_for(providers, env_file, provider, model, temperature, thinking)
         && cfg.is_usable()
     {
         return Box::new(

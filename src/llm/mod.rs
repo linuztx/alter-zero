@@ -20,6 +20,7 @@ pub mod exec;
 pub mod keystore;
 pub mod models;
 pub mod openai;
+pub mod reasoning;
 pub mod retry;
 pub mod settings;
 pub mod thinking;
@@ -31,7 +32,8 @@ pub use backend::LlmBackend;
 pub use config::{ModelConfig, ProvidersFile, Selection};
 pub use keystore::EnvFile;
 pub use models::ModelEntry;
-pub use settings::Settings;
+pub use reasoning::{ReasoningEffort, ReasoningSupport, ThinkingMode};
+pub use settings::{Settings, ThinkingSettings};
 
 /// One message in a chat-completion request.
 ///

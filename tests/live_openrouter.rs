@@ -16,17 +16,15 @@
 use std::path::PathBuf;
 
 use inline_tui::context::{ContextMessage, ContextRole, ContextToolCall};
-use inline_tui::llm::{LlmBackend, ModelConfig};
+use inline_tui::llm::{LlmBackend, ModelConfig, ThinkingMode};
 use inline_tui::stream::{CancelToken, ReplySource, StreamEvent};
 
-/// The backend under test, configured for OpenRouter from the environment.
-/// Panics with a clear message when the key is missing — these tests are only
-/// ever run on purpose (`--ignored`).
-fn backend() -> LlmBackend {
+/// A backend configured for OpenRouter from the environment, for `model` with
+/// the given thinking mode. Panics with a clear message when the key is
+/// missing — these tests are only ever run on purpose (`--ignored`).
+fn backend_for(model: String, thinking: Option<ThinkingMode>) -> LlmBackend {
     let key =
         std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
-    let model =
-        std::env::var("INLINE_TUI_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
     let cfg = ModelConfig {
         provider_id: "openrouter".to_string(),
         provider_name: "OpenRouter".to_string(),
@@ -35,6 +33,7 @@ fn backend() -> LlmBackend {
         api_model_base: "https://openrouter.ai/api/v1".to_string(),
         api_key: Some(key),
         temperature: Some(0.0),
+        thinking,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -42,6 +41,14 @@ fn backend() -> LlmBackend {
         cfg,
         Some("You are a terse assistant. Answer in as few words as possible.".to_string()),
     )
+}
+
+/// The default backend under test (`INLINE_TUI_LIVE_MODEL`, else a cheap
+/// vision-capable model), no thinking mode.
+fn backend() -> LlmBackend {
+    let model =
+        std::env::var("INLINE_TUI_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    backend_for(model, None)
 }
 
 /// Run one turn through the real `ReplySource::spawn` seam and collect the
@@ -172,6 +179,67 @@ fn live_tool_call_generation_emits_delta_events() {
         generation_before_start,
         "the generation fragments precede the ToolStart"
     );
+}
+
+/// Run one turn against `model` with `thinking`, collecting the reply text and
+/// the number of ThinkingChunk events (the reasoning the mode should or
+/// shouldn't produce — docs/reasoning.md).
+fn complete_with_thinking(model: &str, thinking: Option<ThinkingMode>) -> (String, usize) {
+    let prompt = "What is 17*23? Answer with just the number.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend_for(model.to_string(), thinking).spawn(
+        prompt.to_string(),
+        vec![],
+        context,
+        tx,
+        CancelToken::new(),
+    );
+    let mut text = String::new();
+    let mut thinking_chunks = 0;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(chunk) => text.push_str(&chunk),
+            StreamEvent::ThinkingChunk(_) => thinking_chunks += 1,
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    (text, thinking_chunks)
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_reasoning_effort_streams_thinking() {
+    // The Shift+Tab mode end to end (docs/reasoning.md): an explicit effort on
+    // a reasoning model rides the payload (`reasoning: {"effort": …}`) and the
+    // native reasoning deltas come back as ThinkingChunk events driving the
+    // `Thinking for Ns` status. gpt-oss-120b is cheap and always reasons.
+    let (reply, thinking_chunks) = complete_with_thinking(
+        "openai/gpt-oss-120b",
+        Some(ThinkingMode::Effort(inline_tui::llm::ReasoningEffort::Low)),
+    );
+    println!("reply: {reply:?}, thinking chunks: {thinking_chunks}");
+    assert!(reply.contains("391"), "the answer arrived: {reply:?}");
+    assert!(
+        thinking_chunks > 0,
+        "an explicit effort produced reasoning deltas"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_thinking_off_suppresses_reasoning() {
+    // Off sends `reasoning: {"enabled": false}` — a hybrid reasoner that
+    // thinks when enabled (deepseek-v3.2) must stream no reasoning deltas.
+    let (reply, thinking_chunks) =
+        complete_with_thinking("deepseek/deepseek-v3.2", Some(ThinkingMode::Off));
+    println!("reply: {reply:?}, thinking chunks: {thinking_chunks}");
+    assert!(reply.contains("391"), "the answer arrived: {reply:?}");
+    assert_eq!(thinking_chunks, 0, "Off produced no reasoning deltas");
 }
 
 #[test]

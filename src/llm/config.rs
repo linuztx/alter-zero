@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
+use super::reasoning::ThinkingMode;
+
 /// The default `providers.toml` shipped in the repo root, embedded so the app
 /// always has the reference providers even when no file is found.
 const DEFAULT_PROVIDERS_TOML: &str = include_str!("../../providers.toml");
@@ -169,6 +171,7 @@ impl ProvidersFile {
             api_model_base: provider.models_base(),
             api_key: sel.api_key.clone(),
             temperature: sel.temperature,
+            thinking: sel.thinking,
             extra_headers: provider
                 .extra_headers
                 .iter()
@@ -187,6 +190,10 @@ pub struct Selection {
     pub model: String,
     pub api_key: Option<String>,
     pub temperature: Option<f32>,
+    /// The model's active thinking mode, when it supports reasoning — rides
+    /// into the request payload. `None` sends no reasoning parameter at all.
+    /// See `docs/reasoning.md`.
+    pub thinking: Option<ThinkingMode>,
 }
 
 /// The fully-resolved config one [`super::openai::OpenAiClient`] talks with.
@@ -201,6 +208,8 @@ pub struct ModelConfig {
     pub api_model_base: String,
     pub api_key: Option<String>,
     pub temperature: Option<f32>,
+    /// The active thinking mode (see [`Selection::thinking`]).
+    pub thinking: Option<ThinkingMode>,
     pub extra_headers: Vec<(String, String)>,
     /// Provider kwargs merged into the request body (e.g. `venice_parameters`).
     pub extra_body: serde_json::Map<String, serde_json::Value>,
@@ -218,6 +227,7 @@ impl ModelConfig {
             api_model_base: "https://api.openai.com/v1".to_string(),
             api_key: None,
             temperature: None,
+            thinking: None,
             extra_headers: Vec::new(),
             extra_body: serde_json::Map::new(),
         }
@@ -319,14 +329,21 @@ api_base = "https://one.example/v1/"
         let file = ProvidersFile::builtin();
         let venice = file.get("a0_venice").unwrap();
         let body = venice.extra_body();
-        // The nested venice_parameters table forwards verbatim.
+        // The nested venice_parameters table forwards verbatim. Its presence
+        // is also the Venice-family marker the payload builder keys the
+        // per-mode `disable_thinking` toggle on (docs/reasoning.md) — so the
+        // file must keep the table, but no longer pin `disable_thinking`
+        // statically (the Shift+Tab mode owns it now).
         let params = body
             .get("venice_parameters")
             .expect("venice_parameters present");
-        assert_eq!(params["disable_thinking"], serde_json::json!(true));
         assert_eq!(
             params["include_venice_system_prompt"],
             serde_json::json!(false)
+        );
+        assert!(
+            params.get("disable_thinking").is_none(),
+            "thinking is per-mode, not pinned in the file"
         );
         // api_base is NOT forwarded — it's the endpoint, not a body param.
         assert!(!body.contains_key("api_base"));
@@ -362,6 +379,7 @@ api_base = "https://a/v1"
             model: "anthropic/claude-3.5-haiku".to_string(),
             api_key: Some("sk-test".to_string()),
             temperature: Some(0.7),
+            thinking: None,
         };
         let cfg = file.model_config(&sel).expect("resolves");
         assert_eq!(cfg.model, "anthropic/claude-3.5-haiku");

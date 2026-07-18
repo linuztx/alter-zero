@@ -102,8 +102,9 @@ impl OpenAiClient {
     }
 
     /// The streamed request body: model, messages, `stream: true`, the optional
-    /// temperature, and any provider `extra_body` (e.g. `venice_parameters`)
-    /// merged in.
+    /// temperature, any provider `extra_body` (e.g. `venice_parameters`) merged
+    /// in, and — for a reasoning-capable model — the active thinking mode
+    /// (`docs/reasoning.md`).
     #[must_use]
     pub fn build_payload(&self, messages: &[ChatMessage]) -> serde_json::Value {
         let mut payload = json!({
@@ -121,6 +122,29 @@ impl OpenAiClient {
         if let Some(obj) = payload.as_object_mut() {
             for (k, v) in &self.cfg.extra_body {
                 obj.insert(k.clone(), v.clone());
+            }
+        }
+        // The thinking mode is applied *after* the extra_body merge so the
+        // user's Shift+Tab choice wins over a file-configured static (the
+        // footer must never claim an effort a stale `disable_thinking: true`
+        // silently vetoes).
+        if let Some(mode) = self.cfg.thinking {
+            if let Some(body) = super::reasoning::reasoning_body(mode) {
+                payload["reasoning"] = body;
+            }
+            // Venice ignores `reasoning.enabled` — `venice_parameters.
+            // disable_thinking` is the toggle it honours. A provider carrying
+            // a venice_parameters table (the Venice-family marker) gets it
+            // synced to the mode, other table keys preserved; providers
+            // without the table (OpenRouter) keep a clean payload.
+            if let Some(venice) = payload
+                .get_mut("venice_parameters")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                venice.insert(
+                    "disable_thinking".to_string(),
+                    json!(mode == super::reasoning::ThinkingMode::Off),
+                );
             }
         }
         payload
@@ -762,6 +786,89 @@ mod tests {
         let client = OpenAiClient::new(cfg);
         let p = client.build_payload(&[ChatMessage::user("hi")]);
         assert_eq!(p["venice_parameters"]["disable_thinking"], json!(true));
+    }
+
+    #[test]
+    fn payload_carries_the_reasoning_effort() {
+        use crate::llm::reasoning::{ReasoningEffort, ThinkingMode};
+        let mut cfg = ModelConfig::fallback();
+        cfg.thinking = Some(ThinkingMode::Effort(ReasoningEffort::High));
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["reasoning"], json!({"effort": "high"}));
+        assert!(
+            p.get("venice_parameters").is_none(),
+            "no venice table is invented for a provider without one"
+        );
+    }
+
+    #[test]
+    fn payload_disables_reasoning_when_off() {
+        use crate::llm::reasoning::ThinkingMode;
+        let mut cfg = ModelConfig::fallback();
+        cfg.thinking = Some(ThinkingMode::Off);
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["reasoning"], json!({"enabled": false}));
+    }
+
+    #[test]
+    fn payload_sends_nothing_for_thinking_on() {
+        // On = the model's own default: no reasoning key at all.
+        use crate::llm::reasoning::ThinkingMode;
+        let mut cfg = ModelConfig::fallback();
+        cfg.thinking = Some(ThinkingMode::On);
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert!(p.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn payload_omits_reasoning_when_no_mode_is_set() {
+        let p =
+            OpenAiClient::new(ModelConfig::fallback()).build_payload(&[ChatMessage::user("hi")]);
+        assert!(p.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn a_venice_provider_gets_disable_thinking_toggled_with_the_mode() {
+        // Venice ignores `reasoning.enabled` — `venice_parameters.
+        // disable_thinking` is the toggle it honours. A provider carrying a
+        // venice_parameters table (the Venice-family marker) gets it set to
+        // match the mode, other table keys preserved; and a stale
+        // file-configured `disable_thinking: true` must not silently veto an
+        // effort the footer claims is active.
+        use crate::llm::reasoning::{ReasoningEffort, ThinkingMode};
+        let mut cfg = ModelConfig::fallback();
+        cfg.extra_body.insert(
+            "venice_parameters".to_string(),
+            json!({"include_venice_system_prompt": false, "disable_thinking": true}),
+        );
+        cfg.thinking = Some(ThinkingMode::Effort(ReasoningEffort::Medium));
+        let p = OpenAiClient::new(cfg.clone()).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["reasoning"], json!({"effort": "medium"}));
+        assert_eq!(p["venice_parameters"]["disable_thinking"], json!(false));
+        assert_eq!(
+            p["venice_parameters"]["include_venice_system_prompt"],
+            json!(false),
+            "the table's other keys survive"
+        );
+
+        cfg.thinking = Some(ThinkingMode::Off);
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["reasoning"], json!({"enabled": false}));
+        assert_eq!(p["venice_parameters"]["disable_thinking"], json!(true));
+    }
+
+    #[test]
+    fn without_a_mode_the_file_configured_venice_table_passes_through() {
+        // No thinking mode (an unknown/non-reasoning model): the provider's
+        // kwargs are forwarded untouched, as before.
+        let mut cfg = ModelConfig::fallback();
+        cfg.extra_body.insert(
+            "venice_parameters".to_string(),
+            json!({"disable_thinking": true}),
+        );
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["venice_parameters"]["disable_thinking"], json!(true));
+        assert!(p.get("reasoning").is_none());
     }
 
     #[test]

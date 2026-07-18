@@ -679,6 +679,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("tab", " to queue next turn"),
     ("ctrl+v", " for image paste"),
     ("ctrl+d", " for llm context"),
+    ("shift+tab", " to cycle thinking"),
 ];
 /// The display column where a row's second entry starts (the first entry is
 /// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea.
@@ -3119,19 +3120,24 @@ pub fn backtrack_hint_line() -> Line<'static> {
 /// The footer's single line: the [`FOOTER_INDENT`], then `{model} · {cwd}` —
 /// every segment dim (codex's no-theme-colours status line, the separator dim
 /// like its ` · `) — cut with a trailing `…` when it overflows `width`
-/// (codex's `truncate_line_with_ellipsis_if_overflow`). Empty when no session
-/// info has been injected.
+/// (codex's `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable
+/// model carries its thinking mode right beside the name (`{model} {mode}`,
+/// Shift+Tab cycles it — `docs/reasoning.md`). Empty when no session info has
+/// been injected.
 #[must_use]
 pub fn footer_line(app: &App, width: u16) -> Line<'static> {
     let Some(session) = &app.session else {
         return Line::default();
     };
     let dim = Style::new().fg(FOOTER_COLOR);
-    let mut segments = vec![
-        Span::styled(session.model.clone(), dim),
+    let mut segments = vec![Span::styled(session.model.clone(), dim)];
+    if let Some(thinking) = &app.thinking {
+        segments.push(Span::styled(format!(" {}", thinking.mode.label()), dim));
+    }
+    segments.extend([
         Span::styled(FOOTER_SEPARATOR.to_string(), dim),
         Span::styled(session.cwd.clone(), dim),
-    ];
+    ]);
     // Running background shells append a `· {n} shell(s)` count — the ↓
     // manager's ambient reminder (docs/background.md).
     let shells = app.background().len();
@@ -11334,6 +11340,18 @@ mod tests {
     }
 
     #[test]
+    fn shortcuts_lines_list_the_shift_tab_thinking_binding() {
+        // Shift+Tab (cycle the thinking mode, docs/reasoning.md) is
+        // discoverable in the `?` band like every other binding.
+        let all: String = shortcuts_lines(false, false)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(all.contains("shift+tab to cycle thinking"), "{all:?}");
+    }
+
+    #[test]
     fn shortcuts_lines_flip_the_esc_entry_while_a_turn_runs() {
         // codex's quit entry is context-sensitive: "to interrupt" while a task
         // runs. Our Esc entry flips the same way.
@@ -11384,7 +11402,7 @@ mod tests {
             .join("\n");
         assert!(all.contains("/ for commands"), "band rendered: {all:?}");
         assert!(
-            row(&buf, h - 1, 60).contains("ctrl+v for image paste"),
+            row(&buf, h - 1, 60).contains("shift+tab to cycle thinking"),
             "the last band row sits on the last region row"
         );
     }
@@ -11689,6 +11707,34 @@ mod tests {
         assert!(cols(&text) <= 20, "fits the width: {text:?}");
         assert!(text.ends_with('…'), "cut is visible: {text:?}");
         assert!(text.starts_with("  dummy_model"), "head kept: {text:?}");
+    }
+
+    #[test]
+    fn footer_line_shows_the_thinking_mode_beside_the_model() {
+        // A reasoning-capable model carries its mode right after the model
+        // name — `{model} {mode} · {cwd}` — so the current thinking level is
+        // always visible (docs/reasoning.md).
+        use crate::llm::{ReasoningEffort, ReasoningSupport, ThinkingMode};
+        let mut app = with_session();
+        app.set_thinking(Some((
+            ReasoningSupport {
+                efforts: vec![ReasoningEffort::Medium],
+                can_disable: true,
+                default_effort: None,
+            },
+            ThinkingMode::Effort(ReasoningEffort::Medium),
+        )));
+        let line = footer_line(&app, 60);
+        assert_eq!(plain(&line), "  dummy_model_name medium · ~/inline-tui");
+        for span in &line.spans[1..] {
+            assert_eq!(span.style.fg, Some(FOOTER_COLOR), "dim: {:?}", span.content);
+        }
+        // Off is a mode too — the user must see thinking is disabled.
+        app.thinking.as_mut().unwrap().mode = ThinkingMode::Off;
+        assert_eq!(
+            plain(&footer_line(&app, 60)),
+            "  dummy_model_name off · ~/inline-tui"
+        );
     }
 
     #[test]
@@ -13045,6 +13091,7 @@ mod tests {
             id: id.into(),
             provider: provider.into(),
             display_name: name.into(),
+            reasoning: None,
         }
     }
 
