@@ -30,10 +30,10 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `spawn`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
-`app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`) so behavior
+`app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`spawn`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
 **and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read, the
 `/resume` session recording + dir scan — `main.rs::SessionRecorder`/`list_sessions`,
@@ -189,7 +189,11 @@ back as the composer's red `! ` prompt — `! pwd`, never `❯ !pwd` — with a 
 `Shell mode` hint in the footer slot (Backspace/Esc on the empty shell composer
 exit the mode; the palette/`?` band are suppressed in it); Enter from an idle
 composer runs the draft under `sh -c` on a background thread as a turn
-(`App::begin_shell`) committing a codex-style **exec cell** — the `! command`
+(`App::begin_shell`; every shell child — this, the model's `bash`, a
+background launch — spawns **detached from the controlling terminal** via the
+shared `spawn` module's setsid helper re-exec, so a `/dev/tty` password
+prompt like `sudo`'s fails fast instead of printing over the TUI and fighting
+the loop for the keyboard, `docs/tools.md`) committing a codex-style **exec cell** — the `! command`
 header on the dark user-style line (a `Role::Shell` message) with the `⎿`
 output **flush** below, `⎿ Running… (Ns)` while it runs (the elapsed rides the
 preview — a shell turn **hides the spinner status line** entirely,

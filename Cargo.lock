@@ -1125,6 +1125,7 @@ dependencies = [
  "image",
  "ratatui",
  "reqwest",
+ "rustix",
  "serde",
  "serde_json",
  "syntect",

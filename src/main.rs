@@ -74,8 +74,21 @@ use inline_tui::ui;
 /// Carried on the model-fetch worker's channel. See `docs/llm.md`.
 type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
 
+fn main() -> io::Result<()> {
+    // The detached-exec helper hook FIRST (crate::spawn, docs/tools.md): when
+    // this process was spawned as `{exe} __inline-tui-detached-exec {cmd}` it
+    // is a shell runner's child, not a TUI — the hook `setsid()`s away from
+    // the controlling terminal (so a `/dev/tty` password prompt like `sudo`'s
+    // fails fast instead of hijacking the screen) and becomes `sh -c {cmd}`
+    // in place, never returning. It must precede anything that touches the
+    // terminal or spawns threads — the tokio runtime and invariant 1's DSR
+    // cursor query included.
+    inline_tui::spawn::run_detached_exec_if_requested();
+    tui_main()
+}
+
 #[tokio::main(flavor = "current_thread")]
-async fn main() -> io::Result<()> {
+async fn tui_main() -> io::Result<()> {
     // Build the tiktoken tokenizer (~125 ms of one-time rank parsing) off the
     // interactive path, concurrently with terminal init, so the first turn's
     // `count_tokens` doesn't freeze the loop. Detached; it never touches stdin
@@ -140,6 +153,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // (the pure `background::tasks_dir`; the uid/cwd/session injected here at
     // the boundary).
     let cwd = std::env::current_dir().unwrap_or_default();
+    // Every shell child (model `bash`, `run_in_background`, the `!` shell)
+    // spawns through the terminal-detach helper: our own binary, re-execed in
+    // the mode `main` installed above, so commands run with no controlling
+    // terminal and a `sudo` password prompt errors at once instead of writing
+    // over the TUI (see `spawn`). Resolved ONCE here — the path stays valid
+    // even if a `cargo build` replaces the file mid-session; a failed
+    // `current_exe` (None) degrades to the attached fallback. The registry
+    // carries it to all three spawn sites.
     let registry = BackgroundRegistry::new(
         bg_tx,
         inline_tui::background::tasks_dir(
@@ -148,7 +169,8 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             &cwd,
             &session_id(),
         ),
-    );
+    )
+    .with_detach_helper(std::env::current_exe().ok());
     let mut bg_clocks: HashMap<String, Instant> = HashMap::new();
     // The reply backend. The dummy is the default (and the fallback) so the app
     // always runs offline; a real OpenAI-compatible model activates only when a
@@ -1982,24 +2004,22 @@ fn spawn_shell_command(
     cancel: CancelToken,
     registry: BackgroundRegistry,
 ) -> JoinHandle<()> {
-    use std::process::{Command, Stdio};
+    use std::process::Stdio;
 
     std::thread::spawn(move || {
         // A Ctrl+B pressed before this command started belongs to nothing.
         registry.clear_background_request();
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c")
-            .arg(&command)
-            .stdin(Stdio::null())
+        // Group + terminal membership come from `spawn::shell_command`: its
+        // own process group so a kill (Esc, quit, the registry) reaps the
+        // whole tree, and — through the registry's detach helper — no
+        // controlling terminal, so a password prompt (`! sudo …`) fails fast
+        // instead of writing over the TUI (the `llm::exec` pattern; see
+        // `spawn`, docs/shell-command.md).
+        let mut cmd =
+            inline_tui::spawn::shell_command(registry.detach_helper().as_deref(), &command);
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Its own process group so a kill (Esc, quit, the registry) reaps the
-        // whole tree — the `llm::exec` pattern.
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(err) => {

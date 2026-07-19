@@ -562,6 +562,70 @@ fn live_killed_background_task_is_known_to_the_model_within_the_turn() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_sudo_style_tty_prompt_fails_fast() {
+    // The sudo-prompt fix end to end (crate::spawn, docs/tools.md), through
+    // the production pipeline INCLUDING the real detach helper — the built
+    // TUI binary (CARGO_BIN_EXE), threaded on the registry exactly as
+    // `main.rs` threads it. The model runs a command that reads /dev/tty —
+    // sudo's password prompt, mechanism for mechanism (sudo itself is
+    // environment-dependent: absent, or passwordless as root). Detached, the
+    // open fails at once and the call resolves failed — well under its 30 s
+    // default timeout; attached, it would block on the terminal (the
+    // `Running…`-forever hijack this fix removes).
+    let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = std::env::temp_dir().join(format!("inline-tui-live-notty-{}", std::process::id()));
+    let registry = inline_tui::background::BackgroundRegistry::new(bg_tx, dir)
+        .with_detach_helper(Some(PathBuf::from(env!("CARGO_BIN_EXE_inline-tui"))));
+    let backend = backend().with_background(registry);
+
+    let prompt = "Use the bash tool exactly once to run exactly this command, verbatim, \
+                  with no timeout_ms argument: read pw < /dev/tty && echo PROMPT_READ_OK \
+                  Then report in one short sentence whether it could read from the terminal.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+
+    let mut reply = String::new();
+    let mut started_at = None;
+    let mut tool_end: Option<(String, bool, std::time::Duration)> = None;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolStart { .. } => started_at = Some(std::time::Instant::now()),
+            StreamEvent::ToolEnd { output, ok, .. } => {
+                if tool_end.is_none() {
+                    let elapsed = started_at.expect("ToolStart precedes ToolEnd").elapsed();
+                    tool_end = Some((output, ok, elapsed));
+                }
+            }
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("model replied: {reply:?}");
+
+    let (output, ok, elapsed) = tool_end.expect("the model ran the bash tool");
+    println!("tool resolved in {elapsed:?}: ok={ok} output={output:?}");
+    assert!(!ok, "the prompt read must fail, got: {output}");
+    assert!(
+        !output.contains("PROMPT_READ_OK"),
+        "the child reached a terminal: {output}"
+    );
+    assert!(
+        !output.contains("timed out"),
+        "the read blocked until the timeout — that IS the hijack bug: {output}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(10),
+        "the prompt path took {elapsed:?} — it must fail fast, not hang"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_run_in_background_resolves_and_completes() {
     // The full production background path (docs/background.md): the model is
     // told to run a command with run_in_background — the agent loop resolves

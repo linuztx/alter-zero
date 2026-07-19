@@ -38,7 +38,7 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 
 | tool | params | executes |
 | --- | --- | --- |
-| `bash` | `command` (req), `timeout_ms` (opt, default 30 000, cap 600 000) | `sh -c command`, stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
+| `bash` | `command` (req), `timeout_ms` (opt, default 30 000, cap 600 000) | `sh -c command` with **no controlling terminal** (`crate::spawn` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
 | `read` | `path` (req), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file, return `cat -n`-style numbered lines (so the model can cite line numbers to `edit`) |
 | `write` | `path` (req), `content` (req) | create parent dirs, write the file; report `Created {path} ({N} lines)` over the numbered contents for a new file, or the numbered diff hunks vs the previous content |
 | `edit` | `path` (req), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; report `Updated {path} (+A -D)` over the numbered diff hunks |
@@ -147,8 +147,9 @@ this in-turn protocol — see `docs/context.md`) all work unchanged.
 Boundary code (file + process I/O), verified by hand / smoke, wrapping the pure
 cores in `llm::tools`:
 
-- **`bash`** — `sh -c`, stdin `/dev/null`, stdout+stderr drained on reader threads
-  (a chatty command can't deadlock a full pipe), retained up to
+- **`bash`** — `sh -c` via [`crate::spawn::shell_command`] (detached from the
+  terminal — see below), stdin `/dev/null`, stdout+stderr drained on reader
+  threads (a chatty command can't deadlock a full pipe), retained up to
   `TOOL_OUTPUT_MAX_BYTES` (64 KiB) via a capped read, killed on the per-call
   timeout *or* a cancel. Output framed for the model as codex does:
   `Exit code: N` + the (truncated) output; a non-zero exit resolves the cell red.
@@ -170,6 +171,39 @@ cores in `llm::tools`:
 Every failure is returned as a **non-ok `ToolOutcome`** with a human/model-readable
 message (never a panic) — the model sees the error string as the tool result and
 can recover, exactly like codex's `RespondToModel`.
+
+### No controlling terminal — the sudo-prompt fix (`crate::spawn`)
+
+`stdin(Stdio::null())` does **not** make a command non-interactive: a password
+prompt (`sudo`, `ssh`, git's credential helper) opens **`/dev/tty`** — the
+controlling terminal, inherited through the process *session*, not through any
+fd — writes its prompt straight over the live region and then blocks reading
+the same keyboard the event loop owns. The symptom was a `⎿ Running…` bash
+cell that never resolved with a stray `[sudo] password for …:` glued to the
+composer.
+
+Every shell runner (this executor, `BackgroundRegistry::launch`, the `!`
+shell) therefore spawns through `spawn::shell_command`, which in production
+re-execs **the TUI's own binary** in a helper mode
+(`{current_exe} __inline-tui-detached-exec {command}`): `main()`'s first
+statement is the hook (`spawn::run_detached_exec_if_requested`), which calls
+the safe `rustix::process::setsid()` — `pre_exec` would be `unsafe`, forbidden
+crate-wide — and `exec`s `sh -c {command}` **in place** (same pid). A fresh
+session has no controlling terminal, so the `/dev/tty` open fails (`ENXIO`)
+and the prompting program errors out immediately — `sudo: a terminal is
+required to read the password` — resolving the cell red with an actionable
+message, exactly like Claude Code. `setsid` also makes the child the
+process-group leader (pgid == pid), preserving the group-kill / Ctrl+B-adopt
+contract `process_group(0)` used to provide; the plain attached `sh -c` +
+`process_group(0)` remains as the fallback wherever the helper isn't
+installed (unit tests — a re-exec of a libtest binary would run the test
+suite, not the command — or a failed `current_exe`). The helper path is
+resolved once at startup in `main.rs` and threaded on the registry
+(`BackgroundRegistry::with_detach_helper` → `detach_helper()`), which every
+runner already shares. Locked by the `spawn` argv unit tests, the
+executor/registry routing tests, `tests/detached_exec.rs` (the real binary,
+via `CARGO_BIN_EXE`), smoke Phase 44, and the live
+`live_sudo_style_tty_prompt_fails_fast` test.
 
 ## Enabling / disabling
 

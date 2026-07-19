@@ -313,7 +313,12 @@ impl ReplySource for LlmBackend {
             let mut executor = RealToolExecutor::new();
             let notices = background.clone();
             if let Some(registry) = background {
-                executor = executor.with_background(registry);
+                // The registry carries the terminal-detach helper from
+                // `main.rs`; hand it to the executor so foreground `bash`
+                // children detach exactly like `launch`ed ones (crate::spawn).
+                executor = executor
+                    .with_detach_helper(registry.detach_helper())
+                    .with_background(registry);
             }
             // The agentic loop: `run_agent` streams one round, runs any tool
             // calls the model requested (via `executor`, emitting the

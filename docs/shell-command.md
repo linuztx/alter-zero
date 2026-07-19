@@ -133,7 +133,16 @@ commit the header lines **without** a trailing blank, then spawn
 `spawn_shell_command` on a background thread that — reusing the `StreamEvent`
 channel and `CancelToken` like `DummyAi` — runs `sh -c {command}` with piped
 stdout/stderr drained on reader threads (no pipe-buffer deadlock), and sends
-`ToolEnd { output, ok }` then `StreamDone`. **Esc** routes to the existing
+`ToolEnd { output, ok }` then `StreamDone`. The child comes from
+`spawn::shell_command` with the registry's detach helper, so it runs
+**detached from the controlling terminal** (its own session via the
+`setsid()` helper re-exec — `crate::spawn`, the same spawn the model's `bash`
+tool uses): a command that prompts on `/dev/tty` (`! sudo …`) errors at once
+inside the cell — `sudo: a terminal is required to read the password` —
+instead of printing the prompt over the TUI and blocking on the keyboard the
+event loop owns (smoke Phase 44; interactive prompts never worked here — raw
+mode races every keystroke between the prompt and crossterm — so failing fast
+with the real error is strictly better). **Esc** routes to the existing
 `Action::Interrupt`: the cancel kills the child (the runner returns at once
 *without* joining its reader threads — a reparented grandchild like `sleep`
 can hold the pipe open long after `sh` dies), and `interrupt_turn` resolves
@@ -269,6 +278,10 @@ The `?` shortcuts band gains a `! for shell command` entry.
   the retained head is kept (with a `…` marker). The cap bounds peak memory; the
   trade-off is the tail is unrecoverable. Bump the const (or add head+tail
   retention, codex's `HeadTailBuffer`) if more is needed.
+- **Commands are non-interactive by design**: no stdin and no controlling
+  terminal (`crate::spawn`), so anything that prompts (`sudo`, `ssh`) fails
+  fast with its own "no terminal" error rather than hanging. Password flows
+  need a non-interactive form (`sudo -n`, an askpass helper, ssh keys).
 - stdout and stderr are **concatenated**, not truly interleaved.
 - ~~The interrupt notice is the shared `Conversation interrupted…` text.~~ —
   **resolved**: a shell interrupt now commits no notice, the resolved

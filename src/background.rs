@@ -187,6 +187,14 @@ struct Inner {
 pub struct BackgroundRegistry {
     inner: Arc<Mutex<Inner>>,
     events: UnboundedSender<BgEvent>,
+    /// The terminal-detach helper (`crate::spawn`), threaded from `main.rs`.
+    /// The registry is the shell-infrastructure handle every runner already
+    /// shares, so it also carries the helper: [`launch`] spawns through it,
+    /// and the executor / `!` runner read it back via [`detach_helper`].
+    ///
+    /// [`launch`]: BackgroundRegistry::launch
+    /// [`detach_helper`]: BackgroundRegistry::detach_helper
+    detach: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for BackgroundRegistry {
@@ -209,7 +217,26 @@ impl BackgroundRegistry {
                 dir,
             })),
             events,
+            detach: None,
         }
+    }
+
+    /// Spawn every shell child through the terminal-detach helper — the TUI's
+    /// own binary (`crate::spawn`), so a `/dev/tty` password prompt (`sudo`)
+    /// fails fast instead of hijacking the TUI. Production only (`main.rs`
+    /// resolves `current_exe` once at startup); without it children spawn
+    /// terminal-attached as before (unit tests).
+    #[must_use]
+    pub fn with_detach_helper(mut self, helper: Option<PathBuf>) -> Self {
+        self.detach = helper;
+        self
+    }
+
+    /// The terminal-detach helper this registry spawns through, for the other
+    /// runners (the model-tool executor, the `!` shell) to spawn through too.
+    #[must_use]
+    pub fn detach_helper(&self) -> Option<PathBuf> {
+        self.detach.clone()
     }
 
     /// Spawn `command` as a background task: `sh -c` in its own process group
@@ -224,19 +251,15 @@ impl BackgroundRegistry {
         description: Option<String>,
         from_model: bool,
     ) -> Result<LaunchedTask, String> {
-        let mut cmd = Command::new("sh");
-        cmd.arg("-c")
-            .arg(command)
-            .stdin(Stdio::null())
+        // Group + terminal membership come from `spawn::shell_command`: its
+        // own process group (pgid == pid) so kill() reaps grandchildren too,
+        // and — through the detach helper — no controlling terminal, so a
+        // `/dev/tty` prompt errors instead of wedging the task
+        // (see `crate::spawn`, the `llm::exec` pattern).
+        let mut cmd = crate::spawn::shell_command(self.detach.as_deref(), command);
+        cmd.stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        // Its own process group (pgid == pid) so kill() reaps grandchildren
-        // too — the `llm::exec` pattern.
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
-        }
         let mut child = cmd
             .spawn()
             .map_err(|err| format!("failed to run command: {err}"))?;
@@ -785,6 +808,22 @@ mod tests {
         assert!(
             reg.take_pending_notices().is_empty(),
             "a take drains the board — nothing is delivered twice"
+        );
+    }
+
+    #[test]
+    fn launch_spawns_through_the_detach_helper_when_configured() {
+        // A helper path that cannot exist: if launch routes the spawn through
+        // it (rather than silently keeping the plain `sh` fallback), the
+        // spawn fails. The real helper's conduct is covered by
+        // tests/detached_exec.rs and smoke.
+        let (reg, _rx) = registry();
+        let reg = reg.with_detach_helper(Some(PathBuf::from(
+            "/definitely/not/a/real/inline-tui-helper",
+        )));
+        assert!(
+            reg.launch("echo hi", None, true).is_err(),
+            "the spawn must route through the helper"
         );
     }
 
