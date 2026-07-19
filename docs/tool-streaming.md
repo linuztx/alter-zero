@@ -82,9 +82,19 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
   `… +N lines (ctrl+o to expand)` — via the shared `result_peek_block`.
 - **Running** (`running_command_lines`, drawn only in the live strip's preview
   where the boundary-supplied `elapsed` is available): the header, the **last**
-  `TOOL_PEEK_LINES` output lines, then `+{hidden} lines ({secs}s)` when any are
-  hidden above (else just the tail — the status line carries the timer). No
-  output yet → the existing `⎿ Running…` row.
+  `TOOL_PEEK_LINES` display **rows** of output, then `+{hidden} lines
+  ({secs}s)` when any source lines are fully hidden above (else just the tail —
+  the status line carries the timer). No output yet → the existing
+  `⎿ Running…` row. Long lines **wrap verbatim** to the width
+  (`wrap_verbatim` — the same wrapper the Ctrl+O view uses, so `ls -l`/`tree`
+  alignment survives) instead of clipping at the terminal edge; the window is
+  counted in wrapped rows, so a single long line tail-follows its own newest
+  rows without growing the strip past its budget, and the newest-first walk
+  wraps only what the window can show per animation frame. The footer counts
+  *source lines*, and only the fully hidden ones — a wrapped line whose newest
+  rows are on screen isn't "hidden". (The strip stays sized by the same
+  `preview_tool_lines` walk `render_live` paints from, so the count and the
+  paint agree by construction.)
 - **Ctrl+O** (`tool_full_lines`): the whole output, uncapped.
 
 ### Stripping the `Exit code: N` frame from the display

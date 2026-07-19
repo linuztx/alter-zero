@@ -82,7 +82,8 @@ loads it back and appends the turns that follow to the same file) in
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 `docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
-tails its output — the last lines + a `+N lines (Ns)` footer — via a
+tails its output — the last rows, long lines wrapped verbatim to the width, +
+a `+N lines (Ns)` footer — via a
 `StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
 (ctrl+o to expand)` when it finishes, Claude-Code style) in
 `docs/tool-streaming.md`; and the **background shells** (the `bash` tool's
@@ -129,8 +130,10 @@ plus, *while a turn is in flight*, a strip above it — a streaming preview row 
 preview shows a running tool's blue cell when one is executing — a backend tool's
 **whole** collapsed cell, the wrapped `● name(args)` header *plus* its output;
 before any output a `⎿ Running…` row, and once a `bash` command **streams** it
-**tails** its output — the last `TOOL_PEEK_LINES` lines + a `+N lines (Ns)`
-footer (`ui::running_command_lines`, `docs/tool-streaming.md`) — so a long
+**tails** its output — the last `TOOL_PEEK_LINES` display **rows**, long lines
+wrapped verbatim like the Ctrl+O view (never clipped at the width), + a
+`+N lines (Ns)` footer counting the fully hidden source lines
+(`ui::running_command_lines`, `docs/tool-streaming.md`) — so a long
 command isn't clipped and the running state shows; a **parallel
 batch** previews the *whole* `tool_queue` — the running call over each dim
 `⎿ Waiting…` sibling, blank-separated, `docs/parallel-tools.md`; the preview slot

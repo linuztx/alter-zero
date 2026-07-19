@@ -6,6 +6,7 @@
 //! ([`render_live`]). That keeps them unit-testable with a plain `Buffer` or
 //! ratatui's `TestBackend`, with no real terminal involved.
 
+use std::collections::VecDeque;
 use std::ops::Range;
 use std::path::Path;
 use std::time::Duration;
@@ -3817,25 +3818,49 @@ fn command_display_lines(tool: &ToolCall) -> Vec<String> {
 }
 
 /// The live preview for a **running** command-style backend tool (`bash`): the
-/// coloured `● name(args)` header, the **last** [`TOOL_PEEK_LINES`] output lines
-/// under the `⎿` gutter (the *tail* — what just streamed), then a
-/// `+{hidden} lines ({secs}s)` footer when any lines are hidden above it. This
-/// is Claude-Code's running-command look (the mock; `docs/tool-streaming.md`) —
-/// the asymmetric twin of the finished head peek in [`tool_lines`]. The
-/// `elapsed` is boundary-supplied (like the shell running row and the status
-/// timer), so this is drawn from [`preview_tool_lines`] where `App` is in hand.
+/// coloured `● name(args)` header, the **last** [`TOOL_PEEK_LINES`] display
+/// **rows** of its output under the `⎿` gutter (the *tail* — what just
+/// streamed), then a `+{hidden} lines ({secs}s)` footer when any source lines
+/// are fully hidden above it. This is Claude-Code's running-command look (the
+/// mock; `docs/tool-streaming.md`) — the asymmetric twin of the finished head
+/// peek in [`tool_lines`]. The `elapsed` is boundary-supplied (like the shell
+/// running row and the status timer), so this is drawn from
+/// [`preview_tool_lines`] where `App` is in hand.
+///
+/// Long lines **wrap verbatim** ([`wrap_verbatim`] — the same wrapper the
+/// Ctrl+O expanded view uses, so alignment survives) instead of clipping at
+/// the width; the window is counted in wrapped rows so a single long line
+/// tail-follows its own newest rows without growing the strip past its
+/// budget. Walking the source lines newest-first wraps only what the window
+/// can show — never the whole retained buffer — per animation frame.
 fn running_command_lines(tool: &ToolCall, elapsed: Duration, width: u16) -> Vec<Line<'static>> {
     let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
+    let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
     let display = command_display_lines(tool);
-    let shown = display.len().min(TOOL_PEEK_LINES);
-    let start = display.len() - shown; // the tail window
-    for (i, line) in display[start..].iter().enumerate() {
-        lines.push(output_row(i, truncate_cols(line, peek_width)));
+    // The tail window: the last TOOL_PEEK_LINES wrapped rows, each remembering
+    // its source line index so the footer can count what's *fully* hidden.
+    let mut window: VecDeque<(usize, String)> = VecDeque::new();
+    for (idx, line) in display.iter().enumerate().rev() {
+        for row in wrap_verbatim(line, wrap_width).into_iter().rev() {
+            window.push_front((idx, row));
+        }
+        if window.len() >= TOOL_PEEK_LINES {
+            break;
+        }
     }
-    let hidden = display.len() - shown; // lines hidden *above* the tail
+    while window.len() > TOOL_PEEK_LINES {
+        window.pop_front();
+    }
+    // Source lines wholly above the window. A partially shown wrapped line is
+    // on screen, not hidden — its index is the count of the lines above it.
+    let hidden = window.front().map_or(0, |(idx, _)| *idx);
+    let shown = window.len();
+    for (i, (_, row)) in window.into_iter().enumerate() {
+        lines.push(output_row(i, row));
+    }
     if hidden > 0 {
         // A continuation row (index ≥ 1) so it indents under the content column;
         // the `+N lines (Ns)` footer is meta, so it stays the dim `result_row`.
@@ -7826,6 +7851,74 @@ mod tests {
         assert!(
             !lines.iter().any(|l| plain(l).contains("lines (")),
             "no footer when nothing is hidden"
+        );
+    }
+
+    #[test]
+    fn running_command_lines_wraps_a_long_tail_line_instead_of_clipping() {
+        // The inline streaming tail must wrap like the Ctrl+O view does
+        // (wrap_verbatim — docs/tool-streaming.md), not silently clip at the
+        // width: every streamed column stays visible in the live cell.
+        let long = "0123456789".repeat(6); // 60 cols
+        let t = tool("Bash", "cat log", ToolStatus::Running, &long);
+        let lines = running_command_lines(&t, Duration::from_secs(1), 40);
+        // width 40 − the 5-col `  ⎿  ` gutter = 35 content cols → 2 rows.
+        let body: Vec<String> = lines[1..].iter().map(plain).collect();
+        assert_eq!(body.len(), 2, "the 60-col line wraps to two rows: {body:?}");
+        // Strip the 5-char `  ⎿  ` gutter / continuation indent off each row.
+        let joined: String = body
+            .iter()
+            .map(|l| l.chars().skip(5).collect::<String>())
+            .collect::<Vec<_>>()
+            .concat();
+        assert_eq!(joined, long, "no column is dropped: {body:?}");
+    }
+
+    #[test]
+    fn running_command_lines_tail_window_counts_display_rows_when_lines_wrap() {
+        // The TOOL_PEEK_LINES cap bounds *display rows*, so a wrapping tail
+        // can't grow the strip past its budget — a long newest line
+        // tail-follows its own newest rows. The `+N lines` footer keeps
+        // counting source lines, and only the ones *fully* hidden above the
+        // window (a partially shown wrapped line is on screen, not hidden).
+        let long = "x".repeat(70); // 35 content cols → exactly 2 rows
+        let out = format!("alpha\nbeta\ngamma\n{long}");
+        let t = tool("Bash", "cat log", ToolStatus::Running, &out);
+        let lines = running_command_lines(&t, Duration::from_secs(7), 40);
+        let body: Vec<String> = lines[1..].iter().map(plain).collect();
+        assert_eq!(body.len(), 5, "4 tail rows + the footer: {body:?}");
+        assert!(
+            !body.iter().any(|l| l.contains("alpha")),
+            "alpha is fully hidden above the window: {body:?}"
+        );
+        assert!(
+            body[0].contains("beta") && body[1].contains("gamma"),
+            "the window opens on the still-visible lines: {body:?}"
+        );
+        assert_eq!(body[2].trim(), "x".repeat(35), "the long line wraps…");
+        assert_eq!(body[3].trim(), "x".repeat(35), "…across the window's rows");
+        assert_eq!(
+            body.last().unwrap().trim(),
+            "+1 lines (7s)",
+            "the footer counts the one fully hidden line: {body:?}"
+        );
+    }
+
+    #[test]
+    fn preview_rows_counts_a_wrapped_running_tail() {
+        // Strip sizing and paint agree when the tail wraps: preview_rows
+        // counts the wrapped rows (header + windowed tail + the Ctrl+B hint),
+        // not one row per source line.
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Bash", "cat log");
+        // Past the hint delay so the Ctrl+B hint row is part of the preview.
+        app.set_command_elapsed(Some(Duration::from_secs(3)));
+        app.push_tool_output(&"y".repeat(70)); // 35 content cols → 2 rows
+        assert_eq!(
+            preview_rows(&app, 40),
+            4,
+            "header + 2 wrapped tail rows + the Ctrl+B hint"
         );
     }
 
