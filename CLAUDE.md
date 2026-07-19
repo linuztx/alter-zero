@@ -30,10 +30,10 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `spawn`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
-`app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`spawn`) so behavior
+`app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
 **and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read, the
 `/resume` session recording + dir scan — `main.rs::SessionRecorder`/`list_sessions`,
@@ -82,8 +82,8 @@ loads it back and appends the turns that follow to the same file) in
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 `docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command
-tails its output — the last rows, long lines wrapped verbatim to the width, +
-a `+N lines (Ns)` footer — via a
+tails its output — the last rows, long lines word-wrapped to the width with
+spaces preserved, + a `+N lines (Ns)` footer — via a
 `StreamEvent::ToolOutput` channel, collapsing to the head peek `… +N lines
 (ctrl+o to expand)` when it finishes, Claude-Code style) in
 `docs/tool-streaming.md`; and the **background shells** (the `bash` tool's
@@ -131,7 +131,8 @@ preview shows a running tool's blue cell when one is executing — a backend too
 **whole** collapsed cell, the wrapped `● name(args)` header *plus* its output;
 before any output a `⎿ Running…` row, and once a `bash` command **streams** it
 **tails** its output — the last `TOOL_PEEK_LINES` display **rows**, long lines
-wrapped verbatim like the Ctrl+O view (never clipped at the width), + a
+word-wrapped like the Ctrl+O view (`ui::wrap_output` — never clipped at the
+width, spaces preserved), + a
 `+N lines (Ns)` footer counting the fully hidden source lines
 (`ui::running_command_lines`, `docs/tool-streaming.md`) — so a long
 command isn't clipped and the running state shows; a **parallel
@@ -194,7 +195,7 @@ exit the mode; the palette/`?` band are suppressed in it); Enter from an idle
 composer runs the draft under `sh -c` on a background thread as a turn
 (`App::begin_shell`; every shell child — this, the model's `bash`, a
 background launch — spawns **detached from the controlling terminal** via the
-shared `spawn` module's setsid helper re-exec, so a `/dev/tty` password
+shared `subprocess` module's setsid detach chain, so a `/dev/tty` password
 prompt like `sudo`'s fails fast instead of printing over the TUI and fighting
 the loop for the keyboard, `docs/tools.md`) committing a codex-style **exec cell** — the `! command`
 header on the dark user-style line (a `Role::Shell` message) with the `⎿`
@@ -633,7 +634,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   header bullet in `message_lines`; shell `tool_lines`/`tool_full_lines` are
   headerless `⎿` blocks — inline up to `TOOL_PEEK_LINES` aligned display rows
   (`result_row` does the corner/continuation indent; a line wider than the
-  terminal **wraps verbatim** like the Ctrl+O view via `result_peek_block`
+  terminal **word-wraps with spaces preserved** like the Ctrl+O view
+  (`wrap_output`, via `result_peek_block`)
   rather than clipping, the cap counting wrapped rows so one huge line can't
   balloon the cell) then `… +N lines (ctrl+o
   to expand)`, `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;

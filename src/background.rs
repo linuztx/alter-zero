@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -187,7 +187,7 @@ struct Inner {
 pub struct BackgroundRegistry {
     inner: Arc<Mutex<Inner>>,
     events: UnboundedSender<BgEvent>,
-    /// The terminal-detach helper (`crate::spawn`), threaded from `main.rs`.
+    /// The terminal-detach helper (`crate::subprocess`), threaded from `main.rs`.
     /// The registry is the shell-infrastructure handle every runner already
     /// shares, so it also carries the helper: [`launch`] spawns through it,
     /// and the executor / `!` runner read it back via [`detach_helper`].
@@ -221,11 +221,11 @@ impl BackgroundRegistry {
         }
     }
 
-    /// Spawn every shell child through the terminal-detach helper — the TUI's
-    /// own binary (`crate::spawn`), so a `/dev/tty` password prompt (`sudo`)
-    /// fails fast instead of hijacking the TUI. Production only (`main.rs`
-    /// resolves `current_exe` once at startup); without it children spawn
-    /// terminal-attached as before (unit tests).
+    /// Install the terminal-detach helper — the TUI's own binary
+    /// (`crate::subprocess`), the fallback tier that keeps a `/dev/tty`
+    /// password prompt (`sudo`) failing fast even where the `setsid` binary
+    /// is absent (macOS). Production only (`main.rs` resolves `current_exe`
+    /// once at startup); without it the chain is just shorter.
     #[must_use]
     pub fn with_detach_helper(mut self, helper: Option<PathBuf>) -> Self {
         self.detach = helper;
@@ -251,17 +251,12 @@ impl BackgroundRegistry {
         description: Option<String>,
         from_model: bool,
     ) -> Result<LaunchedTask, String> {
-        // Group + terminal membership come from `spawn::shell_command`: its
-        // own process group (pgid == pid) so kill() reaps grandchildren too,
-        // and — through the detach helper — no controlling terminal, so a
-        // `/dev/tty` prompt errors instead of wedging the task
-        // (see `crate::spawn`, the `llm::exec` pattern).
-        let mut cmd = crate::spawn::shell_command(self.detach.as_deref(), command);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = cmd
-            .spawn()
+        // Group + terminal membership (and stdio) come from
+        // `subprocess::spawn_detached_shell`: its own process group
+        // (pgid == pid) so kill() reaps grandchildren too, and no controlling
+        // terminal, so a `/dev/tty` prompt errors instead of wedging the task
+        // (see `crate::subprocess`, the `llm::exec` pattern).
+        let mut child = crate::subprocess::spawn_detached_shell(self.detach.as_deref(), command)
             .map_err(|err| format!("failed to run command: {err}"))?;
 
         // Drain both pipes on their own threads (a chatty command must never
@@ -575,6 +570,7 @@ fn kill_group(_pgid: u32) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
 
     fn registry() -> (
         BackgroundRegistry,
@@ -812,19 +808,37 @@ mod tests {
     }
 
     #[test]
-    fn launch_spawns_through_the_detach_helper_when_configured() {
-        // A helper path that cannot exist: if launch routes the spawn through
-        // it (rather than silently keeping the plain `sh` fallback), the
-        // spawn fails. The real helper's conduct is covered by
-        // tests/detached_exec.rs and smoke.
-        let (reg, _rx) = registry();
+    fn launch_survives_a_stale_detach_helper() {
+        // The helper is a fallback tier (`subprocess::tiers`): a path that no
+        // longer exists (the TUI binary replaced mid-session) must not break
+        // a launch — the chain lands on a working tier either way. The real
+        // helper's conduct is covered by tests/detached_exec.rs and smoke.
+        let (reg, mut rx) = registry();
         let reg = reg.with_detach_helper(Some(PathBuf::from(
             "/definitely/not/a/real/inline-tui-helper",
         )));
-        assert!(
-            reg.launch("echo hi", None, true).is_err(),
-            "the spawn must route through the helper"
-        );
+        let task = reg
+            .launch("echo hi", None, true)
+            .expect("the chain survives a stale helper");
+        // The task runs to completion like any other launch.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            match rx.try_recv() {
+                Ok(BgEvent::Exited { code, .. }) => {
+                    assert_eq!(code, Some(0));
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "the launched task exits"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
+        std::fs::remove_file(&task.output_path).ok();
     }
 
     #[test]

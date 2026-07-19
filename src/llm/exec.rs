@@ -9,7 +9,7 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -55,11 +55,12 @@ const BASH_POLL_INTERVAL: Duration = Duration::from_millis(20);
 #[derive(Debug, Clone, Default)]
 pub struct RealToolExecutor {
     background: Option<BackgroundRegistry>,
-    /// The terminal-detach helper (`crate::spawn`): the TUI's own binary,
-    /// re-execed per `bash` child so the command runs with **no controlling
-    /// terminal** — a `/dev/tty` password prompt (`sudo`) fails fast instead
-    /// of hijacking the TUI. `None` (tests, embedders without the hook) keeps
-    /// the plain attached `sh -c` fallback.
+    /// The terminal-detach helper (`crate::subprocess`): the TUI's own binary,
+    /// available as the re-exec fallback tier when the `setsid` binary is
+    /// absent (macOS, minimal images) — so `bash` children run with **no
+    /// controlling terminal** and a `/dev/tty` password prompt (`sudo`) fails
+    /// fast instead of hijacking the TUI. `None` (tests, embedders without
+    /// the hook) just shortens the tier chain.
     detach_helper: Option<std::path::PathBuf>,
 }
 
@@ -79,7 +80,7 @@ impl RealToolExecutor {
 
     /// Route `bash` children through the terminal-detach helper (production —
     /// `main.rs` resolves its own binary once at startup and the backend
-    /// copies it off the registry). See `crate::spawn`.
+    /// copies it off the registry). See `crate::subprocess`.
     #[must_use]
     pub fn with_detach_helper(mut self, helper: Option<std::path::PathBuf>) -> Self {
         self.detach_helper = helper;
@@ -193,19 +194,15 @@ fn run_bash(
     }
     let timeout = Duration::from_millis(args.timeout_ms());
 
-    // Group + terminal membership come from `spawn::shell_command`: the child
-    // leads its own process group (pgid == pid — a command that forks or
-    // backgrounds a grandchild leaves it holding the stdout/stderr pipe, and
-    // only a **group** kill reaps the whole tree, so the reader-thread joins
-    // can't hang) and, through the detach helper, has **no controlling
-    // terminal** — a `/dev/tty` password prompt (`sudo`) errors at once
-    // instead of hijacking the TUI (see `crate::spawn`, docs/tools.md).
-    let mut command = crate::spawn::shell_command(detach_helper, &args.command);
-    command
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = match command.spawn() {
+    // Group + terminal membership come from `subprocess::spawn_detached_shell`
+    // (stdio too — stdin null, stdout/stderr piped): the child leads its own
+    // process group (pgid == pid — a command that forks or backgrounds a
+    // grandchild leaves it holding the stdout/stderr pipe, and only a
+    // **group** kill reaps the whole tree, so the reader-thread joins can't
+    // hang) and has **no controlling terminal** — a `/dev/tty` password
+    // prompt (`sudo`) errors at once instead of hijacking the TUI (see
+    // `crate::subprocess`, docs/tools.md).
+    let mut child = match crate::subprocess::spawn_detached_shell(detach_helper, &args.command) {
         Ok(child) => child,
         Err(err) => return ToolOutcome::error(format!("failed to run command: {err}")),
     };
@@ -517,12 +514,12 @@ fn create_parents(path: &Path) -> std::io::Result<()> {
 }
 
 /// Kill `child`'s entire process group and reap it. Because `run_bash` spawns
-/// through [`crate::spawn::shell_command`], the child leads its own group
-/// (pgid == pid — via the detach helper's `setsid` or the fallback's
-/// `process_group(0)`), so a **negative pid** targets the whole tree — reaping
-/// any process the command forked or backgrounded, which would otherwise keep
-/// the stdout/stderr pipe open and hang a reader-thread join (defeating the
-/// timeout). Best-effort; errors are ignored.
+/// through [`crate::subprocess::spawn_detached_shell`], the child leads its
+/// own group (pgid == pid — via `setsid` in the detached tiers or
+/// `process_group(0)` in the attached one), so a **negative pid** targets the
+/// whole tree — reaping any process the command forked or backgrounded, which
+/// would otherwise keep the stdout/stderr pipe open and hang a reader-thread
+/// join (defeating the timeout). Best-effort; errors are ignored.
 ///
 /// This crate `forbid`s `unsafe`, so it can't call `libc::kill(-pid, …)`
 /// directly; instead it uses the shell's POSIX `kill` builtin, which treats a
@@ -606,10 +603,12 @@ mod tests {
     }
 
     #[test]
-    fn bash_spawns_through_the_detach_helper_when_configured() {
-        // A helper path that cannot exist: if the executor routes the spawn
-        // through it (rather than silently keeping the plain `sh` fallback),
-        // the spawn fails and the outcome says so. The real helper's conduct
+    fn bash_survives_a_stale_detach_helper() {
+        // The helper is a fallback TIER (`subprocess::tiers`), not the only
+        // route: with the `setsid` binary present the chain never needs it,
+        // and even a helper path that no longer exists (the TUI binary
+        // replaced or deleted mid-session) must not break the tool — the
+        // chain lands on a working tier either way. The real helper's conduct
         // (setsid → no controlling terminal, then exec `sh -c`) is covered by
         // tests/detached_exec.rs against the built binary, and by smoke.
         let out = RealToolExecutor::new()
@@ -619,12 +618,8 @@ mod tests {
                 &CancelToken::new(),
                 &mut |_| {},
             );
-        assert!(!out.ok, "the spawn must route through the helper");
-        assert!(
-            out.output.contains("failed to run command"),
-            "got {}",
-            out.output
-        );
+        assert!(out.ok, "the chain survives a stale helper: {}", out.output);
+        assert!(out.output.contains("hi"), "got {}", out.output);
     }
 
     #[test]

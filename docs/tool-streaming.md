@@ -80,40 +80,47 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 
 - **Finished** (`tool_lines`): the first `TOOL_PEEK_LINES` display **rows** of
   output then `… +N lines (ctrl+o to expand)` — via the shared
-  `result_peek_block`. Each line **wraps verbatim** to the width
-  (`wrap_verbatim`, like the Ctrl+O view) rather than clipping at the terminal
-  edge, so a long line's tail no longer disappears; the window is bounded by
-  display rows (so one huge line can't balloon the committed cell — it
-  tail-follows the window like the running preview), and the `+N lines` hint
-  counts **source lines** not fully shown, so it appears whenever any content
-  is cut — even the wrapped remainder of a single long line.
+  `result_peek_block`. Each line **word-wraps, spaces preserved**
+  (`wrap_output`, the same wrapper the Ctrl+O view uses — a prose error like
+  `sudo`'s breaks at words, never mid-"askpass"; `ls -l` columns that fit
+  stay byte-exact) rather than clipping at the terminal edge, so a long
+  line's tail no longer disappears; the window is bounded by display rows (so
+  one huge line can't balloon the committed cell — it tail-follows the window
+  like the running preview), and the `+N lines` hint counts **source lines**
+  not fully shown, so it appears whenever any content is cut — even the
+  wrapped remainder of a single long line. (The legacy diff-fallback peek
+  wraps **verbatim** instead — code, never reflowed at spaces — with each
+  wrapped row coloured by its *source* line's `+`/`-` marker, so a
+  continuation row keeps its tint.)
 - **Running** (`running_command_lines`, drawn only in the live strip's preview
   where the boundary-supplied `elapsed` is available): the header, the **last**
   `TOOL_PEEK_LINES` display **rows** of output, then `+{hidden} lines
   ({secs}s)` when any source lines are fully hidden above (else just the tail —
   the status line carries the timer). No output yet → the existing
-  `⎿ Running…` row. Long lines **wrap verbatim** to the width
-  (`wrap_verbatim` — the same wrapper the Ctrl+O view uses, so `ls -l`/`tree`
-  alignment survives) instead of clipping at the terminal edge; the window is
-  counted in wrapped rows, so a single long line tail-follows its own newest
-  rows without growing the strip past its budget, and the newest-first walk
-  wraps only what the window can show per animation frame. The footer counts
-  *source lines*, and only the fully hidden ones — a wrapped line whose newest
-  rows are on screen isn't "hidden". (The strip stays sized by the same
+  `⎿ Running…` row. Long lines **word-wrap** the same way (`wrap_output`)
+  instead of clipping at the terminal edge; the window is counted in wrapped
+  rows, so a single long line tail-follows its own newest rows without
+  growing the strip past its budget, and the newest-first walk wraps only
+  what the window can show per animation frame. The footer counts *source
+  lines*, and only the fully hidden ones — a wrapped line whose newest rows
+  are on screen isn't "hidden". (The strip stays sized by the same
   `preview_tool_lines` walk `render_live` paints from, so the count and the
   paint agree by construction.)
-- **Ctrl+O** (`tool_full_lines`): the whole output, uncapped.
+- **Ctrl+O** (`tool_full_lines`): the whole output, uncapped — `wrap_output`
+  too, so the expanded view and the inline peek render identically.
 
-### Stripping the `Exit code: N` frame from the display
+### The `Exit code: N` frame, reframed for display
 
 `tool.output` stays framed (`Exit code: 0\n…`) because `context::context_messages`
 replays it verbatim as the model-facing `tool` result on later turns. For the
-**display** a leading `Exit code: <n>` line is dropped (`command_display_lines`)
-so the cell reads like the mock — the real command output, not the frame. A
-non-zero exit is already signalled by the red bullet/gutter (its stderr, when
-any, is in the body), so no information the user needs is lost. Stripping only
-fires when the line is actually present, so non-`bash` tools and old rollouts are
-untouched.
+**display** (`command_display_output`): on **success** the leading
+`Exit code: 0` line is dropped so the cell reads like the mock — the real
+command output, not the frame; on **failure** it is rewritten to an
+`Error: Exit code N` (or `Error: killed by signal`) line kept above the body,
+so a red cell says *why* it failed even when the command printed nothing (a
+bare `exit 3` used to show `(no output)`). Reframing only fires when the
+frame line is actually present, so non-`bash` tools, `!` shell cells (whose
+output is raw, never framed), and old rollouts are untouched.
 
 ## Live in the Ctrl+O overlay (ours streams; Claude Code doesn't)
 

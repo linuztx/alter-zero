@@ -1,7 +1,8 @@
-//! Integration proof of the terminal-detach helper (`inline_tui::spawn`,
+//! Integration proof of the terminal detach (`inline_tui::subprocess`,
 //! docs/tools.md) against the **real built binary**: cargo hands integration
 //! tests the bin's path as `CARGO_BIN_EXE_inline-tui`, whose `main` installs
-//! the helper hook — so these run the exact production re-exec, not a stand-in.
+//! the helper hook — so the re-exec tier here is the exact production one,
+//! not a stand-in.
 //!
 //! Offline and deterministic (no network, no model): the executor is driven
 //! directly, the way the agent loop drives it. The user-visible symptom this
@@ -71,6 +72,31 @@ fn helper_reexec_preserves_output_and_exit_status() {
         out.output.contains("through-stdout") && out.output.contains("through-stderr"),
         "both pipes survive the re-exec: {}",
         out.output
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_helper_reexec_tier_detaches_on_its_own() {
+    // macOS-representative: there is no `setsid` binary there, so the chain's
+    // second tier — the TUI's own binary re-execed in helper mode — must
+    // detach by itself. Drive that tier directly (`command_for`), bypassing
+    // the `setsid` tier Linux would normally win with.
+    use inline_tui::subprocess::{DetachTier, command_for};
+    let helper = helper();
+    let mut child = command_for(
+        &DetachTier::HelperReexec(&helper),
+        "if sh -c ': < /dev/tty' 2>/dev/null; then echo GOT_TTY; else echo NO_TTY; fi",
+    )
+    .spawn()
+    .expect("spawns");
+    let mut out = String::new();
+    std::io::Read::read_to_string(child.stdout.as_mut().expect("piped stdout"), &mut out)
+        .expect("reads output");
+    let _ = child.wait();
+    assert!(
+        out.contains("NO_TTY") && !out.contains("GOT_TTY"),
+        "the helper tier detaches on its own: {out:?}"
     );
 }
 

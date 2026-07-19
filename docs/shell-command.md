@@ -83,11 +83,12 @@ The committed result is one Claude-Code-style **exec cell** — the `! command`
 dark header, then the output as a `⎿` block (the first line under the corner,
 the rest aligned beneath it), capped inline at `TOOL_PEEK_LINES` (4) display
 **rows** with a `… +N lines (ctrl+o to expand)` hint when more is hidden. A
-line wider than the terminal **wraps verbatim** (`wrap_verbatim`, like the
-Ctrl+O view) instead of clipping at the edge, so no output text disappears;
-the cap counts wrapped rows, so a very long line can't balloon the cell (its
-tail rides behind the hint), and the `+N lines` count includes a line only
-partially shown:
+line wider than the terminal **word-wraps, spaces preserved** (`wrap_output`,
+the same wrapper the Ctrl+O view uses — prose like a `sudo` error breaks at
+words, `ls -l` columns that fit stay byte-exact) instead of clipping at the
+edge, so no output text disappears; the cap counts wrapped rows, so a very
+long line can't balloon the cell (its tail rides behind the hint), and the
+`+N lines` count includes a line only partially shown:
 
 ```
 ! ls                           ← Role::Shell header: dark user-style line
@@ -139,10 +140,11 @@ commit the header lines **without** a trailing blank, then spawn
 channel and `CancelToken` like `DummyAi` — runs `sh -c {command}` with piped
 stdout/stderr drained on reader threads (no pipe-buffer deadlock), and sends
 `ToolEnd { output, ok }` then `StreamDone`. The child comes from
-`spawn::shell_command` with the registry's detach helper, so it runs
-**detached from the controlling terminal** (its own session via the
-`setsid()` helper re-exec — `crate::spawn`, the same spawn the model's `bash`
-tool uses): a command that prompts on `/dev/tty` (`! sudo …`) errors at once
+`subprocess::spawn_detached_shell` with the registry's detach helper, so it
+runs **detached from the controlling terminal** (its own session via the
+`setsid` binary, else the `setsid()` helper re-exec — `crate::subprocess`,
+the same spawn the model's `bash` tool uses): a command that prompts on
+`/dev/tty` (`! sudo …`) errors at once
 inside the cell — `sudo: a terminal is required to read the password` —
 instead of printing the prompt over the TUI and blocking on the keyboard the
 event loop owns (smoke Phase 44; interactive prompts never worked here — raw
@@ -247,8 +249,9 @@ The `?` shortcuts band gains a `! for shell command` entry.
   `⎿ Running…` while running (`tool_lines`; the live preview adds the elapsed);
   the Ctrl+O `tool_full_lines` is headerless too
   (no `● ls` bullet) and shows the retained output uncapped under `⎿`,
-  whitespace preserved verbatim (`wrap_verbatim` — `ls -l`/`tree` alignment
-  survives; `wrap_text` stays for messages); a
+  word-wrapped with whitespace preserved (`wrap_output` — `ls -l`/`tree`
+  alignment survives, prose breaks at words; `wrap_text` stays for
+  messages); a
   truncated output (`tool.truncated` set) appends a dim `…`
   (`TOOL_TRUNCATED_MARKER`) line after the last retained line in the expanded
   view, while a complete output appends nothing; `conversation_lines` and
@@ -284,9 +287,9 @@ The `?` shortcuts band gains a `! for shell command` entry.
   trade-off is the tail is unrecoverable. Bump the const (or add head+tail
   retention, codex's `HeadTailBuffer`) if more is needed.
 - **Commands are non-interactive by design**: no stdin and no controlling
-  terminal (`crate::spawn`), so anything that prompts (`sudo`, `ssh`) fails
-  fast with its own "no terminal" error rather than hanging. Password flows
-  need a non-interactive form (`sudo -n`, an askpass helper, ssh keys).
+  terminal (`crate::subprocess`), so anything that prompts (`sudo`, `ssh`)
+  fails fast with its own "no terminal" error rather than hanging. Password
+  flows need a non-interactive form (`sudo -n`, an askpass helper, ssh keys).
 - stdout and stderr are **concatenated**, not truly interleaved.
 - ~~The interrupt notice is the shared `Conversation interrupted…` text.~~ —
   **resolved**: a shell interrupt now commits no notice, the resolved

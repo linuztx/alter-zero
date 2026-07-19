@@ -1326,9 +1326,10 @@ fn wrap_segment(segment: &str, width: usize) -> Vec<String> {
 /// its bytes exactly; a line wider than `width` is hard-broken on grapheme
 /// boundaries, measured in display columns like [`wrap_segment`]'s hard break
 /// (an overflowing cluster is placed alone — it can't be split further).
-/// `width == 0` disables wrapping, like [`wrap_text`]. Used by
-/// [`tool_full_lines`], so the Ctrl+O expanded output is at least as faithful
-/// as the inline peek's `truncate_cols`; **messages** keep [`wrap_text`].
+/// `width == 0` disables wrapping, like [`wrap_text`]. Used for **diff
+/// bodies** (code — inline peek and Ctrl+O alike, coloured by source line);
+/// command/shell output word-wraps via [`wrap_output`] instead, and
+/// **messages** keep [`wrap_text`].
 fn wrap_verbatim(text: &str, width: u16) -> Vec<String> {
     if width == 0 {
         return text.split('\n').map(str::to_string).collect();
@@ -1350,6 +1351,62 @@ fn wrap_verbatim(text: &str, width: u16) -> Vec<String> {
             }
             cur.push_str(g);
             cur_w += g_w;
+        }
+        out.push(cur);
+    }
+    out
+}
+
+/// Wrap `text` to `width` columns at **word boundaries, preserving
+/// whitespace** — the middle ground between [`wrap_text`] (word boundaries but
+/// *collapses* space runs) and [`wrap_verbatim`] (preserves whitespace but
+/// hard-breaks *mid-word*). A tool's captured output wants both: prose errors
+/// (`sudo: …`) should break cleanly at spaces, yet a line's exact spaces must
+/// survive so `ls -l` columns / indentation that already fit are untouched —
+/// only an over-wide line reflows. The boundary space stays at the end of the
+/// current row (so concatenating the rows reconstructs the line byte-exactly)
+/// and continuation rows start at a word. A single word wider than `width` is
+/// hard-broken on grapheme boundaries, measured in display columns (like
+/// [`wrap_segment`]'s hard break). `width == 0` disables wrapping. Used by the
+/// command/shell peek ([`result_peek_block`]), the running tail
+/// ([`running_command_lines`]), and the Ctrl+O output ([`tool_full_lines`]),
+/// so the three wrap identically.
+fn wrap_output(text: &str, width: u16) -> Vec<String> {
+    if width == 0 {
+        return text.split('\n').map(str::to_string).collect();
+    }
+    let width = width as usize;
+    let mut out = Vec::new();
+    for line in text.split('\n') {
+        let mut cur = String::new();
+        let mut cur_w = 0usize;
+        // Byte index in `cur` just past the most recent whitespace grapheme — a
+        // clean break point. `None` until the first space and after each break.
+        let mut brk: Option<usize> = None;
+        for g in line.graphemes(true) {
+            let g_w = cols(g);
+            if cur_w > 0 && cur_w + g_w > width {
+                match brk {
+                    // Break at the last space: it stays on the current row, the
+                    // partial word after it carries to the next.
+                    Some(bp) => {
+                        let cont = cur.split_off(bp);
+                        out.push(std::mem::replace(&mut cur, cont));
+                        cur_w = cols(&cur);
+                    }
+                    // No space to break on — hard-break the over-long word.
+                    None => {
+                        out.push(std::mem::take(&mut cur));
+                        cur_w = 0;
+                    }
+                }
+                brk = None;
+            }
+            cur.push_str(g);
+            cur_w += g_w;
+            if g.chars().all(char::is_whitespace) {
+                brk = Some(cur.len());
+            }
         }
         out.push(cur);
     }
@@ -3447,19 +3504,6 @@ fn diff_line_color(line: &str) -> Option<Color> {
     }
 }
 
-/// A `⎿` result row for an `edit`/`write` diff cell, coloured by the row's own
-/// leading diff marker. Used for the **inline peek** fallback
-/// ([`result_peek_block`]) when a diff didn't parse as the numbered
-/// [`file_cell_lines`] format — real `edit`/`write` diffs take that richer
-/// path. The peek now wraps like the expanded view, so a wrapped
-/// **continuation** row (no leading `+`/`-`) falls to the dim context colour;
-/// the marker row keeps its tint. Codex's diff look, in the existing gutter.
-/// See `docs/tools.md`.
-fn diff_result_row(index: usize, text: String) -> Line<'static> {
-    let color = diff_line_color(&text);
-    gutter_row(index, text, color)
-}
-
 /// One parsed row of a numbered `Created …`/`Updated …` body — the
 /// `llm::tools` gutter format (`{n:>W} {text}` / `{n:>W} {sign}{text}`) a
 /// `write`/`edit` cell restyles ([`file_cell_lines`]).
@@ -3794,29 +3838,44 @@ fn split_display_lines(text: &str) -> Vec<String> {
     out
 }
 
-/// `output` with a leading `Exit code: N` frame line dropped, for **display**
-/// — the frame stays in `tool.output` for the model / context replay
-/// (`context::context_messages`), but the cell reads like the real command
-/// output (the mock, `docs/tool-streaming.md`). Only fires when the line is
-/// actually present, so non-`bash` tools and old rollouts are untouched. A
-/// non-zero exit is signalled by the red bullet/gutter (its stderr, when any,
-/// is in the body), so no information the user needs is lost.
-fn command_display_output(output: &str) -> &str {
-    match output.strip_prefix("Exit code: ") {
-        // Drop through the first newline (the frame line); the body follows.
-        Some(rest) => match rest.find('\n') {
-            Some(nl) => &rest[nl + 1..],
-            // The whole output is just the frame (a failure with no body).
-            None => "",
-        },
-        None => output,
+/// `output` reframed for **display**: on **success** the `Exit code: 0` line
+/// is dropped so the cell reads like the real command output (the mock,
+/// `docs/tool-streaming.md`); on **failure** it is rewritten to an
+/// `Error: Exit code N` (or `Error: killed by signal`) line kept above the
+/// body, so a red cell says *why* it failed even when the body is empty. The
+/// raw frame stays in `tool.output` for the model / context replay
+/// (`context::context_messages`) — this is display-only. Only fires when the
+/// frame is present, so non-`bash` tools and old rollouts are untouched.
+fn command_display_output(output: &str) -> std::borrow::Cow<'_, str> {
+    let Some(rest) = output.strip_prefix("Exit code: ") else {
+        return std::borrow::Cow::Borrowed(output);
+    };
+    // The frame is `Exit code: {code}\n{body}` (the body may be absent).
+    let (code, body) = match rest.find('\n') {
+        Some(nl) => (&rest[..nl], &rest[nl + 1..]),
+        None => (rest, ""),
+    };
+    if code == "0" {
+        // Success: the frame is noise — show just the body.
+        return std::borrow::Cow::Borrowed(body);
     }
+    // Failure: surface the exit code as an `Error: …` header above the body.
+    let head = if code == "killed by signal" {
+        "Error: killed by signal".to_string()
+    } else {
+        format!("Error: Exit code {code}")
+    };
+    std::borrow::Cow::Owned(if body.is_empty() {
+        head
+    } else {
+        format!("{head}\n{body}")
+    })
 }
 
 /// A command-style tool's output as display lines — [`tool_output_lines`] with
-/// the `Exit code: N` frame stripped ([`command_display_output`]).
+/// the `Exit code: N` frame reframed for display ([`command_display_output`]).
 fn command_display_lines(tool: &ToolCall) -> Vec<String> {
-    split_display_lines(command_display_output(&tool.output))
+    split_display_lines(&command_display_output(&tool.output))
 }
 
 /// The live preview for a **running** command-style backend tool (`bash`): the
@@ -3829,12 +3888,13 @@ fn command_display_lines(tool: &ToolCall) -> Vec<String> {
 /// running row and the status timer), so this is drawn from
 /// [`preview_tool_lines`] where `App` is in hand.
 ///
-/// Long lines **wrap verbatim** ([`wrap_verbatim`] — the same wrapper the
-/// Ctrl+O expanded view uses, so alignment survives) instead of clipping at
-/// the width; the window is counted in wrapped rows so a single long line
-/// tail-follows its own newest rows without growing the strip past its
-/// budget. Walking the source lines newest-first wraps only what the window
-/// can show — never the whole retained buffer — per animation frame.
+/// Long lines **word-wrap, spaces preserved** ([`wrap_output`] — the same
+/// wrapper the finished peek and the Ctrl+O view use, so alignment survives
+/// and prose breaks at words) instead of clipping at the width; the window is
+/// counted in wrapped rows so a single long line tail-follows its own newest
+/// rows without growing the strip past its budget. Walking the source lines
+/// newest-first wraps only what the window can show — never the whole
+/// retained buffer — per animation frame.
 fn running_command_lines(tool: &ToolCall, elapsed: Duration, width: u16) -> Vec<Line<'static>> {
     let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
     let peek_width = (width as usize)
@@ -3846,7 +3906,7 @@ fn running_command_lines(tool: &ToolCall, elapsed: Duration, width: u16) -> Vec<
     // its source line index so the footer can count what's *fully* hidden.
     let mut window: VecDeque<(usize, String)> = VecDeque::new();
     for (idx, line) in display.iter().enumerate().rev() {
-        for row in wrap_verbatim(line, wrap_width).into_iter().rev() {
+        for row in wrap_output(line, wrap_width).into_iter().rev() {
             window.push_front((idx, row));
         }
         if window.len() >= TOOL_PEEK_LINES {
@@ -3914,7 +3974,9 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
             ToolStatus::Waiting => vec![result_row(0, TOOL_WAITING.to_string())],
             ToolStatus::Running => vec![result_row(0, TOOL_RUNNING.to_string())],
             _ if out_lines.is_empty() => vec![result_row(0, TOOL_NO_OUTPUT.to_string())],
-            _ => result_peek_block(&out_lines, peek_width, output_row),
+            _ => result_peek_block(&out_lines, peek_width, wrap_output, |i, text, _| {
+                output_row(i, text)
+            }),
         };
     }
 
@@ -3933,7 +3995,16 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // the Ctrl+O view). Other backend tools keep the single collapsed peek line.
     if is_diff_tool(tool) && tool.status != ToolStatus::Running && !out_lines.is_empty() {
         let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
-        lines.extend(result_peek_block(&out_lines, peek_width, diff_result_row));
+        // Wrap verbatim (a diff body is code, never reflowed at spaces) and
+        // colour every wrapped row by the SOURCE line's `+`/`-` marker, so a
+        // continuation row keeps its tint — the Ctrl+O view colours the same
+        // way (docs/tools.md).
+        lines.extend(result_peek_block(
+            &out_lines,
+            peek_width,
+            wrap_verbatim,
+            |i, text, src| gutter_row(i, text, diff_line_color(src)),
+        ));
         return lines;
     }
 
@@ -3956,7 +4027,9 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
                     TOOL_NO_OUTPUT.to_string()
                 },
             )],
-            _ => result_peek_block(&display, peek_width, output_row),
+            _ => result_peek_block(&display, peek_width, wrap_output, |i, text, _| {
+                output_row(i, text)
+            }),
         };
         let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
         lines.extend(peek);
@@ -3982,12 +4055,14 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The head peek of `out_lines`: the first [`TOOL_PEEK_LINES`] **display rows**
-/// built with `row` (dim [`result_row`] or diff-coloured [`diff_result_row`]),
-/// each source line **wrapped verbatim** to `peek_width` ([`wrap_verbatim`] —
-/// the same wrapper the Ctrl+O view uses, so a long line's tail no longer
-/// disappears past the terminal edge and `ls -l`/`tree` alignment survives),
-/// then a `… +N lines` hint when any source line isn't fully shown. Shared by
-/// the shell cell and the diff-tool cell.
+/// built with `row` (which also receives the **source** line, so a diff cell
+/// can colour a wrapped continuation by the source's `+`/`-` marker), each
+/// source line wrapped to `peek_width` by `wrap` — [`wrap_output`] for
+/// command/shell output (word boundaries, spaces preserved, like the Ctrl+O
+/// view) or [`wrap_verbatim`] for diff bodies (code — hard-break, never
+/// reflowed at spaces) — so a long line's tail no longer disappears past the
+/// terminal edge. A `… +N lines` hint follows when any source line isn't fully
+/// shown.
 ///
 /// Bounding by display **rows** (not source lines) keeps a committed cell from
 /// ballooning scrollback when one line wraps huge — it tail-follows the window
@@ -3998,7 +4073,8 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
 fn result_peek_block(
     out_lines: &[String],
     peek_width: usize,
-    row: impl Fn(usize, String) -> Line<'static>,
+    wrap: fn(&str, u16) -> Vec<String>,
+    row: impl Fn(usize, String, &str) -> Line<'static>,
 ) -> Vec<Line<'static>> {
     let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
     let mut lines: Vec<Line> = Vec::new();
@@ -4007,7 +4083,7 @@ fn result_peek_block(
         if lines.len() >= TOOL_PEEK_LINES {
             break;
         }
-        let wrapped = wrap_verbatim(line, wrap_width);
+        let wrapped = wrap(line, wrap_width);
         let total = wrapped.len();
         let room = TOOL_PEEK_LINES - lines.len();
         let take = total.min(room);
@@ -4017,7 +4093,7 @@ fn result_peek_block(
             // continuation or the next source line — indents under the content
             // column, exactly like the uncapped Ctrl+O block.
             let i = lines.len();
-            lines.push(row(i, text));
+            lines.push(row(i, text, line));
         }
         if take < total {
             break; // the window filled mid-line: this line is only partial
@@ -4095,12 +4171,12 @@ fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         // (a `!` shell command's output is raw — never framed, never stripped;
         // docs/tool-streaming.md).
         _ => {
-            let body = if tool.shell {
-                tool.output.as_str()
+            let body: std::borrow::Cow<'_, str> = if tool.shell {
+                std::borrow::Cow::Borrowed(tool.output.as_str())
             } else {
                 command_display_output(&tool.output)
             };
-            wrap_verbatim(&expand_code_tabs(body), body_width)
+            wrap_output(&expand_code_tabs(&body), body_width)
                 .into_iter()
                 .map(|line| (line, Some(TOOL_OUTPUT_COLOR)))
                 .collect()
@@ -7201,6 +7277,67 @@ mod tests {
         assert_eq!(lines.concat(), text, "no text lost by the break");
     }
 
+    // --- wrap_output (word-boundary + whitespace-preserving, for tool output) ---
+
+    #[test]
+    fn wrap_output_breaks_at_word_boundaries_keeping_the_space() {
+        let rows = wrap_output("sudo: a terminal is required", 12);
+        assert!(rows.len() > 1, "the line wraps: {rows:?}");
+        for r in &rows {
+            assert!(cols(r) <= 12, "no row overflows: {rows:?}");
+        }
+        for r in &rows[1..] {
+            assert!(
+                !r.starts_with(' '),
+                "continuations start at a word: {rows:?}"
+            );
+        }
+        // The boundary space stays at the end of the current row, so
+        // concatenating the rows reconstructs the line byte-exactly.
+        assert_eq!(rows.concat(), "sudo: a terminal is required");
+        for r in &rows[..rows.len() - 1] {
+            assert!(
+                r.ends_with(' '),
+                "each break lands just past a space: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn wrap_output_preserves_internal_space_runs_that_fit() {
+        // Column-aligned output that fits is untouched — byte-exact.
+        assert_eq!(
+            wrap_output("-rw-r--r--  1 user   42 a.txt", 60),
+            vec!["-rw-r--r--  1 user   42 a.txt"]
+        );
+    }
+
+    #[test]
+    fn wrap_output_hard_breaks_an_overlong_word() {
+        // A single word wider than the width can't break at a space — it
+        // hard-breaks on grapheme boundaries like wrap_verbatim.
+        let rows = wrap_output(&"x".repeat(25), 10);
+        assert_eq!(rows, vec!["x".repeat(10), "x".repeat(10), "x".repeat(5)]);
+    }
+
+    #[test]
+    fn wrap_output_keeps_leading_indentation() {
+        assert_eq!(
+            wrap_output("    indented text", 40),
+            vec!["    indented text"]
+        );
+    }
+
+    #[test]
+    fn wrap_output_preserves_empty_lines() {
+        assert_eq!(wrap_output("a\n\nb", 10), vec!["a", "", "b"]);
+    }
+
+    #[test]
+    fn wrap_output_zero_width_disables_wrapping() {
+        assert_eq!(wrap_output("a b c", 0), vec!["a b c"]);
+    }
+
     // --- wrap_verbatim (the whitespace-preserving wrap for tool output) ---
 
     #[test]
@@ -7865,6 +8002,118 @@ mod tests {
             hint.contains("+1 lines"),
             "one source line, partially hidden below the window: {hint:?}"
         );
+    }
+
+    #[test]
+    fn a_finished_peek_wraps_the_sudo_error_at_word_boundaries() {
+        // The user-visible polish over the plain hard-break: "askpass" must
+        // never render as "as / kpass" across rows — the peek word-wraps like
+        // prose while still preserving the line's own spaces.
+        let out = "sudo: a terminal is required to read the password; either use \
+                   the -S option to read from standard input or configure an \
+                   askpass helper";
+        let mut t = tool("sudo pacman -Rns steam", "", ToolStatus::Failed, out);
+        t.shell = true;
+        let rows: Vec<String> = tool_lines(&t, 66).iter().map(plain).collect();
+        assert!(
+            rows.iter().any(|r| r.contains("askpass")),
+            "askpass stays intact on one row: {rows:?}"
+        );
+        for r in &rows[1..] {
+            let content: String = r.chars().skip(5).collect(); // drop the gutter
+            assert!(
+                !content.starts_with(' '),
+                "continuations start at a word: {rows:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_command_cell_surfaces_its_exit_code() {
+        // A red cell says WHY it failed: the display reframes the model-facing
+        // `Exit code: N` line as an `Error: Exit code N` header above the body
+        // (the raw frame stays in tool.output for the model / context replay).
+        let lines = tool_lines(
+            &tool("Bash", "false", ToolStatus::Failed, "Exit code: 3\nboom"),
+            80,
+        );
+        let body: Vec<String> = lines[1..].iter().map(plain).collect();
+        assert!(
+            body[0].contains("Error: Exit code 3"),
+            "the failure header leads: {body:?}"
+        );
+        assert!(body[1].contains("boom"), "the body follows: {body:?}");
+    }
+
+    #[test]
+    fn a_failed_command_cell_with_no_body_still_says_why() {
+        // A failure with empty output used to show "(no output)" — now the
+        // exit code itself is the body.
+        let lines = tool_lines(
+            &tool("Bash", "false", ToolStatus::Failed, "Exit code: 3"),
+            80,
+        );
+        let body: Vec<String> = lines[1..].iter().map(plain).collect();
+        assert_eq!(body.len(), 1, "one row: {body:?}");
+        assert!(
+            body[0].contains("Error: Exit code 3"),
+            "the reason shows: {body:?}"
+        );
+    }
+
+    #[test]
+    fn a_signal_killed_command_cell_says_so() {
+        let lines = tool_lines(
+            &tool(
+                "Bash",
+                "x",
+                ToolStatus::Failed,
+                "Exit code: killed by signal",
+            ),
+            80,
+        );
+        assert!(
+            plain(&lines[1]).contains("Error: killed by signal"),
+            "got {:?}",
+            plain(&lines[1])
+        );
+    }
+
+    #[test]
+    fn the_full_view_surfaces_the_exit_code_on_failure_too() {
+        let lines = tool_full_lines(
+            &tool("Bash", "false", ToolStatus::Failed, "Exit code: 2\nnope"),
+            80,
+        );
+        let all = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(
+            all.contains("Error: Exit code 2") && all.contains("nope"),
+            "got {all:?}"
+        );
+    }
+
+    #[test]
+    fn a_diff_peek_continuation_row_keeps_the_source_line_colour() {
+        // The legacy (unparseable-output) diff peek: a long `+` line wraps; the
+        // continuation rows must keep the SOURCE line's green, not fall to dim
+        // because their own first char has no marker — the Ctrl+O view already
+        // colours by source line (diff_line_color before wrapping).
+        let long = format!("+{}", "a".repeat(60));
+        let lines = tool_lines(&tool("Edit", "f", ToolStatus::Ok, &long), 40);
+        let rows: Vec<_> = lines[1..].iter().collect();
+        assert!(
+            rows.len() >= 2,
+            "the long + line wrapped: {:?}",
+            rows.iter().map(|l| plain(l)).collect::<Vec<_>>()
+        );
+        for r in &rows {
+            assert_eq!(
+                r.spans[1].style.fg,
+                Some(TOOL_DIFF_ADD_COLOR),
+                "every wrapped row keeps the + colour: {:?}",
+                plain(r)
+            );
+        }
     }
 
     #[test]

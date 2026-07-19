@@ -60,12 +60,14 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Parse `providers.toml` (docs/llm.md) into the `llm::config` provider table.
 toml = "0.8"
-# The detached-exec helper (src/spawn.rs): the safe `setsid()` wrapper that
-# severs a shell child from the TUI's controlling terminal, so a command that
-# prompts on /dev/tty (`sudo`, `ssh`) fails fast instead of writing its prompt
-# over the live region and fighting the event loop for the keyboard. This crate
-# forbids `unsafe` (no libc/pre_exec), and rustix is already in the tree via
-# crossterm — `process` just enables its setsid wrapper.
+# The detached-exec helper mode (src/subprocess.rs): the safe `setsid()`
+# wrapper that severs a shell child from the TUI's controlling terminal, so a
+# command that prompts on /dev/tty (`sudo`, `ssh`) fails fast instead of
+# writing its prompt over the live region and fighting the event loop for the
+# keyboard. Used by the helper re-exec tier (the fallback where the `setsid`
+# binary is absent — macOS, minimal images). This crate forbids `unsafe` (no
+# libc/pre_exec), and rustix is already in the tree via crossterm — `process`
+# just enables its setsid wrapper.
 rustix = { version = "1", features = ["process"] }
 # Real token counting for the status-line tally (`tokenizer` module): the
 # `o200k_base` BPE ranks ship embedded in the crate, so counting is offline and

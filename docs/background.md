@@ -63,11 +63,11 @@ executor (`llm::exec`), and the `!` shell runner:
   `forbid(unsafe)` crate), cwd, and session id.
 
 - `launch(command, description, from_model)` spawns `sh -c` in its own process
-  group **detached from the controlling terminal** (`spawn::shell_command`
-  with the registry's detach helper — a `/dev/tty` password prompt fails fast
-  instead of wedging the task; the registry also *carries* that helper to the
-  executor and the `!` runner, `docs/tools.md`) and a **monitor thread** that
-  merges
+  group **detached from the controlling terminal**
+  (`subprocess::spawn_detached_shell` with the registry's detach helper — a
+  `/dev/tty` password prompt fails fast instead of wedging the task; the
+  registry also *carries* that helper to the executor and the `!` runner,
+  `docs/tools.md`) and a **monitor thread** that merges
   stdout/stderr in arrival order, streams completed lines as
   `BgEvent::Output`, tees everything to `{tasks_dir}/{id}.output` (so the
   model can `read` interim output), and sends `BgEvent::Exited {code, killed}`

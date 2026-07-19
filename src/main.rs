@@ -75,15 +75,15 @@ use inline_tui::ui;
 type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
 
 fn main() -> io::Result<()> {
-    // The detached-exec helper hook FIRST (crate::spawn, docs/tools.md): when
-    // this process was spawned as `{exe} __inline-tui-detached-exec {cmd}` it
-    // is a shell runner's child, not a TUI — the hook `setsid()`s away from
-    // the controlling terminal (so a `/dev/tty` password prompt like `sudo`'s
-    // fails fast instead of hijacking the screen) and becomes `sh -c {cmd}`
-    // in place, never returning. It must precede anything that touches the
-    // terminal or spawns threads — the tokio runtime and invariant 1's DSR
-    // cursor query included.
-    inline_tui::spawn::run_detached_exec_if_requested();
+    // The detached-exec helper hook FIRST (crate::subprocess, docs/tools.md):
+    // when this process was spawned as `{exe} __inline-tui-detached-exec
+    // {cmd}` it is a shell runner's child, not a TUI — the hook `setsid()`s
+    // away from the controlling terminal (so a `/dev/tty` password prompt
+    // like `sudo`'s fails fast instead of hijacking the screen) and becomes
+    // `sh -c {cmd}` in place, never returning. It must precede anything that
+    // touches the terminal or spawns threads — the tokio runtime and
+    // invariant 1's DSR cursor query included.
+    inline_tui::subprocess::run_detached_exec_if_requested();
     tui_main()
 }
 
@@ -154,13 +154,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // the boundary).
     let cwd = std::env::current_dir().unwrap_or_default();
     // Every shell child (model `bash`, `run_in_background`, the `!` shell)
-    // spawns through the terminal-detach helper: our own binary, re-execed in
-    // the mode `main` installed above, so commands run with no controlling
-    // terminal and a `sudo` password prompt errors at once instead of writing
-    // over the TUI (see `spawn`). Resolved ONCE here — the path stays valid
-    // even if a `cargo build` replaces the file mid-session; a failed
-    // `current_exe` (None) degrades to the attached fallback. The registry
-    // carries it to all three spawn sites.
+    // spawns detached from the controlling terminal (`subprocess::tiers` —
+    // the `setsid` binary, else our own binary re-execed in the mode `main`
+    // installed above), so a `sudo` password prompt errors at once instead of
+    // writing over the TUI. The helper path is resolved ONCE here — it stays
+    // valid even if a `cargo build` replaces the file mid-session (and the
+    // setsid tier doesn't need it at all); a failed `current_exe` (None) just
+    // shortens the chain. The registry carries it to all three spawn sites.
     let registry = BackgroundRegistry::new(
         bg_tx,
         inline_tui::background::tasks_dir(
@@ -2004,23 +2004,19 @@ fn spawn_shell_command(
     cancel: CancelToken,
     registry: BackgroundRegistry,
 ) -> JoinHandle<()> {
-    use std::process::Stdio;
-
     std::thread::spawn(move || {
         // A Ctrl+B pressed before this command started belongs to nothing.
         registry.clear_background_request();
-        // Group + terminal membership come from `spawn::shell_command`: its
-        // own process group so a kill (Esc, quit, the registry) reaps the
-        // whole tree, and — through the registry's detach helper — no
-        // controlling terminal, so a password prompt (`! sudo …`) fails fast
-        // instead of writing over the TUI (the `llm::exec` pattern; see
-        // `spawn`, docs/shell-command.md).
-        let mut cmd =
-            inline_tui::spawn::shell_command(registry.detach_helper().as_deref(), &command);
-        cmd.stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = match cmd.spawn() {
+        // Group + terminal membership (and stdio) come from
+        // `subprocess::spawn_detached_shell`: its own process group so a kill
+        // (Esc, quit, the registry) reaps the whole tree, and no controlling
+        // terminal, so a password prompt (`! sudo …`) fails fast instead of
+        // writing over the TUI (the `llm::exec` pattern; see
+        // `subprocess`, docs/shell-command.md).
+        let mut child = match inline_tui::subprocess::spawn_detached_shell(
+            registry.detach_helper().as_deref(),
+            &command,
+        ) {
             Ok(child) => child,
             Err(err) => {
                 let _ = tx.send(StreamEvent::ToolEnd {

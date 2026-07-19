@@ -27,11 +27,11 @@
 //!   placeholder helpers.
 //! - [`session`]     — the `/resume` rollout-file format: serialize/parse the
 //!   JSONL session record, the picker preview + humanized age.
-//! - [`spawn`]       — the shared `sh -c` child builder + the detached-exec
-//!   helper mode: every shell runner's child is severed from the controlling
-//!   terminal so a `/dev/tty` password prompt (`sudo`) fails fast instead of
-//!   hijacking the TUI.
 //! - [`stream`]      — the dummy AI: canned responses and chunked streaming.
+//! - [`subprocess`]  — the shared detached `sh -c` spawn (setsid binary →
+//!   helper re-exec → attached): every shell runner's child is severed from
+//!   the controlling terminal so a `/dev/tty` password prompt (`sudo`) fails
+//!   fast instead of hijacking the TUI.
 //! - [`term`]        — the custom inline viewport (dynamic-height live region;
 //!   I/O).
 //! - [`textarea`]    — the grapheme-aware editable composer.
@@ -52,8 +52,8 @@ pub mod llm;
 pub mod markdown;
 pub mod paste;
 pub mod session;
-pub mod spawn;
 pub mod stream;
+pub mod subprocess;
 pub mod term;
 pub mod textarea;
 pub mod tokenizer;
