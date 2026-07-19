@@ -167,6 +167,31 @@ pub fn augment_with_environment(base: &str, date: &str, os: &str, cwd: &str) -> 
     )
 }
 
+/// Extract a human distro name from `/etc/os-release` contents — the
+/// `PRETTY_NAME` (e.g. `Ubuntu 24.04.4 LTS`), else `NAME`. Values may be
+/// double- or single-quoted (the freedesktop os-release format). Returns
+/// `None` when neither key carries a non-empty value. Pure: the boundary
+/// (`main.rs`) reads the file and only on Linux, so the agent's `OS` line
+/// reads e.g. `linux (Ubuntu 24.04.4 LTS)`. See `docs/environment.md`.
+#[must_use]
+pub fn os_release_name(contents: &str) -> Option<String> {
+    let value = |key: &str| {
+        contents.lines().find_map(|line| {
+            // Anchored `key=` match so a suffix key (e.g. `CPE_NAME`) never
+            // masquerades as `NAME`.
+            let rest = line.trim().strip_prefix(key)?.strip_prefix('=')?.trim();
+            let unquoted = rest
+                .strip_prefix('"')
+                .and_then(|r| r.strip_suffix('"'))
+                .or_else(|| rest.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')))
+                .unwrap_or(rest)
+                .trim();
+            (!unquoted.is_empty()).then(|| unquoted.to_string())
+        })
+    };
+    value("PRETTY_NAME").or_else(|| value("NAME"))
+}
+
 /// Assemble the request messages for one turn: the optional system prompt,
 /// then the whole conversation context in order — the multi-turn memory (see
 /// `docs/context.md`). A context message with image attachments becomes the
@@ -689,6 +714,41 @@ mod tests {
             persona < env && env < tools,
             "order persona<env<tools: {prompt}"
         );
+    }
+
+    #[test]
+    fn os_release_name_prefers_pretty_name() {
+        let contents = "\
+PRETTY_NAME=\"Ubuntu 24.04.4 LTS\"
+NAME=\"Ubuntu\"
+VERSION_ID=\"24.04\"
+ID=ubuntu
+";
+        assert_eq!(
+            os_release_name(contents).as_deref(),
+            Some("Ubuntu 24.04.4 LTS")
+        );
+    }
+
+    #[test]
+    fn os_release_name_falls_back_to_name_without_pretty_name() {
+        // Single-quoted value, no PRETTY_NAME — some minimal distros ship this.
+        let contents = "NAME='Alpine Linux'\nVERSION_ID=3.20.0\n";
+        assert_eq!(os_release_name(contents).as_deref(), Some("Alpine Linux"));
+    }
+
+    #[test]
+    fn os_release_name_is_none_when_absent_or_blank() {
+        assert_eq!(os_release_name("ID=void\nVERSION_ID=rolling\n"), None);
+        assert_eq!(os_release_name("PRETTY_NAME=\"\"\n"), None);
+        assert_eq!(os_release_name(""), None);
+    }
+
+    #[test]
+    fn os_release_name_does_not_match_a_suffix_key() {
+        // A key that merely ends in NAME (CPE_NAME) must not be read as NAME.
+        let contents = "CPE_NAME=\"cpe:/o:fedoraproject:fedora:40\"\n";
+        assert_eq!(os_release_name(contents), None);
     }
 
     #[test]

@@ -194,7 +194,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             llm::backend::augment_with_environment(
                 &base,
                 &local_date(),
-                std::env::consts::OS,
+                &os_context(),
                 &cwd.display().to_string(),
             )
         });
@@ -2497,6 +2497,26 @@ fn local_timestamp() -> String {
 /// [`augment_with_environment`]: inline_tui::llm::backend::augment_with_environment
 fn local_date() -> String {
     chrono::Local::now().format("%A %Y-%m-%d").to_string()
+}
+
+/// The OS string for the agent's environment context: the platform
+/// (`std::env::consts::OS`) enriched, on Linux, with the distro from
+/// `/etc/os-release` — e.g. `linux (Ubuntu 24.04.4 LTS)`. Boundary code (reads
+/// the file); the parse is the pure `backend::os_release_name`. Falls back to
+/// the bare platform when the file is missing/unreadable or off Linux (see
+/// `docs/environment.md`).
+fn os_context() -> String {
+    let os = std::env::consts::OS;
+    if os == "linux" {
+        let distro = std::fs::read_to_string("/etc/os-release")
+            .or_else(|_| std::fs::read_to_string("/usr/lib/os-release"))
+            .ok()
+            .and_then(|contents| llm::backend::os_release_name(&contents));
+        if let Some(distro) = distro {
+            return format!("{os} ({distro})");
+        }
+    }
+    os.to_string()
 }
 
 /// The live region's height for `app` at the current screen size — exactly what

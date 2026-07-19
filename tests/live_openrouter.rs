@@ -146,10 +146,13 @@ fn live_environment_context_reaches_the_model() {
     let model =
         std::env::var("INLINE_TUI_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
     let cwd = "/home/user/inline-tui-sentinel-42";
+    // The os string is the distro-enriched form the boundary builds on Linux
+    // (docs/environment.md) — assert the model can read the distro back too.
+    let os = "linux (Ubuntu 24.04.4 LTS)";
     let system = augment_with_environment(
         "You are Alter Zero an autonomous AI agent running in terminal UI",
         "Sunday 2026-07-19",
-        "linux",
+        os,
         cwd,
     );
     let cfg = ModelConfig {
@@ -166,7 +169,8 @@ fn live_environment_context_reaches_the_model() {
     };
     let backend = LlmBackend::configure(cfg, Some(system), false);
 
-    let prompt = "What is your current working directory? Reply with just the path.";
+    let prompt = "Report your operating system and your current working directory, \
+                  exactly as given in your environment context.";
     let context = vec![ContextMessage::new(ContextRole::User, prompt)];
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
@@ -185,6 +189,10 @@ fn live_environment_context_reaches_the_model() {
     assert!(
         reply.contains(cwd),
         "the model read the cwd out of the environment context, got: {reply:?}"
+    );
+    assert!(
+        reply.contains("Ubuntu 24.04.4 LTS"),
+        "the model read the distro-enriched OS out of the environment context, got: {reply:?}"
     );
 }
 

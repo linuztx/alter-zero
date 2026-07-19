@@ -26,7 +26,7 @@ The `{date}`/`{os}`/`{cwd}` placeholders are filled at runtime, e.g.:
 Know your runtime environment
 
 Date Sunday 2026-07-19
-OS linux
+OS linux (Ubuntu 24.04.4 LTS)
 Directory /home/user/inline-tui
 ```
 
@@ -51,17 +51,22 @@ Like the Ctrl+O timestamp clock (`docs/timestamps.md`), a wall-clock and a CWD
 read can't live in the pure, deterministically-tested library. So the split is:
 
 1. **The values are gathered at the I/O boundary.** `main.rs` reads the date
-   (`local_date` — `chrono::Local`, `%A %Y-%m-%d`), the os
-   (`std::env::consts::OS`), and the cwd (`std::env::current_dir`, already in
-   hand at startup), then folds them into `system_prompt` **once**. Every
-   backend the loop rebuilds on a `/model` switch inherits the block via
-   `system_prompt.clone()`, so there is a single injection point.
+   (`local_date` — `chrono::Local`, `%A %Y-%m-%d`), the os (`os_context` —
+   `std::env::consts::OS`, enriched on Linux with the distro from
+   `/etc/os-release`, e.g. `linux (Ubuntu 24.04.4 LTS)`), and the cwd
+   (`std::env::current_dir`, already in hand at startup), then folds them into
+   `system_prompt` **once**. Every backend the loop rebuilds on a `/model`
+   switch inherits the block via `system_prompt.clone()`, so there is a single
+   injection point.
 
 2. **The formatting is pure and unit-tested** (`llm::backend`):
    - `render_environment(date, os, cwd)` fills the template — every `{token}`
      is substituted, none survive.
    - `augment_with_environment(base, date, os, cwd)` appends the rendered block
      to a base prompt after a blank line.
+   - `os_release_name(contents)` parses `/etc/os-release`, preferring
+     `PRETTY_NAME` then `NAME` (quotes stripped), so the distro enrichment is
+     tested without reading a real file.
 
 3. **A blank base stays blank.** The "empty `INLINE_TUI_SYSTEM_PROMPT` → no
    system message" contract (`docs/context.md`) is preserved:
@@ -76,9 +81,10 @@ read can't live in the pure, deterministically-tested library. So the split is:
   leaves no `{`; `augment_with_environment` appends the block after the base,
   leaves a blank base untouched, and — composed with `configure` — yields the
   persona → environment → tools order.
-- `main.rs` (boundary): the date/os/cwd gathering is verified by running the
-  app (Ctrl+D shows the block) and by the live OpenRouter check that the model
-  can report its cwd from the prompt.
+- `main.rs` (boundary): the date/os/cwd gathering — including `os_context`
+  reading the real `/etc/os-release` on Linux — is verified by running the app
+  (Ctrl+D shows the block) and by the live OpenRouter check that the model can
+  report its cwd from the prompt.
 
 ## Known limitations
 
