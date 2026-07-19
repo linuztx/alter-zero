@@ -148,7 +148,8 @@ The body (`ui::context_lines`) is the raw context window:
 
 ```
 system prompt:                        (amber tag — the backend's prompt)
-  You are Alter Zero, an autonomous AI agent …
+  You are Alter Zero an autonomous AI agent running in terminal UI …
+  Know your runtime environment · Date … OS … Directory …   (docs/environment.md)
 user:                                 (blue tag)
   [Image #1] what's in this picture?
   image: /tmp/inline-tui-clipboard-x.png    (dim attachment row)
@@ -161,7 +162,9 @@ tool:                                 (purple tag — the tool result)
 
 — the system prompt first (injected at the boundary via
 `App::set_system_prompt` from `ReplySource::system_prompt()`, at startup and
-on every `/model` switch; the dummy has none), then every derived context
+on every `/model` switch; the dummy has none — the real backend's is the
+persona, then the runtime **environment context** of date/os/cwd, then the
+tools note: persona → environment → tools, `docs/environment.md`), then every derived context
 message: a coloured `role:` tag over its text wrapped **verbatim**
 (`wrap_verbatim`, never the markdown renderer — the whole point is the
 unformatted wire content), an assistant entry's native tool calls as purple
@@ -182,7 +185,10 @@ when its segment lands in history.
 through, so with the var unset the real backend got **no** system prompt —
 `DEFAULT_SYSTEM_PROMPT` was unreachable, contradicting `docs/llm.md`
 ("Override with…"). Now: unset → the default; set → the override; set to
-empty → no system prompt at all (`with_system_prompt` drops blanks).
+empty → no system prompt at all (`with_system_prompt` drops blanks). The
+runtime environment context (date/os/cwd) is folded onto any **non-empty**
+base — default or override — so the empty → no-prompt contract still holds
+(`docs/environment.md`).
 
 ## Known limitations (v1)
 

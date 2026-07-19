@@ -133,6 +133,63 @@ fn live_raw_tool_records_are_usable_context() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_environment_context_reaches_the_model() {
+    // The context-awareness feature end to end (docs/environment.md): the
+    // boundary folds date/os/cwd into the system prompt via
+    // `augment_with_environment`; a real model must be able to read the cwd
+    // back out of that block. Proves the block rides the request and is
+    // legible to the model. Tools off so the model answers from the prompt
+    // instead of shelling out for the path.
+    use inline_tui::llm::backend::augment_with_environment;
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let model =
+        std::env::var("INLINE_TUI_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let cwd = "/home/user/inline-tui-sentinel-42";
+    let system = augment_with_environment(
+        "You are Alter Zero an autonomous AI agent running in terminal UI",
+        "Sunday 2026-07-19",
+        "linux",
+        cwd,
+    );
+    let cfg = ModelConfig {
+        provider_id: "openrouter".to_string(),
+        provider_name: "OpenRouter".to_string(),
+        model,
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_model_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        extra_headers: Vec::new(),
+        extra_body: serde_json::Map::new(),
+    };
+    let backend = LlmBackend::configure(cfg, Some(system), false);
+
+    let prompt = "What is your current working directory? Reply with just the path.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut reply = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.contains(cwd),
+        "the model read the cwd out of the environment context, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_tool_call_generation_emits_delta_events() {
     // While the model *generates* a tool call, the backend surfaces
     // ToolCallDelta events (the streamed name/argument fragments) so the live

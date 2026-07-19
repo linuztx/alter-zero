@@ -24,10 +24,10 @@ use crate::stream::{CancelToken, ReplySource, StreamEvent};
 /// identity, authored in [`prompts/alter_zero.md`](../../prompts/alter_zero.md)
 /// and compiled in with `include_str!` so the wording lives in a maintainable
 /// markdown file (drop in a new `prompts/*.md` and point this const at it to
-/// swap personas). Kept short to save tokens. Tool calls and `!` shell runs now
-/// replay in the provider-native format (see `docs/context.md`), so the prompt
-/// no longer has to explain any bracketed records. Override with
-/// `INLINE_TUI_SYSTEM_PROMPT`.
+/// swap personas). Kept short to save tokens. The boundary folds the runtime
+/// **environment context** (date/os/cwd) onto this at startup so the agent has
+/// context awareness — see [`augment_with_environment`] and
+/// `docs/environment.md`. Override the persona with `INLINE_TUI_SYSTEM_PROMPT`.
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/alter_zero.md");
 
 /// A real OpenAI-compatible backend. Holds the streaming client (carrying the
@@ -127,6 +127,45 @@ fn tools_enabled_from_env() -> bool {
 /// [`DEFAULT_SYSTEM_PROMPT`]). Joined after a blank line; the schemas carry the
 /// per-parameter detail.
 const TOOLS_SYSTEM_SUFFIX: &str = include_str!("../../prompts/tools.md");
+
+/// The environment-context template appended to the system prompt for the
+/// agent's runtime awareness — authored in
+/// [`prompts/environment.md`](../../prompts/environment.md) (terse, in the
+/// persona's own style) with `{date}`/`{os}`/`{cwd}` placeholders that
+/// [`render_environment`] fills. See `docs/environment.md`.
+const ENVIRONMENT_TEMPLATE: &str = include_str!("../../prompts/environment.md");
+
+/// Fill the environment template with the session's `date`, `os`, and `cwd`.
+/// Pure: the boundary (`main.rs`) gathers the values (the same clock-injection
+/// pattern as [`App::set_clock`]), keeping the library free of time/CWD reads.
+///
+/// [`App::set_clock`]: crate::app::App::set_clock
+#[must_use]
+pub fn render_environment(date: &str, os: &str, cwd: &str) -> String {
+    ENVIRONMENT_TEMPLATE
+        .trim()
+        .replace("{date}", date)
+        .replace("{os}", os)
+        .replace("{cwd}", cwd)
+}
+
+/// Append the environment context to a base system prompt so the agent knows
+/// its date/os/cwd (`docs/environment.md`). A blank base is returned unchanged
+/// so the "empty `INLINE_TUI_SYSTEM_PROMPT` → no system message" contract holds
+/// (`docs/context.md`); the tools note (when enabled) is added by
+/// [`LlmBackend::configure`] afterwards, so the final prompt reads
+/// persona → environment → tools.
+#[must_use]
+pub fn augment_with_environment(base: &str, date: &str, os: &str, cwd: &str) -> String {
+    if base.trim().is_empty() {
+        return base.to_string();
+    }
+    format!(
+        "{}\n\n{}",
+        base.trim_end(),
+        render_environment(date, os, cwd)
+    )
+}
 
 /// Assemble the request messages for one turn: the optional system prompt,
 /// then the whole conversation context in order — the multi-turn memory (see
@@ -596,6 +635,60 @@ mod tests {
         let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
         assert!(!backend.tools_enabled());
         assert_eq!(backend.system_prompt.as_deref(), Some("be nice"));
+    }
+
+    #[test]
+    fn render_environment_fills_every_placeholder() {
+        let block = render_environment("Sunday 2026-07-19", "linux", "/home/user/proj");
+        assert!(block.contains("Sunday 2026-07-19"), "date is in: {block}");
+        assert!(block.contains("linux"), "os is in: {block}");
+        assert!(block.contains("/home/user/proj"), "cwd is in: {block}");
+        // Every `{token}` placeholder is substituted — none survive.
+        assert!(!block.contains('{'), "no leftover placeholder: {block}");
+    }
+
+    #[test]
+    fn augment_with_environment_appends_the_block_after_the_base() {
+        let out =
+            augment_with_environment("You are Alter Zero", "Sunday 2026-07-19", "linux", "/tmp/x");
+        assert!(
+            out.starts_with("You are Alter Zero"),
+            "persona leads: {out}"
+        );
+        let persona = out.find("You are Alter Zero").unwrap();
+        let cwd = out.find("/tmp/x").unwrap();
+        assert!(persona < cwd, "environment follows the persona: {out}");
+        assert!(
+            out.contains("Sunday 2026-07-19") && out.contains("linux"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn augment_with_environment_leaves_a_blank_base_unchanged() {
+        // The "empty INLINE_TUI_SYSTEM_PROMPT → no system message" contract
+        // (docs/context.md) must survive: a blank base gains no environment
+        // block, so `configure` still drops it to `None`.
+        assert_eq!(augment_with_environment("   ", "d", "o", "c"), "   ");
+        assert_eq!(augment_with_environment("", "d", "o", "c"), "");
+    }
+
+    #[test]
+    fn boundary_order_is_persona_then_environment_then_tools() {
+        // The full assembly the boundary produces: augment first (persona +
+        // environment), then `configure` appends the tools note — so the
+        // Ctrl+D debug view reads persona → environment → tools.
+        let base =
+            augment_with_environment("You are Alter Zero", "Sunday 2026-07-19", "linux", "/repo");
+        let backend = LlmBackend::configure(ModelConfig::fallback(), Some(base), true);
+        let prompt = backend.system_prompt.as_deref().unwrap();
+        let persona = prompt.find("Alter Zero").expect("persona present");
+        let env = prompt.find("/repo").expect("environment present");
+        let tools = prompt.find("bash").expect("tools note present");
+        assert!(
+            persona < env && env < tools,
+            "order persona<env<tools: {prompt}"
+        );
     }
 
     #[test]

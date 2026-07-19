@@ -178,13 +178,26 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let temperature = std::env::var("INLINE_TUI_TEMPERATURE")
         .ok()
         .and_then(|t| t.trim().parse::<f32>().ok());
-    // The real backend's system prompt: the default (which explains the
-    // bracketed context records — docs/context.md) unless the env var
-    // overrides it. Setting the var to an empty string sends no system
-    // prompt at all (`with_system_prompt` drops blanks).
+    // The real backend's system prompt: the "Alter Zero" persona
+    // (`prompts/alter_zero.md`) unless `INLINE_TUI_SYSTEM_PROMPT` overrides it
+    // (an empty value sends no system prompt at all — `with_system_prompt`
+    // drops blanks). Either way we fold in the runtime environment — date, os,
+    // cwd — so the agent has context awareness (docs/environment.md); the
+    // values are gathered here at the boundary (the set_clock pattern), the
+    // assembly is the pure `backend::augment_with_environment`. Folding once
+    // here means every backend the loop rebuilds (`/model` switches) inherits
+    // it via `system_prompt.clone()`.
     let system_prompt = std::env::var("INLINE_TUI_SYSTEM_PROMPT")
         .ok()
-        .or_else(|| Some(DEFAULT_SYSTEM_PROMPT.to_string()));
+        .or_else(|| Some(DEFAULT_SYSTEM_PROMPT.to_string()))
+        .map(|base| {
+            llm::backend::augment_with_environment(
+                &base,
+                &local_date(),
+                std::env::consts::OS,
+                &cwd.display().to_string(),
+            )
+        });
     // The provider the /model picker lists from and switches within: env, else
     // the saved selection, else the file's default. The active model starts from
     // env, then the saved selection, then tracks what the backend actually
@@ -2474,6 +2487,16 @@ fn update_status_times(app: &mut App, clocks: &StatusClocks) {
 /// pure library.
 fn local_timestamp() -> String {
     chrono::Local::now().format("%I:%M %p").to_string()
+}
+
+/// Local date for the agent's environment context — weekday plus ISO date,
+/// e.g. `Sunday 2026-07-19`. Gathered here at the boundary and folded into the
+/// system prompt by [`augment_with_environment`] so the agent knows the day
+/// (see `docs/environment.md`).
+///
+/// [`augment_with_environment`]: inline_tui::llm::backend::augment_with_environment
+fn local_date() -> String {
+    chrono::Local::now().format("%A %Y-%m-%d").to_string()
 }
 
 /// The live region's height for `app` at the current screen size — exactly what

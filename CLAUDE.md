@@ -718,4 +718,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   dark-green/red background tints (`TOOL_DIFF_*_BG`), a 10-row inline peek
   (`FILE_PEEK_LINES`) with the `… +N lines` hint, everything in Ctrl+O;
   unparseable output (old rollouts, error bodies, a `read` placeholder) keeps
-  the legacy rendering.
+  the legacy rendering. The backend's **system prompt** is assembled from three
+  `include_str!`d markdown files — the persona (`prompts/alter_zero.md`), the
+  runtime **environment context** of date/os/cwd (`prompts/environment.md`,
+  folded in at the boundary via `backend::augment_with_environment` so the agent
+  has context awareness), and the tools note (`prompts/tools.md`) — in the order
+  persona → environment → tools (`docs/environment.md`).

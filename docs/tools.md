@@ -176,11 +176,14 @@ can recover, exactly like codex's `RespondToModel`.
 Tools are **on by default for the real backend** and never for the dummy (the
 dummy's canned tools are unaffected). Toggle with `INLINE_TUI_TOOLS`
 (`0`/`false`/`no` disables). When enabled, the tool-capability note in
-[`prompts/tools.md`](../prompts/tools.md) is appended to the base system prompt
-([`prompts/alter_zero.md`](../prompts/alter_zero.md)) — both `include_str!`d into
-`llm::backend` so the wording lives in maintainable markdown files (swap a
-persona by pointing the const at a different `prompts/*.md`). It names the tools
-and the "prefer `read` before `edit`" convention; the schemas carry the detail.
+[`prompts/tools.md`](../prompts/tools.md) is appended to the system prompt —
+after the persona ([`prompts/alter_zero.md`](../prompts/alter_zero.md)) and the
+runtime **environment context**
+([`prompts/environment.md`](../prompts/environment.md), `docs/environment.md`),
+so the assembled prompt reads persona → environment → tools. All three are
+`include_str!`d into `llm::backend` so the wording lives in maintainable
+markdown files (swap a persona by pointing the const at a different
+`prompts/*.md`). The note just names the tools; the schemas carry the detail.
 
 The executor runs commands and writes files **in the app's working directory with
 no sandbox** — the same trust model as the `!` shell. A future revision could add

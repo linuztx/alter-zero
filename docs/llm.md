@@ -132,6 +132,7 @@ default — and can be switched live by `/model`:
 | `INLINE_TUI_ENV_FILE` | the `.env` key store `/login` reads and writes | `{config_home}/.env` |
 | `INLINE_TUI_TEMPERATURE` | sampling temperature | provider/omit |
 | `INLINE_TUI_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
+| `INLINE_TUI_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
 | `SSL_CERT_FILE` / `INLINE_TUI_CA_FILE` | extra CA bundle for the proxy | unset |
 
 **The dummy is the fallback, never a surprise.** The real backend activates only
