@@ -78,8 +78,15 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 `edit` file cell — in practice `bash`) now renders its output as a multi-line
 `⎿` block, like the `!` shell cell:
 
-- **Finished** (`tool_lines`): the first `TOOL_PEEK_LINES` output lines then
-  `… +N lines (ctrl+o to expand)` — via the shared `result_peek_block`.
+- **Finished** (`tool_lines`): the first `TOOL_PEEK_LINES` display **rows** of
+  output then `… +N lines (ctrl+o to expand)` — via the shared
+  `result_peek_block`. Each line **wraps verbatim** to the width
+  (`wrap_verbatim`, like the Ctrl+O view) rather than clipping at the terminal
+  edge, so a long line's tail no longer disappears; the window is bounded by
+  display rows (so one huge line can't balloon the committed cell — it
+  tail-follows the window like the running preview), and the `+N lines` hint
+  counts **source lines** not fully shown, so it appears whenever any content
+  is cut — even the wrapped remainder of a single long line.
 - **Running** (`running_command_lines`, drawn only in the live strip's preview
   where the boundary-supplied `elapsed` is available): the header, the **last**
   `TOOL_PEEK_LINES` display **rows** of output, then `+{hidden} lines

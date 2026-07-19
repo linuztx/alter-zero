@@ -3448,11 +3448,13 @@ fn diff_line_color(line: &str) -> Option<Color> {
 }
 
 /// A `⎿` result row for an `edit`/`write` diff cell, coloured by the row's own
-/// leading diff marker — for the **inline peek**, where each row is a whole
-/// (un-wrapped) source line so the first char is authoritative. The expanded
-/// view wraps line-by-line and colours by the *source* line instead
-/// ([`tool_full_lines`]). Codex's diff look, in the existing gutter. See
-/// `docs/tools.md`.
+/// leading diff marker. Used for the **inline peek** fallback
+/// ([`result_peek_block`]) when a diff didn't parse as the numbered
+/// [`file_cell_lines`] format — real `edit`/`write` diffs take that richer
+/// path. The peek now wraps like the expanded view, so a wrapped
+/// **continuation** row (no leading `+`/`-`) falls to the dim context colour;
+/// the marker row keeps its tint. Codex's diff look, in the existing gutter.
+/// See `docs/tools.md`.
 fn diff_result_row(index: usize, text: String) -> Line<'static> {
     let color = diff_line_color(&text);
     gutter_row(index, text, color)
@@ -3979,22 +3981,50 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// Up to [`TOOL_PEEK_LINES`] `⎿` rows of `out_lines` built with `row` (dim
-/// [`result_row`] or diff-coloured [`diff_result_row`]), each truncated to
-/// `peek_width`, then a `… +N lines` hint when more is hidden. Shared by the
-/// shell cell and the diff-tool cell.
+/// The head peek of `out_lines`: the first [`TOOL_PEEK_LINES`] **display rows**
+/// built with `row` (dim [`result_row`] or diff-coloured [`diff_result_row`]),
+/// each source line **wrapped verbatim** to `peek_width` ([`wrap_verbatim`] —
+/// the same wrapper the Ctrl+O view uses, so a long line's tail no longer
+/// disappears past the terminal edge and `ls -l`/`tree` alignment survives),
+/// then a `… +N lines` hint when any source line isn't fully shown. Shared by
+/// the shell cell and the diff-tool cell.
+///
+/// Bounding by display **rows** (not source lines) keeps a committed cell from
+/// ballooning scrollback when one line wraps huge — it tail-follows the window
+/// like the running preview ([`running_command_lines`]) — while `hidden`
+/// counts **source lines** (a partially-shown wrapped line counts as hidden, so
+/// the hint appears whenever any content is cut, even within a single line).
+/// The wrap stops once the window is full, so this is O(window), not O(output).
 fn result_peek_block(
     out_lines: &[String],
     peek_width: usize,
     row: impl Fn(usize, String) -> Line<'static>,
 ) -> Vec<Line<'static>> {
-    let shown = out_lines.len().min(TOOL_PEEK_LINES);
-    let mut lines: Vec<Line> = out_lines[..shown]
-        .iter()
-        .enumerate()
-        .map(|(i, line)| row(i, truncate_cols(line, peek_width)))
-        .collect();
-    let hidden = out_lines.len() - shown;
+    let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
+    let mut lines: Vec<Line> = Vec::new();
+    let mut fully_shown = 0usize; // source lines whose every wrapped row fits
+    for line in out_lines {
+        if lines.len() >= TOOL_PEEK_LINES {
+            break;
+        }
+        let wrapped = wrap_verbatim(line, wrap_width);
+        let total = wrapped.len();
+        let room = TOOL_PEEK_LINES - lines.len();
+        let take = total.min(room);
+        for text in wrapped.into_iter().take(take) {
+            // The very first display row of the block gets the `⎿` corner
+            // ([`gutter_row`]'s index 0); every later row — a wrapped
+            // continuation or the next source line — indents under the content
+            // column, exactly like the uncapped Ctrl+O block.
+            let i = lines.len();
+            lines.push(row(i, text));
+        }
+        if take < total {
+            break; // the window filled mid-line: this line is only partial
+        }
+        fully_shown += 1;
+    }
+    let hidden = out_lines.len() - fully_shown;
     if hidden > 0 {
         lines.push(more_hint_line(hidden));
     }
@@ -7759,6 +7789,85 @@ mod tests {
     }
 
     #[test]
+    fn tool_lines_wraps_a_long_command_output_line_instead_of_clipping() {
+        // The FINISHED (committed) bash cell must wrap a long output line like
+        // the Ctrl+O view does, not clip it at the width — the text used to
+        // disappear past the terminal edge (the reported bug;
+        // docs/tool-streaming.md).
+        let long = "0123456789".repeat(6); // 60 cols
+        let lines = tool_lines(&tool("Bash", "cat log", ToolStatus::Ok, &long), 40);
+        // width 40 − the 5-col `  ⎿  ` gutter = 35 content cols → 2 rows, and a
+        // single source line → no hint.
+        let body: Vec<String> = lines[1..].iter().map(plain).collect();
+        assert_eq!(body.len(), 2, "the 60-col line wraps to two rows: {body:?}");
+        let joined: String = body
+            .iter()
+            .map(|l| l.chars().skip(5).collect::<String>()) // drop the 5-col gutter
+            .collect::<Vec<_>>()
+            .concat();
+        assert_eq!(joined, long, "every column is preserved, not clipped");
+        for l in &lines {
+            assert!(cols(&plain(l)) <= 40, "no row overflows the width: {l:?}");
+        }
+    }
+
+    #[test]
+    fn a_finished_shell_output_wraps_a_long_line_showing_every_line() {
+        // The reported bug, mechanism for mechanism: a `! sudo …` cell whose
+        // first output line is longer than the terminal used to lose the text
+        // past the edge. Both lines must show in full, wrapped, with no expand
+        // hint (they fit the row budget).
+        let out = "sudo: a terminal is required to read the password; either use the -S option\n\
+                   sudo: a password is required";
+        let mut t = tool("sudo pacman -Rns steam", "", ToolStatus::Ok, out);
+        t.shell = true;
+        let lines: Vec<String> = tool_lines(&t, 50).iter().map(plain).collect();
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("either use the -S option"),
+            "the full first line survives the wrap: {joined:?}"
+        );
+        assert!(
+            joined.contains("a password is required"),
+            "the second line still shows: {joined:?}"
+        );
+        assert!(
+            !joined.contains("ctrl+o to expand"),
+            "both lines fit the budget — no hint: {joined:?}"
+        );
+        for l in &lines {
+            assert!(cols(l) <= 50, "no row overflows the width: {l:?}");
+        }
+    }
+
+    #[test]
+    fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
+        // A single very long line can't blow up the committed cell: it wraps
+        // but is bounded to TOOL_PEEK_LINES display rows, and the expand hint
+        // appears because content is hidden below the window — even though it
+        // is one source line (a partially-shown line counts as not-fully-shown).
+        let long = "x".repeat(400); // ~12 rows at a narrow width
+        let lines: Vec<String> = tool_lines(&tool("Bash", "cat big", ToolStatus::Ok, &long), 40)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(
+            lines.len(),
+            1 + TOOL_PEEK_LINES + 1,
+            "header + {TOOL_PEEK_LINES} bounded rows + hint: {lines:?}"
+        );
+        let hint = lines.last().unwrap();
+        assert!(
+            hint.contains("ctrl+o to expand"),
+            "the hint signals more: {hint:?}"
+        );
+        assert!(
+            hint.contains("+1 lines"),
+            "one source line, partially hidden below the window: {hint:?}"
+        );
+    }
+
+    #[test]
     fn a_non_command_tool_with_raw_multiline_output_keeps_a_single_peek_line() {
         // Only a command tool (bash) expands to a multi-line peek. A generic
         // backend tool whose output isn't the numbered file-cell format (e.g. the
@@ -8760,13 +8869,24 @@ mod tests {
     }
 
     #[test]
-    fn tool_lines_truncates_a_long_peek_to_the_width() {
-        // A peek line never overflows the terminal width (column-aware).
-        let long = "x".repeat(200);
+    fn tool_lines_wraps_a_peek_line_within_the_width_preserving_content() {
+        // A peek line never overflows the terminal width (column-aware) — and,
+        // when it's longer than the width, it **wraps** rather than clipping,
+        // so no content is lost. A 50-col line at width 30 (25 content cols)
+        // fits the row budget → two wrapped rows, no hint, every column kept.
+        let long = "abcdefghij".repeat(5); // 50 cols
         let lines = tool_lines(&tool("Bash", "y", ToolStatus::Ok, &long), 30);
         for line in &lines {
             assert!(cols(&plain(line)) <= 30, "no line exceeds the width");
         }
+        let body: Vec<String> = lines[1..].iter().map(plain).collect();
+        assert_eq!(body.len(), 2, "the 50-col line wraps to two rows: {body:?}");
+        let joined: String = body
+            .iter()
+            .map(|l| l.chars().skip(5).collect::<String>()) // drop the 5-col gutter
+            .collect::<Vec<_>>()
+            .concat();
+        assert_eq!(joined, long, "every column is preserved by the wrap");
     }
 
     // --- tool-output view: the full conversation transcript (Ctrl+O overlay) ---

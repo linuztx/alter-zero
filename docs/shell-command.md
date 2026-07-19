@@ -81,8 +81,13 @@ In `on_key_conversation`'s Enter arm, in shell mode:
 
 The committed result is one Claude-Code-style **exec cell** — the `! command`
 dark header, then the output as a `⎿` block (the first line under the corner,
-the rest aligned beneath it), capped inline at `TOOL_PEEK_LINES` (4) lines with
-a `… +N lines (ctrl+o to expand)` hint when more is hidden:
+the rest aligned beneath it), capped inline at `TOOL_PEEK_LINES` (4) display
+**rows** with a `… +N lines (ctrl+o to expand)` hint when more is hidden. A
+line wider than the terminal **wraps verbatim** (`wrap_verbatim`, like the
+Ctrl+O view) instead of clipping at the edge, so no output text disappears;
+the cap counts wrapped rows, so a very long line can't balloon the cell (its
+tail rides behind the hint), and the `+N lines` count includes a line only
+partially shown:
 
 ```
 ! ls                           ← Role::Shell header: dark user-style line

@@ -631,8 +631,11 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   hint (`shell_mode_line`) and the red `! ` that doubles as the composer
   prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell
   header bullet in `message_lines`; shell `tool_lines`/`tool_full_lines` are
-  headerless `⎿` blocks — inline up to `TOOL_PEEK_LINES` aligned rows
-  (`result_row` does the corner/continuation indent) then `… +N lines (ctrl+o
+  headerless `⎿` blocks — inline up to `TOOL_PEEK_LINES` aligned display rows
+  (`result_row` does the corner/continuation indent; a line wider than the
+  terminal **wraps verbatim** like the Ctrl+O view via `result_peek_block`
+  rather than clipping, the cap counting wrapped rows so one huge line can't
+  balloon the cell) then `… +N lines (ctrl+o
   to expand)`, `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;
   output over `main.rs`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
   read (`main.rs::read_capped`, codex's pattern — bounds peak RSS so `! tree ~/`
