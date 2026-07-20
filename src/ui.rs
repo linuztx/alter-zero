@@ -194,6 +194,14 @@ const EXPAND_HINT: &str = " (ctrl+o to expand)";
 /// rest behind a `… +N lines (ctrl+o to expand)` hint (Claude-Code's exec-cell
 /// preview). The full output is always in the Ctrl+O view.
 const TOOL_PEEK_LINES: usize = 4;
+/// The finished peek's safety ceiling in wrapped display **rows**: the budget
+/// above is *source lines* (each shown fully wrapped — a long first line must
+/// not push its siblings out of the peek), so without a ceiling ONE
+/// pathological line (a minified bundle, a 64 KiB log line) would balloon a
+/// committed cell into hundreds of rows now that lines wrap instead of
+/// clipping. Three rows per budgeted line keeps the everyday case — a `sudo`
+/// error wrapping to 2–3 rows at a narrow width — fully visible.
+const TOOL_PEEK_MAX_ROWS: usize = TOOL_PEEK_LINES * 3;
 /// How many wrapped rows a tool's `● name(args)` header shows **inline** (and in
 /// the live preview) before the rest is cut with [`TOOL_HEADER_ELLIPSIS`] — so a
 /// very long `bash` command doesn't flood the cell. The Ctrl+O transcript view
@@ -4054,22 +4062,23 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// The head peek of `out_lines`: the first [`TOOL_PEEK_LINES`] **display rows**
+/// The head peek of `out_lines`: the first [`TOOL_PEEK_LINES`] **source
+/// lines**, each **fully wrapped** to `peek_width` — "the first 4 lines of
+/// output", so a long first line never pushes its siblings out of the peek —
 /// built with `row` (which also receives the **source** line, so a diff cell
-/// can colour a wrapped continuation by the source's `+`/`-` marker), each
-/// source line wrapped to `peek_width` by `wrap` — [`wrap_output`] for
-/// command/shell output (word boundaries, spaces preserved, like the Ctrl+O
-/// view) or [`wrap_verbatim`] for diff bodies (code — hard-break, never
-/// reflowed at spaces) — so a long line's tail no longer disappears past the
-/// terminal edge. A `… +N lines` hint follows when any source line isn't fully
-/// shown.
+/// can colour a wrapped continuation by the source's `+`/`-` marker). The
+/// wrapper is `wrap`: [`wrap_output`] for command/shell output (word
+/// boundaries, spaces preserved, like the Ctrl+O view) or [`wrap_verbatim`]
+/// for diff bodies (code — hard-break, never reflowed at spaces) — either
+/// way a long line's tail no longer disappears past the terminal edge. A
+/// `… +N lines` hint follows when any source line isn't fully shown.
 ///
-/// Bounding by display **rows** (not source lines) keeps a committed cell from
-/// ballooning scrollback when one line wraps huge — it tail-follows the window
-/// like the running preview ([`running_command_lines`]) — while `hidden`
-/// counts **source lines** (a partially-shown wrapped line counts as hidden, so
-/// the hint appears whenever any content is cut, even within a single line).
-/// The wrap stops once the window is full, so this is O(window), not O(output).
+/// [`TOOL_PEEK_MAX_ROWS`] is the safety ceiling in display rows: one
+/// pathological line (a minified bundle) can't balloon a committed cell into
+/// hundreds of rows. `hidden` counts **source lines** not fully shown (a
+/// line the ceiling cut mid-wrap counts as hidden), so the hint appears
+/// whenever any content is cut — even within a single line. The wrap stops
+/// once a budget is spent, so this is O(peek), not O(output).
 fn result_peek_block(
     out_lines: &[String],
     peek_width: usize,
@@ -4079,13 +4088,13 @@ fn result_peek_block(
     let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
     let mut lines: Vec<Line> = Vec::new();
     let mut fully_shown = 0usize; // source lines whose every wrapped row fits
-    for line in out_lines {
-        if lines.len() >= TOOL_PEEK_LINES {
+    for line in out_lines.iter().take(TOOL_PEEK_LINES) {
+        if lines.len() >= TOOL_PEEK_MAX_ROWS {
             break;
         }
         let wrapped = wrap(line, wrap_width);
         let total = wrapped.len();
-        let room = TOOL_PEEK_LINES - lines.len();
+        let room = TOOL_PEEK_MAX_ROWS - lines.len();
         let take = total.min(room);
         for text in wrapped.into_iter().take(take) {
             // The very first display row of the block gets the `⎿` corner
@@ -4096,7 +4105,7 @@ fn result_peek_block(
             lines.push(row(i, text, line));
         }
         if take < total {
-            break; // the window filled mid-line: this line is only partial
+            break; // the ceiling cut this line mid-wrap: only partially shown
         }
         fully_shown += 1;
     }
@@ -7978,20 +7987,45 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_peek_shows_the_first_lines_fully_wrapped() {
+        // The peek budget is SOURCE lines (`TOOL_PEEK_LINES` of them, each
+        // fully wrapped) — "the first 4 lines of output", not "the first 4
+        // display rows": a long first line must not push its siblings out of
+        // the peek. Three lines here, the first wrapping to 3 rows → all
+        // three lines visible (5 rows), no hint.
+        let out = format!("{}\nbee\nsea", "a".repeat(80)); // 35 content cols → 3 rows
+        let lines: Vec<String> = tool_lines(&tool("Bash", "cat log", ToolStatus::Ok, &out), 40)
+            .iter()
+            .map(plain)
+            .collect();
+        let joined = lines.join("\n");
+        assert!(
+            joined.contains("bee") && joined.contains("sea"),
+            "every source line within the budget shows: {lines:?}"
+        );
+        assert!(
+            !joined.contains("ctrl+o to expand"),
+            "nothing is hidden — no hint: {lines:?}"
+        );
+        assert_eq!(lines.len(), 1 + 5, "header + 3+1+1 wrapped rows: {lines:?}");
+    }
+
+    #[test]
     fn a_finished_peek_bounds_rows_and_hints_when_one_line_overflows_the_budget() {
-        // A single very long line can't blow up the committed cell: it wraps
-        // but is bounded to TOOL_PEEK_LINES display rows, and the expand hint
-        // appears because content is hidden below the window — even though it
+        // The safety ceiling: a single pathological line (a minified bundle)
+        // wraps but is bounded to TOOL_PEEK_MAX_ROWS display rows, so it can't
+        // balloon the committed cell into hundreds of rows; the expand hint
+        // appears because content is hidden below the ceiling — even though it
         // is one source line (a partially-shown line counts as not-fully-shown).
-        let long = "x".repeat(400); // ~12 rows at a narrow width
+        let long = "x".repeat(600); // 35 content cols → 18 rows uncapped
         let lines: Vec<String> = tool_lines(&tool("Bash", "cat big", ToolStatus::Ok, &long), 40)
             .iter()
             .map(plain)
             .collect();
         assert_eq!(
             lines.len(),
-            1 + TOOL_PEEK_LINES + 1,
-            "header + {TOOL_PEEK_LINES} bounded rows + hint: {lines:?}"
+            1 + TOOL_PEEK_MAX_ROWS + 1,
+            "header + the {TOOL_PEEK_MAX_ROWS}-row ceiling + hint: {lines:?}"
         );
         let hint = lines.last().unwrap();
         assert!(

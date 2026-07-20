@@ -78,20 +78,22 @@ A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 `edit` file cell — in practice `bash`) now renders its output as a multi-line
 `⎿` block, like the `!` shell cell:
 
-- **Finished** (`tool_lines`): the first `TOOL_PEEK_LINES` display **rows** of
-  output then `… +N lines (ctrl+o to expand)` — via the shared
-  `result_peek_block`. Each line **word-wraps, spaces preserved**
-  (`wrap_output`, the same wrapper the Ctrl+O view uses — a prose error like
-  `sudo`'s breaks at words, never mid-"askpass"; `ls -l` columns that fit
-  stay byte-exact) rather than clipping at the terminal edge, so a long
-  line's tail no longer disappears; the window is bounded by display rows (so
-  one huge line can't balloon the committed cell — it tail-follows the window
-  like the running preview), and the `+N lines` hint counts **source lines**
-  not fully shown, so it appears whenever any content is cut — even the
-  wrapped remainder of a single long line. (The legacy diff-fallback peek
-  wraps **verbatim** instead — code, never reflowed at spaces — with each
-  wrapped row coloured by its *source* line's `+`/`-` marker, so a
-  continuation row keeps its tint.)
+- **Finished** (`tool_lines`): the first `TOOL_PEEK_LINES` **source lines**,
+  each fully wrapped — "the first 4 lines of output", so a long first line
+  never pushes its siblings out of the peek — then
+  `… +N lines (ctrl+o to expand)`, via the shared `result_peek_block`. Each
+  line **word-wraps, spaces preserved** (`wrap_output`, the same wrapper the
+  Ctrl+O view uses — a prose error like `sudo`'s breaks at words, never
+  mid-"askpass"; `ls -l` columns that fit stay byte-exact) rather than
+  clipping at the terminal edge, so a long line's tail no longer disappears.
+  `TOOL_PEEK_MAX_ROWS` (3× the line budget) is the safety ceiling in display
+  rows, so one pathological line (a minified bundle) can't balloon the
+  committed cell; the `+N lines` hint counts **source lines** not fully
+  shown, so it appears whenever any content is cut — even the wrapped
+  remainder of a single long line. (The legacy diff-fallback peek wraps
+  **verbatim** instead — code, never reflowed at spaces — with each wrapped
+  row coloured by its *source* line's `+`/`-` marker, so a continuation row
+  keeps its tint.)
 - **Running** (`running_command_lines`, drawn only in the live strip's preview
   where the boundary-supplied `elapsed` is available): the header, the **last**
   `TOOL_PEEK_LINES` display **rows** of output, then `+{hidden} lines

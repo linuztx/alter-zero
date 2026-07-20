@@ -106,7 +106,12 @@ safe boundary — a tool resolution mid-turn, else the turn end — while a
 model-launched note **no agent read** auto-starts a follow-up turn that tells
 the model the result when nothing else is queued (an agent that already heard
 it mid-turn owes no follow-up), `Done for Ns · N shells still running` on the
-summary) in `docs/background.md`.
+summary) in `docs/background.md`; and the **tty detach** (every shell child —
+model `bash`, `!`, background — spawned into a fresh session with no
+controlling terminal via `subprocess::spawn_detached_shell`'s
+setsid-binary → helper-re-exec → attached tier chain, so a `/dev/tty`
+password prompt like `sudo`'s fails fast in a captured error instead of
+hijacking the TUI and hanging) in `docs/tty-detach.md`.
 
 ### The runtime model and its invariants
 
@@ -632,12 +637,13 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   hint (`shell_mode_line`) and the red `! ` that doubles as the composer
   prompt while `App::shell_mode` is on and as the `Role::Shell` exec-cell
   header bullet in `message_lines`; shell `tool_lines`/`tool_full_lines` are
-  headerless `⎿` blocks — inline up to `TOOL_PEEK_LINES` aligned display rows
+  headerless `⎿` blocks — inline up to `TOOL_PEEK_LINES` aligned source
+  lines, each fully wrapped
   (`result_row` does the corner/continuation indent; a line wider than the
   terminal **word-wraps with spaces preserved** like the Ctrl+O view
   (`wrap_output`, via `result_peek_block`)
-  rather than clipping, the cap counting wrapped rows so one huge line can't
-  balloon the cell) then `… +N lines (ctrl+o
+  rather than clipping, the `TOOL_PEEK_MAX_ROWS` display-row ceiling keeping
+  one huge line from ballooning the cell) then `… +N lines (ctrl+o
   to expand)`, `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;
   output over `main.rs`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
   read (`main.rs::read_capped`, codex's pattern — bounds peak RSS so `! tree ~/`

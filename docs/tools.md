@@ -180,46 +180,16 @@ can recover, exactly like codex's `RespondToModel`.
 prompt (`sudo`, `ssh`, git's credential helper) opens **`/dev/tty`** — the
 controlling terminal, inherited through the process *session*, not through any
 fd — writes its prompt straight over the live region and then blocks reading
-the same keyboard the event loop owns. The symptom was a `⎿ Running…` bash
-cell that never resolved with a stray `[sudo] password for …:` glued to the
-composer.
-
-Every shell runner (this executor, `BackgroundRegistry::launch`, the `!`
-shell) therefore spawns through `subprocess::spawn_detached_shell`, a chain of
-tiers (`subprocess::tiers`, most-preferred first, falling through **only** on
-a `NotFound` spawn error):
-
-1. **`setsid sh -c {command}`** — util-linux's binary; the everyday tier on
-   Linux, and independent of our own binary being replaced by a rebuild
-   mid-session. The spawner must NOT also claim a process group (a group
-   leader can't `setsid(2)`, which would force a fork instead of the exec and
-   break `pgid == child.id()`).
-2. **The helper re-exec** — `{current_exe} __inline-tui-detached-exec
-   {command}`: `main()`'s first statement is the hook
-   (`subprocess::run_detached_exec_if_requested`), which calls the safe
-   `rustix::process::setsid()` — `pre_exec` would be `unsafe`, forbidden
-   crate-wide — and `exec`s `sh -c {command}` **in place** (same pid). This is
-   what keeps macOS / minimal images (no `setsid` binary) from degrading back
-   to the attached bug. Opt-in per process: the helper path is resolved once
-   at startup in `main.rs` and threaded on the registry
-   (`BackgroundRegistry::with_detach_helper` → `detach_helper()`), which every
-   runner already shares — a `cargo test` binary has libtest's `main`, so
-   re-execing it would run the test suite, not the command.
-3. **Attached `sh -c` + `process_group(0)`** — the pre-fix behavior, the last
-   resort where neither detach route exists.
-
-In a detached tier the fresh session has no controlling terminal, so the
-`/dev/tty` open fails (`ENXIO`) and the prompting program errors out
-immediately — `sudo: a terminal is required to read the password` — resolving
-the cell red with an actionable message, exactly like Claude Code. Every tier
-preserves the group-kill / Ctrl+B-adopt contract **pgid == `child.id()`**
-(via `setsid` or `process_group(0)`), and stdio is centralized there too
-(stdin `/dev/null`, stdout/stderr piped). Locked by the `subprocess`
-tier/argv unit tests + its real-`sh` session-leadership and exit-propagation
-tests, the executor/registry stale-helper resilience tests,
-`tests/detached_exec.rs` (the real binary via `CARGO_BIN_EXE`, including the
-helper tier driven directly), smoke Phase 44, and the live
-`live_sudo_style_tty_prompt_fails_fast` test.
+the same keyboard the event loop owns. Every shell runner (this executor,
+`BackgroundRegistry::launch`, the `!` shell) therefore spawns through
+`subprocess::spawn_detached_shell`, which runs the command in a **fresh
+session with no controlling terminal** — the `/dev/tty` open fails and `sudo`
+errors out in milliseconds (`sudo: a terminal is required to read the
+password`), resolving the cell red with an actionable message instead of
+hanging, exactly like Claude Code. The mechanism (a `setsid`-binary →
+helper-re-exec → attached tier chain shaped by the crate's `forbid(unsafe)`),
+the preserved `pgid == child.id()` kill contract, and the full test matrix
+live in **`docs/tty-detach.md`**.
 
 ## Enabling / disabling
 

@@ -1,7 +1,8 @@
 //! Shared subprocess spawning for every shell command the app runs — the
 //! model's `bash` tool ([`crate::llm::exec`]), its `run_in_background`
 //! launches ([`crate::background`]), and the user's `!` shell (`main.rs`) —
-//! **detached from the TUI's controlling terminal** (docs/tools.md,
+//! **detached from the TUI's controlling terminal** (`docs/tty-detach.md` —
+//! the full rationale; summarized in docs/tools.md and
 //! docs/shell-command.md).
 //!
 //! Why `stdin(Stdio::null())` is not enough: a password prompt (`sudo`, `ssh`,

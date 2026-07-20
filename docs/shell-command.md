@@ -81,14 +81,16 @@ In `on_key_conversation`'s Enter arm, in shell mode:
 
 The committed result is one Claude-Code-style **exec cell** — the `! command`
 dark header, then the output as a `⎿` block (the first line under the corner,
-the rest aligned beneath it), capped inline at `TOOL_PEEK_LINES` (4) display
-**rows** with a `… +N lines (ctrl+o to expand)` hint when more is hidden. A
-line wider than the terminal **word-wraps, spaces preserved** (`wrap_output`,
-the same wrapper the Ctrl+O view uses — prose like a `sudo` error breaks at
-words, `ls -l` columns that fit stay byte-exact) instead of clipping at the
-edge, so no output text disappears; the cap counts wrapped rows, so a very
-long line can't balloon the cell (its tail rides behind the hint), and the
-`+N lines` count includes a line only partially shown:
+the rest aligned beneath it), capped inline at `TOOL_PEEK_LINES` (4)
+source lines — each **fully wrapped** — with a `… +N lines (ctrl+o to
+expand)` hint when more is hidden. A line wider than the terminal
+**word-wraps, spaces preserved** (`wrap_output`, the same wrapper the Ctrl+O
+view uses — prose like a `sudo` error breaks at words, `ls -l` columns that
+fit stay byte-exact) instead of clipping at the edge, so no output text
+disappears; `TOOL_PEEK_MAX_ROWS` (3× the line budget) is a display-row
+safety ceiling so one pathological line can't balloon the cell (its tail
+rides behind the hint), and the `+N lines` count includes a line only
+partially shown:
 
 ```
 ! ls                           ← Role::Shell header: dark user-style line
@@ -143,7 +145,8 @@ stdout/stderr drained on reader threads (no pipe-buffer deadlock), and sends
 `subprocess::spawn_detached_shell` with the registry's detach helper, so it
 runs **detached from the controlling terminal** (its own session via the
 `setsid` binary, else the `setsid()` helper re-exec — `crate::subprocess`,
-the same spawn the model's `bash` tool uses): a command that prompts on
+the same spawn the model's `bash` tool uses; the full design in
+`docs/tty-detach.md`): a command that prompts on
 `/dev/tty` (`! sudo …`) errors at once
 inside the cell — `sudo: a terminal is required to read the password` —
 instead of printing the prompt over the TUI and blocking on the keyboard the
