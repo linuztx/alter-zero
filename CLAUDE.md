@@ -252,7 +252,13 @@ of bug:
    exists*; a second stdin reader would steal that reply and cause "cursor position
    could not be read". So: create the `EventStream` only after init, and never add
    another thread or task that reads stdin (`insert_before` tracks the viewport row
-   itself and never queries the cursor).
+   itself and never queries the cursor). **Relatedly, the detached-exec hook
+   (`subprocess::run_detached_exec_if_requested`) must stay the *first statement*
+   of `main()`** — before the tokio runtime and any terminal I/O: in a helper
+   re-exec (`{exe} __inline-tui-detached-exec {cmd}`) the process must `setsid`
+   away and `exec` `sh` before it ever touches stdin/stdout or spawns a thread, or
+   it would boot a TUI into the caller's pipes and the tty detach would silently
+   break (`docs/tty-detach.md`). Never move it, and never let anything run above it.
 
 2. **Greedy word-wrap is prefix-stable** (`ui::wrap_text`): appending text only
    ever changes the *last* wrapped line. This is what makes streaming-to-scrollback
