@@ -1,4 +1,4 @@
-# inline-tui
+# alter-zero
 
 A tiny, well-documented **inline terminal chat UI** built with
 [ratatui](https://ratatui.rs). You type a message, press Enter, and a *dummy*
@@ -144,20 +144,20 @@ Point it at a provider with environment variables (or `providers.toml`), and the
 real backend takes over automatically:
 
 ```bash
-export OPENROUTER_API_KEY=sk-...              # or <PROVIDER>_API_KEY / INLINE_TUI_API_KEY
-export INLINE_TUI_PROVIDER=openrouter          # a provider from providers.toml
-export INLINE_TUI_MODEL=anthropic/claude-3.5-haiku
+export OPENROUTER_API_KEY=sk-...              # or <PROVIDER>_API_KEY / ALTER_ZERO_API_KEY
+export ALTER_ZERO_PROVIDER=openrouter          # a provider from providers.toml
+export ALTER_ZERO_MODEL=anthropic/claude-3.5-haiku
 cargo run
 ```
 
 Or add the key in-app with **`/login`** — an inline flow to pick a provider and
-paste its API key; it saves to `~/.inline-tui/.env` (git-ignored) so it persists
+paste its API key; it saves to `~/.alter-zero/.env` (git-ignored) so it persists
 across runs. The dummy stays the default and the fallback — the real backend
-activates only when a provider, model, and key all resolve and `INLINE_TUI_DUMMY`
+activates only when a provider, model, and key all resolve and `ALTER_ZERO_DUMMY`
 isn't set, so the app always runs offline out of the box. Switch models live with
 the **`/model`** picker: an inline search-and-select list of the provider's
 `/v1/models` (it asks you to `/login` first if no key is configured), and your
-choice persists to `~/.inline-tui/config.json` so it's the default next run.
+choice persists to `~/.alter-zero/config.json` so it's the default next run.
 
 Providers live in `providers.toml` (repo root; an Agent-Zero/Venice proxy and
 OpenRouter ship by default). To plug in a *non*-OpenAI-shaped

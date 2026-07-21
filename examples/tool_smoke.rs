@@ -4,7 +4,7 @@
 //! Usage:
 //! ```bash
 //! OPENROUTER_API_KEY=sk-... \
-//!   INLINE_TUI_CA_FILE=/root/.ccr/ca-bundle.crt \
+//!   ALTER_ZERO_CA_FILE=/root/.ccr/ca-bundle.crt \
 //!   cargo run --example tool_smoke -- [model] ["prompt"]
 //! ```
 //! Defaults to `openai/gpt-4o-mini` and a prompt that forces a `bash` call.
@@ -13,10 +13,10 @@
 
 use std::time::Duration;
 
-use inline_tui::context::{ContextMessage, ContextRole};
-use inline_tui::llm::LlmBackend;
-use inline_tui::llm::config::{ProvidersFile, Selection};
-use inline_tui::stream::{CancelToken, ReplySource, StreamEvent};
+use alter_zero::context::{ContextMessage, ContextRole};
+use alter_zero::llm::LlmBackend;
+use alter_zero::llm::config::{ProvidersFile, Selection};
+use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
 use tokio::sync::mpsc::unbounded_channel;
 
 fn main() {

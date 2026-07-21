@@ -100,7 +100,7 @@ fn accepted_image_extension(path: &std::path::Path) -> Option<String> {
 /// Copy `path`'s bytes verbatim into a kept temp file with the same `ext`.
 fn copy_file_to_temp(path: &std::path::Path, ext: &str) -> Result<PathBuf, String> {
     let tmp = tempfile::Builder::new()
-        .prefix("inline-tui-clipboard-")
+        .prefix("alter-zero-clipboard-")
         .suffix(&format!(".{ext}"))
         .tempfile()
         .map_err(|e| format!("could not create a temp file: {e}"))?;
@@ -116,7 +116,7 @@ fn encode_png_to_temp(image: &image::DynamicImage) -> Result<PathBuf, String> {
         .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
         .map_err(|e| format!("could not encode the image: {e}"))?;
     let tmp = tempfile::Builder::new()
-        .prefix("inline-tui-clipboard-")
+        .prefix("alter-zero-clipboard-")
         .suffix(".png")
         .tempfile()
         .map_err(|e| format!("could not create a temp file: {e}"))?;

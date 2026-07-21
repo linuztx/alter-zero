@@ -9,8 +9,8 @@
 
 use std::time::{Duration, Instant};
 
-use inline_tui::app::Role;
-use inline_tui::ui::{self, StreamRender};
+use alter_zero::app::Role;
+use alter_zero::ui::{self, StreamRender};
 
 const WIDTH: u16 = 100;
 
@@ -181,9 +181,9 @@ fn part_a() {
 }
 
 fn part_b() {
-    use inline_tui::llm::ModelConfig;
-    use inline_tui::llm::openai::OpenAiClient;
-    use inline_tui::stream::CancelToken;
+    use alter_zero::llm::ModelConfig;
+    use alter_zero::llm::openai::OpenAiClient;
+    use alter_zero::stream::CancelToken;
 
     let Ok(key) = std::env::var("OPENROUTER_API_KEY") else {
         println!("\n=== Part B skipped (set OPENROUTER_API_KEY to run the live test) ===");
@@ -204,10 +204,10 @@ fn part_b() {
     let client = OpenAiClient::new(cfg);
     let cancel = CancelToken::new();
     let messages = vec![
-        inline_tui::llm::ChatMessage::system(
+        alter_zero::llm::ChatMessage::system(
             "You are a coding assistant. Reply with a single large fenced code block and minimal prose.",
         ),
-        inline_tui::llm::ChatMessage::user(
+        alter_zero::llm::ChatMessage::user(
             "Write a complete Python implementation of a terminal Snake game using curses, \
              with about 250 lines of well-commented code. Output only one ```python code block.",
         ),

@@ -72,7 +72,7 @@ is real and surfaces):
    `setsid(2)` and `exec`s `sh` into the new session. Simple, the everyday
    tier on Linux, and independent of our own binary (a `cargo build` replacing
    the running TUI's file mid-session can't break it).
-2. **The helper re-exec** — `{current_exe} __inline-tui-detached-exec
+2. **The helper re-exec** — `{current_exe} __alter-zero-detached-exec
    "<command>"`: our own binary, whose `main()` runs
    `subprocess::run_detached_exec_if_requested()` as its **first statement**.
    In helper mode that calls the safe `rustix::process::setsid()` wrapper and
@@ -131,7 +131,7 @@ a terminal?" saw non-tty fds before and after. The new session only removes
 
 - **Pure** — `subprocess::tiers` orders the chain (`SetsidBinary` →
   `HelperReexec` when installed → `Attached`); `command_for`'s argv per tier,
-  including the helper's `{exe} __inline-tui-detached-exec {command}`
+  including the helper's `{exe} __alter-zero-detached-exec {command}`
   protocol the `main()` hook parses.
 - **Boundary (real `sh`)** — a spawned command reports itself a **session
   leader** (`/proc`'s session field == `$$`, which only holds detached — the

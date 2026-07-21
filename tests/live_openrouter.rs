@@ -10,14 +10,14 @@
 //! OPENROUTER_API_KEY=sk-or-… cargo test --test live_openrouter -- --ignored --nocapture
 //! ```
 //!
-//! `INLINE_TUI_LIVE_MODEL` overrides the model (default `openai/gpt-4o-mini`,
+//! `ALTER_ZERO_LIVE_MODEL` overrides the model (default `openai/gpt-4o-mini`,
 //! which is cheap and supports vision).
 
 use std::path::PathBuf;
 
-use inline_tui::context::{ContextMessage, ContextRole, ContextToolCall};
-use inline_tui::llm::{LlmBackend, ModelConfig, ThinkingMode};
-use inline_tui::stream::{CancelToken, ReplySource, StreamEvent};
+use alter_zero::context::{ContextMessage, ContextRole, ContextToolCall};
+use alter_zero::llm::{LlmBackend, ModelConfig, ThinkingMode};
+use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
 
 /// A backend configured for OpenRouter from the environment, for `model` with
 /// the given thinking mode. Panics with a clear message when the key is
@@ -43,11 +43,11 @@ fn backend_for(model: String, thinking: Option<ThinkingMode>) -> LlmBackend {
     )
 }
 
-/// The default backend under test (`INLINE_TUI_LIVE_MODEL`, else a cheap
+/// The default backend under test (`ALTER_ZERO_LIVE_MODEL`, else a cheap
 /// vision-capable model), no thinking mode.
 fn backend() -> LlmBackend {
     let model =
-        std::env::var("INLINE_TUI_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
     backend_for(model, None)
 }
 
@@ -140,12 +140,12 @@ fn live_environment_context_reaches_the_model() {
     // back out of that block. Proves the block rides the request and is
     // legible to the model. Tools off so the model answers from the prompt
     // instead of shelling out for the path.
-    use inline_tui::llm::backend::augment_with_environment;
+    use alter_zero::llm::backend::augment_with_environment;
     let key =
         std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
     let model =
-        std::env::var("INLINE_TUI_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
-    let cwd = "/home/user/inline-tui-sentinel-42";
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let cwd = "/home/user/alter-zero-sentinel-42";
     // The os string is the distro-enriched form the boundary builds on Linux
     // (docs/environment.md) — assert the model can read the distro back too.
     let os = "linux (Ubuntu 24.04.4 LTS)";
@@ -285,7 +285,7 @@ fn live_reasoning_effort_streams_thinking() {
     // `Thinking for Ns` status. gpt-oss-120b is cheap and always reasons.
     let (reply, thinking_chunks) = complete_with_thinking(
         "openai/gpt-oss-120b",
-        Some(ThinkingMode::Effort(inline_tui::llm::ReasoningEffort::Low)),
+        Some(ThinkingMode::Effort(alter_zero::llm::ReasoningEffort::Low)),
     );
     println!("reply: {reply:?}, thinking chunks: {thinking_chunks}");
     assert!(reply.contains("391"), "the answer arrived: {reply:?}");
@@ -312,7 +312,7 @@ fn live_thinking_off_suppresses_reasoning() {
 fn live_vision_reads_a_pasted_image() {
     // A solid-red PNG written the way the clipboard paste writes one; the
     // context message carries its path like a real [Image #1] attachment.
-    let path = std::env::temp_dir().join("inline-tui-live-vision-red.png");
+    let path = std::env::temp_dir().join("alter-zero-live-vision-red.png");
     let img = image::RgbaImage::from_pixel(64, 64, image::Rgba([220, 20, 20, 255]));
     img.save(&path).expect("write the test PNG");
 
@@ -342,7 +342,7 @@ fn live_vision_survives_a_large_image_upload() {
     // send/header exchange. Under the old 3 s per-operation timeout this
     // upload burned the whole retry budget re-hitting the same wall and the
     // turn failed ("[Image] can't be processed").
-    let path = std::env::temp_dir().join("inline-tui-live-vision-large.png");
+    let path = std::env::temp_dir().join("alter-zero-live-vision-large.png");
     // Deterministic noise compresses poorly, so the PNG lands in the
     // megabytes without shipping a binary fixture; the solid red centre
     // square keeps a semantic assertion possible.
@@ -397,8 +397,8 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
     // acknowledgement — so the model knows why the output stopped arriving
     // and does not re-run the command or poll for it.
     let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel();
-    let dir = std::env::temp_dir().join(format!("inline-tui-live-ctrlb-{}", std::process::id()));
-    let registry = inline_tui::background::BackgroundRegistry::new(bg_tx, dir);
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-ctrlb-{}", std::process::id()));
+    let registry = alter_zero::background::BackgroundRegistry::new(bg_tx, dir);
     let backend = backend().with_background(registry.clone());
 
     let prompt = "Use the bash tool exactly once to run this command in the foreground \
@@ -444,11 +444,11 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
         match bg_rx.try_recv() {
-            Ok(inline_tui::background::BgEvent::Started { id: started, .. }) => {
+            Ok(alter_zero::background::BgEvent::Started { id: started, .. }) => {
                 assert_eq!(started, id);
             }
-            Ok(inline_tui::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
-            Ok(inline_tui::background::BgEvent::Exited { code, killed, .. }) => {
+            Ok(alter_zero::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
+            Ok(alter_zero::background::BgEvent::Exited { code, killed, .. }) => {
                 assert_eq!(code, Some(0));
                 assert!(!killed);
                 exited = true;
@@ -480,8 +480,8 @@ fn live_killed_background_task_is_known_to_the_model_within_the_turn() {
     // signal" note in its final reply of the SAME turn, without any
     // follow-up turn.
     let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel();
-    let dir = std::env::temp_dir().join(format!("inline-tui-live-kill-{}", std::process::id()));
-    let registry = inline_tui::background::BackgroundRegistry::new(bg_tx, dir);
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-kill-{}", std::process::id()));
+    let registry = alter_zero::background::BackgroundRegistry::new(bg_tx, dir);
     let backend = backend().with_background(registry.clone());
 
     // The boundary simulator: apply the registry's events to the pure App
@@ -489,20 +489,20 @@ fn live_killed_background_task_is_known_to_the_model_within_the_turn() {
     // Exited-arm dance (docs/background.md).
     let post_registry = registry.clone();
     let boundary = std::thread::spawn(move || {
-        let mut app = inline_tui::app::App::new();
+        let mut app = alter_zero::app::App::new();
         let mut posted = None;
         while let Some(event) = bg_rx.blocking_recv() {
             match event {
-                inline_tui::background::BgEvent::Started {
+                alter_zero::background::BgEvent::Started {
                     id,
                     command,
                     description,
                     from_model,
                 } => app.bg_started(&id, &command, description, from_model),
-                inline_tui::background::BgEvent::Output { id, chunk } => {
+                alter_zero::background::BgEvent::Output { id, chunk } => {
                     app.bg_output(&id, &chunk);
                 }
-                inline_tui::background::BgEvent::Exited { id, code, killed } => {
+                alter_zero::background::BgEvent::Exited { id, code, killed } => {
                     let completion = app.bg_exited(&id, code, killed).expect("a known shell");
                     post_registry.post_notice(completion.context_text(), completion.from_model);
                     posted = Some(completion);
@@ -573,9 +573,9 @@ fn live_sudo_style_tty_prompt_fails_fast() {
     // default timeout; attached, it would block on the terminal (the
     // `Running…`-forever hijack this fix removes).
     let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
-    let dir = std::env::temp_dir().join(format!("inline-tui-live-notty-{}", std::process::id()));
-    let registry = inline_tui::background::BackgroundRegistry::new(bg_tx, dir)
-        .with_detach_helper(Some(PathBuf::from(env!("CARGO_BIN_EXE_inline-tui"))));
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-notty-{}", std::process::id()));
+    let registry = alter_zero::background::BackgroundRegistry::new(bg_tx, dir)
+        .with_detach_helper(Some(PathBuf::from(env!("CARGO_BIN_EXE_alter-zero"))));
     let backend = backend().with_background(registry);
 
     let prompt = "Use the bash tool exactly once to run exactly this command, verbatim, \
@@ -633,8 +633,8 @@ fn live_run_in_background_resolves_and_completes() {
     // turn finishing while the process runs), and the shared registry reports
     // Started → Output → Exited on its own channel.
     let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel();
-    let dir = std::env::temp_dir().join(format!("inline-tui-live-bg-{}", std::process::id()));
-    let registry = inline_tui::background::BackgroundRegistry::new(bg_tx, dir);
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-bg-{}", std::process::id()));
+    let registry = alter_zero::background::BackgroundRegistry::new(bg_tx, dir);
     let backend = backend().with_background(registry);
 
     let prompt = "Use the bash tool exactly once to run this command in the background \
@@ -670,11 +670,11 @@ fn live_run_in_background_resolves_and_completes() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while std::time::Instant::now() < deadline {
         match bg_rx.try_recv() {
-            Ok(inline_tui::background::BgEvent::Started { id: started, .. }) => {
+            Ok(alter_zero::background::BgEvent::Started { id: started, .. }) => {
                 assert_eq!(started, id);
             }
-            Ok(inline_tui::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
-            Ok(inline_tui::background::BgEvent::Exited { code, killed, .. }) => {
+            Ok(alter_zero::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
+            Ok(alter_zero::background::BgEvent::Exited { code, killed, .. }) => {
                 assert_eq!(code, Some(0));
                 assert!(!killed);
                 exited = true;

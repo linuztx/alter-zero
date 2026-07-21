@@ -1,6 +1,6 @@
 //! Persisted UI settings — currently just the last provider/model chosen via
 //! `/model`, so the selection survives a restart. Written to
-//! `~/.inline-tui/config.json` by the boundary; the parse/serialize here is
+//! `~/.alter-zero/config.json` by the boundary; the parse/serialize here is
 //! **pure and unit-tested** (the file read/write lives in `main.rs`, like the
 //! `.env` keystore). See `docs/llm.md`.
 

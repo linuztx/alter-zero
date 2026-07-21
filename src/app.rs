@@ -823,7 +823,7 @@ pub const COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "quit",
-        description: "Exit inline-tui",
+        description: "Exit alter-zero",
         effect: CommandEffect::Quit,
     },
 ];
@@ -1109,7 +1109,7 @@ pub struct KeyOnboarding {
     pub key_input: String,
     /// Where saved keys land (the `~`-relative `.env` path), injected at open by
     /// the boundary so the provider-step hint names the real file even under an
-    /// `INLINE_TUI_ENV_FILE` override. See `docs/llm.md`.
+    /// `ALTER_ZERO_ENV_FILE` override. See `docs/llm.md`.
     pub env_path: String,
 }
 
@@ -7991,10 +7991,10 @@ mod tests {
     #[test]
     fn set_session_info_stores_the_display_strings() {
         let mut app = App::new();
-        app.set_session_info("dummy_model_name", "~/inline-tui");
+        app.set_session_info("dummy_model_name", "~/alter-zero");
         let session = app.session.as_ref().expect("session info stored");
         assert_eq!(session.model, "dummy_model_name");
-        assert_eq!(session.cwd, "~/inline-tui");
+        assert_eq!(session.cwd, "~/alter-zero");
     }
 
     // --- live status indicator (see docs/status-indicator.md) ---
@@ -10529,7 +10529,7 @@ mod tests {
 
     fn login_app() -> App {
         let mut app = App::new();
-        app.open_key_onboarding(sample_choices(), "~/.inline-tui/.env");
+        app.open_key_onboarding(sample_choices(), "~/.alter-zero/.env");
         app
     }
 
@@ -10588,7 +10588,7 @@ mod tests {
         let mut app = App::new();
         app.shortcuts_open = true;
         app.open_model_picker("m");
-        app.open_key_onboarding(sample_choices(), "~/.inline-tui/.env");
+        app.open_key_onboarding(sample_choices(), "~/.alter-zero/.env");
         assert!(!app.shortcuts_open);
         assert!(app.command_menu.is_none());
         assert!(app.model_picker.is_none(), "the model picker is dismissed");

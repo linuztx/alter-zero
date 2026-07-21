@@ -89,15 +89,15 @@ overlay machinery.
 ### The session file (src/session.rs, pure)
 
 - Files: `{root}/YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-{id}.jsonl`, where
-  `{root}` is `~/.inline-tui/sessions` (override: `INLINE_TUI_SESSIONS_DIR`,
-  the `INLINE_TUI_STARTUP_DELAY_MS` pattern — the smoke test points it at a
+  `{root}` is `~/.alter-zero/sessions` (override: `ALTER_ZERO_SESSIONS_DIR`,
+  the `ALTER_ZERO_STARTUP_DELAY_MS` pattern — the smoke test points it at a
   temp dir). `{id}` is nanos-since-epoch + pid in hex — unique enough without
   a uuid dependency, and never parsed back (we resume by *path*). The path
   derivation is the pure `session::rollout_rel_path(date, time, id)`; the
   clock/pid stay at the boundary.
 - Lines are codex's shape: `{"timestamp": <UTC millis Z>, "type": …,
   "payload": …}`. Line 1 is `session_meta`
-  (`{id, timestamp, cwd, model, originator: "inline-tui", version}`); then one
+  (`{id, timestamp, cwd, model, originator: "alter-zero", version}`); then one
   line per finished [`HistoryItem`] as it lands in `App::history`:
   - `"message"` → `{role: "user"|"assistant"|"system"|"error"|"shell", text,
     timestamp}` (the display stamp the item already carries),
@@ -295,7 +295,7 @@ and the list height; no stored scroll offset).
   events); our rewrite-on-truncate keeps the file a mirror of `App::history`
   instead. (A resumed file whose last line lost its newline — a torn write —
   is repaired on the first append rather than glued onto.)
-- **Concurrent instances**: two inline-tui processes never share a file
+- **Concurrent instances**: two alter-zero processes never share a file
   (the id embeds the pid), but resuming the *same* saved session from two
   instances interleaves appends unguarded — codex has state-db arbitration;
   documented limitation here.
@@ -332,7 +332,7 @@ and the list height; no stored scroll offset).
   `{n}/{total}` count, both empty states, narrow-width truncation, and the
   selection kept visible in a short window.
 - `scripts/smoke.sh` Phase 31 (the I/O boundary): with
-  `INLINE_TUI_SESSIONS_DIR` pointed at a temp dir — a turn writes a rollout
+  `ALTER_ZERO_SESSIONS_DIR` pointed at a temp dir — a turn writes a rollout
   file (meta + user + assistant lines); a second launch's `/resume` picker
   lists it (preview visible), Enter repaints the old conversation inline, a
   follow-up turn **appends to the same file** (no second file), and the

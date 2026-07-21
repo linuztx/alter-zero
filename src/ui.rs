@@ -9615,7 +9615,7 @@ mod tests {
         app.record_user_message_with_images(
             "[Image #1]",
             vec![std::path::PathBuf::from(
-                "/tmp/a-very-long-temp-directory-name/inline-tui-clipboard-0123456789.png",
+                "/tmp/a-very-long-temp-directory-name/alter-zero-clipboard-0123456789.png",
             )],
         );
         let texts: Vec<String> = context_lines(&app, 30)
@@ -12167,7 +12167,7 @@ mod tests {
     /// An app with session info injected, as `main.rs` does at startup.
     fn with_session() -> App {
         let mut app = App::new();
-        app.set_session_info("dummy_model_name", "~/inline-tui");
+        app.set_session_info("dummy_model_name", "~/alter-zero");
         app
     }
 
@@ -12187,7 +12187,7 @@ mod tests {
     #[test]
     fn footer_line_shows_model_and_cwd_dim_behind_the_indent() {
         let line = footer_line(&with_session(), 60);
-        assert_eq!(plain(&line), "  dummy_model_name · ~/inline-tui");
+        assert_eq!(plain(&line), "  dummy_model_name · ~/alter-zero");
         // spans = [indent, model, separator, cwd] — every segment dim (codex's
         // no-theme-colours status line), the indent unstyled.
         assert_eq!(line.spans[0].style.fg, None);
@@ -12221,7 +12221,7 @@ mod tests {
             ThinkingMode::Effort(ReasoningEffort::Medium),
         )));
         let line = footer_line(&app, 60);
-        assert_eq!(plain(&line), "  dummy_model_name medium · ~/inline-tui");
+        assert_eq!(plain(&line), "  dummy_model_name medium · ~/alter-zero");
         for span in &line.spans[1..] {
             assert_eq!(span.style.fg, Some(FOOTER_COLOR), "dim: {:?}", span.content);
         }
@@ -12229,7 +12229,7 @@ mod tests {
         app.thinking.as_mut().unwrap().mode = ThinkingMode::Off;
         assert_eq!(
             plain(&footer_line(&app, 60)),
-            "  dummy_model_name off · ~/inline-tui"
+            "  dummy_model_name off · ~/alter-zero"
         );
     }
 
@@ -12276,7 +12276,7 @@ mod tests {
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);
         assert!(
-            last.contains("dummy_model_name · ~/inline-tui"),
+            last.contains("dummy_model_name · ~/alter-zero"),
             "footer under the box: {last:?}"
         );
         assert!(last.starts_with("  dummy"), "two-column inset: {last:?}");
@@ -12391,7 +12391,7 @@ mod tests {
     #[test]
     fn the_palette_replaces_the_footer() {
         let mut app = palette("/", 0);
-        app.set_session_info("dummy_model_name", "~/inline-tui");
+        app.set_session_info("dummy_model_name", "~/alter-zero");
         let band = menu_rows(&app);
         let h = live_height(
             &app.input,
@@ -12425,7 +12425,7 @@ mod tests {
         app.input = TextArea::from_text("hi");
         let bare_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0);
         let bare = cursor_position(Rect::new(0, 0, 40, bare_h), &app);
-        app.set_session_info("dummy_model_name", "~/inline-tui");
+        app.set_session_info("dummy_model_name", "~/alter-zero");
         let footer_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 1);
         let with_footer = cursor_position(Rect::new(0, 0, 40, footer_h), &app);
         assert_eq!(with_footer, bare, "cursor unchanged by the footer row");
@@ -12617,7 +12617,7 @@ mod tests {
     #[test]
     fn the_search_line_displaces_the_session_footer() {
         let mut app = searching(&["git status"], "git");
-        app.set_session_info("dummy_model_name", "~/inline-tui");
+        app.set_session_info("dummy_model_name", "~/alter-zero");
         let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
@@ -12760,7 +12760,7 @@ mod tests {
     #[test]
     fn the_shell_mode_line_displaces_the_session_footer() {
         let mut app = shelling("ls -la");
-        app.set_session_info("dummy_model_name", "~/inline-tui");
+        app.set_session_info("dummy_model_name", "~/alter-zero");
         let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
@@ -12831,10 +12831,10 @@ mod tests {
     fn a_shell_tool_renders_headerless_output_only() {
         // The Role::Shell header message is the cell's first line; the tool
         // itself contributes only the `⎿` output lines, flush below it.
-        let mut t = tool("pwd", "", ToolStatus::Ok, "/home/user/inline-tui");
+        let mut t = tool("pwd", "", ToolStatus::Ok, "/home/user/alter-zero");
         t.shell = true;
         let lines = tool_lines(&t, 60);
-        assert_eq!(plain(&lines[0]), "  ⎿  /home/user/inline-tui");
+        assert_eq!(plain(&lines[0]), "  ⎿  /home/user/alter-zero");
         assert!(
             !plain(&lines[0]).contains("pwd"),
             "no `● pwd` header — the Shell message above is the header"
@@ -13911,7 +13911,7 @@ mod tests {
 
     fn login_app_provider() -> App {
         let mut app = App::new();
-        app.open_key_onboarding(login_choices(), "~/.inline-tui/.env");
+        app.open_key_onboarding(login_choices(), "~/.alter-zero/.env");
         app
     }
 
@@ -13949,7 +13949,7 @@ mod tests {
         assert!(!row(&buf, 5, 60).contains('✓'));
         // The hint (row 8: counter(6) gap(7) hint(8)) names the real .env path.
         assert!(
-            row(&buf, 8, 60).contains("Keys are saved to ~/.inline-tui/.env"),
+            row(&buf, 8, 60).contains("Keys are saved to ~/.alter-zero/.env"),
             "hint: {:?}",
             row(&buf, 8, 60)
         );

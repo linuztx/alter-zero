@@ -55,8 +55,8 @@ executor (`llm::exec`), and the `!` shell runner:
   `task_id(seed)` pins the format.
 - The interim files live in **Claude Code's tasks layout** — the pure
   `tasks_dir(temp, uid, cwd, session)`:
-  `{tmp}/inline-tui-{uid}/{cwd, non-alphanumerics dashed}/{session}/tasks/{id}.output`
-  (e.g. `/tmp/inline-tui-0/-home-user-proj/18f…-4e2/tasks/bvyo7tkbe.output`) —
+  `{tmp}/alter-zero-{uid}/{cwd, non-alphanumerics dashed}/{session}/tasks/{id}.output`
+  (e.g. `/tmp/alter-zero-0/-home-user-proj/18f…-4e2/tasks/bvyo7tkbe.output`) —
   a stable per-user root, the project cwd as one dashed segment, and a
   per-session dir keeping concurrent instances apart. The boundary injects
   the uid (`main.rs::process_uid` — `/proc/self`'s owner; no `libc` in a

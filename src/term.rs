@@ -126,7 +126,7 @@ pub struct InlineViewport {
     /// terminal reports Shift+Enter distinctly from Enter — see
     /// `docs/shift-enter.md`). Recorded so [`restore`] and the panic hook only
     /// **pop** the stack when we actually pushed; `false` when the
-    /// `INLINE_TUI_DISABLE_KEYBOARD_ENHANCEMENT` escape hatch is set.
+    /// `ALTER_ZERO_DISABLE_KEYBOARD_ENHANCEMENT` escape hatch is set.
     ///
     /// [`init`]: InlineViewport::init
     /// [`restore`]: InlineViewport::restore
@@ -835,7 +835,7 @@ fn install_panic_hook(keyboard_enhanced: bool) {
 /// Environment escape hatch: set this to a truthy value to keep keyboard
 /// enhancement **off** on terminals where the kitty protocol misbehaves (codex's
 /// `CODEX_TUI_DISABLE_KEYBOARD_ENHANCEMENT`). See `docs/shift-enter.md`.
-const DISABLE_KEYBOARD_ENHANCEMENT_ENV: &str = "INLINE_TUI_DISABLE_KEYBOARD_ENHANCEMENT";
+const DISABLE_KEYBOARD_ENHANCEMENT_ENV: &str = "ALTER_ZERO_DISABLE_KEYBOARD_ENHANCEMENT";
 
 /// Whether keyboard enhancement should be left **off**, given the value of
 /// [`DISABLE_KEYBOARD_ENHANCEMENT_ENV`]. A truthy value (`1`/`true`/`yes`,

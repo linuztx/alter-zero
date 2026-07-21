@@ -52,7 +52,7 @@ unit-tested must be unit-tested.
   dim **`esc to interrupt`** hint (codex's discoverability hint). The turn opens
   with a deliberate **pre-stream pause** (the backend waits before its first
   chunk — `DummyAi`'s `STARTUP_DELAY`, 3s, overridable via
-  `INLINE_TUI_STARTUP_DELAY_MS`) so the indicator is visibly working first: the
+  `ALTER_ZERO_STARTUP_DELAY_MS`) so the indicator is visibly working first: the
   just-sent user message is counted up front (`App::count_user_input`, `↑`), so
   the pause shows `↑ N tokens` and the timer ticks. The strip reserves **no
   preview row** while there is nothing to preview (`preview_rows` 0 —
@@ -263,7 +263,7 @@ unit-tested must be unit-tested.
   `Thinking for Ns` status. `main.rs` holds the backend as a `Box<dyn
   ReplySource>` so it can be swapped live. The **dummy is the default and the
   fallback** — the real backend activates only when a provider, model, and API
-  key all resolve and `INLINE_TUI_DUMMY` isn't set — so the app always runs
+  key all resolve and `ALTER_ZERO_DUMMY` isn't set — so the app always runs
   offline and `smoke.sh` (which configures none of that) stays on the dummy.
 - **`/model` picker** (`docs/llm.md`). An **inline** picker (it replaces the
   composer in the bottom region, unlike the alternate-screen `/resume`): `/model`
@@ -273,13 +273,13 @@ unit-tested must be unit-tested.
   them with type-to-search (`→` marks the selection, `❯` the search prompt,
   headerless), and
   `Enter` rebuilds the backend for the chosen model, updates the footer, and
-  **persists the choice** to `~/.inline-tui/config.json` (`llm::settings::Settings`)
+  **persists the choice** to `~/.alter-zero/config.json` (`llm::settings::Settings`)
   so it's the default next run. With no provider configured it shows a cyan
   `run /login` hint instead of a list. Rejected mid-turn like `/resume`.
 - **`/login` API-key onboarding** (`docs/llm.md`). A second **inline** flow,
   two-step: pick a provider (headerless list), then paste its API key (masked,
   under a periwinkle `Enter your … API key` prompt). On save the key is written to
-  `~/.inline-tui/.env` (`llm::keystore::EnvFile`, a pure `.env` reader/writer) so
+  `~/.alter-zero/.env` (`llm::keystore::EnvFile`, a pure `.env` reader/writer) so
   it **persists across runs** — key resolution consults the real process env
   first, then this file. Because `std::env::set_var` is `unsafe` (forbidden here),
   the loaded keys live in an in-memory map, never the process env. Rejected
@@ -395,8 +395,8 @@ unit-tested must be unit-tested.
   deleted at the boundary (`App::take_discarded_images`).
 - **`/resume` picks up a saved session** (codex's `/resume` — see
   `docs/resume.md`). Every conversation records to a rollout JSONL file
-  (`~/.inline-tui/sessions/YYYY/MM/DD/rollout-…-{id}.jsonl`, overridable via
-  `INLINE_TUI_SESSIONS_DIR`): a `session_meta` line, then one line per
+  (`~/.alter-zero/sessions/YYYY/MM/DD/rollout-…-{id}.jsonl`, overridable via
+  `ALTER_ZERO_SESSIONS_DIR`): a `session_meta` line, then one line per
   finished `HistoryItem` — completed items only, never streaming deltas
   (codex's persistence policy). The file is created lazily on the first
   recorded item (empty sessions never touch disk), a backtrack rewind
@@ -439,7 +439,7 @@ logic is unit-testable without a real terminal.
 | File        | Responsibility | Tested? |
 |-------------|----------------|---------|
 | `stream.rs` | The backend seam: the `ReplySource` trait (sends on a **tokio** `UnboundedSender<StreamEvent>`; `model_name()` names the backend for the session footer) + built-in `DummyAi` impl (with a configurable `STARTUP_DELAY` pre-stream pause — `with_startup_delay`), a `CancelToken`, and the `StreamEvent` protocol (`Chunk`/`ToolStart`/`ToolEnd`/`ThinkingStart`/`ThinkingChunk`/`ThinkingEnd`/`Error`/`StreamDone`); plus pure `dummy_response`/`chunks`/`turn_events` (the interleaved thinking + tool script). | Pure parts, token & dummy: yes |
-| `llm/`      | The **real OpenAI-compatible backend** (`docs/llm.md`): `config` (the `providers.toml` parse + `ModelConfig`/`Selection` resolution), `thinking` (`ThinkingSplitter` — peels `<think>`/native `reasoning` deltas out of the stream), `openai` (`OpenAiClient` — pure endpoint/payload/SSE-parse + the blocking SSE `stream_chat`), `models` (`parse_models` + the `/v1/models` `fetch_models`, the `ModelEntry` picker row), `keystore` (`EnvFile` — the pure `.env` reader/writer `/login` persists keys through), and `backend` (`LlmBackend: ReplySource` — bridges the split deltas to `StreamEvent`s). The dummy is the default/fallback; the real backend activates only when a provider+model+key resolve and `INLINE_TUI_DUMMY` isn't set. | Pure cores: yes (HTTP: manual) |
+| `llm/`      | The **real OpenAI-compatible backend** (`docs/llm.md`): `config` (the `providers.toml` parse + `ModelConfig`/`Selection` resolution), `thinking` (`ThinkingSplitter` — peels `<think>`/native `reasoning` deltas out of the stream), `openai` (`OpenAiClient` — pure endpoint/payload/SSE-parse + the blocking SSE `stream_chat`), `models` (`parse_models` + the `/v1/models` `fetch_models`, the `ModelEntry` picker row), `keystore` (`EnvFile` — the pure `.env` reader/writer `/login` persists keys through), and `backend` (`LlmBackend: ReplySource` — bridges the split deltas to `StreamEvent`s). The dummy is the default/fallback; the real backend activates only when a provider+model+key resolve and `ALTER_ZERO_DUMMY` isn't set. | Pure cores: yes (HTTP: manual) |
 | `app.rs`    | State + pure update logic: `App` (its `input` is a `TextArea`), `on_key -> Action` (per `View`; routes editing/cursor keys to the textarea), `push_chunk`/`finish_stream`/`flush_streaming_segment`/`interrupt_turn`, `start_tool`/`end_tool`, the message+tool `history`, **the ↑/↓ input-history recall** (`InputHistory` — record/gate/up/down, plus `seed`/`take_unpersisted` for the boundary's cross-session persistence, `docs/input-history.md` + `docs/history-persistence.md`), **the Ctrl+R reverse search over it** (`HistorySearch`/`SearchState` + `InputHistory::search`/`entry`/`resume_at`, every key routed to `on_key_search` while open, `docs/history-search.md`), **the `!` shell-command mode + dispatch** (`shell_mode`/`sync_shell_mode` — the absorbed bang — `shell_query`, `Action::RunShell`, `begin_shell` + `Role::Shell`, `docs/shell-command.md`), **the `?` shortcuts-band toggle** (`shortcuts_open`, `docs/shortcuts.md`), **the mid-turn message queue** (`queued` turn-batches/`drain_next_batch`/`drain_last_batch`, Enter-appends + Tab-new-batch + Alt+Up edits the last batch, `docs/queue.md`), **the session info** (`session`/`set_session_info`, boundary-injected for the footer, `docs/footer.md`), the tool-view scroll, **the slash-command palette** (`command_query`/`matching_commands`, `COMMANDS`, open/filter/scroll/dispatch), **the `@` file picker** (`FileSearch` state + `refresh_file_search`/`file_search_query`/`set_file_matches`/`move_file_selection`/`accept_file_selection` — matches arrive asynchronously from the boundary; `docs/file-search.md`), **the `/resume` picker** (`ResumePicker` state + `open_resume_picker`/`close_resume_picker`/`on_key_resume_picker`/`load_session` — the sessions arrive from the boundary's scan; `docs/resume.md`), **the inline `/model` picker** (`ModelPicker`/`ModelLoad`/`ModelFetchError` state + `open_model_picker`/`close_model_picker`/`begin_model_load`/`add_models`/`add_model_error`/`on_key_model_picker` — the per-provider model lists arrive in parallel from the boundary's fetches and merge; `docs/llm.md`), **the inline `/login` onboarding** (`KeyOnboarding`/`KeyStep`/`ProviderChoice` state + `open_key_onboarding`/`close_key_onboarding`/`on_key_key_onboarding`/`paste_into_key_onboarding` — the provider choices arrive from the boundary; `docs/llm.md`). `Action`/`Role`/`Message`/`StreamError`/`InterruptedTurn`/`ToolStatus`/`ToolCall`/`HistoryItem`/`QueuedTurn`/`View`/`SlashCommand`/`CommandEffect`/`CommandMenu`/`FileSearch`/`ResumePicker`/`ModelPicker`/`InputHistory`/`SessionInfo` types. | Yes |
 | `textarea.rs` | The **codex-style editable input** (`TextArea`): `text` + a movable `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical motion. Insert/delete at the cursor, grapheme ←/→, wrapped ↑/↓ (logical-line fallback when the cache is cold), Home/End, byte-range wrapping (`wrapped_rows`/`display_rows`/`cursor_row_col`/`row_count`), and `replace_range` (swap a span — the `@token` for a path). Focused port of codex's editing core; see `docs/textarea.md`. | Yes |
 | `file_search.rs` | The **pure core of the `@` file picker** (`docs/file-search.md`): `at_token` (the `@token` under the cursor — byte range + query), `fuzzy_match` (ASCII-case-insensitive subsequence + score + matched-char indices), `rank_files` (filter/sort/cap), and the `AtToken`/`FileMatch` types. The filesystem walk + async plumbing are the boundary's (`main.rs`); this is all pure. | Yes |

@@ -88,7 +88,7 @@ blocks up to 2s on terminals that never answer (the reason codex wrote its own).
 An unconditional push is simply ignored by terminals that don't support the
 protocol, so there's nothing to gain by paying that latency.
 
-### Escape hatch (`INLINE_TUI_DISABLE_KEYBOARD_ENHANCEMENT`)
+### Escape hatch (`ALTER_ZERO_DISABLE_KEYBOARD_ENHANCEMENT`)
 
 A truthy value (`1`/`true`/`yes`, case-insensitive) keeps enhancement **off**, for
 the rare terminal where the kitty protocol misbehaves (codex's

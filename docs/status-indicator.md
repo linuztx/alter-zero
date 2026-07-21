@@ -47,7 +47,7 @@ text appears): the just-sent **user message is counted into the tally up front
 with the `↑` arrow** (uploaded input, like a tool result folded back in), so the
 pause shows `↑ N tokens` and the timer ticks. The first streamed chunk flips the
 arrow to `↓`. The pause is `DummyAi`'s (`stream::STARTUP_DELAY`, overridable via
-`INLINE_TUI_STARTUP_DELAY_MS` — the smoke test runs short, one phase long); a
+`ALTER_ZERO_STARTUP_DELAY_MS` — the smoke test runs short, one phase long); a
 real backend's own latency plays the same role.
 
 - **spinner** — the line opens with a **comet** (a Larson-scanner sweep): a
@@ -232,7 +232,7 @@ spinner never shifts as the comet moves.
 status indicator is visibly working before any reply text — the point of the
 pause is to show it off. The wait is an interruptible `nap` (an Esc during it
 reaps the thread at once and streams nothing). The delay is configurable
-(`DummyAi::with_startup_delay`); `main.rs` reads `INLINE_TUI_STARTUP_DELAY_MS`
+(`DummyAi::with_startup_delay`); `main.rs` reads `ALTER_ZERO_STARTUP_DELAY_MS`
 (so the smoke test runs short and one phase long), defaulting to `STARTUP_DELAY`.
 A real backend's own first-token latency plays the same role. During the pause
 the strip is **status + gap only** — no preview row is reserved (`preview_rows`

@@ -122,7 +122,7 @@ pub enum StreamEvent {
 /// draw loop re-arms a frame every 32ms while a turn is active (see `main.rs`),
 /// and an Esc reaps the thread promptly (the wait is an interruptible
 /// [`nap`]). Configurable per backend via [`DummyAi::with_startup_delay`] (the
-/// app reads `INLINE_TUI_STARTUP_DELAY_MS`; tests use a short delay).
+/// app reads `ALTER_ZERO_STARTUP_DELAY_MS`; tests use a short delay).
 pub const STARTUP_DELAY: Duration = Duration::from_secs(3);
 
 /// Delay between streamed chunks. Small enough to feel responsive, large
@@ -496,7 +496,7 @@ pub trait ReplySource {
 pub struct DummyAi {
     /// Pause before the first streamed event so the status indicator shows
     /// first ([`STARTUP_DELAY`] by default; the app overrides it from
-    /// `INLINE_TUI_STARTUP_DELAY_MS`, tests use a short value).
+    /// `ALTER_ZERO_STARTUP_DELAY_MS`, tests use a short value).
     startup_delay: Duration,
 }
 
@@ -516,7 +516,7 @@ impl DummyAi {
     }
 
     /// A dummy with a custom pre-stream pause — the app threads
-    /// `INLINE_TUI_STARTUP_DELAY_MS` through here, and tests pass a short delay.
+    /// `ALTER_ZERO_STARTUP_DELAY_MS` through here, and tests pass a short delay.
     #[must_use]
     pub fn with_startup_delay(startup_delay: Duration) -> Self {
         Self { startup_delay }
@@ -598,7 +598,7 @@ impl ReplySource for DummyAi {
 /// only wake after one op-timeout — see `src/llm/openai.rs`), reproduced
 /// deterministically and offline. The event loop must therefore **never
 /// `join()`** a cancelled backend on its thread: doing so freezes the UI for
-/// the whole stall (the interrupt-lag bug). Selected via `INLINE_TUI_STALL_MS`
+/// the whole stall (the interrupt-lag bug). Selected via `ALTER_ZERO_STALL_MS`
 /// and used only by `scripts/smoke.sh` — never in normal operation. See
 /// `docs/interrupt.md`.
 #[derive(Debug, Clone, Copy)]

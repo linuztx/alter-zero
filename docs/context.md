@@ -152,7 +152,7 @@ system prompt:                        (amber tag — the backend's prompt)
   Know your runtime environment · Date … OS … Directory …   (docs/environment.md)
 user:                                 (blue tag)
   [Image #1] what's in this picture?
-  image: /tmp/inline-tui-clipboard-x.png    (dim attachment row)
+  image: /tmp/alter-zero-clipboard-x.png    (dim attachment row)
 assistant:                            (green tag)
   Let me look at the file.
   → read({"path":"src/main.rs"})      (purple — the native tool call)
@@ -181,7 +181,7 @@ when its segment lands in history.
 
 ## Also fixed while wiring: the default system prompt was dead
 
-`build_backend` passed the raw `INLINE_TUI_SYSTEM_PROMPT` env read straight
+`build_backend` passed the raw `ALTER_ZERO_SYSTEM_PROMPT` env read straight
 through, so with the var unset the real backend got **no** system prompt —
 `DEFAULT_SYSTEM_PROMPT` was unreachable, contradicting `docs/llm.md`
 ("Override with…"). Now: unset → the default; set → the override; set to
@@ -210,5 +210,5 @@ base — default or override — so the empty → no-prompt contract still holds
   echoed argument is just lossy. (`docs/tools.md`.)
 - Replaying native `tool_calls`/`tool` messages assumes the provider supports
   function calling (the same providers that would emit tool calls). Resuming a
-  tools-on session with `INLINE_TUI_TOOLS=0` would replay tool messages to a
+  tools-on session with `ALTER_ZERO_TOOLS=0` would replay tool messages to a
   request that declares no tools — a narrow edge a strict provider could reject.

@@ -120,7 +120,7 @@ fn splitmix64(seed: u64) -> u64 {
 }
 
 /// The tasks directory, in Claude Code's layout:
-/// `{temp}/inline-tui-{uid}/{cwd, non-alphanumerics dashed}/{session}/tasks`
+/// `{temp}/alter-zero-{uid}/{cwd, non-alphanumerics dashed}/{session}/tasks`
 /// — a stable per-user root (Claude Code's `claude-{uid}`), the project's
 /// cwd as one dashed segment (`/home/user/proj` → `-home-user-proj`), and a
 /// per-session dir keeping concurrent instances off each other's files. Pure
@@ -138,7 +138,7 @@ pub fn tasks_dir(
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    temp.join(format!("inline-tui-{uid}"))
+    temp.join(format!("alter-zero-{uid}"))
         .join(dashed)
         .join(session)
         .join("tasks")
@@ -583,7 +583,7 @@ mod tests {
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let dir =
-            std::env::temp_dir().join(format!("inline-tui-bg-test-{}-{seq}", std::process::id()));
+            std::env::temp_dir().join(format!("alter-zero-bg-test-{}-{seq}", std::process::id()));
         (BackgroundRegistry::new(tx, dir), rx)
     }
 
@@ -620,7 +620,7 @@ mod tests {
 
     #[test]
     fn tasks_dir_mirrors_claude_codes_layout() {
-        // `{temp}/inline-tui-{uid}/{sanitized cwd}/{session}/tasks` — the
+        // `{temp}/alter-zero-{uid}/{sanitized cwd}/{session}/tasks` — the
         // shape of Claude Code's
         // `/tmp/claude-0/-home-user-proj/{session}/tasks/{id}.output`: a
         // stable per-user root, the cwd with every non-alphanumeric char
@@ -628,12 +628,12 @@ mod tests {
         let dir = tasks_dir(
             std::path::Path::new("/tmp"),
             0,
-            std::path::Path::new("/home/user/inline-tui"),
+            std::path::Path::new("/home/user/alter-zero"),
             "1f0a2b3c-4d5e",
         );
         assert_eq!(
             dir,
-            PathBuf::from("/tmp/inline-tui-0/-home-user-inline-tui/1f0a2b3c-4d5e/tasks")
+            PathBuf::from("/tmp/alter-zero-0/-home-user-alter-zero/1f0a2b3c-4d5e/tasks")
         );
     }
 
@@ -815,7 +815,7 @@ mod tests {
         // helper's conduct is covered by tests/detached_exec.rs and smoke.
         let (reg, mut rx) = registry();
         let reg = reg.with_detach_helper(Some(PathBuf::from(
-            "/definitely/not/a/real/inline-tui-helper",
+            "/definitely/not/a/real/alter-zero-helper",
         )));
         let task = reg
             .launch("echo hi", None, true)

@@ -167,7 +167,7 @@ final cell still comes from `ToolEnd`.
 `examples/tool_smoke.rs` prints every event, `ToolOutput` included:
 
 ```bash
-OPENROUTER_API_KEY=sk-... INLINE_TUI_CA_FILE=/root/.ccr/ca-bundle.crt \
+OPENROUTER_API_KEY=sk-... ALTER_ZERO_CA_FILE=/root/.ccr/ca-bundle.crt \
   cargo run --example tool_smoke -- openai/gpt-4o-mini \
   "Use bash to run: ping -c 10 google.com"
 ```

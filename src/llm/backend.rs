@@ -27,7 +27,7 @@ use crate::stream::{CancelToken, ReplySource, StreamEvent};
 /// swap personas). Kept short to save tokens. The boundary folds the runtime
 /// **environment context** (date/os/cwd) onto this at startup so the agent has
 /// context awareness — see [`augment_with_environment`] and
-/// `docs/environment.md`. Override the persona with `INLINE_TUI_SYSTEM_PROMPT`.
+/// `docs/environment.md`. Override the persona with `ALTER_ZERO_SYSTEM_PROMPT`.
 pub const DEFAULT_SYSTEM_PROMPT: &str = include_str!("../../prompts/alter_zero.md");
 
 /// A real OpenAI-compatible backend. Holds the streaming client (carrying the
@@ -55,8 +55,8 @@ impl LlmBackend {
     }
 
     /// Build a backend with an explicit system prompt (`None` sends no system
-    /// message). The boundary passes `INLINE_TUI_SYSTEM_PROMPT` through here.
-    /// Tools are enabled unless `INLINE_TUI_TOOLS` is falsy (see `docs/tools.md`).
+    /// message). The boundary passes `ALTER_ZERO_SYSTEM_PROMPT` through here.
+    /// Tools are enabled unless `ALTER_ZERO_TOOLS` is falsy (see `docs/tools.md`).
     #[must_use]
     pub fn with_system_prompt(cfg: ModelConfig, system_prompt: Option<String>) -> Self {
         Self::configure(cfg, system_prompt, tools_enabled_from_env())
@@ -110,9 +110,9 @@ impl LlmBackend {
 }
 
 /// Are the `bash`/`read`/`write`/`edit` tools enabled? On by default; disabled
-/// by a falsy `INLINE_TUI_TOOLS` (`0`/`false`/`no`/`off`). See `docs/tools.md`.
+/// by a falsy `ALTER_ZERO_TOOLS` (`0`/`false`/`no`/`off`). See `docs/tools.md`.
 fn tools_enabled_from_env() -> bool {
-    match std::env::var("INLINE_TUI_TOOLS") {
+    match std::env::var("ALTER_ZERO_TOOLS") {
         Ok(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "0" | "false" | "no" | "off"
@@ -151,7 +151,7 @@ pub fn render_environment(date: &str, os: &str, cwd: &str) -> String {
 
 /// Append the environment context to a base system prompt so the agent knows
 /// its date/os/cwd (`docs/environment.md`). A blank base is returned unchanged
-/// so the "empty `INLINE_TUI_SYSTEM_PROMPT` → no system message" contract holds
+/// so the "empty `ALTER_ZERO_SYSTEM_PROMPT` → no system message" contract holds
 /// (`docs/context.md`); the tools note (when enabled) is added by
 /// [`LlmBackend::configure`] afterwards, so the final prompt reads
 /// persona → environment → tools.
@@ -617,7 +617,7 @@ mod tests {
     fn image_data_url_embeds_the_file_as_base64() {
         // The one boundary helper, exercised with a real temp file.
         let dir = std::env::temp_dir();
-        let path = dir.join("inline-tui-test-image-data-url.png");
+        let path = dir.join("alter-zero-test-image-data-url.png");
         std::fs::write(&path, b"foobar").unwrap();
         let url = image_data_url(&path).expect("readable file encodes");
         std::fs::remove_file(&path).ok();
@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn backend_surfaces_its_system_prompt_for_the_debug_view() {
         // Tools off so the prompt isn't augmented — deterministic regardless of
-        // the ambient INLINE_TUI_TOOLS (the augmented case has its own test).
+        // the ambient ALTER_ZERO_TOOLS (the augmented case has its own test).
         let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
         assert_eq!(
             ReplySource::system_prompt(&backend).as_deref(),
@@ -696,7 +696,7 @@ mod tests {
 
     #[test]
     fn augment_with_environment_leaves_a_blank_base_unchanged() {
-        // The "empty INLINE_TUI_SYSTEM_PROMPT → no system message" contract
+        // The "empty ALTER_ZERO_SYSTEM_PROMPT → no system message" contract
         // (docs/context.md) must survive: a blank base gains no environment
         // block, so `configure` still drops it to `None`.
         assert_eq!(augment_with_environment("   ", "d", "o", "c"), "   ");

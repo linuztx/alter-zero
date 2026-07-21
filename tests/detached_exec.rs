@@ -1,6 +1,6 @@
-//! Integration proof of the terminal detach (`inline_tui::subprocess`,
+//! Integration proof of the terminal detach (`alter_zero::subprocess`,
 //! docs/tools.md) against the **real built binary**: cargo hands integration
-//! tests the bin's path as `CARGO_BIN_EXE_inline-tui`, whose `main` installs
+//! tests the bin's path as `CARGO_BIN_EXE_alter-zero`, whose `main` installs
 //! the helper hook — so the re-exec tier here is the exact production one,
 //! not a stand-in.
 //!
@@ -12,17 +12,17 @@
 
 use std::path::PathBuf;
 
-use inline_tui::llm::exec::{RealToolExecutor, ToolExecutor};
-use inline_tui::llm::tools::ToolCallRequest;
-use inline_tui::stream::CancelToken;
+use alter_zero::llm::exec::{RealToolExecutor, ToolExecutor};
+use alter_zero::llm::tools::ToolCallRequest;
+use alter_zero::stream::CancelToken;
 
 /// The production detach helper: the TUI binary this test run just built.
 fn helper() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_inline-tui"))
+    PathBuf::from(env!("CARGO_BIN_EXE_alter-zero"))
 }
 
 /// Run one `bash` tool call through the real executor + real helper.
-fn bash(command: &str) -> inline_tui::llm::tools::ToolOutcome {
+fn bash(command: &str) -> alter_zero::llm::tools::ToolOutcome {
     let call = ToolCallRequest {
         id: "c".to_string(),
         name: "bash".to_string(),
@@ -82,7 +82,7 @@ fn the_helper_reexec_tier_detaches_on_its_own() {
     // second tier — the TUI's own binary re-execed in helper mode — must
     // detach by itself. Drive that tier directly (`command_for`), bypassing
     // the `setsid` tier Linux would normally win with.
-    use inline_tui::subprocess::{DetachTier, command_for};
+    use alter_zero::subprocess::{DetachTier, command_for};
     let helper = helper();
     let mut child = command_for(
         &DetachTier::HelperReexec(&helper),

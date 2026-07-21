@@ -274,7 +274,7 @@ The `?` shortcuts band gains a `! for shell command` entry.
   Esc resolves it `⎿ Interrupted by user` with **no** `Conversation interrupted`
   notice (req 2). **Phase 22**: a `!` command with >100KB output
   (`seq 1 50000`) renders its retained head with the `+N lines (ctrl+o to
-  expand)` peek hint, writes **no** `/tmp/inline-tui-shell-*.txt` file (the
+  expand)` peek hint, writes **no** `/tmp/alter-zero-shell-*.txt` file (the
   output is capped in memory, never saved), and the Ctrl+O view ends with the `…`
   truncation marker.
 

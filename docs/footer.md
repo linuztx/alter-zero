@@ -7,7 +7,7 @@ below the input box's bottom rule, giving ambient session context —
 ────────────────────────────────────────────────────────────
 ❯
 ────────────────────────────────────────────────────────────
-  dummy_model_name · ~/inline-tui
+  dummy_model_name · ~/alter-zero
 ```
 
 — the backend's model name and the current working directory, joined with

@@ -1,4 +1,4 @@
-//! Thin terminal shell around the [`inline_tui`] library.
+//! Thin terminal shell around the [`alter_zero`] library.
 //!
 //! This file is the one place that drives real terminal I/O, so it is
 //! intentionally tiny and free of logic worth unit-testing — all of that lives
@@ -48,25 +48,25 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
-use inline_tui::app::{
+use alter_zero::app::{
     Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, InterruptedTurn, ProviderChoice,
     QueuedTurn, Role, ToastKind, View,
 };
-use inline_tui::background::{BackgroundRegistry, BgEvent, PendingNotice};
-use inline_tui::clipboard;
-use inline_tui::context;
-use inline_tui::file_search::{FileMatch, rank_files};
-use inline_tui::frame::{self, FrameRequester};
-use inline_tui::history;
-use inline_tui::llm::{
+use alter_zero::background::{BackgroundRegistry, BgEvent, PendingNotice};
+use alter_zero::clipboard;
+use alter_zero::context;
+use alter_zero::file_search::{FileMatch, rank_files};
+use alter_zero::frame::{self, FrameRequester};
+use alter_zero::history;
+use alter_zero::llm::{
     self, EnvFile, LlmBackend, ModelConfig, ModelEntry, ProvidersFile, ReasoningSupport, Selection,
     Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
-use inline_tui::paste::{self, PasteBurst};
-use inline_tui::session::{self, SessionMeta, SessionSummary};
-use inline_tui::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
-use inline_tui::term::{InlineViewport, ReflowClear};
-use inline_tui::ui;
+use alter_zero::paste::{self, PasteBurst};
+use alter_zero::session::{self, SessionMeta, SessionSummary};
+use alter_zero::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
+use alter_zero::term::{InlineViewport, ReflowClear};
+use alter_zero::ui;
 
 /// A finished `/model` fetch from one provider: its human label (for a failure
 /// note) and either the provider's models or a one-line error. The picker
@@ -76,14 +76,14 @@ type ModelFetch = (String, Result<Vec<ModelEntry>, String>);
 
 fn main() -> io::Result<()> {
     // The detached-exec helper hook FIRST (crate::subprocess, docs/tools.md):
-    // when this process was spawned as `{exe} __inline-tui-detached-exec
+    // when this process was spawned as `{exe} __alter-zero-detached-exec
     // {cmd}` it is a shell runner's child, not a TUI — the hook `setsid()`s
     // away from the controlling terminal (so a `/dev/tty` password prompt
     // like `sudo`'s fails fast instead of hijacking the screen) and becomes
     // `sh -c {cmd}` in place, never returning. It must precede anything that
     // touches the terminal or spawns threads — the tokio runtime and
     // invariant 1's DSR cursor query included.
-    inline_tui::subprocess::run_detached_exec_if_requested();
+    alter_zero::subprocess::run_detached_exec_if_requested();
     tui_main()
 }
 
@@ -93,7 +93,7 @@ async fn tui_main() -> io::Result<()> {
     // interactive path, concurrently with terminal init, so the first turn's
     // `count_tokens` doesn't freeze the loop. Detached; it never touches stdin
     // or the terminal (invariant 1 safe), and `tokenizer::warm` is idempotent.
-    std::thread::spawn(inline_tui::tokenizer::warm);
+    std::thread::spawn(alter_zero::tokenizer::warm);
     let mut term = InlineViewport::init(ui::LIVE_MIN_HEIGHT)?;
     let result = run(&mut term).await;
     // Always restore the terminal (raw mode off, cursor below the box), even if
@@ -131,10 +131,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let hist_store = InputHistoryStore::new();
     app.seed_input_history(hist_store.load());
     // The dummy's pre-stream pause so the status indicator shows first; the
-    // pause is `STARTUP_DELAY` unless `INLINE_TUI_STARTUP_DELAY_MS` overrides it
+    // pause is `STARTUP_DELAY` unless `ALTER_ZERO_STARTUP_DELAY_MS` overrides it
     // (the smoke test runs with a short delay; one phase uses a longer one). A
     // real backend's own first-token latency replaces it.
-    let startup_delay = std::env::var("INLINE_TUI_STARTUP_DELAY_MS")
+    let startup_delay = std::env::var("ALTER_ZERO_STARTUP_DELAY_MS")
         .ok()
         .and_then(|ms| ms.parse::<u64>().ok())
         .map_or(stream::STARTUP_DELAY, Duration::from_millis);
@@ -149,7 +149,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel::<BgEvent>();
     // Claude Code's tasks layout: a stable per-user root, the cwd as one
     // dashed segment, and a per-session dir —
-    // `{tmp}/inline-tui-{uid}/-home-user-proj/{session}/tasks/{id}.output`
+    // `{tmp}/alter-zero-{uid}/-home-user-proj/{session}/tasks/{id}.output`
     // (the pure `background::tasks_dir`; the uid/cwd/session injected here at
     // the boundary).
     let cwd = std::env::current_dir().unwrap_or_default();
@@ -163,7 +163,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // shortens the chain. The registry carries it to all three spawn sites.
     let registry = BackgroundRegistry::new(
         bg_tx,
-        inline_tui::background::tasks_dir(
+        alter_zero::background::tasks_dir(
             &std::env::temp_dir(),
             process_uid(),
             &cwd,
@@ -174,18 +174,18 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let mut bg_clocks: HashMap<String, Instant> = HashMap::new();
     // The reply backend. The dummy is the default (and the fallback) so the app
     // always runs offline; a real OpenAI-compatible model activates only when a
-    // provider, a model, and an API key all resolve and `INLINE_TUI_DUMMY` isn't
+    // provider, a model, and an API key all resolve and `ALTER_ZERO_DUMMY` isn't
     // forcing the dummy (see `build_backend` / docs/llm.md). `/model` rebuilds
     // it live, so it — plus the config it needs — is kept around.
     let providers = load_providers();
-    // The persistent API-key store: `.env` in the cwd (or `INLINE_TUI_ENV_FILE`),
+    // The persistent API-key store: `.env` in the cwd (or `ALTER_ZERO_ENV_FILE`),
     // written by the `/login` flow and consulted during key resolution (a real
     // process env var still wins). `set_var` is `unsafe` (forbidden here), so the
     // loaded keys live in this in-memory map rather than the process env; the
     // path is kept so `/login` can rewrite it. See `docs/llm.md`.
     let env_file_path = env_file_path();
     let mut env_file = load_env_file(&env_file_path);
-    // The persisted `/model` selection (`~/.inline-tui/config.json`): the
+    // The persisted `/model` selection (`~/.alter-zero/config.json`): the
     // provider + model chosen last run, so it survives a restart. Written on
     // each successful switch; real env vars still win over it. See `docs/llm.md`.
     let settings_path = settings_file_path();
@@ -197,11 +197,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // its thinking would hijack the saved default. See docs/reasoning.md.
     let mut persisted_selection: Option<(String, String)> =
         saved.provider.clone().zip(saved.model.clone());
-    let temperature = std::env::var("INLINE_TUI_TEMPERATURE")
+    let temperature = std::env::var("ALTER_ZERO_TEMPERATURE")
         .ok()
         .and_then(|t| t.trim().parse::<f32>().ok());
     // The real backend's system prompt: the "Alter Zero" persona
-    // (`prompts/alter_zero.md`) unless `INLINE_TUI_SYSTEM_PROMPT` overrides it
+    // (`prompts/alter_zero.md`) unless `ALTER_ZERO_SYSTEM_PROMPT` overrides it
     // (an empty value sends no system prompt at all — `with_system_prompt`
     // drops blanks). Either way we fold in the runtime environment — date, os,
     // cwd — so the agent has context awareness (docs/environment.md); the
@@ -209,7 +209,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // assembly is the pure `backend::augment_with_environment`. Folding once
     // here means every backend the loop rebuilds (`/model` switches) inherits
     // it via `system_prompt.clone()`.
-    let system_prompt = std::env::var("INLINE_TUI_SYSTEM_PROMPT")
+    let system_prompt = std::env::var("ALTER_ZERO_SYSTEM_PROMPT")
         .ok()
         .or_else(|| Some(DEFAULT_SYSTEM_PROMPT.to_string()))
         .map(|base| {
@@ -224,7 +224,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // the saved selection, else the file's default. The active model starts from
     // env, then the saved selection, then tracks what the backend actually
     // answers as (so a dummy fallback shows `dummy_model_name`).
-    let mut active_provider = std::env::var("INLINE_TUI_PROVIDER")
+    let mut active_provider = std::env::var("ALTER_ZERO_PROVIDER")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| saved.provider.clone())
@@ -237,17 +237,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         .model
         .clone()
         .filter(|_| active_provider == saved.provider);
-    let env_model = std::env::var("INLINE_TUI_MODEL")
+    let env_model = std::env::var("ALTER_ZERO_MODEL")
         .ok()
         .filter(|s| !s.is_empty())
         .or(saved_model);
-    // `INLINE_TUI_STALL_MS` selects a test-only backend that ignores the cancel
+    // `ALTER_ZERO_STALL_MS` selects a test-only backend that ignores the cancel
     // for N ms — modelling a real network backend wedged in a blocking read
     // during the pre-first-token pause — so `scripts/smoke.sh` can prove an Esc
     // interrupt stays responsive even then. Never used in normal operation (it
     // preempts the real/dummy backend only when the env var is set). See
     // `docs/interrupt.md`.
-    let stall_ms = std::env::var("INLINE_TUI_STALL_MS")
+    let stall_ms = std::env::var("ALTER_ZERO_STALL_MS")
         .ok()
         .and_then(|ms| ms.parse::<u64>().ok());
     // The saved thinking blob describes the saved (provider, model) pairing —
@@ -300,7 +300,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let cwd_display = ui::display_cwd(&cwd, home.as_deref());
     // The `~`-relative `.env` path shown in the `/login` provider-step hint, so
-    // it names the real file even under an `INLINE_TUI_ENV_FILE` override.
+    // it names the real file even under an `ALTER_ZERO_ENV_FILE` override.
     let env_path_display = ui::display_cwd(&env_file_path, home.as_deref());
     app.set_session_info(backend.model_name(), cwd_display.clone());
     // The backend's system prompt rides into App so the Ctrl+D view shows the
@@ -967,7 +967,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 let current = std::fs::read_to_string(&env_file_path)
                                     .unwrap_or_default();
                                 let updated = EnvFile::upsert(&current, &env_var, &key);
-                                // The config home (`~/.inline-tui`) may not exist
+                                // The config home (`~/.alter-zero`) may not exist
                                 // yet — create it before the first write.
                                 if let Some(parent) = env_file_path.parent() {
                                     let _ = std::fs::create_dir_all(parent);
@@ -1342,11 +1342,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     Ok(())
 }
 
-/// Is the built-in dummy backend forced on? (`INLINE_TUI_DUMMY` set to a truthy
+/// Is the built-in dummy backend forced on? (`ALTER_ZERO_DUMMY` set to a truthy
 /// value). Keeps `smoke.sh` — which sets nothing — on the dummy, and lets a
 /// developer force it even with a key configured. See `docs/llm.md`.
 fn dummy_forced() -> bool {
-    std::env::var("INLINE_TUI_DUMMY").ok().is_some_and(|v| {
+    std::env::var("ALTER_ZERO_DUMMY").ok().is_some_and(|v| {
         matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "1" | "true" | "yes" | "on"
@@ -1354,18 +1354,18 @@ fn dummy_forced() -> bool {
     })
 }
 
-/// Load the provider table: `INLINE_TUI_PROVIDERS_FILE`, then `./providers.toml`,
-/// then `~/.inline-tui/providers.toml`, else the built-in default. The first that
+/// Load the provider table: `ALTER_ZERO_PROVIDERS_FILE`, then `./providers.toml`,
+/// then `~/.alter-zero/providers.toml`, else the built-in default. The first that
 /// reads and parses wins; a malformed file falls through to the next. Boundary
 /// code — env + filesystem. See `docs/llm.md`.
 fn load_providers() -> ProvidersFile {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(path) = std::env::var_os("INLINE_TUI_PROVIDERS_FILE") {
+    if let Some(path) = std::env::var_os("ALTER_ZERO_PROVIDERS_FILE") {
         candidates.push(PathBuf::from(path));
     }
     candidates.push(PathBuf::from("providers.toml"));
     if let Some(home) = std::env::var_os("HOME") {
-        candidates.push(PathBuf::from(home).join(".inline-tui/providers.toml"));
+        candidates.push(PathBuf::from(home).join(".alter-zero/providers.toml"));
     }
     for path in candidates {
         if let Ok(text) = std::fs::read_to_string(&path)
@@ -1382,7 +1382,7 @@ fn load_providers() -> ProvidersFile {
 /// "set X" hint.
 fn key_env_name(providers: &ProvidersFile, provider: &str) -> String {
     providers.get(provider).map_or_else(
-        || inline_tui::llm::config::default_key_env(provider),
+        || alter_zero::llm::config::default_key_env(provider),
         |p| p.key_env(provider),
     )
 }
@@ -1402,14 +1402,14 @@ fn resolve_env(env_file: &EnvFile, name: &str) -> Option<String> {
 }
 
 /// Resolve a provider's API key: its own env var (process env then `.env`), else
-/// the generic `INLINE_TUI_API_KEY`. Empty values count as unset.
+/// the generic `ALTER_ZERO_API_KEY`. Empty values count as unset.
 fn resolve_api_key(
     providers: &ProvidersFile,
     env_file: &EnvFile,
     provider: &str,
 ) -> Option<String> {
     resolve_env(env_file, &key_env_name(providers, provider))
-        .or_else(|| resolve_env(env_file, "INLINE_TUI_API_KEY"))
+        .or_else(|| resolve_env(env_file, "ALTER_ZERO_API_KEY"))
 }
 
 /// Build the resolved [`ModelConfig`] for a provider/model (with the resolved
@@ -1459,17 +1459,17 @@ fn provider_choices(providers: &ProvidersFile, env_file: &EnvFile) -> Vec<Provid
 }
 
 /// The app's config home — where the `.env` key store and `config.json` live:
-/// `INLINE_TUI_CONFIG_DIR`, else `~/.inline-tui`, else `None` (no HOME and no
+/// `ALTER_ZERO_CONFIG_DIR`, else `~/.alter-zero`, else `None` (no HOME and no
 /// override, so file persistence is disabled). Matches where `providers.toml`
 /// and the sessions dir already resolve. See `docs/llm.md`.
 fn config_home() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("INLINE_TUI_CONFIG_DIR") {
+    if let Some(dir) = std::env::var_os("ALTER_ZERO_CONFIG_DIR") {
         return Some(PathBuf::from(dir));
     }
-    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".inline-tui"))
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".alter-zero"))
 }
 
-/// The `.env` key store path: `INLINE_TUI_ENV_FILE`, else `{config_home}/.env`,
+/// The `.env` key store path: `ALTER_ZERO_ENV_FILE`, else `{config_home}/.env`,
 /// else `./.env` when there's no config home. Written by the `/login` flow.
 /// Write the `.env` key store **owner-only**: the file holds plaintext API
 /// keys, so it is created `0o600` — and a pre-existing file's mode is
@@ -1497,7 +1497,7 @@ fn write_key_store(path: &std::path::Path, contents: &str) -> io::Result<()> {
 }
 
 fn env_file_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("INLINE_TUI_ENV_FILE") {
+    if let Some(path) = std::env::var_os("ALTER_ZERO_ENV_FILE") {
         return PathBuf::from(path);
     }
     config_home().map_or_else(|| PathBuf::from(".env"), |dir| dir.join(".env"))
@@ -1561,7 +1561,7 @@ fn thinking_settings_of(thinking: Option<&(ReasoningSupport, ThinkingMode)>) -> 
 }
 
 /// Pick the reply backend: the dummy unless a real provider/model/key all
-/// resolve (and `INLINE_TUI_DUMMY` isn't forcing the dummy). The dummy is the
+/// resolve (and `ALTER_ZERO_DUMMY` isn't forcing the dummy). The dummy is the
 /// safe fallback so the app always runs offline. See `docs/llm.md`.
 #[allow(clippy::too_many_arguments)] // a flat list of independent config knobs
 fn build_backend(
@@ -1601,7 +1601,7 @@ fn spawn_model_fetch(
     std::thread::spawn(move || {
         let result: Result<Vec<ModelEntry>, String> = match cfg {
             Some(cfg) => llm::models::fetch_models(&cfg, &cancel).map_err(|e| e.to_string()),
-            None => Err("No provider configured — set providers.toml / INLINE_TUI_PROVIDER".into()),
+            None => Err("No provider configured — set providers.toml / ALTER_ZERO_PROVIDER".into()),
         };
         // Don't deliver a result the picker no longer wants.
         if !cancel.is_cancelled() {
@@ -1803,7 +1803,7 @@ fn commit_turn_failure(
     app: &App,
     render: &mut ui::StreamRender,
     partial: Option<String>,
-    tool: Option<inline_tui::app::ToolCall>,
+    tool: Option<alter_zero::app::ToolCall>,
     notice: Option<&str>,
 ) {
     let width = term.screen().width;
@@ -2013,7 +2013,7 @@ fn spawn_shell_command(
         // terminal, so a password prompt (`! sudo …`) fails fast instead of
         // writing over the TUI (the `llm::exec` pattern; see
         // `subprocess`, docs/shell-command.md).
-        let mut child = match inline_tui::subprocess::spawn_detached_shell(
+        let mut child = match alter_zero::subprocess::spawn_detached_shell(
             registry.detach_helper().as_deref(),
             &command,
         ) {
@@ -2510,7 +2510,7 @@ fn local_timestamp() -> String {
 /// system prompt by [`augment_with_environment`] so the agent knows the day
 /// (see `docs/environment.md`).
 ///
-/// [`augment_with_environment`]: inline_tui::llm::backend::augment_with_environment
+/// [`augment_with_environment`]: alter_zero::llm::backend::augment_with_environment
 fn local_date() -> String {
     chrono::Local::now().format("%A %Y-%m-%d").to_string()
 }
@@ -2786,8 +2786,8 @@ const RESUME_HEAD_BYTES: u64 = 2 * 1024 * 1024;
 ///
 /// [`sync`]: SessionRecorder::sync
 struct SessionRecorder {
-    /// The sessions root (`~/.inline-tui/sessions`, or
-    /// `INLINE_TUI_SESSIONS_DIR` — the smoke test points it at a temp dir);
+    /// The sessions root (`~/.alter-zero/sessions`, or
+    /// `ALTER_ZERO_SESSIONS_DIR` — the smoke test points it at a temp dir);
     /// `None` disables recording (no HOME and no override).
     root: Option<PathBuf>,
     /// The active session's file + meta, once anything was recorded — created
@@ -2806,11 +2806,11 @@ struct SessionRecorder {
 
 impl SessionRecorder {
     fn new(model: &str, cwd: &Path) -> Self {
-        let root = std::env::var_os("INLINE_TUI_SESSIONS_DIR")
+        let root = std::env::var_os("ALTER_ZERO_SESSIONS_DIR")
             .map(PathBuf::from)
             .or_else(|| {
                 std::env::var_os("HOME")
-                    .map(|home| PathBuf::from(home).join(".inline-tui").join("sessions"))
+                    .map(|home| PathBuf::from(home).join(".alter-zero").join("sessions"))
             });
         Self {
             root,
@@ -2918,7 +2918,7 @@ impl SessionRecorder {
             timestamp: utc_stamp(),
             cwd: self.cwd.clone(),
             model: self.model.clone(),
-            originator: "inline-tui".to_string(),
+            originator: "alter-zero".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
         let first_line = format!("{}\n", session::meta_line(&meta, &meta.timestamp));
@@ -3016,9 +3016,9 @@ const HISTORY_MAX_ENTRY_BYTES: usize = 100 * 1024;
 /// compaction. Best-effort — every failure is swallowed (persistence must never
 /// kill the TUI, like [`SessionRecorder`] and `save_settings`).
 struct InputHistoryStore {
-    /// The history file (`INLINE_TUI_HISTORY_FILE`, else
+    /// The history file (`ALTER_ZERO_HISTORY_FILE`, else
     /// `{config_home}/history.jsonl` — beside `config.json`/`.env`, which
-    /// `INLINE_TUI_CONFIG_DIR` already redirects). `None` disables persistence
+    /// `ALTER_ZERO_CONFIG_DIR` already redirects). `None` disables persistence
     /// (no HOME and no override).
     path: Option<PathBuf>,
     /// This process's id, stamped into each record's `session_id` field. The
@@ -3028,7 +3028,7 @@ struct InputHistoryStore {
 
 impl InputHistoryStore {
     fn new() -> Self {
-        let path = std::env::var_os("INLINE_TUI_HISTORY_FILE")
+        let path = std::env::var_os("ALTER_ZERO_HISTORY_FILE")
             .map(PathBuf::from)
             .or_else(|| config_home().map(|dir| dir.join("history.jsonl")));
         Self {

@@ -10,11 +10,11 @@
 #   - `api_key_env` (optional) names the environment variable the API key is read
 #     from; it defaults to `<ID_UPPERCASE>_API_KEY` (e.g. `OPENROUTER_API_KEY`).
 #
-# The active provider/model is chosen with `INLINE_TUI_PROVIDER` /
-# `INLINE_TUI_MODEL`, or interactively with the `/model` picker, and persists to
-# ~/.inline-tui/config.json between runs. With no API key configured — or with
-# `INLINE_TUI_DUMMY=1` — the app falls back to the built-in dummy backend, so it
-# always runs offline. Add a key in-app with `/login` (saved to ~/.inline-tui/.env).
+# The active provider/model is chosen with `ALTER_ZERO_PROVIDER` /
+# `ALTER_ZERO_MODEL`, or interactively with the `/model` picker, and persists to
+# ~/.alter-zero/config.json between runs. With no API key configured — or with
+# `ALTER_ZERO_DUMMY=1` — the app falls back to the built-in dummy backend, so it
+# always runs offline. Add a key in-app with `/login` (saved to ~/.alter-zero/.env).
 
 [providers.a0_venice]
 name = "Agent Zero API"

@@ -63,7 +63,7 @@ use std::process::{Child, Command, Stdio};
 
 /// The sentinel first argument that selects the detached-exec helper mode —
 /// obscure enough that no real TUI invocation collides with it.
-pub const DETACH_ARG: &str = "__inline-tui-detached-exec";
+pub const DETACH_ARG: &str = "__alter-zero-detached-exec";
 
 /// One way to spawn the shell child, in [`tiers`]' preference order. See the
 /// module docs for the full rationale per tier.
@@ -180,7 +180,7 @@ pub fn run_detached_exec_if_requested() {
     let Some(command) = args.next() else {
         // A malformed helper invocation must never fall through and boot a
         // TUI into the caller's pipes — fail the spawn instead.
-        eprintln!("inline-tui: {DETACH_ARG} requires a command");
+        eprintln!("alter-zero: {DETACH_ARG} requires a command");
         std::process::exit(2);
     };
     #[cfg(unix)]
@@ -197,7 +197,7 @@ pub fn run_detached_exec_if_requested() {
         // group-kill helpers target.
         let err = Command::new("sh").arg("-c").arg(&command).exec();
         // exec only returns on failure.
-        eprintln!("inline-tui: failed to exec sh: {err}");
+        eprintln!("alter-zero: failed to exec sh: {err}");
         std::process::exit(127);
     }
     #[cfg(not(unix))]
@@ -207,7 +207,7 @@ pub fn run_detached_exec_if_requested() {
         match Command::new("sh").arg("-c").arg(&command).status() {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(err) => {
-                eprintln!("inline-tui: failed to run sh: {err}");
+                eprintln!("alter-zero: failed to run sh: {err}");
                 std::process::exit(127);
             }
         }
@@ -234,7 +234,7 @@ mod tests {
             tiers(None),
             vec![DetachTier::SetsidBinary, DetachTier::Attached]
         );
-        let helper = Path::new("/opt/bin/inline-tui");
+        let helper = Path::new("/opt/bin/alter-zero");
         assert_eq!(
             tiers(Some(helper)),
             vec![
@@ -256,12 +256,12 @@ mod tests {
     fn the_helper_tier_is_the_reexec_protocol() {
         // The spawner side of the argv protocol the main() hook parses:
         // `{helper} {DETACH_ARG} {command}` — one command string, verbatim.
-        let helper = Path::new("/opt/bin/inline-tui");
+        let helper = Path::new("/opt/bin/alter-zero");
         let (prog, args) = argv(&command_for(
             &DetachTier::HelperReexec(helper),
             "sudo -v 'a b'",
         ));
-        assert_eq!(prog, "/opt/bin/inline-tui");
+        assert_eq!(prog, "/opt/bin/alter-zero");
         assert_eq!(args, [DETACH_ARG, "sudo -v 'a b'"].map(OsString::from));
     }
 

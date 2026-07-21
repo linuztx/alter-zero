@@ -27,7 +27,7 @@ Know your runtime environment
 
 Date Sunday 2026-07-19
 OS linux (Ubuntu 24.04.4 LTS)
-Directory /home/user/inline-tui
+Directory /home/user/alter-zero
 ```
 
 ## Where it sits in the prompt
@@ -68,11 +68,11 @@ read can't live in the pure, deterministically-tested library. So the split is:
      `PRETTY_NAME` then `NAME` (quotes stripped), so the distro enrichment is
      tested without reading a real file.
 
-3. **A blank base stays blank.** The "empty `INLINE_TUI_SYSTEM_PROMPT` → no
+3. **A blank base stays blank.** The "empty `ALTER_ZERO_SYSTEM_PROMPT` → no
    system message" contract (`docs/context.md`) is preserved:
    `augment_with_environment` returns a blank base unchanged, so
    `configure` still drops it to `None`. Any non-empty prompt — the default
-   persona *or* a custom `INLINE_TUI_SYSTEM_PROMPT` — gets the environment
+   persona *or* a custom `ALTER_ZERO_SYSTEM_PROMPT` — gets the environment
    block, because context awareness is orthogonal to persona.
 
 ## Testing

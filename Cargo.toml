@@ -1,7 +1,22 @@
 [package]
-name = "inline-tui"
+name = "alter-zero"
 version = "0.1.0"
 edition = "2024"
+# Two binary targets share the one entry point (`src/main.rs`): the primary
+# `alter-zero` and the short alias `alter0`, so `cargo build --release` yields
+# both `./target/release/alter-zero` and `./target/release/alter0`. `cargo run`
+# would otherwise be ambiguous with multiple bins, so pick the canonical one.
+default-run = "alter-zero"
+
+# The full name and the short alias. Both compile `src/main.rs`, so the two
+# binaries are byte-for-byte identical in behaviour — invoke whichever you like.
+[[bin]]
+name = "alter-zero"
+path = "src/main.rs"
+
+[[bin]]
+name = "alter0"
+path = "src/main.rs"
 
 [dependencies]
 ratatui = "0.30.1"

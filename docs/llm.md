@@ -65,7 +65,7 @@ a normal text turn.
 
 `reqwest` honours `HTTPS_PROXY` from the environment; the
 agent proxy's custom CA is loaded at runtime from `SSL_CERT_FILE` (or
-`INLINE_TUI_CA_FILE`) and added as an extra trust root, so `rustls` keeps the
+`ALTER_ZERO_CA_FILE`) and added as an extra trust root, so `rustls` keeps the
 build free of system OpenSSL.
 
 ### Retrying a failed request (`llm::retry`)
@@ -113,44 +113,44 @@ stream + `ThinkingEnd` (when the response text resumes), driving the existing
 ## Configuration and the dummy toggle
 
 `providers.toml` (repo root by default) declares the providers; see the file's own
-comments for the block shape. Resolution order for the file: `INLINE_TUI_PROVIDERS_FILE`
-→ `./providers.toml` → `~/.inline-tui/providers.toml` → a built-in default with the
+comments for the block shape. Resolution order for the file: `ALTER_ZERO_PROVIDERS_FILE`
+→ `./providers.toml` → `~/.alter-zero/providers.toml` → a built-in default with the
 two shipped providers (`a0_venice` — the Agent Zero/Venice proxy — and `openrouter`).
 
 The active backend is chosen at startup — from env, then the **persisted
-selection** (`~/.inline-tui/config.json`, written by `/model`), then the file's
+selection** (`~/.alter-zero/config.json`, written by `/model`), then the file's
 default — and can be switched live by `/model`:
 
 | env var | meaning | default |
 | --- | --- | --- |
-| `INLINE_TUI_DUMMY` | truthy (`1`/`true`/`yes`) forces the dummy backend | unset |
-| `INLINE_TUI_PROVIDER` | active provider id | saved selection, then first in the file |
-| `INLINE_TUI_MODEL` | active model id | saved selection, then unset → dummy |
-| `INLINE_TUI_API_KEY` | generic API key (fallback) | unset |
+| `ALTER_ZERO_DUMMY` | truthy (`1`/`true`/`yes`) forces the dummy backend | unset |
+| `ALTER_ZERO_PROVIDER` | active provider id | saved selection, then first in the file |
+| `ALTER_ZERO_MODEL` | active model id | saved selection, then unset → dummy |
+| `ALTER_ZERO_API_KEY` | generic API key (fallback) | unset |
 | `<PROVIDER>_API_KEY` | per-provider key, e.g. `OPENROUTER_API_KEY` | unset |
-| `INLINE_TUI_CONFIG_DIR` | the config home (holds `.env` + `config.json`) | `~/.inline-tui` |
-| `INLINE_TUI_ENV_FILE` | the `.env` key store `/login` reads and writes | `{config_home}/.env` |
-| `INLINE_TUI_TEMPERATURE` | sampling temperature | provider/omit |
-| `INLINE_TUI_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
-| `INLINE_TUI_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
-| `SSL_CERT_FILE` / `INLINE_TUI_CA_FILE` | extra CA bundle for the proxy | unset |
+| `ALTER_ZERO_CONFIG_DIR` | the config home (holds `.env` + `config.json`) | `~/.alter-zero` |
+| `ALTER_ZERO_ENV_FILE` | the `.env` key store `/login` reads and writes | `{config_home}/.env` |
+| `ALTER_ZERO_TEMPERATURE` | sampling temperature | provider/omit |
+| `ALTER_ZERO_TOOLS` | falsy (`0`/`false`/`no`/`off`) disables the `bash`/`read`/`write`/`edit` tools (see `docs/tools.md`) | tools on |
+| `ALTER_ZERO_SYSTEM_PROMPT` | override the "Alter Zero" persona; empty sends no system prompt. Any non-empty prompt still gets the runtime environment context (date/os/cwd, `docs/environment.md`) folded on | persona in `prompts/alter_zero.md` |
+| `SSL_CERT_FILE` / `ALTER_ZERO_CA_FILE` | extra CA bundle for the proxy | unset |
 
 **The dummy is the fallback, never a surprise.** The real backend activates only
-when `INLINE_TUI_DUMMY` is unset **and** a provider, a model, and an API key all
+when `ALTER_ZERO_DUMMY` is unset **and** a provider, a model, and an API key all
 resolve. Otherwise the app uses `DummyAi`. `smoke.sh` sets none of these, so it
 always gets the dummy — the canned replies, the `dummy_model_name` footer, and the
 scripted tool calls its assertions depend on are untouched.
 
-### The config home: `~/.inline-tui`
+### The config home: `~/.alter-zero`
 
-The app keeps its per-user state under a **config home** — `INLINE_TUI_CONFIG_DIR`,
-else `~/.inline-tui` (the same base `providers.toml` and the sessions dir already
+The app keeps its per-user state under a **config home** — `ALTER_ZERO_CONFIG_DIR`,
+else `~/.alter-zero` (the same base `providers.toml` and the sessions dir already
 use), else `None` when there's no `HOME` (persistence then disabled, falling back
 to `./.env`). It holds two files, both written best-effort (a failure is swallowed
 so it can never kill the TUI) and created on first write:
 
 - **`.env`** — the API-key store the `/login` flow writes (`main.rs::env_file_path`,
-  overridable with `INLINE_TUI_ENV_FILE`). Git-ignored so keys are never committed.
+  overridable with `ALTER_ZERO_ENV_FILE`). Git-ignored so keys are never committed.
 - **`config.json`** — the last `/model` selection (`{ "provider", "model" }`), so
   the choice is the default next run (`llm::settings::Settings`).
 
@@ -284,7 +284,7 @@ in place; unlike it, it is a **two-step** flow.
   OpenRouter       [OPENROUTER_API_KEY]
   (1/2)                                                  (position/total, dim)
 
-  Keys are saved to ~/.inline-tui/.env                   (dim hint — the real path)
+  Keys are saved to ~/.alter-zero/.env                   (dim hint — the real path)
 
 ────────────────────────────────────────────────
 ```
@@ -321,7 +321,7 @@ in place; unlike it, it is a **two-step** flow.
   to the provider list, `Ctrl+C` closes. The field is masked to `•` glyphs — the
   plaintext key never touches the screen. The prompt names the provider, avoiding
   a doubled "API" when its name already ends in it (`login_key_prompt`).
-- On save, the loop `EnvFile::upsert`s the key into `~/.inline-tui/.env` (creating
+- On save, the loop `EnvFile::upsert`s the key into `~/.alter-zero/.env` (creating
   the config home first), refreshes its in-memory copy (so the next `/model`
   fetch/switch resolves it immediately), and commits a
   `Saved {ENV} to {path} — run /model to use {provider}` system notice. It does

@@ -122,9 +122,9 @@ Resolves the path, loads at startup, appends per loop iteration — best-effort,
 swallowing every error (recording must never kill the TUI, like `SessionRecorder`
 and `save_settings`):
 
-- **Path**: `INLINE_TUI_HISTORY_FILE` override, else `{config_home}/history.jsonl`
-  (`~/.inline-tui/history.jsonl` — beside `config.json`/`.env`/`sessions/`;
-  `INLINE_TUI_CONFIG_DIR` already redirects it, which is how the smoke test
+- **Path**: `ALTER_ZERO_HISTORY_FILE` override, else `{config_home}/history.jsonl`
+  (`~/.alter-zero/history.jsonl` — beside `config.json`/`.env`/`sessions/`;
+  `ALTER_ZERO_CONFIG_DIR` already redirects it, which is how the smoke test
   isolates it). `None` (no HOME, no override) disables persistence.
 - **`load()`** → `Vec<String>`: read the file's **bytes** and lossy-decode
   (`String::from_utf8_lossy`, like the shell reader) — a torn/interleaved append
@@ -186,6 +186,6 @@ and `save_settings`):
   `record` (a messy/concurrent file seeds a clean buffer).
 - `main.rs` (smoke, Phase 37): submit a message in one process, quit, **append an
   invalid-UTF-8 line to the file**, start a **second** process against the same
-  `INLINE_TUI_HISTORY_FILE`, and confirm ↑ recalls the previous session's message
+  `ALTER_ZERO_HISTORY_FILE`, and confirm ↑ recalls the previous session's message
   and Ctrl+R finds it — cross-session persistence end to end, and a corrupt tail
   line doesn't wipe the history (the lossy load skips only the bad line).

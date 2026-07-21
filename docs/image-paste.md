@@ -47,7 +47,7 @@ clipboard I/O boundary (like `term.rs`): a port of codex's
    (e.g. a screenshot); rebuild an `image::RgbaImage` and PNG-encode it.
    `Err("no image on the clipboard")` when neither path yields an image.
 4. Either way the bytes land in a *kept* temp file (`tempfile::Builder` prefix
-   `inline-tui-clipboard-`) whose path is returned — always **our own copy**,
+   `alter-zero-clipboard-`) whose path is returned — always **our own copy**,
    never the user's original (the discard cleanup deletes what this returns);
    the backend reads the file (the TUI never base64-encodes it — codex parity).
 

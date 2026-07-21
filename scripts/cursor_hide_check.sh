@@ -14,7 +14,7 @@
 # Usage: scripts/cursor_hide_check.sh [path/to/binary]
 set -uo pipefail
 
-BIN="${1:-target/debug/inline-tui}"
+BIN="${1:-target/debug/alter-zero}"
 if [ ! -x "$BIN" ]; then
 	echo "FAIL: binary not found at $BIN (run: cargo build)" >&2
 	exit 1
@@ -30,7 +30,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-APP="env INLINE_TUI_CONFIG_DIR=$CFG INLINE_TUI_STARTUP_DELAY_MS=200 $BIN"
+APP="env ALTER_ZERO_CONFIG_DIR=$CFG ALTER_ZERO_STARTUP_DELAY_MS=200 $BIN"
 
 tmux new-session -d -s "$S" -x 80 -y 24 "$APP"
 sleep 0.5

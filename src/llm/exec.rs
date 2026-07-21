@@ -546,7 +546,7 @@ fn kill_process_group(child: &mut std::process::Child) {
 /// A unique temp path under the system temp dir for a test file.
 #[cfg(test)]
 fn temp_path(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("inline-tui-exec-test-{name}"))
+    std::env::temp_dir().join(format!("alter-zero-exec-test-{name}"))
 }
 
 #[cfg(test)]
@@ -825,7 +825,7 @@ mod tests {
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let dir = std::env::temp_dir().join(format!(
-            "inline-tui-exec-bg-test-{}-{seq}",
+            "alter-zero-exec-bg-test-{}-{seq}",
             std::process::id()
         ));
         (crate::background::BackgroundRegistry::new(tx, dir), rx)

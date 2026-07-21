@@ -24,6 +24,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "alter-zero"
+version = "0.1.0"
+dependencies = [
+ "arboard",
+ "chrono",
+ "crossterm",
+ "image",
+ "ratatui",
+ "reqwest",
+ "rustix",
+ "serde",
+ "serde_json",
+ "syntect",
+ "tempfile",
+ "tiktoken-rs",
+ "tokio",
+ "tokio-stream",
+ "toml",
+ "two-face",
+ "unicode-segmentation",
+ "unicode-width",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1113,30 +1137,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79cf5c93f93228cf8efb3ba362535fb11199ac548a09ce117c9b1adc3030d706"
 dependencies = [
  "rustversion",
-]
-
-[[package]]
-name = "inline-tui"
-version = "0.1.0"
-dependencies = [
- "arboard",
- "chrono",
- "crossterm",
- "image",
- "ratatui",
- "reqwest",
- "rustix",
- "serde",
- "serde_json",
- "syntect",
- "tempfile",
- "tiktoken-rs",
- "tokio",
- "tokio-stream",
- "toml",
- "two-face",
- "unicode-segmentation",
- "unicode-width",
 ]
 
 [[package]]

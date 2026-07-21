@@ -16,7 +16,7 @@ rendering. It complements `docs/llm.md` (the backend seam) and
 ## Why Chat Completions function-calling (not codex's Responses/apply_patch)
 
 openai/codex uses the **Responses API** and a freeform `apply_patch` **grammar**
-tool. Neither fits here: inline-tui talks the **Chat Completions** API
+tool. Neither fits here: alter-zero talks the **Chat Completions** API
 (`/chat/completions`) for broad OpenAI-compatible/OpenRouter coverage, and a
 Lark-grammar custom tool only works on the handful of models that support it.
 
@@ -194,7 +194,7 @@ live in **`docs/tty-detach.md`**.
 ## Enabling / disabling
 
 Tools are **on by default for the real backend** and never for the dummy (the
-dummy's canned tools are unaffected). Toggle with `INLINE_TUI_TOOLS`
+dummy's canned tools are unaffected). Toggle with `ALTER_ZERO_TOOLS`
 (`0`/`false`/`no` disables). When enabled, the tool-capability note in
 [`prompts/tools.md`](../prompts/tools.md) is appended to the system prompt —
 after the persona ([`prompts/alter_zero.md`](../prompts/alter_zero.md)) and the
@@ -220,7 +220,7 @@ OPENROUTER_API_KEY=sk-... cargo run --example tool_smoke -- \
   openai/gpt-4o-mini "Create hello.py, read it back, then edit its message."
 ```
 
-(It reads the proxy CA from `SSL_CERT_FILE`/`INLINE_TUI_CA_FILE` like the app.)
+(It reads the proxy CA from `SSL_CERT_FILE`/`ALTER_ZERO_CA_FILE` like the app.)
 
 ## Rendering (codex's `diff_render`, in the `⎿` gutter)
 

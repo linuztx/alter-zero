@@ -41,7 +41,7 @@ pub struct SessionMeta {
     ///
     /// [`ReplySource::model_name`]: crate::stream::ReplySource::model_name
     pub model: String,
-    /// Who wrote the file (`"inline-tui"`) — codex records an `originator`.
+    /// Who wrote the file (`"alter-zero"`) — codex records an `originator`.
     pub originator: String,
     /// The recording crate version (`CARGO_PKG_VERSION`).
     pub version: String,
@@ -406,7 +406,7 @@ mod tests {
             timestamp: "2026-07-06T10:00:00.000Z".into(),
             cwd: "/home/user/repo".into(),
             model: "dummy_model_name".into(),
-            originator: "inline-tui".into(),
+            originator: "alter-zero".into(),
             version: "0.1.0".into(),
         }
     }
@@ -454,7 +454,7 @@ mod tests {
             role: Role::User,
             text: "[Image #1] what is this?".into(),
             timestamp: "03:20 PM".into(),
-            images: vec![PathBuf::from("/tmp/inline-tui-clipboard-a.png")],
+            images: vec![PathBuf::from("/tmp/alter-zero-clipboard-a.png")],
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);

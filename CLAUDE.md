@@ -255,7 +255,7 @@ of bug:
    itself and never queries the cursor). **Relatedly, the detached-exec hook
    (`subprocess::run_detached_exec_if_requested`) must stay the *first statement*
    of `main()`** — before the tokio runtime and any terminal I/O: in a helper
-   re-exec (`{exe} __inline-tui-detached-exec {cmd}`) the process must `setsid`
+   re-exec (`{exe} __alter-zero-detached-exec {cmd}`) the process must `setsid`
    away and `exec` `sh` before it ever touches stdin/stdout or spawns a thread, or
    it would boot a TUI into the caller's pipes and the tty detach would silently
    break (`docs/tty-detach.md`). Never move it, and never let anything run above it.
@@ -468,7 +468,7 @@ while the call is produced, exactly like reasoning. The just-sent
 `begin_stream`, arrow `↑` — uploaded input), so the status shows `↑ N tokens`
 through the backend's **pre-stream pause** (`DummyAi` waits `STARTUP_DELAY`/3s
 before its first chunk so the indicator is visibly working first — overridable
-via `INLINE_TUI_STARTUP_DELAY_MS`; the strip reserves **no preview row** while
+via `ALTER_ZERO_STARTUP_DELAY_MS`; the strip reserves **no preview row** while
 there's nothing to preview — `ui::preview_rows` 0 — so the pause is status +
 gap only, no stray empty line, like codex). Then `Chunk`s,
 `ThinkingChunk`s (counted via `App::push_thinking` — never rendered), the
@@ -728,7 +728,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   edit engine (`llm::tools`), the streamed `tool_calls` accumulator
   (`llm::openai::ToolCallAccumulator`), and the loop itself — are unit-tested;
   the executor's file/process I/O is boundary code. Tools are on by default,
-  off via `INLINE_TUI_TOOLS`. A `read`/`edit`/`write` cell renders its output as
+  off via `ALTER_ZERO_TOOLS`. A `read`/`edit`/`write` cell renders its output as
   a **numbered file change** (codex's `diff_render` look in the `⎿` gutter —
   `ui.rs`'s `file_cell_lines`): the executor emits `Created {path} ({N} lines)`
   over the numbered contents, `Updated {path} (+A -D)` over numbered diff
