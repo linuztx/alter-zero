@@ -28,7 +28,9 @@ Done for 20s                       (NEW: committed turn summary)
 ## What shows, and when
 
 The live line is
-`(●•·   ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · retrying {a}/{max}][ · Thinking for {m}s] · esc to interrupt)`:
+`(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · retrying {a}/{max}][ · Thinking for {m}] · esc to interrupt)`
+— `{elapsed}` and `{m}` are **humanized** by `ui::format_elapsed` (see *Elapsed*
+below), so a short turn reads `3s` and a long one `1m 30s` / `1h 5m`:
 
 | phase                | line                                                                          |
 |----------------------|-------------------------------------------------------------------------------|
@@ -63,9 +65,16 @@ real backend's own latency plays the same role.
   per-turn counter (`App::turn_count`) so it varies across turns yet stays
   deterministic — no RNG, testable like `dummy_response`. The white verb text
   carries a white **shimmer wave** (below).
-- **elapsed** — whole seconds since the turn was submitted. Advances even when no
-  events arrive (the draw branch re-arms an animation frame while a turn is
-  active — see the shimmer section).
+- **elapsed** — time since the turn was submitted, **humanized** by the pure
+  `ui::format_elapsed(secs)`: bare seconds under a minute (`0s`, `45s` — the
+  live seconds keep ticking so a running timer never looks frozen), `{m}m {s}s`
+  under an hour (`1m 30s`, `59m 59s`), and `{h}h {m}m` past an hour (`1h 0m`,
+  `1h 5m`, `25h 0m` — `h` grows unbounded). It is a **combined two-unit** form,
+  distinct from `session::relative_age`'s single-unit static age label (`2m`,
+  `1h`); the same helper formats the `Thinking for {m}` clause and the
+  `{done verb} for {n}` summary so all three read alike. The value advances even
+  when no events arrive (the draw branch re-arms an animation frame while a turn
+  is active — see the shimmer section).
 - **tokens** — a single cumulative tally for the whole turn (the **user's input**
   message, the reply text, **reasoning deltas**, the **tool-call the model
   generates** (its streamed `name`/`arguments` fragments — counted like reasoning
@@ -91,8 +100,8 @@ real backend's own latency plays the same role.
   content streamed, so the real backend is reconnecting (`llm::retry`, see
   `docs/llm.md`). `App::set_retry` sets it from a `StreamEvent::Retrying`; the
   next streamed chunk clears it (the request recovered). The dummy never retries.
-- **Thinking for {m}s** — shown *only while actively thinking*; dropped once
-  thinking ends.
+- **Thinking for {m}** — shown *only while actively thinking* (the `{m}`
+  humanized by `format_elapsed` like the elapsed); dropped once thinking ends.
 - **esc to interrupt** — the closing clause, always present while the line
   shows: codex's discoverability hint for the Esc interrupt
   (`docs/interrupt.md`). An interrupted turn gets **no** `Done for Ns` summary —
@@ -149,7 +158,8 @@ A new ordered history entry so it survives a resize and lists in the Ctrl+O
 transcript (stamp-free there — only user messages display a timestamp):
 
 - `TurnSummary { verb, secs, timestamp }`, `HistoryItem::Summary(TurnSummary)`.
-- `ui::summary_lines` renders a single dim, bullet-less `"{verb} for {secs}s"`.
+- `ui::summary_lines` renders a single dim, bullet-less `"{verb} for {elapsed}"`
+  (the seconds humanized by `format_elapsed` — `Done for 20s`, `Done for 1m 30s`).
 - `App::end_turn(elapsed_secs)` (called by the loop on `StreamDone`) pushes it and
   returns it for the loop to commit to scrollback. On `StreamDone` the loop
   reseats the viewport to the idle box height first (the strip is gone) — same
@@ -271,7 +281,10 @@ same events straight from its streamed `tool_calls` deltas
   tally (`↓`) without touching the reply buffer; `end_turn` records the summary
   and clears status; `fail_stream` clears status; `set_status_times` writes the
   boundary durations.
-- `ui`: `status_line` for each phase (no tokens at 0; `↓`/`↑`; `Thinking for`);
+- `ui`: `format_elapsed` buckets (bare seconds under a minute, `{m}m {s}s`
+  under an hour, `{h}h {m}m` past one) and that `status_line`/`summary_lines`
+  humanize a long elapsed / thinking / done time through it; `status_line` for
+  each phase (no tokens at 0; `↓`/`↑`; `Thinking for`);
   `preview_rows` is 0 on the pre-stream pause, so `live_height` reserves
   no preview row and `render_live` draws the status as the strip's top row (with
   `↑` tokens, no reserved blank above it); `live_layout` tiles the four areas for

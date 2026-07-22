@@ -538,14 +538,15 @@ const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
 // --- Live status indicator (codex / Claude-Code style). While a turn is in
 // flight a status line sits in the strip above the box (with a blank gap row
 // between it and the box's top rule):
-// `(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s)`. The
+// `(●•·   ) {verb}… ({elapsed} · {↓|↑} {n} tokens · Thinking for {m})`. The
 // line opens with a **comet spinner** (a Larson-scanner sweep: a white head
 // dragging a fading grey tail back and forth between dim walls, one frame per
 // `SPINNER_INTERVAL` — see [`spinner_spans`]); the working verb is picked
 // per-turn (in `App`) and its white text carries a codex-style **shimmer**: a
 // bright-white band sweeps across the white-grey text (see [`shimmer_spans`],
-// ported from openai/codex `tui/src/shimmer.rs`). On finish a dim, bullet-less
-// `{done verb} for {n}s` summary commits to scrollback (a
+// ported from openai/codex `tui/src/shimmer.rs`). The elapsed / thinking / done
+// times are humanized by [`format_elapsed`] (`45s`, `1m 30s`, `1h 1m`). On
+// finish a dim, bullet-less `{done verb} for {n}` summary commits to scrollback (a
 // `HistoryItem::Summary`). See docs/status-indicator.md. ---
 
 /// White — the comet's head (matches the codex/Claude-Code white status text).
@@ -598,7 +599,7 @@ const STATUS_ARROW_UP: &str = "↑";
 /// codex's `Esc to interrupt` discoverability hint, lowercased to match this
 /// codebase's hint convention (`(ctrl+o to expand)`, `esc return`).
 const STATUS_INTERRUPT_HINT: &str = "esc to interrupt";
-/// Dim grey — the committed `"{done verb} for {n}s"` turn summary.
+/// Dim grey — the committed `"{done verb} for {n}"` turn summary.
 const STATUS_DONE_COLOR: Color = TOOL_DIM_COLOR;
 /// The status line's row in the streaming strip.
 const STATUS_ROWS: u16 = 1;
@@ -4499,9 +4500,29 @@ fn spinner_spans(elapsed: Duration) -> Vec<Span<'static>> {
     spans
 }
 
+/// Humanize an elapsed count of whole seconds for the status indicator —
+/// combined two-unit, so the display scales past a bare seconds counter:
+/// `{s}s` under a minute (the live seconds keep ticking so a running timer
+/// never looks frozen), `{m}m {s}s` under an hour, `{h}h {m}m` past an hour
+/// (`h` grows unbounded). Distinct from [`crate::session::relative_age`], which
+/// is a **single-unit** static age label (`2m`, `1h`). Shared by the live
+/// status line, its `Thinking for …` clause, and the committed `… for …`
+/// summary so all three read the same (`docs/status-indicator.md`).
+#[must_use]
+pub fn format_elapsed(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let minutes = secs / 60;
+    if minutes < 60 {
+        return format!("{minutes}m {}s", secs % 60);
+    }
+    format!("{}h {}m", minutes / 60, minutes % 60)
+}
+
 /// The live status line shown in the strip above the box while a turn is in
 /// flight:
-/// `(●•·   ) {verb}… ({elapsed}s[ · {arrow} {n} tokens][ · Thinking for {m}s] · esc to interrupt)`.
+/// `(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · Thinking for {m}] · esc to interrupt)`.
 ///
 /// It opens with the comet spinner ([`spinner_spans`]) and the verb
 /// text **shimmers** — a bright-white band sweeping its white-grey chars
@@ -4522,7 +4543,7 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
     // its own warning colour — so it is built as its own span between the
     // (dim) token and hint clauses.
     spans.push(Span::styled(
-        format!(" ({}s", status.elapsed.as_secs()),
+        format!(" ({}", format_elapsed(status.elapsed.as_secs())),
         dim,
     ));
     if status.tokens > 0 {
@@ -4543,7 +4564,7 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
     }
     if let Some(thinking) = status.thinking {
         spans.push(Span::styled(
-            format!(" · Thinking for {}s", thinking.as_secs()),
+            format!(" · Thinking for {}", format_elapsed(thinking.as_secs())),
             dim,
         ));
     }
@@ -4551,14 +4572,15 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
     Line::from(spans)
 }
 
-/// The committed turn summary: a single dim, bullet-less `"{verb} for {secs}s"`
+/// The committed turn summary: a single dim, bullet-less `"{verb} for {elapsed}"`
+/// (the seconds humanized by [`format_elapsed`] — `Done for 20s`, `Done for 1m 30s`)
 /// line — with a `· {n} shells still running` suffix when background shells
 /// were running at turn end (`docs/background.md`). Shown inline (it flows into
 /// scrollback) and in the transcript like any other [`HistoryItem`]; `width` is
 /// unused (the line never wraps) but kept for a uniform `*_lines` signature.
 #[must_use]
 pub fn summary_lines(summary: &TurnSummary, _width: u16) -> Vec<Line<'static>> {
-    let mut text = format!("{} for {}s", summary.verb, summary.secs);
+    let mut text = format!("{} for {}", summary.verb, format_elapsed(summary.secs));
     if summary.shells > 0 {
         let plural = if summary.shells == 1 { "" } else { "s" };
         text.push_str(&format!(
@@ -10173,6 +10195,67 @@ mod tests {
             "no token clause while the tally is 0"
         );
         assert!(!text.contains("Thinking"), "no thinking clause");
+    }
+
+    #[test]
+    fn format_elapsed_is_bare_seconds_under_a_minute() {
+        assert_eq!(format_elapsed(0), "0s");
+        assert_eq!(format_elapsed(5), "5s");
+        assert_eq!(format_elapsed(59), "59s");
+    }
+
+    #[test]
+    fn format_elapsed_combines_minutes_and_seconds() {
+        // The live seconds keep ticking within the minute, so a "working…"
+        // timer never looks frozen.
+        assert_eq!(format_elapsed(60), "1m 0s");
+        assert_eq!(format_elapsed(90), "1m 30s");
+        assert_eq!(format_elapsed(600), "10m 0s");
+        assert_eq!(format_elapsed(3_599), "59m 59s");
+    }
+
+    #[test]
+    fn format_elapsed_combines_hours_and_minutes_past_an_hour() {
+        assert_eq!(format_elapsed(3_600), "1h 0m");
+        assert_eq!(format_elapsed(3_661), "1h 1m");
+        assert_eq!(format_elapsed(7_200), "2h 0m");
+        assert_eq!(format_elapsed(7_380), "2h 3m");
+        assert_eq!(format_elapsed(90_000), "25h 0m");
+    }
+
+    #[test]
+    fn status_line_humanizes_a_long_elapsed_into_minutes_and_seconds() {
+        let text = plain(&status_line(&status(100, TokenArrow::Down, 90, None)));
+        assert!(
+            text.contains("(1m 30s · ↓ 100 tokens"),
+            "the elapsed reads m/s past a minute: {text:?}"
+        );
+        assert!(
+            !text.contains("(90s"),
+            "no bare-seconds form past a minute: {text:?}"
+        );
+    }
+
+    #[test]
+    fn status_line_humanizes_the_thinking_clause_too() {
+        // elapsed 200s → 3m 20s, thinking 75s → 1m 15s.
+        let text = plain(&status_line(&status(150, TokenArrow::Down, 200, Some(75))));
+        assert!(text.contains("(3m 20s "), "elapsed humanized: {text:?}");
+        assert!(
+            text.contains("Thinking for 1m 15s"),
+            "thinking clause humanized: {text:?}"
+        );
+    }
+
+    #[test]
+    fn summary_humanizes_a_long_turn() {
+        let summary = TurnSummary {
+            verb: "Done",
+            secs: 3_661,
+            timestamp: String::new(),
+            shells: 0,
+        };
+        assert_eq!(plain(&summary_lines(&summary, 80)[0]), "Done for 1h 1m");
     }
 
     #[test]
