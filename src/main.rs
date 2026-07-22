@@ -403,6 +403,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // stdin reader (see the module-level invariant note).
     let mut events = EventStream::new();
 
+    // The startup header banner (docs/header.md): the ASCII wordmark + version +
+    // cwd, committed to scrollback once here and re-emitted atop every full
+    // repaint (resize, `/clear`) by `repaint_conversation`. Pure chrome — it
+    // never enters `history`, so it reaches neither the model nor the `/resume`
+    // rollout. It flows in through the normal flicker-free pipeline (the next
+    // draw writes it above the box in one synchronized frame).
+    term.insert_before(ui::header_lines(&app, term.screen().width));
+    term.insert_before(vec![Line::default()]);
+
     frame.schedule_frame(); // first paint
 
     loop {
@@ -2621,13 +2630,25 @@ fn repaint_conversation(
         ReflowClear::Purge => RESIZE_REFLOW_MAX_ROWS,
         ReflowClear::InPlace => ui::repaint_budget(screen.height, height),
     };
-    let tail = ui::repaint_tail(
+    let mut tail = ui::repaint_tail(
         &app.history,
         app.streaming_text(),
         render,
         screen.width,
         budget,
     );
+    // A full rebuild purged scrollback (resize, `/clear`), so re-emit the header
+    // banner at the very top — it lives outside `history` and would otherwise be
+    // lost (docs/header.md). The box is bottom-anchored, so prepending never
+    // hides on-screen content: the banner just occupies scrollback above. An
+    // `InPlace` repaint keeps the terminal's own scrollback, where the header
+    // already sits, so it is not re-added there.
+    if clear == ReflowClear::Purge {
+        let mut banner = ui::header_lines(app, screen.width);
+        banner.push(Line::default());
+        banner.extend(tail);
+        tail = banner;
+    }
     term.reflow(
         tail,
         height,

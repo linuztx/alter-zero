@@ -782,6 +782,54 @@ const SHELL_MODE_COLOR: Color = ERROR_COLOR;
 /// absorbed bang rendered back; same two columns as [`PROMPT`]).
 const SHELL_BULLET: &str = "! ";
 
+// --- The startup header banner (docs/header.md): an ASCII wordmark + version +
+// cwd + hint, committed to scrollback at launch and re-emitted atop every full
+// repaint (resize, `/clear`) so it survives the scrollback purge. Pure chrome,
+// like the footer — never in `history`, so it never reaches the model, the
+// `/resume` rollout, or the Ctrl+O transcript. Borderless (no `─` rule row, no
+// bare prompt, no model name) so the smoke resize counters don't see it. ---
+
+/// The full ANSI-Shadow wordmark, shown when the terminal is wide enough
+/// ([`header_lines`] falls back to [`HEADER_LOGO_COMPACT`], then a text badge).
+/// One `&str` per row so the leading spaces survive verbatim — a `\`-continued
+/// string literal would strip them and shift the `A`'s crown a column left.
+const HEADER_LOGO_FULL: &[&str] = &[
+    " █████╗ ██╗  ████████╗███████╗██████╗   ███████╗███████╗██████╗  ██████╗",
+    "██╔══██╗██║  ╚══██╔══╝██╔════╝██╔══██╗  ╚══███╔╝██╔════╝██╔══██╗██╔═══██╗",
+    "███████║██║     ██║   █████╗  ██████╔╝    ███╔╝ █████╗  ██████╔╝██║   ██║",
+    "██╔══██║██║     ██║   ██╔══╝  ██╔══██╗   ███╔╝  ██╔══╝  ██╔══██╗██║   ██║",
+    "██║  ██║███████╗██║   ███████╗██║  ██║  ███████╗███████╗██║  ██║╚██████╔╝",
+    "╚═╝  ╚═╝╚══════╝╚═╝   ╚══════╝╚═╝  ╚═╝  ╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ",
+];
+
+/// The compact half-block wordmark, shown on mid-width terminals (too narrow for
+/// [`HEADER_LOGO_FULL`], wide enough to still show art).
+const HEADER_LOGO_COMPACT: &[&str] = &[
+    "▄▀█ █   ▀█▀ █▀▀ █▀▄  ▀▀█ █▀▀ █▀▄ █▀█",
+    "█▀█ █▄▄  █  ██▄ █▀▄  █▄▄ ██▄ █▀▄ █▄█",
+];
+
+/// The plain-text name for the one-line badge (a very narrow terminal, too small
+/// for either wordmark).
+const HEADER_NAME: &str = "ALTER ZERO";
+/// The tagline under the logo — the persona, echoing `prompts/alter_zero.md`.
+const HEADER_TAGLINE: &str = "autonomous ai agent · terminal ui";
+/// The command hint under the metadata — bare `/token`s (the slashes accented,
+/// separators dim). Deliberately prose-free so it can't collide with the smoke
+/// suite's `for commands` / footer markers.
+const HEADER_HINT: &[&str] = &["/help", "/model", "/resume"];
+/// Indent shared with the footer and messages — the whole metadata block sits
+/// two columns in. The logo art is drawn flush-left.
+const HEADER_INDENT: &str = "  ";
+/// The logo gradient's left endpoint — the inline-code cyan ([`INLINE_CODE_COLOR`]).
+const HEADER_GRADIENT_START: (u8, u8, u8) = (0x56, 0xB6, 0xC2);
+/// The logo gradient's right endpoint — the link blue ([`LINK_URL_COLOR`]).
+const HEADER_GRADIENT_END: (u8, u8, u8) = (0x61, 0xAF, 0xEF);
+/// The version badge + hint-token colour — the cyan accent, so they pop.
+const HEADER_ACCENT_COLOR: Color = INLINE_CODE_COLOR;
+/// The tagline / cwd / separator colour — dim, like the footer.
+const HEADER_META_COLOR: Color = FOOTER_COLOR;
+
 // --- Live-region geometry. The bottom region's height is dynamic: it grows with
 // the wrapped input (see `live_height`). `render_live` and `cursor_position` both
 // derive their layout from `input_box` so the drawn text and cursor never drift;
@@ -3331,6 +3379,160 @@ pub fn display_cwd(cwd: &Path, home: Option<&Path>) -> String {
         return format!("~{}{}", std::path::MAIN_SEPARATOR, rel.display());
     }
     cwd.display().to_string()
+}
+
+/// Linear interpolation between two RGB colours at `t` in `[0, 1]`.
+fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color::Rgb(mix(a.0, b.0), mix(a.1, b.1), mix(a.2, b.2))
+}
+
+/// Colour `text` with a left-to-right [`HEADER_GRADIENT_START`] →
+/// [`HEADER_GRADIENT_END`] gradient keyed by absolute display column across
+/// `total` columns, coalescing equal-colour runs into spans. The header logo's
+/// cyan → blue wash (docs/header.md).
+fn gradient_spans(text: &str, total: usize) -> Vec<Span<'static>> {
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut col = 0usize;
+    let mut run: Option<(Color, String)> = None;
+    for g in text.graphemes(true) {
+        let t = if total <= 1 {
+            0.0
+        } else {
+            col as f32 / (total - 1) as f32
+        };
+        let color = lerp_rgb(HEADER_GRADIENT_START, HEADER_GRADIENT_END, t);
+        match &mut run {
+            Some((c, s)) if *c == color => s.push_str(g),
+            _ => {
+                if let Some((c, s)) = run.take() {
+                    spans.push(Span::styled(s, Style::new().fg(c)));
+                }
+                run = Some((color, g.to_string()));
+            }
+        }
+        col += cols(g);
+    }
+    if let Some((c, s)) = run {
+        spans.push(Span::styled(s, Style::new().fg(c)));
+    }
+    spans
+}
+
+/// The widest display width across `art`'s rows.
+fn logo_width(art: &[&str]) -> usize {
+    art.iter().map(|row| cols(row)).max().unwrap_or(0)
+}
+
+/// Clamp a run of spans to `width` display columns, appending a dim `…` when
+/// they overflow — the header metadata rows, truncated exactly like
+/// [`footer_line`]. Preserves each kept span's style.
+fn clamp_spans(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    let total: usize = spans.iter().map(|s| cols(&s.content)).sum();
+    if total <= width {
+        return Line::from(spans);
+    }
+    let budget = width.saturating_sub(cols(STATUS_ELLIPSIS));
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for span in spans {
+        let w = cols(&span.content);
+        if used + w <= budget {
+            used += w;
+            out.push(span);
+        } else {
+            let cut = truncate_cols(&span.content, budget - used);
+            if !cut.is_empty() {
+                out.push(Span::styled(cut, span.style));
+            }
+            break;
+        }
+    }
+    out.push(Span::styled(
+        STATUS_ELLIPSIS.to_string(),
+        Style::new().fg(HEADER_META_COLOR),
+    ));
+    Line::from(out)
+}
+
+/// The startup header banner as scrollback rows (docs/header.md): the ASCII
+/// wordmark (sized to `width`), a blank, then the version, tagline, cwd, and the
+/// command hint. Pure chrome — `main.rs` commits it once at launch and re-emits
+/// it atop every full repaint (resize, `/clear`); it never enters `history`.
+/// Returns no trailing spacer (the caller adds one, the
+/// `insert_before(msg); insert_before(blank)` pattern).
+///
+/// `width` picks the widest wordmark that fits — the full block art, a compact
+/// half-block, or a one-line text badge on a very narrow terminal — so the
+/// banner never overflows; the metadata rows are clamped with a trailing `…`.
+#[must_use]
+pub fn header_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let indent = cols(HEADER_INDENT);
+    let accent = Style::new().fg(HEADER_ACCENT_COLOR);
+    let dim = Style::new().fg(HEADER_META_COLOR);
+    let version = format!("v{}", env!("CARGO_PKG_VERSION"));
+
+    let full_w = logo_width(HEADER_LOGO_FULL);
+    let compact_w = logo_width(HEADER_LOGO_COMPACT);
+
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut badge = false;
+
+    // The widest wordmark that fits: full block → compact half-block → badge.
+    if w >= indent + full_w {
+        for &row in HEADER_LOGO_FULL {
+            lines.push(Line::from(gradient_spans(row, full_w)));
+        }
+    } else if w >= indent + compact_w {
+        for &row in HEADER_LOGO_COMPACT {
+            lines.push(Line::from(gradient_spans(row, compact_w)));
+        }
+    } else {
+        // One-line badge: the gradient name + a cyan version, no meta line.
+        let mut spans = vec![Span::raw(HEADER_INDENT)];
+        spans.extend(gradient_spans(HEADER_NAME, cols(HEADER_NAME)));
+        spans.push(Span::styled(format!(" {version}"), accent));
+        lines.push(clamp_spans(spans, w));
+        badge = true;
+    }
+
+    // A blank between the art and the metadata, then `v… · tagline` — skipped
+    // for the badge, which already carries the version inline.
+    if !badge {
+        lines.push(Line::default());
+        lines.push(clamp_spans(
+            vec![
+                Span::raw(HEADER_INDENT),
+                Span::styled(version, accent),
+                Span::styled(FOOTER_SEPARATOR, dim),
+                Span::styled(HEADER_TAGLINE, dim),
+            ],
+            w,
+        ));
+    }
+
+    // The cwd (only with session info) and the command hint, shared by all tiers.
+    if let Some(session) = &app.session {
+        lines.push(clamp_spans(
+            vec![
+                Span::raw(HEADER_INDENT),
+                Span::styled(session.cwd.clone(), dim),
+            ],
+            w,
+        ));
+    }
+    let mut hint = vec![Span::raw(HEADER_INDENT)];
+    for (i, token) in HEADER_HINT.iter().enumerate() {
+        if i > 0 {
+            hint.push(Span::styled("   ", dim));
+        }
+        hint.push(Span::styled(*token, accent));
+    }
+    lines.push(clamp_spans(hint, w));
+
+    lines
 }
 
 /// The bullet colour for a tool's lifecycle: dim waiting, blue running, green
@@ -12256,6 +12458,165 @@ mod tests {
             "/home/username",
             "component-wise, not a string prefix"
         );
+    }
+
+    // --- the startup header banner (docs/header.md) ---
+
+    /// The whole banner as one plain string (rows joined by newlines).
+    fn header_text(app: &App, width: u16) -> String {
+        header_lines(app, width)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn header_full_shows_logo_version_cwd_tagline_and_hint() {
+        let text = header_text(&with_session(), 90);
+        assert!(text.contains('█'), "block wordmark art: {text:?}");
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "version: {text:?}"
+        );
+        assert!(
+            text.contains("~/alter-zero"),
+            "cwd from the session: {text:?}"
+        );
+        assert!(text.contains("autonomous ai agent"), "tagline: {text:?}");
+        assert!(text.contains("terminal ui"), "tagline: {text:?}");
+        for token in ["/help", "/model", "/resume"] {
+            assert!(text.contains(token), "hint token {token}: {text:?}");
+        }
+    }
+
+    #[test]
+    fn header_falls_back_to_the_compact_wordmark_when_mid_width() {
+        let width = 50;
+        let lines = header_lines(&with_session(), width);
+        let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        // The compact half-block wordmark uses `▀`, which the full block art
+        // never does — so its presence proves the mid-width tier was chosen.
+        assert!(text.contains('▀'), "compact half-block wordmark: {text:?}");
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "version kept: {text:?}"
+        );
+        assert!(text.contains("~/alter-zero"), "cwd kept: {text:?}");
+        for line in &lines {
+            assert!(
+                cols(&plain(line)) <= width as usize,
+                "fits {width}: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn header_falls_back_to_a_text_badge_when_very_narrow() {
+        let width = 24;
+        let lines = header_lines(&with_session(), width);
+        let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        // Neither wordmark spells the name in literal letters — a literal
+        // "ALTER ZERO" can only be the one-line text badge.
+        assert!(text.contains("ALTER ZERO"), "text badge: {text:?}");
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "version: {text:?}"
+        );
+        for line in &lines {
+            assert!(
+                cols(&plain(line)) <= width as usize,
+                "fits {width}: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn header_never_exceeds_the_width() {
+        let app = with_session();
+        for width in [16u16, 20, 24, 39, 40, 50, 73, 75, 80, 120] {
+            for line in header_lines(&app, width) {
+                assert!(
+                    cols(&plain(&line)) <= width as usize,
+                    "width {width}: row {:?} overflows",
+                    plain(&line)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn header_logo_carries_the_cyan_to_blue_gradient() {
+        let lines = header_lines(&with_session(), 90);
+        // Row 0 starts at column 0 (gradient t=0) → the exact cyan endpoint.
+        let first = lines[0].spans.first().expect("a logo span");
+        assert_eq!(
+            first.style.fg,
+            Some(Color::Rgb(0x56, 0xB6, 0xC2)),
+            "logo starts cyan"
+        );
+        // Some cell reaches the far edge (t=1) → the exact blue endpoint.
+        let has_blue = lines.iter().take(6).any(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.style.fg == Some(Color::Rgb(0x61, 0xAF, 0xEF)))
+        });
+        assert!(has_blue, "logo ends blue");
+    }
+
+    #[test]
+    fn header_logo_rows_match_the_wordmark_art_verbatim() {
+        // The `A`'s crown row leads with a space; a `\`-continued string literal
+        // strips it and shifts the glyph a column left — regression guard.
+        let lines = header_lines(&with_session(), 90);
+        for (i, art) in HEADER_LOGO_FULL.iter().enumerate() {
+            assert_eq!(&plain(&lines[i]), art, "logo row {i} rendered verbatim");
+        }
+        assert!(
+            plain(&lines[0]).starts_with(' '),
+            "the A's crown keeps its leading indent"
+        );
+    }
+
+    #[test]
+    fn header_without_a_session_still_shows_logo_and_version() {
+        let text = header_text(&App::new(), 90);
+        assert!(text.contains('█'), "logo still drawn: {text:?}");
+        assert!(
+            text.contains(env!("CARGO_PKG_VERSION")),
+            "version: {text:?}"
+        );
+    }
+
+    #[test]
+    fn header_avoids_the_smoke_reserved_strings() {
+        // The banner shares the screen with the smoke suite's structural
+        // counters (docs/header.md, smoke Phases 11/16/17): it must never carry
+        // these markers, nor a full `─` rule / bare `❯` row.
+        for width in [24u16, 50, 90] {
+            let lines = header_lines(&with_session(), width);
+            let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+            for banned in [
+                "for commands",
+                "dummy_model_name",
+                "Happy",
+                "Done for",
+                "esc to interrupt",
+                "Conversation interrupted",
+            ] {
+                assert!(
+                    !text.contains(banned),
+                    "width {width} leaks {banned:?}: {text:?}"
+                );
+            }
+            for line in &lines {
+                let row = plain(line);
+                let trimmed = row.trim();
+                let is_rule = !trimmed.is_empty() && trimmed.chars().all(|c| c == '─');
+                assert!(!is_rule, "width {width} drew a rule row: {row:?}");
+                assert_ne!(trimmed, "❯", "width {width} drew a bare prompt row");
+            }
+        }
     }
 
     #[test]

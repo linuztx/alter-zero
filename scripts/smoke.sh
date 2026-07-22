@@ -51,6 +51,7 @@ cleanup() {
 	tmux kill-session -t "${S}_background" 2>/dev/null
 	tmux kill-session -t "${S}_bgkill" 2>/dev/null
 	tmux kill-session -t "${S}_notty" 2>/dev/null
+	tmux kill-session -t "${S}_header" 2>/dev/null
 	rm -f /tmp/alter-zero-shell-*.txt 2>/dev/null
 	rm -f /tmp/alter-zero-clipboard-*.png 2>/dev/null
 	[ -n "${RESUME_DIR:-}" ] && rm -rf "$RESUME_DIR" 2>/dev/null
@@ -3122,6 +3123,53 @@ if ! printf '%s' "$notty_pane" | grep -qF "exit status:"; then
 fi
 if printf '%s' "$notty_pane" | grep -qF "LEAK_MARK"; then
 	echo "FAIL: Phase 44 — the marker printed over the TUI (the child wrote straight to /dev/tty)" >&2
+	status=1
+fi
+
+# Phase 45: the startup header banner (docs/header.md). A fresh session shows the
+# ASCII wordmark + version + cwd + hint at the top of scrollback. It is chrome
+# (never in `history`), re-emitted on every full repaint — so it survives a
+# resize (a width change purges scrollback and rebuilds from history, which the
+# header is NOT part of, so it must be re-emitted) and re-shows after /clear (a
+# fresh-start banner). The tier-independent tagline is the marker; the borderless
+# design adds no `─` rule / bare prompt / footer, so Phases 16/17 stay green.
+HEADER_MARK="autonomous ai agent"
+S_HEADER="${S}_header"
+tmux new-session -d -s "$S_HEADER" -x 80 -y 24 "$APP"
+sleep 0.5
+header_start="$(tmux capture-pane -t "$S_HEADER" -p)"
+echo "==== Phase 45: captured pane (startup header banner) ===="
+printf '%s\n' "$header_start"
+tmux resize-window -t "$S_HEADER" -x 50 -y 24
+sleep 0.6
+header_narrow="$(tmux capture-pane -t "$S_HEADER" -p)"
+tmux resize-window -t "$S_HEADER" -x 80 -y 24
+sleep 0.6
+header_regrown="$(tmux capture-pane -t "$S_HEADER" -p)"
+echo "==== Phase 45: captured pane (header after a 80→50→80 resize round-trip) ===="
+printf '%s\n' "$header_regrown"
+tmux send-keys -t "$S_HEADER" -l "/clear"
+sleep 0.2
+tmux send-keys -t "$S_HEADER" Enter
+sleep 0.5
+header_cleared="$(tmux capture-pane -t "$S_HEADER" -p)"
+echo "==== Phase 45: captured pane (header re-shown after /clear) ===="
+printf '%s\n' "$header_cleared"
+tmux kill-session -t "$S_HEADER" 2>/dev/null
+if ! printf '%s' "$header_start" | grep -qF "$HEADER_MARK"; then
+	echo "FAIL: Phase 45 — the startup header banner did not show ('$HEADER_MARK' missing)" >&2
+	status=1
+fi
+if ! printf '%s' "$header_narrow" | grep -qF "$HEADER_MARK"; then
+	echo "FAIL: Phase 45 — the header did not survive a width shrink to 50 (not re-emitted on the Purge rebuild)" >&2
+	status=1
+fi
+if ! printf '%s' "$header_regrown" | grep -qF "$HEADER_MARK"; then
+	echo "FAIL: Phase 45 — the header did not survive a resize round-trip" >&2
+	status=1
+fi
+if ! printf '%s' "$header_cleared" | grep -qF "$HEADER_MARK"; then
+	echo "FAIL: Phase 45 — the header did not re-show after /clear" >&2
 	status=1
 fi
 
