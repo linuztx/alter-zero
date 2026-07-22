@@ -680,7 +680,7 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("!", " for shell command"),
     ("↑", " for input history"),
     ("ctrl+r", " to search history"),
-    ("alt+enter", " for newline"),
+    ("shift+enter", " for newline"),
     ("ctrl+o", " for tool output"),
     ("esc", " to quit"),
     ("ctrl+c", " to quit"),
@@ -12000,7 +12000,7 @@ mod tests {
             "{texts:?}"
         );
         assert!(
-            texts[2].contains("alt+enter for newline")
+            texts[2].contains("shift+enter for newline")
                 && texts[2].contains("ctrl+o for tool output"),
             "{texts:?}"
         );

@@ -70,7 +70,7 @@ bindings, codex's phrasing and two-column layout, keys cyan and labels dim
 ```
 / for commands            ! for shell command
 ↑ for input history       ctrl+r to search history
-alt+enter for newline     ctrl+o for tool output
+shift+enter for newline   ctrl+o for tool output
 esc to quit               ctrl+c to quit
 alt+↑ to edit queue       tab to queue next turn
 ctrl+v for image paste    ctrl+d for llm context
