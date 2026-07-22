@@ -160,11 +160,36 @@ for _ in $(seq 1 20); do # up to ~3s
 done
 echo "==== captured pane (Ctrl+O tool-output view) ===="
 printf '%s\n' "$overlay"
+# The Read tool's later output lines sit deeper in the transcript than the
+# first window shows (the header banner + conversation above push them down) —
+# page towards them until the expanded output's marker scrolls into view
+# (TOOL_VIEW_PAGE < the body height, so consecutive windows overlap and the
+# walk can't skip rows).
+overlay_deep="$overlay"
+for _ in $(seq 1 20); do
+	if printf '%s' "$overlay_deep" | grep -qF "InlineViewport::init"; then
+		break
+	fi
+	tmux send-keys -t "$S" NPage
+	sleep 0.2
+	overlay_deep="$(tmux capture-pane -t "$S" -p)"
+done
+echo "==== captured pane (Ctrl+O tool-output view, paged to the Read output) ===="
+printf '%s\n' "$overlay_deep"
 tmux send-keys -t "$S" C-o # back to the conversation
 sleep 0.4
 returned="$(tmux capture-pane -t "$S" -p)"
 echo "==== captured pane (returned to conversation) ===="
 printf '%s\n' "$returned"
+# The InPlace return must NOT paint a second banner copy on screen when the
+# banner already sits in the terminal's kept scrollback (ui::banner_tail
+# re-caps it to the window; docs/header.md). Duplication only — presence is
+# pinned by Phase 45 at settled moments: this return lands MID-STREAM, and a
+# reply that grew past the window under the overlay legitimately moves the
+# rebuilt window beyond banner rows that never reached scrollback (the InPlace
+# overwrite's lossy edge, docs/header.md's residual note), so 0 is possible.
+returned_full="$(tmux capture-pane -t "$S" -p -S -80)"
+returned_banner_count=$(printf '%s\n' "$returned_full" | grep -cF "autonomous ai agent")
 
 # --- Phase 38: PARALLEL tool-call batch — the not-yet-run calls show `⎿ Waiting…`
 # (docs/parallel-tools.md). A prompt mentioning "parallel" makes the dummy announce
@@ -2127,8 +2152,12 @@ if ! printf '%s' "$overlay" | grep -qF "$USER_MSG"; then
 	echo "FAIL: tool-output view did not include the user/AI conversation" >&2
 	status=1
 fi
-if ! printf '%s' "$overlay" | grep -qF "InlineViewport::init"; then
+if ! printf '%s' "$overlay_deep" | grep -qF "InlineViewport::init"; then
 	echo "FAIL: tool-output view did not show the full (expanded) Read output" >&2
+	status=1
+fi
+if [ "${returned_banner_count:-0}" -gt 1 ]; then
+	echo "FAIL: the Ctrl+O return duplicated the header banner over a long conversation — expected at most 1 'autonomous ai agent' in screen+scrollback, got ${returned_banner_count:-0}" >&2
 	status=1
 fi
 # Stamps in the tool view: only the USER message shows one — alone on its own
@@ -3155,6 +3184,47 @@ sleep 0.5
 header_cleared="$(tmux capture-pane -t "$S_HEADER" -p)"
 echo "==== Phase 45: captured pane (header re-shown after /clear) ===="
 printf '%s\n' "$header_cleared"
+# The Ctrl+O round trip (the disappearing-header bug): the overlay transcript
+# itself opens with the banner at its top, and the InPlace return repaint must
+# restore the banner on the inline screen — it lives outside `history`, and the
+# pre-fix return rebuilt from history alone, wiping it until the next resize
+# or /clear re-emitted it (docs/header.md).
+tmux send-keys -t "$S_HEADER" C-o
+sleep 0.5
+header_overlay="$(tmux capture-pane -t "$S_HEADER" -p)"
+echo "==== Phase 45: captured pane (Ctrl+O overlay — the banner tops the empty transcript) ===="
+printf '%s\n' "$header_overlay"
+tmux send-keys -t "$S_HEADER" C-o
+sleep 0.5
+header_returned="$(tmux capture-pane -t "$S_HEADER" -p)"
+echo "==== Phase 45: captured pane (banner still on the inline screen after the Ctrl+O return) ===="
+printf '%s\n' "$header_returned"
+# The reported repro — a real conversation with tool output, then the round
+# trip. Grow the pane first so the whole banner + turn fit the repaint window
+# (the InPlace return re-caps the banner to the visible rows).
+tmux resize-window -t "$S_HEADER" -x 80 -y 45
+sleep 0.6
+tmux send-keys -t "$S_HEADER" -l "hello there"
+sleep 0.2
+tmux send-keys -t "$S_HEADER" Enter
+for _ in $(seq 1 90); do # up to ~13s — the full dummy turn, tools included
+	if tmux capture-pane -t "$S_HEADER" -p | grep -qF "Done for"; then
+		break
+	fi
+	sleep 0.15
+done
+tmux send-keys -t "$S_HEADER" C-o
+sleep 0.5
+tmux send-keys -t "$S_HEADER" Home # the pager opens at the bottom; the banner is at the top
+sleep 0.3
+header_overlay_conv="$(tmux capture-pane -t "$S_HEADER" -p)"
+echo "==== Phase 45: captured pane (Ctrl+O overlay — the banner atop a real conversation) ===="
+printf '%s\n' "$header_overlay_conv"
+tmux send-keys -t "$S_HEADER" C-o
+sleep 0.5
+header_roundtrip="$(tmux capture-pane -t "$S_HEADER" -p)"
+echo "==== Phase 45: captured pane (banner + conversation after the Ctrl+O round trip) ===="
+printf '%s\n' "$header_roundtrip"
 tmux kill-session -t "$S_HEADER" 2>/dev/null
 if ! printf '%s' "$header_start" | grep -qF "$HEADER_MARK"; then
 	echo "FAIL: Phase 45 — the startup header banner did not show ('$HEADER_MARK' missing)" >&2
@@ -3172,8 +3242,28 @@ if ! printf '%s' "$header_cleared" | grep -qF "$HEADER_MARK"; then
 	echo "FAIL: Phase 45 — the header did not re-show after /clear" >&2
 	status=1
 fi
+if ! printf '%s' "$header_overlay" | grep -qF "$HEADER_MARK"; then
+	echo "FAIL: Phase 45 — the Ctrl+O transcript does not open with the banner" >&2
+	status=1
+fi
+if ! printf '%s' "$header_returned" | grep -qF "$HEADER_MARK"; then
+	echo "FAIL: Phase 45 — the header vanished on the Ctrl+O return (the InPlace repaint dropped the banner)" >&2
+	status=1
+fi
+if ! printf '%s' "$header_overlay_conv" | grep -qF "$HEADER_MARK"; then
+	echo "FAIL: Phase 45 — the Ctrl+O transcript of a real conversation is missing the banner at its top" >&2
+	status=1
+fi
+if ! printf '%s' "$header_roundtrip" | grep -qF "$HEADER_MARK"; then
+	echo "FAIL: Phase 45 — the header vanished after a Ctrl+O round trip over a real conversation" >&2
+	status=1
+fi
+if ! printf '%s' "$header_roundtrip" | grep -qF "Happy to help"; then
+	echo "FAIL: Phase 45 — the conversation itself did not survive the Ctrl+O round trip beneath the banner" >&2
+	status=1
+fi
 
 if [ "$status" -eq 0 ]; then
-	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… (Ns) while it runs (no spinner status line — the elapsed rides the preview), no summary — a non-zero exit reports its status, Esc interrupts a long one (resolving ⎿ Interrupted by user with no 'Conversation interrupted' notice), multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary), and /resume picks up a saved session (every conversation records to a rollout JSONL file — session_meta line first, created lazily on the first user message — a later launch's /resume lists it in a full-screen picker with a humanized age and the first-user-message preview, Enter repaints the whole saved conversation inline and appends the turns that follow to the same file, /clear starts a fresh rollout so the next message lands in a new one, and the picker carries codex's Filter/Sort toolbar — 'Filter: [Cwd] All   Sort: [Updated] Created' on the search row, Tab + arrows toggling — with the selected row lit on a full-width background tint), and an Esc interrupt stays prompt even when the backend is slow to observe the cancel — under a stalled backend (ALTER_ZERO_STALL_MS, ignoring the cancel for 3s) that streamed nothing, Esc undoes the no-output turn and settles within a frame (the status line clears and 'hello there' returns to the composer, no 'Conversation interrupted' notice) because the loop detaches the thread and swaps the reply channel instead of join()ing it (the interrupt-lag fix — no UI freeze), and slash-command confirmations and soft rejections surface as transient toasts above the box that self-clear after a few seconds instead of committing scrollback bullets (/copy confirms with a toast that then vanishes; /help and /resume run mid-turn are rejected with a toast; /model and /login now open their inline pickers mid-turn since they only swap the composer, never the running turn), and a resize reflow hides the hardware cursor before it homes/clears the screen and reshows it only at the prompt seat — so a terminal cursor-trail animation (kitty) can't streak from the top when the redraw drags the cursor around, and a mid-stream Ctrl+O round trip keeps the already-streamed partial reply on the restored screen (the repaint carries the stream's committed rows and catches up on what streamed under the overlay exactly once — no vanish, no flicker, no duplicate), and Ctrl+D opens the full-screen context-debug view showing the raw LLM context window (role-tagged entries, the conversation verbatim, tool calls in the provider-native wire format — an assistant '→ name(args)' request plus a 'tool:' result entry) with q returning to the repainted conversation, and the input history PERSISTS across sessions (a message submitted in one process is written to an append-only history.jsonl and, in a fresh process against the same file, Up recalls it and Ctrl+R finds it — both ↑/↓ recall and reverse-search span sessions like codex), and a PARALLEL tool-call batch is visible and clear — the model's calls are announced up front so the running one shows live while the not-yet-run ones show '⎿ Waiting…' in the live region, each committing to scrollback as it finishes (a 'parallel' prompt demos three Bash(ping …) calls at once; the default turn keeps a compact Read+Bash batch; a real backend renders however many parallel calls the model requests — docs/parallel-tools.md), and a running Bash tool STREAMS and TAILS its live output — the last lines under the ⎿ gutter plus a '+N lines (Ns)' footer while it runs, collapsing to the head peek '… +N lines (ctrl+o to expand)' when it finishes (Claude-Code's running-command look — docs/tool-streaming.md), and the Ctrl+O tool-output overlay shows a running bash tool's output LIVE (unlike Claude Code, whose transcript only shows tool output once it finishes) — a running Bash(ping) cell streams into the overlay while its batch siblings still show ⎿ Waiting…, tail-followed to the frontier (docs/tool-streaming.md), and a streamed markdown TABLE previews its whole forming grid in the strip then commits the finished block in one flush at its close — the flush syncing to the collapsed strip height so the box stays flush at the bottom (no blank band beneath it — docs/table-streaming.md), and BACKGROUND SHELLS work end to end — the '(ctrl+b to run in background)' hint is delayed a few seconds (early in a run the command shows 'Running…' but no hint yet, so a fast command never flashes it — Claude-Code-style), Ctrl+B moves a running command to the background (the cell resolves '⎿ Running in the background (↓ to manage)'), the footer counts '· N shells', ↓ opens the inline manager band (list → Enter details whose output box tails the live stream → x stops the shell, committing the red 'was stopped by the user' notice) and falls back to 'No tasks currently running' once every shell is gone, and a background shell killed MID-TURN surfaces immediately — the notice commits at the turn's next tool boundary, on screen while the status line still spins, landing above the turn's Done summary instead of after it (the in-flight agent reads the same note from the registry board before its next round, so a model that kills its own background task hears the outcome within the same turn — docs/background.md), and every shell child runs DETACHED from the controlling terminal — a command that opens /dev/tty (sudo's password prompt) errors at once ('No such device or address') inside its cell instead of printing the prompt over the TUI and blocking on the keyboard the event loop owns (the runner spawns through the setsid detach chain — the setsid binary, else the binary's own detached-exec helper mode — crate::subprocess, docs/shell-command.md)"
+	echo "PASS: reply + tools streamed to scrollback, the cursor stays visible on the prompt row mid-stream, the input box grows and stays flush at the bottom after a reply, typing bursts render in one repaint, Ctrl+O opens the tool-output view, the slash-command palette opens and runs commands, Esc interrupts a streaming turn, Ctrl+C clears a draft before /quit exits, Up recalls the last sent message for resubmission, ? toggles the shortcuts band, messages submitted mid-turn queue (all shown) and batch-send as the next turn (Esc sends the backlog right away, Alt+Up pulls the last batch back to edit, and Tab queues a message as a separate follow-up turn that runs after the first queue, and a !command queued mid-turn runs locally as its own standalone shell turn after — never sent to the backend as text), the session footer ({model} · {cwd}) sits under the box except while a band is open, every scrollback commit clears+repaints the live region inside one synchronized frame (no flicker), /clear mid-turn kills the generation and blanks the screen (nothing streams in afterwards), a resize — height-only included, mid-stream included — re-presents the conversation at the new size with a single input box, Ctrl+R reverse-searches the input history (typed queries preview matches in the composer, Enter accepts, Esc cancels without quitting), and !commands run locally (the bang is absorbed into a '! cmd' prompt with a Shell mode hint, the run commits as a codex-style exec cell — the dark '! cmd' header with its ⎿ output flush below, ⎿ Running… (Ns) while it runs (no spinner status line — the elapsed rides the preview), no summary — a non-zero exit reports its status, Esc interrupts a long one (resolving ⎿ Interrupted by user with no 'Conversation interrupted' notice), multi-line output shows a 4-line ⎿ preview with a '+N lines (ctrl+o to expand)' hint, and a huge output is capped in memory — no temp file, peak RSS bounded — with a '…' truncation marker at the end of the Ctrl+O view), and the dummy AI pauses before streaming so the status indicator shows first — the just-sent user message counted as ↑ tokens during the pause, flipping to ↓ once the reply streams, and Ctrl+J inserts a newline (the universal Shift+Enter fallback) so the box grows and a plain Enter then submits the multi-line draft, and typing @query opens a file picker below the box (async walk+rank) whose Enter inserts the highlighted path into the composer, and a large bracketed paste collapses to a '[Pasted Content N chars]' placeholder in the composer instead of dumping the raw text (and one Backspace removes the whole placeholder atomically), and Ctrl+V pastes a clipboard image as an '[Image #N]' placeholder (here, headless with no clipboard, it fails gracefully with a red 'Failed to paste image' notice and the composer stays responsive), and a message queued mid-turn shows inside the Ctrl+O transcript view and auto-dispatches there when the turn ends (the overlay follows the new turn live), and /copy copies the last assistant response to the clipboard (an empty conversation reports 'No agent response to copy'; after a reply it confirms 'Copied last message to clipboard' and — arboard having no clipboard here — its OSC 52 fallback lands the reply text in tmux's paste buffer), and Esc Esc backtracks to a previous user message (the first idle Esc arms with an 'esc again to edit previous message' footer hint, the second opens the transcript preview whose hint row shows the backtrack keys, a further Esc steps to the older message, and Enter rewinds the conversation to that point with the message back in the composer — resubmitting it streams a fresh turn to its summary), and /resume picks up a saved session (every conversation records to a rollout JSONL file — session_meta line first, created lazily on the first user message — a later launch's /resume lists it in a full-screen picker with a humanized age and the first-user-message preview, Enter repaints the whole saved conversation inline and appends the turns that follow to the same file, /clear starts a fresh rollout so the next message lands in a new one, and the picker carries codex's Filter/Sort toolbar — 'Filter: [Cwd] All   Sort: [Updated] Created' on the search row, Tab + arrows toggling — with the selected row lit on a full-width background tint), and an Esc interrupt stays prompt even when the backend is slow to observe the cancel — under a stalled backend (ALTER_ZERO_STALL_MS, ignoring the cancel for 3s) that streamed nothing, Esc undoes the no-output turn and settles within a frame (the status line clears and 'hello there' returns to the composer, no 'Conversation interrupted' notice) because the loop detaches the thread and swaps the reply channel instead of join()ing it (the interrupt-lag fix — no UI freeze), and slash-command confirmations and soft rejections surface as transient toasts above the box that self-clear after a few seconds instead of committing scrollback bullets (/copy confirms with a toast that then vanishes; /help and /resume run mid-turn are rejected with a toast; /model and /login now open their inline pickers mid-turn since they only swap the composer, never the running turn), and a resize reflow hides the hardware cursor before it homes/clears the screen and reshows it only at the prompt seat — so a terminal cursor-trail animation (kitty) can't streak from the top when the redraw drags the cursor around, and a mid-stream Ctrl+O round trip keeps the already-streamed partial reply on the restored screen (the repaint carries the stream's committed rows and catches up on what streamed under the overlay exactly once — no vanish, no flicker, no duplicate), and Ctrl+D opens the full-screen context-debug view showing the raw LLM context window (role-tagged entries, the conversation verbatim, tool calls in the provider-native wire format — an assistant '→ name(args)' request plus a 'tool:' result entry) with q returning to the repainted conversation, and the input history PERSISTS across sessions (a message submitted in one process is written to an append-only history.jsonl and, in a fresh process against the same file, Up recalls it and Ctrl+R finds it — both ↑/↓ recall and reverse-search span sessions like codex), and a PARALLEL tool-call batch is visible and clear — the model's calls are announced up front so the running one shows live while the not-yet-run ones show '⎿ Waiting…' in the live region, each committing to scrollback as it finishes (a 'parallel' prompt demos three Bash(ping …) calls at once; the default turn keeps a compact Read+Bash batch; a real backend renders however many parallel calls the model requests — docs/parallel-tools.md), and a running Bash tool STREAMS and TAILS its live output — the last lines under the ⎿ gutter plus a '+N lines (Ns)' footer while it runs, collapsing to the head peek '… +N lines (ctrl+o to expand)' when it finishes (Claude-Code's running-command look — docs/tool-streaming.md), and the Ctrl+O tool-output overlay shows a running bash tool's output LIVE (unlike Claude Code, whose transcript only shows tool output once it finishes) — a running Bash(ping) cell streams into the overlay while its batch siblings still show ⎿ Waiting…, tail-followed to the frontier (docs/tool-streaming.md), and a streamed markdown TABLE previews its whole forming grid in the strip then commits the finished block in one flush at its close — the flush syncing to the collapsed strip height so the box stays flush at the bottom (no blank band beneath it — docs/table-streaming.md), and BACKGROUND SHELLS work end to end — the '(ctrl+b to run in background)' hint is delayed a few seconds (early in a run the command shows 'Running…' but no hint yet, so a fast command never flashes it — Claude-Code-style), Ctrl+B moves a running command to the background (the cell resolves '⎿ Running in the background (↓ to manage)'), the footer counts '· N shells', ↓ opens the inline manager band (list → Enter details whose output box tails the live stream → x stops the shell, committing the red 'was stopped by the user' notice) and falls back to 'No tasks currently running' once every shell is gone, and a background shell killed MID-TURN surfaces immediately — the notice commits at the turn's next tool boundary, on screen while the status line still spins, landing above the turn's Done summary instead of after it (the in-flight agent reads the same note from the registry board before its next round, so a model that kills its own background task hears the outcome within the same turn — docs/background.md), and every shell child runs DETACHED from the controlling terminal — a command that opens /dev/tty (sudo's password prompt) errors at once ('No such device or address') inside its cell instead of printing the prompt over the TUI and blocking on the keyboard the event loop owns (the runner spawns through the setsid detach chain — the setsid binary, else the binary's own detached-exec helper mode — crate::subprocess, docs/shell-command.md), and the startup ASCII header banner PERSISTS — shown at launch, surviving a resize round-trip and re-shown after /clear (the Purge rebuilds re-emit it), restored by the Ctrl+O return's InPlace repaint too (it used to vanish there until the next resize or /clear), re-capped to the visible window so a long conversation's return never duplicates it in scrollback, and the Ctrl+O transcript itself opens with the banner at its top (docs/header.md)"
 fi
 exit "$status"

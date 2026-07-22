@@ -3458,8 +3458,10 @@ fn clamp_spans(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
 
 /// The startup header banner as scrollback rows (docs/header.md): the ASCII
 /// wordmark (sized to `width`), a blank, then the version, tagline, cwd, and the
-/// command hint. Pure chrome — `main.rs` commits it once at launch and re-emits
-/// it atop every full repaint (resize, `/clear`); it never enters `history`.
+/// command hint. Pure chrome — `main.rs` commits it once at launch and restores
+/// it atop every repaint via [`banner_tail`] (uncapped on a Purge rebuild,
+/// window-capped on an InPlace overlay return); it never enters `history`, and
+/// the Ctrl+O transcript shows it as chrome too ([`transcript_lines`]).
 /// Returns no trailing spacer (the caller adds one, the
 /// `insert_before(msg); insert_before(blank)` pattern).
 ///
@@ -4622,12 +4624,14 @@ fn user_stamp_lines(timestamp: &str, width: u16) -> Vec<Line<'static>> {
     ]
 }
 
-/// Build the full conversation transcript shown in the tool-output view: every
-/// user/assistant/error message **and** every tool call's complete output,
-/// interleaved in the exact order they happened (straight from `App::history`),
-/// followed by the live tail — the in-progress reply and/or the running tool.
-/// A blank line separates items. Tools are shown *expanded* here (the inline
-/// view collapses them). Empty → a single placeholder line.
+/// Build the full conversation transcript shown in the tool-output view: the
+/// startup header banner (docs/header.md — the overlay mirrors the inline
+/// scrollback, which opens with it), then every user/assistant/error message
+/// **and** every tool call's complete output, interleaved in the exact order
+/// they happened (straight from `App::history`), followed by the live tail —
+/// the in-progress reply and/or the running tool. A blank line separates
+/// items. Tools are shown *expanded* here (the inline view collapses them).
+/// Empty → the banner over a single placeholder line.
 ///
 /// Only the **user** message shows its wall-clock `timestamp`: dim,
 /// right-aligned on its own line below the message ([`user_stamp_lines`]) — the
@@ -4655,7 +4659,13 @@ pub fn transcript_selection(app: &App, width: u16) -> Option<Range<usize>> {
 /// `user_message_style().reversed()` highlight — the timestamp line under it
 /// stays normal) and reports the row range it occupies.
 fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<usize>>) {
-    let mut lines = Vec::new();
+    // The header banner tops the transcript exactly as it tops the inline
+    // conversation (docs/header.md) — the overlay mirrors the real scrollback,
+    // so Ctrl+O never hides it. Chrome, not content: the walk below starts
+    // after it, and the empty placeholder keys on "nothing beyond the banner".
+    let mut lines = header_lines(app, width);
+    lines.push(Line::default());
+    let chrome_rows = lines.len();
     let mut selection = None;
     let mut user_ordinal = 0usize;
     for item in &app.history {
@@ -4711,7 +4721,7 @@ fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<
         lines.extend(queued_lines(app, width));
         lines.push(Line::default());
     }
-    if lines.is_empty() {
+    if lines.len() == chrome_rows {
         lines.push(Line::from(Span::styled(
             TOOL_VIEW_EMPTY.to_string(),
             Style::new().fg(TOOL_DIM_COLOR),
@@ -6468,6 +6478,30 @@ fn keep_last_rows(mut lines: Vec<Line<'static>>, max_rows: usize) -> Vec<Line<'s
         lines = lines.split_off(lines.len() - max_rows);
     }
     lines
+}
+
+/// A rebuilt repaint tail with the header banner (docs/header.md) restored
+/// above it: `banner`, a blank spacer, then `tail`, re-capped to the last
+/// `budget` rows. Both of `main.rs::repaint_conversation`'s rebuild modes go
+/// through this. A `Purge` rebuild (resize, `/clear`) passes `usize::MAX` —
+/// the banner unconditionally tops the freshly-purged scrollback. An
+/// `InPlace` overlay return (Ctrl+O, `/resume`) passes the on-screen window
+/// budget, so the rebuild reproduces the window exactly: the banner comes
+/// back fully when the conversation is short (the bug this fixes — the
+/// overwrite used to wipe it), only its bottom rows when it had partly
+/// scrolled, and not at all once it scrolled wholly into the terminal's kept
+/// scrollback (re-adding it there would duplicate it). Prepend-then-recap is
+/// exact because [`keep_last_rows`] keeps suffixes:
+/// `keep(banner + keep(x, n), n) == keep(banner + x, n)`.
+#[must_use]
+pub fn banner_tail(
+    mut banner: Vec<Line<'static>>,
+    tail: Vec<Line<'static>>,
+    budget: usize,
+) -> Vec<Line<'static>> {
+    banner.push(Line::default());
+    banner.extend(tail);
+    keep_last_rows(banner, budget)
 }
 
 /// How many history rows fit above a `live_height`-row live region on a
@@ -9390,6 +9424,18 @@ mod tests {
         app
     }
 
+    /// The transcript rows *after* the banner chrome (banner + spacer),
+    /// trimmed — for tests asserting on the conversation walk itself (the
+    /// banner atop it has its own tests).
+    fn transcript_body(app: &App, width: u16) -> Vec<String> {
+        let chrome = header_lines(app, width).len() + 1;
+        transcript_lines(app, width)
+            .iter()
+            .skip(chrome)
+            .map(|l| plain(l).trim_end().to_string())
+            .collect()
+    }
+
     #[test]
     fn transcript_lines_interleaves_messages_and_full_tool_output_in_order() {
         let app = transcript_fixture();
@@ -9531,12 +9577,42 @@ mod tests {
 
     #[test]
     fn transcript_lines_when_empty_is_a_placeholder() {
-        let lines = transcript_lines(&App::new(), 80);
+        // Even an empty transcript opens with the header banner (the overlay
+        // mirrors the inline conversation — docs/header.md); the placeholder
+        // sits under it, not lost.
+        let app = App::new();
+        let lines = transcript_lines(&app, 80);
+        let chrome = header_lines(&app, 80).len() + 1; // banner + spacer
         assert!(
-            plain(&lines[0]).to_lowercase().contains("nothing"),
+            plain(&lines[chrome]).to_lowercase().contains("nothing"),
             "{:?}",
-            plain(&lines[0])
+            plain(&lines[chrome])
         );
+    }
+
+    #[test]
+    fn transcript_opens_with_the_header_banner() {
+        // The Ctrl+O overlay shows the same conversation the inline view
+        // holds, and that conversation opens with the startup banner
+        // (docs/header.md): the transcript's first rows are the banner plus a
+        // blank spacer, then the history walk.
+        let app = transcript_fixture();
+        let lines = transcript_lines(&app, 80);
+        let banner = header_lines(&app, 80);
+        assert!(!banner.is_empty());
+        let head: Vec<String> = lines.iter().take(banner.len()).map(plain).collect();
+        let want: Vec<String> = banner.iter().map(plain).collect();
+        assert_eq!(head, want, "the banner tops the transcript");
+        assert_eq!(
+            plain(&lines[banner.len()]).trim(),
+            "",
+            "a spacer divides the banner from the conversation"
+        );
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert!(texts.iter().any(|t| t == "❯ hello"), "{texts:?}");
     }
 
     #[test]
@@ -9613,14 +9689,18 @@ mod tests {
     #[test]
     fn render_tool_view_shows_the_title_messages_and_full_output() {
         let app = transcript_fixture();
-        let mut buf = buffer(40, 16);
+        let mut buf = buffer(40, 24);
         let tv_lines = transcript_lines(&app, buf.area.width);
         render_tool_view(buf.area, &mut buf, &app, &tv_lines);
-        let all: String = (0..16)
+        let all: String = (0..24)
             .map(|y| row(&buf, y, 40))
             .collect::<Vec<_>>()
             .join("\n");
         assert!(all.contains(TOOL_VIEW_TITLE), "title present: {all:?}");
+        assert!(
+            all.contains(env!("CARGO_PKG_VERSION")),
+            "the header banner opens the transcript: {all:?}"
+        );
         assert!(all.contains("hello"), "user message shown: {all:?}");
         assert!(
             all.contains("let me check") && all.contains("all done"),
@@ -9640,7 +9720,7 @@ mod tests {
         // percentage right-aligned one dash in from the edge, two dim key-hint
         // rows, and a final blank row.
         let app = transcript_fixture();
-        let mut buf = buffer(40, 16);
+        let mut buf = buffer(40, 24);
         let tv_lines = transcript_lines(&app, buf.area.width);
         render_tool_view(buf.area, &mut buf, &app, &tv_lines);
         let header = row(&buf, 0, 40);
@@ -9648,25 +9728,25 @@ mod tests {
             header.starts_with("/ T R A N S C R I P T / / "),
             "the title overlays the slash tiling: {header:?}"
         );
-        // body rows 1..=11, then the separator at 16 - 4.
-        let sep = row(&buf, 12, 40);
+        // body rows 1..=19, then the separator at 24 - 4.
+        let sep = row(&buf, 20, 40);
         assert!(sep.starts_with('─'), "{sep:?}");
         assert!(
             sep.contains(" 100% "),
             "everything fits → pinned at 100%: {sep:?}"
         );
         assert!(sep.ends_with('─'), "one dash right of the percent: {sep:?}");
-        let hints = row(&buf, 13, 40);
+        let hints = row(&buf, 21, 40);
         assert!(
             hints.contains("to scroll") && hints.contains("pgup/pgdn"),
             "{hints:?}"
         );
         assert!(
-            row(&buf, 14, 40).contains("q/esc/ctrl+o to quit"),
+            row(&buf, 22, 40).contains("q/esc/ctrl+o to quit"),
             "{:?}",
-            row(&buf, 14, 40)
+            row(&buf, 22, 40)
         );
-        assert_eq!(row(&buf, 15, 40).trim(), "", "a blank final row");
+        assert_eq!(row(&buf, 23, 40).trim(), "", "a blank final row");
     }
 
     #[test]
@@ -9674,13 +9754,19 @@ mod tests {
         // Body rows past the transcript's end read `~` (codex's pager, vi-style).
         let mut app = App::new();
         app.record_user_message("hi");
-        let mut buf = buffer(40, 12);
+        let mut buf = buffer(40, 24);
         let tv_lines = transcript_lines(&app, buf.area.width);
         render_tool_view(buf.area, &mut buf, &app, &tv_lines);
-        // Content is two lines (message + spacer) in a 7-row body: rows 3..=7
-        // are filler.
-        assert!(row(&buf, 1, 40).contains("❯ hi"), "{:?}", row(&buf, 1, 40));
-        for y in 3..=7 {
+        // Content is the banner chrome + two lines (message + spacer) in a
+        // 19-row body: the rows after it are filler.
+        let chrome = header_lines(&app, 40).len() + 1;
+        let msg_row = 1 + chrome as u16;
+        assert!(
+            row(&buf, msg_row, 40).contains("❯ hi"),
+            "{:?}",
+            row(&buf, msg_row, 40)
+        );
+        for y in (msg_row + 2)..=19 {
             assert_eq!(row(&buf, y, 40).trim_end(), "~", "row {y} is filler");
         }
     }
@@ -10027,11 +10113,7 @@ mod tests {
         // blank under the user message.
         let mut app = App::new();
         app.history = vec![msg(Role::User, "hi"), msg(Role::Assistant, "hello")];
-        let texts: Vec<String> = transcript_lines(&app, 60)
-            .iter()
-            .map(|l| plain(l).trim_end().to_string())
-            .collect();
-        assert_eq!(texts, vec!["❯ hi", "", "● hello", ""]);
+        assert_eq!(transcript_body(&app, 60), vec!["❯ hi", "", "● hello", ""]);
     }
 
     #[test]
@@ -12619,6 +12701,55 @@ mod tests {
         }
     }
 
+    // --- the banner-topped repaint tail (docs/header.md) ---
+
+    #[test]
+    fn banner_tail_restores_the_banner_over_a_short_tail() {
+        // The InPlace overlay return on a short conversation: the banner the
+        // window still showed comes back — banner, spacer, then the tail.
+        let out = banner_tail(
+            vec![Line::raw("LOGO"), Line::raw("meta")],
+            vec![Line::raw("❯ hi"), Line::raw("ok")],
+            10,
+        );
+        let texts: Vec<String> = out.iter().map(plain).collect();
+        assert_eq!(texts, ["LOGO", "meta", "", "❯ hi", "ok"]);
+    }
+
+    #[test]
+    fn banner_tail_drops_the_banner_once_the_window_is_full() {
+        // A conversation that already fills the repaint window: the recap
+        // drops the banner — it scrolled into the terminal's kept scrollback,
+        // and re-adding it on screen would duplicate it.
+        let tail: Vec<Line<'static>> = (0..4).map(|i| Line::raw(format!("r{i}"))).collect();
+        let out = banner_tail(vec![Line::raw("LOGO")], tail, 4);
+        let texts: Vec<String> = out.iter().map(plain).collect();
+        assert_eq!(texts, ["r0", "r1", "r2", "r3"]);
+    }
+
+    #[test]
+    fn banner_tail_keeps_the_banner_bottom_when_it_half_fits() {
+        // Mid-scroll: the window held only the banner's bottom rows, so only
+        // those come back — the top rows stay in the kept scrollback above.
+        let out = banner_tail(
+            vec![Line::raw("top"), Line::raw("bottom")],
+            vec![Line::raw("❯ hi")],
+            3,
+        );
+        let texts: Vec<String> = out.iter().map(plain).collect();
+        assert_eq!(texts, ["bottom", "", "❯ hi"]);
+    }
+
+    #[test]
+    fn banner_tail_uncapped_never_clips() {
+        // The Purge rebuild passes usize::MAX: the banner tops the fresh
+        // scrollback whatever the conversation's length.
+        let tail: Vec<Line<'static>> = (0..100).map(|i| Line::raw(format!("r{i}"))).collect();
+        let out = banner_tail(vec![Line::raw("LOGO")], tail, usize::MAX);
+        assert_eq!(out.len(), 102, "banner + spacer + every tail row");
+        assert_eq!(plain(&out[0]), "LOGO");
+    }
+
     #[test]
     fn live_height_adds_the_footer_row() {
         let ta = TextArea::from_text("hi");
@@ -13380,11 +13511,7 @@ mod tests {
             }),
             HistoryItem::Tool(t),
         ];
-        let texts: Vec<String> = transcript_lines(&app, 40)
-            .iter()
-            .map(|l| plain(l).trim_end().to_string())
-            .collect();
-        assert_eq!(texts, vec!["! pwd", "  ⎿  /home", ""]);
+        assert_eq!(transcript_body(&app, 40), vec!["! pwd", "  ⎿  /home", ""]);
     }
 
     #[test]

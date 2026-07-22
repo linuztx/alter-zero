@@ -2630,25 +2630,30 @@ fn repaint_conversation(
         ReflowClear::Purge => RESIZE_REFLOW_MAX_ROWS,
         ReflowClear::InPlace => ui::repaint_budget(screen.height, height),
     };
-    let mut tail = ui::repaint_tail(
+    let tail = ui::repaint_tail(
         &app.history,
         app.streaming_text(),
         render,
         screen.width,
         budget,
     );
-    // A full rebuild purged scrollback (resize, `/clear`), so re-emit the header
-    // banner at the very top — it lives outside `history` and would otherwise be
-    // lost (docs/header.md). The box is bottom-anchored, so prepending never
-    // hides on-screen content: the banner just occupies scrollback above. An
-    // `InPlace` repaint keeps the terminal's own scrollback, where the header
-    // already sits, so it is not re-added there.
-    if clear == ReflowClear::Purge {
-        let mut banner = ui::header_lines(app, screen.width);
-        banner.push(Line::default());
-        banner.extend(tail);
-        tail = banner;
-    }
+    // Re-emit the header banner atop the rebuilt tail — it lives outside
+    // `history` and would otherwise be lost (docs/header.md). A `Purge`
+    // rebuilt scrollback from scratch (resize, `/clear`), so the banner tops
+    // the full rebuild uncapped. An `InPlace` overwrite (the Ctrl+O /
+    // `/resume` return) rewrites the on-screen window — where a short
+    // conversation still *shows* the banner, which the overwrite used to wipe
+    // — so the banner joins that tail too, re-capped to the window budget:
+    // exactly as much of it as the window held comes back, and one that
+    // scrolled wholly into the terminal's kept scrollback is not duplicated.
+    let tail = ui::banner_tail(
+        ui::header_lines(app, screen.width),
+        tail,
+        match clear {
+            ReflowClear::Purge => usize::MAX,
+            ReflowClear::InPlace => budget,
+        },
+    );
     term.reflow(
         tail,
         height,
