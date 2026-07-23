@@ -66,6 +66,12 @@ pub struct ToolOutcome {
     /// model-facing launch text, and the cell renders the fixed backgrounded
     /// row. `None` for every normal outcome.
     pub background: Option<String>,
+    /// `Some(data: URL)` when the tool read an image (the `read` tool on a
+    /// png/jpg/jpeg/gif/webp): the pixels the agent loop attaches as a
+    /// follow-up **user** message — never part of `output`, which stays the
+    /// small human/model-readable text (byte-capped, cell-displayed,
+    /// token-counted, session-recorded). See `docs/tools.md`.
+    pub image: Option<String>,
 }
 
 impl ToolOutcome {
@@ -77,6 +83,7 @@ impl ToolOutcome {
             ok: true,
             truncated: false,
             background: None,
+            image: None,
         }
     }
 
@@ -89,6 +96,7 @@ impl ToolOutcome {
             ok: false,
             truncated: false,
             background: None,
+            image: None,
         }
     }
 
@@ -102,6 +110,7 @@ impl ToolOutcome {
             ok: true,
             truncated: false,
             background: Some(id.into()),
+            image: None,
         }
     }
 
@@ -109,6 +118,13 @@ impl ToolOutcome {
     #[must_use]
     pub fn with_truncated(mut self, truncated: bool) -> Self {
         self.truncated = truncated;
+        self
+    }
+
+    /// Attach an image's `data:` URL (the `read` tool's image branch).
+    #[must_use]
+    pub fn with_image(mut self, url: impl Into<String>) -> Self {
+        self.image = Some(url.into());
         self
     }
 }
@@ -193,10 +209,12 @@ fn bash_spec() -> Value {
 fn read_spec() -> Value {
     function_spec(
         "read",
-        "Read a UTF-8 text file from the filesystem and return its contents with \
+        "Read a file from the filesystem. A text file returns its contents with \
          1-based line numbers (like `cat -n`), so you can cite exact lines to the \
-         `edit` tool. Reads up to 2000 lines by default; use `offset`/`limit` to \
-         page through a large file.",
+         `edit` tool — up to 2000 lines by default; use `offset`/`limit` to page \
+         through a large file. An image file (png/jpg/jpeg/gif/webp) is returned \
+         visually: the image is attached to the conversation so you can see it \
+         (`offset`/`limit` are ignored for images).",
         json!({
             "type": "object",
             "properties": {
@@ -519,6 +537,85 @@ pub fn format_read(content: &str, offset: Option<usize>, limit: Option<usize>) -
         out.pop();
     }
     out
+}
+
+/// The raw-byte ceiling for an image `read` — 3.75 MB, so the base64 form
+/// (4/3 inflation) stays under the strictest mainstream provider's 5 MB
+/// per-image limit. Claude Code's Read uses the same bound. Past it the read
+/// fails with a recoverable message telling the model to downscale first.
+pub const READ_IMAGE_MAX_BYTES: usize = 3 * 1024 * 1024 + 768 * 1024;
+
+/// The output head that marks an image read ([`format_read_image`]).
+/// [`is_image_read_output`] keys on it when the context replay reconstructs
+/// the attachment for later turns (`crate::context`). A text read can never
+/// collide: its output starts with a numbered gutter row, `(file …`, or a
+/// `could not read …` error.
+const READ_IMAGE_HEAD: &str = "Read image ";
+
+/// Does this path name an image the `read` tool should return visually?
+/// Extension-keyed (case-insensitive) over the four formats every
+/// vision-capable OpenAI-compatible endpoint accepts. Pure — the executor
+/// sniffs the actual bytes before attaching (`llm::exec`).
+#[must_use]
+pub fn is_image_path(path: &str) -> bool {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    matches!(
+        ext.as_deref(),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp")
+    )
+}
+
+/// The model-facing (and cell-displayed) output of an image `read`: the
+/// [`READ_IMAGE_HEAD`] marker with the path, then the sniffed format, the
+/// pixel dimensions, and the humanized byte size — plus where the pixels are
+/// (the attachment note the agent loop appends; see `docs/tools.md`).
+#[must_use]
+pub fn format_read_image(
+    path: &str,
+    format: &str,
+    width: u32,
+    height: u32,
+    bytes: usize,
+) -> String {
+    format!(
+        "{READ_IMAGE_HEAD}{path} ({format}, {width}x{height}, {size})\n\
+         The image is attached as the next user message.",
+        size = human_size(bytes),
+    )
+}
+
+/// Was this `read` output an image read ([`format_read_image`])? The context
+/// replay uses it to reconstruct the follow-up attachment message.
+#[must_use]
+pub fn is_image_read_output(output: &str) -> bool {
+    output.starts_with(READ_IMAGE_HEAD)
+}
+
+/// The text of the user-role message that carries an image read's pixels —
+/// bracket-prefixed like the other injected notes (`[error]`/`[background]`),
+/// naming the path so the model pairs it to the tool result above. Shared by
+/// the live agent loop and the context replay so both turns' wire shapes match.
+#[must_use]
+pub fn image_attachment_note(path: &str) -> String {
+    format!(
+        "[image] The image file {path} from the read tool call above is attached to this message."
+    )
+}
+
+/// `512 B` / `240 KB` / `2.5 MB` — the size clause of [`format_read_image`].
+fn human_size(bytes: usize) -> String {
+    const KB: usize = 1024;
+    const MB: usize = 1024 * 1024;
+    if bytes >= MB {
+        format!("{:.1} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{} KB", bytes / KB)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// One line of a [`diff_lines`] result.
@@ -1217,6 +1314,84 @@ mod tests {
         assert!(
             tail.starts_with('…') && tail.contains("more lines"),
             "tail = {tail}"
+        );
+    }
+
+    // ===== image reads (docs/tools.md) =====
+
+    #[test]
+    fn is_image_path_detects_the_vision_formats_by_extension() {
+        assert!(is_image_path("shot.png"));
+        assert!(is_image_path("photo.JPG"), "case-insensitive");
+        assert!(is_image_path("a/b/pic.jpeg"));
+        assert!(is_image_path("anim.gif"));
+        assert!(is_image_path("modern.webp"));
+        assert!(!is_image_path("main.rs"));
+        assert!(!is_image_path("notes.txt"));
+        assert!(!is_image_path("png"), "no extension");
+        assert!(
+            !is_image_path("archive.png.zip"),
+            "only the final extension"
+        );
+        assert!(!is_image_path("diagram.svg"), "svg is text — read as text");
+    }
+
+    #[test]
+    fn format_read_image_reports_the_facts_and_the_attachment() {
+        let out = format_read_image("assets/logo.png", "PNG", 1920, 1080, 245_760);
+        assert!(
+            out.starts_with("Read image assets/logo.png"),
+            "the marker head leads: {out}"
+        );
+        assert!(out.contains("PNG"), "got {out}");
+        assert!(out.contains("1920x1080"), "got {out}");
+        assert!(out.contains("240 KB"), "got {out}");
+        assert!(
+            out.contains("attached"),
+            "the model is told where the pixels are: {out}"
+        );
+    }
+
+    #[test]
+    fn format_read_image_humanizes_the_size() {
+        let bytes = format_read_image("a.png", "PNG", 1, 1, 512);
+        assert!(bytes.contains("512 B"), "got {bytes}");
+        let mb = format_read_image("a.png", "PNG", 1, 1, 2_621_440);
+        assert!(mb.contains("2.5 MB"), "got {mb}");
+    }
+
+    #[test]
+    fn is_image_read_output_matches_only_the_image_head() {
+        assert!(is_image_read_output(&format_read_image(
+            "a.png", "PNG", 1, 1, 10
+        )));
+        // A text read starts with a numbered gutter row — never the marker.
+        assert!(!is_image_read_output("1 alpha\n2 beta"));
+        assert!(!is_image_read_output("(file a.txt is empty)"));
+        assert!(!is_image_read_output("could not read a.png: missing"));
+    }
+
+    #[test]
+    fn image_attachment_note_names_the_path_and_the_tool() {
+        let note = image_attachment_note("assets/logo.png");
+        assert!(
+            note.starts_with("[image] "),
+            "a bracketed note like the other injected notes: {note}"
+        );
+        assert!(note.contains("assets/logo.png"), "got {note}");
+        assert!(
+            note.contains("read"),
+            "the model can pair it to the tool call: {note}"
+        );
+    }
+
+    #[test]
+    fn read_spec_description_mentions_images() {
+        let specs = tool_specs();
+        let desc = specs[1]["function"]["description"].as_str().unwrap();
+        assert!(
+            desc.contains("image") && desc.contains("attached"),
+            "the model is told image files come back attached: {desc}"
         );
     }
 

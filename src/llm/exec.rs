@@ -351,6 +351,7 @@ fn run_bash(
         ok,
         truncated,
         background: None,
+        image: None,
     }
 }
 
@@ -405,7 +406,9 @@ fn absorb_chunk(
     }
 }
 
-/// `read`: read the file and return `cat -n`-style numbered lines, byte-capped.
+/// `read`: an image file (`tools::is_image_path`) is returned visually — see
+/// [`read_image`]; a text file returns `cat -n`-style numbered lines,
+/// byte-capped.
 fn run_read(arguments: &str) -> ToolOutcome {
     let args: ReadArgs = match tools::parse_args(arguments) {
         Ok(a) => a,
@@ -416,6 +419,9 @@ fn run_read(arguments: &str) -> ToolOutcome {
         Ok(b) => b,
         Err(err) => return ToolOutcome::error(format!("could not read {}: {err}", args.path)),
     };
+    if tools::is_image_path(&args.path) {
+        return read_image(&args.path, &bytes);
+    }
     let content = String::from_utf8_lossy(&bytes);
     if content.is_empty() {
         return ToolOutcome::ok(format!("(file {} is empty)", args.path));
@@ -423,6 +429,66 @@ fn run_read(arguments: &str) -> ToolOutcome {
     let numbered = tools::format_read(&content, args.offset, args.limit);
     let (output, truncated) = tools::truncate_output(&numbered, TOOL_OUTPUT_MAX_BYTES);
     ToolOutcome::ok(output).with_truncated(truncated)
+}
+
+/// The image branch of `read` (`docs/tools.md`): bound the size, sniff the
+/// real format from the bytes (the MIME must match the content, not the
+/// extension, or a provider decodes garbage), read the header dimensions, and
+/// return the facts as the text output with the base64 `data:` URL riding
+/// [`ToolOutcome::image`] — the agent loop attaches it as a follow-up user
+/// message. Every failure is a recoverable error the model reads.
+fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
+    const MB: f64 = 1024.0 * 1024.0;
+    if bytes.len() > tools::READ_IMAGE_MAX_BYTES {
+        return ToolOutcome::error(format!(
+            "image {path} is too large to attach ({:.1} MB; the limit is {:.2} MB) — \
+             downscale or convert it with a bash command first",
+            bytes.len() as f64 / MB,
+            tools::READ_IMAGE_MAX_BYTES as f64 / MB,
+        ));
+    }
+    // Sniff the content (magic bytes), the clipboard module's pattern — an
+    // io::Error is impossible over an in-memory cursor but handled anyway.
+    let reader = match image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format() {
+        Ok(reader) => reader,
+        Err(err) => return ToolOutcome::error(format!("could not inspect {path}: {err}")),
+    };
+    let Some((mime, label)) = reader.format().and_then(vision_format) else {
+        return ToolOutcome::error(format!(
+            "{path} is not a supported image (its content is not png/jpeg/gif/webp) — \
+             read it as text or convert it first"
+        ));
+    };
+    let (width, height) = match reader.into_dimensions() {
+        Ok(dimensions) => dimensions,
+        Err(err) => {
+            return ToolOutcome::error(format!("could not decode {path} as an image: {err}"));
+        }
+    };
+    let url = format!(
+        "data:{mime};base64,{}",
+        crate::clipboard::base64_encode(bytes)
+    );
+    ToolOutcome::ok(tools::format_read_image(
+        path,
+        label,
+        width,
+        height,
+        bytes.len(),
+    ))
+    .with_image(url)
+}
+
+/// The `(MIME, display label)` for a sniffed format — `None` for anything a
+/// vision-capable OpenAI-compatible endpoint doesn't accept.
+fn vision_format(format: image::ImageFormat) -> Option<(&'static str, &'static str)> {
+    match format {
+        image::ImageFormat::Png => Some(("image/png", "PNG")),
+        image::ImageFormat::Jpeg => Some(("image/jpeg", "JPEG")),
+        image::ImageFormat::Gif => Some(("image/gif", "GIF")),
+        image::ImageFormat::WebP => Some(("image/webp", "WebP")),
+        _ => None,
+    }
 }
 
 /// `write`: create parent dirs and write the file, reporting a diff vs the old
@@ -695,6 +761,89 @@ mod tests {
         assert!(out.ok);
         assert!(out.output.contains("1 alpha"), "got {}", out.output);
         assert!(out.output.contains("2 beta"));
+    }
+
+    // ===== image reads (docs/tools.md) =====
+
+    #[test]
+    fn read_of_a_png_attaches_the_image() {
+        let path = temp_path("read-image.png");
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([220, 20, 20, 255]))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
+        std::fs::remove_file(&path).ok();
+        assert!(out.ok, "got {}", out.output);
+        assert!(
+            out.output.starts_with("Read image "),
+            "the marker head leads: {}",
+            out.output
+        );
+        assert!(out.output.contains("PNG"), "sniffed format: {}", out.output);
+        assert!(out.output.contains("3x2"), "dimensions: {}", out.output);
+        let url = out.image.expect("the data: URL rides beside the text");
+        assert!(url.starts_with("data:image/png;base64,"), "got {url}");
+        assert!(
+            !out.output.contains("base64"),
+            "the URL never pollutes the text output: {}",
+            out.output
+        );
+    }
+
+    #[test]
+    fn read_image_mime_follows_the_sniffed_content_not_the_extension() {
+        // JPEG bytes misnamed .png: the data: URL must say image/jpeg or a
+        // provider decodes garbage.
+        let path = temp_path("read-image-mislabeled.png");
+        image::RgbImage::from_pixel(2, 2, image::Rgb([1, 2, 3]))
+            .save_with_format(&path, image::ImageFormat::Jpeg)
+            .unwrap();
+        let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
+        std::fs::remove_file(&path).ok();
+        assert!(out.ok, "got {}", out.output);
+        assert!(out.output.contains("JPEG"), "got {}", out.output);
+        let url = out.image.expect("attached");
+        assert!(url.starts_with("data:image/jpeg;base64,"), "got {url}");
+    }
+
+    #[test]
+    fn read_of_a_misnamed_non_image_is_a_recoverable_error() {
+        let path = temp_path("read-not-an-image.png");
+        std::fs::write(&path, "just text pretending to be pixels").unwrap();
+        let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
+        std::fs::remove_file(&path).ok();
+        assert!(!out.ok, "got {}", out.output);
+        assert!(out.image.is_none());
+        assert!(
+            out.output.contains("not"),
+            "the model learns the file isn't an image: {}",
+            out.output
+        );
+    }
+
+    #[test]
+    fn read_of_an_oversized_image_is_a_recoverable_error() {
+        let path = temp_path("read-image-huge.png");
+        std::fs::write(&path, vec![0u8; tools::READ_IMAGE_MAX_BYTES + 1]).unwrap();
+        let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
+        std::fs::remove_file(&path).ok();
+        assert!(!out.ok, "got {}", out.output);
+        assert!(out.image.is_none());
+        assert!(
+            out.output.contains("too large"),
+            "the model is told why and can downscale: {}",
+            out.output
+        );
+    }
+
+    #[test]
+    fn a_text_read_carries_no_image() {
+        let path = temp_path("read-plain.txt");
+        std::fs::write(&path, "alpha\n").unwrap();
+        let out = exec("read", &format!(r#"{{"path":"{}"}}"#, path.display()));
+        std::fs::remove_file(&path).ok();
+        assert!(out.ok);
+        assert!(out.image.is_none(), "text reads stay text-only");
     }
 
     #[test]

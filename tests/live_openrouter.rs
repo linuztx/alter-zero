@@ -336,6 +336,126 @@ fn live_vision_reads_a_pasted_image() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_read_tool_lets_the_model_see_an_image() {
+    // The image `read` end to end (docs/tools.md "Image reads"): the model
+    // reads a solid-red PNG with its read tool; the executor attaches the
+    // pixels via ToolOutcome::image, the agent loop appends the follow-up
+    // user parts message, and the NEXT round must actually see it — the
+    // color exists nowhere in text, only in the attached pixels.
+    let path = std::env::temp_dir().join("alter-zero-live-read-image-red.png");
+    let img = image::RgbaImage::from_pixel(64, 64, image::Rgba([220, 20, 20, 255]));
+    img.save(&path).expect("write the test PNG");
+
+    let prompt = format!(
+        "Use the read tool exactly once to read the file {} — it is an image. \
+         Then answer: what is the single dominant color of that image? \
+         Reply with one lowercase color word.",
+        path.display()
+    );
+    let context = vec![ContextMessage::new(ContextRole::User, prompt.clone())];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend().spawn(prompt, vec![], context, tx, CancelToken::new());
+    let mut reply = String::new();
+    let mut tool_ends: Vec<(String, bool)> = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::ToolEnd { output, ok, .. } => tool_ends.push((output, ok)),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    std::fs::remove_file(&path).ok();
+    println!("model replied: {reply:?}");
+
+    let (output, ok) = tool_ends
+        .iter()
+        .find(|(output, _)| output.starts_with("Read image "))
+        .expect("the read tool ran its image branch");
+    assert!(ok, "the image read succeeded: {output}");
+    assert!(
+        output.contains("PNG") && output.contains("64x64"),
+        "the fact line carries the sniffed format and dimensions: {output}"
+    );
+    assert!(
+        !output.contains("base64"),
+        "the tool result stays small text — the URL rides the attachment: {output}"
+    );
+    assert!(
+        reply.to_lowercase().contains("red"),
+        "the model actually saw the attached image, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_replayed_image_read_is_visible_on_the_next_turn() {
+    // The cross-turn half of the image `read` (docs/context.md): a PRIOR
+    // turn's image read, replayed exactly as `context_messages` derives it
+    // from history — native call + tool result + the reconstructed
+    // attachment note — must still be *visible* to the model in a later
+    // turn. Blue (vs the in-turn test's red) so a leaked context can't
+    // false-positive.
+    use alter_zero::app::{HistoryItem, Message, Role, ToolCall, ToolStatus};
+    let path = std::env::temp_dir().join("alter-zero-live-replay-image-blue.png");
+    let img = image::RgbaImage::from_pixel(64, 64, image::Rgba([20, 20, 220, 255]));
+    img.save(&path).expect("write the test PNG");
+    let path_str = path.display().to_string();
+
+    let question = "What was the single dominant color of the image you read \
+                    earlier? Reply with one lowercase color word.";
+    let history = vec![
+        HistoryItem::Message(Message {
+            role: Role::User,
+            text: format!("Read the image {path_str} with your read tool."),
+            timestamp: String::new(),
+            images: Vec::new(),
+        }),
+        HistoryItem::Tool(ToolCall {
+            name: "Read".to_string(),
+            args: path_str.clone(),
+            output: alter_zero::llm::tools::format_read_image(&path_str, "PNG", 64, 64, 200),
+            status: ToolStatus::Ok,
+            timestamp: String::new(),
+            shell: false,
+            truncated: false,
+        }),
+        HistoryItem::Message(Message {
+            role: Role::Assistant,
+            text: "I read the image.".to_string(),
+            timestamp: String::new(),
+            images: Vec::new(),
+        }),
+        HistoryItem::Message(Message {
+            role: Role::User,
+            text: question.to_string(),
+            timestamp: String::new(),
+            images: Vec::new(),
+        }),
+    ];
+    let context = alter_zero::context::context_messages(&history);
+    // The derivation reconstructed the attachment: a user entry carrying the
+    // image path right after the tool result.
+    assert!(
+        context
+            .iter()
+            .any(|m| m.images.contains(&path.clone()) && m.text.starts_with("[image] ")),
+        "the derived context carries the reconstructed attachment: {context:?}"
+    );
+    let reply = complete(question, vec![], context);
+    std::fs::remove_file(&path).ok();
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.to_lowercase().contains("blue"),
+        "the model still sees the replayed image next turn, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_vision_survives_a_large_image_upload() {
     // The send-phase regression canary (docs/llm.md): a multi-megabyte base64
     // body — the realistic size of a pasted screenshot — must survive the

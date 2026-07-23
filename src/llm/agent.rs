@@ -12,8 +12,10 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::tools::{ToolCallRequest, ToolOutcome, display_name, summarize_call};
-use super::{ChatMessage, LlmError};
+use super::tools::{
+    ToolCallRequest, ToolOutcome, display_name, image_attachment_note, summarize_call,
+};
+use super::{ChatMessage, ContentPart, LlmError};
 use crate::stream::{CancelToken, StreamEvent, ToolCallSummary};
 
 /// The most rounds of tool calls one turn will run before giving up — a
@@ -115,6 +117,16 @@ pub fn run_agent(
                         })
                         .collect(),
                 ));
+                // An image `read`'s pixels: collected per call and attached
+                // AFTER the round's tool results, which must stay contiguous
+                // (strict providers require every tool_call answered directly
+                // after the assistant message). Each attachment is a
+                // user-role parts message — the one multimodal shape every
+                // OpenAI-compatible vision endpoint accepts; `tool`-role
+                // messages reject image parts. The context replays the same
+                // shape into later turns (`crate::context`). See
+                // `docs/tools.md`.
+                let mut attachments: Vec<ChatMessage> = Vec::new();
                 for call in &calls {
                     if cancel.is_cancelled() {
                         return;
@@ -151,7 +163,18 @@ pub fn run_agent(
                         }
                     }
                     messages.push(ChatMessage::tool_result(&call.id, &outcome.output));
+                    if let Some(url) = outcome.image {
+                        let path = summarize_call(&call.name, &call.arguments);
+                        attachments.push(ChatMessage::with_parts(
+                            "user",
+                            vec![
+                                ContentPart::text(image_attachment_note(&path)),
+                                ContentPart::image(url),
+                            ],
+                        ));
+                    }
                 }
+                messages.append(&mut attachments);
                 // A cancel that landed during a tool run reaps us here rather
                 // than spending another round that would just return Cancelled.
                 if cancel.is_cancelled() {
@@ -736,6 +759,124 @@ mod tests {
             || panic!("no notice take once cancelled"),
         );
         assert!(drain(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn an_image_read_outcome_attaches_a_user_image_message_after_the_results() {
+        // An image `read` (docs/tools.md): the tool result stays the small
+        // text while the pixels ride a follow-up USER message — the only
+        // multimodal shape every OpenAI-compatible provider accepts
+        // (tool-role messages reject image parts). With a sibling call in the
+        // round, the results stay contiguous (strict providers require every
+        // tool_call answered directly after the assistant message) and the
+        // attachment follows them.
+        use crate::llm::{ContentPart, MessageContent};
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![
+            call("c1", "read", r#"{"path":"shot.png"}"#),
+            call("c2", "bash", r#"{"command":"ls"}"#),
+        ];
+        let seen_round2: RefCell<Vec<ChatMessage>> = RefCell::new(Vec::new());
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            vec![ChatMessage::user("look at shot.png")],
+            |msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    *seen_round2.borrow_mut() = msgs.to_vec();
+                    RoundOutcome::Complete
+                }
+            },
+            |c, _sink| {
+                if c.name == "read" {
+                    ToolOutcome::ok(
+                        "Read image shot.png (PNG, 3x2, 90 B)\n\
+                         The image is attached as the next user message.",
+                    )
+                    .with_image("data:image/png;base64,AAAA")
+                } else {
+                    ToolOutcome::ok("Exit code: 0\nfiles")
+                }
+            },
+            Vec::new,
+        );
+        drain(&mut rx);
+        let seen = seen_round2.borrow();
+        let roles: Vec<&str> = seen.iter().map(|m| m.role.as_str()).collect();
+        assert_eq!(
+            roles,
+            vec!["user", "assistant", "tool", "tool", "user"],
+            "the results stay contiguous; the attachment follows them"
+        );
+        let attachment = seen.last().unwrap();
+        let MessageContent::Parts(parts) = &attachment.content else {
+            panic!("the attachment is a multimodal parts message: {attachment:?}");
+        };
+        assert_eq!(parts.len(), 2, "one text note + one image: {parts:?}");
+        let ContentPart::Text { text } = &parts[0] else {
+            panic!("a text note leads: {parts:?}");
+        };
+        assert!(text.starts_with("[image] "), "got {text}");
+        assert!(text.contains("shot.png"), "the note names the path: {text}");
+        let ContentPart::ImageUrl { image_url } = &parts[1] else {
+            panic!("the pixels follow the note: {parts:?}");
+        };
+        assert_eq!(image_url.url, "data:image/png;base64,AAAA");
+        // The tool result itself stays the plain text the cell shows.
+        assert_eq!(seen[2].role, "tool");
+        assert!(
+            matches!(&seen[2].content, MessageContent::Text(t) if t.starts_with("Read image ")),
+            "the result content is the text facts: {:?}",
+            seen[2]
+        );
+    }
+
+    #[test]
+    fn an_imageless_round_attaches_nothing() {
+        // The zero-image path is byte-identical to before the feature.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "read", r#"{"path":"a.txt"}"#)];
+        let seen_round2: RefCell<Vec<ChatMessage>> = RefCell::new(Vec::new());
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            vec![ChatMessage::user("read a.txt")],
+            |msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    *seen_round2.borrow_mut() = msgs.to_vec();
+                    RoundOutcome::Complete
+                }
+            },
+            |_c, _sink| ToolOutcome::ok("1 alpha"),
+            Vec::new,
+        );
+        drain(&mut rx);
+        let roles: Vec<String> = seen_round2
+            .borrow()
+            .iter()
+            .map(|m| m.role.clone())
+            .collect();
+        assert_eq!(roles, vec!["user", "assistant", "tool"]);
     }
 
     #[test]

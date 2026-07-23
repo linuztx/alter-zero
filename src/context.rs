@@ -19,6 +19,7 @@
 use std::path::PathBuf;
 
 use crate::app::{HistoryItem, Role, ToolCall};
+use crate::llm::tools::{image_attachment_note, is_image_read_output};
 
 /// The wire role a context message is sent as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -303,6 +304,19 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
                     _ => out.push(ContextMessage::assistant_tool_calls("", vec![call])),
                 }
                 out.push(ContextMessage::tool_result(id, tool.output.clone()));
+                // An image `read` (docs/tools.md): the live agent loop
+                // attached the pixels as a follow-up user message; replay the
+                // same shape so later turns keep seeing them. The stored args
+                // are the path — the backend re-encodes it each request (a
+                // gone file becomes an `[image unavailable]` note there).
+                if tool.name == "Read" && is_image_read_output(&tool.output) {
+                    push_text(
+                        &mut out,
+                        ContextRole::User,
+                        image_attachment_note(&tool.args),
+                        vec![PathBuf::from(&tool.args)],
+                    );
+                }
             }
             HistoryItem::Summary(_) => {} // TUI chrome, not conversation
             // A background shell's completion: a bracketed user-role note
@@ -520,6 +534,87 @@ mod tests {
                 ContextMessage::new(ContextRole::Assistant, "second"),
             ]
         );
+    }
+
+    #[test]
+    fn an_image_read_replays_its_attachment_as_a_user_note() {
+        // The live turn attached the pixels as a follow-up user message
+        // (llm::agent); the replay must reconstruct the same wire shape from
+        // the stored record — the note text via the shared
+        // `llm::tools::image_attachment_note`, the path as an `images`
+        // attachment the backend re-encodes each turn (a gone file becomes an
+        // `[image unavailable]` note there). See docs/tools.md.
+        let history = vec![tool(
+            "Read",
+            "assets/shot.png",
+            "Read image assets/shot.png (PNG, 3x2, 90 B)\n\
+             The image is attached as the next user message.",
+            ToolStatus::Ok,
+            false,
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 3, "call + result + attachment note: {ctx:?}");
+        assert_eq!(ctx[1].role, ContextRole::Tool);
+        let note = &ctx[2];
+        assert_eq!(note.role, ContextRole::User);
+        assert_eq!(
+            note.text,
+            crate::llm::tools::image_attachment_note("assets/shot.png"),
+            "the note text matches the live turn's exactly"
+        );
+        assert_eq!(note.images, vec![PathBuf::from("assets/shot.png")]);
+        assert!(note.tool_calls.is_empty() && note.tool_call_id.is_none());
+    }
+
+    #[test]
+    fn a_text_read_replays_without_an_attachment() {
+        let history = vec![tool(
+            "Read",
+            "src/main.rs",
+            "1 fn main() {}",
+            ToolStatus::Ok,
+            false,
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 2, "no injected note for a text read: {ctx:?}");
+    }
+
+    #[test]
+    fn a_bash_echo_of_the_marker_is_not_an_attachment() {
+        // Only a `read` cell can carry an image — a bash command whose output
+        // merely starts with the marker text must not inject a phantom note.
+        let history = vec![tool(
+            "Bash",
+            "cat log.txt",
+            "Read image assets/shot.png (PNG, 3x2, 90 B)",
+            ToolStatus::Ok,
+            false,
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 2, "no note for a bash cell: {ctx:?}");
+    }
+
+    #[test]
+    fn the_users_next_message_merges_into_the_attachment_note() {
+        // Alternation safety: the injected note and the user's next typed
+        // message collapse into one user entry (like every other adjacent
+        // same-role pair), the attachment riding along.
+        let history = vec![
+            tool(
+                "Read",
+                "shot.png",
+                "Read image shot.png (PNG, 1x1, 68 B)",
+                ToolStatus::Ok,
+                false,
+            ),
+            message(Role::User, "what color is it?"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 3, "call + result + merged user entry: {ctx:?}");
+        let merged = &ctx[2];
+        assert_eq!(merged.role, ContextRole::User);
+        assert!(merged.text.ends_with("what color is it?"), "{merged:?}");
+        assert_eq!(merged.images, vec![PathBuf::from("shot.png")]);
     }
 
     #[test]

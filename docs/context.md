@@ -59,6 +59,11 @@ JSON, so the replayed call's `arguments` is **reconstructed** from that summary
 (`{"command": …}` for `bash`, `{"path": …}` for the file tools); the tool
 **result** below it carries the full outcome the model reasons from (the diff,
 the file contents, the command output), so nothing the model needs is lost.
+An **image `read`** (detected from the stored record: `name == "Read"` + the
+`Read image ` output marker) additionally replays the follow-up user note the
+live loop attached — `llm::tools::image_attachment_note` over the path as an
+`images` attachment — so later turns keep *seeing* the image, re-encoded per
+request like a Ctrl+V paste (`docs/tools.md`).
 
 Adjacent same-role **plain-text** entries still **merge** (texts joined with a
 blank line, attachments concatenated) so message batches and notice runs

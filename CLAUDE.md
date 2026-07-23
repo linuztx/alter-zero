@@ -764,7 +764,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `tools::render_numbered_content`/`render_numbered_diff`), or — for `read` —
   the file numbered by `tools::format_read` in the **same** `{n:>W} {text}`
   gutter (dynamic-width numbers + a space, not the old `cat -n` tab; the UI
-  synthesizes the `Read {N} lines` corner). The cell re-styles those rows — dim
+  synthesizes the `Read {N} lines` corner; a `read` of an **image**
+  (png/jpg/jpeg/gif/webp) instead returns a small `Read image {path} (…)` fact
+  line while the pixels ride `ToolOutcome::image` as a base64 `data:` URL —
+  `run_agent` attaches them after the round's tool results as a user-role parts
+  message (tool-role content rejects image parts on most providers) and
+  `context_messages` replays the same note on later turns from the output
+  marker, the path re-encoded per request like a Ctrl+V paste;
+  `docs/tools.md` "Image reads"). The cell re-styles those rows — dim
   line numbers, green/red signs (`read`/`created` have none), the content
   syntax-highlighted by the path's extension, added/removed rows on
   dark-green/red background tints (`TOOL_DIFF_*_BG`), a 10-row inline peek
