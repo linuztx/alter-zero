@@ -86,7 +86,11 @@ code**, not just the transcript: rewinding restores the working directory to the
 the pure mapping/format is `checkpoint` + `session::parse_checkpoints`, the git
 I/O is `checkpoint::CheckpointStore`, turn-end snapshots ride
 `dispatch_after_turn`, and restores hang off the `ResumeSession` /
-`ConfirmBacktrack` arms; gated by `ALTER_ZERO_CHECKPOINTS`) in
+`ConfirmBacktrack` arms; gated by `ALTER_ZERO_CHECKPOINTS` **and by the cwd
+being project-scoped** — `checkpoint::cwd_allows_checkpoints` refuses the home
+dir itself, its ancestors, and filesystem roots, since the session-start
+snapshot's whole-cwd `git add -A` over `~` blocked the raw-mode terminal for
+minutes before the first frame, the "hangs in `~`" bug) in
 `docs/checkpoint.md`; the **parallel tool-call batch** (the model's several tool
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in

@@ -92,6 +92,17 @@ Split the repo's usual way — a **pure core** (unit-tested) and a **boundary**
   a restore's `git clean` must never delete.
 - `enabled_by_env` — the `ALTER_ZERO_CHECKPOINTS` gate (the `ALTER_ZERO_TOOLS`
   pattern: off for `0`/`false`/`no`/`off`).
+- `cwd_allows_checkpoints(cwd, home)` — the project-scope guard: checkpoints
+  are refused when the cwd **is** the home directory, an ancestor of it
+  (`/home`, `/`), or a filesystem root. The session-start snapshot runs before
+  the first frame paints, and a `git add -A` over a whole home directory hashes
+  the user's entire disk into the store — minutes of blocked, blank, raw-mode
+  terminal (Ctrl+C dead too — it's just an unread key event) plus hundreds of
+  megabytes per snapshot, repeated synchronously at every turn end (the "alter0
+  hangs in `~`" bug) — and a restore's `git reset --hard` + `git clean -fd`
+  blast radius there is every file the user owns, not a project. Component-wise
+  path matching, so a `/home/username` sibling of `/home/user` still
+  checkpoints, as does any project directory under home.
 
 ### Boundary (`CheckpointStore`)
 
@@ -126,8 +137,11 @@ store-local file), no prompts, all stdio detached.
 ## Wiring (`main.rs`, the boundary)
 
 - **Store + pristine snapshot** are created next to the `SessionRecorder`, gated
-  by `checkpoint::enabled_by_env(ALTER_ZERO_CHECKPOINTS)` **and** a `git` binary
-  being present. Root: `ALTER_ZERO_CHECKPOINTS_DIR`, else
+  by `checkpoint::enabled_by_env(ALTER_ZERO_CHECKPOINTS)` **and**
+  `checkpoint::cwd_allows_checkpoints(cwd, $HOME)` (never the home dir itself,
+  an ancestor of it, or a filesystem root — the "hangs in `~`" guard) **and** a
+  `git` binary being present (probed last, so a refused cwd never even spawns
+  git). Root: `ALTER_ZERO_CHECKPOINTS_DIR`, else
   `~/.alter-zero/checkpoints` (the `ALTER_ZERO_SESSIONS_DIR` pattern; the smoke
   test points it at a temp dir).
 - **Turn-end snapshot** rides `dispatch_after_turn` — the single choke point every
@@ -164,10 +178,16 @@ Old builds skip the unknown record type — the forward-compatibility contract.
 
 ## Enabling / disabling
 
-On by default when a `git` binary is present. `ALTER_ZERO_CHECKPOINTS=0` (or
-`false`/`no`/`off`) disables it; a missing git or no writable root disables it
-silently. A disabled store makes every operation an inert no-op, so `/resume` and
-backtrack behave exactly as they did before this feature — transcript only.
+On by default when a `git` binary is present **and the cwd is project-scoped**.
+`ALTER_ZERO_CHECKPOINTS=0` (or `false`/`no`/`off`) disables it; a missing git or
+no writable root disables it silently — and so does running with the cwd at the
+home directory itself, an ancestor of it, or a filesystem root
+(`cwd_allows_checkpoints`): those trees are the user's whole disk, not a
+project, and snapshotting one blocked startup for minutes while duplicating it
+into the store. The guard is unconditional (an explicit
+`ALTER_ZERO_CHECKPOINTS=1` doesn't override it) — run in a project directory to
+checkpoint. A disabled store makes every operation an inert no-op, so `/resume`
+and backtrack behave exactly as they did before this feature — transcript only.
 
 > **Running the test suite:** `scripts/smoke.sh` drives the real binary *inside
 > this repo's working directory*, and a restore's `git clean` would delete files
@@ -185,7 +205,9 @@ backtrack behave exactly as they did before this feature — transcript only.
   Surgical, agent-touched-only restores are future work.
 - **Synchronous git.** Snapshots run at idle turn boundaries and restores at a
   user action, so a brief pause on a very large tree is possible. Offloading to a
-  worker thread (like the Ctrl+V image pipeline) is future work.
+  worker thread (like the Ctrl+V image pipeline) is future work. The
+  *pathological* case — the whole home directory or a filesystem root as the
+  cwd — is refused outright by `cwd_allows_checkpoints` rather than paused for.
 - **No pruning.** `gc.auto=0` keeps every snapshot restorable across the fork a
   restore creates, so the store grows slowly and unbounded. A retention policy is
   future work.
@@ -203,7 +225,10 @@ backtrack behave exactly as they did before this feature — transcript only.
   and is `None` when nothing qualifies; `retain_surviving` drops snapshots past a
   truncation; `store_git_dir` dashes the cwd like the tasks dir;
   `exclude_file_contents` always shields `.git`; `enabled_by_env` reads the
-  disabling words.
+  disabling words; `cwd_allows_checkpoints` refuses the home dir (trailing-slash
+  `$HOME` included), its ancestors, and filesystem roots while accepting project
+  dirs (a `/home/username` sibling too — component matching, not prefix), and
+  treats an empty `$HOME` as unknown.
 - `session` (pure): a `checkpoint` line round-trips through `checkpoint_line` /
   `parse_checkpoints` in file order, and checkpoint lines are invisible to
   `parse_session`.
@@ -214,6 +239,8 @@ backtrack behave exactly as they did before this feature — transcript only.
 - `scripts/smoke.sh` Phases 46–47 (the real binary, in a temp cwd): an Esc-Esc
   backtrack reverts a `!`-mutated working file to its pristine checkpoint; a
   `/resume` restores a working file to the saved session's final checkpoint even
-  after it was diverged on disk between launches.
+  after it was diverged on disk between launches. Phase 49: launched with
+  cwd == `$HOME` (even under an explicit `ALTER_ZERO_CHECKPOINTS=1`) the store
+  is never created, while a project dir under that same home still snapshots.
 
 [`HistoryItem`]: ../src/app.rs

@@ -8,7 +8,9 @@
 //! - a **pure core** — [`Checkpoint`] plus the free functions here: the
 //!   history↔snapshot mapping ([`restore_target`]/[`retain_surviving`]), the
 //!   store-path derivation ([`store_git_dir`]), the ignore-file contents
-//!   ([`exclude_file_contents`]), and the env gate ([`enabled_by_env`]);
+//!   ([`exclude_file_contents`]), the env gate ([`enabled_by_env`]), and the
+//!   project-scope guard ([`cwd_allows_checkpoints`] — never the home dir, an
+//!   ancestor of it, or a filesystem root);
 //! - a **boundary** — [`CheckpointStore`]: an *isolated* git object store with
 //!   its own `GIT_DIR` (never the user's `.git`, never their branches/index)
 //!   whose commits capture the whole cwd, and which restores the cwd to any of
@@ -120,6 +122,34 @@ pub fn exclude_file_contents() -> String {
         out.push('\n');
     }
     out
+}
+
+/// Whether `cwd` is a directory checkpoints may snapshot at all — the
+/// project-scope guard beside the env gate. The home directory itself, any
+/// ancestor of it (`/home`, `/`), and any filesystem root are refused:
+/// `git add -A` over a whole home dir hashes the user's entire disk into the
+/// store — minutes of blocked, blank, raw-mode startup and hundreds of
+/// megabytes per snapshot (the "alter0 hangs in `~`" bug), repeated
+/// synchronously at every turn end — and a restore's `git reset --hard` +
+/// `git clean -fd` blast radius there is every file the user owns, not a
+/// project. Project dirs pass, under home or not. `home` is the
+/// boundary-injected `$HOME` (`None` when unset).
+#[must_use]
+pub fn cwd_allows_checkpoints(cwd: &Path, home: Option<&Path>) -> bool {
+    // A filesystem root (`/`, a drive root) is never a project — and an
+    // empty, unknowable cwd (its parent is `None` too) is never snapshot.
+    if cwd.parent().is_none() {
+        return false;
+    }
+    // The home directory itself, or an ancestor of it: both contain the
+    // user's whole tree. `starts_with` compares path components, so a
+    // `/home/username` sibling never matches `/home/user`, and a trailing
+    // slash in `$HOME` is immaterial. A degenerate empty `$HOME` guards
+    // nothing (it would ban every relative path via the empty prefix).
+    match home.filter(|h| !h.as_os_str().is_empty()) {
+        Some(home) => !home.starts_with(cwd),
+        None => true,
+    }
 }
 
 /// Whether checkpoints are enabled given the `ALTER_ZERO_CHECKPOINTS` value
@@ -426,5 +456,59 @@ mod tests {
         for off in ["0", "false", "no", "off", "OFF", " False "] {
             assert!(!enabled_by_env(Some(off)), "{off:?} should disable");
         }
+    }
+
+    // ===== cwd_allows_checkpoints (the "alter0 hangs in ~/" guard) =====
+
+    #[test]
+    fn cwd_allows_checkpoints_accepts_project_directories() {
+        let home = Some(Path::new("/home/user"));
+        assert!(cwd_allows_checkpoints(Path::new("/home/user/proj"), home));
+        assert!(cwd_allows_checkpoints(
+            Path::new("/home/user/code/deep/nested"),
+            home
+        ));
+        // Outside the home tree is fine too (a temp dir, a mounted volume).
+        assert!(cwd_allows_checkpoints(Path::new("/tmp/scratch"), home));
+        assert!(cwd_allows_checkpoints(Path::new("/tmp/scratch"), None));
+    }
+
+    #[test]
+    fn cwd_allows_checkpoints_refuses_the_home_directory_itself() {
+        let home = Path::new("/home/user");
+        assert!(!cwd_allows_checkpoints(Path::new("/home/user"), Some(home)));
+        // A trailing slash in $HOME (common) must still match.
+        assert!(!cwd_allows_checkpoints(
+            Path::new("/home/user"),
+            Some(Path::new("/home/user/"))
+        ));
+    }
+
+    #[test]
+    fn cwd_allows_checkpoints_refuses_ancestors_of_home_and_roots() {
+        let home = Some(Path::new("/home/user"));
+        // Ancestors of home contain the home dir — snapshotting them is worse.
+        assert!(!cwd_allows_checkpoints(Path::new("/home"), home));
+        assert!(!cwd_allows_checkpoints(Path::new("/"), home));
+        // A filesystem root is refused even when home is unknown.
+        assert!(!cwd_allows_checkpoints(Path::new("/"), None));
+    }
+
+    #[test]
+    fn cwd_allows_checkpoints_component_matches_not_prefix_matches() {
+        // `/home/username` is a *sibling* of `/home/user`, not home itself.
+        let home = Some(Path::new("/home/user"));
+        assert!(cwd_allows_checkpoints(Path::new("/home/username"), home));
+    }
+
+    #[test]
+    fn cwd_allows_checkpoints_ignores_a_degenerate_home() {
+        // `HOME=""` guards nothing beyond the root rule.
+        assert!(cwd_allows_checkpoints(
+            Path::new("/tmp/x"),
+            Some(Path::new(""))
+        ));
+        // An unknowable cwd (empty path) is never snapshot.
+        assert!(!cwd_allows_checkpoints(Path::new(""), None));
     }
 }

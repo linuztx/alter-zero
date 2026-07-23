@@ -316,13 +316,19 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // object store — never the user's real .git — that snapshots the whole cwd
     // per turn so a /resume or Esc-Esc backtrack can reset the code, not just
     // the transcript. Keyed by cwd (checkpoints outlive a session), gated by
-    // `ALTER_ZERO_CHECKPOINTS` and a `git` binary being present. The initial
+    // `ALTER_ZERO_CHECKPOINTS`, a `git` binary being present, and the cwd
+    // being project-scoped (`cwd_allows_checkpoints` — never the home dir
+    // itself, an ancestor of it, or a filesystem root: the session-start
+    // snapshot below runs before the first frame, and a `git add -A` over a
+    // whole home directory blocks the raw-mode terminal for minutes while
+    // duplicating it into the store — the "hangs in `~`" bug). The initial
     // snapshot below captures the pristine tree (history length 0) so a
     // backtrack to the very first message restores it. All boundary I/O; the
     // pure mapping lives in `checkpoint`.
     let checkpoints_root = checkpoints_root();
     let checkpoints_enabled =
         checkpoint::enabled_by_env(std::env::var("ALTER_ZERO_CHECKPOINTS").ok().as_deref())
+            && checkpoint::cwd_allows_checkpoints(&cwd, home.as_deref())
             && checkpoint::git_available();
     let checkpoints =
         checkpoint::CheckpointStore::new(checkpoints_root.as_deref(), &cwd, checkpoints_enabled);
