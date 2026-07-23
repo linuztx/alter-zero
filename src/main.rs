@@ -573,11 +573,21 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     }
                                     None => false,
                                 };
+                                // Consume the overlay-resized flag (a resize under
+                                // the overlay must not leak to the next return); we
+                                // purge unconditionally below anyway.
+                                let _ = overlay_return_clear(&mut overlay_resized);
                                 term.exit_overlay()?;
                                 transcript.clear();
+                                // Backtrack TRUNCATES history, so an in-place
+                                // overwrite leaves the dropped exchange stale in
+                                // scrollback (and on screen when it overflowed) —
+                                // it only cleared on the next resize. Purge-rebuild
+                                // like /resume and resize: the truncated
+                                // conversation replaces the screen AND scrollback
+                                // cleanly (invariant 3).
                                 repaint_conversation(
-                                    term, &mut app, &mut render,
-                                    overlay_return_clear(&mut overlay_resized),
+                                    term, &mut app, &mut render, ReflowClear::Purge,
                                 )?;
                                 if restored {
                                     present_toast(

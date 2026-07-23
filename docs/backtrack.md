@@ -83,15 +83,26 @@ true (`esc to quit` ↔ `esc esc to edit previous`).
 3. prefills the composer with the message's text via the same path as a ↑
    history recall (cursor at the end, palette/shell-mode re-derived).
 
-The key arm returns `Action::ToggleToolView`, so the loop's existing
-return-from-overlay path runs: `exit_overlay` + `repaint_conversation`, which
-rebuilds the inline view **from the truncated history** (invariant 3's repaint
-— truncation is just a shorter tail; an empty result repaints like `/clear`).
-No scrollback commits happen while the overlay is up (invariant 4), so there
-is nothing stale to retract — the repaint *is* the rewind. The submitted-input
-↑ history is untouched (codex's cross-session input history likewise survives
-a fork), and the dropped exchanges remain in the terminal's scrollback above
-the repainted tail, exactly like codex's scrollback after its fork.
+The key arm returns `Action::ConfirmBacktrack` (a dedicated action, not
+`ToggleToolView` — the loop also resets the code to that point's checkpoint,
+`docs/checkpoint.md`), then runs `exit_overlay` + a **`ReflowClear::Purge`**
+`repaint_conversation`, which rebuilds the inline view **from the truncated
+history** (invariant 3's repaint — truncation is just a shorter tail; an empty
+result repaints like `/clear`). No scrollback commits happen while the overlay
+is up (invariant 4), so there is nothing stale to retract — the repaint *is*
+the rewind. The submitted-input ↑ history is untouched (codex's cross-session
+input history likewise survives a fork).
+
+**Why Purge, not the in-place overlay-return repaint.** Backtrack *shrinks*
+history, so — like `/resume` (which replaces it) and every resize — the repaint
+must **purge scrollback and clear the whole screen** before rebuilding
+(invariant 3). An in-place overwrite only rewrites the visible rows: it left the
+dropped exchange lingering in the terminal's own scrollback (and still *on
+screen* when the conversation had overflowed), clearing only on the next resize
+— the "it's still there after I rewind" duplication bug. The purge makes the
+rewound conversation the whole record, screen and scrollback alike. (This is the
+one deliberate divergence from codex, whose post-fork scrollback keeps the
+dropped cells; the duplication it caused here wasn't worth the parity.)
 
 There is no backend session to fork: a `ReplySource` gets one prompt per turn
 (`docs/design.md`), so truncating `App::history` *is* the whole rollback —

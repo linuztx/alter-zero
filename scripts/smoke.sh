@@ -1439,6 +1439,12 @@ sleep 0.6
 backtrack_rewound="$(tmux capture-pane -t "$S30" -p)"
 echo "==== captured pane (Enter — rewound, the first message back in the composer) ===="
 printf '%s\n' "$backtrack_rewound"
+# The rewind PURGES scrollback (docs/backtrack.md — like /resume/resize): the
+# dropped exchange must not linger even in the terminal's scrollback (the
+# duplication bug where it only cleared on the next resize). Capture WITH
+# scrollback and assert "beta question" is gone entirely — the composer holds
+# "alpha question", so "beta question" must appear zero times anywhere.
+backtrack_rewound_scroll="$(tmux capture-pane -t "$S30" -p -S -120)"
 tmux send-keys -t "$S30" Enter # resubmit the recalled draft
 backtrack_resent=""
 for _ in $(seq 1 80); do # turn 3 → "Completed for"
@@ -2823,6 +2829,14 @@ if ! printf '%s' "$backtrack_rewound" | grep -qF "❯ alpha question"; then
 fi
 if printf '%s' "$backtrack_rewound" | grep -qF "beta question"; then
 	echo "FAIL: the second exchange survived the rewind on the repainted screen" >&2
+	status=1
+fi
+# The dropped exchange must be gone from SCROLLBACK too, not just the visible
+# screen — an in-place overwrite left it lingering above the fold until the next
+# resize (the duplication bug). A Purge-rebuild clears scrollback, so nothing
+# should scroll back to "beta question" (the composer holds "alpha question").
+if printf '%s' "$backtrack_rewound_scroll" | grep -qF "beta question"; then
+	echo "FAIL: the rewound exchange lingered in scrollback (backtrack must Purge-rebuild, not overwrite in place)" >&2
 	status=1
 fi
 if ! printf '%s' "$backtrack_resent" | grep -qF "Completed for"; then

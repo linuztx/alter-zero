@@ -147,9 +147,11 @@ store-local file), no prompts, all stdio detached.
   (`session::parse_checkpoints`), backs up the current tree, and restores the
   final one before the purge-repaint. The new `ConfirmBacktrack` action (the
   Enter arm of the backtrack preview now returns it instead of `ToggleToolView`)
-  restores `restore_target(recorder.checkpoints(), history.len())` before the
-  return-from-overlay repaint; the loop-bottom `recorder.sync` then rewrites the
-  file, dropping the rewound-away checkpoint lines.
+  restores `restore_target(recorder.checkpoints(), history.len())` before a
+  **purge-rebuild** repaint (backtrack shrinks history, so — like `/resume` — an
+  in-place overwrite would leave the dropped exchange stale in scrollback;
+  `docs/backtrack.md`); the loop-bottom `recorder.sync` then rewrites the file,
+  dropping the rewound-away checkpoint lines.
 
 ## The rollout line (`session`)
 
