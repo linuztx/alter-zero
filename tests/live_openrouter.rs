@@ -20,9 +20,10 @@ use alter_zero::llm::{LlmBackend, ModelConfig, ThinkingMode};
 use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
 
 /// A backend configured for OpenRouter from the environment, for `model` with
-/// the given thinking mode. Panics with a clear message when the key is
-/// missing — these tests are only ever run on purpose (`--ignored`).
-fn backend_for(model: String, thinking: Option<ThinkingMode>) -> LlmBackend {
+/// the given thinking mode and known image-input support. Panics with a clear
+/// message when the key is missing — these tests are only ever run on purpose
+/// (`--ignored`).
+fn backend_with(model: String, thinking: Option<ThinkingMode>, vision: Option<bool>) -> LlmBackend {
     let key =
         std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
     let cfg = ModelConfig {
@@ -34,6 +35,7 @@ fn backend_for(model: String, thinking: Option<ThinkingMode>) -> LlmBackend {
         api_key: Some(key),
         temperature: Some(0.0),
         thinking,
+        vision,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -41,6 +43,11 @@ fn backend_for(model: String, thinking: Option<ThinkingMode>) -> LlmBackend {
         cfg,
         Some("You are a terse assistant. Answer in as few words as possible.".to_string()),
     )
+}
+
+/// [`backend_with`] with unknown vision — the pre-detection shape.
+fn backend_for(model: String, thinking: Option<ThinkingMode>) -> LlmBackend {
+    backend_with(model, thinking, None)
 }
 
 /// The default backend under test (`ALTER_ZERO_LIVE_MODEL`, else a cheap
@@ -164,6 +171,7 @@ fn live_environment_context_reaches_the_model() {
         api_key: Some(key),
         temperature: Some(0.0),
         thinking: None,
+        vision: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -387,6 +395,158 @@ fn live_read_tool_lets_the_model_see_an_image() {
     assert!(
         reply.to_lowercase().contains("red"),
         "the model actually saw the attached image, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_openrouter_models_report_vision_support() {
+    // The /v1/models vision detection against the live wire (docs/tools.md):
+    // OpenRouter's architecture.input_modalities marks gpt-4o-mini as
+    // image-capable and gpt-oss-120b as text-only — the pair the graceful
+    // degradation below keys on.
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let mut cfg = alter_zero::llm::ModelConfig::fallback();
+    cfg.provider_id = "openrouter".to_string();
+    cfg.api_model_base = "https://openrouter.ai/api/v1".to_string();
+    cfg.api_key = Some(key);
+    let models = alter_zero::llm::models::fetch_models(&cfg, &CancelToken::new())
+        .expect("the model list fetches");
+    let vision_of = |id: &str| {
+        models
+            .iter()
+            .find(|m| m.id == id)
+            .unwrap_or_else(|| panic!("{id} is listed"))
+            .vision
+    };
+    assert_eq!(vision_of("openai/gpt-4o-mini"), Some(true));
+    assert_eq!(vision_of("openai/gpt-oss-120b"), Some(false));
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_venice_models_report_vision_support() {
+    // The Venice shape (model_spec.capabilities.supportsVision) against the
+    // live wire, via the built-in provider's models base. Ids churn, so
+    // assert the field parses both ways rather than pinning names.
+    let key = std::env::var("A0_VENICE_API_KEY")
+        .expect("set A0_VENICE_API_KEY to run the Venice live tests");
+    let providers = alter_zero::llm::ProvidersFile::builtin();
+    let venice = providers.get("a0_venice").expect("a0_venice is built in");
+    let mut cfg = alter_zero::llm::ModelConfig::fallback();
+    cfg.provider_id = "a0_venice".to_string();
+    cfg.api_model_base = venice.models_base();
+    cfg.api_key = Some(key);
+    let models = alter_zero::llm::models::fetch_models(&cfg, &CancelToken::new())
+        .expect("the model list fetches");
+    let sighted = models.iter().filter(|m| m.vision == Some(true)).count();
+    let blind = models.iter().filter(|m| m.vision == Some(false)).count();
+    println!(
+        "venice models: {} ({sighted} vision, {blind} text-only)",
+        models.len()
+    );
+    assert!(sighted > 0, "some Venice models support vision");
+    assert!(blind > 0, "some Venice models are text-only");
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_non_vision_model_gracefully_declines_an_image_read() {
+    // The read-tool gate end to end (docs/tools.md): a text-only model whose
+    // record said "no image input" asks to read an image. Without the gate,
+    // attaching would 404 the whole next request ("No endpoints found that
+    // support image input") and the turn would die red; with it, the tool
+    // resolves as a recoverable error the model reads, and the turn completes
+    // with a text answer.
+    let path = std::env::temp_dir().join("alter-zero-live-no-vision-read.png");
+    let img = image::RgbaImage::from_pixel(32, 32, image::Rgba([220, 20, 20, 255]));
+    img.save(&path).expect("write the test PNG");
+
+    let prompt = format!(
+        "Use the read tool exactly once to read the file {} — it is an image. \
+         Then report in one short sentence what the tool result said.",
+        path.display()
+    );
+    let context = vec![ContextMessage::new(ContextRole::User, prompt.clone())];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let backend = backend_with("openai/gpt-oss-120b".to_string(), None, Some(false));
+    let handle = backend.spawn(prompt, vec![], context, tx, CancelToken::new());
+    let mut reply = String::new();
+    let mut tool_ends: Vec<(String, bool)> = Vec::new();
+    let mut done = false;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::ToolEnd { output, ok, .. } => tool_ends.push((output, ok)),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("the turn must not die: {e}"),
+            StreamEvent::StreamDone => {
+                done = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    std::fs::remove_file(&path).ok();
+    println!("model replied: {reply:?}");
+
+    let (output, ok) = tool_ends
+        .iter()
+        .find(|(output, _)| output.contains("does not support image input"))
+        .expect("the read declined with the vision message");
+    assert!(!ok, "the declined read resolves as an error: {output}");
+    assert!(done, "the turn completed normally");
+    assert!(!reply.is_empty(), "the model answered in text");
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_non_vision_model_survives_a_pasted_image() {
+    // The paste-path gate end to end (docs/tools.md): a context carrying a
+    // Ctrl+V attachment goes to a text-only model. Without the gate the
+    // provider 404s the request; with it the attachment degrades to the
+    // [image omitted…] note and the model answers — knowing an image existed
+    // that it cannot see.
+    let path = std::env::temp_dir().join("alter-zero-live-no-vision-paste.png");
+    let img = image::RgbaImage::from_pixel(32, 32, image::Rgba([20, 220, 20, 255]));
+    img.save(&path).expect("write the test PNG");
+
+    let prompt = "[Image #1] Can you see the attached image? Answer yes or no, \
+                  with one short reason.";
+    let context = vec![ContextMessage {
+        role: ContextRole::User,
+        text: prompt.to_string(),
+        images: vec![path.clone()],
+        tool_calls: vec![],
+        tool_call_id: None,
+    }];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let backend = backend_with("openai/gpt-oss-120b".to_string(), None, Some(false));
+    let handle = backend.spawn(
+        prompt.to_string(),
+        vec![path.clone()],
+        context,
+        tx,
+        CancelToken::new(),
+    );
+    let mut reply = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("the turn must not die: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    std::fs::remove_file(&path).ok();
+    println!("model replied: {reply:?}");
+    assert!(
+        !reply.is_empty(),
+        "the request survived and the model answered"
     );
 }
 

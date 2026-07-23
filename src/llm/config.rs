@@ -172,6 +172,7 @@ impl ProvidersFile {
             api_key: sel.api_key.clone(),
             temperature: sel.temperature,
             thinking: sel.thinking,
+            vision: sel.vision,
             extra_headers: provider
                 .extra_headers
                 .iter()
@@ -194,6 +195,12 @@ pub struct Selection {
     /// into the request payload. `None` sends no reasoning parameter at all.
     /// See `docs/reasoning.md`.
     pub thinking: Option<ThinkingMode>,
+    /// Whether the model accepts image input, when known (from the same
+    /// `/v1/models` records the picker lists — `ModelEntry::vision`).
+    /// `Some(false)` makes the backend degrade attachments gracefully instead
+    /// of letting the provider fail the turn; `None` attaches optimistically.
+    /// See `docs/tools.md`.
+    pub vision: Option<bool>,
 }
 
 /// The fully-resolved config one [`super::openai::OpenAiClient`] talks with.
@@ -210,6 +217,8 @@ pub struct ModelConfig {
     pub temperature: Option<f32>,
     /// The active thinking mode (see [`Selection::thinking`]).
     pub thinking: Option<ThinkingMode>,
+    /// The model's image-input support (see [`Selection::vision`]).
+    pub vision: Option<bool>,
     pub extra_headers: Vec<(String, String)>,
     /// Provider kwargs merged into the request body (e.g. `venice_parameters`).
     pub extra_body: serde_json::Map<String, serde_json::Value>,
@@ -228,6 +237,7 @@ impl ModelConfig {
             api_key: None,
             temperature: None,
             thinking: None,
+            vision: None,
             extra_headers: Vec::new(),
             extra_body: serde_json::Map::new(),
         }
@@ -380,12 +390,34 @@ api_base = "https://a/v1"
             api_key: Some("sk-test".to_string()),
             temperature: Some(0.7),
             thinking: None,
+            vision: None,
         };
         let cfg = file.model_config(&sel).expect("resolves");
         assert_eq!(cfg.model, "anthropic/claude-3.5-haiku");
         assert_eq!(cfg.api_base, "https://openrouter.ai/api/v1");
         assert_eq!(cfg.provider_name, "OpenRouter");
         assert!(cfg.is_usable());
+    }
+
+    #[test]
+    fn model_config_carries_the_selections_vision() {
+        // The picked model's detected image-input support rides the resolved
+        // config so the backend can gate attachments (docs/tools.md).
+        let file = ProvidersFile::builtin();
+        let sel = Selection {
+            provider_id: "openrouter".to_string(),
+            model: "openai/gpt-oss-120b".to_string(),
+            api_key: Some("k".to_string()),
+            vision: Some(false),
+            ..Default::default()
+        };
+        let cfg = file.model_config(&sel).expect("resolves");
+        assert_eq!(cfg.vision, Some(false));
+        assert_eq!(
+            ModelConfig::fallback().vision,
+            None,
+            "unknown by default — attach optimistically"
+        );
     }
 
     #[test]

@@ -110,7 +110,11 @@ boundary's expiry timer arms — `docs/toast.md`).
   next request, and persists — but **only onto the recorded selection**: an
   env-overridden model never writes `config.json` (env always wins, never
   sticks), so that combination just re-probes next run. A failed probe leaves
-  support unknown silently (background bookkeeping, not a user action).
+  support unknown silently (background bookkeeping, not a user action). The
+  same probe (and the same persisted blob's sibling `vision` field) now also
+  reads the model's **image-input** support out of the record — the graceful
+  image-attachment gate of `docs/tools.md` "Vision detection" — firing when
+  *either* capability is unknown.
 
 `/clear` and `/resume` never touch the state (the model didn't change); a
 switch to a non-reasoning model clears it (`App::set_thinking(None)`), which

@@ -62,6 +62,11 @@ pub struct RealToolExecutor {
     /// fast instead of hijacking the TUI. `None` (tests, embedders without
     /// the hook) just shortens the tier chain.
     detach_helper: Option<std::path::PathBuf>,
+    /// The active model's image-input support (`ModelConfig::vision`):
+    /// `Some(false)` makes an image `read` fail as a recoverable error
+    /// instead of attaching pixels the provider would reject with the whole
+    /// turn (`docs/tools.md`). `None`/`Some(true)` attach as normal.
+    vision: Option<bool>,
 }
 
 impl RealToolExecutor {
@@ -86,6 +91,14 @@ impl RealToolExecutor {
         self.detach_helper = helper;
         self
     }
+
+    /// Tell the executor the active model's image-input support (the backend
+    /// copies it off its `ModelConfig`). See `docs/tools.md`.
+    #[must_use]
+    pub fn with_vision(mut self, vision: Option<bool>) -> Self {
+        self.vision = vision;
+        self
+    }
 }
 
 impl ToolExecutor for RealToolExecutor {
@@ -103,7 +116,7 @@ impl ToolExecutor for RealToolExecutor {
                 self.detach_helper.as_deref(),
                 on_output,
             ),
-            "read" => run_read(&call.arguments),
+            "read" => run_read(&call.arguments, self.vision),
             "write" => run_write(&call.arguments),
             "edit" => run_edit(&call.arguments),
             other => ToolOutcome::error(format!("unknown tool: {other}")),
@@ -408,12 +421,23 @@ fn absorb_chunk(
 
 /// `read`: an image file (`tools::is_image_path`) is returned visually — see
 /// [`read_image`]; a text file returns `cat -n`-style numbered lines,
-/// byte-capped.
-fn run_read(arguments: &str) -> ToolOutcome {
+/// byte-capped. On a model whose `/v1/models` record said "no image input"
+/// (`vision == Some(false)`), an image read fails as a recoverable error
+/// before touching the file — attaching would make the provider fail the
+/// whole turn instead (`docs/tools.md`).
+fn run_read(arguments: &str, vision: Option<bool>) -> ToolOutcome {
     let args: ReadArgs = match tools::parse_args(arguments) {
         Ok(a) => a,
         Err(e) => return arg_error(e),
     };
+    if tools::is_image_path(&args.path) && vision == Some(false) {
+        return ToolOutcome::error(format!(
+            "cannot view {}: the current model does not support image input — \
+             work with the file another way, or ask the user to switch to a \
+             vision-capable model with /model",
+            args.path
+        ));
+    }
     let path = Path::new(&args.path);
     let bytes = match std::fs::read(path) {
         Ok(b) => b,
@@ -834,6 +858,65 @@ mod tests {
             "the model is told why and can downscale: {}",
             out.output
         );
+    }
+
+    #[test]
+    fn an_image_read_on_a_known_non_vision_model_is_a_recoverable_error() {
+        // The model's /v1/models record said "no image input": attaching
+        // anyway would make the provider fail the whole turn (OpenRouter
+        // 404s "No endpoints found that support image input"), so the read
+        // resolves as an error the model reads and can act on instead.
+        let path = temp_path("read-image-no-vision.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([1, 2, 3, 255]))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        let out = RealToolExecutor::new().with_vision(Some(false)).execute(
+            &call("read", &format!(r#"{{"path":"{}"}}"#, path.display())),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        std::fs::remove_file(&path).ok();
+        assert!(!out.ok, "got {}", out.output);
+        assert!(out.image.is_none(), "nothing is attached");
+        assert!(
+            out.output.contains("does not support image input"),
+            "the model learns why: {}",
+            out.output
+        );
+        assert!(
+            out.output.contains("/model"),
+            "and how the user could fix it: {}",
+            out.output
+        );
+    }
+
+    #[test]
+    fn vision_true_or_unknown_still_attaches_and_text_reads_ignore_the_gate() {
+        let path = temp_path("read-image-vision-ok.png");
+        image::RgbaImage::from_pixel(2, 2, image::Rgba([9, 9, 9, 255]))
+            .save_with_format(&path, image::ImageFormat::Png)
+            .unwrap();
+        for vision in [Some(true), None] {
+            let out = RealToolExecutor::new().with_vision(vision).execute(
+                &call("read", &format!(r#"{{"path":"{}"}}"#, path.display())),
+                &CancelToken::new(),
+                &mut |_| {},
+            );
+            assert!(out.ok, "vision {vision:?}: {}", out.output);
+            assert!(out.image.is_some(), "vision {vision:?} attaches");
+        }
+        std::fs::remove_file(&path).ok();
+        // The gate never touches a text read.
+        let text = temp_path("read-text-no-vision.txt");
+        std::fs::write(&text, "alpha\n").unwrap();
+        let out = RealToolExecutor::new().with_vision(Some(false)).execute(
+            &call("read", &format!(r#"{{"path":"{}"}}"#, text.display())),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        std::fs::remove_file(&text).ok();
+        assert!(out.ok, "got {}", out.output);
+        assert!(out.output.contains("1 alpha"));
     }
 
     #[test]

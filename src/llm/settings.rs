@@ -24,6 +24,13 @@ pub struct Settings {
     /// See `docs/reasoning.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingSettings>,
+    /// The saved model's image-input support, when its `/v1/models` record
+    /// said either way — restored at startup so the backend gates image
+    /// attachments without a re-probe. Absent = unknown (a legacy file, or a
+    /// provider whose records don't say) — the probe finds out. See
+    /// `docs/tools.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision: Option<bool>,
 }
 
 /// The persisted reasoning state, as plain labels so a hand-edited or
@@ -142,6 +149,7 @@ impl Settings {
             provider: Some(provider.into()),
             model: Some(model.into()),
             thinking: None,
+            vision: None,
         }
     }
 
@@ -150,6 +158,14 @@ impl Settings {
     #[must_use]
     pub fn with_thinking(mut self, thinking: Option<ThinkingSettings>) -> Self {
         self.thinking = thinking;
+        self
+    }
+
+    /// The same settings with the saved model's image-input support attached
+    /// (`None` = the record didn't say).
+    #[must_use]
+    pub fn with_vision(mut self, vision: Option<bool>) -> Self {
+        self.vision = vision;
         self
     }
 }
@@ -271,6 +287,27 @@ mod tests {
         );
         assert!(!support.can_disable);
         assert_eq!(mode, support.default_mode());
+    }
+
+    #[test]
+    fn vision_round_trips_and_legacy_files_load_with_none() {
+        // The saved model's image-input support is persisted beside the
+        // thinking blob so startup needs no re-probe; a legacy file simply
+        // has it unknown (the probe finds out). See docs/tools.md.
+        let s =
+            Settings::for_selection("openrouter", "openai/gpt-oss-120b").with_vision(Some(false));
+        let restored = Settings::parse(&s.to_json());
+        assert_eq!(restored.vision, Some(false));
+        let known_vision = Settings::for_selection("p", "m").with_vision(Some(true));
+        assert_eq!(Settings::parse(&known_vision.to_json()).vision, Some(true));
+        let legacy = Settings::parse(r#"{"provider":"p","model":"m"}"#);
+        assert_eq!(legacy.vision, None);
+        assert!(
+            !Settings::for_selection("p", "m")
+                .to_json()
+                .contains("vision"),
+            "unset vision is skipped in the output"
+        );
     }
 
     #[test]

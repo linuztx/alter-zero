@@ -44,6 +44,11 @@ pub struct LlmBackend {
     /// enables the `bash` tool's `run_in_background` and Ctrl+B handoff
     /// (`docs/background.md`).
     background: Option<crate::background::BackgroundRegistry>,
+    /// The model's image-input support ([`ModelConfig::vision`]): gates both
+    /// the message assembly (attachments degrade to `[image omitted: …]`
+    /// notes on a known non-vision model) and the `read` tool's image branch
+    /// (`docs/tools.md`).
+    vision: Option<bool>,
 }
 
 impl LlmBackend {
@@ -69,6 +74,7 @@ impl LlmBackend {
     #[must_use]
     pub fn configure(cfg: ModelConfig, system_prompt: Option<String>, tools_enabled: bool) -> Self {
         let model = cfg.model.clone();
+        let vision = cfg.vision;
         let mut client = OpenAiClient::new(cfg);
         // Trim so the prompt-file trailing newline (or a whitespace-only
         // override) normalizes away; a now-empty prompt sends no system message.
@@ -90,6 +96,7 @@ impl LlmBackend {
             system_prompt,
             tools_enabled,
             background: None,
+            vision,
         }
     }
 
@@ -201,8 +208,29 @@ pub fn os_release_name(contents: &str) -> Option<String> {
 /// (its temp file may have been cleaned away) is noted in the text instead of
 /// being dropped silently. Should the context ever be empty, the bare
 /// `prompt` is sent so the request is never user-less.
+///
+/// Equivalent to [`build_messages_for`] with unknown vision (attach
+/// optimistically) — the shape every pre-vision-detection caller used.
 #[must_use]
 pub fn build_messages(
+    system_prompt: Option<&str>,
+    prompt: &str,
+    context: &[ContextMessage],
+    encode_image: impl Fn(&Path) -> Option<String>,
+) -> Vec<ChatMessage> {
+    build_messages_for(None, system_prompt, prompt, context, encode_image)
+}
+
+/// [`build_messages`] with the active model's image-input support applied:
+/// when the model is a **known non-vision** one (`vision == Some(false)`),
+/// every attachment — a Ctrl+V paste or a replayed read-tool image — becomes
+/// a `[image omitted: …]` text note instead of an `image_url` part, because
+/// the provider would otherwise fail the whole request (OpenRouter 404s
+/// "No endpoints found that support image input"). `Some(true)`/`None`
+/// attach exactly as before. See `docs/tools.md`.
+#[must_use]
+pub fn build_messages_for(
+    vision: Option<bool>,
     system_prompt: Option<&str>,
     prompt: &str,
     context: &[ContextMessage],
@@ -213,7 +241,7 @@ pub fn build_messages(
         messages.push(ChatMessage::system(sys));
     }
     for message in context {
-        messages.push(chat_message(message, &encode_image));
+        messages.push(chat_message(message, vision, &encode_image));
     }
     if context.is_empty() {
         messages.push(ChatMessage::user(prompt));
@@ -223,9 +251,12 @@ pub fn build_messages(
 
 /// One context message as a wire [`ChatMessage`]: an assistant tool-call turn
 /// or a `tool`-role result in the provider-native shape, plain text when
-/// imageless, or the multimodal parts array when attachments encode.
+/// imageless, or the multimodal parts array when attachments encode — unless
+/// the model is a known non-vision one, in which case attachments become
+/// `[image omitted: …]` text notes (see [`build_messages_for`]).
 fn chat_message(
     message: &ContextMessage,
+    vision: Option<bool>,
     encode_image: &impl Fn(&Path) -> Option<String>,
 ) -> ChatMessage {
     let role = message.role.wire_name();
@@ -245,6 +276,19 @@ fn chat_message(
     }
     if message.images.is_empty() {
         return ChatMessage::new(role, &message.text);
+    }
+    if vision == Some(false) {
+        // A known non-vision model: an image_url part would fail the whole
+        // request, so the attachment degrades to a note the model reads —
+        // it knows an image existed and why it can't see it.
+        let mut text = message.text.clone();
+        for path in &message.images {
+            text.push_str(&format!(
+                "\n[image omitted: {} — the current model does not support image input]",
+                path.display()
+            ));
+        }
+        return ChatMessage::new(role, text);
     }
     let mut text = message.text.clone();
     let mut image_parts = Vec::new();
@@ -306,11 +350,15 @@ impl ReplySource for LlmBackend {
         let client = self.client.clone();
         let system = self.system_prompt.clone();
         let background = self.background.clone();
+        let vision = self.vision;
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
-            // thread so a large image never stalls the event loop.
-            let messages = build_messages(system.as_deref(), &prompt, &context, image_data_url);
-            let mut executor = RealToolExecutor::new();
+            // thread so a large image never stalls the event loop. A known
+            // non-vision model gets omission notes instead of parts
+            // (docs/tools.md).
+            let messages =
+                build_messages_for(vision, system.as_deref(), &prompt, &context, image_data_url);
+            let mut executor = RealToolExecutor::new().with_vision(vision);
             let notices = background.clone();
             if let Some(registry) = background {
                 // The registry carries the terminal-detach helper from
@@ -562,6 +610,45 @@ mod tests {
                 ContentPart::image("data:image/png;base64,/tmp/shot.png"),
             ])
         );
+    }
+
+    #[test]
+    fn a_known_non_vision_model_gets_omission_notes_instead_of_parts() {
+        // The model's record said "no image input": sending the parts array
+        // anyway fails the whole request (OpenRouter 404s it), so every
+        // attachment — a Ctrl+V paste or a replayed read-tool image — becomes
+        // a text note naming the omitted file. The message stays plain text
+        // (no parts), and the encoder is never consulted.
+        let context = vec![ContextMessage {
+            role: ContextRole::User,
+            text: "[Image #1] what is this?".into(),
+            images: vec![PathBuf::from("/tmp/shot.png")],
+            tool_calls: vec![],
+            tool_call_id: None,
+        }];
+        let msgs = build_messages_for(
+            Some(false),
+            None,
+            "",
+            &context,
+            |_: &Path| -> Option<String> { panic!("a blind model must not encode attachments") },
+        );
+        assert_eq!(
+            msgs[0].content,
+            MessageContent::Text(
+                "[Image #1] what is this?\n\
+                 [image omitted: /tmp/shot.png — the current model does not support image input]"
+                    .into()
+            )
+        );
+        // Some(true) / None (unknown) keep today's optimistic parts form.
+        for vision in [Some(true), None] {
+            let msgs = build_messages_for(vision, None, "", &context, fake_encode);
+            assert!(
+                matches!(msgs[0].content, MessageContent::Parts(_)),
+                "vision {vision:?} still attaches"
+            );
+        }
     }
 
     #[test]

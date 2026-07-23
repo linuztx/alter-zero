@@ -26,6 +26,13 @@ pub struct ModelEntry {
     /// advertises one — drives the Shift+Tab mode cycle. `None` for a model
     /// with no reasoning. See `docs/reasoning.md`.
     pub reasoning: Option<ReasoningSupport>,
+    /// Whether the model accepts **image input** (vision), when the record
+    /// says either way — `Some(false)` makes the backend degrade image
+    /// attachments gracefully instead of letting the provider fail the turn
+    /// (OpenRouter 404s an image part sent to a text-only model). `None` =
+    /// the record doesn't say (a bare OpenAI-style list) — the backend then
+    /// attaches optimistically, exactly as before. See `docs/tools.md`.
+    pub vision: Option<bool>,
 }
 
 /// The OpenAI `/models` envelope: `{ "data": [ { "id", "name"? } ] }`. Each
@@ -66,6 +73,7 @@ pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
                 provider: provider.to_string(),
                 display_name: display_name.to_string(),
                 reasoning: reasoning_support_of(record),
+                vision: vision_support_of(record),
             })
         })
         .collect();
@@ -165,6 +173,41 @@ fn reasoning_support_of(record: &serde_json::Value) -> Option<ReasoningSupport> 
         can_disable: true,
         default_effort: None,
     })
+}
+
+/// Read one `/models` record's **image-input** (vision) capability, sniffing
+/// both provider shapes like [`reasoning_support_of`]:
+///
+/// - **OpenRouter**: `architecture.input_modalities` — an array; `"image"` in
+///   it means vision. Absent that, the older combined `architecture.modality`
+///   string (`"text+image->text"`) decides by its **input** side only — an
+///   image *generator* (`"text->image"`) is not image input.
+/// - **Venice**: `model_spec.capabilities.supportsVision`.
+///
+/// `None` when the record says nothing either way (a bare OpenAI-style list) —
+/// the backend then attaches images optimistically, exactly as before.
+fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
+    if let Some(arch) = record.get("architecture").filter(|a| a.is_object()) {
+        if let Some(inputs) = arch
+            .get("input_modalities")
+            .and_then(serde_json::Value::as_array)
+        {
+            return Some(inputs.iter().any(|m| m.as_str() == Some("image")));
+        }
+        if let Some(modality) = arch.get("modality").and_then(serde_json::Value::as_str) {
+            let input_side = modality.split("->").next().unwrap_or("");
+            return Some(
+                input_side
+                    .split('+')
+                    .any(|token| token.trim().eq_ignore_ascii_case("image")),
+            );
+        }
+    }
+    record
+        .get("model_spec")?
+        .get("capabilities")?
+        .get("supportsVision")?
+        .as_bool()
 }
 
 /// The `/models` endpoint for a config: `{api_model_base}/models`.
@@ -438,6 +481,64 @@ mod tests {
         let body = r#"{"data":[{"id":"gpt-4o-mini"}]}"#;
         let models = parse_models(body, "openai").unwrap();
         assert!(models[0].reasoning.is_none());
+    }
+
+    // ===== vision (image-input) support =====
+
+    #[test]
+    fn openrouter_input_modalities_mark_vision_support() {
+        // The live OpenRouter shape: every record carries
+        // architecture.input_modalities; "image" in it means the model can
+        // see attachments, its absence means the provider 404s an image part
+        // ("No endpoints found that support image input").
+        let body = r#"{"data":[
+            {"id":"openai/gpt-4o-mini","architecture":{"modality":"text+image+file->text","input_modalities":["text","image","file"],"output_modalities":["text"]}},
+            {"id":"openai/gpt-oss-120b","architecture":{"modality":"text->text","input_modalities":["text"],"output_modalities":["text"]}}
+        ]}"#;
+        let models = parse_models(body, "openrouter").unwrap();
+        let by_id = |id: &str| models.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(by_id("openai/gpt-4o-mini").vision, Some(true));
+        assert_eq!(by_id("openai/gpt-oss-120b").vision, Some(false));
+    }
+
+    #[test]
+    fn the_modality_string_alone_marks_vision_by_its_input_side() {
+        // An older/other aggregator record with only the combined string: the
+        // input side ("text+image") decides — an image *output* (a generator,
+        // "text->image") must not read as image input.
+        let body = r#"{"data":[
+            {"id":"sees","architecture":{"modality":"text+image->text"}},
+            {"id":"blind","architecture":{"modality":"text->text"}},
+            {"id":"paints","architecture":{"modality":"text->image"}}
+        ]}"#;
+        let models = parse_models(body, "p").unwrap();
+        let by_id = |id: &str| models.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(by_id("sees").vision, Some(true));
+        assert_eq!(by_id("blind").vision, Some(false));
+        assert_eq!(by_id("paints").vision, Some(false));
+    }
+
+    #[test]
+    fn venice_supports_vision_capability_parses() {
+        // The live Venice shape: model_spec.capabilities.supportsVision,
+        // beside the supportsReasoning flag already sniffed.
+        let body = r#"{"data":[
+            {"id":"claude-fable-5","model_spec":{"capabilities":{"supportsVision":true,"supportsReasoning":true}}},
+            {"id":"zai-org-glm-5","model_spec":{"capabilities":{"supportsVision":false,"supportsReasoning":false}}}
+        ]}"#;
+        let models = parse_models(body, "a0_venice").unwrap();
+        let by_id = |id: &str| models.iter().find(|m| m.id == id).unwrap();
+        assert_eq!(by_id("claude-fable-5").vision, Some(true));
+        assert_eq!(by_id("zai-org-glm-5").vision, Some(false));
+    }
+
+    #[test]
+    fn a_record_without_modality_hints_has_unknown_vision() {
+        // A bare OpenAI-style list says nothing either way — unknown, so the
+        // backend keeps attaching optimistically (today's behavior).
+        let body = r#"{"data":[{"id":"gpt-4o-mini"}]}"#;
+        let models = parse_models(body, "openai").unwrap();
+        assert_eq!(models[0].vision, None);
     }
 
     #[test]

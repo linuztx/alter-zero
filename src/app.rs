@@ -531,11 +531,14 @@ pub enum Action {
     /// `reasoning` is the picked entry's parsed thinking capability (from the
     /// same `/v1/models` fetch that listed it), so a successful switch seeds
     /// the Shift+Tab cycle without refetching — `None` for a model with no
-    /// reasoning. See `docs/reasoning.md`.
+    /// reasoning. See `docs/reasoning.md`. `vision` is the entry's parsed
+    /// image-input support, gating attachments on the rebuilt backend —
+    /// `None` when the record didn't say. See `docs/tools.md`.
     SelectModel {
         provider: String,
         id: String,
         reasoning: Option<ReasoningSupport>,
+        vision: Option<bool>,
     },
     /// Shift+Tab cycled the thinking mode ([`App::thinking`] already advanced
     /// to the carried mode). The loop rebinds the *next* turn's backend to it,
@@ -3626,6 +3629,7 @@ impl App {
                         provider: model.provider.clone(),
                         id: model.id.clone(),
                         reasoning: model.reasoning.clone(),
+                        vision: model.vision,
                     };
                     self.close_model_picker();
                     return action;
@@ -10015,6 +10019,7 @@ mod tests {
             provider: provider.into(),
             display_name: name.into(),
             reasoning: None,
+            vision: None,
         }
     }
 
@@ -10206,7 +10211,29 @@ mod tests {
                 provider: "openrouter".into(),
                 id: "thinker".into(),
                 reasoning: Some(trio_support()),
+                vision: None,
             }
+        );
+    }
+
+    #[test]
+    fn selecting_a_model_carries_its_vision_support() {
+        // Enter also hands the loop the entry's image-input support, so the
+        // rebuilt backend gates attachments without refetching /models
+        // (docs/tools.md).
+        let mut blind = model("openai/gpt-oss-120b", "openrouter", "GPT OSS");
+        blind.vision = Some(false);
+        let mut app = model_app(&[blind]);
+        let action = app.on_key(key(KeyCode::Enter));
+        assert!(
+            matches!(
+                action,
+                Action::SelectModel {
+                    vision: Some(false),
+                    ..
+                }
+            ),
+            "the entry's vision rides the action: {action:?}"
         );
     }
 
@@ -10493,6 +10520,7 @@ mod tests {
                 provider: "openrouter".into(),
                 id: "moonshotai/kimi-k2.6".into(),
                 reasoning: None,
+                vision: None,
             }
         );
         assert!(app.model_picker.is_none(), "selecting closes the picker");

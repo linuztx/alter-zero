@@ -237,6 +237,41 @@ plots it just generated.
   legacy rendering, and the terminal can't show pixels anyway (same stance as
   the `[Image #N]` paste placeholders).
 
+### Vision detection — degrading gracefully on a text-only model
+
+Attaching an image to a model that can't see is not a soft failure: OpenRouter
+**404s the whole request** ("No endpoints found that support image input"), so
+without a gate an image read (or a Ctrl+V paste) on e.g. `openai/gpt-oss-120b`
+kills the turn red. The gate reuses the `/v1/models` capability pattern the
+Shift+Tab thinking cycle established (`docs/reasoning.md`):
+
+- **Detection** (`models::vision_support_of` → `ModelEntry::vision`,
+  per-record like the reasoning sniff): OpenRouter's
+  `architecture.input_modalities` array (`"image"` ∈ it), falling back to the
+  older combined `architecture.modality` string decided by its **input** side
+  (`"text+image->text"` sees; `"text->image"` — a generator — doesn't);
+  Venice's `model_spec.capabilities.supportsVision`. A record that says
+  nothing (a bare OpenAI-style list) yields `None` = unknown → attach
+  optimistically, exactly the old behavior.
+- **Flow**: the picked entry's `vision` rides `Action::SelectModel` into the
+  rebuilt backend (`Selection::vision` → `ModelConfig::vision` →
+  `LlmBackend`), persists in `config.json` beside the thinking blob
+  (`Settings::vision` — a legacy file just re-probes), and the startup
+  capability probe (now thinking **and** vision) seeds it for env-selected
+  models.
+- **Effect when `Some(false)`**: the `read` tool declines an image path with
+  a recoverable error *before touching the file* ("the current model does not
+  support image input — … ask the user to switch … with /model"), so the
+  model adapts within the turn; and `build_messages_for` replaces every
+  attachment — a paste or a replayed read image — with an
+  `[image omitted: {path} — …]` text note, so a past image degrades instead
+  of poisoning every later request. A Ctrl+V paste additionally raises a red
+  toast at the boundary (`docs/image-paste.md`). Live-verified:
+  `live_non_vision_model_gracefully_declines_an_image_read` /
+  `live_non_vision_model_survives_a_pasted_image` (the model answers "I can't
+  view images" instead of the turn dying) and the two
+  `live_*_models_report_vision_support` listings.
+
 ## Enabling / disabling
 
 Tools are **on by default for the real backend** and never for the dummy (the

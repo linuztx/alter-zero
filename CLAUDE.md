@@ -770,8 +770,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `run_agent` attaches them after the round's tool results as a user-role parts
   message (tool-role content rejects image parts on most providers) and
   `context_messages` replays the same note on later turns from the output
-  marker, the path re-encoded per request like a Ctrl+V paste;
-  `docs/tools.md` "Image reads"). The cell re-styles those rows — dim
+  marker, the path re-encoded per request like a Ctrl+V paste; and a model
+  whose `/v1/models` record says it **can't** see images (`ModelEntry::vision`
+  — detected beside the reasoning support, riding the selection into
+  `ModelConfig::vision` and `config.json`) degrades gracefully instead of
+  letting the provider 404 the turn: the `read` tool declines the image with a
+  recoverable error, attachments become `[image omitted: …]` notes in
+  `build_messages_for`, and a Ctrl+V paste raises a red toast;
+  `docs/tools.md` "Image reads"/"Vision detection"). The cell re-styles those rows — dim
   line numbers, green/red signs (`read`/`created` have none), the content
   syntax-highlighted by the path's extension, added/removed rows on
   dark-green/red background tints (`TOOL_DIFF_*_BG`), a 10-row inline peek

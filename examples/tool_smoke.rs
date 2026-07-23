@@ -41,6 +41,7 @@ fn main() {
             api_key: Some(key),
             temperature: Some(0.0),
             thinking: None,
+            vision: None,
         })
         .expect("openrouter is a built-in provider");
 

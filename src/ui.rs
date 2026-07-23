@@ -14462,6 +14462,7 @@ mod tests {
             provider: provider.into(),
             display_name: name.into(),
             reasoning: None,
+            vision: None,
         }
     }
 

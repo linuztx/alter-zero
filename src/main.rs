@@ -265,6 +265,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         })
         .map(ThinkingSettings::to_seed);
     let startup_thinking = saved_thinking.clone().flatten();
+    // The saved model's image-input support — like saved_thinking it applies
+    // only when that exact selection resolved; `None` = unknown (the probe
+    // below finds out). Gates attachments on the backend and the Ctrl+V
+    // paste warning toast. See docs/tools.md.
+    let saved_vision: Option<bool> = saved.vision.filter(|_| {
+        active_provider == saved.provider && env_model.is_some() && env_model == saved.model
+    });
     let mut backend: Box<dyn ReplySource> = if let Some(ms) = stall_ms {
         Box::new(stream::StallAi::new(Duration::from_millis(ms)))
     } else {
@@ -275,6 +282,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             env_model.as_deref(),
             temperature,
             startup_thinking.as_ref().map(|(_, mode)| *mode),
+            saved_vision,
             system_prompt.clone(),
             startup_delay,
             &registry,
@@ -289,12 +297,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             .as_deref()
             .zip(env_model.as_deref())
             .is_some_and(|(p, m)| {
-                model_config_for(&providers, &env_file, p, m, temperature, None)
+                model_config_for(&providers, &env_file, p, m, temperature, None, None)
                     .is_some_and(|cfg| cfg.is_usable())
             });
     if real_backend {
         app.set_thinking(startup_thinking.clone());
     }
+    // The active model's image-input support, tracked beside active_model:
+    // `Some(false)` warns a Ctrl+V paste with a toast and rides every rebuilt
+    // backend so attachments degrade gracefully (docs/tools.md). Meaningful
+    // only against a real provider (the dummy sees no wire).
+    let mut active_vision: Option<bool> = if real_backend { saved_vision } else { None };
     // Session context for the footer under the box — the backend's model name
     // and the cwd (shared with the tasks-dir derivation above) — formatted
     // here at the boundary (the set_clock pattern: the pure core never reads
@@ -374,10 +387,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let (probe_tx, mut probe_rx) = tokio::sync::mpsc::unbounded_channel::<ModelFetch>();
     let mut thinking_probe_pending = false;
     if real_backend
-        && saved_thinking.is_none()
+        && (saved_thinking.is_none() || saved_vision.is_none())
         && let Some((p, m)) = active_provider.as_deref().zip(env_model.as_deref())
     {
-        let cfg = model_config_for(&providers, &env_file, p, m, temperature, None);
+        let cfg = model_config_for(&providers, &env_file, p, m, temperature, None, None);
         thinking_probe_pending = true;
         spawn_model_fetch(p.to_string(), cfg, CancelToken::new(), probe_tx);
     }
@@ -939,7 +952,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     for choice in &configured {
                                         let cfg = model_config_for(
                                             &providers, &env_file, &choice.id, &active_model,
-                                            temperature, None,
+                                            temperature, None, None,
                                         );
                                         spawn_model_fetch(
                                             choice.name.clone(),
@@ -958,7 +971,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     c.cancel();
                                 }
                             }
-                            Action::SelectModel { provider, id, reasoning } => {
+                            Action::SelectModel { provider, id, reasoning, vision } => {
                                 // Enter on a picker row: rebuild the backend for the
                                 // chosen provider/model (docs/llm.md). The picker is
                                 // already closed (on_key did it); cancel any pending
@@ -978,7 +991,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 });
                                 match model_config_for(
                                     &providers, &env_file, &provider, &id, temperature,
-                                    thinking.as_ref().map(|(_, mode)| *mode),
+                                    thinking.as_ref().map(|(_, mode)| *mode), vision,
                                 ) {
                                     Some(cfg) if cfg.is_usable() => {
                                         backend = Box::new(
@@ -999,9 +1012,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         // a still-in-flight startup probe is stale.
                                         thinking_probe_pending = false;
                                         app.set_thinking(thinking.clone());
-                                        // Persist the choice (and its reasoning
-                                        // state) so it's the default next run
-                                        // (docs/llm.md, docs/reasoning.md).
+                                        active_vision = vision;
+                                        // Persist the choice (and its reasoning +
+                                        // vision state) so it's the default next
+                                        // run (docs/llm.md, docs/reasoning.md,
+                                        // docs/tools.md).
                                         persisted_selection =
                                             Some((provider.clone(), id.clone()));
                                         save_settings(
@@ -1009,6 +1024,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                             &provider,
                                             &id,
                                             Some(thinking_settings_of(thinking.as_ref())),
+                                            vision,
                                         );
                                         present_toast(
                                             &mut app,
@@ -1043,7 +1059,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 if let Some(provider) = active_provider.as_deref()
                                     && let Some(cfg) = model_config_for(
                                         &providers, &env_file, provider, &active_model,
-                                        temperature, Some(mode),
+                                        temperature, Some(mode), active_vision,
                                     )
                                     && cfg.is_usable()
                                 {
@@ -1069,6 +1085,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         provider,
                                         &active_model,
                                         Some(thinking_settings_of(thinking.as_ref())),
+                                        active_vision,
                                     );
                                 }
                                 present_toast(
@@ -1311,7 +1328,22 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             //    history. See docs/image-paste.md.
             Some(result) = img_rx.recv() => {
                 match result {
-                    Ok(path) => app.attach_image(path),
+                    Ok(path) => {
+                        app.attach_image(path);
+                        // A known non-vision model can't see the paste: warn
+                        // at once with a toast — the attachment still rides
+                        // the request as a text note the model reads, so it
+                        // can tell the user too (docs/tools.md).
+                        if active_vision == Some(false) {
+                            present_toast(
+                                &mut app,
+                                &mut toast_deadline,
+                                &frame,
+                                format!("{active_model} does not support image input"),
+                                ToastKind::Error,
+                            );
+                        }
+                    }
                     Err(reason) => {
                         let text = format!("Failed to paste image: {reason}");
                         if app.view == View::Conversation {
@@ -1339,32 +1371,37 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 frame.schedule_frame();
             }
 
-            // 6b. The startup thinking-support probe answered
-            //     (docs/reasoning.md): find the active model's record, seed
-            //     the Shift+Tab cycle at its default mode, rebind the next
-            //     turn's backend so the mode rides its request, and persist —
-            //     so later startups seed from the file instead of probing.
-            //     Guarded so a `/model` switch that raced the probe (and
-            //     already knows its support first-hand) wins; a failed fetch
-            //     just leaves the support unknown (no toast — this is
-            //     background bookkeeping the user never asked for).
+            // 6b. The startup capability probe answered (docs/reasoning.md,
+            //     docs/tools.md): find the active model's record, seed the
+            //     Shift+Tab cycle at its default mode AND the image-input
+            //     gate, rebind the next turn's backend so both ride its
+            //     requests, and persist — so later startups seed from the
+            //     file instead of probing. Guarded so a `/model` switch that
+            //     raced the probe (and already knows its support first-hand)
+            //     wins; a failed fetch just leaves the support unknown (no
+            //     toast — this is background bookkeeping the user never
+            //     asked for).
             Some((provider, result)) = probe_rx.recv(), if thinking_probe_pending => {
                 thinking_probe_pending = false;
                 if let Ok(models) = result
                     && active_provider.as_deref() == Some(provider.as_str())
                 {
-                    let thinking = models
-                        .iter()
-                        .find(|m| m.id == active_model)
+                    let entry = models.iter().find(|m| m.id == active_model);
+                    let thinking = entry
                         .and_then(|entry| entry.reasoning.clone())
                         .map(|support| {
                             let mode = support.default_mode();
                             (support, mode)
                         });
-                    if let Some((_, mode)) = &thinking
+                    let vision = entry.and_then(|entry| entry.vision);
+                    // Rebind when something actually changes a request: a
+                    // thinking mode to ride it, or a known-blind model whose
+                    // attachments must degrade (Some(true)/None both attach —
+                    // nothing to rebind for).
+                    if (thinking.is_some() || vision == Some(false))
                         && let Some(cfg) = model_config_for(
                             &providers, &env_file, &provider, &active_model, temperature,
-                            Some(*mode),
+                            thinking.as_ref().map(|(_, mode)| *mode), vision,
                         )
                         && cfg.is_usable()
                     {
@@ -1374,6 +1411,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         );
                     }
                     app.set_thinking(thinking.clone());
+                    active_vision = vision;
                     // Persist only onto the recorded selection: an
                     // env-overridden model never writes config.json (env
                     // always wins, never sticks), so that combination just
@@ -1386,6 +1424,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             &provider,
                             &active_model,
                             Some(thinking_settings_of(thinking.as_ref())),
+                            vision,
                         );
                     }
                     frame.schedule_frame();
@@ -1562,10 +1601,13 @@ fn resolve_api_key(
 }
 
 /// Build the resolved [`ModelConfig`] for a provider/model (with the resolved
-/// key + temperature + thinking mode merged in), or `None` when the provider
-/// isn't in the file. `thinking` is the mode riding the request payload —
-/// `None` for a model with no reasoning (or a fetch that doesn't care, like
-/// the `/models` listing). See `docs/reasoning.md`.
+/// key + temperature + thinking mode + vision support merged in), or `None`
+/// when the provider isn't in the file. `thinking` is the mode riding the
+/// request payload — `None` for a model with no reasoning (or a fetch that
+/// doesn't care, like the `/models` listing). See `docs/reasoning.md`.
+/// `vision` is the model's known image-input support — `Some(false)` makes
+/// the backend degrade attachments instead of letting the provider fail the
+/// turn; `None` = unknown, attach optimistically. See `docs/tools.md`.
 fn model_config_for(
     providers: &ProvidersFile,
     env_file: &EnvFile,
@@ -1573,6 +1615,7 @@ fn model_config_for(
     model: &str,
     temperature: Option<f32>,
     thinking: Option<ThinkingMode>,
+    vision: Option<bool>,
 ) -> Option<ModelConfig> {
     let sel = Selection {
         provider_id: provider.to_string(),
@@ -1580,6 +1623,7 @@ fn model_config_for(
         api_key: resolve_api_key(providers, env_file, provider),
         temperature,
         thinking,
+        vision,
     };
     providers.model_config(&sel)
 }
@@ -1686,15 +1730,18 @@ fn load_settings(path: Option<&Path>) -> Settings {
 }
 
 /// Persist the chosen provider/model — plus the model's reasoning state, so
-/// the Shift+Tab cycle needs no refetch next run (`docs/reasoning.md`) — to
-/// `config.json`, creating the config home first. Best-effort — a write
-/// failure is swallowed (like the session recorder) so it can never kill the
-/// TUI; a `None` path (no config home) no-ops. See `docs/llm.md`.
+/// the Shift+Tab cycle needs no refetch next run (`docs/reasoning.md`), and
+/// its image-input support, so the attachment gate needs no re-probe
+/// (`docs/tools.md`) — to `config.json`, creating the config home first.
+/// Best-effort — a write failure is swallowed (like the session recorder) so
+/// it can never kill the TUI; a `None` path (no config home) no-ops. See
+/// `docs/llm.md`.
 fn save_settings(
     path: Option<&Path>,
     provider: &str,
     model: &str,
     thinking: Option<ThinkingSettings>,
+    vision: Option<bool>,
 ) {
     let Some(path) = path else {
         return;
@@ -1706,6 +1753,7 @@ fn save_settings(
         path,
         Settings::for_selection(provider, model)
             .with_thinking(thinking)
+            .with_vision(vision)
             .to_json(),
     );
 }
@@ -1732,14 +1780,22 @@ fn build_backend(
     model: Option<&str>,
     temperature: Option<f32>,
     thinking: Option<ThinkingMode>,
+    vision: Option<bool>,
     system_prompt: Option<String>,
     startup_delay: Duration,
     registry: &BackgroundRegistry,
 ) -> Box<dyn ReplySource> {
     if !dummy_forced()
         && let (Some(provider), Some(model)) = (provider, model)
-        && let Some(cfg) =
-            model_config_for(providers, env_file, provider, model, temperature, thinking)
+        && let Some(cfg) = model_config_for(
+            providers,
+            env_file,
+            provider,
+            model,
+            temperature,
+            thinking,
+            vision,
+        )
         && cfg.is_usable()
     {
         return Box::new(

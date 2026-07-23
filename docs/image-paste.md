@@ -168,6 +168,20 @@ through the same typed channel as an idle submit, and an Alt+Up pull-back
 re-attaches them to the composer so the placeholders in the restored draft are
 backed again — a mid-turn Enter never silently drops an attachment.
 
+**A known non-vision model degrades the paste instead of dying on it.** The
+active model's image-input support is detected from its `/v1/models` record
+(`ModelEntry::vision` — OpenRouter's `architecture.input_modalities`, Venice's
+`supportsVision`; see `docs/tools.md` "Vision detection") and rides
+`ModelConfig::vision` into every rebuilt backend. When it is `Some(false)`,
+sending the parts array anyway would fail the whole request (OpenRouter 404s
+"No endpoints found that support image input"), so `build_messages_for`
+replaces each attachment with an `[image omitted: {path} — the current model
+does not support image input]` text note — the model knows an image existed
+and tells the user it can't see it — and the paste itself raises a red toast
+(`{model} does not support image input`) the moment the attachment lands, so
+the user knows before ever sending. Unknown support (`None` — a provider whose
+records don't say) keeps today's optimistic attach.
+
 ## Rendering
 
 The placeholder is **plain text** in the composer and in the committed user
