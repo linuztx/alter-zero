@@ -120,7 +120,11 @@ model `bash`, `!`, background — spawned into a fresh session with no
 controlling terminal via `subprocess::spawn_detached_shell`'s
 setsid-binary → helper-re-exec → attached tier chain, so a `/dev/tty`
 password prompt like `sudo`'s fails fast in a captured error instead of
-hijacking the TUI and hanging) in `docs/tty-detach.md`.
+hijacking the TUI and hanging) in `docs/tty-detach.md`; and the **Ctrl+O
+performance work** (the incrementally-built, boundary-warmed transcript cache
+and the atomic queued overlay switch, so the transcript opens instantly on a
+big resumed session with no blank alt screen / kitty cursor-trail streak) in
+`docs/tool-view-performance.md`.
 
 ### The runtime model and its invariants
 
@@ -380,21 +384,32 @@ of bug:
    (`ui::queued_lines`' inset rows, so Ctrl+O never hides a queued message —
    `docs/queue.md`). That walk is **O(history)** and re-runs the markdown +
    syntax highlighter over the whole transcript, so the loop drives it through a
-   **`ui::TranscriptCache`** (a `main.rs`-owned cache, like `StreamRender`): a
-   scroll changes only the viewport window, not the content, so the cache rebuilds
-   only when a cheap signature (history length, live-tail length, the tool
-   queue's shape — its length + front-call status **+ front output length**, so a
-   Waiting→Running flip, a batch call committing, *or a running `bash` call
-   streaming its output* invalidates it — the last is what makes the overlay show
-   the **live streaming output** (unlike Claude Code, which only shows a tool's
-   output once it finishes; the overlay tail-follows the frontier,
-   `docs/tool-streaming.md`) — backtrack selection,
-   width) changes — a scroll keypress is then
-   a cache hit (O(viewport)), not a full re-highlight. `draw_tool_view` builds it
-   **once** per draw (shared by the scroll clamp and the render); it's freed on
-   overlay close. History is append-only while the overlay is up (a backtrack
-   rewind truncates it but also exits), which is what makes the length signature
-   exact. Only the **user** message shows its
+   **`ui::TranscriptCache`** (a `main.rs`-owned cache, like `StreamRender`) that
+   builds **incrementally** (`docs/tool-view-performance.md`): committed items
+   are immutable and history otherwise only grows — every non-append mutation
+   (a `/clear`, a `/resume` load, a backtrack truncation, an interrupt-undo
+   pop) bumps `App::history_generation` — so the cache keeps a **frozen
+   prefix** of per-item rendered rows pinned on `(generation, width, cwd)` and
+   each refresh re-renders only the newly committed items + the volatile live
+   tail (the Esc-Esc highlight is an in-place style diff on the frozen rows,
+   never a re-render). A cheap signature (generation, history length, live-tail
+   length, the tool queue's shape — its length + front-call status **+ front
+   output length**, so a Waiting→Running flip, a batch call committing, *or a
+   running `bash` call streaming its output* invalidates it — the last is what
+   makes the overlay show the **live streaming output** (unlike Claude Code,
+   which only shows a tool's output once it finishes; the overlay tail-follows
+   the frontier, `docs/tool-streaming.md`) — backtrack selection, width)
+   short-circuits a refresh entirely, so a scroll keypress is a cache hit
+   (O(viewport)) and a streamed chunk costs O(live tail), not O(history).
+   `draw_tool_view` refreshes it **once** per draw (shared by the scroll clamp
+   and the render); it is **retained across overlay closes** and pre-warmed at
+   the loop bottom (`TranscriptCache::warm` — a no-op when nothing committed,
+   the whole loaded history on the iteration a `/resume` swaps it in), so
+   Ctrl+O never opens cold: the switch itself is atomic (`term::enter_overlay`
+   only *queues* hide+switch+clear; the first `draw_overlay` flush delivers
+   them **with** the painted frame as one write — no blank alt screen for a
+   kitty cursor-trail to streak across, `docs/tool-view-performance.md`).
+   Only the **user** message shows its
    wall-clock `timestamp` (`hh:mm AM/PM`, no seconds): dim, **right-aligned on
    its own line below the message** — the *only* stamp displayed anywhere
    (AI/tool/summary stamps are recorded but never shown; never inline; the

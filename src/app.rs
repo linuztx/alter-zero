@@ -1627,6 +1627,15 @@ pub struct App {
     /// Every finished message and tool call, oldest first — used to repaint after
     /// a resize or on returning from the tool-output view.
     pub history: Vec<HistoryItem>,
+    /// Bumped by every **non-append** [`history`](Self::history) mutation — a
+    /// `/clear`, a `/resume` load, a backtrack truncation, an interrupt-undo
+    /// pop. Committed items are immutable and otherwise only ever appended, so
+    /// `(generation, len)` identifies a history prefix exactly — what lets the
+    /// Ctrl+O transcript cache ([`crate::ui::TranscriptCache`]) keep rendered
+    /// items frozen across refreshes (and overlay closes) instead of
+    /// re-highlighting all of history every open. Read via
+    /// [`history_generation`](Self::history_generation).
+    history_generation: u64,
     /// Which screen is showing (Ctrl+O toggles to the tool-output view).
     pub view: View,
     /// The tool-output view's vertical scroll offset, in lines from the top.
@@ -1822,6 +1831,14 @@ impl App {
     #[must_use]
     pub const fn is_streaming(&self) -> bool {
         self.streaming.is_some()
+    }
+
+    /// The [`history`](Self::history) mutation generation: unchanged by
+    /// appends, bumped by every clear/replace/truncate/pop — see the field
+    /// docs. `(generation, history.len())` pins a rendered prefix exactly.
+    #[must_use]
+    pub const fn history_generation(&self) -> u64 {
+        self.history_generation
     }
 
     /// Inject the wall-clock used to stamp recorded items (called once at the I/O
@@ -3911,6 +3928,7 @@ impl App {
             }
         }
         self.history.truncate(position);
+        self.history_generation += 1;
         // The rewound history's tail can be an older batch-sibling user
         // message — fence it off from the interrupt-undo like a resumed tail.
         self.undo_floor = self.history.len();
@@ -4907,6 +4925,9 @@ impl App {
                 messages.push(m);
             }
         }
+        if !messages.is_empty() {
+            self.history_generation += 1;
+        }
         messages.reverse();
         let mut pairs = Vec::new();
         let mut texts = Vec::with_capacity(messages.len());
@@ -4934,6 +4955,7 @@ impl App {
     /// (`clear_command_keeps_the_recall_history`).
     fn clear_conversation(&mut self) {
         self.history.clear();
+        self.history_generation += 1;
         self.streaming = None;
         self.tool_queue.clear();
         self.status = None;
@@ -10890,6 +10912,48 @@ mod tests {
         assert_eq!(app.input.text(), "new");
         assert_eq!(roles(&app), vec![Role::User]);
         assert_eq!(message_at(&app, 0).text, "first");
+    }
+
+    #[test]
+    fn history_generation_bumps_on_every_non_append_mutation() {
+        // The Ctrl+O transcript cache freezes rendered history items and only
+        // appends — sound *only if* every non-append history mutation is
+        // observable. Appends keep the generation; anything that clears,
+        // replaces, truncates, or pops history must bump it (a pop + re-push
+        // can land on the same length, so lengths alone can't be trusted).
+        let mut app = App::new();
+        let start = app.history_generation();
+        app.record_user_message("one");
+        app.record_user_message("two");
+        assert_eq!(app.history_generation(), start, "appends never bump");
+
+        // The Esc-Esc backtrack rewind truncates history.
+        app.on_key(key(KeyCode::Esc)); // arm
+        app.on_key(key(KeyCode::Esc)); // preview at the newest ("two")
+        app.on_key(key(KeyCode::Enter)); // rewind: history = [one]
+        let after_rewind = app.history_generation();
+        assert_ne!(after_rewind, start, "a backtrack truncation bumps");
+
+        // The interrupt-undo pops the just-submitted user message.
+        app.record_user_message("new");
+        app.begin_stream();
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        let after_undo = app.history_generation();
+        assert_ne!(after_undo, after_rewind, "an interrupt-undo pop bumps");
+
+        // /resume replaces the whole conversation (load_session clears first).
+        app.load_session(vec![HistoryItem::Message(Message {
+            role: Role::User,
+            text: "loaded".to_string(),
+            timestamp: String::new(),
+            images: Vec::new(),
+        })]);
+        let after_load = app.history_generation();
+        assert_ne!(after_load, after_undo, "a session load bumps");
+
+        // /clear wipes it.
+        app.clear_conversation();
+        assert_ne!(app.history_generation(), after_load, "/clear bumps");
     }
 
     // --- background shells (docs/background.md) ---

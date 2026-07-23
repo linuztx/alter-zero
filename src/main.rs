@@ -398,8 +398,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // as it streams — O(reply) over the whole stream, not O(reply²). It also
     // renders the strip's cheap preview line. See `docs/markdown.md`.
     let mut render = ui::StreamRender::new();
-    // Caches the Ctrl+O overlay's built transcript so scrolling reuses it instead
-    // of re-highlighting all of history every keypress (freed on overlay exit).
+    // The Ctrl+O overlay's incrementally-built transcript: each committed item
+    // is rendered once (the loop-bottom `transcript.warm`) and retained across
+    // overlay closes, so opening the overlay — even right after a big `/resume`
+    // load — assembles instead of re-highlighting all of history. See
+    // docs/tool-view-performance.md.
     let mut transcript = ui::TranscriptCache::new();
     // Detects a paste / fast-type burst so its redraw can be coalesced.
     let mut burst = PasteBurst::new();
@@ -533,9 +536,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     draw_tool_view(term, &mut app, &mut transcript)?;
                                 } else {
                                     term.exit_overlay()?;
-                                    // Free the cached transcript build — the inline
-                                    // view is shown now, so don't retain its rows.
-                                    transcript.clear();
+                                    // The transcript cache is deliberately RETAINED
+                                    // across the close (docs/tool-view-performance.md):
+                                    // its frozen prefix is what makes the next Ctrl+O
+                                    // instant, and the loop-bottom `transcript.warm`
+                                    // keeps appending to it as items commit.
                                     // Catch the inline view up on whatever streamed
                                     // — or was dispatched off the queue — while the
                                     // overlay was showing (the reflow regenerates
@@ -578,7 +583,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // purge unconditionally below anyway.
                                 let _ = overlay_return_clear(&mut overlay_resized);
                                 term.exit_overlay()?;
-                                transcript.clear();
+                                // (The transcript cache needs no explicit clear: the
+                                // truncation bumped the history generation, so the
+                                // loop-bottom warm rebuilds the kept prefix.)
                                 // Backtrack TRUNCATES history, so an in-place
                                 // overwrite leaves the dropped exchange stale in
                                 // scrollback (and on screen when it overflowed) —
@@ -1428,6 +1435,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
         // file (docs/history-persistence.md) — the drain is empty on iterations
         // that recorded nothing, so streaming ticks cost no I/O.
         hist_store.append(&app.take_unpersisted_inputs());
+        // Pre-render whatever this iteration committed into the Ctrl+O
+        // transcript cache (docs/tool-view-performance.md) — a few integer
+        // compares when nothing did, one grammar-highlight per new item when
+        // something did, the whole loaded history on the iteration a `/resume`
+        // swapped it in. Paying it here, at the boundary, is what makes the
+        // Ctrl+O keypress itself O(live tail): the overlay never opens cold.
+        transcript.warm(&app, term.screen().width);
         // Reap detached backend threads (interrupt / `/clear` abandonments) that
         // have finished. `is_finished()` never blocks, so this can't stall the
         // loop; a thread still parked in its final network read is left until it

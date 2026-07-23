@@ -4676,80 +4676,49 @@ pub fn transcript_selection(app: &App, width: u16) -> Option<Range<usize>> {
 }
 
 /// The single transcript walk behind [`transcript_lines`] and
-/// [`transcript_selection`]: builds every row and, when a backtrack preview
-/// has a user message selected, reverses that message's rows (codex's
-/// `user_message_style().reversed()` highlight — the timestamp line under it
-/// stays normal) and reports the row range it occupies.
+/// [`transcript_selection`]: a fresh [`TranscriptCache`] refreshed once — the
+/// incremental build *is* the only transcript implementation (one code path,
+/// so the cached and from-scratch renders can never drift apart; the draw loop
+/// reuses a long-lived cache instead of paying this full build).
 fn transcript_build(app: &App, width: u16) -> (Vec<Line<'static>>, Option<Range<usize>>) {
-    // The header banner tops the transcript exactly as it tops the inline
-    // conversation (docs/header.md) — the overlay mirrors the real scrollback,
-    // so Ctrl+O never hides it. Chrome, not content: the walk below starts
-    // after it, and the empty placeholder keys on "nothing beyond the banner".
-    let mut lines = header_lines(app, width);
-    lines.push(Line::default());
-    let chrome_rows = lines.len();
-    let mut selection = None;
-    let mut user_ordinal = 0usize;
-    for item in &app.history {
-        match item {
-            HistoryItem::Message(m) => {
-                let mut message = message_lines(m.role, &m.text, width);
-                if m.role == Role::User {
-                    if app.backtrack.selected == Some(user_ordinal) {
-                        for line in &mut message {
-                            line.style = line.style.add_modifier(Modifier::REVERSED);
-                        }
-                        selection = Some(lines.len()..lines.len() + message.len());
-                    }
-                    user_ordinal += 1;
-                }
-                lines.extend(message);
-                if m.role == Role::User {
-                    lines.extend(user_stamp_lines(&m.timestamp, width));
-                }
+    let mut cache = TranscriptCache::new();
+    cache.refresh(app, width);
+    (std::mem::take(&mut cache.lines), cache.selection)
+}
+
+/// One history item's transcript rows — the message (or the tool's *expanded*
+/// output, or a summary/background notice) plus its trailing blank spacer,
+/// self-contained so [`TranscriptCache`] can render each committed item
+/// exactly once and only ever append. The spacer is skipped after a shell
+/// command's header ([`is_shell_header`]): its tool's `⎿` output sits flush
+/// below it, whether that tool is already in history or still the running
+/// live tail, so the overlay renders the same exec cell as the inline view.
+///
+/// The second value is `Some(message-row count)` for a **user** message — the
+/// span the Esc-Esc backtrack preview reverses (its timestamp line below stays
+/// normal; see `docs/backtrack.md`) — `None` for everything else.
+fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>, Option<usize>) {
+    let mut lines = Vec::new();
+    let mut user_rows = None;
+    match item {
+        HistoryItem::Message(m) => {
+            let message = message_lines(m.role, &m.text, width);
+            if m.role == Role::User {
+                user_rows = Some(message.len());
             }
-            HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
-            HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
-            HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
+            lines.extend(message);
+            if m.role == Role::User {
+                lines.extend(user_stamp_lines(&m.timestamp, width));
+            }
         }
-        // Blank spacer after every item — except a shell command's header
-        // ([`is_shell_header`]): its tool's `⎿` output sits flush below it,
-        // whether the tool is already in history or still the running live
-        // tail, so the overlay renders the same exec cell as the inline view.
-        if !is_shell_header(item) {
-            lines.push(Line::default());
-        }
+        HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
+        HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
+        HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
     }
-    // Live tail: the in-progress assistant text, then every live tool call — the
-    // running one followed by any `⎿ Waiting…` siblings of a parallel batch, in
-    // order, so the overlay shows the full live picture and a waiting call is
-    // never hidden under Ctrl+O (docs/parallel-tools.md).
-    if let Some(text) = app.streaming_text()
-        && !text.is_empty()
-    {
-        lines.extend(message_lines(Role::Assistant, text, width));
+    if !is_shell_header(item) {
         lines.push(Line::default());
     }
-    for tool in app.tool_queue() {
-        lines.extend(tool_full_lines(tool, width));
-        lines.push(Line::default());
-    }
-    // Entries still waiting in the queue come last — after the live tail, in
-    // dispatch order, styled exactly like the inline strip's queued rows
-    // ([`queued_lines`] — the two-space inset user-/shell-style lines, a blank
-    // dividing entries), so the overlay shows the full live picture and a
-    // queued message is never invisible under Ctrl+O (docs/queue.md).
-    if !app.queued.is_empty() {
-        lines.extend(queued_lines(app, width));
-        lines.push(Line::default());
-    }
-    if lines.len() == chrome_rows {
-        lines.push(Line::from(Span::styled(
-            TOOL_VIEW_EMPTY.to_string(),
-            Style::new().fg(TOOL_DIM_COLOR),
-        )));
-    }
-    (lines, selection)
+    (lines, user_rows)
 }
 
 /// The pager's scrolling-body height: the screen less the title + footer chrome.
@@ -4775,37 +4744,91 @@ pub fn tool_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize 
     tool_view_max_scroll_for(transcript_lines(app, width).len(), screen_height)
 }
 
-/// Caches the Ctrl+O overlay's fully-built transcript so a **scroll** (which
-/// changes only the viewport window, not the content) doesn't rebuild and
-/// re-highlight all of `history` every keypress — that walk is O(history) and,
-/// with real grammar highlighting, cost ~200 ms per build on a long transcript
-/// (`draw_tool_view` ran it *twice* per keypress). Owned by the event loop like
-/// [`StreamRender`]; each draw asks for the lines and the build is skipped while
-/// the cheap [`TranscriptSig`] is unchanged.
+/// Caches the Ctrl+O overlay's built transcript **incrementally**, so opening
+/// the overlay, scrolling it, and following a live stream under it all avoid
+/// re-rendering history — that walk is O(history) and, with real grammar
+/// highlighting over every expanded tool cell, cost hundreds of ms on a big
+/// resumed session (the old open re-highlighted everything on a blank alt
+/// screen). Owned by the event loop like [`StreamRender`]; it is **retained
+/// across overlay closes** (reopening is O(live tail)) and pre-warmed at the
+/// boundary ([`warm`]) so the open itself renders nothing.
 ///
-/// Correctness rests on `history` being **append-only while the overlay is open**
-/// (no in-place item mutation; a backtrack rewind truncates it but also *exits*
-/// the overlay), so a signature of lengths + the volatile live-tail / queue /
-/// selection / width bits identifies the rendered content exactly. A streaming
-/// turn changes the signature every chunk (the content genuinely changed, so a
-/// rebuild is correct); an idle transcript is stable, so scrolling is O(viewport).
+/// Committed history items are immutable and history only ever grows — every
+/// other mutation (a `/clear`, a `/resume` load, a backtrack truncation, an
+/// interrupt-undo pop) bumps [`App::history_generation`]. That makes
+/// `(generation, width)` pin the **frozen prefix** exactly: `lines[..frozen_rows]`
+/// holds the banner chrome plus every committed item, rendered once
+/// ([`transcript_item_lines`]); each refresh truncates the volatile live tail
+/// (in-progress reply, live tool queue, queued backlog) off the end and
+/// re-renders just that. The Esc-Esc backtrack highlight — REVERSED rows
+/// *inside* the frozen prefix — is applied as an in-place style diff
+/// ([`Self::restyle_selection`]), never a re-render. A cheap [`TranscriptSig`]
+/// short-circuits the refresh entirely while nothing changed, so a scroll
+/// keypress is O(viewport).
+///
+/// [`warm`]: Self::warm
 #[derive(Default)]
 pub struct TranscriptCache {
+    /// Pins the frozen prefix: `(history generation, width, session cwd)` —
+    /// any mismatch invalidates every rendered item (the cwd feeds the banner
+    /// chrome above them). `None` until the first build.
+    key: Option<FrozenKey>,
     sig: Option<TranscriptSig>,
+    /// The full transcript: the frozen prefix (`..frozen_rows`) + the live tail.
     lines: Vec<Line<'static>>,
+    /// Rows of banner chrome at the top of `lines` (the empty-transcript
+    /// placeholder keys on "nothing beyond the banner").
+    chrome_rows: usize,
+    /// End of the frozen prefix in `lines`; the live tail is rebuilt above it.
+    frozen_rows: usize,
+    /// Per rendered history item: its row count (for selection offsets) and,
+    /// for a user message, the reversible message-row span of the backtrack
+    /// preview ([`transcript_item_lines`]).
+    items: Vec<RenderedItem>,
+    /// The frozen rows currently carrying the backtrack preview's REVERSED
+    /// styling, so a selection step can undo exactly what it applied.
+    reversed: Option<Range<usize>>,
     selection: Option<Range<usize>>,
-    /// Test-only: how many times `refresh` actually rebuilt — so a test can
+    /// Test-only: how many refreshes did any rebuild work — so a test can
     /// prove a scroll (unchanged signature) is a cache hit, not a rebuild.
     #[cfg(test)]
     builds: usize,
+    /// Test-only: how many history items were rendered, ever — so a test can
+    /// prove the frozen prefix is reused, not re-rendered.
+    #[cfg(test)]
+    item_renders: usize,
 }
 
-/// The cheap fingerprint of every input to [`transcript_build`] — see
-/// [`TranscriptCache`] for why lengths suffice (history is append-only here).
+/// What pins [`TranscriptCache`]'s frozen prefix — see the struct docs.
+#[derive(PartialEq, Eq)]
+struct FrozenKey {
+    generation: u64,
+    width: u16,
+    cwd: Option<String>,
+}
+
+/// One rendered history item's shape inside the frozen prefix.
+struct RenderedItem {
+    /// Rows this item occupies (message + stamp + spacer / expanded tool cell).
+    rows: usize,
+    /// `Some(message-row count)` for a user message — the span the backtrack
+    /// preview reverses; `None` otherwise.
+    user_rows: Option<usize>,
+}
+
+/// The cheap fingerprint of every input to a [`TranscriptCache`] refresh — see
+/// the struct docs for why lengths suffice (append-only history, plus the
+/// generation catching every non-append mutation; a same-length replace after
+/// an interrupt-undo pop would fool lengths alone).
 #[derive(PartialEq, Eq)]
 struct TranscriptSig {
+    generation: u64,
     width: u16,
     history_len: usize,
+    /// Display length of the session cwd shown in the banner chrome (`None`
+    /// before the boundary injects it) — set once at startup, but cheap to
+    /// fingerprint, so a late injection can't leave a stale banner.
+    cwd_len: Option<usize>,
     /// Live in-progress reply length (`None` when not streaming).
     streaming_len: Option<usize>,
     /// The live tool queue's shape: `(number of live calls, front call status,
@@ -4827,8 +4850,10 @@ impl TranscriptSig {
     fn of(app: &App, width: u16) -> Self {
         let queue = app.tool_queue();
         Self {
+            generation: app.history_generation(),
             width,
             history_len: app.history.len(),
+            cwd_len: app.session.as_ref().map(|s| s.cwd.len()),
             streaming_len: app.streaming_text().map(str::len),
             tool_queue: queue
                 .front()
@@ -4845,24 +4870,171 @@ impl TranscriptCache {
         Self::default()
     }
 
-    /// Drop the cached build — used when the overlay closes so its (possibly
-    /// large) `Vec<Line>` isn't retained while the inline view is shown.
+    /// Drop the whole cache — the rendered transcript with it. Not part of the
+    /// overlay lifecycle (the cache is deliberately retained across closes so
+    /// reopening stays O(live tail)); for a caller that wants the memory back.
     pub fn clear(&mut self) {
         *self = Self::new();
     }
 
-    /// Rebuild the transcript only if the signature changed since the last call.
-    fn refresh(&mut self, app: &App, width: u16) {
-        let sig = TranscriptSig::of(app, width);
-        if self.sig.as_ref() != Some(&sig) {
-            let (lines, selection) = transcript_build(app, width);
-            self.lines = lines;
-            self.selection = selection;
-            self.sig = Some(sig);
+    /// Pre-render the frozen prefix at the boundary, ahead of any overlay
+    /// draw — after a `/resume` load, after each committed item — so pressing
+    /// Ctrl+O finds every history item already rendered and pays only the
+    /// live tail. When nothing changed this is a few integer compares.
+    ///
+    /// A **width-only** mismatch is deliberately skipped: resize events arrive
+    /// in bursts (a drag delivers dozens), and a full O(history) re-render per
+    /// event would freeze the loop — the first overlay draw at the new width
+    /// pays the rebuild instead (behind the still-painted inline screen).
+    pub fn warm(&mut self, app: &App, width: u16) {
+        let width_only_miss = self.key.as_ref().is_some_and(|k| {
+            k.generation == app.history_generation()
+                && k.cwd.as_deref() == app.session.as_ref().map(|s| s.cwd.as_str())
+                && k.width != width
+        });
+        if width_only_miss {
+            return;
+        }
+        if self.ensure_frozen(app, width) {
+            // The tail was truncated off (or the prefix reset): the next
+            // refresh must rebuild it even if the volatile signature matches.
+            self.sig = None;
+        }
+    }
+
+    /// Bring the frozen prefix up to date with `app.history` at `width`:
+    /// reset it when the [`FrozenKey`] mismatches, then render and append any
+    /// items not yet cached. Returns whether anything changed; when it did,
+    /// `lines` holds **only** chrome + frozen items (the live tail was
+    /// truncated off) and the caller must rebuild the tail.
+    fn ensure_frozen(&mut self, app: &App, width: u16) -> bool {
+        let key_matches = self.key.as_ref().is_some_and(|k| {
+            k.generation == app.history_generation()
+                && k.width == width
+                && k.cwd.as_deref() == app.session.as_ref().map(|s| s.cwd.as_str())
+        });
+        if !key_matches {
+            self.key = Some(FrozenKey {
+                generation: app.history_generation(),
+                width,
+                cwd: app.session.as_ref().map(|s| s.cwd.clone()),
+            });
+            // The header banner tops the transcript exactly as it tops the
+            // inline conversation (docs/header.md) — the overlay mirrors the
+            // real scrollback, so Ctrl+O never hides it.
+            self.lines = header_lines(app, width);
+            self.lines.push(Line::default());
+            self.chrome_rows = self.lines.len();
+            self.frozen_rows = self.chrome_rows;
+            self.items.clear();
+            self.reversed = None;
+        } else if self.items.len() == app.history.len() {
+            return false;
+        } else {
+            self.lines.truncate(self.frozen_rows);
+        }
+        // Append the not-yet-rendered items (all of them after a reset). The
+        // generation guarantees the cached prefix is a prefix of `history`.
+        for item in app.history.get(self.items.len()..).unwrap_or(&[]) {
+            let (rows, user_rows) = transcript_item_lines(item, width);
+            self.items.push(RenderedItem {
+                rows: rows.len(),
+                user_rows,
+            });
+            self.frozen_rows += rows.len();
+            self.lines.extend(rows);
             #[cfg(test)]
             {
-                self.builds += 1;
+                self.item_renders += 1;
             }
+        }
+        true
+    }
+
+    /// Apply the backtrack preview's REVERSED highlight to the selected user
+    /// message's rows — an in-place style diff on the frozen prefix (undo the
+    /// old span, style the new), exactly mirroring the styling a from-scratch
+    /// build applies, so stepping the selection never re-renders anything.
+    fn restyle_selection(&mut self, app: &App) {
+        let target = app.backtrack.selected.and_then(|ordinal| {
+            let mut seen = 0usize;
+            let mut row = self.chrome_rows;
+            for item in &self.items {
+                if let Some(user_rows) = item.user_rows {
+                    if seen == ordinal {
+                        return Some(row..row + user_rows);
+                    }
+                    seen += 1;
+                }
+                row += item.rows;
+            }
+            None
+        });
+        if self.reversed != target {
+            if let Some(old) = self.reversed.take() {
+                for line in &mut self.lines[old] {
+                    line.style.add_modifier.remove(Modifier::REVERSED);
+                }
+            }
+            if let Some(new) = target.clone() {
+                for line in &mut self.lines[new] {
+                    line.style.add_modifier.insert(Modifier::REVERSED);
+                }
+            }
+            self.reversed = target.clone();
+        }
+        self.selection = target;
+    }
+
+    /// Rebuild the live tail above the frozen prefix: the in-progress
+    /// assistant text, then every live tool call — the running one followed by
+    /// any `⎿ Waiting…` siblings of a parallel batch, in order, so the overlay
+    /// shows the full live picture and a waiting call is never hidden under
+    /// Ctrl+O (docs/parallel-tools.md) — then the still-queued backlog
+    /// ([`queued_lines`]' inset rows, docs/queue.md), and the placeholder when
+    /// nothing at all follows the banner.
+    fn build_tail(&mut self, app: &App, width: u16) {
+        if let Some(text) = app.streaming_text()
+            && !text.is_empty()
+        {
+            self.lines
+                .extend(message_lines(Role::Assistant, text, width));
+            self.lines.push(Line::default());
+        }
+        for tool in app.tool_queue() {
+            self.lines.extend(tool_full_lines(tool, width));
+            self.lines.push(Line::default());
+        }
+        if !app.queued.is_empty() {
+            self.lines.extend(queued_lines(app, width));
+            self.lines.push(Line::default());
+        }
+        if self.lines.len() == self.chrome_rows {
+            self.lines.push(Line::from(Span::styled(
+                TOOL_VIEW_EMPTY.to_string(),
+                Style::new().fg(TOOL_DIM_COLOR),
+            )));
+        }
+    }
+
+    /// Rebuild what changed since the last call — nothing when the signature
+    /// matches, otherwise the frozen-prefix append + selection restyle + live
+    /// tail (see the struct docs).
+    fn refresh(&mut self, app: &App, width: u16) {
+        let sig = TranscriptSig::of(app, width);
+        if self.sig.as_ref() == Some(&sig) {
+            return;
+        }
+        if !self.ensure_frozen(app, width) {
+            // Only the volatile tail changed: drop it, keep the frozen prefix.
+            self.lines.truncate(self.frozen_rows);
+        }
+        self.restyle_selection(app);
+        self.build_tail(app, width);
+        self.sig = Some(sig);
+        #[cfg(test)]
+        {
+            self.builds += 1;
         }
     }
 
@@ -9706,6 +9878,137 @@ mod tests {
             cache.builds > builds,
             "each streamed chunk refreshes the overlay"
         );
+    }
+
+    #[test]
+    fn transcript_cache_appends_new_items_without_rerendering_frozen_ones() {
+        // The slow-Ctrl+O fix: the transcript build is O(history) with real
+        // grammar highlighting (~hundreds of ms on a resumed session), so the
+        // cache must render each committed item ONCE and only append — a new
+        // item, a streamed chunk, or a reopen must never re-render the frozen
+        // prefix. Correctness stays "equals a fresh full build".
+        let mut app = transcript_fixture();
+        let mut cache = TranscriptCache::new();
+        let _ = cache.lines(&app, 80);
+        let rendered = cache.item_renders;
+        assert_eq!(
+            rendered,
+            app.history.len(),
+            "the first build renders every item exactly once"
+        );
+
+        app.record_user_message("appended later");
+        assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+        assert_eq!(
+            cache.item_renders,
+            rendered + 1,
+            "a committed item renders once; the frozen prefix is reused"
+        );
+
+        let _ = cache.lines(&app, 80);
+        assert_eq!(cache.item_renders, rendered + 1, "a scroll renders nothing");
+    }
+
+    #[test]
+    fn transcript_cache_streams_a_reply_without_rerendering_history() {
+        // While a reply streams under the open overlay the signature changes
+        // every chunk — the live tail must rebuild (the overlay follows the
+        // stream) without paying the frozen prefix again.
+        let mut app = transcript_fixture();
+        let mut cache = TranscriptCache::new();
+        let _ = cache.lines(&app, 80);
+        let rendered = cache.item_renders;
+        app.begin_stream();
+        for chunk in ["stream", "ing 1", " and 2"] {
+            app.push_chunk(chunk);
+            assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+        }
+        assert_eq!(
+            cache.item_renders, rendered,
+            "streamed chunks re-render only the live tail, never the history"
+        );
+    }
+
+    #[test]
+    fn transcript_cache_backtrack_selection_restyles_without_rerendering() {
+        // The Esc-Esc preview reverses the highlighted user message's rows —
+        // rows in the *frozen* prefix. Stepping the selection must restyle in
+        // place (and un-restyle exactly, byte-for-byte) without re-rendering.
+        let mut app = transcript_fixture();
+        app.record_user_message("second question");
+        let mut cache = TranscriptCache::new();
+        let _ = cache.lines(&app, 80);
+        let rendered = cache.item_renders;
+
+        for selected in [Some(1), Some(0), None, Some(1)] {
+            app.backtrack.selected = selected;
+            assert_eq!(
+                cache.lines(&app, 80),
+                transcript_lines(&app, 80).as_slice(),
+                "selection {selected:?} matches a fresh build"
+            );
+            assert_eq!(
+                cache.selection(&app, 80),
+                transcript_selection(&app, 80),
+                "selection range {selected:?} matches a fresh build"
+            );
+        }
+        assert_eq!(
+            cache.item_renders, rendered,
+            "restyling the selection never re-renders items"
+        );
+    }
+
+    #[test]
+    fn transcript_cache_rebuilds_when_history_is_replaced_at_the_same_length() {
+        // A pop + re-push (the interrupt-undo, then a new submission) can land
+        // history back on the SAME length with different content — the length
+        // signature alone would serve the stale build; the generation catches it.
+        let mut app = App::new();
+        app.record_user_message("first try");
+        let mut cache = TranscriptCache::new();
+        let _ = cache.lines(&app, 80);
+
+        app.begin_stream();
+        assert_eq!(
+            app.interrupt_turn(),
+            Some(crate::app::InterruptedTurn::Undone),
+            "the no-output interrupt undoes the submission"
+        );
+        app.record_user_message("second try");
+        let lines = cache.lines(&app, 80).to_vec();
+        assert_eq!(lines, transcript_lines(&app, 80), "no stale frozen rows");
+        let all: String = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+        assert!(all.contains("second try"), "{all:?}");
+        assert!(!all.contains("first try"), "{all:?}");
+    }
+
+    #[test]
+    fn transcript_cache_warm_prebuilds_so_the_open_renders_nothing() {
+        // The loop warms the cache at the boundary (after a /resume load, after
+        // each commit) so pressing Ctrl+O finds every item already rendered —
+        // the open then only assembles the live tail.
+        let mut app = transcript_fixture();
+        let mut cache = TranscriptCache::new();
+        cache.warm(&app, 80);
+        let rendered = cache.item_renders;
+        assert_eq!(rendered, app.history.len(), "warm renders every item");
+        assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+        assert_eq!(cache.item_renders, rendered, "the open renders no items");
+
+        // A /resume swaps the whole history: the next warm rebuilds it.
+        let loaded: Vec<HistoryItem> = transcript_fixture().history.clone();
+        app.load_session(loaded);
+        cache.warm(&app, 80);
+        assert_eq!(cache.lines(&app, 80), transcript_lines(&app, 80).as_slice());
+
+        // A width-only mismatch (a resize while the overlay is closed) defers:
+        // warm must NOT burn a full rebuild per resize event…
+        let rendered = cache.item_renders;
+        cache.warm(&app, 40);
+        assert_eq!(cache.item_renders, rendered, "warm skips a width change");
+        // …the next real access (the overlay opening at the new width) pays it.
+        assert_eq!(cache.lines(&app, 40), transcript_lines(&app, 40).as_slice());
     }
 
     #[test]

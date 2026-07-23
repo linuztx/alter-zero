@@ -54,8 +54,9 @@ use ratatui::crossterm::event::{
     PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::terminal::{
-    BeginSynchronizedUpdate, EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen,
-    disable_raw_mode, enable_raw_mode,
+    BeginSynchronizedUpdate, Clear as CrosstermClear, ClearType as CrosstermClearType,
+    EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+    enable_raw_mode,
 };
 use ratatui::crossterm::{execute, queue};
 use ratatui::layout::{Position, Rect};
@@ -609,17 +610,30 @@ impl InlineViewport {
         // the exit paths still emit a LeaveAlternateScreen (harmless when the
         // terminal never actually switched) rather than risk stranding it.
         OVERLAY_ACTIVE.store(true, Ordering::SeqCst);
-        // Hide the cursor BEFORE switching buffers, not after: the switch + clear
-        // move the cursor to the top of the (blank) alternate screen, and a
-        // still-shown cursor makes kitty's cursor-trail streak from the composer
-        // up into the overlay. The overlay never shows the cursor again
-        // ([`draw_overlay`] leaves it hidden), so this holds until [`exit_overlay`]
-        // returns and the inline reflow re-seats it on the prompt.
-        self.backend.hide_cursor()?;
-        execute!(self.backend, EnterAlternateScreen)?;
-        self.backend.clear_region(ClearType::All)?;
+        // QUEUE the whole switch — no flush: the caller paints the first
+        // overlay frame right after ([`draw_overlay`]), whose flush delivers
+        // the switch and the painted frame as one write, so the terminal hops
+        // from the live inline frame straight to the finished overlay. The old
+        // flush-then-build order parked the terminal on a blank alternate
+        // screen for as long as the first frame took to build — long enough on
+        // a big resumed session for kitty's cursor-trail animation to streak
+        // up the empty screen before the overlay appeared (and the build now
+        // stalls with the inline view still intact instead of a black hole).
+        // The cursor Hide leads the switch so no flushed state ever shows it
+        // mid-hop: the overlay never displays a cursor ([`draw_overlay`]
+        // re-asserts the hide), and the inline reflow re-seats it on the
+        // prompt after [`exit_overlay`].
+        //
+        // [`draw_overlay`]: InlineViewport::draw_overlay
+        // [`exit_overlay`]: InlineViewport::exit_overlay
+        queue!(
+            self.backend,
+            Hide,
+            EnterAlternateScreen,
+            CrosstermClear(CrosstermClearType::All)
+        )?;
         self.prev = None; // the inline view isn't on screen now
-        Backend::flush(&mut self.backend)
+        Ok(())
     }
 
     /// Leave the alternate screen, restoring the inline conversation exactly as it
