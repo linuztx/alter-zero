@@ -30,7 +30,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `checkpoint`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
@@ -78,7 +78,16 @@ previous user message: prime → transcript preview → rewind + prefill) in
 `docs/backtrack.md`; the **`/resume` session picker** (every conversation
 recorded to a rollout JSONL file, listed in a full-screen picker whose Enter
 loads it back and appends the turns that follow to the same file) in
-`docs/resume.md`; the **parallel tool-call batch** (the model's several tool
+`docs/resume.md`; the **filesystem checkpoints** (every turn snapshots the whole
+cwd into an *isolated* git store — never the user's real `.git` — keyed to the
+conversation length, so the Esc-Esc backtrack **and** `/resume` **reset the
+code**, not just the transcript: rewinding restores the working directory to the
+`checkpoint::restore_target` at that point, backing up the current tree first;
+the pure mapping/format is `checkpoint` + `session::parse_checkpoints`, the git
+I/O is `checkpoint::CheckpointStore`, turn-end snapshots ride
+`dispatch_after_turn`, and restores hang off the `ResumeSession` /
+`ConfirmBacktrack` arms; gated by `ALTER_ZERO_CHECKPOINTS`) in
+`docs/checkpoint.md`; the **parallel tool-call batch** (the model's several tool
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in
 `docs/parallel-tools.md`; the **live-streaming `bash` tool** (a running command

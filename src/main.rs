@@ -49,10 +49,12 @@ use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
 use alter_zero::app::{
-    Action, App, COPY_EMPTY_NOTICE, COPY_OK_NOTICE, HistoryItem, InterruptedTurn, ProviderChoice,
-    QueuedTurn, Role, ToastKind, View,
+    Action, App, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE, COPY_EMPTY_NOTICE,
+    COPY_OK_NOTICE, HistoryItem, InterruptedTurn, ProviderChoice, QueuedTurn, Role, ToastKind,
+    View,
 };
 use alter_zero::background::{BackgroundRegistry, BgEvent, PendingNotice};
+use alter_zero::checkpoint;
 use alter_zero::clipboard;
 use alter_zero::context;
 use alter_zero::file_search::{FileMatch, rank_files};
@@ -310,6 +312,27 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // rollout file, lazily created on the first recorded item so empty
     // sessions never touch disk. `sync` runs once per loop iteration below.
     let mut recorder = SessionRecorder::new(&backend.model_name(), &cwd);
+    // The filesystem checkpoint store (docs/checkpoint.md): an isolated git
+    // object store — never the user's real .git — that snapshots the whole cwd
+    // per turn so a /resume or Esc-Esc backtrack can reset the code, not just
+    // the transcript. Keyed by cwd (checkpoints outlive a session), gated by
+    // `ALTER_ZERO_CHECKPOINTS` and a `git` binary being present. The initial
+    // snapshot below captures the pristine tree (history length 0) so a
+    // backtrack to the very first message restores it. All boundary I/O; the
+    // pure mapping lives in `checkpoint`.
+    let checkpoints_root = checkpoints_root();
+    let checkpoints_enabled =
+        checkpoint::enabled_by_env(std::env::var("ALTER_ZERO_CHECKPOINTS").ok().as_deref())
+            && checkpoint::git_available();
+    let checkpoints =
+        checkpoint::CheckpointStore::new(checkpoints_root.as_deref(), &cwd, checkpoints_enabled);
+    // A store that won't initialize (odd perms, disk full) simply yields no
+    // checkpoints for the session rather than killing the TUI — like recording.
+    if checkpoints.init().is_ok()
+        && let Some(commit) = checkpoints.snapshot("session start")
+    {
+        recorder.record_checkpoint(checkpoint::Checkpoint { after: 0, commit });
+    }
     // The `@` file-search pipeline (docs/file-search.md): a background worker
     // walks the cwd once and ranks it per query off the UI thread. The loop sends
     // queries on a std channel and receives results on a tokio channel it can
@@ -527,6 +550,42 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     )?;
                                 }
                             }
+                            Action::ConfirmBacktrack => {
+                                // Esc-Esc backtrack confirmed: history is already
+                                // truncated to the chosen message and the composer
+                                // prefilled. Reset the code to that point's
+                                // checkpoint (docs/checkpoint.md) before returning
+                                // to the inline view. The restore target is the
+                                // latest checkpoint at or before the new history
+                                // length; back up the current tree first
+                                // (recoverable via the store's reflog). The
+                                // loop-bottom recorder.sync sees history shrink and
+                                // rewrites the file, dropping the rewound-away
+                                // checkpoints in lockstep.
+                                let restored = match checkpoint::restore_target(
+                                    recorder.checkpoints(),
+                                    app.history.len(),
+                                ) {
+                                    Some(commit) => {
+                                        let commit = commit.to_string();
+                                        let _ = checkpoints.snapshot("before backtrack restore");
+                                        checkpoints.restore(&commit).unwrap_or(false)
+                                    }
+                                    None => false,
+                                };
+                                term.exit_overlay()?;
+                                transcript.clear();
+                                repaint_conversation(
+                                    term, &mut app, &mut render,
+                                    overlay_return_clear(&mut overlay_resized),
+                                )?;
+                                if restored {
+                                    present_toast(
+                                        &mut app, &mut toast_deadline, &frame,
+                                        CHECKPOINT_REWOUND_NOTICE, ToastKind::Info,
+                                    );
+                                }
+                            }
                             Action::ToggleContextDebug => {
                                 // The Ctrl+D raw-context view — the same overlay
                                 // dance as Ctrl+O (docs/context.md).
@@ -607,8 +666,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 let _ = registry.take_pending_notices();
                                 // A cleared conversation starts a fresh session
                                 // file (codex's /new); the old one keeps what it
-                                // had (docs/resume.md).
+                                // had (docs/resume.md). Re-seed the checkpoint
+                                // chain with a pristine snapshot of the current
+                                // tree so a backtrack in the new session can
+                                // restore its starting point (docs/checkpoint.md).
                                 recorder.start_new();
+                                if let Some(commit) = checkpoints.snapshot("session start") {
+                                    recorder.record_checkpoint(checkpoint::Checkpoint {
+                                        after: 0,
+                                        commit,
+                                    });
+                                }
                                 // Purge scrollback + clear the screen (codex's
                                 // /clear), not just blank the visible screen —
                                 // the old conversation must be gone from
@@ -661,6 +729,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         inflight = dispatch_after_turn(
                                             term, &mut app, &tx, backend.as_ref(), &registry,
                                             &mut render, &mut clocks,
+                                            &checkpoints, &mut recorder,
                                         )?;
                                     }
                                     Some(InterruptedTurn::Kept { partial, tool, notice }) => {
@@ -688,6 +757,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         inflight = dispatch_after_turn(
                                             term, &mut app, &tx, backend.as_ref(), &registry,
                                             &mut render, &mut clocks,
+                                            &checkpoints, &mut recorder,
                                         )?;
                                     }
                                     None => render.reset(),
@@ -735,13 +805,45 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 match loaded {
                                     Some((text, meta, items)) => {
                                         let count = items.len();
+                                        // The code-reset side of resume
+                                        // (docs/checkpoint.md): restore the cwd
+                                        // to the session's *final* checkpoint so
+                                        // the files match the transcript being
+                                        // loaded. Back up the current tree first
+                                        // (recoverable via the store's reflog);
+                                        // an unknown commit (a session from a
+                                        // different cwd) or no checkpoints leave
+                                        // the code untouched.
+                                        let session_checkpoints =
+                                            session::parse_checkpoints(&text);
+                                        let restored = match checkpoint::restore_target(
+                                            &session_checkpoints,
+                                            usize::MAX,
+                                        ) {
+                                            Some(commit) => {
+                                                let commit = commit.to_string();
+                                                let _ = checkpoints
+                                                    .snapshot("before resume restore");
+                                                checkpoints.restore(&commit).unwrap_or(false)
+                                            }
+                                            None => false,
+                                        };
                                         app.load_session(items);
                                         // A file whose last line lost its newline
                                         // (a torn write) must not have the next
                                         // append glued onto it — the recorder
-                                        // prefixes the repair.
+                                        // prefixes the repair. The parsed
+                                        // checkpoints are adopted too so later
+                                        // turns extend the same chain and a
+                                        // backtrack restores against them.
                                         let torn = !text.is_empty() && !text.ends_with('\n');
-                                        recorder.adopt(path, meta, count, torn);
+                                        recorder.adopt(
+                                            path,
+                                            meta,
+                                            count,
+                                            torn,
+                                            session_checkpoints,
+                                        );
                                         term.exit_overlay()?;
                                         // A resumed session REPLACES the whole
                                         // conversation: purge-rebuild (like
@@ -754,6 +856,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         repaint_conversation(
                                             term, &mut app, &mut render, ReflowClear::Purge,
                                         )?;
+                                        if restored {
+                                            present_toast(
+                                                &mut app, &mut toast_deadline, &frame,
+                                                CHECKPOINT_RESTORED_NOTICE, ToastKind::Info,
+                                            );
+                                        }
                                     }
                                     None => {
                                         app.close_resume_picker();
@@ -1108,6 +1216,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     inflight = dispatch_after_turn(
                         term, &mut app, &tx, backend.as_ref(), &registry,
                         &mut render, &mut clocks,
+                        &checkpoints, &mut recorder,
                     )?;
                 }
                 frame.schedule_frame();
@@ -1290,6 +1399,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 inflight = dispatch_after_turn(
                                     term, &mut app, &tx, backend.as_ref(), &registry,
                                     &mut render, &mut clocks,
+                                    &checkpoints, &mut recorder,
                                 )?;
                             }
                         }
@@ -1523,6 +1633,18 @@ fn load_env_file(path: &Path) -> EnvFile {
 /// there's no config home — persistence is then disabled. See `docs/llm.md`.
 fn settings_file_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("config.json"))
+}
+
+/// The checkpoints root — `ALTER_ZERO_CHECKPOINTS_DIR` (the smoke test points
+/// it at a temp dir, the `ALTER_ZERO_SESSIONS_DIR` pattern), else
+/// `~/.alter-zero/checkpoints`. `None` (no HOME and no override) disables
+/// checkpoints. Each working directory gets one isolated store under this root
+/// ([`checkpoint::store_git_dir`]). See `docs/checkpoint.md`.
+fn checkpoints_root() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("ALTER_ZERO_CHECKPOINTS_DIR") {
+        return Some(PathBuf::from(dir));
+    }
+    config_home().map(|dir| dir.join("checkpoints"))
 }
 
 /// Load the persisted `/model` selection; an absent, unreadable, or corrupt
@@ -1904,7 +2026,28 @@ fn settle_bg_completions(term: &mut InlineViewport, app: &mut App) {
 /// Shared by every turn-end site (`StreamDone`, `Error`, both Esc-interrupt
 /// outcomes) *and* the idle completion arrival, so the paths can never
 /// drift.
-#[allow(clippy::too_many_arguments)] // the start_turn plumbing, plus the registry
+/// Snapshot the working directory at a turn boundary and record it against the
+/// current conversation length (`docs/checkpoint.md`). Called before the next
+/// queued turn dispatches, so it captures the *just-ended* turn's code state —
+/// which is exactly what a later backtrack to the next message, or a resume,
+/// restores. A disabled store or a failed git step is a silent no-op (the TUI
+/// never dies for a checkpoint). The recorded line flushes with the loop's
+/// next `recorder.sync`.
+fn checkpoint_turn_end(
+    checkpoints: &checkpoint::CheckpointStore,
+    recorder: &mut SessionRecorder,
+    app: &App,
+) {
+    if !checkpoints.is_enabled() {
+        return;
+    }
+    let after = app.history.len();
+    if let Some(commit) = checkpoints.snapshot(&format!("checkpoint after {after} items")) {
+        recorder.record_checkpoint(checkpoint::Checkpoint { after, commit });
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // the turn-end plumbing, plus the checkpoint store + recorder
 fn dispatch_after_turn(
     term: &mut InlineViewport,
     app: &mut App,
@@ -1913,7 +2056,12 @@ fn dispatch_after_turn(
     registry: &BackgroundRegistry,
     render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
+    checkpoints: &checkpoint::CheckpointStore,
+    recorder: &mut SessionRecorder,
 ) -> io::Result<Option<(CancelToken, JoinHandle<()>)>> {
+    // The turn just ended and its history is settled — snapshot the code state
+    // before any queued follow-up starts editing again (docs/checkpoint.md).
+    checkpoint_turn_end(checkpoints, recorder, app);
     settle_bg_completions(term, app);
     let unheard = registry.take_pending_notices();
     let mut next = flush_next_queued(term, app, tx, backend, registry, render, clocks)?;
@@ -2825,6 +2973,14 @@ struct SessionRecorder {
     /// An adopted file's last line lost its newline (a torn write): the next
     /// append prefixes one so the first new item isn't glued onto it.
     repair_newline: bool,
+    /// The filesystem checkpoints recorded in this session (`docs/checkpoint.md`)
+    /// — an in-memory mirror of the `checkpoint` lines, kept so a truncation
+    /// rewrite can re-emit the survivors and a resume can adopt the file's own.
+    /// Appended interleaved with the item lines.
+    checkpoints: Vec<checkpoint::Checkpoint>,
+    /// How many of [`checkpoints`](Self::checkpoints) are already on disk — the
+    /// checkpoint twin of `recorded`, so an append only writes the new ones.
+    checkpoints_written: usize,
     /// The meta context of a *new* session file, captured once at startup.
     cwd: String,
     model: String,
@@ -2843,9 +2999,26 @@ impl SessionRecorder {
             active: None,
             recorded: 0,
             repair_newline: false,
+            checkpoints: Vec::new(),
+            checkpoints_written: 0,
             cwd: cwd.display().to_string(),
             model: model.to_string(),
         }
+    }
+
+    /// Record a filesystem checkpoint against the current conversation length
+    /// (`docs/checkpoint.md`): held in memory now, flushed to the file by the
+    /// next [`sync`](Self::sync) (a turn always grows history, so the flush
+    /// rides that append — and a session that never grows history never
+    /// materializes a file, keeping codex's deferred create).
+    fn record_checkpoint(&mut self, checkpoint: checkpoint::Checkpoint) {
+        self.checkpoints.push(checkpoint);
+    }
+
+    /// The checkpoints known this session — the loop reads these to pick the
+    /// restore target for an Esc-Esc backtrack (`docs/backtrack.md`).
+    fn checkpoints(&self) -> &[checkpoint::Checkpoint] {
+        &self.checkpoints
     }
 
     /// The sessions root, for the `/resume` scan.
@@ -2860,15 +3033,28 @@ impl SessionRecorder {
     }
 
     /// Mirror the file to `history`: append newly finished items (creating
-    /// the file + meta line first on the very first one), rewrite the whole
-    /// file when history shrank (the backtrack rewind), no-op when unchanged.
-    /// History is append-or-truncate only, so the watermark compare is sound.
+    /// the file + meta line first on the very first one) plus any pending
+    /// checkpoint lines (`docs/checkpoint.md`), rewrite the whole file when
+    /// history shrank (the backtrack rewind), no-op when unchanged. History is
+    /// append-or-truncate only, so the watermark compare is sound. A checkpoint
+    /// alone never creates a file (deferred create).
     fn sync(&mut self, history: &[HistoryItem]) {
-        if history.len() == self.recorded {
-            return;
-        }
         if history.len() < self.recorded {
             self.rewrite(history);
+            return;
+        }
+        let items_grew = history.len() > self.recorded;
+        let checkpoints_pending = self.checkpoints.len() > self.checkpoints_written;
+        // Nothing new to write — neither items nor checkpoints.
+        if !items_grew && !checkpoints_pending {
+            return;
+        }
+        // A checkpoint with no file yet (the startup/`/clear` pristine snapshot)
+        // must NOT materialize a rollout file — codex's deferred create: an
+        // empty session leaves no file. Hold it in memory until a history item
+        // creates the file, at which point `append` flushes it alongside. A
+        // pending checkpoint with a file that already exists does flush now.
+        if !items_grew && self.active.is_none() {
             return;
         }
         let fresh = &history[self.recorded..];
@@ -2885,16 +3071,30 @@ impl SessionRecorder {
         self.active = None;
         self.recorded = 0;
         self.repair_newline = false;
+        self.checkpoints.clear();
+        self.checkpoints_written = 0;
     }
 
     /// Adopt a resumed session's file: further items append there (codex's
     /// resume-mode open), and a rewrite re-serializes its own meta. `torn`
     /// flags a file whose last line lost its newline — the next append
-    /// repairs it first.
-    fn adopt(&mut self, path: PathBuf, meta: SessionMeta, recorded: usize, torn: bool) {
+    /// repairs it first. `checkpoints` are the file's own recorded snapshots
+    /// (`docs/checkpoint.md`), taken over as already-written so later turns
+    /// extend the same chain and a backtrack after resuming restores against
+    /// them.
+    fn adopt(
+        &mut self,
+        path: PathBuf,
+        meta: SessionMeta,
+        recorded: usize,
+        torn: bool,
+        checkpoints: Vec<checkpoint::Checkpoint>,
+    ) {
         self.active = Some((path, meta));
         self.recorded = recorded;
         self.repair_newline = torn;
+        self.checkpoints_written = checkpoints.len();
+        self.checkpoints = checkpoints;
     }
 
     /// Append `items` as rollout lines, materializing the file (date dirs +
@@ -2921,6 +3121,13 @@ impl SessionRecorder {
             text.push_str(&session::item_line(item, &stamp));
             text.push('\n');
         }
+        // Flush any checkpoints recorded since the last append (docs/checkpoint.md)
+        // — interleaved with the item lines; parsed back by their own reader.
+        for checkpoint in &self.checkpoints[self.checkpoints_written..] {
+            text.push_str(&session::checkpoint_line(checkpoint, &stamp));
+            text.push('\n');
+        }
+        self.checkpoints_written = self.checkpoints.len();
         let _ = file.write_all(text.as_bytes());
     }
 
@@ -2959,6 +3166,11 @@ impl SessionRecorder {
     fn rewrite(&mut self, history: &[HistoryItem]) {
         self.recorded = history.len();
         self.repair_newline = false;
+        // A truncation (backtrack) drops the checkpoints describing the
+        // rewound-away future, so the file mirrors the survivors
+        // (docs/checkpoint.md), in lockstep with the in-memory list.
+        checkpoint::retain_surviving(&mut self.checkpoints, history.len());
+        self.checkpoints_written = self.checkpoints.len();
         let Some((path, meta)) = self.active.as_ref() else {
             return;
         };
@@ -2966,6 +3178,10 @@ impl SessionRecorder {
         let mut text = format!("{}\n", session::meta_line(meta, &meta.timestamp));
         for item in history {
             text.push_str(&session::item_line(item, &stamp));
+            text.push('\n');
+        }
+        for checkpoint in &self.checkpoints {
+            text.push_str(&session::checkpoint_line(checkpoint, &stamp));
             text.push('\n');
         }
         let _ = std::fs::write(path, text);

@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::app::{DONE_VERBS, HistoryItem, Message, Role, ToolCall, ToolStatus, TurnSummary};
+use crate::checkpoint::Checkpoint;
 
 /// The `session_meta` payload — the first line of every rollout file (codex's
 /// `SessionMeta`: identity plus enough context to label the session later).
@@ -94,6 +95,11 @@ enum ItemRecord {
     Tool(ToolRecord),
     Summary(SummaryRecord),
     Background(BackgroundRecord),
+    /// A filesystem checkpoint (`docs/checkpoint.md`) — not a [`HistoryItem`]
+    /// but recorded in the same file so a resume can reset the code. Parsed by
+    /// [`parse_checkpoints`], skipped by [`parse_session`]. Old builds skip the
+    /// unknown record type (the forward-compatibility contract).
+    Checkpoint(CheckpointRecord),
 }
 
 /// A [`Message`] on disk. `role` is the lowercase role name; an unknown role
@@ -147,6 +153,14 @@ struct BackgroundRecord {
     killed: bool,
     output_tail: String,
     timestamp: String,
+}
+
+/// A [`Checkpoint`] on disk (`docs/checkpoint.md`): the isolated-store commit
+/// SHA and the history length it captures the code state at.
+#[derive(Serialize, Deserialize)]
+struct CheckpointRecord {
+    commit: String,
+    after: usize,
 }
 
 /// A [`TurnSummary`] on disk. `verb` maps back to its [`DONE_VERBS`] static on
@@ -257,6 +271,39 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
     line(stamp, record)
 }
 
+/// Serialize one filesystem checkpoint as a rollout line (`docs/checkpoint.md`).
+/// Interleaved with the item lines in the same file; extracted by
+/// [`parse_checkpoints`] and ignored by [`parse_session`].
+#[must_use]
+pub fn checkpoint_line(checkpoint: &Checkpoint, stamp: &str) -> String {
+    line(
+        stamp,
+        ItemRecord::Checkpoint(CheckpointRecord {
+            commit: checkpoint.commit.clone(),
+            after: checkpoint.after,
+        }),
+    )
+}
+
+/// Extract the [`Checkpoint`]s recorded in a rollout file, in file order —
+/// the code-reset side channel `/resume` reads alongside [`parse_session`]'s
+/// transcript. Malformed and non-checkpoint lines are skipped; an empty vec
+/// means the session recorded no checkpoints (an older rollout, or a run with
+/// the feature disabled), in which case a resume leaves the code untouched.
+#[must_use]
+pub fn parse_checkpoints(text: &str) -> Vec<Checkpoint> {
+    text.lines()
+        .filter_map(|line| serde_json::from_str::<LineRecord>(line.trim()).ok())
+        .filter_map(|record| match record.item {
+            ItemRecord::Checkpoint(cp) => Some(Checkpoint {
+                after: cp.after,
+                commit: cp.commit,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Parse a rollout file's text back into its meta + history items, in file
 /// order. Malformed lines, unknown record types, and unknown roles are
 /// **skipped** (codex's forward-compatible reader); `None` when no valid
@@ -323,6 +370,10 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     timestamp: notice.timestamp,
                 }));
             }
+            // Checkpoints ride the same file but aren't transcript items —
+            // `parse_checkpoints` reads them for the code reset. Skip here so
+            // the loaded history matches what the user actually said.
+            ItemRecord::Checkpoint(_) => {}
         }
     }
     meta.map(|meta| (meta, items))
@@ -523,6 +574,78 @@ mod tests {
             text.push('\n');
         }
         text
+    }
+
+    // ===== checkpoints (docs/checkpoint.md) =====
+
+    #[test]
+    fn checkpoint_line_is_a_tagged_json_line() {
+        let cp = Checkpoint {
+            after: 4,
+            commit: "deadbeef".into(),
+        };
+        let line = checkpoint_line(&cp, "t9");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "checkpoint");
+        assert_eq!(value["timestamp"], "t9");
+        assert_eq!(value["payload"]["commit"], "deadbeef");
+        assert_eq!(value["payload"]["after"], 4);
+        assert!(!line.contains('\n'));
+    }
+
+    #[test]
+    fn parse_checkpoints_extracts_them_in_file_order() {
+        // A realistic file: meta, a turn, its checkpoint, another checkpoint.
+        let mut text = file_of(&[message(Role::User, "hi"), message(Role::Assistant, "yo")]);
+        text.push_str(&checkpoint_line(
+            &Checkpoint {
+                after: 0,
+                commit: "pristine".into(),
+            },
+            "t",
+        ));
+        text.push('\n');
+        text.push_str(&checkpoint_line(
+            &Checkpoint {
+                after: 2,
+                commit: "after-turn".into(),
+            },
+            "t",
+        ));
+        text.push('\n');
+        assert_eq!(
+            parse_checkpoints(&text),
+            vec![
+                Checkpoint {
+                    after: 0,
+                    commit: "pristine".into()
+                },
+                Checkpoint {
+                    after: 2,
+                    commit: "after-turn".into()
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn checkpoint_lines_are_invisible_to_the_transcript_parse() {
+        // A checkpoint line among the items must not become a history item —
+        // resume loads the same transcript whether or not checkpoints exist.
+        let items = vec![message(Role::User, "hi"), message(Role::Assistant, "yo")];
+        let mut text = file_of(&items);
+        text.push_str(&checkpoint_line(
+            &Checkpoint {
+                after: 2,
+                commit: "abc".into(),
+            },
+            "t",
+        ));
+        text.push('\n');
+        let (_, parsed) = parse_session(&text).expect("parses");
+        assert_eq!(parsed, items, "checkpoints don't leak into the transcript");
+        // …but the sidecar sees them.
+        assert_eq!(parse_checkpoints(&text).len(), 1);
     }
 
     #[test]

@@ -387,6 +387,15 @@ pub const RESUME_BUSY_NOTICE: &str = "/resume is disabled while a task is in pro
 /// the full list). Shown as an [`Action::Toast`]. See `docs/toast.md`.
 pub const HELP_BUSY_NOTICE: &str = "/help is disabled while a task is in progress";
 
+/// The transient toast shown when a `/resume` restored the working directory to
+/// the session's checkpoint (`docs/checkpoint.md`) — feedback that the code, not
+/// just the transcript, was rewound.
+pub const CHECKPOINT_RESTORED_NOTICE: &str = "Restored files to this session's checkpoint";
+
+/// The transient toast shown when an Esc-Esc backtrack reset the working
+/// directory to the rewound-to message's checkpoint (`docs/checkpoint.md`).
+pub const CHECKPOINT_REWOUND_NOTICE: &str = "Reset files to the checkpoint for that message";
+
 /// The output recorded on a tool that was still running when the user
 /// interrupted: it resolves as [`ToolStatus::Failed`] with this explanation
 /// (codex: an aborted tool "may have partially executed").
@@ -451,6 +460,14 @@ pub enum Action {
     /// The user toggled the tool-output view (Ctrl+O, or Esc to leave it). The
     /// loop syncs the full-screen overlay to the now-updated [`App::view`].
     ToggleToolView,
+    /// Enter confirmed an Esc-Esc backtrack: [`App::history`] is already
+    /// truncated to the chosen message and the composer prefilled. The loop
+    /// resets the code to that point's checkpoint (`docs/checkpoint.md`), then
+    /// leaves the overlay and repaints — the same return path as
+    /// [`Action::ToggleToolView`]'s exit branch. Distinguished from a plain
+    /// overlay toggle so the loop knows a rewind (not just a view change)
+    /// happened. See `docs/backtrack.md`.
+    ConfirmBacktrack,
     /// The user toggled the Ctrl+D context-debug view (or closed it with
     /// q/Esc). The loop syncs the overlay to the now-updated [`App::view`],
     /// exactly like [`Action::ToggleToolView`]. See `docs/context.md`.
@@ -3122,7 +3139,10 @@ impl App {
             }
             KeyCode::Enter if self.backtrack.selected.is_some() => {
                 self.confirm_backtrack();
-                Action::ToggleToolView
+                // A dedicated action (not ToggleToolView) so the loop resets
+                // the code to this point's checkpoint before the shared
+                // return-from-overlay repaint (docs/checkpoint.md).
+                Action::ConfirmBacktrack
             }
             // Esc in a plain Ctrl+O view *begins* the preview in place when
             // idle with a target — codex's Ctrl+T → Esc path; without one
@@ -9467,7 +9487,7 @@ mod tests {
         exchange(&mut app, "second", "b");
         app.on_key(key(KeyCode::Esc));
         app.on_key(key(KeyCode::Esc)); // preview on "second"
-        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::ToggleToolView);
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::ConfirmBacktrack);
         assert_eq!(app.view, View::Conversation, "back to the inline view");
         assert_eq!(app.input.text(), "second", "the message is back to edit");
         assert_eq!(app.input.cursor(), "second".len(), "cursor at the end");
