@@ -427,6 +427,19 @@ pub const RESUME_BUSY_NOTICE: &str = "/resume is disabled while a task is in pro
 /// the full list). Shown as an [`Action::Toast`]. See `docs/toast.md`.
 pub const HELP_BUSY_NOTICE: &str = "/help is disabled while a task is in progress";
 
+/// Codex's `/init` prompt (`prompts/init.md`, its `prompt_for_init_command.md`
+/// verbatim): generate an `AGENTS.md` contributor guide — never overwriting an
+/// existing one. Submitted as a **regular user turn** ([`Action::Submit`]), so
+/// the model's agentic tool loop does the exploring and writing; the prompt is
+/// the whole feature. See `docs/init.md`.
+pub const INIT_PROMPT: &str = include_str!("../prompts/init.md");
+
+/// The transient toast shown when `/init` is run while a turn is active —
+/// codex disables it during a task (`available_during_task`); submitting would
+/// race the running stream with a second turn. The `/compact` toast pattern.
+/// See `docs/init.md` / `docs/toast.md`.
+pub const INIT_BUSY_NOTICE: &str = "/init is disabled while a task is in progress";
+
 /// The transient toast shown when `/compact` is run while a turn is active —
 /// codex disables it during a task (`available_during_task`); ours rejects with
 /// the `/help`/`/resume` toast pattern. See `docs/compact.md` / `docs/toast.md`.
@@ -852,6 +865,11 @@ pub enum CommandEffect {
     /// confirmation surfaces as a toast, not a scrollback message. See
     /// `docs/copy.md` / `docs/toast.md`.
     Copy,
+    /// Run codex's `/init`: submit the canned [`INIT_PROMPT`] as a regular
+    /// user turn asking the model to generate an `AGENTS.md` contributor
+    /// guide (`docs/init.md`) — or reject with an [`INIT_BUSY_NOTICE`] toast
+    /// while a turn is active (codex's `available_during_task` is `false`).
+    Init,
     /// Run codex's `/compact`: a summarization turn whose reply becomes the
     /// context bridge (`docs/compact.md`) — or reject with a
     /// [`COMPACT_BUSY_NOTICE`] toast while a turn is active (codex disables
@@ -906,6 +924,13 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "copy",
         description: "Copy the last response to the clipboard",
         effect: CommandEffect::Copy,
+    },
+    SlashCommand {
+        name: "init",
+        // Codex's description, its product name swapped for ours (the /quit
+        // "Exit alter-zero" pattern).
+        description: "create an AGENTS.md file with instructions for alter-zero",
+        effect: CommandEffect::Init,
     },
     SlashCommand {
         name: "compact",
@@ -2864,6 +2889,20 @@ impl App {
                 }
             }
             CommandEffect::Copy => Action::Copy(self.last_assistant_text()),
+            CommandEffect::Init => {
+                // Codex's /init is submit_user_message(INIT_PROMPT): the canned
+                // prompt rides the normal Submit → start_turn path — echoed as
+                // the user ❯ message, recorded, checkpointed — and the model's
+                // tool loop generates AGENTS.md. Mid-turn it is disabled like
+                // /compact (codex's available_during_task = false); the ↑
+                // recall history is untouched (the user typed "/init", not the
+                // prompt). See docs/init.md.
+                if self.turn_active() {
+                    Action::Toast(INIT_BUSY_NOTICE.to_string())
+                } else {
+                    Action::Submit(INIT_PROMPT.to_string())
+                }
+            }
             CommandEffect::Compact => {
                 // Codex disables /compact while a task runs (the summarize
                 // request would race the stream over the same history); the
@@ -8183,6 +8222,76 @@ mod tests {
             Action::Toast(HELP_BUSY_NOTICE.to_string()),
         );
         assert!(app.input.is_empty());
+    }
+
+    // --- /init (docs/init.md) ---
+
+    #[test]
+    fn the_palette_lists_init_with_codexs_description() {
+        let cmd = COMMANDS
+            .iter()
+            .find(|c| c.name == "init")
+            .expect("/init is registered");
+        assert_eq!(
+            cmd.description,
+            "create an AGENTS.md file with instructions for alter-zero"
+        );
+        assert_eq!(cmd.effect, CommandEffect::Init);
+    }
+
+    #[test]
+    fn the_init_prompt_is_codexs_agents_md_generator() {
+        // The canned prompt *is* the feature — everything after the submit is
+        // the normal turn machinery. Codex's prompt_for_init_command.md asks
+        // the model to generate AGENTS.md and to leave an existing one alone.
+        assert!(INIT_PROMPT.contains("AGENTS.md"));
+        assert!(
+            INIT_PROMPT.contains("do not overwrite"),
+            "the prompt guards an existing AGENTS.md"
+        );
+    }
+
+    #[test]
+    fn slash_init_submits_the_canned_prompt_when_idle() {
+        // Codex's /init is submit_user_message(INIT_PROMPT): the whole canned
+        // prompt goes out as a regular user turn — echoed as the ❯ message,
+        // recorded, checkpointed — and the model's tool loop does the work.
+        let mut app = App::new();
+        type_str(&mut app, "/init");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Submit(INIT_PROMPT.to_string())
+        );
+        assert!(app.input.is_empty());
+        assert!(app.command_menu.is_none());
+    }
+
+    #[test]
+    fn slash_init_does_not_enter_the_up_arrow_recall_history() {
+        // Palette commands never record into the ↑ recall history — the
+        // composer held "/init", not the canned prompt, and recalling a
+        // 40-line prompt the user never typed would be noise.
+        let mut app = App::new();
+        type_str(&mut app, "/init");
+        app.on_key(key(KeyCode::Enter));
+        app.on_key(key(KeyCode::Up));
+        assert!(app.input.is_empty(), "nothing to recall");
+    }
+
+    #[test]
+    fn init_mid_turn_is_rejected_with_a_toast() {
+        // Codex's available_during_task is false for /init — submitting would
+        // race the running stream with a second turn. Ours rejects with the
+        // /compact toast pattern; the running turn is untouched.
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.begin_stream();
+        type_str(&mut app, "/init");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Toast(INIT_BUSY_NOTICE.to_string()),
+        );
+        assert!(app.turn_active(), "the running turn is untouched");
     }
 
     // --- /compact (docs/compact.md) ---

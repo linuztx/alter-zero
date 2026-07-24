@@ -640,8 +640,8 @@ const SHIMMER_MAX_BLEND: f32 = 0.9;
 /// Sized to hold the whole [`crate::app::COMMANDS`] registry so a bare `/`
 /// lists every command without scrolling (the
 /// `the_menu_cap_holds_the_whole_command_registry` test pins it to the
-/// registry's growth — `/compact` grew it to 8).
-const MENU_MAX_ROWS: u16 = 8;
+/// registry's growth — `/compact` grew it to 8, `/init` to 9).
+const MENU_MAX_ROWS: u16 = 9;
 /// The column descriptions start at — names are padded out to here so the
 /// descriptions line up in a tidy column regardless of command-name length.
 const MENU_DESC_COL: usize = 25;

@@ -32,6 +32,9 @@ there" and fades it after a few seconds.
 | `/login` write fails | `Couldn't write {path}: {e}` | error |
 | `/resume` run mid-turn | `/resume is disabled while a task is in progress` | info |
 | `/help` run mid-turn | `/help is disabled while a task is in progress` | info |
+| `/init` run mid-turn | `/init is disabled while a task is in progress` | info |
+| `/compact` run mid-turn | `/compact is disabled while a task is in progress` | info |
+| `/compact` with an empty context | `Nothing to compact` | info |
 
 These were all committed as scrollback messages before; now they surface as
 toasts and leave no trace in `history` (so they never appear in the Ctrl+O

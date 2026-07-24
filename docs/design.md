@@ -161,7 +161,7 @@ unit-tested must be unit-tested.
   space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
   (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
-  `/copy`, `/resume`, `/model`, `/login`, and `/quit`),
+  `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone lists everything.
   ↑/↓ move the highlight (the window scrolls, capped at `MENU_MAX_ROWS`, to keep it
   visible); descriptions line up in a column (names padded to `MENU_DESC_COL`), and
@@ -180,7 +180,12 @@ unit-tested must be unit-tested.
   commits a system or red error notice, see `docs/copy.md`), and `/resume` →
   `OpenResumePicker` idle or `ErrorNotice(RESUME_BUSY_NOTICE)` mid-turn
   (codex blocks it while a task runs — see `docs/resume.md` and the /resume
-  bullet below), and `/compact` → `Compact` idle (codex's manual context
+  bullet below), and `/init` → `Submit(INIT_PROMPT)` idle (codex's `/init`:
+  the canned `prompts/init.md` prompt — generate an `AGENTS.md` contributor
+  guide, never overwriting an existing one — submitted as a regular user
+  turn the model's tool loop answers; mid-turn a `Toast(INIT_BUSY_NOTICE)`
+  like codex's `available_during_task = false` — see `docs/init.md`), and
+  `/compact` → `Compact` idle (codex's manual context
   compaction — a summarization turn whose invisible reply becomes the
   append-only `HistoryItem::Compaction` marker the context derivation bridges
   from; mid-turn a `Toast(COMPACT_BUSY_NOTICE)`, an empty context a
