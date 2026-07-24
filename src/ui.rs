@@ -638,8 +638,10 @@ const SHIMMER_MAX_BLEND: f32 = 0.9;
 
 /// The most command rows shown at once; longer match lists scroll within this.
 /// Sized to hold the whole [`crate::app::COMMANDS`] registry so a bare `/`
-/// lists every command without scrolling.
-const MENU_MAX_ROWS: u16 = 7;
+/// lists every command without scrolling (the
+/// `the_menu_cap_holds_the_whole_command_registry` test pins it to the
+/// registry's growth — `/compact` grew it to 8).
+const MENU_MAX_ROWS: u16 = 8;
 /// The column descriptions start at — names are padded out to here so the
 /// descriptions line up in a tidy column regardless of command-name length.
 const MENU_DESC_COL: usize = 25;
@@ -12402,6 +12404,18 @@ mod tests {
     #[test]
     fn menu_rows_is_zero_when_the_palette_is_closed() {
         assert_eq!(menu_rows(&App::new()), 0);
+    }
+
+    #[test]
+    fn the_menu_cap_holds_the_whole_command_registry() {
+        // MENU_MAX_ROWS is sized so a bare `/` lists EVERY command without
+        // scrolling (its doc contract; smoke.sh asserts /quit — the last —
+        // is visible). Adding a command must grow the cap with it.
+        assert!(
+            crate::app::COMMANDS.len() <= MENU_MAX_ROWS as usize,
+            "MENU_MAX_ROWS ({MENU_MAX_ROWS}) no longer fits the {} registered commands",
+            crate::app::COMMANDS.len()
+        );
     }
 
     #[test]
