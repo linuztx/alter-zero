@@ -128,7 +128,15 @@ hijacking the TUI and hanging) in `docs/tty-detach.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in
-`docs/tool-view-performance.md`.
+`docs/tool-view-performance.md`; and **`/compact`** (codex's manual context
+compaction, ported append-only: a summarization turn streams the model's
+handoff summary invisibly into `App::compact_buffer`, `finish_compact` appends
+a `HistoryItem::Compaction` marker — the transcript, recorder, checkpoint
+keys, and backtrack all untouched — and `context::context_messages` derives
+codex's compacted shape from the *last* marker: the 20k-approx-token budget of
+recent user texts + the `SUMMARY_PREFIX\n{summary}` bridge in place of
+everything before it, the `● Context compacted` cell the visible record) in
+`docs/compact.md`.
 
 ### The runtime model and its invariants
 
@@ -537,7 +545,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/resume`, `/model`, `/login`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/compact`, `/resume`, `/model`, `/login`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
@@ -567,7 +575,14 @@ transient `Toast` (was a red `ErrorNotice`; `docs/toast.md`) like codex; see
 `docs/resume.md`, `smoke.sh` Phase 31. **`/model` and `/login` (the inline
 pickers, `docs/llm.md`) now open *mid-turn* too** — they only replace the
 composer, never the running turn, so their old busy rejections are gone; their
-confirmations are toasts (`smoke.sh` Phase 33)).
+confirmations are toasts (`smoke.sh` Phase 33). **`/compact`→`Compact`** —
+codex's manual compaction (`docs/compact.md`): the loop runs the summarization
+turn on a one-off tools-free `LlmBackend::configure(cfg, system_prompt,
+false)` (the dummy scripts a text-only summary), the reply diverts into
+`App::compact_buffer` (never rendered), and `StreamDone` appends the
+`HistoryItem::Compaction` marker + commits the cyan `● Context compacted`
+cell; mid-turn it is rejected with a `Toast` like `/resume`, an empty derived
+context with `Nothing to compact` (`smoke.sh` Phase 50)).
 **`/clear` mid-turn is a kill**, not codex's
 "disabled while a task is in progress" rejection: `App::clear_conversation`
 wipes history, the streaming buffer, the running tool, the status, and the

@@ -180,7 +180,12 @@ unit-tested must be unit-tested.
   commits a system or red error notice, see `docs/copy.md`), and `/resume` →
   `OpenResumePicker` idle or `ErrorNotice(RESUME_BUSY_NOTICE)` mid-turn
   (codex blocks it while a task runs — see `docs/resume.md` and the /resume
-  bullet below). A `Notice` is recorded as
+  bullet below), and `/compact` → `Compact` idle (codex's manual context
+  compaction — a summarization turn whose invisible reply becomes the
+  append-only `HistoryItem::Compaction` marker the context derivation bridges
+  from; mid-turn a `Toast(COMPACT_BUSY_NOTICE)`, an empty context a
+  `Toast(COMPACT_EMPTY_NOTICE)` — see `docs/compact.md`, `smoke.sh`
+  Phase 50). A `Notice` is recorded as
   a `Role::System` message and committed to scrollback like any other. Adding a
   command later is a one-line registry edit + an effect arm in
   `run_selected_command` — the palette, filtering, scrolling, and dispatch don't

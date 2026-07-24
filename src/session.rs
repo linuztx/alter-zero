@@ -100,6 +100,20 @@ enum ItemRecord {
     /// [`parse_checkpoints`], skipped by [`parse_session`]. Old builds skip the
     /// unknown record type (the forward-compatibility contract).
     Checkpoint(CheckpointRecord),
+    /// A `/compact` marker (`docs/compact.md`) — persists so a `/resume`
+    /// stays compacted. Old builds skip the unknown record type (and see the
+    /// full uncompacted context — the graceful degradation).
+    Compaction(CompactionRecord),
+}
+
+/// A [`Compaction`] marker on disk (`docs/compact.md`): the model-written
+/// handoff summary the context derivation bridges from.
+///
+/// [`Compaction`]: crate::app::Compaction
+#[derive(Serialize, Deserialize)]
+struct CompactionRecord {
+    summary: String,
+    timestamp: String,
 }
 
 /// A [`Message`] on disk. `role` is the lowercase role name; an unknown role
@@ -276,6 +290,10 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             output_tail: notice.output_tail.clone(),
             timestamp: notice.timestamp.clone(),
         }),
+        HistoryItem::Compaction(compaction) => ItemRecord::Compaction(CompactionRecord {
+            summary: compaction.summary.clone(),
+            timestamp: compaction.timestamp.clone(),
+        }),
     };
     line(stamp, record)
 }
@@ -379,6 +397,12 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     killed: notice.killed,
                     output_tail: notice.output_tail,
                     timestamp: notice.timestamp,
+                }));
+            }
+            ItemRecord::Compaction(compaction) => {
+                items.push(HistoryItem::Compaction(crate::app::Compaction {
+                    summary: compaction.summary,
+                    timestamp: compaction.timestamp,
                 }));
             }
             // Checkpoints ride the same file but aren't transcript items —
@@ -518,6 +542,22 @@ mod tests {
             timestamp: "03:20 PM".into(),
             images: vec![PathBuf::from("/tmp/alter-zero-clipboard-a.png")],
         });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_compaction_marker_round_trips() {
+        // The /compact marker persists so a /resume stays compacted
+        // (docs/compact.md); the summary is the payload.
+        let item = HistoryItem::Compaction(crate::app::Compaction {
+            summary: "we did the thing".into(),
+            timestamp: "03:20 PM".into(),
+        });
+        let line = item_line(&item, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "compaction");
+        assert_eq!(value["payload"]["summary"], "we did the thing");
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
     }

@@ -262,6 +262,17 @@ const DUMMY_TABLE_REPLY: &str = "Here's a table with data that uses backticks:\n
 The backticks are wrapped in double backticks (`` `code` ``) so they display \
 properly in Markdown.";
 
+/// The opening of codex's `/compact` summarization prompt
+/// ([`crate::context::SUMMARIZATION_PROMPT`]) — how [`turn_events`] recognizes
+/// a compact turn's request and scripts a text-only summary for it.
+const COMPACT_PROMPT_MARKER: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION";
+
+/// The dummy's canned `/compact` summary — streamed word-by-word like every
+/// reply, captured (never rendered) by the compact turn (docs/compact.md).
+const DUMMY_COMPACT_SUMMARY: &str = "Progress so far: this is a canned handoff summary from the dummy backend. \
+     Key decisions: none - no real model is attached. Next steps: keep \
+     chatting; the compacted context now rides this summary.";
+
 /// Canned replies. One is chosen deterministically per prompt so the demo has
 /// a little variety without any real model behind it.
 const RESPONSES: &[&str] = &[
@@ -350,6 +361,18 @@ pub fn image_ack(count: usize) -> Option<String> {
 /// [`dummy_response`], so streaming stays faithful.
 #[must_use]
 pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
+    // `/compact`'s summarization request plays a **text-only** canned summary
+    // — no thinking phase, no tool batch (codex sends the summarize request
+    // with no tools) — so the offline dummy path (and smoke.sh) can drive the
+    // whole compact flow with no provider (docs/compact.md).
+    if prompt.starts_with(COMPACT_PROMPT_MARKER) {
+        let mut events: Vec<StreamEvent> = chunks(DUMMY_COMPACT_SUMMARY)
+            .into_iter()
+            .map(StreamEvent::Chunk)
+            .collect();
+        events.push(StreamEvent::StreamDone);
+        return events;
+    }
     let reply = dummy_response(prompt);
     let words: Vec<&str> = reply.split_inclusive(' ').collect();
     let mid = (words.len() / 2).max(1).min(words.len());
@@ -870,6 +893,33 @@ mod tests {
             })
             .collect();
         assert_eq!(text, dummy_response(prompt));
+    }
+
+    #[test]
+    fn a_compact_prompt_plays_a_text_only_summary_turn() {
+        // /compact's summarization prompt must never trigger the scripted tool
+        // batch or thinking phase — codex sends the summarize request with no
+        // tools, and the offline path (and smoke.sh) drives this branch
+        // (docs/compact.md).
+        let events = turn_events(crate::context::SUMMARIZATION_PROMPT, 0);
+        assert!(
+            events
+                .iter()
+                .all(|e| matches!(e, StreamEvent::Chunk(_) | StreamEvent::StreamDone)),
+            "text-only: {events:?}"
+        );
+        assert!(matches!(events.last(), Some(StreamEvent::StreamDone)));
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::Chunk(c) => Some(c.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            !text.trim().is_empty(),
+            "a non-empty canned summary streams"
+        );
     }
 
     #[test]

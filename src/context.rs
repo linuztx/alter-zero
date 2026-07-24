@@ -21,6 +21,115 @@ use std::path::PathBuf;
 use crate::app::{HistoryItem, Role, ToolCall};
 use crate::llm::tools::{image_attachment_note, is_image_read_output};
 
+/// Codex's `/compact` summarization prompt (`prompts/compact_prompt.md`,
+/// verbatim): the user message the compact turn sends over the whole current
+/// context. See `docs/compact.md`.
+pub const SUMMARIZATION_PROMPT: &str = include_str!("../prompts/compact_prompt.md");
+
+/// Codex's summary prefix (`prompts/compact_summary_prefix.md`, verbatim — no
+/// trailing newline): the compacted context's bridge message opens with it,
+/// followed by a newline and the marker's summary. See `docs/compact.md`.
+pub const SUMMARY_PREFIX: &str = include_str!("../prompts/compact_summary_prefix.md");
+
+/// Codex's `COMPACT_USER_MESSAGE_MAX_TOKENS`: the approx-token budget for the
+/// recent user messages replayed before the bridge after a `/compact`.
+const COMPACT_USER_MESSAGE_MAX_TOKENS: usize = 20_000;
+
+/// Codex's `APPROX_BYTES_PER_TOKEN` — the byte↔token heuristic the budget
+/// uses (not the real tokenizer: the walk runs at every turn start and must
+/// stay O(len); codex budgets with the same approximation).
+const APPROX_BYTES_PER_TOKEN: usize = 4;
+
+/// Codex's `approx_token_count`: bytes divided by four, rounded up.
+const fn approx_token_count(text: &str) -> usize {
+    text.len().div_ceil(APPROX_BYTES_PER_TOKEN)
+}
+
+/// Codex's `truncate_middle_with_token_budget`: fit `text` into `max_tokens`
+/// (≈ 4 bytes each) by keeping the head and tail halves — split on char
+/// boundaries — around an `…N tokens truncated…` marker. Text already within
+/// budget passes through untouched.
+fn truncate_middle_to_tokens(text: &str, max_tokens: usize) -> String {
+    let max_bytes = max_tokens.saturating_mul(APPROX_BYTES_PER_TOKEN);
+    if text.len() <= max_bytes {
+        return text.to_string();
+    }
+    let left_budget = max_bytes / 2;
+    let right_budget = max_bytes - left_budget;
+    // The widest char-aligned prefix within the left half of the budget…
+    let mut prefix_end = 0;
+    for (idx, ch) in text.char_indices() {
+        let end = idx + ch.len_utf8();
+        if end <= left_budget {
+            prefix_end = end;
+        } else {
+            break;
+        }
+    }
+    // …and the widest char-aligned suffix within the right half.
+    let tail_target = text.len() - right_budget;
+    let mut suffix_start = text.len();
+    for (idx, _) in text.char_indices() {
+        if idx >= tail_target {
+            suffix_start = idx;
+            break;
+        }
+    }
+    if suffix_start < prefix_end {
+        suffix_start = prefix_end;
+    }
+    let removed = (text.len() - max_bytes).div_ceil(APPROX_BYTES_PER_TOKEN);
+    format!(
+        "{}…{removed} tokens truncated…{}",
+        &text[..prefix_end],
+        &text[suffix_start..]
+    )
+}
+
+/// The typed user messages of `items` that fit `budget` approx tokens —
+/// codex's `build_compacted_history` selection: walk newest→oldest keeping
+/// whole messages while they fit, middle-truncate the first overflowing one to
+/// the remaining budget, then restore chronological order. Only real
+/// [`Role::User`] messages collect (tool records, shell transcripts, notices,
+/// and earlier compaction markers all drop — codex's `collect_user_messages`).
+fn budgeted_user_texts(items: &[HistoryItem], budget: usize) -> Vec<String> {
+    let mut selected = Vec::new();
+    let mut remaining = budget;
+    for item in items.iter().rev() {
+        let HistoryItem::Message(message) = item else {
+            continue;
+        };
+        if message.role != Role::User {
+            continue;
+        }
+        if remaining == 0 {
+            break;
+        }
+        let tokens = approx_token_count(&message.text);
+        if tokens <= remaining {
+            selected.push(message.text.clone());
+            remaining -= tokens;
+        } else {
+            selected.push(truncate_middle_to_tokens(&message.text, remaining));
+            break;
+        }
+    }
+    selected.reverse();
+    selected
+}
+
+/// The compacted context's bridge message: [`SUMMARY_PREFIX`], a newline, and
+/// the marker's summary — codex's `format!("{SUMMARY_PREFIX}\n{summary}")`,
+/// with its "(no summary available)" fallback when the model streamed nothing.
+fn summary_bridge(summary: &str) -> String {
+    let body = if summary.is_empty() {
+        "(no summary available)"
+    } else {
+        summary
+    };
+    format!("{SUMMARY_PREFIX}\n{body}")
+}
+
 /// The wire role a context message is sent as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextRole {
@@ -225,32 +334,60 @@ fn push_text(out: &mut Vec<ContextMessage>, role: ContextRole, text: String, ima
 #[must_use]
 pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
     let mut out: Vec<ContextMessage> = Vec::new();
+    // A `/compact` marker (docs/compact.md): the *last* one wins, and
+    // everything before it derives as codex's compacted shape — the budgeted
+    // recent user texts, then the summary bridge — with the items after it
+    // deriving normally. Earlier markers sit before the last one, so a prior
+    // compaction's summary is structurally excluded (only real user texts
+    // collect); codex needs an `is_summary_message` prefix check for the same
+    // exclusion because its summaries are plain user messages.
+    if let Some(cut) = history
+        .iter()
+        .rposition(|item| matches!(item, HistoryItem::Compaction(_)))
+    {
+        let HistoryItem::Compaction(compaction) = &history[cut] else {
+            unreachable!("rposition matched a Compaction");
+        };
+        for text in budgeted_user_texts(&history[..cut], COMPACT_USER_MESSAGE_MAX_TOKENS) {
+            push_text(&mut out, ContextRole::User, text, vec![]);
+        }
+        push_text(
+            &mut out,
+            ContextRole::User,
+            summary_bridge(&compaction.summary),
+            vec![],
+        );
+        derive_into(&mut out, &history[cut + 1..]);
+    } else {
+        derive_into(&mut out, history);
+    }
+    out
+}
+
+/// Derive `history` (a compaction-free run of items) into `out` — the
+/// per-item mapping documented on [`context_messages`].
+fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
     let mut tool_seq = 0usize;
     for (position, item) in history.iter().enumerate() {
         match item {
             HistoryItem::Message(message) => match message.role {
                 Role::User => push_text(
-                    &mut out,
+                    out,
                     ContextRole::User,
                     message.text.clone(),
                     message.images.clone(),
                 ),
                 Role::Assistant => {
-                    push_text(
-                        &mut out,
-                        ContextRole::Assistant,
-                        message.text.clone(),
-                        vec![],
-                    );
+                    push_text(out, ContextRole::Assistant, message.text.clone(), vec![]);
                 }
                 Role::Error => push_text(
-                    &mut out,
+                    out,
                     ContextRole::User,
                     format!("[error] {}", message.text),
                     vec![],
                 ),
                 Role::System => push_text(
-                    &mut out,
+                    out,
                     ContextRole::User,
                     format!("[system] {}", message.text),
                     vec![],
@@ -268,7 +405,7 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
                     );
                     if !resolved {
                         push_text(
-                            &mut out,
+                            out,
                             ContextRole::User,
                             format!("$ {}", message.text),
                             vec![],
@@ -285,7 +422,7 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
                     text.push('\n');
                     text.push_str(&tool.output);
                 }
-                push_text(&mut out, ContextRole::User, text, vec![]);
+                push_text(out, ContextRole::User, text, vec![]);
             }
             HistoryItem::Tool(tool) => {
                 let id = format!("call_{tool_seq}");
@@ -311,7 +448,7 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
                 // gone file becomes an `[image unavailable]` note there).
                 if tool.name == "Read" && is_image_read_output(&tool.output) {
                     push_text(
-                        &mut out,
+                        out,
                         ContextRole::User,
                         image_attachment_note(&tool.args),
                         vec![PathBuf::from(&tool.args)],
@@ -319,17 +456,20 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
                 }
             }
             HistoryItem::Summary(_) => {} // TUI chrome, not conversation
+            // Unreachable through `context_messages` (it splits at the last
+            // marker), but the mapping stays total: a marker inside a plain
+            // run contributes nothing itself.
+            HistoryItem::Compaction(_) => {}
             // A background shell's completion: a bracketed user-role note
             // carrying the outcome AND the output tail — the model reads the
             // result here (the rendered cell shows only the one-line headline).
             // User-role like the other notices: strict providers reject
             // mid-conversation system messages. See docs/background.md.
             HistoryItem::Background(notice) => {
-                push_text(&mut out, ContextRole::User, notice.context_text(), vec![]);
+                push_text(out, ContextRole::User, notice.context_text(), vec![]);
             }
         }
     }
-    out
 }
 
 #[cfg(test)]
@@ -808,5 +948,212 @@ mod tests {
         assert_eq!(ContextRole::User.wire_name(), "user");
         assert_eq!(ContextRole::Assistant.wire_name(), "assistant");
         assert_eq!(ContextRole::Tool.wire_name(), "tool");
+    }
+
+    // --- /compact: the marker-aware derivation (docs/compact.md) ---
+
+    fn compaction(summary: &str) -> HistoryItem {
+        HistoryItem::Compaction(crate::app::Compaction {
+            summary: summary.to_string(),
+            timestamp: String::new(),
+        })
+    }
+
+    #[test]
+    fn approx_token_count_is_bytes_over_four_rounded_up() {
+        // Codex's `approx_token_count` (bytes/4, ceiling) — the budget's unit.
+        assert_eq!(approx_token_count(""), 0);
+        assert_eq!(approx_token_count("abc"), 1);
+        assert_eq!(approx_token_count("abcd"), 1);
+        assert_eq!(approx_token_count("abcde"), 2);
+    }
+
+    #[test]
+    fn truncating_to_a_token_budget_keeps_head_and_tail_with_a_marker() {
+        // Codex's `truncate_middle_with_token_budget`: half the byte budget from
+        // the head, half from the tail, an `…N tokens truncated…` marker between.
+        let text = "aaaaaaaaaa..bbbbbbbbbb"; // 22 bytes
+        let out = truncate_middle_to_tokens(text, 5); // 20-byte budget
+        assert!(out.starts_with("aaaaaaaaaa"), "{out:?}");
+        assert!(out.ends_with("bbbbbbbbbb"), "{out:?}");
+        assert!(out.contains("tokens truncated…"), "{out:?}");
+    }
+
+    #[test]
+    fn a_text_within_the_budget_is_untouched() {
+        assert_eq!(truncate_middle_to_tokens("short", 20_000), "short");
+    }
+
+    #[test]
+    fn the_user_message_budget_keeps_the_newest_messages_within_the_cap() {
+        // Newest→oldest walk keeping whole messages, re-reversed to
+        // chronological order — codex's `build_compacted_history` selection.
+        let items = vec![
+            message(Role::User, "oldest message dropped"), // over budget
+            message(Role::Assistant, "reply"),
+            message(Role::User, "abcd"), // 1 token
+            message(Role::User, "efgh"), // 1 token
+        ];
+        assert_eq!(budgeted_user_texts(&items, 2), vec!["abcd", "efgh"]);
+    }
+
+    #[test]
+    fn an_overflowing_user_message_is_middle_truncated_to_the_remaining_budget() {
+        let big = "x".repeat(400);
+        let items = vec![
+            message(Role::User, &big),
+            message(Role::User, "abcd"), // 1 token, leaves 9 of 10
+        ];
+        let texts = budgeted_user_texts(&items, 10);
+        assert_eq!(texts.len(), 2);
+        assert!(texts[0].contains("tokens truncated…"), "{:?}", texts[0]);
+        assert!(texts[0].len() < big.len());
+        assert_eq!(texts[1], "abcd");
+    }
+
+    #[test]
+    fn only_typed_user_messages_enter_the_budget_walk() {
+        // Shell transcripts, notices, tool records, and summaries all drop —
+        // codex collects only real user messages.
+        let items = vec![
+            message(Role::User, "keep me"),
+            message(Role::Assistant, "reply"),
+            message(Role::Error, "bang"),
+            message(Role::System, "notice"),
+            message(Role::Shell, "pwd"),
+            tool("pwd", "", "/home", ToolStatus::Ok, true),
+            tool("Read", "f", "L1", ToolStatus::Ok, false),
+        ];
+        assert_eq!(budgeted_user_texts(&items, 20_000), vec!["keep me"]);
+    }
+
+    #[test]
+    fn a_compaction_marker_derives_the_bridge_in_place_of_the_prior_items() {
+        // Everything before the marker collapses to the budgeted user texts +
+        // the SUMMARY_PREFIX bridge (one merged user entry — our wire shape);
+        // the tool record and the reply drop entirely.
+        let history = vec![
+            message(Role::User, "do the thing"),
+            message(Role::Assistant, "let me check"),
+            tool("Read", "f", "L1", ToolStatus::Ok, false),
+            message(Role::Assistant, "all done"),
+            compaction("we did the thing"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 1, "{ctx:?}");
+        assert_eq!(ctx[0].role, ContextRole::User);
+        assert_eq!(
+            ctx[0].text,
+            format!("do the thing\n\n{SUMMARY_PREFIX}\nwe did the thing")
+        );
+        assert!(ctx[0].tool_calls.is_empty() && ctx[0].images.is_empty());
+    }
+
+    #[test]
+    fn post_marker_items_derive_normally_after_the_bridge() {
+        let history = vec![
+            message(Role::User, "old question"),
+            message(Role::Assistant, "old answer"),
+            compaction("summary"),
+            message(Role::User, "new question"),
+            message(Role::Assistant, "new answer"),
+            tool("Bash", "ls", "files", ToolStatus::Ok, false),
+        ];
+        let ctx = context_messages(&history);
+        // [merged user: old question + bridge + new question], assistant with
+        // the tool call, tool result.
+        assert_eq!(ctx.len(), 3, "{ctx:?}");
+        assert!(ctx[0].text.starts_with("old question\n\n"));
+        assert!(
+            ctx[0].text.ends_with("\n\nnew question"),
+            "{:?}",
+            ctx[0].text
+        );
+        assert_eq!(ctx[1].role, ContextRole::Assistant);
+        assert_eq!(ctx[1].text, "new answer");
+        assert_eq!(
+            ctx[1].tool_calls,
+            vec![ContextToolCall::new(
+                "call_0",
+                "bash",
+                r#"{"command":"ls"}"#
+            )]
+        );
+        assert_eq!(ctx[2], ContextMessage::tool_result("call_0", "files"));
+    }
+
+    #[test]
+    fn an_empty_summary_bridges_as_no_summary_available() {
+        // Codex's fallback when the model streamed nothing.
+        let history = vec![message(Role::User, "hi"), compaction("")];
+        let ctx = context_messages(&history);
+        assert!(
+            ctx[0]
+                .text
+                .ends_with(&format!("{SUMMARY_PREFIX}\n(no summary available)")),
+            "{:?}",
+            ctx[0].text
+        );
+    }
+
+    #[test]
+    fn only_the_last_marker_counts_and_prior_marker_summaries_are_excluded() {
+        // A second /compact: the first marker (and its summary) sits before the
+        // last one and is structurally excluded — only real user texts collect.
+        let history = vec![
+            message(Role::User, "first question"),
+            compaction("first summary"),
+            message(Role::User, "second question"),
+            compaction("second summary"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 1, "{ctx:?}");
+        assert!(!ctx[0].text.contains("first summary"), "{:?}", ctx[0].text);
+        assert!(ctx[0].text.contains("first question"));
+        assert!(ctx[0].text.contains("second question"));
+        assert!(
+            ctx[0].text.ends_with("\nsecond summary"),
+            "{:?}",
+            ctx[0].text
+        );
+    }
+
+    #[test]
+    fn pre_marker_user_images_do_not_ride_the_compacted_context() {
+        // Codex re-emits retained user messages as plain text — attachments
+        // drop from the model's view (the paths stay owned by history).
+        let history = vec![
+            HistoryItem::Message(Message {
+                role: Role::User,
+                text: "[Image #1] look".to_string(),
+                timestamp: String::new(),
+                images: vec![PathBuf::from("/tmp/shot.png")],
+            }),
+            compaction("saw it"),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 1);
+        assert!(ctx[0].images.is_empty(), "{:?}", ctx[0].images);
+        assert!(ctx[0].text.starts_with("[Image #1] look"));
+    }
+
+    #[test]
+    fn a_marker_first_in_history_derives_just_the_bridge() {
+        let history = vec![compaction("from nothing")];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx.len(), 1);
+        assert_eq!(ctx[0].text, format!("{SUMMARY_PREFIX}\nfrom nothing"));
+    }
+
+    #[test]
+    fn the_summarization_prompt_and_prefix_carry_codexs_text() {
+        assert!(
+            SUMMARIZATION_PROMPT.starts_with("You are performing a CONTEXT CHECKPOINT COMPACTION")
+        );
+        assert!(SUMMARY_PREFIX.starts_with("Another language model started to solve"));
+        assert!(
+            !SUMMARY_PREFIX.ends_with('\n'),
+            "the prefix has no trailing newline — the bridge adds the separator"
+        );
     }
 }

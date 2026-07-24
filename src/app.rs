@@ -300,6 +300,26 @@ pub enum HistoryItem {
     Summary(TurnSummary),
     /// A background shell's completion notice (`docs/background.md`).
     Background(BackgroundNotice),
+    /// A `/compact` marker (`docs/compact.md`): from here back, the model's
+    /// context is the compacted shape — [`crate::context::context_messages`]
+    /// derives the budgeted recent user texts + the summary bridge in place of
+    /// the earlier items. Appended (never a rewrite), so the transcript, the
+    /// recorder, and the checkpoint keys are untouched.
+    Compaction(Compaction),
+}
+
+/// A `/compact` marker's payload: the model-written handoff summary the
+/// context derivation bridges into every later request, codex's local
+/// compaction (`docs/compact.md`). Renders as the `● Context compacted` cell
+/// (the summary body expands in the Ctrl+O transcript only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compaction {
+    /// The compact turn's full streamed reply — the handoff summary (may be
+    /// empty when the model streamed nothing; the derivation substitutes
+    /// codex's "(no summary available)").
+    pub summary: String,
+    /// Wall-clock stamp (recorded like every item's; never displayed).
+    pub timestamp: String,
 }
 
 /// The whimsical working verbs, one chosen per turn (by [`App::turn_count`]) for
@@ -396,6 +416,22 @@ pub const RESUME_BUSY_NOTICE: &str = "/resume is disabled while a task is in pro
 /// scrollback, so mid-turn it is rejected like `/resume` (idle it still commits
 /// the full list). Shown as an [`Action::Toast`]. See `docs/toast.md`.
 pub const HELP_BUSY_NOTICE: &str = "/help is disabled while a task is in progress";
+
+/// The transient toast shown when `/compact` is run while a turn is active —
+/// codex disables it during a task (`available_during_task`); ours rejects with
+/// the `/help`/`/resume` toast pattern. See `docs/compact.md` / `docs/toast.md`.
+pub const COMPACT_BUSY_NOTICE: &str = "/compact is disabled while a task is in progress";
+
+/// The transient toast shown when `/compact` finds nothing to summarize — an
+/// empty conversation would send the bare summarization prompt to the model
+/// and "summarize" nothing. See `docs/compact.md`.
+pub const COMPACT_EMPTY_NOTICE: &str = "Nothing to compact";
+
+/// The fixed live-status verb for a `/compact` turn (the [`SHELL_VERB`]
+/// pattern — not cycled): the status line reads `Compacting…`. It doubles as
+/// the never-rendered done verb — a compact turn ends without a summary, the
+/// `● Context compacted` cell being its record. See `docs/compact.md`.
+pub const COMPACT_VERB: &str = "Compacting";
 
 /// The transient toast shown when a `/resume` restored the working directory to
 /// the session's checkpoint (`docs/checkpoint.md`) — feedback that the code, not
@@ -503,6 +539,14 @@ pub enum Action {
     /// The user pressed Esc while a turn was in flight: stop the generation
     /// (cancel + reap the backend, then [`App::interrupt_turn`]) — codex-style.
     Interrupt,
+    /// `/compact` from an idle composer with a non-empty context: run the
+    /// summarization turn. The loop calls [`App::begin_compact`], derives the
+    /// context, pushes codex's summarization prompt as its final user entry,
+    /// and spawns the request on a one-off **tools-free** backend — the
+    /// summary streams into the compact buffer (never rendered) and
+    /// [`App::finish_compact`] appends the marker at `StreamDone`. See
+    /// `docs/compact.md`.
+    Compact,
     /// `/resume` from an idle composer: open the session picker. The *loop*
     /// scans the sessions dir (the fs I/O stays at the boundary) and hands the
     /// result to [`App::open_resume_picker`]. See `docs/resume.md`.
@@ -787,6 +831,12 @@ pub enum CommandEffect {
     /// confirmation surfaces as a toast, not a scrollback message. See
     /// `docs/copy.md` / `docs/toast.md`.
     Copy,
+    /// Run codex's `/compact`: a summarization turn whose reply becomes the
+    /// context bridge (`docs/compact.md`) — or reject with a
+    /// [`COMPACT_BUSY_NOTICE`] toast while a turn is active (codex disables
+    /// it mid-task) / a [`COMPACT_EMPTY_NOTICE`] toast when the derived
+    /// context is empty.
+    Compact,
     /// Open the `/resume` session picker — or reject with a
     /// [`RESUME_BUSY_NOTICE`] toast while a turn is active (codex blocks it
     /// mid-task; it swaps the whole conversation). See `docs/resume.md`.
@@ -835,6 +885,12 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "copy",
         description: "Copy the last response to the clipboard",
         effect: CommandEffect::Copy,
+    },
+    SlashCommand {
+        name: "compact",
+        // Codex's description, verbatim.
+        description: "summarize conversation to prevent hitting the context limit",
+        effect: CommandEffect::Compact,
     },
     SlashCommand {
         name: "resume",
@@ -1617,6 +1673,14 @@ pub struct App {
     /// [`streaming_text`]: App::streaming_text
     /// [`is_streaming`]: App::is_streaming
     streaming: Option<String>,
+    /// `Some` while a `/compact` turn is in flight — the flag *and* the
+    /// accumulator: [`push_chunk`](App::push_chunk) diverts the streamed
+    /// summary here so the visible reply buffer stays empty (the summary is
+    /// never rendered, codex parity) while the token tally still ticks.
+    /// [`finish_compact`](App::finish_compact) takes it into the appended
+    /// [`HistoryItem::Compaction`] marker; an interrupt, a backend error, or
+    /// a `/clear` drops it — the old context stands. See `docs/compact.md`.
+    compact_buffer: Option<String>,
     /// The streaming strip preview's row count, injected by the boundary before
     /// each draw ([`set_stream_preview_rows`], the [`set_status_times`]
     /// pattern): 1 for a normal reply's single-row preview, the forming block's
@@ -2750,6 +2814,20 @@ impl App {
                 }
             }
             CommandEffect::Copy => Action::Copy(self.last_assistant_text()),
+            CommandEffect::Compact => {
+                // Codex disables /compact while a task runs (the summarize
+                // request would race the stream over the same history); the
+                // rejection is a transient toast like /resume's. An empty
+                // derived context has nothing to summarize. See
+                // docs/compact.md / docs/toast.md.
+                if self.turn_active() {
+                    Action::Toast(COMPACT_BUSY_NOTICE.to_string())
+                } else if crate::context::context_messages(&self.history).is_empty() {
+                    Action::Toast(COMPACT_EMPTY_NOTICE.to_string())
+                } else {
+                    Action::Compact
+                }
+            }
             CommandEffect::Resume => {
                 // Codex blocks /resume while a task runs (it swaps the whole
                 // conversation, racing the stream); the rejection is a transient
@@ -4584,6 +4662,75 @@ impl App {
         }
     }
 
+    /// Begin a `/compact` turn (`docs/compact.md`), reusing the AI turn
+    /// machinery like [`begin_shell`](App::begin_shell) so the summarization
+    /// request gets the live status strip, `esc to interrupt`, and the
+    /// mid-turn queueing for free:
+    ///
+    /// - an **empty** streaming buffer — [`is_streaming`](App::is_streaming)
+    ///   is true (the strip shows, Enter queues, [`fail_stream`] works) but
+    ///   the visible reply stays empty: chunks divert into the summary buffer
+    ///   via [`push_chunk`](App::push_chunk), so the summary is never rendered
+    ///   (codex parity) while the tally ticks;
+    /// - a fixed-verb status ([`COMPACT_VERB`] → `Compacting…`) that does
+    ///   **not** advance the cycled per-turn verbs (`turn_count` untouched).
+    ///
+    /// The boundary spawns the summarize request; [`finish_compact`] lands the
+    /// marker at `StreamDone`, while an interrupt/error/`/clear` drops the
+    /// buffer — the old context stands (codex swaps only at the very end).
+    ///
+    /// [`fail_stream`]: App::fail_stream
+    /// [`finish_compact`]: App::finish_compact
+    pub fn begin_compact(&mut self) {
+        self.streaming = Some(String::new());
+        self.compact_buffer = Some(String::new());
+        self.stream_preview_rows = 1;
+        // Per-turn usage accumulators reset with every turn machinery start.
+        self.turn_usage_tokens = 0;
+        self.turn_usage_cached = 0;
+        self.status = Some(TurnStatus {
+            verb: COMPACT_VERB,
+            // Never rendered: a compact turn ends without a summary (the
+            // `● Context compacted` cell is its record).
+            done_verb: COMPACT_VERB,
+            tokens: 0,
+            arrow: TokenArrow::Down,
+            elapsed: Duration::ZERO,
+            thinking: None,
+            shell: false,
+            retry: None,
+        });
+    }
+
+    /// Whether a `/compact` turn is in flight (the summary buffer is open).
+    #[must_use]
+    pub const fn is_compacting(&self) -> bool {
+        self.compact_buffer.is_some()
+    }
+
+    /// End a `/compact` turn: take the streamed summary, append the
+    /// [`HistoryItem::Compaction`] marker (an *append* — the transcript, the
+    /// recorder watermark, and the checkpoint keys all stay valid), and clear
+    /// the turn state with **no** `Done for Ns` summary. Returns the appended
+    /// marker for the boundary to commit the `● Context compacted` cell, or
+    /// `None` when no compact turn was in flight. The context derivation
+    /// ([`crate::context::context_messages`]) applies the compacted shape from
+    /// the marker on. See `docs/compact.md`.
+    pub fn finish_compact(&mut self) -> Option<Compaction> {
+        let summary = self.compact_buffer.take()?;
+        self.streaming = None;
+        self.status = None;
+        let compaction = Compaction {
+            // A model reply often ends with a trailing newline; the bridge
+            // adds its own separators, so store the summary trimmed.
+            summary: summary.trim().to_string(),
+            timestamp: self.now_stamp(),
+        };
+        self.history
+            .push(HistoryItem::Compaction(compaction.clone()));
+        Some(compaction)
+    }
+
     /// Count a just-submitted user message into the live tally as **uploaded
     /// input** — the tokens grow and the arrow points `↑` (like a tool result
     /// folded back in, the reverse of streaming output). Called right after
@@ -4604,8 +4751,13 @@ impl App {
 
     /// Append a streamed chunk to the in-progress reply (and grow the live token
     /// tally, arrow pointing down — output streaming). No-op if not streaming.
+    /// A `/compact` turn diverts the chunk into the summary buffer instead —
+    /// the visible reply stays empty (the summary is never rendered) while the
+    /// tally still ticks. See `docs/compact.md`.
     pub fn push_chunk(&mut self, chunk: &str) {
-        if let Some(buf) = self.streaming.as_mut() {
+        if let Some(buf) = self.compact_buffer.as_mut() {
+            buf.push_str(chunk);
+        } else if let Some(buf) = self.streaming.as_mut() {
             buf.push_str(chunk);
         }
         if let Some(status) = self.status.as_mut() {
@@ -4831,6 +4983,9 @@ impl App {
     /// mirror of [`App::interrupt_turn`].
     pub fn fail_stream(&mut self, error: &str) -> Option<StreamError> {
         let streamed = self.streaming.take()?;
+        // A /compact turn's half summary dies with the request — the marker
+        // lands only at StreamDone, so the old context stands (docs/compact.md).
+        self.compact_buffer = None;
         let partial = if streamed.is_empty() {
             None
         } else {
@@ -4883,6 +5038,14 @@ impl App {
         if !self.is_streaming() && !self.turn_active() {
             return None;
         }
+        // A /compact turn: drop the half-streamed summary — the swap happens
+        // only at StreamDone (codex replaces history at the very end), so an
+        // interrupt leaves the old context standing. Taking the buffer also
+        // keeps the undo branch below from firing: the history tail may be an
+        // unrelated user message (the marker was never appended), and pulling
+        // it into the composer would undo a submission this turn never made.
+        // See docs/compact.md.
+        let compacting = self.compact_buffer.take().is_some();
         // Take the partial first (empties the streaming buffer either way).
         let partial = self.streaming.take().filter(|text| !text.is_empty());
 
@@ -4908,7 +5071,8 @@ impl App {
         // path below records the notice. See `docs/tools.md` / `docs/interrupt.md`.
         let submission_is_intact =
             matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User);
-        if submission_is_intact
+        if !compacting
+            && submission_is_intact
             && partial.is_none()
             && self.tool_queue.is_empty()
             && self.queued.is_empty()
@@ -5013,6 +5177,7 @@ impl App {
         self.history.clear();
         self.history_generation += 1;
         self.streaming = None;
+        self.compact_buffer = None;
         self.tool_queue.clear();
         self.status = None;
         // The wiped batches' image attachments will never dispatch — record
@@ -7703,7 +7868,7 @@ mod tests {
         // the highlight (and Enter) lands on nothing.
         let mut app = App::new();
         type_str(&mut app, "/c");
-        assert_eq!(matching_commands("c").len(), 2, "/clear and /copy");
+        assert_eq!(matching_commands("c").len(), 3, "/clear, /copy, /compact");
         app.on_key(key(KeyCode::Down)); // highlight /copy (index 1)
         assert_eq!(app.command_menu.as_ref().unwrap().selected, 1);
         type_str(&mut app, "l"); // "/cl" — only /clear matches now
@@ -7859,6 +8024,188 @@ mod tests {
             Action::Toast(HELP_BUSY_NOTICE.to_string()),
         );
         assert!(app.input.is_empty());
+    }
+
+    // --- /compact (docs/compact.md) ---
+
+    #[test]
+    fn the_palette_lists_compact_with_codexs_description() {
+        let cmd = COMMANDS
+            .iter()
+            .find(|c| c.name == "compact")
+            .expect("/compact is registered");
+        assert_eq!(
+            cmd.description,
+            "summarize conversation to prevent hitting the context limit"
+        );
+        assert_eq!(cmd.effect, CommandEffect::Compact);
+    }
+
+    #[test]
+    fn slash_compact_dispatches_the_compact_action_when_idle() {
+        let mut app = App::new();
+        app.record_user_message("hello");
+        type_str(&mut app, "/compact");
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Compact);
+        assert!(app.input.is_empty());
+    }
+
+    #[test]
+    fn compact_mid_turn_is_rejected_with_a_toast() {
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.begin_stream();
+        type_str(&mut app, "/compact");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Toast(COMPACT_BUSY_NOTICE.to_string()),
+        );
+        assert!(app.turn_active(), "the running turn is untouched");
+    }
+
+    #[test]
+    fn compact_with_nothing_to_compact_is_rejected_with_a_toast() {
+        let mut app = App::new();
+        type_str(&mut app, "/compact");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Toast(COMPACT_EMPTY_NOTICE.to_string()),
+        );
+    }
+
+    #[test]
+    fn begin_compact_starts_a_fixed_verb_turn_without_advancing_the_cycle() {
+        let mut app = App::new();
+        app.begin_compact();
+        assert!(app.turn_active());
+        assert!(
+            app.is_streaming(),
+            "the strip shows while the summary streams"
+        );
+        assert!(app.is_compacting());
+        assert_eq!(app.status().expect("a compact status").verb, COMPACT_VERB);
+        app.finish_compact();
+        // The cycled per-turn verbs are unaffected: the next real turn still
+        // picks the first (the verb-sequence contract).
+        app.begin_stream();
+        assert_eq!(app.status().unwrap().verb, WORKING_VERBS[0]);
+    }
+
+    #[test]
+    fn compact_chunks_divert_to_the_buffer_and_never_render() {
+        let mut app = App::new();
+        app.begin_compact();
+        app.push_chunk("the summary ");
+        app.push_chunk("text");
+        assert_eq!(
+            app.streaming_text(),
+            Some(""),
+            "the visible reply buffer stays empty — the summary is never rendered"
+        );
+        assert!(app.status().unwrap().tokens > 0, "the tally still ticks");
+        let compaction = app.finish_compact().expect("a marker");
+        assert_eq!(compaction.summary, "the summary text");
+    }
+
+    #[test]
+    fn finish_compact_appends_the_marker_and_ends_the_turn_without_a_summary() {
+        let mut app = App::new();
+        app.record_user_message("hello");
+        let before = app.history.len();
+        app.begin_compact();
+        app.push_chunk("gist\n");
+        let compaction = app.finish_compact().expect("a marker");
+        assert_eq!(compaction.summary, "gist", "the streamed text, trimmed");
+        assert_eq!(app.history.len(), before + 1);
+        assert!(
+            matches!(app.history.last(), Some(HistoryItem::Compaction(c)) if c.summary == "gist")
+        );
+        assert!(!app.turn_active(), "the status cleared");
+        assert!(!app.is_streaming());
+        assert!(!app.is_compacting());
+        assert!(
+            app.end_turn(3).is_none(),
+            "no Done-for-Ns summary for a compact turn — the marker cell is the record"
+        );
+    }
+
+    #[test]
+    fn a_compact_turn_with_no_streamed_text_still_appends_an_empty_marker() {
+        // The derivation substitutes codex's "(no summary available)" for the
+        // empty summary — the marker still lands so the state is visible.
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.begin_compact();
+        let compaction = app.finish_compact().expect("a marker");
+        assert_eq!(compaction.summary, "");
+    }
+
+    #[test]
+    fn esc_mid_compact_keeps_the_old_history_and_records_the_interrupt_notice() {
+        // The swap lives only at StreamDone (codex: replace-at-the-very-end) —
+        // an interrupt drops the half summary and leaves the context as it was.
+        // The tail being a user message must NOT trigger the interrupt-undo
+        // (that would pull an unrelated old message into the composer).
+        let mut app = App::new();
+        app.record_user_message("hello");
+        let before = app.history.clone();
+        app.begin_compact();
+        app.push_chunk("half a summ");
+        let outcome = app.interrupt_turn().expect("an interrupt outcome");
+        assert!(
+            matches!(
+                &outcome,
+                InterruptedTurn::Kept {
+                    partial: None,
+                    tool: None,
+                    notice: Some(_)
+                }
+            ),
+            "{outcome:?}"
+        );
+        assert!(!app.is_compacting(), "the half summary is dropped");
+        assert_eq!(app.history[..before.len()], before[..]);
+        assert!(
+            !app.history
+                .iter()
+                .any(|i| matches!(i, HistoryItem::Compaction(_))),
+            "no marker on interrupt"
+        );
+        assert!(app.input.is_empty(), "no interrupt-undo composer refill");
+    }
+
+    #[test]
+    fn a_backend_error_mid_compact_drops_the_buffer_and_records_the_notice() {
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.begin_compact();
+        app.push_chunk("half");
+        let failure = app.fail_stream("boom").expect("a failure record");
+        assert_eq!(
+            failure.partial, None,
+            "the half summary never becomes an assistant message"
+        );
+        assert!(!app.is_compacting());
+        assert!(
+            !app.history
+                .iter()
+                .any(|i| matches!(i, HistoryItem::Compaction(_)))
+        );
+        assert!(
+            matches!(app.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::Error)
+        );
+    }
+
+    #[test]
+    fn clear_conversation_drops_the_compact_state() {
+        let mut app = App::new();
+        app.record_user_message("hi");
+        app.begin_compact();
+        app.push_chunk("half");
+        app.clear_conversation();
+        assert!(!app.is_compacting());
+        assert!(!app.turn_active());
+        assert!(app.history.is_empty());
     }
 
     #[test]
@@ -8063,6 +8410,7 @@ mod tests {
                 HistoryItem::Tool(t) => &t.timestamp,
                 HistoryItem::Summary(s) => &s.timestamp,
                 HistoryItem::Background(n) => &n.timestamp,
+                HistoryItem::Compaction(c) => &c.timestamp,
             };
             assert_eq!(ts, STAMP, "every recorded item carries the clock's stamp");
         }
@@ -8533,6 +8881,7 @@ mod tests {
                 HistoryItem::Tool(_) => "tool",
                 HistoryItem::Background(_) => "background",
                 HistoryItem::Summary(_) => "summary",
+                HistoryItem::Compaction(_) => "compaction",
             })
             .collect();
         assert_eq!(

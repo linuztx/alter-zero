@@ -1,0 +1,165 @@
+# /compact — summarize the conversation to free context
+
+A port of codex's `/compact` (its local "Memento" compaction,
+`codex-rs/core/src/compact.rs`): the command runs a special **summarization
+turn** — the whole conversation plus a fixed handoff prompt goes to the model,
+the streamed summary is captured (never rendered), and from then on the model's
+context window is rebuilt as codex's *compacted history*: the most recent user
+messages (token-budgeted) plus a `SUMMARY_PREFIX`-tagged bridge message carrying
+the summary. The visible transcript is untouched — a cyan
+`● Context compacted` cell marks the spot, exactly like codex's info cell.
+
+```
+❯ long conversation …
+● …many turns of replies and tool calls…
+
+(  ●•· ) Compacting… (2s · ↑ 8.1k tokens · esc to interrupt)   ← the turn
+
+● Context compacted                                            ← the marker
+───────────────────────────────────────────────────────────────
+❯
+───────────────────────────────────────────────────────────────
+```
+
+## The append-only design (why history is never rewritten)
+
+Codex keeps **two** histories: the TUI transcript stays intact while the
+model-facing session history is replaced with the compacted shape (and the
+rollout file records everything plus a `Compacted` item; resume derives the
+working set from the newest such record). This TUI has **one**
+`App::history` feeding the renderer, the recorder, the checkpoint keys, the
+Esc-Esc backtrack, *and* the per-turn context derivation
+(`context::context_messages`). Physically replacing it would lose the visible
+transcript, force a rollout rewrite that drops the pre-compaction turns,
+and invalidate every length-keyed checkpoint.
+
+So compaction is **append-only**: `/compact`'s turn ends by *appending* a
+`HistoryItem::Compaction { summary, timestamp }` marker, and the replacement
+happens at **derivation time** — `context_messages` finds the *last* marker and
+emits, in place of everything before it:
+
+1. the pre-marker **typed user messages** (`Role::User` text only — images,
+   tool records, shell transcripts, and notices drop, codex-parity), walked
+   newest→oldest under a `COMPACT_USER_MESSAGE_MAX_TOKENS` (20 000) budget:
+   whole messages are kept while they fit, the first overflowing one is
+   **middle-truncated** to the remaining budget (codex's
+   `truncate_middle_with_token_budget` — head + `…{n} tokens truncated…` +
+   tail), then the selection is re-reversed to chronological order. Tokens are
+   codex's `bytes/4` approximation (`approx_token_count`), not the tiktoken
+   seam — the walk runs at every turn start and must be O(len);
+2. the **bridge**: `{SUMMARY_PREFIX}\n{summary}` as a user message (an empty
+   summary becomes `(no summary available)`, codex's fallback). The prefix is
+   codex's verbatim `prompts/compact_summary_prefix.md` ("Another language
+   model started to solve this problem…");
+
+then derives the items *after* the marker normally. Earlier markers (a second
+`/compact`) sit before the last one and are skipped — only real `Role::User`
+texts are collected, so a prior compaction's summary is structurally excluded
+(codex needs an `is_summary_message` prefix check because its summaries are
+user messages; ours live in the marker).
+
+Everything downstream holds with zero remapping:
+
+- the **recorder** sees a plain append (no rewrite, no transcript loss; the
+  marker is a new `compaction` rollout line, `session.rs`);
+- **checkpoints** stay valid — `after` counts only ever grow;
+- **Esc-Esc backtrack** to a pre-compaction user message truncates the marker
+  away and the context reverts to the full conversation — codex's
+  rollback-past-compaction semantics for free;
+- **`/resume`** parses the marker back and the derivation re-applies;
+- **Ctrl+D** shows the compacted context automatically (it renders
+  `context_messages` fresh);
+- the **Ctrl+O transcript** shows the marker cell with the summary text under
+  it (dim, indented) — unlike the inline cell, which is just the one line.
+
+## The compact turn
+
+`/compact` (palette description: codex's "summarize conversation to prevent
+hitting the context limit") dispatches `Action::Compact` when idle with a
+non-empty derivable context; mid-turn it is rejected with a
+`COMPACT_BUSY_NOTICE` toast (the `/help`/`/resume` pattern — codex also
+disables it during a task), and with nothing to compact it toasts
+`COMPACT_EMPTY_NOTICE`.
+
+The loop's `Compact` arm is a sibling of `start_background_turn` — a turn with
+no new user bubble:
+
+- `App::begin_compact()` opens the status with **fixed** verbs
+  (`COMPACT_VERB` "Compacting"; `turn_count` does not advance, so the cycled
+  per-turn verbs are unaffected) plus an empty streaming buffer and an empty
+  **`compact_buffer`** — the flag *and* the accumulator;
+- the context is derived as usual and codex's verbatim summarization prompt
+  (`prompts/compact_prompt.md`, "You are performing a CONTEXT CHECKPOINT
+  COMPACTION…") is pushed onto it as a final user entry — necessary because
+  the real backend ignores the bare `prompt` argument whenever the context is
+  non-empty. The prompt is never recorded into history (codex-parity: it
+  lives only in the request);
+- the request runs on a **one-off tools-free backend** —
+  `LlmBackend::configure(cfg, system_prompt, /*tools=*/false)` with the same
+  persona+environment prompt and no background-notice injection — so the
+  model can only answer with text (codex sends the summarize request with no
+  tools). When no real backend is configured the session backend (the dummy)
+  is used instead; `stream::turn_events` scripts a text-only summary for the
+  compact prompt so the flow is drivable offline (and by `smoke.sh`);
+- streamed `Chunk`s **divert** into `compact_buffer` (`App::push_chunk` checks
+  the flag) — the streaming buffer stays empty, so the strip shows the status
+  line only (no preview row, no scrollback commits) and the token tally still
+  ticks; codex likewise never renders the summary;
+- on `StreamDone`, `App::finish_compact()` takes the buffer, appends the
+  `Compaction` marker, and clears the status with **no** `Done for Ns`
+  summary; the loop commits the `● Context compacted` cell
+  (`ui::compaction_lines`) and runs the normal `dispatch_after_turn` — a
+  queued batch dispatches onto the freshly compacted context, and the
+  turn-end checkpoint snapshots at the new (grown) length.
+
+## Interrupts, errors, `/clear`
+
+The swap-only-at-the-end rule is codex's: nothing mutates until the summary
+fully streamed.
+
+- **Esc mid-compact** takes the normal interrupt path: the backend is
+  cancelled and `App::interrupt_turn` lands in `Kept` (a compact turn has no
+  trailing user message, so `Undone` can't fire) with no partial (the
+  streaming buffer is empty — the half-summary in `compact_buffer` is
+  dropped), recording only the red `Conversation interrupted` notice. No
+  marker is appended; the old context stands. A queued batch then dispatches
+  on the *uncompacted* context — intended (the compaction didn't happen).
+- **A backend error** rides `App::fail_stream` unchanged: the buffer is
+  dropped, the red error notice lands, no marker.
+- **`/clear` mid-compact** works because the compact turn lives in the loop's
+  normal `inflight` slot: the Clear arm cancels the thread and swaps the
+  channel, and `clear_conversation` also drops `compact_buffer`.
+
+## Files
+
+- `prompts/compact_prompt.md` / `prompts/compact_summary_prefix.md` — codex's
+  prompt bytes verbatim (the prefix file has **no** trailing newline; the
+  bridge is `prefix + "\n" + summary`).
+- `src/context.rs` — the prompt consts, `approx_token_count`, the budget walk
+  (`compacted_user_texts`), the bridge, and the marker-aware
+  `context_messages`; all pure and unit-tested.
+- `src/app.rs` — `HistoryItem::Compaction(Compaction)`, `begin_compact` /
+  `finish_compact` / the `push_chunk` diversion, the `/compact` command +
+  busy/empty guards, `Action::Compact`.
+- `src/session.rs` — the `compaction` rollout record (round-trips; old builds
+  skip the unknown line, the established forward-compat contract).
+- `src/ui.rs` — `compaction_lines` (inline cell) and the transcript arm
+  (cell + dim summary body); a `conversation_lines` arm so resizes repaint it.
+- `src/main.rs` — the `Action::Compact` arm (boundary), the compact branches
+  in the `Chunk`/`StreamDone` handling, `build_compact_backend`.
+- `src/stream.rs` — the dummy's text-only compact script.
+
+## Limitations
+
+- No auto-compact: codex also compacts automatically near the context limit;
+  this TUI models no per-model context window at all (the OpenRouter
+  `/models` `context_length` is unparsed), so `/compact` is manual-only.
+- No context-window-exceeded recovery *during* the summarize call: codex
+  drops the oldest history item and retries on that provider error; our
+  `ReplySource` seam has no such classification, so the turn fails with the
+  provider's error notice once (ironically, the failure `/compact` exists to
+  prevent). Retry the command after trimming by hand (`/clear`, backtrack).
+- Codex's post-compact "Heads up: Long threads and multiple compactions…"
+  warning cell is not ported — the marker cell is the whole record.
+- The bridge re-tokenizes as `bytes/4`, not the real tokenizer — same
+  approximation codex uses for the budget.

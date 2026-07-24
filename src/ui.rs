@@ -1527,6 +1527,39 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// The `/compact` marker cell's text — codex's "Context compacted" info cell,
+/// verbatim. See `docs/compact.md`.
+pub const COMPACTED_NOTICE: &str = "Context compacted";
+
+/// The inline `/compact` marker cell: the one-line `● Context compacted`
+/// notice in the system-notice dress (cyan bullet, literal text). The summary
+/// body never shows inline — it expands in the Ctrl+O transcript only
+/// ([`compaction_full_lines`]). See `docs/compact.md`.
+#[must_use]
+pub fn compaction_lines(width: u16) -> Vec<Line<'static>> {
+    message_lines(Role::System, COMPACTED_NOTICE, width)
+}
+
+/// The Ctrl+O transcript's expanded `/compact` cell: the marker line with the
+/// model-written handoff summary wrapped dim + indented below it — what the
+/// bridge will replay to the model, readable in place. An empty summary shows
+/// just the marker. See `docs/compact.md`.
+fn compaction_full_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<Line<'static>> {
+    let mut lines = compaction_lines(width);
+    if compaction.summary.is_empty() {
+        return lines;
+    }
+    let body_width = width.saturating_sub(BULLET_WIDTH).max(1);
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    for row in wrap_text(&compaction.summary, body_width) {
+        lines.push(Line::from(vec![
+            Span::raw(INDENT.to_string()),
+            Span::styled(row, dim),
+        ]));
+    }
+    lines
+}
+
 /// Expand tabs in a single code line to spaces **for display** (see
 /// [`CODE_TAB_WIDTH`]). A tab is zero display columns, so tab-indented code
 /// rendered verbatim would collapse flush-left; this substitutes a fixed run of
@@ -4751,6 +4784,9 @@ fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>,
         HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
         HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
         HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
+        // The transcript expands the marker with its summary body — the
+        // inline view keeps it collapsed (docs/compact.md).
+        HistoryItem::Compaction(c) => lines.extend(compaction_full_lines(c, width)),
     }
     if !is_shell_header(item) {
         lines.push(Line::default());
@@ -6657,6 +6693,7 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
             HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
+            HistoryItem::Compaction(_) => lines.extend(compaction_lines(width)),
         }
         // Blank spacer after every item — except a shell command's header:
         // its cell stays flush ([`is_shell_header`]).
@@ -12459,6 +12496,56 @@ mod tests {
         let lines = message_lines(Role::System, "a notice", 80);
         assert_eq!(lines[0].spans[0].style.fg, Some(SYSTEM_COLOR));
         assert_ne!(SYSTEM_COLOR, AI_COLOR, "distinct from an AI reply");
+    }
+
+    // --- /compact: the marker cell (docs/compact.md) ---
+
+    #[test]
+    fn compaction_lines_render_the_cyan_marker_cell() {
+        // The inline cell is codex's "Context compacted" info line, in our
+        // system-notice dress (cyan ●).
+        let lines = compaction_lines(80);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(plain(&lines[0]), format!("● {COMPACTED_NOTICE}"));
+        assert_eq!(lines[0].spans[0].style.fg, Some(SYSTEM_COLOR));
+    }
+
+    #[test]
+    fn conversation_lines_keep_the_compaction_marker_collapsed() {
+        // The inline repaint shows the one-line cell + the spacer — the summary
+        // body is Ctrl+O-only.
+        let history = vec![HistoryItem::Compaction(crate::app::Compaction {
+            summary: "kept the gist".into(),
+            timestamp: String::new(),
+        })];
+        let lines = conversation_lines(&history, 80);
+        assert_eq!(lines.len(), 2, "marker + spacer: {:?}", lines.len());
+        assert_eq!(plain(&lines[0]), format!("● {COMPACTED_NOTICE}"));
+    }
+
+    #[test]
+    fn the_transcript_expands_the_compaction_summary_dim_below_the_marker() {
+        let compaction = crate::app::Compaction {
+            summary: "kept the gist".into(),
+            timestamp: String::new(),
+        };
+        let lines = compaction_full_lines(&compaction, 80);
+        assert_eq!(plain(&lines[0]), format!("● {COMPACTED_NOTICE}"));
+        assert_eq!(plain(&lines[1]), format!("{INDENT}kept the gist"));
+        assert_eq!(
+            lines[1].spans[1].style.fg,
+            Some(TOOL_DIM_COLOR),
+            "the summary body is dim"
+        );
+    }
+
+    #[test]
+    fn an_empty_compaction_summary_expands_to_just_the_marker() {
+        let compaction = crate::app::Compaction {
+            summary: String::new(),
+            timestamp: String::new(),
+        };
+        assert_eq!(compaction_full_lines(&compaction, 80).len(), 1);
     }
 
     #[test]

@@ -799,6 +799,76 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     None => render.reset(),
                                 }
                             }
+                            Action::Compact => {
+                                // /compact (docs/compact.md): run codex's
+                                // summarization turn — the whole current context
+                                // plus the fixed handoff prompt — with the reply
+                                // diverted into the compact buffer (never
+                                // rendered); `finish_compact` appends the marker
+                                // at StreamDone and the derivation compacts the
+                                // model's context from there on. The turn rides
+                                // the normal `inflight` slot so Esc, /clear, and
+                                // quit reap it like any other turn.
+                                app.begin_compact();
+                                app.count_user_input(context::SUMMARIZATION_PROMPT);
+                                render.reset();
+                                clocks.turn_start = Some(Instant::now());
+                                clocks.thinking_start = None;
+                                clocks.command_start = None;
+                                let cancel = CancelToken::new();
+                                let mut compact_context =
+                                    context::context_messages(&app.history);
+                                // The real backend ignores the bare prompt
+                                // whenever the context is non-empty — the
+                                // summarization prompt rides as the context's
+                                // final user entry (the prompt argument still
+                                // serves the dummy, which scripts a text-only
+                                // canned summary for it).
+                                compact_context.push(context::ContextMessage::new(
+                                    context::ContextRole::User,
+                                    context::SUMMARIZATION_PROMPT,
+                                ));
+                                // Codex sends the summarize request with NO
+                                // tools: a one-off tools-free backend for the
+                                // active selection (same persona + environment
+                                // prompt, no background-notice injection). With
+                                // no real backend configured the session backend
+                                // — the dummy — plays its canned summary.
+                                let compact_backend = if dummy_forced() || stall_ms.is_some() {
+                                    None
+                                } else {
+                                    active_provider
+                                        .as_deref()
+                                        .and_then(|provider| {
+                                            model_config_for(
+                                                &providers, &env_file, provider, &active_model,
+                                                temperature,
+                                                app.thinking.as_ref().map(|t| t.mode),
+                                                active_vision,
+                                            )
+                                        })
+                                        .filter(|cfg| cfg.is_usable())
+                                        .map(|cfg| {
+                                            LlmBackend::configure(
+                                                cfg,
+                                                system_prompt.clone(),
+                                                /*tools_enabled=*/ false,
+                                            )
+                                        })
+                                };
+                                let spawn_on: &dyn ReplySource = match compact_backend.as_ref() {
+                                    Some(one_off) => one_off,
+                                    None => backend.as_ref(),
+                                };
+                                let handle = spawn_on.spawn(
+                                    context::SUMMARIZATION_PROMPT.to_string(),
+                                    Vec::new(),
+                                    compact_context,
+                                    tx.clone(),
+                                    cancel.clone(),
+                                );
+                                inflight = Some((cancel, handle));
+                            }
                             Action::OpenResumePicker => {
                                 // /resume from an idle composer (docs/resume.md):
                                 // scan the sessions dir here at the boundary —
@@ -2623,6 +2693,26 @@ fn on_stream_event(
             Ok(false)
         }
         StreamEvent::StreamDone => {
+            // A /compact turn's end (docs/compact.md): the marker is appended
+            // here (an append — the loop-bottom recorder sync writes it, the
+            // checkpoint keys stay valid) and nothing streamed to the
+            // transcript, so there is no final text and no Done-for-Ns
+            // summary — the `● Context compacted` cell is the record.
+            // dispatch_after_turn then snapshots + drains the queue like any
+            // turn end, so a batch queued mid-compact goes out over the
+            // freshly compacted context.
+            if app.finish_compact().is_some() {
+                if committing {
+                    term.set_view_height(live_region_height(app, term.screen()));
+                    term.insert_before(ui::compaction_lines(width));
+                    term.insert_before(vec![Line::default()]); // blank spacer
+                }
+                settle_bg_completions(term, app);
+                render.reset();
+                clocks.turn_start = None;
+                clocks.thinking_start = None;
+                return Ok(true);
+            }
             let final_text = app.finish_stream();
             let elapsed = clocks
                 .turn_start
