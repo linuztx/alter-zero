@@ -1807,6 +1807,15 @@ pub struct App {
     /// ([`App::set_system_prompt`], from `ReplySource::system_prompt`) so the
     /// Ctrl+D view can show the *whole* context window. `None` for the dummy.
     pub system_prompt: Option<String>,
+    /// The project's AGENTS.md instructions, rendered as codex's
+    /// user-instructions fragment and injected at the boundary
+    /// ([`App::set_user_instructions`], from `project_doc::load_user_instructions`
+    /// — loaded at startup and refreshed at every turn start, so a `/init`-
+    /// generated guide rides the very next turn). The context derivation
+    /// prepends it as the window's first user entry
+    /// (`context::context_messages_with`), the Ctrl+D view shows it there,
+    /// and the offline token estimate counts it. See `docs/project-doc.md`.
+    pub user_instructions: Option<String>,
     /// The Esc-Esc backtrack gesture (edit a previous message): primed by Esc
     /// from an idle empty composer when a previous user message exists,
     /// previewing in the transcript overlay, confirmed with Enter. Reset by
@@ -4205,6 +4214,14 @@ impl App {
         self.system_prompt = prompt;
     }
 
+    /// Inject the project's rendered AGENTS.md instructions (from
+    /// `project_doc::load_user_instructions`, at startup and refreshed at
+    /// every turn start) so the context derivation, the Ctrl+D view, and the
+    /// token estimate all carry them. See `docs/project-doc.md`.
+    pub fn set_user_instructions(&mut self, instructions: Option<String>) {
+        self.user_instructions = instructions;
+    }
+
     /// Record a finished user message in the history.
     pub fn record_user_message(&mut self, text: &str) {
         self.record_message(Role::User, text);
@@ -4867,14 +4884,17 @@ impl App {
     }
 
     /// Estimate the current context size with the tokenizer: the system
-    /// prompt, plus every derived context message's text, tool calls, and a
+    /// prompt, plus every derived context message's text (the AGENTS.md
+    /// instructions among them — they ride every request), tool calls, and a
     /// flat [`IMAGE_INPUT_TOKENS`] per attachment. The stand-in between real
     /// usage frames — and the only measure right after a history mutation
     /// (compaction, `/clear`, backtrack, `/resume`) made the last frame stale.
     #[must_use]
     fn estimate_context_tokens(&self) -> u64 {
         let mut total = self.system_prompt.as_deref().map_or(0, count_tokens);
-        for message in crate::context::context_messages(&self.history) {
+        for message in
+            crate::context::context_messages_with(self.user_instructions.as_deref(), &self.history)
+        {
             total += count_tokens(&message.text);
             total += message.images.len() * IMAGE_INPUT_TOKENS;
             for call in &message.tool_calls {
@@ -8581,6 +8601,41 @@ mod tests {
         app.finish_stream();
         app.end_turn(1);
         assert!(app.context_used() > 0);
+    }
+
+    #[test]
+    fn set_user_instructions_stores_the_agents_md_fragment() {
+        // The boundary injects the rendered AGENTS.md instructions (the
+        // set_system_prompt pattern); everyone deriving context reads them.
+        // See docs/project-doc.md.
+        let mut app = App::new();
+        assert_eq!(app.user_instructions, None);
+        app.set_user_instructions(Some("<INSTRUCTIONS>\nguide\n</INSTRUCTIONS>".to_string()));
+        assert_eq!(
+            app.user_instructions.as_deref(),
+            Some("<INSTRUCTIONS>\nguide\n</INSTRUCTIONS>")
+        );
+        app.set_user_instructions(None);
+        assert_eq!(app.user_instructions, None);
+    }
+
+    #[test]
+    fn the_context_estimate_counts_the_user_instructions() {
+        // The instructions ride every request, so the footer gauge's offline
+        // estimate must count them like the system prompt.
+        let run_turn = |instructions: Option<&str>| {
+            let mut app = App::new();
+            app.set_user_instructions(instructions.map(str::to_string));
+            app.record_user_message("hello there");
+            app.begin_stream();
+            app.push_chunk("a reply");
+            app.finish_stream();
+            app.end_turn(1);
+            app.context_used()
+        };
+        let without = run_turn(None);
+        let with = run_turn(Some("a long AGENTS.md contributor guide to count"));
+        assert!(with > without, "{with} vs {without}");
     }
 
     #[test]

@@ -65,6 +65,15 @@ The port mirrors that shape exactly; every piece rides existing machinery.
   follow-up Ctrl+C records only `/init` into ↑ recall, keeping the
   no-recall guarantee below.
 
+## The loop closes: the generated guide reaches the context
+
+`/init` writes `AGENTS.md`; **`docs/project-doc.md`** is the other half —
+codex's project-doc discovery, ported: every turn start re-reads the
+project's `AGENTS.md` (root→cwd, 32 KiB cap) and injects it as the context
+window's leading user-instructions fragment. So the guide the model just
+generated is already in its context on the very next turn, exactly like
+codex.
+
 ## What deliberately isn't here
 
 - **No app-side `AGENTS.md` existence check.** The prompt itself instructs

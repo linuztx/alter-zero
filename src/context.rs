@@ -333,7 +333,33 @@ fn push_text(out: &mut Vec<ContextMessage>, role: ContextRole, text: String, ima
 /// sends.
 #[must_use]
 pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
+    context_messages_with(None, history)
+}
+
+/// [`context_messages`] with the project's AGENTS.md instructions in front —
+/// codex's user-instructions fragment (`project_doc::instructions_message`,
+/// rendered at the boundary) leads the derived context as its first **user**
+/// entry, in front of the normal derivation *and* the post-`/compact` shape
+/// alike (codex keeps its initial context through compaction the same way).
+/// It rides [`push_text`], so a first user message merges after it under the
+/// module's alternation convention. `None` or a blank changes nothing. See
+/// `docs/project-doc.md`.
+#[must_use]
+pub fn context_messages_with(
+    user_instructions: Option<&str>,
+    history: &[HistoryItem],
+) -> Vec<ContextMessage> {
     let mut out: Vec<ContextMessage> = Vec::new();
+    if let Some(instructions) = user_instructions
+        && !instructions.trim().is_empty()
+    {
+        push_text(
+            &mut out,
+            ContextRole::User,
+            instructions.to_string(),
+            vec![],
+        );
+    }
     // A `/compact` marker (docs/compact.md): the *last* one wins, and
     // everything before it derives as codex's compacted shape — the budgeted
     // recent user texts, then the summary bridge — with the items after it
@@ -1158,5 +1184,67 @@ mod tests {
             !SUMMARY_PREFIX.ends_with('\n'),
             "the prefix has no trailing newline — the bridge adds the separator"
         );
+    }
+
+    // --- AGENTS.md user instructions (docs/project-doc.md) ---
+
+    #[test]
+    fn user_instructions_lead_the_derived_context() {
+        // The rendered AGENTS.md fragment is the context's first user entry;
+        // a first user message merges after it under the module's alternation
+        // convention (push_text), the markers keeping the boundary clear.
+        let history = vec![message(Role::User, "hello"), message(Role::Assistant, "hi")];
+        let ctx =
+            context_messages_with(Some("<INSTRUCTIONS>\nUse TDD.\n</INSTRUCTIONS>"), &history);
+        assert_eq!(ctx.len(), 2, "{ctx:?}");
+        assert_eq!(ctx[0].role, ContextRole::User);
+        assert_eq!(
+            ctx[0].text,
+            "<INSTRUCTIONS>\nUse TDD.\n</INSTRUCTIONS>\n\nhello"
+        );
+        assert_eq!(ctx[1].text, "hi");
+    }
+
+    #[test]
+    fn user_instructions_alone_are_a_context_of_one() {
+        let ctx = context_messages_with(Some("guide"), &[]);
+        assert_eq!(ctx, vec![ContextMessage::new(ContextRole::User, "guide")]);
+    }
+
+    #[test]
+    fn none_or_blank_instructions_leave_the_derivation_untouched() {
+        let history = vec![message(Role::User, "hello")];
+        assert_eq!(
+            context_messages_with(None, &history),
+            context_messages(&history)
+        );
+        assert_eq!(
+            context_messages_with(Some("   "), &history),
+            context_messages(&history)
+        );
+    }
+
+    #[test]
+    fn user_instructions_survive_compaction_at_the_front() {
+        // Codex keeps its initial context (the instructions among it) through
+        // a compaction; ours re-derives, so the fragment leads the compacted
+        // shape too — before the budgeted user texts and the bridge. The
+        // budget walk reads *history*, which the instructions never enter, so
+        // they are never re-summarized.
+        let history = vec![
+            message(Role::User, "old question"),
+            message(Role::Assistant, "old answer"),
+            compaction("the summary"),
+            message(Role::User, "new question"),
+        ];
+        let ctx = context_messages_with(Some("guide"), &history);
+        assert_eq!(ctx.len(), 1, "{ctx:?}");
+        assert!(
+            ctx[0].text.starts_with("guide\n\nold question"),
+            "{:?}",
+            ctx[0].text
+        );
+        assert!(ctx[0].text.contains(SUMMARY_PREFIX));
+        assert!(ctx[0].text.ends_with("new question"));
     }
 }

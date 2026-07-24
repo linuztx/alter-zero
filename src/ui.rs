@@ -5398,7 +5398,9 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             width,
         );
     }
-    for message in crate::context::context_messages(&app.history) {
+    for message in
+        crate::context::context_messages_with(app.user_instructions.as_deref(), &app.history)
+    {
         context_entry_lines(
             &mut lines,
             &format!("{}:", message.role.wire_name()),
@@ -10313,6 +10315,27 @@ mod tests {
         }
         // Turn summaries are TUI chrome; they never reach the context.
         assert!(!texts.iter().any(|t| t.contains("Done")), "{texts:?}");
+    }
+
+    #[test]
+    fn context_lines_show_the_user_instructions_first() {
+        // The AGENTS.md instructions fragment (docs/project-doc.md) is the
+        // first user entry of the window — right after the system prompt, in
+        // front of the conversation, exactly what the request carries.
+        let mut app = context_fixture();
+        app.set_user_instructions(Some("# AGENTS.md instructions\n\nguide".to_string()));
+        let texts: Vec<String> = context_lines(&app, 80)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        assert_eq!(texts[0], "system prompt:", "{texts:?}");
+        let first_user = texts.iter().position(|t| t == "user:").unwrap();
+        assert_eq!(
+            texts[first_user + 1],
+            "  # AGENTS.md instructions",
+            "{texts:?}"
+        );
+        assert_eq!(texts[first_user + 3], "  guide", "{texts:?}");
     }
 
     #[test]

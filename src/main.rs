@@ -65,6 +65,7 @@ use alter_zero::llm::{
     Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
 use alter_zero::paste::{self, PasteBurst};
+use alter_zero::project_doc;
 use alter_zero::session::{self, SessionMeta, SessionSummary};
 use alter_zero::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
 use alter_zero::term::{InlineViewport, ReflowClear};
@@ -338,6 +339,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // The backend's system prompt rides into App so the Ctrl+D view shows the
     // whole context window (docs/context.md). None for the dummy.
     app.set_system_prompt(backend.system_prompt());
+    // The project's AGENTS.md instructions (codex's project doc,
+    // docs/project-doc.md): discovered root→cwd and injected like the system
+    // prompt — the context derivation prepends them, the Ctrl+D view and the
+    // token estimate carry them from the first frame. Refreshed at every
+    // `start_turn`, so this seed mostly serves the pre-first-turn Ctrl+D.
+    app.set_user_instructions(project_doc::load_user_instructions(&cwd));
     // The /resume session recorder (docs/resume.md): mirrors App::history to a
     // rollout file, lazily created on the first recorded item so empty
     // sessions never touch disk. `sync` runs once per loop iteration below.
@@ -1940,7 +1947,11 @@ fn start_compact_turn(
     clocks.thinking_start = None;
     clocks.command_start = None;
     let cancel = CancelToken::new();
-    let mut compact_context = context::context_messages(&app.history);
+    // The summarizer reads the same window the model does — the AGENTS.md
+    // instructions in front (codex's compact request keeps its initial
+    // context too). See docs/project-doc.md.
+    let mut compact_context =
+        context::context_messages_with(app.user_instructions.as_deref(), &app.history);
     compact_context.push(context::ContextMessage::new(
         context::ContextRole::User,
         context::SUMMARIZATION_PROMPT,
@@ -2124,11 +2135,20 @@ fn start_turn(
     // its ToolStart (docs/background.md).
     clocks.command_start = None;
     let cancel = CancelToken::new();
+    // Refresh the project's AGENTS.md instructions right before the context
+    // derives (docs/project-doc.md): the turn that just ended may have
+    // written the guide (`/init`'s whole point), and this turn must already
+    // carry it. The TUI process never chdirs, so this is run()'s cwd; on the
+    // odd read failure the startup seed stands.
+    if let Ok(cwd) = std::env::current_dir() {
+        app.set_user_instructions(project_doc::load_user_instructions(&cwd));
+    }
     // The whole conversation — the just-recorded user message included — rides
-    // the request so a real model keeps its context across turns; the image
-    // paths also travel the original typed channel (codex's
-    // `UserInput::LocalImage`). See docs/context.md.
-    let context = context::context_messages(&app.history);
+    // the request so a real model keeps its context across turns (the
+    // AGENTS.md instructions in front); the image paths also travel the
+    // original typed channel (codex's `UserInput::LocalImage`). See
+    // docs/context.md.
+    let context = context::context_messages_with(app.user_instructions.as_deref(), &app.history);
     let handle = backend.spawn(prompt, paths, context, tx.clone(), cancel.clone());
     Ok((cancel, handle))
 }
@@ -2377,7 +2397,7 @@ fn start_background_turn(
     // A follow-up turn about background completions — text, no command yet.
     clocks.command_start = None;
     let cancel = CancelToken::new();
-    let context = context::context_messages(&app.history);
+    let context = context::context_messages_with(app.user_instructions.as_deref(), &app.history);
     let handle = backend.spawn(prompt, Vec::new(), context, tx.clone(), cancel.clone());
     (cancel, handle)
 }

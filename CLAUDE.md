@@ -30,7 +30,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `checkpoint`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `checkpoint`, `project_doc`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
@@ -590,7 +590,16 @@ the model's agentic tool loop answers by exploring the repo and writing the file
 mid-turn it is rejected with a `Toast` like `/compact` (codex's
 `available_during_task = false`), it never records into the ↑-recall history,
 and an Esc-undo of the turn restores the literal `/init` (palette reopened),
-not the prompt.
+not the prompt. **The generated guide feeds back into the model's context**
+(`docs/project-doc.md` — codex's project doc): every turn start re-reads the
+project's `AGENTS.md` files (the pure `project_doc` module — nearest-`.git`
+root→cwd discovery, codex's 32 KiB cap, the
+`# AGENTS.md instructions … <INSTRUCTIONS>` fragment; the read is
+`main.rs`'s `start_turn` + a startup seed) into `App::user_instructions`, and
+`context::context_messages_with` injects it as the derived context's leading
+user entry — in front of the post-`/compact` shape too, never entering
+`history` — so the Ctrl+D view shows it and `App::estimate_context_tokens`
+counts it.
 **`/compact`→`Compact`** —
 codex's manual compaction (`docs/compact.md`): the loop runs the summarization
 turn on a one-off tools-free `LlmBackend::configure(cfg, system_prompt,

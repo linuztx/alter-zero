@@ -425,6 +425,46 @@ fn live_environment_context_reaches_the_model() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_agents_md_instructions_reach_the_model() {
+    // The /init loop closed end to end (docs/project-doc.md): an AGENTS.md
+    // on disk → `project_doc::load_user_instructions` (discovery + the codex
+    // fragment) → `context_messages_with` (the leading user entry) → the real
+    // wire — and the model can read a sentinel fact back out of it. Tools
+    // off; the fact exists nowhere but the instructions.
+    use alter_zero::app::{HistoryItem, Message, Role};
+    use alter_zero::context::context_messages_with;
+    use alter_zero::project_doc;
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    std::fs::create_dir_all(repo.join(".git")).expect("mk repo");
+    std::fs::write(
+        repo.join("AGENTS.md"),
+        "# Contributor guide\n\nThis project's internal codename is Umbral-Kite-77. \
+         Always refer to it by that codename.\n",
+    )
+    .expect("write AGENTS.md");
+    let instructions = project_doc::load_user_instructions(&repo).expect("the guide is discovered");
+
+    let prompt = "According to your AGENTS.md instructions, what is this project's \
+                  internal codename? Reply with just the codename.";
+    let history = vec![HistoryItem::Message(Message {
+        role: Role::User,
+        text: prompt.to_string(),
+        timestamp: String::new(),
+        images: Vec::new(),
+    })];
+    let context = context_messages_with(Some(&instructions), &history);
+    let reply = complete(prompt, vec![], context);
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.contains("Umbral-Kite-77"),
+        "the model should read the codename out of the AGENTS.md instructions, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_tool_call_generation_emits_delta_events() {
     // While the model *generates* a tool call, the backend surfaces
     // ToolCallDelta events (the streamed name/argument fragments) so the live

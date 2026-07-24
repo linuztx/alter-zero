@@ -28,6 +28,9 @@
 //!   from fenced code blocks and detect ATX headings (see `docs/markdown.md`).
 //! - [`paste`]       — paste-burst detection and the large-paste/image
 //!   placeholder helpers.
+//! - [`project_doc`] — AGENTS.md discovery: codex's project doc collected
+//!   root→cwd under a 32 KiB cap and rendered as the user-instructions
+//!   context fragment (see `docs/project-doc.md`).
 //! - [`session`]     — the `/resume` rollout-file format: serialize/parse the
 //!   JSONL session record, the picker preview + humanized age.
 //! - [`stream`]      — the dummy AI: canned responses and chunked streaming.
@@ -55,6 +58,7 @@ pub mod history;
 pub mod llm;
 pub mod markdown;
 pub mod paste;
+pub mod project_doc;
 pub mod session;
 pub mod stream;
 pub mod subprocess;
