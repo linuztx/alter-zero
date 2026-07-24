@@ -112,6 +112,44 @@ no new user bubble:
   queued batch dispatches onto the freshly compacted context, and the
   turn-end checkpoint snapshots at the new (grown) length.
 
+## Auto-compact + the context gauge
+
+Codex also compacts **automatically** near the context limit; so do we, with
+the same threshold — **90% of the model's context window**
+(`ModelInfo::auto_compact_token_limit`, `(context_window * 9) / 10`).
+
+- **The window** comes from the provider's `/v1/models` record —
+  `context_length` (OpenRouter and most aggregators) or
+  `model_spec.availableContextTokens` (Venice) — parsed into
+  `ModelEntry::context`, riding a `/model` selection and the startup
+  capability probe, persisted in `config.json` beside the vision flag, and
+  overridable (or supplied for a provider that reports none, and for the
+  dummy) via `ALTER_ZERO_CONTEXT_WINDOW`. Unknown window → no gauge, no
+  auto-compact.
+- **The gauge** shows in the footer whenever the window is known:
+  `{model} · {cwd} · {used}%/{window}` (e.g. `6.0%/300k`, one decimal, the
+  window humanized by the summary's token formatter). `used` is the last
+  usage frame's `input + output` — the provider's own accounting of the
+  re-sent context plus the reply that joins the next request — kept honest
+  across mutations by a tokenizer re-estimate: after a compaction (codex's
+  `recompute_token_usage`), a `/clear` (→ 0), a backtrack, a `/resume`, and
+  at the end of any turn that saw no usage frame (the dummy).
+- **The trigger** lives at the loop bottom, where every turn end and gauge
+  change lands: idle, past the threshold, and with a non-empty derivable
+  context, the loop starts the same summarization turn the command runs —
+  marked `auto`, so the cell reads `● Context compacted · 88k → 2.1k tokens
+  · auto`. **One attempt per user turn** (codex's per-turn semantics): a
+  compact turn ending *any* way — landed, Esc'd, or failed — blocks the
+  trigger until the next real turn begins, so an insufficient compaction
+  never loops and an interrupted one is never restarted against the user's
+  wishes. Messages queued while it runs dispatch onto the compacted context
+  at its turn end, exactly like the manual command.
+
+The marker cell's shrink clause (`· {before} → {after} tokens`) appears on
+manual compactions too — `before` is the gauge when the compaction began,
+`after` the fresh estimate of the compacted derivation; both persist in the
+rollout (old files parse with the clause hidden).
+
 ## Interrupts, errors, `/clear`
 
 The swap-only-at-the-end rule is codex's: nothing mutates until the summary
@@ -146,14 +184,15 @@ fully streamed.
 - `src/ui.rs` — `compaction_lines` (inline cell) and the transcript arm
   (cell + dim summary body); a `conversation_lines` arm so resizes repaint it.
 - `src/main.rs` — the `Action::Compact` arm (boundary), the compact branches
-  in the `Chunk`/`StreamDone` handling, `build_compact_backend`.
+  in the `Chunk`/`StreamDone` handling, `build_compact_backend` /
+  `start_compact_turn` (shared with the loop-bottom auto trigger), the
+  `ALTER_ZERO_CONTEXT_WINDOW` override and window seeding/persistence.
+- `src/llm/models.rs` / `src/llm/settings.rs` — `ModelEntry::context`
+  (`context_length` sniffing) and its `config.json` persistence.
 - `src/stream.rs` — the dummy's text-only compact script.
 
 ## Limitations
 
-- No auto-compact: codex also compacts automatically near the context limit;
-  this TUI models no per-model context window at all (the OpenRouter
-  `/models` `context_length` is unparsed), so `/compact` is manual-only.
 - No context-window-exceeded recovery *during* the summarize call: codex
   drops the oldest history item and retries on that provider error; our
   `ReplySource` seam has no such classification, so the turn fails with the

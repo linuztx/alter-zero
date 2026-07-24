@@ -956,6 +956,9 @@ mod tests {
         HistoryItem::Compaction(crate::app::Compaction {
             summary: summary.to_string(),
             timestamp: String::new(),
+            before: 0,
+            after: 0,
+            auto: false,
         })
     }
 

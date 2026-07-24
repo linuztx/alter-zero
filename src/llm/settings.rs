@@ -31,6 +31,12 @@ pub struct Settings {
     /// `docs/tools.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
+    /// The saved model's context window in tokens, when its `/v1/models`
+    /// record reported one — restored at startup so the footer's
+    /// `{used}%/{window}` gauge (and the auto-compact trigger) work without a
+    /// re-probe. Absent = unknown. See `docs/compact.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<u64>,
 }
 
 /// The persisted reasoning state, as plain labels so a hand-edited or
@@ -150,6 +156,7 @@ impl Settings {
             model: Some(model.into()),
             thinking: None,
             vision: None,
+            context: None,
         }
     }
 
@@ -166,6 +173,14 @@ impl Settings {
     #[must_use]
     pub fn with_vision(mut self, vision: Option<bool>) -> Self {
         self.vision = vision;
+        self
+    }
+
+    /// The same settings with the saved model's context window attached
+    /// (`None` = the record didn't report one). See `docs/compact.md`.
+    #[must_use]
+    pub fn with_context(mut self, context: Option<u64>) -> Self {
+        self.context = context;
         self
     }
 }
@@ -201,6 +216,20 @@ mod tests {
     fn json_round_trips() {
         let s = Settings::for_selection("openrouter", "vendor/model-1");
         assert_eq!(Settings::parse(&s.to_json()), s);
+    }
+
+    #[test]
+    fn the_context_window_round_trips_and_omits_when_absent() {
+        // The saved model's context window (docs/compact.md) — restored at
+        // startup so the footer gauge shows without a re-probe.
+        let s = Settings::for_selection("p", "m").with_context(Some(128_000));
+        assert_eq!(Settings::parse(&s.to_json()).context, Some(128_000));
+        assert!(
+            !Settings::for_selection("p", "m")
+                .to_json()
+                .contains("context"),
+            "absent stays off the wire (old-shape compat)"
+        );
     }
 
     fn trio_support() -> ReasoningSupport {

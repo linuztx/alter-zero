@@ -320,6 +320,16 @@ pub struct Compaction {
     pub summary: String,
     /// Wall-clock stamp (recorded like every item's; never displayed).
     pub timestamp: String,
+    /// The context gauge when the compaction began (tokens) — the cell shows
+    /// `· {before} → {after} tokens`. 0 = unknown (an old rollout), hiding
+    /// the clause.
+    pub before: u64,
+    /// The re-estimated context size right after the compaction (tokens).
+    pub after: u64,
+    /// Whether this compaction was **auto-triggered** by the context gauge
+    /// crossing the threshold (the cell appends `· auto`), vs the manual
+    /// `/compact` command. See `docs/compact.md`.
+    pub auto: bool,
 }
 
 /// The whimsical working verbs, one chosen per turn (by [`App::turn_count`]) for
@@ -432,6 +442,13 @@ pub const COMPACT_EMPTY_NOTICE: &str = "Nothing to compact";
 /// the never-rendered done verb — a compact turn ends without a summary, the
 /// `● Context compacted` cell being its record. See `docs/compact.md`.
 pub const COMPACT_VERB: &str = "Compacting";
+
+/// The auto-compact trigger's numerator/denominator: codex's threshold is
+/// **90% of the context window** (`(context_window * 9) / 10`,
+/// `ModelInfo::auto_compact_token_limit`). Past it, the loop starts a compact
+/// turn on its own at the next idle boundary. See `docs/compact.md`.
+const AUTO_COMPACT_NUMERATOR: u64 = 9;
+const AUTO_COMPACT_DENOMINATOR: u64 = 10;
 
 /// The transient toast shown when a `/resume` restored the working directory to
 /// the session's checkpoint (`docs/checkpoint.md`) — feedback that the code, not
@@ -593,6 +610,10 @@ pub enum Action {
         id: String,
         reasoning: Option<ReasoningSupport>,
         vision: Option<bool>,
+        /// The picked entry's context window (`/v1/models` `context_length`),
+        /// seeding the footer gauge + auto-compact without a refetch — `None`
+        /// when the record didn't report one. See `docs/compact.md`.
+        context: Option<u64>,
     },
     /// Shift+Tab cycled the thinking mode ([`App::thinking`] already advanced
     /// to the carried mode). The loop rebinds the *next* turn's backend to it,
@@ -1681,6 +1702,35 @@ pub struct App {
     /// [`HistoryItem::Compaction`] marker; an interrupt, a backend error, or
     /// a `/clear` drops it — the old context stands. See `docs/compact.md`.
     compact_buffer: Option<String>,
+    /// Whether the in-flight `/compact` turn was **auto-triggered** (the gauge
+    /// crossed the threshold) vs the manual command — recorded onto the marker
+    /// so its cell can say `· auto`. Meaningful only while
+    /// [`compact_buffer`](Self::compact_buffer) is `Some`.
+    compact_auto: bool,
+    /// The context gauge when the in-flight compaction began — the marker's
+    /// `before` count.
+    compact_before: u64,
+    /// The active model's context window in tokens, when known (the provider's
+    /// `/v1/models` `context_length`, the saved settings, or the
+    /// `ALTER_ZERO_CONTEXT_WINDOW` override — injected at the boundary via
+    /// [`set_context_window`](Self::set_context_window)). Drives the footer's
+    /// `{used}%/{window}` gauge and the auto-compact trigger; `None` hides
+    /// both. See `docs/compact.md`.
+    context_window: Option<u64>,
+    /// The current context size in tokens: the last usage frame's
+    /// `input + output` (the provider's own accounting of the re-sent context
+    /// plus the reply that joins the next request), or — when no usage arrived
+    /// (the dummy) or the history just mutated (a compaction, a `/clear`, a
+    /// backtrack, a `/resume`) — the tokenizer estimate over the derived
+    /// context ([`estimate_context_tokens`](Self::estimate_context_tokens)).
+    context_used: u64,
+    /// One auto-compact attempt per user turn (codex's per-turn semantics):
+    /// set when a compact turn ends **any** way — landed, interrupted, or
+    /// failed — and cleared when the next real turn begins, so a compaction
+    /// that didn't (or couldn't) shrink the context never re-triggers in a
+    /// tight loop, and an Esc'd one isn't immediately restarted against the
+    /// user's wishes. See `docs/compact.md`.
+    auto_compact_blocked: bool,
     /// The streaming strip preview's row count, injected by the boundary before
     /// each draw ([`set_stream_preview_rows`], the [`set_status_times`]
     /// pattern): 1 for a normal reply's single-row preview, the forming block's
@@ -3428,6 +3478,8 @@ impl App {
         // belongs to the resumed conversation, not to any new turn — fence it
         // off from the interrupt-undo (docs/interrupt.md).
         self.undo_floor = self.history.len();
+        // The gauge re-seats on the loaded conversation (docs/compact.md).
+        self.refresh_context_used();
         self.close_resume_picker();
     }
 
@@ -3729,6 +3781,7 @@ impl App {
                         id: model.id.clone(),
                         reasoning: model.reasoning.clone(),
                         vision: model.vision,
+                        context: model.context,
                     };
                     self.close_model_picker();
                     return action;
@@ -4035,6 +4088,8 @@ impl App {
         // The rewound history's tail can be an older batch-sibling user
         // message — fence it off from the interrupt-undo like a resumed tail.
         self.undo_floor = self.history.len();
+        // The gauge re-seats on the rewound conversation (docs/compact.md).
+        self.refresh_context_used();
         self.backtrack = Backtrack::default();
         self.view = View::Conversation;
         self.recall_input(&text);
@@ -4594,6 +4649,9 @@ impl App {
     /// start the live turn status (pick this turn's verbs, reset the tally).
     pub fn begin_stream(&mut self) {
         self.streaming = Some(String::new());
+        // A new real turn re-arms the auto-compact trigger (one attempt per
+        // user turn — docs/compact.md).
+        self.auto_compact_blocked = false;
         // A fresh turn starts with the single-row preview; the boundary
         // re-injects the real count each frame (a forming table grows it).
         self.stream_preview_rows = 1;
@@ -4681,9 +4739,11 @@ impl App {
     ///
     /// [`fail_stream`]: App::fail_stream
     /// [`finish_compact`]: App::finish_compact
-    pub fn begin_compact(&mut self) {
+    pub fn begin_compact(&mut self, auto: bool) {
         self.streaming = Some(String::new());
         self.compact_buffer = Some(String::new());
+        self.compact_auto = auto;
+        self.compact_before = self.context_used;
         self.stream_preview_rows = 1;
         // Per-turn usage accumulators reset with every turn machinery start.
         self.turn_usage_tokens = 0;
@@ -4720,15 +4780,92 @@ impl App {
         let summary = self.compact_buffer.take()?;
         self.streaming = None;
         self.status = None;
-        let compaction = Compaction {
+        let mut compaction = Compaction {
             // A model reply often ends with a trailing newline; the bridge
             // adds its own separators, so store the summary trimmed.
             summary: summary.trim().to_string(),
             timestamp: self.now_stamp(),
+            before: self.compact_before,
+            after: 0,
+            auto: self.compact_auto,
         };
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
+        // The gauge drops to the compacted derivation's estimate (codex's
+        // recompute_token_usage) — the marker records the shrink.
+        self.refresh_context_used();
+        compaction.after = self.context_used;
+        if let Some(HistoryItem::Compaction(recorded)) = self.history.last_mut() {
+            recorded.after = self.context_used;
+        }
+        // One attempt per user turn: no immediate auto re-trigger.
+        self.auto_compact_blocked = true;
         Some(compaction)
+    }
+
+    /// Inject the active model's context window in tokens (the boundary's
+    /// `/v1/models` `context_length`, the saved settings, or the
+    /// `ALTER_ZERO_CONTEXT_WINDOW` override) — `None` (or a meaningless 0)
+    /// hides the footer gauge and disables auto-compact. See `docs/compact.md`.
+    pub fn set_context_window(&mut self, window: Option<u64>) {
+        self.context_window = window.filter(|&w| w > 0);
+    }
+
+    /// The active model's context window in tokens, when known.
+    #[must_use]
+    pub const fn context_window(&self) -> Option<u64> {
+        self.context_window
+    }
+
+    /// The current context size in tokens (see the field doc) — the footer
+    /// gauge's numerator.
+    #[must_use]
+    pub const fn context_used(&self) -> u64 {
+        self.context_used
+    }
+
+    /// Estimate the current context size with the tokenizer: the system
+    /// prompt, plus every derived context message's text, tool calls, and a
+    /// flat [`IMAGE_INPUT_TOKENS`] per attachment. The stand-in between real
+    /// usage frames — and the only measure right after a history mutation
+    /// (compaction, `/clear`, backtrack, `/resume`) made the last frame stale.
+    #[must_use]
+    fn estimate_context_tokens(&self) -> u64 {
+        let mut total = self.system_prompt.as_deref().map_or(0, count_tokens);
+        for message in crate::context::context_messages(&self.history) {
+            total += count_tokens(&message.text);
+            total += message.images.len() * IMAGE_INPUT_TOKENS;
+            for call in &message.tool_calls {
+                total += count_tokens(&call.name) + count_tokens(&call.arguments);
+            }
+        }
+        u64::try_from(total).unwrap_or(u64::MAX)
+    }
+
+    /// Re-seat the gauge on the tokenizer estimate (the last usage frame no
+    /// longer describes the derived context).
+    fn refresh_context_used(&mut self) {
+        self.context_used = self.estimate_context_tokens();
+    }
+
+    /// Whether the loop should start an **auto-compact** turn at the next idle
+    /// boundary: the window is known, the gauge is past codex's 90% threshold,
+    /// no turn is in flight, the last compact attempt isn't still blocking
+    /// (one per user turn), and the conversation derives a non-empty context
+    /// to summarize. See `docs/compact.md`.
+    #[must_use]
+    pub fn should_auto_compact(&self) -> bool {
+        let Some(window) = self.context_window else {
+            return false;
+        };
+        if self.auto_compact_blocked || self.turn_active() || self.is_streaming() {
+            return false;
+        }
+        let threshold = window.saturating_mul(AUTO_COMPACT_NUMERATOR) / AUTO_COMPACT_DENOMINATOR;
+        if self.context_used <= threshold {
+            return false;
+        }
+        !crate::context::context_messages(&self.history).is_empty()
     }
 
     /// Count a just-submitted user message into the live tally as **uploaded
@@ -4817,6 +4954,10 @@ impl App {
         if let Some(status) = self.status.as_mut() {
             status.tokens = self.turn_usage_tokens;
         }
+        // The round's `input` is the whole re-sent context and its `output`
+        // joins the next round's — their sum is the live context gauge
+        // (docs/compact.md), authoritative until a history mutation stales it.
+        self.context_used = usage.input.saturating_add(usage.output);
     }
 
     /// Record that a failed request is being retried, so the status line shows
@@ -4945,6 +5086,12 @@ impl App {
     /// committed cell is its own record (`docs/shell-command.md`).
     pub fn take_turn_summary(&mut self, elapsed_secs: u64) -> Option<TurnSummary> {
         let status = self.status.take()?;
+        // No usage frame arrived this turn (the dummy, or a provider that
+        // omits them): the tokenizer estimate stands in for the context gauge
+        // so it — and the auto-compact trigger — still work (docs/compact.md).
+        if self.turn_usage_tokens == 0 {
+            self.refresh_context_used();
+        }
         if status.shell {
             return None;
         }
@@ -4985,7 +5132,11 @@ impl App {
         let streamed = self.streaming.take()?;
         // A /compact turn's half summary dies with the request — the marker
         // lands only at StreamDone, so the old context stands (docs/compact.md).
-        self.compact_buffer = None;
+        // A failed compaction also blocks the auto re-trigger until the next
+        // real turn (it would fail the same way in a tight loop).
+        if self.compact_buffer.take().is_some() {
+            self.auto_compact_blocked = true;
+        }
         let partial = if streamed.is_empty() {
             None
         } else {
@@ -5046,6 +5197,11 @@ impl App {
         // it into the composer would undo a submission this turn never made.
         // See docs/compact.md.
         let compacting = self.compact_buffer.take().is_some();
+        if compacting {
+            // The user said no — don't restart it at this same turn end
+            // (docs/compact.md's one-attempt-per-turn rule).
+            self.auto_compact_blocked = true;
+        }
         // Take the partial first (empties the streaming buffer either way).
         let partial = self.streaming.take().filter(|text| !text.is_empty());
 
@@ -5178,6 +5334,9 @@ impl App {
         self.history_generation += 1;
         self.streaming = None;
         self.compact_buffer = None;
+        // A fresh slate: the gauge drops to zero and auto-compact re-arms.
+        self.context_used = 0;
+        self.auto_compact_blocked = false;
         self.tool_queue.clear();
         self.status = None;
         // The wiped batches' image attachments will never dispatch — record
@@ -8076,7 +8235,7 @@ mod tests {
     #[test]
     fn begin_compact_starts_a_fixed_verb_turn_without_advancing_the_cycle() {
         let mut app = App::new();
-        app.begin_compact();
+        app.begin_compact(false);
         assert!(app.turn_active());
         assert!(
             app.is_streaming(),
@@ -8094,7 +8253,7 @@ mod tests {
     #[test]
     fn compact_chunks_divert_to_the_buffer_and_never_render() {
         let mut app = App::new();
-        app.begin_compact();
+        app.begin_compact(false);
         app.push_chunk("the summary ");
         app.push_chunk("text");
         assert_eq!(
@@ -8112,7 +8271,7 @@ mod tests {
         let mut app = App::new();
         app.record_user_message("hello");
         let before = app.history.len();
-        app.begin_compact();
+        app.begin_compact(false);
         app.push_chunk("gist\n");
         let compaction = app.finish_compact().expect("a marker");
         assert_eq!(compaction.summary, "gist", "the streamed text, trimmed");
@@ -8135,7 +8294,7 @@ mod tests {
         // empty summary — the marker still lands so the state is visible.
         let mut app = App::new();
         app.record_user_message("hello");
-        app.begin_compact();
+        app.begin_compact(false);
         let compaction = app.finish_compact().expect("a marker");
         assert_eq!(compaction.summary, "");
     }
@@ -8149,7 +8308,7 @@ mod tests {
         let mut app = App::new();
         app.record_user_message("hello");
         let before = app.history.clone();
-        app.begin_compact();
+        app.begin_compact(false);
         app.push_chunk("half a summ");
         let outcome = app.interrupt_turn().expect("an interrupt outcome");
         assert!(
@@ -8178,7 +8337,7 @@ mod tests {
     fn a_backend_error_mid_compact_drops_the_buffer_and_records_the_notice() {
         let mut app = App::new();
         app.record_user_message("hello");
-        app.begin_compact();
+        app.begin_compact(false);
         app.push_chunk("half");
         let failure = app.fail_stream("boom").expect("a failure record");
         assert_eq!(
@@ -8200,12 +8359,213 @@ mod tests {
     fn clear_conversation_drops_the_compact_state() {
         let mut app = App::new();
         app.record_user_message("hi");
-        app.begin_compact();
+        app.begin_compact(false);
         app.push_chunk("half");
         app.clear_conversation();
         assert!(!app.is_compacting());
         assert!(!app.turn_active());
         assert!(app.history.is_empty());
+    }
+
+    // --- auto-compact + the context gauge (docs/compact.md) ---
+
+    fn usage_of(total_input: u64, output: u64) -> crate::stream::TokenUsage {
+        crate::stream::TokenUsage {
+            input: total_input,
+            output,
+            cached: 0,
+            cache_write: 0,
+        }
+    }
+
+    #[test]
+    fn apply_usage_tracks_the_context_size_from_the_usage_frame() {
+        // The round's `input` is the whole re-sent context; `output` joins the
+        // next round's context — their sum is the live gauge value.
+        let mut app = App::new();
+        app.begin_stream();
+        app.apply_usage(&usage_of(5_000, 200));
+        assert_eq!(app.context_used(), 5_200);
+    }
+
+    #[test]
+    fn a_turn_with_no_usage_frame_estimates_the_context_at_turn_end() {
+        // The dummy sends no usage — the tokenizer estimate stands in so the
+        // gauge (and the auto trigger) still work offline.
+        let mut app = App::new();
+        app.record_user_message("hello there");
+        app.begin_stream();
+        app.push_chunk("a reply");
+        app.finish_stream();
+        app.end_turn(1);
+        assert!(app.context_used() > 0);
+    }
+
+    #[test]
+    fn set_context_window_ignores_a_zero() {
+        let mut app = App::new();
+        app.set_context_window(Some(0));
+        assert_eq!(app.context_window(), None);
+        app.set_context_window(Some(100));
+        assert_eq!(app.context_window(), Some(100));
+    }
+
+    #[test]
+    fn auto_compact_triggers_past_ninety_percent_of_the_window() {
+        // Codex's threshold: (window * 9) / 10.
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.set_context_window(Some(1_000));
+        app.begin_stream();
+        app.apply_usage(&usage_of(950, 0));
+        app.finish_stream();
+        app.end_turn(1);
+        assert!(app.should_auto_compact());
+    }
+
+    #[test]
+    fn auto_compact_does_not_trigger_at_or_below_the_threshold() {
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.set_context_window(Some(1_000));
+        app.begin_stream();
+        app.apply_usage(&usage_of(900, 0));
+        app.finish_stream();
+        app.end_turn(1);
+        assert!(
+            !app.should_auto_compact(),
+            "900 of 1000 is exactly the line"
+        );
+    }
+
+    #[test]
+    fn auto_compact_needs_a_window_and_derivable_content() {
+        let mut app = App::new();
+        // Over any threshold but no window known → never.
+        app.begin_stream();
+        app.apply_usage(&usage_of(1_000_000, 0));
+        app.finish_stream();
+        app.end_turn(1);
+        assert!(!app.should_auto_compact(), "no window, no trigger");
+        // A window but an empty conversation → nothing to summarize.
+        app.set_context_window(Some(100));
+        assert!(!app.should_auto_compact(), "empty context, no trigger");
+    }
+
+    #[test]
+    fn auto_compact_never_fires_mid_turn() {
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.set_context_window(Some(100));
+        app.begin_stream();
+        app.apply_usage(&usage_of(990, 0));
+        assert!(!app.should_auto_compact(), "a turn is in flight");
+    }
+
+    #[test]
+    fn auto_compact_is_blocked_after_a_compaction_until_the_next_turn() {
+        // One attempt per user turn (codex's per-turn semantics): a compaction
+        // that leaves the gauge high must not immediately re-trigger — the
+        // next completed turn re-arms it.
+        let mut app = App::new();
+        app.record_user_message("hello there my friend");
+        app.set_context_window(Some(10)); // tiny: the bridge alone exceeds it
+        app.begin_compact(false);
+        app.push_chunk("a summary");
+        app.finish_compact();
+        assert!(
+            app.context_used() > 9,
+            "precondition: still over the threshold after compacting"
+        );
+        assert!(
+            !app.should_auto_compact(),
+            "blocked right after a compaction"
+        );
+        app.begin_stream();
+        app.finish_stream();
+        app.end_turn(1);
+        assert!(
+            app.should_auto_compact(),
+            "the next turn re-arms the trigger"
+        );
+    }
+
+    #[test]
+    fn an_interrupted_compaction_blocks_the_auto_retrigger() {
+        // Esc'ing a compaction must not spawn another one at the same turn end
+        // — the user just said no.
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.set_context_window(Some(10));
+        app.begin_stream();
+        app.apply_usage(&usage_of(100, 0));
+        app.finish_stream();
+        app.end_turn(1);
+        assert!(app.should_auto_compact(), "precondition: over threshold");
+        app.begin_compact(true);
+        app.push_chunk("half");
+        app.interrupt_turn();
+        assert!(!app.should_auto_compact(), "an Esc'd compaction stays down");
+    }
+
+    #[test]
+    fn a_failed_compaction_blocks_the_auto_retrigger() {
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.set_context_window(Some(10));
+        app.begin_compact(true);
+        app.push_chunk("half");
+        app.fail_stream("boom");
+        assert!(!app.should_auto_compact(), "a failed compaction stays down");
+    }
+
+    #[test]
+    fn finish_compact_records_before_after_and_the_auto_tag() {
+        let mut app = App::new();
+        app.record_user_message("hello there friend");
+        app.set_context_window(Some(1_000));
+        app.begin_stream();
+        app.apply_usage(&usage_of(500, 0));
+        app.finish_stream();
+        app.end_turn(1);
+        app.begin_compact(true);
+        app.push_chunk("the gist");
+        let compaction = app.finish_compact().expect("a marker");
+        assert_eq!(
+            compaction.before, 500,
+            "the gauge value when compacting began"
+        );
+        assert!(
+            compaction.after > 0,
+            "re-estimated from the compacted derivation"
+        );
+        assert!(compaction.auto);
+        assert_eq!(
+            app.context_used(),
+            compaction.after,
+            "the gauge drops to the fresh estimate"
+        );
+    }
+
+    #[test]
+    fn a_manual_compaction_is_not_tagged_auto() {
+        let mut app = App::new();
+        app.record_user_message("hi");
+        app.begin_compact(false);
+        app.push_chunk("s");
+        assert!(!app.finish_compact().expect("a marker").auto);
+    }
+
+    #[test]
+    fn clear_conversation_resets_the_context_gauge() {
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.begin_stream();
+        app.apply_usage(&usage_of(5_000, 0));
+        app.finish_stream();
+        app.end_turn(1);
+        app.clear_conversation();
+        assert_eq!(app.context_used(), 0);
     }
 
     #[test]
@@ -10511,6 +10871,7 @@ mod tests {
             display_name: name.into(),
             reasoning: None,
             vision: None,
+            context: None,
         }
     }
 
@@ -10703,6 +11064,7 @@ mod tests {
                 id: "thinker".into(),
                 reasoning: Some(trio_support()),
                 vision: None,
+                context: None,
             }
         );
     }
@@ -11012,6 +11374,7 @@ mod tests {
                 id: "moonshotai/kimi-k2.6".into(),
                 reasoning: None,
                 vision: None,
+                context: None,
             }
         );
         assert!(app.model_picker.is_none(), "selecting closes the picker");

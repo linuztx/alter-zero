@@ -107,13 +107,28 @@ enum ItemRecord {
 }
 
 /// A [`Compaction`] marker on disk (`docs/compact.md`): the model-written
-/// handoff summary the context derivation bridges from.
+/// handoff summary the context derivation bridges from, plus the gauge's
+/// before/after token counts and the auto tag — `serde(default)`ed (and kept
+/// off the wire at their defaults) so files from before the gauge still parse
+/// and unchanged lines keep their shape.
 ///
 /// [`Compaction`]: crate::app::Compaction
 #[derive(Serialize, Deserialize)]
 struct CompactionRecord {
     summary: String,
     timestamp: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    before: u64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    after: u64,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    auto: bool,
+}
+
+/// `skip_serializing_if` helper for the gauge counts' 0-means-unknown default.
+#[allow(clippy::trivially_copy_pass_by_ref)] // the signature serde requires
+const fn is_zero(count: &u64) -> bool {
+    *count == 0
 }
 
 /// A [`Message`] on disk. `role` is the lowercase role name; an unknown role
@@ -293,6 +308,9 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
         HistoryItem::Compaction(compaction) => ItemRecord::Compaction(CompactionRecord {
             summary: compaction.summary.clone(),
             timestamp: compaction.timestamp.clone(),
+            before: compaction.before,
+            after: compaction.after,
+            auto: compaction.auto,
         }),
     };
     line(stamp, record)
@@ -403,6 +421,9 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 items.push(HistoryItem::Compaction(crate::app::Compaction {
                     summary: compaction.summary,
                     timestamp: compaction.timestamp,
+                    before: compaction.before,
+                    after: compaction.after,
+                    auto: compaction.auto,
                 }));
             }
             // Checkpoints ride the same file but aren't transcript items —
@@ -549,10 +570,14 @@ mod tests {
     #[test]
     fn a_compaction_marker_round_trips() {
         // The /compact marker persists so a /resume stays compacted
-        // (docs/compact.md); the summary is the payload.
+        // (docs/compact.md); the summary — and the gauge's before/after token
+        // counts + the auto tag — are the payload.
         let item = HistoryItem::Compaction(crate::app::Compaction {
             summary: "we did the thing".into(),
             timestamp: "03:20 PM".into(),
+            before: 88_000,
+            after: 2_100,
+            auto: true,
         });
         let line = item_line(&item, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -560,6 +585,22 @@ mod tests {
         assert_eq!(value["payload"]["summary"], "we did the thing");
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_compaction_line_without_token_info_parses_with_defaults() {
+        // Rollouts written before the gauge fields still load (the
+        // forward-compatibility contract) — counts default to 0, auto false.
+        let old =
+            r#"{"timestamp":"t","type":"compaction","payload":{"summary":"s","timestamp":""}}"#;
+        let text = format!("{}\n{old}\n", meta_line(&meta(), "t0"));
+        let (_, parsed) = parse_session(&text).expect("parses");
+        let [HistoryItem::Compaction(compaction)] = parsed.as_slice() else {
+            panic!("one compaction parses, got {parsed:?}");
+        };
+        assert_eq!(compaction.summary, "s");
+        assert_eq!((compaction.before, compaction.after), (0, 0));
+        assert!(!compaction.auto);
     }
 
     #[test]

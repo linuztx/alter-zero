@@ -1534,12 +1534,35 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 pub const COMPACTED_NOTICE: &str = "Context compacted";
 
 /// The inline `/compact` marker cell: the one-line `● Context compacted`
-/// notice in the system-notice dress (cyan bullet, literal text). The summary
-/// body never shows inline — it expands in the Ctrl+O transcript only
-/// ([`compaction_full_lines`]). See `docs/compact.md`.
+/// notice in the system-notice dress (cyan bullet, literal text), carrying a
+/// dim ` · {before} → {after} tokens` shrink clause when the marker recorded
+/// the gauge (0/0 — an old rollout — hides it) and a dim ` · auto` tag for an
+/// auto-triggered compaction. A single unwrapped line, the [`summary_lines`]
+/// precedent. The summary body never shows inline — it expands in the Ctrl+O
+/// transcript only ([`compaction_full_lines`]). See `docs/compact.md`.
 #[must_use]
-pub fn compaction_lines(width: u16) -> Vec<Line<'static>> {
-    message_lines(Role::System, COMPACTED_NOTICE, width)
+pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<Line<'static>> {
+    let _ = width; // one unwrapped line, like summary_lines
+    let bullet_style = Style::new().fg(SYSTEM_COLOR).add_modifier(Modifier::BOLD);
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let mut spans = vec![
+        Span::styled(SYSTEM_BULLET.to_string(), bullet_style),
+        Span::raw(COMPACTED_NOTICE.to_string()),
+    ];
+    if compaction.before > 0 || compaction.after > 0 {
+        spans.push(Span::styled(
+            format!(
+                " · {} → {} tokens",
+                format_token_count(usize::try_from(compaction.before).unwrap_or(usize::MAX)),
+                format_token_count(usize::try_from(compaction.after).unwrap_or(usize::MAX)),
+            ),
+            dim,
+        ));
+    }
+    if compaction.auto {
+        spans.push(Span::styled(" · auto".to_string(), dim));
+    }
+    vec![Line::from(spans)]
 }
 
 /// The Ctrl+O transcript's expanded `/compact` cell: the marker line with the
@@ -1547,7 +1570,7 @@ pub fn compaction_lines(width: u16) -> Vec<Line<'static>> {
 /// bridge will replay to the model, readable in place. An empty summary shows
 /// just the marker. See `docs/compact.md`.
 fn compaction_full_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<Line<'static>> {
-    let mut lines = compaction_lines(width);
+    let mut lines = compaction_lines(compaction, width);
     if compaction.summary.is_empty() {
         return lines;
     }
@@ -3288,6 +3311,21 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         Span::styled(FOOTER_SEPARATOR.to_string(), dim),
         Span::styled(session.cwd.clone(), dim),
     ]);
+    // The context gauge — `{used}%/{window}` (e.g. `6.0%/300k`) — whenever
+    // the active model's window is known, so the user sees auto-compact
+    // approaching (docs/compact.md).
+    if let Some(window) = app.context_window() {
+        #[allow(clippy::cast_precision_loss)] // display only — one decimal
+        let pct = app.context_used() as f64 * 100.0 / window as f64;
+        segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));
+        segments.push(Span::styled(
+            format!(
+                "{pct:.1}%/{}",
+                format_token_count(usize::try_from(window).unwrap_or(usize::MAX))
+            ),
+            dim,
+        ));
+    }
     // Running background shells append a `· {n} shell(s)` count — the ↓
     // manager's ambient reminder (docs/background.md).
     let shells = app.background().len();
@@ -6695,7 +6733,7 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
             HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
-            HistoryItem::Compaction(_) => lines.extend(compaction_lines(width)),
+            HistoryItem::Compaction(c) => lines.extend(compaction_lines(c, width)),
         }
         // Blank spacer after every item — except a shell command's header:
         // its cell stays flush ([`is_shell_header`]).
@@ -12514,24 +12552,63 @@ mod tests {
 
     // --- /compact: the marker cell (docs/compact.md) ---
 
+    /// A test marker with no token info (the pre-gauge shape).
+    fn bare_compaction(summary: &str) -> crate::app::Compaction {
+        crate::app::Compaction {
+            summary: summary.into(),
+            timestamp: String::new(),
+            before: 0,
+            after: 0,
+            auto: false,
+        }
+    }
+
     #[test]
     fn compaction_lines_render_the_cyan_marker_cell() {
         // The inline cell is codex's "Context compacted" info line, in our
-        // system-notice dress (cyan ●).
-        let lines = compaction_lines(80);
+        // system-notice dress (cyan ●). No token info → just the notice.
+        let lines = compaction_lines(&bare_compaction("s"), 80);
         assert_eq!(lines.len(), 1);
         assert_eq!(plain(&lines[0]), format!("● {COMPACTED_NOTICE}"));
         assert_eq!(lines[0].spans[0].style.fg, Some(SYSTEM_COLOR));
     }
 
     #[test]
+    fn the_compaction_cell_appends_the_token_shrink_and_auto_tag() {
+        // The gauge info rides the cell: `· {before} → {after} tokens`, plus
+        // `· auto` when the compaction was auto-triggered (docs/compact.md).
+        let compaction = crate::app::Compaction {
+            summary: "s".into(),
+            timestamp: String::new(),
+            before: 88_000,
+            after: 2_100,
+            auto: true,
+        };
+        let text = plain(&compaction_lines(&compaction, 120)[0]);
+        assert!(text.starts_with(&format!("● {COMPACTED_NOTICE}")), "{text}");
+        assert!(text.contains("88k → 2.1k tokens"), "{text}");
+        assert!(text.ends_with("· auto"), "{text}");
+    }
+
+    #[test]
+    fn a_manual_compaction_cell_shows_the_shrink_without_the_auto_tag() {
+        let compaction = crate::app::Compaction {
+            summary: "s".into(),
+            timestamp: String::new(),
+            before: 1_000,
+            after: 300,
+            auto: false,
+        };
+        let text = plain(&compaction_lines(&compaction, 120)[0]);
+        assert!(text.contains("1k → 300 tokens"), "{text}");
+        assert!(!text.contains("auto"), "{text}");
+    }
+
+    #[test]
     fn conversation_lines_keep_the_compaction_marker_collapsed() {
         // The inline repaint shows the one-line cell + the spacer — the summary
         // body is Ctrl+O-only.
-        let history = vec![HistoryItem::Compaction(crate::app::Compaction {
-            summary: "kept the gist".into(),
-            timestamp: String::new(),
-        })];
+        let history = vec![HistoryItem::Compaction(bare_compaction("kept the gist"))];
         let lines = conversation_lines(&history, 80);
         assert_eq!(lines.len(), 2, "marker + spacer: {:?}", lines.len());
         assert_eq!(plain(&lines[0]), format!("● {COMPACTED_NOTICE}"));
@@ -12539,10 +12616,7 @@ mod tests {
 
     #[test]
     fn the_transcript_expands_the_compaction_summary_dim_below_the_marker() {
-        let compaction = crate::app::Compaction {
-            summary: "kept the gist".into(),
-            timestamp: String::new(),
-        };
+        let compaction = bare_compaction("kept the gist");
         let lines = compaction_full_lines(&compaction, 80);
         assert_eq!(plain(&lines[0]), format!("● {COMPACTED_NOTICE}"));
         assert_eq!(plain(&lines[1]), format!("{INDENT}kept the gist"));
@@ -12555,11 +12629,33 @@ mod tests {
 
     #[test]
     fn an_empty_compaction_summary_expands_to_just_the_marker() {
-        let compaction = crate::app::Compaction {
-            summary: String::new(),
-            timestamp: String::new(),
-        };
-        assert_eq!(compaction_full_lines(&compaction, 80).len(), 1);
+        assert_eq!(compaction_full_lines(&bare_compaction(""), 80).len(), 1);
+    }
+
+    // --- the footer context gauge (docs/compact.md) ---
+
+    #[test]
+    fn the_footer_shows_the_context_gauge_when_the_window_is_known() {
+        let mut app = App::new();
+        app.set_session_info("some-model", "~/x");
+        app.set_context_window(Some(300_000));
+        app.begin_stream();
+        app.apply_usage(&crate::stream::TokenUsage {
+            input: 17_900,
+            output: 100,
+            cached: 0,
+            cache_write: 0,
+        });
+        let text = plain(&footer_line(&app, 120));
+        assert!(text.contains("6.0%/300k"), "{text}");
+    }
+
+    #[test]
+    fn the_footer_omits_the_gauge_without_a_window() {
+        let mut app = App::new();
+        app.set_session_info("some-model", "~/x");
+        let text = plain(&footer_line(&app, 120));
+        assert!(!text.contains('%'), "{text}");
     }
 
     #[test]
@@ -14664,6 +14760,7 @@ mod tests {
             display_name: name.into(),
             reasoning: None,
             vision: None,
+            context: None,
         }
     }
 

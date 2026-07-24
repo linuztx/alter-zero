@@ -128,15 +128,21 @@ hijacking the TUI and hanging) in `docs/tty-detach.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in
-`docs/tool-view-performance.md`; and **`/compact`** (codex's manual context
-compaction, ported append-only: a summarization turn streams the model's
-handoff summary invisibly into `App::compact_buffer`, `finish_compact` appends
-a `HistoryItem::Compaction` marker — the transcript, recorder, checkpoint
-keys, and backtrack all untouched — and `context::context_messages` derives
-codex's compacted shape from the *last* marker: the 20k-approx-token budget of
-recent user texts + the `SUMMARY_PREFIX\n{summary}` bridge in place of
-everything before it, the `● Context compacted` cell the visible record) in
-`docs/compact.md`.
+`docs/tool-view-performance.md`; and **`/compact` + auto-compact** (codex's
+context compaction, ported append-only: a summarization turn streams the
+model's handoff summary invisibly into `App::compact_buffer`,
+`finish_compact` appends a `HistoryItem::Compaction` marker — the transcript,
+recorder, checkpoint keys, and backtrack all untouched — and
+`context::context_messages` derives codex's compacted shape from the *last*
+marker: the 20k-approx-token budget of recent user texts + the
+`SUMMARY_PREFIX\n{summary}` bridge in place of everything before it, the
+`● Context compacted · {before} → {after} tokens` cell the visible record;
+with the model's **context window** known — `/v1/models` `context_length`
+via `ModelEntry::context`, persisted in `config.json`, overridable via
+`ALTER_ZERO_CONTEXT_WINDOW` — the footer shows a `{used}%/{window}` gauge
+(usage-frame fed, tokenizer-estimated offline) and the loop **auto-runs** the
+same turn past codex's 90% threshold (`App::should_auto_compact`, one
+attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`.
 
 ### The runtime model and its invariants
 

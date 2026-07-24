@@ -185,7 +185,9 @@ unit-tested must be unit-tested.
   append-only `HistoryItem::Compaction` marker the context derivation bridges
   from; mid-turn a `Toast(COMPACT_BUSY_NOTICE)`, an empty context a
   `Toast(COMPACT_EMPTY_NOTICE)` — see `docs/compact.md`, `smoke.sh`
-  Phase 50). A `Notice` is recorded as
+  Phase 50; with the model's context window known the footer carries a
+  `{used}%/{window}` gauge and the loop **auto-compacts** past codex's 90%
+  threshold, the cell tagged `· auto` — Phase 51). A `Notice` is recorded as
   a `Role::System` message and committed to scrollback like any other. Adding a
   command later is a one-line registry edit + an effect arm in
   `run_selected_command` — the palette, filtering, scrolling, and dispatch don't

@@ -308,6 +308,20 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // backend so attachments degrade gracefully (docs/tools.md). Meaningful
     // only against a real provider (the dummy sees no wire).
     let mut active_vision: Option<bool> = if real_backend { saved_vision } else { None };
+    // The active model's context window (docs/compact.md), tracked beside
+    // active_vision: drives the footer's `{used}%/{window}` gauge and the
+    // auto-compact trigger. `ALTER_ZERO_CONTEXT_WINDOW` overrides whatever the
+    // provider reports (and is the only way to get a gauge on the dummy);
+    // otherwise the saved selection seeds it and the probe/{`/model`} keep it
+    // fresh.
+    let env_context_window: Option<u64> = std::env::var("ALTER_ZERO_CONTEXT_WINDOW")
+        .ok()
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|&w| w > 0);
+    let saved_context: Option<u64> = saved.context.filter(|_| {
+        active_provider == saved.provider && env_model.is_some() && env_model == saved.model
+    });
+    let mut active_context: Option<u64> = if real_backend { saved_context } else { None };
     // Session context for the footer under the box — the backend's model name
     // and the cwd (shared with the tasks-dir derivation above) — formatted
     // here at the boundary (the set_clock pattern: the pure core never reads
@@ -318,6 +332,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // it names the real file even under an `ALTER_ZERO_ENV_FILE` override.
     let env_path_display = ui::display_cwd(&env_file_path, home.as_deref());
     app.set_session_info(backend.model_name(), cwd_display.clone());
+    // The footer gauge + auto-compact window: the env override wins, else the
+    // active model's known window (docs/compact.md).
+    app.set_context_window(env_context_window.or(active_context));
     // The backend's system prompt rides into App so the Ctrl+D view shows the
     // whole context window (docs/context.md). None for the dummy.
     app.set_system_prompt(backend.system_prompt());
@@ -809,65 +826,22 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // model's context from there on. The turn rides
                                 // the normal `inflight` slot so Esc, /clear, and
                                 // quit reap it like any other turn.
-                                app.begin_compact();
-                                app.count_user_input(context::SUMMARIZATION_PROMPT);
-                                render.reset();
-                                clocks.turn_start = Some(Instant::now());
-                                clocks.thinking_start = None;
-                                clocks.command_start = None;
-                                let cancel = CancelToken::new();
-                                let mut compact_context =
-                                    context::context_messages(&app.history);
-                                // The real backend ignores the bare prompt
-                                // whenever the context is non-empty — the
-                                // summarization prompt rides as the context's
-                                // final user entry (the prompt argument still
-                                // serves the dummy, which scripts a text-only
-                                // canned summary for it).
-                                compact_context.push(context::ContextMessage::new(
-                                    context::ContextRole::User,
-                                    context::SUMMARIZATION_PROMPT,
-                                ));
-                                // Codex sends the summarize request with NO
-                                // tools: a one-off tools-free backend for the
-                                // active selection (same persona + environment
-                                // prompt, no background-notice injection). With
-                                // no real backend configured the session backend
-                                // — the dummy — plays its canned summary.
-                                let compact_backend = if dummy_forced() || stall_ms.is_some() {
+                                let compact_backend = if stall_ms.is_some() {
                                     None
                                 } else {
-                                    active_provider
-                                        .as_deref()
-                                        .and_then(|provider| {
-                                            model_config_for(
-                                                &providers, &env_file, provider, &active_model,
-                                                temperature,
-                                                app.thinking.as_ref().map(|t| t.mode),
-                                                active_vision,
-                                            )
-                                        })
-                                        .filter(|cfg| cfg.is_usable())
-                                        .map(|cfg| {
-                                            LlmBackend::configure(
-                                                cfg,
-                                                system_prompt.clone(),
-                                                /*tools_enabled=*/ false,
-                                            )
-                                        })
+                                    build_compact_backend(
+                                        &providers, &env_file,
+                                        active_provider.as_deref(), &active_model,
+                                        temperature,
+                                        app.thinking.as_ref().map(|t| t.mode),
+                                        active_vision, system_prompt.clone(),
+                                    )
                                 };
-                                let spawn_on: &dyn ReplySource = match compact_backend.as_ref() {
-                                    Some(one_off) => one_off,
-                                    None => backend.as_ref(),
-                                };
-                                let handle = spawn_on.spawn(
-                                    context::SUMMARIZATION_PROMPT.to_string(),
-                                    Vec::new(),
-                                    compact_context,
-                                    tx.clone(),
-                                    cancel.clone(),
-                                );
-                                inflight = Some((cancel, handle));
+                                inflight = Some(start_compact_turn(
+                                    &mut app, &tx, backend.as_ref(),
+                                    compact_backend.as_ref(),
+                                    &mut render, &mut clocks, /*auto=*/ false,
+                                ));
                             }
                             Action::OpenResumePicker => {
                                 // /resume from an idle composer (docs/resume.md):
@@ -1041,7 +1015,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     c.cancel();
                                 }
                             }
-                            Action::SelectModel { provider, id, reasoning, vision } => {
+                            Action::SelectModel { provider, id, reasoning, vision, context } => {
                                 // Enter on a picker row: rebuild the backend for the
                                 // chosen provider/model (docs/llm.md). The picker is
                                 // already closed (on_key did it); cancel any pending
@@ -1083,10 +1057,19 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         thinking_probe_pending = false;
                                         app.set_thinking(thinking.clone());
                                         active_vision = vision;
+                                        // The picked entry's context window seeds
+                                        // the footer gauge + auto-compact (the
+                                        // env override still wins) —
+                                        // docs/compact.md.
+                                        active_context = context;
+                                        app.set_context_window(
+                                            env_context_window.or(active_context),
+                                        );
                                         // Persist the choice (and its reasoning +
-                                        // vision state) so it's the default next
-                                        // run (docs/llm.md, docs/reasoning.md,
-                                        // docs/tools.md).
+                                        // vision + context-window state) so it's
+                                        // the default next run (docs/llm.md,
+                                        // docs/reasoning.md, docs/tools.md,
+                                        // docs/compact.md).
                                         persisted_selection =
                                             Some((provider.clone(), id.clone()));
                                         save_settings(
@@ -1095,6 +1078,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                             &id,
                                             Some(thinking_settings_of(thinking.as_ref())),
                                             vision,
+                                            context,
                                         );
                                         present_toast(
                                             &mut app,
@@ -1156,6 +1140,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         &active_model,
                                         Some(thinking_settings_of(thinking.as_ref())),
                                         active_vision,
+                                        active_context,
                                     );
                                 }
                                 present_toast(
@@ -1482,6 +1467,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     }
                     app.set_thinking(thinking.clone());
                     active_vision = vision;
+                    // The probed record's context window seeds the footer
+                    // gauge + auto-compact (the env override still wins) —
+                    // docs/compact.md.
+                    active_context = entry.and_then(|entry| entry.context);
+                    app.set_context_window(env_context_window.or(active_context));
                     // Persist only onto the recorded selection: an
                     // env-overridden model never writes config.json (env
                     // always wins, never sticks), so that combination just
@@ -1495,6 +1485,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             &active_model,
                             Some(thinking_settings_of(thinking.as_ref())),
                             vision,
+                            active_context,
                         );
                     }
                     frame.schedule_frame();
@@ -1541,6 +1532,35 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             }
         }
 
+        // Auto-compact (docs/compact.md): past codex's 90%-of-window
+        // threshold, start the summarization turn on our own at this idle
+        // boundary — the loop bottom sees every turn end and gauge change.
+        // `should_auto_compact` pre-checks are cheap (the context derivation
+        // runs only once every gate has passed), it can't fire mid-turn, and
+        // one attempt per user turn means an Esc'd or failed compaction never
+        // loops. The StallAi test backend opts out (it ignores the script).
+        if inflight.is_none() && stall_ms.is_none() && app.should_auto_compact() {
+            let compact_backend = build_compact_backend(
+                &providers,
+                &env_file,
+                active_provider.as_deref(),
+                &active_model,
+                temperature,
+                app.thinking.as_ref().map(|t| t.mode),
+                active_vision,
+                system_prompt.clone(),
+            );
+            inflight = Some(start_compact_turn(
+                &mut app,
+                &tx,
+                backend.as_ref(),
+                compact_backend.as_ref(),
+                &mut render,
+                &mut clocks,
+                /*auto=*/ true,
+            ));
+            frame.schedule_frame();
+        }
         // Mirror the finished history to the session file (docs/resume.md):
         // append what this iteration added, rewrite on a backtrack truncation,
         // nothing when unchanged — so streaming chunks (which never touch
@@ -1830,6 +1850,7 @@ fn save_settings(
     model: &str,
     thinking: Option<ThinkingSettings>,
     vision: Option<bool>,
+    context: Option<u64>,
 ) {
     let Some(path) = path else {
         return;
@@ -1842,6 +1863,7 @@ fn save_settings(
         Settings::for_selection(provider, model)
             .with_thinking(thinking)
             .with_vision(vision)
+            .with_context(context)
             .to_json(),
     );
 }
@@ -1855,6 +1877,86 @@ fn thinking_settings_of(thinking: Option<&(ReasoningSupport, ThinkingMode)>) -> 
         Some((support, mode)) => ThinkingSettings::from_state(support, *mode),
         None => ThinkingSettings::unsupported(),
     }
+}
+
+/// Build the one-off **tools-free** backend a `/compact` turn runs on (codex
+/// sends the summarize request with no tools): the same persona + environment
+/// prompt via `LlmBackend::configure(cfg, prompt, false)`, no
+/// `.with_background` (no notice injection into the summary request). `None`
+/// when no real backend is configured — the caller falls back to the session
+/// backend (the dummy scripts a text-only canned summary). See
+/// `docs/compact.md`.
+#[allow(clippy::too_many_arguments)] // the same flat knob list as build_backend
+fn build_compact_backend(
+    providers: &ProvidersFile,
+    env_file: &EnvFile,
+    provider: Option<&str>,
+    model: &str,
+    temperature: Option<f32>,
+    thinking: Option<ThinkingMode>,
+    vision: Option<bool>,
+    system_prompt: Option<String>,
+) -> Option<LlmBackend> {
+    if dummy_forced() {
+        return None;
+    }
+    provider
+        .and_then(|provider| {
+            model_config_for(
+                providers,
+                env_file,
+                provider,
+                model,
+                temperature,
+                thinking,
+                vision,
+            )
+        })
+        .filter(llm::ModelConfig::is_usable)
+        .map(|cfg| LlmBackend::configure(cfg, system_prompt, /*tools_enabled=*/ false))
+}
+
+/// Start a `/compact` summarization turn (docs/compact.md) — manual
+/// (`Action::Compact`) or auto-triggered (the loop bottom's
+/// `should_auto_compact`). Like [`start_background_turn`], no user message is
+/// recorded: the context is derived as-is and codex's summarization prompt
+/// rides as its final user entry (the real backend ignores the bare `prompt`
+/// whenever the context is non-empty; the prompt argument still serves the
+/// dummy, which scripts a text-only canned summary for it). Spawns on the
+/// tools-free one-off backend when one resolved, else the session backend.
+fn start_compact_turn(
+    app: &mut App,
+    tx: &tokio::sync::mpsc::UnboundedSender<StreamEvent>,
+    fallback: &dyn ReplySource,
+    compact_backend: Option<&LlmBackend>,
+    render: &mut ui::StreamRender,
+    clocks: &mut StatusClocks,
+    auto: bool,
+) -> (CancelToken, JoinHandle<()>) {
+    app.begin_compact(auto);
+    app.count_user_input(context::SUMMARIZATION_PROMPT);
+    render.reset();
+    clocks.turn_start = Some(Instant::now());
+    clocks.thinking_start = None;
+    clocks.command_start = None;
+    let cancel = CancelToken::new();
+    let mut compact_context = context::context_messages(&app.history);
+    compact_context.push(context::ContextMessage::new(
+        context::ContextRole::User,
+        context::SUMMARIZATION_PROMPT,
+    ));
+    let spawn_on: &dyn ReplySource = match compact_backend {
+        Some(one_off) => one_off,
+        None => fallback,
+    };
+    let handle = spawn_on.spawn(
+        context::SUMMARIZATION_PROMPT.to_string(),
+        Vec::new(),
+        compact_context,
+        tx.clone(),
+        cancel.clone(),
+    );
+    (cancel, handle)
 }
 
 /// Pick the reply backend: the dummy unless a real provider/model/key all
@@ -2701,10 +2803,10 @@ fn on_stream_event(
             // dispatch_after_turn then snapshots + drains the queue like any
             // turn end, so a batch queued mid-compact goes out over the
             // freshly compacted context.
-            if app.finish_compact().is_some() {
+            if let Some(compaction) = app.finish_compact() {
                 if committing {
                     term.set_view_height(live_region_height(app, term.screen()));
-                    term.insert_before(ui::compaction_lines(width));
+                    term.insert_before(ui::compaction_lines(&compaction, width));
                     term.insert_before(vec![Line::default()]); // blank spacer
                 }
                 settle_bg_completions(term, app);

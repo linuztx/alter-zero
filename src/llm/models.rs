@@ -33,6 +33,11 @@ pub struct ModelEntry {
     /// the record doesn't say (a bare OpenAI-style list) — the backend then
     /// attaches optimistically, exactly as before. See `docs/tools.md`.
     pub vision: Option<bool>,
+    /// The model's context window in tokens, when the record reports one —
+    /// drives the footer's `{used}%/{window}` gauge and the auto-compact
+    /// trigger. `None` = unknown (a bare OpenAI-style list; the gauge hides
+    /// and auto-compact stays off). See `docs/compact.md`.
+    pub context: Option<u64>,
 }
 
 /// The OpenAI `/models` envelope: `{ "data": [ { "id", "name"? } ] }`. Each
@@ -74,6 +79,7 @@ pub fn parse_models(body: &str, provider: &str) -> Result<Vec<ModelEntry>> {
                 display_name: display_name.to_string(),
                 reasoning: reasoning_support_of(record),
                 vision: vision_support_of(record),
+                context: context_window_of(record),
             })
         })
         .collect();
@@ -210,6 +216,27 @@ fn vision_support_of(record: &serde_json::Value) -> Option<bool> {
         .as_bool()
 }
 
+/// Read one `/models` record's context-window size, sniffing both provider
+/// shapes (per record, like the vision sniff):
+///
+/// - **OpenRouter** (and most aggregators): a top-level `context_length`.
+/// - **Venice**: `model_spec.availableContextTokens`.
+///
+/// `None` when the record doesn't say, or reports a non-positive size (a
+/// meaningless window would divide the gauge by zero). See `docs/compact.md`.
+fn context_window_of(record: &serde_json::Value) -> Option<u64> {
+    let raw = record
+        .get("context_length")
+        .and_then(serde_json::Value::as_u64)
+        .or_else(|| {
+            record
+                .get("model_spec")?
+                .get("availableContextTokens")?
+                .as_u64()
+        })?;
+    (raw > 0).then_some(raw)
+}
+
 /// The `/models` endpoint for a config: `{api_model_base}/models`.
 #[must_use]
 pub fn models_endpoint(cfg: &ModelConfig) -> String {
@@ -256,6 +283,29 @@ pub fn fetch_models(cfg: &ModelConfig, cancel: &CancelToken) -> Result<Vec<Model
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- context window (docs/compact.md: the footer gauge + auto-compact) ---
+
+    #[test]
+    fn context_length_parses_from_an_openrouter_record() {
+        let body = r#"{"data":[{"id":"m","context_length":262144}]}"#;
+        let models = parse_models(body, "openrouter").unwrap();
+        assert_eq!(models[0].context, Some(262_144));
+    }
+
+    #[test]
+    fn context_window_sniffs_venice_and_defaults_to_unknown() {
+        let venice = r#"{"data":[{"id":"m","model_spec":{"availableContextTokens":131072}}]}"#;
+        assert_eq!(
+            parse_models(venice, "venice").unwrap()[0].context,
+            Some(131_072)
+        );
+        let bare = r#"{"data":[{"id":"m"}]}"#;
+        assert_eq!(parse_models(bare, "openai").unwrap()[0].context, None);
+        // A zero/negative length is meaningless — treat as unknown.
+        let zero = r#"{"data":[{"id":"m","context_length":0}]}"#;
+        assert_eq!(parse_models(zero, "p").unwrap()[0].context, None);
+    }
 
     #[test]
     fn parses_ids_and_names() {
