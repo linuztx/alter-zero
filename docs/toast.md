@@ -36,8 +36,10 @@ there" and fades it after a few seconds.
 | `/compact` run mid-turn | `/compact is disabled while a task is in progress` | info |
 | `/compact` with an empty context | `Nothing to compact` | info |
 
-These were all committed as scrollback messages before; now they surface as
-toasts and leave no trace in `history` (so they never appear in the Ctrl+O
+The original rows (`/copy`, `/model`, `/login`, `/resume`, `/help`) were all
+committed as scrollback messages before this design; the later `/init` and
+`/compact` rows were born as toasts. Either way they surface as toasts and
+leave no trace in `history` (so they never appear in the Ctrl+O
 transcript or a `/resume` rollout). The one thing that *stays* in scrollback is
 **idle `/help`** — its multi-line command list is real content the user wants to
 scroll, so it commits as a `Role::System` message as before. Only `/help`
@@ -84,9 +86,11 @@ pub struct Toast { pub text: String, pub kind: ToastKind }
 `clear_conversation` (`/clear`) also drops the toast — a cleared slate shows
 nothing lingering.
 
-The slash-command dispatch returns `Action::Toast(String)` for the two mid-turn
-rejections (`/resume`, `/help`); every other toast is raised by the boundary
-directly (it already owns the clipboard / backend / `.env` I/O those confirm).
+The slash-command dispatch returns `Action::Toast(String)` for the palette's
+soft rejections — the mid-turn busy notices (`/resume`, `/help`, `/init`,
+`/compact`) and `/compact`'s empty-context `Nothing to compact`; every other
+toast is raised by the boundary directly (it already owns the clipboard /
+backend / `.env` I/O those confirm).
 
 ## The expiry (`main.rs`, the timestamp pattern)
 

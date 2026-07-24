@@ -178,9 +178,10 @@ unit-tested must be unit-tested.
   `Copy(Option<String>)` (codex's `/copy` — the last assistant response to the
   system clipboard; the loop does the arboard/OSC 52 write at the boundary and
   commits a system or red error notice, see `docs/copy.md`), and `/resume` →
-  `OpenResumePicker` idle or `ErrorNotice(RESUME_BUSY_NOTICE)` mid-turn
+  `OpenResumePicker` idle or `Toast(RESUME_BUSY_NOTICE)` mid-turn
   (codex blocks it while a task runs — see `docs/resume.md` and the /resume
-  bullet below), and `/init` → `Submit(INIT_PROMPT)` idle (codex's `/init`:
+  bullet below), and `/init` → `Submit(INIT_PROMPT.trim_end())` idle
+  (codex's `/init`:
   the canned `prompts/init.md` prompt — generate an `AGENTS.md` contributor
   guide, never overwriting an existing one — submitted as a regular user
   turn the model's tool loop answers; mid-turn a `Toast(INIT_BUSY_NOTICE)`
@@ -586,10 +587,10 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   (Ctrl+O toggles the transcript; `/resume` opens the picker —
   `docs/resume.md`).
 - `SlashCommand { name, description, effect }` + `CommandEffect { Clear, Help,
-  Copy, Resume, Model, Login, Quit }` + the `COMMANDS` registry (`/help`,
-  `/clear`, `/copy`, `/resume`, `/model`, `/login`, `/quit`) — the
-  slash-command palette's data; adding a command is one registry entry (+ an
-  effect arm).
+  Copy, Init, Compact, Resume, Model, Login, Quit }` + the `COMMANDS` registry
+  (`/help`, `/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`,
+  `/login`, `/quit`) — the slash-command palette's data; adding a command is
+  one registry entry (+ an effect arm).
 - `KeyOnboarding { providers, step, selected, query, chosen, key_input }` +
   `KeyStep { Provider, Key }` + `ProviderChoice { id, name, env_var, configured }`
   — the open inline `/login` flow (`App::key_onboarding`, `None` when closed;
@@ -978,7 +979,8 @@ rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
   with every tool expanded (by design — keeps the inline chat compact).
 - The slash-command palette only matches a **bare** `/token` (a leading slash, no
   whitespace); there's no argument parsing yet. The registry is intentionally small
-  for now (`/help`, `/clear`, `/copy`, `/resume`, `/quit`) — adding a command is a one-line `COMMANDS`
+  (`/help`, `/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`,
+  `/login`, `/quit`) — adding a command is a one-line `COMMANDS`
   entry plus an effect arm in `run_selected_command`. Esc's dismissal reopens on
   the next keystroke only if you leave and re-enter command mode; and running
   `/help` mid-stream finalises the reply's current segment first (so the notice

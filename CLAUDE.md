@@ -581,13 +581,16 @@ transient `Toast` (was a red `ErrorNotice`; `docs/toast.md`) like codex; see
 `docs/resume.md`, `smoke.sh` Phase 31. **`/model` and `/login` (the inline
 pickers, `docs/llm.md`) now open *mid-turn* too** — they only replace the
 composer, never the running turn, so their old busy rejections are gone; their
-confirmations are toasts (`smoke.sh` Phase 33). **`/init`→`Submit(INIT_PROMPT)`**
-— codex's `/init` (`docs/init.md`): the canned `prompts/init.md` prompt (generate
+confirmations are toasts (`smoke.sh` Phase 33).
+**`/init`→`Submit(INIT_PROMPT.trim_end())`** — codex's `/init`
+(`docs/init.md`): the canned `prompts/init.md` prompt (generate
 an `AGENTS.md` contributor guide, never overwriting an existing one) submitted as
 a regular user turn — echoed as the `❯` message, recorded, checkpointed — that
 the model's agentic tool loop answers by exploring the repo and writing the file;
 mid-turn it is rejected with a `Toast` like `/compact` (codex's
-`available_during_task = false`), and it never records into the ↑-recall history.
+`available_during_task = false`), it never records into the ↑-recall history,
+and an Esc-undo of the turn restores the literal `/init` (palette reopened),
+not the prompt.
 **`/compact`→`Compact`** —
 codex's manual compaction (`docs/compact.md`): the loop runs the summarization
 turn on a one-off tools-free `LlmBackend::configure(cfg, system_prompt,

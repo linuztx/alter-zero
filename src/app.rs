@@ -2893,14 +2893,17 @@ impl App {
                 // Codex's /init is submit_user_message(INIT_PROMPT): the canned
                 // prompt rides the normal Submit → start_turn path — echoed as
                 // the user ❯ message, recorded, checkpointed — and the model's
-                // tool loop generates AGENTS.md. Mid-turn it is disabled like
-                // /compact (codex's available_during_task = false); the ↑
-                // recall history is untouched (the user typed "/init", not the
-                // prompt). See docs/init.md.
+                // tool loop generates AGENTS.md. Trimmed because the file's
+                // final newline would wrap into an empty last line that
+                // message_lines pads into a stray full-width dark row under
+                // the ❯ cell (codex trims the same way at render time). Mid-turn
+                // it is disabled like /compact (codex's available_during_task =
+                // false); the ↑ recall history is untouched (the user typed
+                // "/init", not the prompt). See docs/init.md.
                 if self.turn_active() {
                     Action::Toast(INIT_BUSY_NOTICE.to_string())
                 } else {
-                    Action::Submit(INIT_PROMPT.to_string())
+                    Action::Submit(INIT_PROMPT.trim_end().to_string())
                 }
             }
             CommandEffect::Compact => {
@@ -5274,6 +5277,19 @@ impl App {
         {
             self.status = None;
             let (text, pairs) = self.take_trailing_user_messages();
+            // An /init turn's recorded message is the canned prompt, but the
+            // user typed "/init" — restoring 1.8KB of text the composer never
+            // held would flood it (and a follow-up Ctrl+C would record the
+            // prompt into ↑ recall, breaking docs/init.md's no-recall
+            // guarantee). Recall the command instead; refresh_command_menu
+            // reopens the palette on it — the exact pre-submit state. (A
+            // hand-typed submission of the identical text lands here too;
+            // "/init" resubmits the same prompt, so nothing is lost.)
+            let text = if text == INIT_PROMPT.trim_end() {
+                "/init".to_string()
+            } else {
+                text
+            };
             self.recall_input(&text);
             // recall_input replaced the draft, unanchoring any pairs that
             // backed it — discard those (the boundary deletes the orphaned
@@ -8228,15 +8244,23 @@ mod tests {
 
     #[test]
     fn the_palette_lists_init_with_codexs_description() {
-        let cmd = COMMANDS
+        let init = COMMANDS
             .iter()
-            .find(|c| c.name == "init")
+            .position(|c| c.name == "init")
             .expect("/init is registered");
+        let cmd = &COMMANDS[init];
         assert_eq!(
             cmd.description,
             "create an AGENTS.md file with instructions for alter-zero"
         );
         assert_eq!(cmd.effect, CommandEffect::Init);
+        // Codex's palette adjacency: Init lists immediately before Compact
+        // (its enum order) — the documented order, pinned like MENU_MAX_ROWS.
+        let compact = COMMANDS
+            .iter()
+            .position(|c| c.name == "compact")
+            .expect("/compact is registered");
+        assert_eq!(init + 1, compact, "/init lists right before /compact");
     }
 
     #[test]
@@ -8256,14 +8280,63 @@ mod tests {
         // Codex's /init is submit_user_message(INIT_PROMPT): the whole canned
         // prompt goes out as a regular user turn — echoed as the ❯ message,
         // recorded, checkpointed — and the model's tool loop does the work.
+        // Trailing whitespace is trimmed: the file's final newline would wrap
+        // into an empty last line that message_lines pads into a stray
+        // full-width dark row under the ❯ cell (codex trims the same way at
+        // render time, its display_lines' trim_end_matches).
         let mut app = App::new();
         type_str(&mut app, "/init");
         assert_eq!(
             app.on_key(key(KeyCode::Enter)),
-            Action::Submit(INIT_PROMPT.to_string())
+            Action::Submit(INIT_PROMPT.trim_end().to_string())
         );
         assert!(app.input.is_empty());
         assert!(app.command_menu.is_none());
+    }
+
+    #[test]
+    fn esc_undo_of_an_init_turn_restores_the_command_not_the_prompt() {
+        // Esc in the pre-stream window undoes the submission into the
+        // composer (docs/interrupt.md). For an /init turn the user typed
+        // "/init", not the 1.8KB canned prompt — flooding the composer with
+        // text the user never held (which a follow-up Ctrl+C would then
+        // record into ↑ recall) breaks the no-recall guarantee, so the undo
+        // restores the command itself, palette reopened: the exact
+        // pre-submit state.
+        let mut app = App::new();
+        type_str(&mut app, "/init");
+        let Action::Submit(text) = app.on_key(key(KeyCode::Enter)) else {
+            panic!("idle /init submits");
+        };
+        app.record_user_message(&text); // mirror start_turn's recording
+        app.begin_stream();
+        assert_eq!(app.interrupt_turn(), Some(InterruptedTurn::Undone));
+        assert_eq!(app.input.text(), "/init", "the command, not the prompt");
+        assert!(
+            app.command_menu.is_some(),
+            "the palette reopens on the recalled command"
+        );
+        assert!(app.history.is_empty(), "the submission rolled back");
+    }
+
+    #[test]
+    fn init_mid_turn_tab_is_rejected_like_enter() {
+        // Tab is the palette's other accept key, and mid-turn it is also the
+        // queue-as-new-batch key — the menu_open arm must keep winning, or
+        // Tab on "/init" would silently queue the literal text as a message
+        // for the model. Both accept keys reject with the busy toast.
+        let mut app = App::new();
+        app.record_user_message("hello");
+        app.begin_stream();
+        type_str(&mut app, "/init");
+        assert_eq!(
+            app.on_key(key(KeyCode::Tab)),
+            Action::Toast(INIT_BUSY_NOTICE.to_string()),
+        );
+        assert!(
+            app.queued.is_empty(),
+            "the literal \"/init\" was not queued as a message"
+        );
     }
 
     #[test]
