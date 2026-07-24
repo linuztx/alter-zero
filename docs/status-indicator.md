@@ -88,7 +88,13 @@ real backend's own latency plays the same role.
   total a hair above a whole-buffer re-encode — fine for a status estimate, and
   it keeps counting O(text), non-blocking. It is **never reset** mid-turn.
   Omitted only while it is 0 — which, now that the input is counted up front, is
-  just the very first frame before `count_user_input` runs.
+  just the very first frame before `count_user_input` runs. **A real backend's
+  round-end usage frame snaps the tally to the provider's own accounting**
+  (`StreamEvent::Usage` → `App::apply_usage` — the estimate never saw the
+  system prompt or the re-sent context, so the snap usually jumps it up), the
+  next round's estimates ticking on top; large totals render humanized
+  (`ui::format_token_count` — `8.1k`), and the committed summary appends
+  `· {n} tokens ({c} cached)`. See `docs/prompt-caching.md`.
 - **arrow** — `↑` for **uploaded** tokens (the user's input at turn start, and a
   tool result folded back in), `↓` while the reply (or its reasoning) streams.
   So a turn opens `↑` (the counted input during the pre-stream pause), flips `↓`

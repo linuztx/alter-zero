@@ -15,6 +15,14 @@
 # ~/.alter-zero/config.json between runs. With no API key configured — or with
 # `ALTER_ZERO_DUMMY=1` — the app falls back to the built-in dummy backend, so it
 # always runs offline. Add a key in-app with `/login` (saved to ~/.alter-zero/.env).
+#
+# Prompt caching needs no configuration here (docs/prompt-caching.md): the
+# payload builder marks `cache_control` breakpoints for the models that need
+# them (anthropic/…, qwen/… ids), sends a per-session `prompt_cache_key`
+# (plus `session_id` on OpenRouter bases) for cache affinity, and asks every
+# stream for its final usage frame (`stream_options.include_usage` — the token
+# tally snaps to it). Since kwargs merge over the base payload, a provider
+# whose shim rejects `stream_options` can override it from its kwargs table.
 
 [providers.a0_venice]
 name = "Agent Zero API"

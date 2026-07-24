@@ -25,6 +25,7 @@ network calls are boundary code (like `main.rs`/`term.rs`), verified by hand.
 | file | role | pure? |
 | --- | --- | --- |
 | `llm/mod.rs` | `ChatMessage`, module glue, `LlmError`/`Result` | mostly |
+| `llm/cache.rs` | prompt-cache request shaping — which models need explicit `cache_control` breakpoints, and the wire-JSON rewrite that places them (`docs/prompt-caching.md`) | **pure** |
 | `llm/config.rs` | `providers.toml` → `Provider`/`ProvidersConfig`, `ModelConfig`, key/model resolution | **pure** |
 | `llm/keystore.rs` | `EnvFile` — the `.env` reader/writer the `/login` flow persists keys through | **pure** |
 | `llm/settings.rs` | `Settings` — the `config.json` reader/writer persisting the `/model` selection across runs | **pure** |
@@ -337,8 +338,13 @@ that names the provider on the key step. Retheme there.
 
 ## Known limitations (v1)
 
-- Token counts remain an app-side estimate; the OpenAI streaming protocol's final
-  `usage` block is not surfaced through `StreamEvent` (unchanged from the dummy).
+- ~~Token counts remain an app-side estimate; the OpenAI streaming protocol's
+  final `usage` block is not surfaced through `StreamEvent`.~~ **Fixed**: every
+  request asks for `stream_options.include_usage`, the final usage frame rides
+  `StreamEvent::Usage`, and the live tally snaps to the provider's own
+  accounting (the tiktoken estimate still ticks between frames). Requests are
+  also shaped for **prompt caching** — explicit `cache_control` breakpoints
+  where needed, cache-affinity keys everywhere — see `docs/prompt-caching.md`.
 - Switching models mid-session does not rewrite the already-recorded `/resume`
   session-meta `model` field (it names the model the file was started with).
 - **Tool calling is now implemented** (was future work): the real backend offers

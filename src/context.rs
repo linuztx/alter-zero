@@ -746,6 +746,8 @@ mod tests {
     fn turn_summaries_are_skipped() {
         let history = vec![HistoryItem::Summary(TurnSummary {
             verb: "Done",
+            tokens: 0,
+            cached: 0,
             secs: 3,
             timestamp: String::new(),
             shells: 0,

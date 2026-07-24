@@ -42,6 +42,10 @@ fn main() {
             temperature: Some(0.0),
             thinking: None,
             vision: None,
+            // The production shape (main.rs::session_cache_key): a per-process
+            // affinity key so multi-round turns pin to one warm cache
+            // (docs/prompt-caching.md).
+            cache_key: Some(format!("tool-smoke-{}", std::process::id())),
         })
         .expect("openrouter is a built-in provider");
 
@@ -97,6 +101,12 @@ fn main() {
                 let color = if ok { "\x1b[32m" } else { "\x1b[31m" };
                 let head: String = output.lines().take(8).collect::<Vec<_>>().join("\n");
                 println!("{color}  ⎿ ok={ok} truncated={truncated}\x1b[0m\n{head}\n  ---");
+            }
+            StreamEvent::Usage(usage) => {
+                println!(
+                    "\n\x1b[90m[usage: {} in ({} cached, {} cache-written) + {} out]\x1b[0m",
+                    usage.input, usage.cached, usage.cache_write, usage.output
+                );
             }
             StreamEvent::ThinkingStart => println!("\x1b[90m[thinking…]\x1b[0m"),
             StreamEvent::ThinkingChunk(_) => {}

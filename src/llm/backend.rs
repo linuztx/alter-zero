@@ -483,6 +483,13 @@ fn stream_round(
     match retry::run_attempts(tx, cancel, MAX_RETRIES, attempt, retry::sleep_cancellable) {
         AttemptResult::Ok => {
             let outcome = captured.unwrap_or_default();
+            // The round's real usage frame (stream_options.include_usage):
+            // forward it so the app snaps its tally to the provider's own
+            // accounting — one report per round, so an agentic turn
+            // accumulates them (docs/prompt-caching.md).
+            if let Some(usage) = outcome.usage {
+                let _ = tx.send(StreamEvent::Usage(usage));
+            }
             if outcome.tool_calls.is_empty() {
                 RoundOutcome::Complete
             } else {

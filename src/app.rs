@@ -204,6 +204,16 @@ pub struct TurnSummary {
     /// [`App::end_turn`]; not persisted to the session file (a resumed
     /// session's shells are gone). See `docs/background.md`.
     pub shells: usize,
+    /// The turn's **real** billed tokens (input + output summed over the
+    /// turn's request rounds), from the provider's usage frames
+    /// ([`App::apply_usage`]) — rendered as a `· {n} tokens` suffix. `0` when
+    /// the backend reported none (the dummy, a `!` shell), which hides the
+    /// clause. Persisted with the summary. See `docs/prompt-caching.md`.
+    pub tokens: usize,
+    /// How many of those input tokens were served from the provider's prompt
+    /// cache — the `({n} cached)` suffix beside `tokens` when non-zero, the
+    /// visible proof caching is working. See `docs/prompt-caching.md`.
+    pub cached: usize,
 }
 
 /// One background shell's completion, committed to history as a one-line
@@ -1700,6 +1710,17 @@ pub struct App {
     ///
     /// [`begin_stream`]: App::begin_stream
     turn_count: usize,
+    /// The turn's accumulated **real** usage — billed tokens summed over the
+    /// provider's per-round usage frames ([`App::apply_usage`]), which the
+    /// live tally snaps to (replacing the estimate ticked so far) and the
+    /// turn summary records. Reset by [`begin_stream`]/[`begin_shell`]. See
+    /// `docs/prompt-caching.md`.
+    ///
+    /// [`begin_stream`]: App::begin_stream
+    /// [`begin_shell`]: App::begin_shell
+    turn_usage_tokens: usize,
+    /// The cached-read share of [`turn_usage_tokens`](Self::turn_usage_tokens).
+    turn_usage_cached: usize,
     /// Wall-clock used to stamp recorded items, injected at the I/O boundary
     /// ([`App::set_clock`]). `None` in unit tests (→ empty stamp, keeping the
     /// pure logic deterministic); `main.rs` sets a real local-time clock. The
@@ -4498,6 +4519,9 @@ impl App {
         // A fresh turn starts with the single-row preview; the boundary
         // re-injects the real count each frame (a forming table grows it).
         self.stream_preview_rows = 1;
+        // The usage accumulators are per-turn (docs/prompt-caching.md).
+        self.turn_usage_tokens = 0;
+        self.turn_usage_cached = 0;
         let verb = WORKING_VERBS[self.turn_count % WORKING_VERBS.len()];
         let done_verb = DONE_VERBS[self.turn_count % DONE_VERBS.len()];
         self.turn_count = self.turn_count.wrapping_add(1);
@@ -4538,6 +4562,10 @@ impl App {
     pub fn begin_shell(&mut self, command: &str) {
         self.record_message(Role::Shell, command);
         self.streaming = Some(String::new());
+        // A shell turn never receives usage, but the per-turn accumulators
+        // reset with every turn machinery start all the same.
+        self.turn_usage_tokens = 0;
+        self.turn_usage_cached = 0;
         self.status = Some(TurnStatus {
             verb: SHELL_VERB,
             // Never rendered: a shell turn ends without a summary (end_turn
@@ -4616,6 +4644,26 @@ impl App {
             status.arrow = TokenArrow::Down;
             // Generating the call is content too — a retrying request recovered.
             status.retry = None;
+        }
+    }
+
+    /// Fold one provider usage report (the round's final `usage` frame,
+    /// [`crate::stream::StreamEvent::Usage`]) into the turn: accumulate the
+    /// billed total and its cached share, and **snap the live tally to the
+    /// accumulated real number** — replacing the tiktoken estimate ticked so
+    /// far, which never saw the system prompt or the re-sent context. Later
+    /// estimates (the next round's stream) tick on top of the snapped base,
+    /// and that round's own usage frame snaps again — so the tally is always
+    /// "everything billed so far, plus the current round's live estimate".
+    /// No-op when no turn is in flight. See `docs/prompt-caching.md`.
+    pub fn apply_usage(&mut self, usage: &crate::stream::TokenUsage) {
+        if self.status.is_none() {
+            return;
+        }
+        self.turn_usage_tokens += usize::try_from(usage.total()).unwrap_or(usize::MAX);
+        self.turn_usage_cached += usize::try_from(usage.cached).unwrap_or(usize::MAX);
+        if let Some(status) = self.status.as_mut() {
+            status.tokens = self.turn_usage_tokens;
         }
     }
 
@@ -4757,6 +4805,10 @@ impl App {
             // finished has already left `self.background` (at `bg_exited`),
             // so settling its notice next doesn't change this count.
             shells: self.background.len(),
+            // The turn's real billed usage (`apply_usage`) — 0 (hidden) when
+            // the backend reported none. See docs/prompt-caching.md.
+            tokens: self.turn_usage_tokens,
+            cached: self.turn_usage_cached,
         })
     }
 
@@ -8224,6 +8276,96 @@ mod tests {
         app.push_tool_call_progress(r#"{"command":"ls"}"#);
         assert!(app.status().is_none(), "no status conjured up");
         assert_eq!(app.streaming_text(), None);
+    }
+
+    #[test]
+    fn apply_usage_snaps_the_tally_to_the_real_total() {
+        // The provider's usage frame counts what the estimate never saw (the
+        // system prompt, the re-sent context), so it REPLACES the ticked
+        // estimate rather than adding to it — and later estimates tick on
+        // top of the snapped base (docs/prompt-caching.md).
+        use crate::stream::TokenUsage;
+        let mut app = App::new();
+        app.begin_stream();
+        app.push_chunk("a streamed reply estimate ");
+        app.apply_usage(&TokenUsage {
+            input: 8080,
+            output: 20,
+            cached: 8063,
+            cache_write: 0,
+        });
+        assert_eq!(
+            app.status().unwrap().tokens,
+            8100,
+            "the tally snapped to the real input+output"
+        );
+        let before = app.status().unwrap().tokens;
+        app.push_chunk("next round streaming ");
+        assert!(
+            app.status().unwrap().tokens > before,
+            "the next round's estimate ticks on top of the snapped base"
+        );
+    }
+
+    #[test]
+    fn apply_usage_accumulates_across_agent_rounds() {
+        // An agentic turn reports one usage frame per round; the tally is the
+        // billed sum, not the last round alone.
+        use crate::stream::TokenUsage;
+        let mut app = App::new();
+        app.begin_stream();
+        let round = |input, output, cached| TokenUsage {
+            input,
+            output,
+            cached,
+            cache_write: 0,
+        };
+        app.apply_usage(&round(1000, 50, 0));
+        app.apply_usage(&round(1200, 30, 900));
+        assert_eq!(app.status().unwrap().tokens, 2280, "both rounds billed");
+    }
+
+    #[test]
+    fn apply_usage_is_a_no_op_when_idle() {
+        use crate::stream::TokenUsage;
+        let mut app = App::new();
+        app.apply_usage(&TokenUsage {
+            input: 10,
+            output: 10,
+            cached: 0,
+            cache_write: 0,
+        });
+        assert!(app.status().is_none(), "no status conjured up");
+        app.begin_stream();
+        assert_eq!(
+            app.status().unwrap().tokens,
+            0,
+            "an idle report never leaks into the next turn"
+        );
+    }
+
+    #[test]
+    fn the_turn_summary_carries_the_real_usage() {
+        // The committed `Done for Ns` summary appends the billed tokens and
+        // their cached share when the provider reported usage — and the next
+        // turn starts from zero (the accumulators are per-turn).
+        use crate::stream::TokenUsage;
+        let mut app = App::new();
+        app.begin_stream();
+        app.apply_usage(&TokenUsage {
+            input: 8080,
+            output: 123,
+            cached: 8063,
+            cache_write: 0,
+        });
+        let summary = app.end_turn(12).expect("a turn was active");
+        assert_eq!(summary.tokens, 8203);
+        assert_eq!(summary.cached, 8063);
+
+        app.begin_stream();
+        let summary = app.end_turn(1).expect("second turn");
+        assert_eq!(summary.tokens, 0, "a usage-less turn reports none");
+        assert_eq!(summary.cached, 0);
     }
 
     #[test]

@@ -15,6 +15,7 @@
 
 pub mod agent;
 pub mod backend;
+pub mod cache;
 pub mod config;
 pub mod exec;
 pub mod keystore;

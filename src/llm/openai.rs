@@ -16,7 +16,7 @@ use super::config::ModelConfig;
 use super::thinking::ThinkingSplitter;
 use super::tools::ToolCallRequest;
 use super::{ChatMessage, LlmError, Result};
-use crate::stream::CancelToken;
+use crate::stream::{CancelToken, TokenUsage};
 
 /// The HTTP client's per-operation deadline (see [`super::http_client`]): it
 /// bounds the whole send/header exchange — connect, uploading the request
@@ -51,14 +51,18 @@ pub struct Delta {
 }
 
 /// What one completed stream produced: the accumulated text/reasoning, the
-/// tool calls the model requested (empty on a plain answer), and the
-/// `finish_reason` the provider reported. The backend inspects `tool_calls` to
-/// decide whether to run tools and loop again (see `docs/tools.md`).
+/// tool calls the model requested (empty on a plain answer), the
+/// `finish_reason` the provider reported, and the provider's real token
+/// usage when its final frame carried one (`stream_options.include_usage` —
+/// the backend forwards it as [`crate::stream::StreamEvent::Usage`]). The
+/// backend inspects `tool_calls` to decide whether to run tools and loop
+/// again (see `docs/tools.md`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StreamOutcome {
     pub text: super::thinking::ChatStreamResult,
     pub tool_calls: Vec<ToolCallRequest>,
     pub finish_reason: Option<String>,
+    pub usage: Option<TokenUsage>,
 }
 
 /// A streaming chat client bound to one [`ModelConfig`], optionally carrying the
@@ -101,17 +105,52 @@ impl OpenAiClient {
         format!("{base}/chat/completions")
     }
 
-    /// The streamed request body: model, messages, `stream: true`, the optional
-    /// temperature, any provider `extra_body` (e.g. `venice_parameters`) merged
-    /// in, and — for a reasoning-capable model — the active thinking mode
-    /// (`docs/reasoning.md`).
+    /// The streamed request body: model, messages, `stream: true` (with the
+    /// standard `stream_options.include_usage` asking for the final usage
+    /// frame the app's token tally snaps to), the optional temperature, the
+    /// prompt-caching fields (`docs/prompt-caching.md` — explicit
+    /// `cache_control` breakpoints for the models that need them, and the
+    /// session's cache-affinity key as `prompt_cache_key` / OpenRouter's
+    /// `session_id`), any provider `extra_body` (e.g. `venice_parameters`)
+    /// merged in, and — for a reasoning-capable model — the active thinking
+    /// mode (`docs/reasoning.md`).
     #[must_use]
     pub fn build_payload(&self, messages: &[ChatMessage]) -> serde_json::Value {
         let mut payload = json!({
             "model": self.cfg.model,
             "messages": messages,
             "stream": true,
+            // Both shipped providers honour the standard OpenAI switch and
+            // answer with a final usage frame (cache detail included). A
+            // provider whose shim chokes can override it from its kwargs —
+            // the extra_body merge below wins over this base.
+            "stream_options": {"include_usage": true},
         });
+        // An explicit-caching model (anthropic/qwen via an OpenRouter-style
+        // aggregator) only caches marked blocks: rewrite the wire messages
+        // with the ephemeral breakpoints. Implicit-caching providers (OpenAI,
+        // Venice, …) keep the untouched plain-string form.
+        if super::cache::needs_cache_breakpoints(&self.cfg.model) {
+            super::cache::apply_cache_breakpoints(&mut payload["messages"]);
+        }
+        if let Some(key) = self.cfg.cache_key.as_deref().filter(|k| !k.is_empty()) {
+            // The per-session affinity key: the standard OpenAI
+            // `prompt_cache_key` (accepted by OpenRouter and Venice alike),
+            // plus OpenRouter's own `session_id` so its routing pins the
+            // session to one upstream provider — a cache written on one
+            // provider is unreadable from another. Venice rejects unknown
+            // keys ("Unrecognized key(s)"), so `session_id` stays
+            // OpenRouter-gated.
+            payload["prompt_cache_key"] = json!(key);
+            if self
+                .cfg
+                .api_base
+                .to_ascii_lowercase()
+                .contains("openrouter")
+            {
+                payload["session_id"] = json!(key);
+            }
+        }
         if let Some(t) = self.cfg.temperature {
             payload["temperature"] = json!(t);
         }
@@ -249,6 +288,7 @@ fn drain_stream(
     let mut splitter = ThinkingSplitter::new();
     let mut tools = ToolCallAccumulator::default();
     let mut finish_reason: Option<String> = None;
+    let mut usage: Option<TokenUsage> = None;
     let mut line: Vec<u8> = Vec::new();
     // A response that ignored `stream:true` has no SSE framing at all —
     // collect its raw lines (bounded) so EOF can fall back to parsing one
@@ -282,6 +322,7 @@ fn drain_stream(
                                 &mut splitter,
                                 &mut tools,
                                 &mut finish_reason,
+                                &mut usage,
                                 &mut on_delta,
                             );
                             line.clear();
@@ -311,6 +352,7 @@ fn drain_stream(
                         &mut splitter,
                         &mut tools,
                         &mut finish_reason,
+                        &mut usage,
                         &mut on_delta,
                     )
                 {
@@ -334,6 +376,7 @@ fn drain_stream(
                 &mut splitter,
                 &mut tools,
                 &mut finish_reason,
+                &mut usage,
                 &mut |d| {
                     yielded = true;
                     on_delta(d);
@@ -363,6 +406,7 @@ fn drain_stream(
         text: splitter.finish(),
         tool_calls: tools.finish(),
         finish_reason,
+        usage,
     })
 }
 
@@ -483,6 +527,7 @@ fn process_sse_line(
     splitter: &mut ThinkingSplitter,
     tools: &mut ToolCallAccumulator,
     finish_reason: &mut Option<String>,
+    usage: &mut Option<TokenUsage>,
     on_delta: &mut impl FnMut(Delta),
 ) -> SseStep {
     let Ok(text) = std::str::from_utf8(line) else {
@@ -494,7 +539,7 @@ fn process_sse_line(
     if data == "[DONE]" {
         return SseStep::Done;
     }
-    process_payload(data, splitter, tools, finish_reason, on_delta)
+    process_payload(data, splitter, tools, finish_reason, usage, on_delta)
 }
 
 /// Parse and dispatch one JSON payload (the body of a `data:` frame — or, at
@@ -506,10 +551,16 @@ fn process_payload(
     splitter: &mut ThinkingSplitter,
     tools: &mut ToolCallAccumulator,
     finish_reason: &mut Option<String>,
+    usage: &mut Option<TokenUsage>,
     on_delta: &mut impl FnMut(Delta),
 ) -> SseStep {
     if let Some(err) = parse_sse_error(data) {
         return SseStep::Fail(err);
+    }
+    // The round's usage rides one (usually final) frame — capture the last
+    // non-empty report; delta frames carry `"usage": null` until then.
+    if let Some(report) = parse_sse_usage(data) {
+        *usage = Some(report);
     }
     // Tool-call fragments and the finish reason ride the same JSON frame as the
     // text delta — fold them in before the content early-return so a
@@ -704,6 +755,72 @@ fn parse_sse_tool_calls(data: &str) -> (Vec<ToolCallDeltaParsed>, Option<String>
     (calls, finish)
 }
 
+/// The `usage` block of a streamed frame (or a whole non-SSE completion) —
+/// the OpenAI accounting shape with the prompt-cache detail nested under
+/// `prompt_tokens_details`, plus the top-level `cache_read_input_tokens` /
+/// `cache_creation_input_tokens` aliases Venice and Anthropic-style shims
+/// send. All fields default so partial reports still parse.
+#[derive(Debug, Default, Deserialize)]
+struct UsagePayload {
+    #[serde(default)]
+    prompt_tokens: Option<u64>,
+    #[serde(default)]
+    completion_tokens: Option<u64>,
+    #[serde(default)]
+    prompt_tokens_details: Option<PromptTokensDetails>,
+    #[serde(default)]
+    cache_read_input_tokens: Option<u64>,
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct PromptTokensDetails {
+    #[serde(default)]
+    cached_tokens: Option<u64>,
+    /// OpenRouter's cache-write spelling.
+    #[serde(default)]
+    cache_write_tokens: Option<u64>,
+    /// The Anthropic-style spelling some shims nest here instead.
+    #[serde(default)]
+    cache_creation_input_tokens: Option<u64>,
+}
+
+/// Extract the frame's usage report as a [`TokenUsage`], or `None` when the
+/// frame carries none (`"usage": null` on delta frames) or an all-zero block
+/// (meaningless — never a real round). A third targeted parse of the same
+/// JSON, like [`parse_sse_tool_calls`].
+fn parse_sse_usage(data: &str) -> Option<TokenUsage> {
+    #[derive(Deserialize)]
+    struct UsageEnvelope {
+        #[serde(default)]
+        usage: Option<UsagePayload>,
+    }
+    let envelope: UsageEnvelope = serde_json::from_str(data).ok()?;
+    let u = envelope.usage?;
+    let input = u.prompt_tokens.unwrap_or(0);
+    let output = u.completion_tokens.unwrap_or(0);
+    if input == 0 && output == 0 {
+        return None;
+    }
+    let details = u.prompt_tokens_details.as_ref();
+    let cached = details
+        .and_then(|d| d.cached_tokens)
+        .or(u.cache_read_input_tokens)
+        .unwrap_or(0);
+    let cache_write = details
+        .and_then(|d| d.cache_write_tokens)
+        .or_else(|| details.and_then(|d| d.cache_creation_input_tokens))
+        .or(u.cache_creation_input_tokens)
+        .unwrap_or(0);
+    Some(TokenUsage {
+        input,
+        output,
+        cached,
+        cache_write,
+    })
+}
+
 /// Parse one SSE `data:` JSON payload into `(content, reasoning)`, concatenating
 /// across choices (chat completions almost always have exactly one). Unparseable
 /// payloads yield empty deltas (skipped by the caller), never an error — a
@@ -872,6 +989,96 @@ mod tests {
     }
 
     #[test]
+    fn payload_asks_for_the_streamed_usage_frame() {
+        // The standard OpenAI `stream_options.include_usage` — both shipped
+        // providers honour it, delivering the final usage frame the app snaps
+        // its token tally to (docs/prompt-caching.md).
+        let p =
+            OpenAiClient::new(ModelConfig::fallback()).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["stream_options"], json!({"include_usage": true}));
+    }
+
+    #[test]
+    fn a_provider_kwarg_can_override_stream_options() {
+        // extra_body merges after the base payload, so a provider whose shim
+        // chokes on stream_options can override it from providers.toml.
+        let mut cfg = ModelConfig::fallback();
+        cfg.extra_body
+            .insert("stream_options".to_string(), serde_json::Value::Null);
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["stream_options"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn payload_marks_cache_breakpoints_for_an_explicit_caching_model() {
+        // An anthropic/ model via an OpenRouter-style aggregator only caches
+        // marked blocks: the wire messages carry the ephemeral breakpoints
+        // (system + frontier — the pure placement is cache.rs's, this test
+        // pins the builder wiring). See docs/prompt-caching.md.
+        let mut cfg = ModelConfig::fallback();
+        cfg.model = "anthropic/claude-haiku-4.5".to_string();
+        let p = OpenAiClient::new(cfg)
+            .build_payload(&[ChatMessage::system("persona"), ChatMessage::user("hi")]);
+        assert_eq!(
+            p["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "the system prompt carries a breakpoint: {p}"
+        );
+        assert_eq!(
+            p["messages"][1]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"}),
+            "the frontier carries a breakpoint: {p}"
+        );
+    }
+
+    #[test]
+    fn payload_leaves_messages_plain_for_implicit_caching_models() {
+        // OpenAI/Venice-style models cache automatically — their messages
+        // stay the classic bare-string form, byte-identical to before.
+        let p = OpenAiClient::new(ModelConfig::fallback())
+            .build_payload(&[ChatMessage::system("persona"), ChatMessage::user("hi")]);
+        assert_eq!(p["messages"][0]["content"], json!("persona"));
+        assert_eq!(p["messages"][1]["content"], json!("hi"));
+    }
+
+    #[test]
+    fn payload_carries_the_cache_key_as_prompt_cache_key() {
+        // The per-session affinity key rides the standard OpenAI
+        // `prompt_cache_key` (verified accepted by OpenRouter and Venice) so
+        // repeats hit the same warm cache. No OpenRouter-only `session_id`
+        // for a non-OpenRouter base — Venice rejects unknown keys.
+        let mut cfg = ModelConfig::fallback();
+        cfg.cache_key = Some("alter-zero-42".to_string());
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["prompt_cache_key"], json!("alter-zero-42"));
+        assert!(
+            p.get("session_id").is_none(),
+            "session_id is OpenRouter-only: {p}"
+        );
+    }
+
+    #[test]
+    fn an_openrouter_base_also_gets_the_session_id() {
+        // OpenRouter routes a model across several upstream providers; its
+        // `session_id` pins the session to one so cache writes are readable.
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = "https://openrouter.ai/api/v1".to_string();
+        cfg.cache_key = Some("alter-zero-42".to_string());
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert_eq!(p["prompt_cache_key"], json!("alter-zero-42"));
+        assert_eq!(p["session_id"], json!("alter-zero-42"));
+    }
+
+    #[test]
+    fn payload_omits_affinity_fields_without_a_cache_key() {
+        let mut cfg = ModelConfig::fallback();
+        cfg.api_base = "https://openrouter.ai/api/v1".to_string();
+        let p = OpenAiClient::new(cfg).build_payload(&[ChatMessage::user("hi")]);
+        assert!(p.get("prompt_cache_key").is_none());
+        assert!(p.get("session_id").is_none());
+    }
+
+    #[test]
     fn sse_data_strips_the_prefix_and_optional_space() {
         assert_eq!(sse_data("data: hello\n"), Some("hello"));
         assert_eq!(sse_data("data:hello\n"), Some("hello"));
@@ -922,12 +1129,14 @@ mod tests {
         let mut splitter = ThinkingSplitter::new();
         let mut tools = ToolCallAccumulator::default();
         let mut finish = None;
+        let mut usage = None;
         let mut out = Vec::new();
         let step = process_sse_line(
             line.as_bytes(),
             &mut splitter,
             &mut tools,
             &mut finish,
+            &mut usage,
             &mut |d| out.push(d),
         );
         (step, out)
@@ -990,6 +1199,7 @@ mod tests {
         let mut splitter = ThinkingSplitter::new();
         let mut tools = ToolCallAccumulator::default();
         let mut finish = None;
+        let mut usage = None;
         let mut emitted = false;
         // A lone 0xFF byte after the prefix isn't valid UTF-8.
         let step = process_sse_line(
@@ -997,6 +1207,7 @@ mod tests {
             &mut splitter,
             &mut tools,
             &mut finish,
+            &mut usage,
             &mut |_| {
                 emitted = true;
             },
@@ -1067,12 +1278,14 @@ mod tests {
         let mut splitter = ThinkingSplitter::new();
         let mut tools = ToolCallAccumulator::default();
         let mut finish = None;
+        let mut usage = None;
         for line in lines {
             process_sse_line(
                 line.as_bytes(),
                 &mut splitter,
                 &mut tools,
                 &mut finish,
+                &mut usage,
                 &mut |_| {},
             );
         }
@@ -1308,6 +1521,88 @@ mod tests {
             "the generation fragment surfaced for counting"
         );
         assert_eq!(deltas[0].tool_call, "bash{}");
+    }
+
+    #[test]
+    fn drain_stream_captures_the_final_usage_frame() {
+        // With `stream_options.include_usage` the provider's last data frame
+        // (choices empty or final) carries the round's real usage — captured
+        // into the outcome, cache detail included (the OpenRouter shape).
+        let (out, deltas) = drain_queued(vec![
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n".to_vec()),
+            Ok(br#"data: {"choices":[],"usage":{"prompt_tokens":8080,"completion_tokens":5,"total_tokens":8085,"prompt_tokens_details":{"cached_tokens":8063,"cache_write_tokens":17,"audio_tokens":0}}}
+"#
+            .to_vec()),
+            Ok(b"data: [DONE]\n".to_vec()),
+        ]);
+        let outcome = out.expect("the stream succeeds");
+        assert_eq!(
+            outcome.usage,
+            Some(TokenUsage {
+                input: 8080,
+                output: 5,
+                cached: 8063,
+                cache_write: 17,
+            })
+        );
+        assert_eq!(deltas.len(), 1, "the usage frame emits no delta");
+        assert_eq!(outcome.text.response, "Hi");
+    }
+
+    #[test]
+    fn drain_stream_reads_the_venice_style_usage_aliases() {
+        // Venice reports the cache read both as prompt_tokens_details.
+        // cached_tokens and a top-level cache_read_input_tokens; an
+        // Anthropic-style shim may only send the top-level aliases. Both
+        // spellings must land in the same TokenUsage.
+        let (out, _deltas) = drain_queued(vec![
+            Ok(br#"data: {"choices":[],"usage":{"prompt_tokens":3215,"completion_tokens":2,"total_tokens":3217,"cache_read_input_tokens":3072,"cache_creation_input_tokens":11,"cost":{"usd":0,"diem":0.0003}}}
+"#
+            .to_vec()),
+            Ok(b"data: [DONE]\n".to_vec()),
+        ]);
+        assert_eq!(
+            out.unwrap().usage,
+            Some(TokenUsage {
+                input: 3215,
+                output: 2,
+                cached: 3072,
+                cache_write: 11,
+            })
+        );
+    }
+
+    #[test]
+    fn null_or_empty_usage_frames_are_not_a_report() {
+        // OpenAI-style streams carry `"usage": null` on every delta frame
+        // until the final one; an all-zero block is equally meaningless. The
+        // outcome must not report usage for either.
+        let (out, _deltas) = drain_queued(vec![
+            Ok(b"data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}],\"usage\":null}\n".to_vec()),
+            Ok(br#"data: {"choices":[],"usage":{"prompt_tokens":0,"completion_tokens":0,"total_tokens":0}}
+"#
+            .to_vec()),
+            Ok(b"data: [DONE]\n".to_vec()),
+        ]);
+        assert_eq!(out.unwrap().usage, None);
+    }
+
+    #[test]
+    fn a_plain_json_completion_body_carries_its_usage_too() {
+        // The non-SSE fallback (a shim that ignored stream:true): the whole
+        // JSON completion's usage block is captured like a streamed one.
+        let body = br#"{"choices":[{"message":{"content":"full"},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":2,"total_tokens":15,"prompt_tokens_details":{"cached_tokens":0}}}"#
+            .to_vec();
+        let (out, _deltas) = drain_queued(vec![Ok(body)]);
+        assert_eq!(
+            out.unwrap().usage,
+            Some(TokenUsage {
+                input: 13,
+                output: 2,
+                cached: 0,
+                cache_write: 0,
+            })
+        );
     }
 
     #[test]

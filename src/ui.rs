@@ -4520,6 +4520,33 @@ pub fn format_elapsed(secs: u64) -> String {
     format!("{}h {}m", minutes / 60, minutes % 60)
 }
 
+/// Humanize a token count for the status line and the turn summary: bare under
+/// a thousand (`842`), one-decimal thousands up to a million (`8.1k`, a
+/// trailing `.0` dropped — `15k`), one-decimal millions past that (`1.2M`).
+/// Real provider usage counts the whole re-sent context per round, so an
+/// agentic turn's tally runs to six digits — unreadable raw in a one-line
+/// status (`docs/prompt-caching.md`).
+#[must_use]
+pub fn format_token_count(tokens: usize) -> String {
+    /// One-decimal `value/scale` with a trailing `.0` dropped (`8.1`, `15`).
+    fn scaled(tokens: usize, scale: f64, suffix: &str) -> String {
+        #[allow(clippy::cast_precision_loss)] // display only — 1dp anyway
+        let value = (tokens as f64 / scale * 10.0).round() / 10.0;
+        if value.fract() == 0.0 {
+            format!("{value:.0}{suffix}")
+        } else {
+            format!("{value:.1}{suffix}")
+        }
+    }
+    if tokens < 1_000 {
+        tokens.to_string()
+    } else if tokens < 1_000_000 {
+        scaled(tokens, 1_000.0, "k")
+    } else {
+        scaled(tokens, 1_000_000.0, "M")
+    }
+}
+
 /// The live status line shown in the strip above the box while a turn is in
 /// flight:
 /// `(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · Thinking for {m}] · esc to interrupt)`.
@@ -4552,7 +4579,7 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
             TokenArrow::Up => STATUS_ARROW_UP,
         };
         spans.push(Span::styled(
-            format!(" · {arrow} {} tokens", status.tokens),
+            format!(" · {arrow} {} tokens", format_token_count(status.tokens)),
             dim,
         ));
     }
@@ -4581,6 +4608,16 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
 #[must_use]
 pub fn summary_lines(summary: &TurnSummary, _width: u16) -> Vec<Line<'static>> {
     let mut text = format!("{} for {}", summary.verb, format_elapsed(summary.secs));
+    if summary.tokens > 0 {
+        // The turn's real billed tokens, with the cache-served share beside
+        // them — the visible proof prompt caching worked. Absent (the dummy,
+        // a `!` shell) the summary keeps its bare shape. See
+        // docs/prompt-caching.md.
+        text.push_str(&format!(" · {} tokens", format_token_count(summary.tokens)));
+        if summary.cached > 0 {
+            text.push_str(&format!(" ({} cached)", format_token_count(summary.cached)));
+        }
+    }
     if summary.shells > 0 {
         let plural = if summary.shells == 1 { "" } else { "s" };
         text.push_str(&format!(
@@ -10403,6 +10440,8 @@ mod tests {
                 secs: 12,
                 timestamp: STAMP.to_string(),
                 shells: 0,
+                tokens: 0,
+                cached: 0,
             }),
         ];
         let all: String = transcript_lines(&app, 60)
@@ -10557,6 +10596,8 @@ mod tests {
             secs: 3_661,
             timestamp: String::new(),
             shells: 0,
+            tokens: 0,
+            cached: 0,
         };
         assert_eq!(plain(&summary_lines(&summary, 80)[0]), "Done for 1h 1m");
     }
@@ -10567,6 +10608,61 @@ mod tests {
         assert!(
             text.ends_with("Working… (1s · ↓ 100 tokens · esc to interrupt)"),
             "{text:?}"
+        );
+    }
+
+    #[test]
+    fn format_token_count_humanizes_thousands_and_millions() {
+        // Real usage tallies run to six digits (the whole context re-billed
+        // per agent round) — raw ints stop reading in a one-line status.
+        assert_eq!(format_token_count(0), "0");
+        assert_eq!(format_token_count(999), "999");
+        assert_eq!(format_token_count(1_000), "1k");
+        assert_eq!(format_token_count(8_063), "8.1k");
+        assert_eq!(format_token_count(15_049), "15k");
+        assert_eq!(format_token_count(154_302), "154.3k");
+        assert_eq!(format_token_count(2_000_000), "2M");
+        assert_eq!(format_token_count(1_234_567), "1.2M");
+    }
+
+    #[test]
+    fn status_line_humanizes_a_large_token_tally() {
+        // Once the real usage snaps the tally past a thousand, the status
+        // shows the compact form (the small-estimate case stays bare).
+        let text = plain(&status_line(&status(8_063, TokenArrow::Down, 1, None)));
+        assert!(
+            text.contains("↓ 8.1k tokens"),
+            "the tally reads compact: {text:?}"
+        );
+    }
+
+    #[test]
+    fn summary_lines_append_the_real_token_usage() {
+        // A turn whose backend reported usage commits it with the summary —
+        // the cached share beside it as the visible proof caching worked.
+        let mut summary = TurnSummary {
+            verb: "Done",
+            secs: 12,
+            timestamp: String::new(),
+            shells: 0,
+            tokens: 8_203,
+            cached: 8_063,
+        };
+        assert_eq!(
+            plain(&summary_lines(&summary, 80)[0]),
+            "Done for 12s · 8.2k tokens (8.1k cached)"
+        );
+        summary.cached = 0;
+        assert_eq!(
+            plain(&summary_lines(&summary, 80)[0]),
+            "Done for 12s · 8.2k tokens",
+            "no parenthetical when nothing was cached"
+        );
+        summary.tokens = 0;
+        assert_eq!(
+            plain(&summary_lines(&summary, 80)[0]),
+            "Done for 12s",
+            "a usage-less turn (the dummy) keeps the bare summary"
         );
     }
 
@@ -10825,6 +10921,8 @@ mod tests {
             secs: 20,
             timestamp: String::new(),
             shells: 0,
+            tokens: 0,
+            cached: 0,
         };
         let lines = summary_lines(&summary, 80);
         assert_eq!(lines.len(), 1, "one line");
@@ -10842,6 +10940,8 @@ mod tests {
                 secs: 7,
                 timestamp: String::new(),
                 shells: 0,
+                tokens: 0,
+                cached: 0,
             }),
         ];
         let texts: Vec<String> = conversation_lines(&history, 80)
@@ -15215,6 +15315,8 @@ mod tests {
             secs: 22,
             timestamp: String::new(),
             shells: 3,
+            tokens: 0,
+            cached: 0,
         };
         assert_eq!(
             plain(&summary_lines(&summary, 80)[0]),

@@ -165,12 +165,19 @@ struct CheckpointRecord {
 
 /// A [`TurnSummary`] on disk. `verb` maps back to its [`DONE_VERBS`] static on
 /// load (falling back to `Done` for a verb this build doesn't know) because
-/// `TurnSummary::verb` is `&'static str`.
+/// `TurnSummary::verb` is `&'static str`. The real usage (`tokens`/`cached`,
+/// `docs/prompt-caching.md`) is persisted — a fact of the turn, unlike the
+/// transient `shells` count — and `serde(default)`ed so rollouts recorded
+/// before the fields existed still parse.
 #[derive(Serialize, Deserialize)]
 struct SummaryRecord {
     verb: String,
     secs: u64,
     timestamp: String,
+    #[serde(default)]
+    tokens: usize,
+    #[serde(default)]
+    cached: usize,
 }
 
 /// One serialized JSONL line for `item`, stamped `stamp`. Serializing these
@@ -258,6 +265,8 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             verb: summary.verb.to_string(),
             secs: summary.secs,
             timestamp: summary.timestamp.clone(),
+            tokens: summary.tokens,
+            cached: summary.cached,
         }),
         HistoryItem::Background(notice) => ItemRecord::Background(BackgroundRecord {
             description: notice.description.clone(),
@@ -359,6 +368,8 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 // Not persisted: a resumed session's shells are gone, so the
                 // suffix must not claim they still run (docs/background.md).
                 shells: 0,
+                tokens: summary.tokens,
+                cached: summary.cached,
             })),
             ItemRecord::Background(notice) => {
                 items.push(HistoryItem::Background(crate::app::BackgroundNotice {
@@ -694,6 +705,8 @@ mod tests {
             secs: 7,
             timestamp: "03:22 PM".into(),
             shells: 0,
+            tokens: 0,
+            cached: 0,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
         assert_eq!(parsed, vec![summary]);
@@ -898,6 +911,8 @@ mod tests {
             secs: 22,
             timestamp: String::new(),
             shells: 3,
+            tokens: 0,
+            cached: 0,
         });
         let line = item_line(&summary, "t");
         assert!(!line.contains("shells"), "not recorded: {line}");
@@ -906,5 +921,38 @@ mod tests {
             panic!("a summary parses back");
         };
         assert_eq!(parsed.shells, 0);
+    }
+
+    #[test]
+    fn summary_usage_round_trips() {
+        // The real billed tokens are a fact of the turn (unlike the transient
+        // shells count) — a resumed transcript keeps them
+        // (docs/prompt-caching.md).
+        let summary = HistoryItem::Summary(TurnSummary {
+            verb: DONE_VERBS[1],
+            secs: 9,
+            timestamp: String::new(),
+            shells: 0,
+            tokens: 8_203,
+            cached: 8_063,
+        });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&summary))).expect("parses");
+        assert_eq!(parsed, vec![summary]);
+    }
+
+    #[test]
+    fn a_summary_line_recorded_before_usage_existed_still_parses() {
+        // Rollouts written by older builds have no tokens/cached keys — they
+        // load with zeroes, never an error.
+        let mut text = format!("{}\n", meta_line(&meta(), "t"));
+        text.push_str(
+            "{\"timestamp\":\"t\",\"type\":\"summary\",\"payload\":{\"verb\":\"Done\",\"secs\":4,\"timestamp\":\"\"}}\n",
+        );
+        let (_, parsed) = parse_session(&text).expect("an old line parses");
+        let HistoryItem::Summary(parsed) = &parsed[0] else {
+            panic!("a summary parses back");
+        };
+        assert_eq!((parsed.tokens, parsed.cached), (0, 0));
+        assert_eq!(parsed.secs, 4);
     }
 }

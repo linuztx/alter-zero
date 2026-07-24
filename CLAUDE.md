@@ -744,9 +744,16 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`↑`) at turn start, so the status reads `↑ N tokens` until your first chunk.
   The loop and
   rendering treat chunks and tool output as opaque text, and count the status
-  tokens app-side with a real `tiktoken` `o200k_base` tokenizer (no usage
-  reporting in the protocol) via the `app::count_tokens` → `tokenizer::count`
-  seam — exact for OpenAI models, close for the rest; nothing else changes.
+  tokens app-side with a real `tiktoken` `o200k_base` tokenizer via the
+  `app::count_tokens` → `tokenizer::count` seam — exact for OpenAI models,
+  close for the rest — **as the live estimate between usage frames**: a real
+  backend forwards each round's final `usage` frame as `StreamEvent::Usage`
+  and `App::apply_usage` snaps the tally to the provider's own accounting
+  (the `Done for Ns` summary appending `· {n} tokens ({c} cached)`), and every
+  request is shaped for **prompt caching** — `llm::cache`'s `cache_control`
+  breakpoints on the models that need them, a per-session `prompt_cache_key`
+  (+ OpenRouter `session_id`) for affinity, `stream_options.include_usage` in
+  the payload — see `docs/prompt-caching.md`.
   **The real `LlmBackend` also drives an agentic tool loop** (`docs/tools.md`):
   it offers the model `bash`/`read`/`write`/`edit` as Chat Completions function
   tools, and `llm::agent::run_agent` streams a round, runs the tools the model

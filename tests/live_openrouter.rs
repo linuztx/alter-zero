@@ -11,7 +11,10 @@
 //! ```
 //!
 //! `ALTER_ZERO_LIVE_MODEL` overrides the model (default `openai/gpt-4o-mini`,
-//! which is cheap and supports vision).
+//! which is cheap and supports vision). The prompt-caching / usage tests
+//! (`docs/prompt-caching.md`) live here too; the Venice ones need
+//! `A0_VENICE_API_KEY` (and `ALTER_ZERO_LIVE_VENICE_MODEL` to override that
+//! provider's churning model ids).
 
 use std::path::PathBuf;
 
@@ -36,6 +39,7 @@ fn backend_with(model: String, thinking: Option<ThinkingMode>, vision: Option<bo
         temperature: Some(0.0),
         thinking,
         vision,
+        cache_key: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };
@@ -78,6 +82,220 @@ fn complete(prompt: &str, images: Vec<PathBuf>, context: Vec<ContextMessage>) ->
     }
     handle.join().expect("backend thread joins");
     text
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_usage_frame_reaches_the_app() {
+    // The real-usage pipeline end to end (docs/prompt-caching.md): the
+    // payload asks for `stream_options.include_usage`, the provider's final
+    // frame is parsed, and the backend forwards it as StreamEvent::Usage —
+    // the numbers the app snaps its tally to instead of the tiktoken
+    // estimate.
+    let context = vec![ContextMessage::new(
+        ContextRole::User,
+        "Say OK and nothing else.",
+    )];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend().spawn(
+        "say ok".to_string(),
+        vec![],
+        context,
+        tx,
+        CancelToken::new(),
+    );
+    let mut usages = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Usage(u) => usages.push(u),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("usage frames: {usages:?}");
+    assert!(!usages.is_empty(), "the round reported real usage");
+    let total: u64 = usages
+        .iter()
+        .map(alter_zero::stream::TokenUsage::total)
+        .sum();
+    assert!(
+        total > 100,
+        "the report counts the whole request (system prompt included), got {total}"
+    );
+}
+
+/// Run one plain turn through `backend`, collecting the reply text and every
+/// usage frame. Panics on a backend error.
+fn complete_with_usage(
+    backend: &LlmBackend,
+    prompt: &str,
+) -> (String, Vec<alter_zero::stream::TokenUsage>) {
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut reply = String::new();
+    let mut usages = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::Usage(u) => usages.push(u),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    (reply, usages)
+}
+
+/// A deterministic ~5k-token system prompt, unique per `salt` so a rerun
+/// can't hit a previous run's still-warm cache.
+fn big_system_prompt(salt: u64) -> String {
+    let corpus: String = (0..420)
+        .map(|i| format!("Calibration sentence {i} of the standing corpus, run {salt}. "))
+        .collect();
+    format!("You are a terse assistant. Answer in as few words as possible.\n{corpus}")
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY; costs a few cents"]
+fn live_anthropic_prompt_cache_writes_then_reads() {
+    // The whole explicit-caching feature end to end (docs/prompt-caching.md):
+    // an anthropic/ model gets cache_control breakpoints on the system prompt
+    // and the conversation frontier, plus the session_id pin — so turn 1
+    // WRITES the prefix to the provider's cache and turn 2 READS it back at
+    // ~1/10th the input price. The usage frames prove both.
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let mut cfg = ModelConfig {
+        provider_id: "openrouter".to_string(),
+        provider_name: "OpenRouter".to_string(),
+        model: "anthropic/claude-haiku-4.5".to_string(),
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_model_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: Some(format!("alter-zero-live-cache-{salt}")),
+        extra_headers: Vec::new(),
+        extra_body: serde_json::Map::new(),
+    };
+    cfg.temperature = Some(0.0);
+    // Tools off: a deterministic single round per turn, so each turn is
+    // exactly one usage frame.
+    let backend = LlmBackend::configure(cfg, Some(big_system_prompt(salt)), false);
+
+    let (reply, usages) = complete_with_usage(&backend, "Just say ONE.");
+    println!("turn 1 reply: {reply:?}, usage: {usages:?}");
+    let first = usages.first().expect("turn 1 reported usage");
+    assert!(
+        first.cache_write > 1_000,
+        "turn 1 wrote the big prefix to the cache: {first:?}"
+    );
+
+    let (reply, usages) = complete_with_usage(&backend, "Just say ONE.");
+    println!("turn 2 reply: {reply:?}, usage: {usages:?}");
+    let second = usages.first().expect("turn 2 reported usage");
+    assert!(
+        second.cached > 1_000,
+        "turn 2 read the prefix back from the cache: {second:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_qwen_accepts_cache_breakpoints_on_a_tool_round() {
+    // qwen/ ids are in the explicit-caching set (needs_cache_breakpoints), so
+    // a request whose frontier breakpoint lands on a `tool`-role message must
+    // not be rejected by the upstream provider — the risky shape, verified
+    // live. The turn just has to complete.
+    let context = vec![
+        ContextMessage::new(ContextRole::User, "Read the config file."),
+        ContextMessage::assistant_tool_calls(
+            "",
+            vec![ContextToolCall::new(
+                "call_0",
+                "read",
+                r#"{"path":"config.toml"}"#,
+            )],
+        ),
+        ContextMessage::tool_result("call_0", "port = 4821\nhost = \"example.test\""),
+        ContextMessage::new(
+            ContextRole::User,
+            "According to the tool output above, what port is configured? Reply with just the number.",
+        ),
+    ];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let backend = backend_for("qwen/qwen3.6-flash".to_string(), None);
+    let handle = backend.spawn(
+        "what port?".to_string(),
+        vec![],
+        context,
+        tx,
+        CancelToken::new(),
+    );
+    let mut reply = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(c) => reply.push_str(&c),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("qwen rejected the breakpointed request: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("model replied: {reply:?}");
+    assert!(reply.contains("4821"), "the turn completed: {reply:?}");
+}
+
+#[test]
+#[ignore = "hits the network; needs A0_VENICE_API_KEY"]
+fn live_venice_reports_usage_and_hits_its_cache() {
+    // The Venice/Agent-Zero pipeline (docs/prompt-caching.md): Venice caches
+    // implicitly — no breakpoints — but honours `prompt_cache_key` and
+    // reports usage with the cached detail. Turn 2 of an identical prefix
+    // must show cached tokens.
+    let key = std::env::var("A0_VENICE_API_KEY")
+        .expect("set A0_VENICE_API_KEY to run the Venice live tests");
+    let model = std::env::var("ALTER_ZERO_LIVE_VENICE_MODEL")
+        .unwrap_or_else(|_| "openai-gpt-4o-mini-2024-07-18".to_string());
+    let providers = alter_zero::llm::ProvidersFile::builtin();
+    let salt = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let sel = alter_zero::llm::Selection {
+        provider_id: "a0_venice".to_string(),
+        model,
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: Some(format!("alter-zero-live-venice-{salt}")),
+    };
+    let cfg = providers.model_config(&sel).expect("a0_venice is built in");
+    let backend = LlmBackend::configure(cfg, Some(big_system_prompt(salt)), false);
+
+    let (reply, usages) = complete_with_usage(&backend, "Just say ONE.");
+    println!("turn 1 reply: {reply:?}, usage: {usages:?}");
+    let first = usages.first().expect("turn 1 reported usage");
+    assert!(first.total() > 1_000, "the whole prefix billed: {first:?}");
+
+    let (reply, usages) = complete_with_usage(&backend, "Just say ONE.");
+    println!("turn 2 reply: {reply:?}, usage: {usages:?}");
+    let second = usages.first().expect("turn 2 reported usage");
+    assert!(
+        second.cached > 500,
+        "turn 2 hit Venice's implicit prompt cache: {second:?}"
+    );
 }
 
 #[test]
@@ -172,6 +390,7 @@ fn live_environment_context_reaches_the_model() {
         temperature: Some(0.0),
         thinking: None,
         vision: None,
+        cache_key: None,
         extra_headers: Vec::new(),
         extra_body: serde_json::Map::new(),
     };

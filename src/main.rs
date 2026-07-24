@@ -1624,8 +1624,26 @@ fn model_config_for(
         temperature,
         thinking,
         vision,
+        cache_key: Some(session_cache_key().to_string()),
     };
     providers.model_config(&sel)
+}
+
+/// The per-session cache-affinity key every backend build shares, minted once
+/// per process (pid + startup time — unique enough for a routing hint whose
+/// caches live minutes). Sent as `prompt_cache_key` (and OpenRouter's
+/// `session_id`) so this session's requests keep landing on the same
+/// provider/server and hitting its warm prompt cache; a fresh key on the next
+/// run just means one cold request. Boundary code — the time read stays out
+/// of the pure core (see `docs/prompt-caching.md`).
+fn session_cache_key() -> &'static str {
+    static KEY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    KEY.get_or_init(|| {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        format!("alter-zero-{}-{now}", std::process::id())
+    })
 }
 
 /// The provider rows the `/login` flow shows: every provider in the file, tagged
@@ -2653,6 +2671,14 @@ fn on_stream_event(
             // before any content streamed). Show it live in the status line;
             // nothing commits to scrollback — the turn is still in flight.
             app.set_retry(attempt, max);
+            Ok(false)
+        }
+        StreamEvent::Usage(usage) => {
+            // The round's real usage frame: snap the live tally from the
+            // app-side estimate to the provider's own accounting (cache
+            // detail included). Live-only — the turn summary commits the
+            // total at StreamDone (docs/prompt-caching.md).
+            app.apply_usage(&usage);
             Ok(false)
         }
         StreamEvent::Error(message) => {

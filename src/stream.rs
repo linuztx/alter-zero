@@ -27,6 +27,38 @@ pub struct ToolCallSummary {
     pub args: String,
 }
 
+/// Real token usage reported by the provider for one completed request round
+/// — the final `usage` frame of an OpenAI-compatible stream (asked for via
+/// `stream_options.include_usage`). Unlike the app-side tiktoken estimate it
+/// counts **everything** the request billed — system prompt, full context,
+/// reasoning — and carries the prompt-cache detail. The loop folds it into
+/// the live tally via [`crate::app::App::apply_usage`]. See
+/// `docs/prompt-caching.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenUsage {
+    /// Prompt tokens billed for the round (`prompt_tokens`) — cached reads
+    /// included, per the OpenAI accounting shape.
+    pub input: u64,
+    /// Completion tokens the round generated (`completion_tokens`).
+    pub output: u64,
+    /// Input tokens served from the provider's prompt cache (a subset of
+    /// `input`): `prompt_tokens_details.cached_tokens`, or the
+    /// `cache_read_input_tokens` alias Venice/Anthropic-style shims use.
+    pub cached: u64,
+    /// Input tokens written to the cache by this round (Anthropic-style
+    /// explicit caching): `prompt_tokens_details.cache_write_tokens` /
+    /// `cache_creation_input_tokens`.
+    pub cache_write: u64,
+}
+
+impl TokenUsage {
+    /// The round's billed total — what the tally grows by.
+    #[must_use]
+    pub const fn total(&self) -> u64 {
+        self.input + self.output
+    }
+}
+
 /// What a backend sends to the event loop. Only the *reply* travels this channel
 /// — keyboard input arrives separately via the terminal event stream (see
 /// `main.rs`). It is a tokio unbounded channel so the async loop can `select!` on
@@ -109,6 +141,13 @@ pub enum StreamEvent {
     /// `retrying {attempt}/{max}`. Only a real backend sends this (see
     /// `llm::retry`); the loop shows it in the status and keeps the turn alive.
     Retrying { attempt: u32, max: u32 },
+    /// The provider's real token usage for one completed request round (the
+    /// final usage frame of the stream — sent once per round by a real
+    /// backend, so an agentic turn reports one per tool round). The loop
+    /// snaps the live tally to it ([`crate::app::App::apply_usage`]), turning
+    /// the app-side estimate into the provider's own accounting, prompt-cache
+    /// detail included. The dummy never sends it. See `docs/prompt-caching.md`.
+    Usage(TokenUsage),
     /// The backend failed; carries a human-readable message to show the user.
     Error(String),
     /// The reply is complete.
@@ -1203,6 +1242,7 @@ mod tests {
                     break;
                 }
                 StreamEvent::Retrying { .. } => panic!("the dummy never retries"),
+                StreamEvent::Usage(_) => panic!("the dummy never reports usage"),
                 StreamEvent::ToolBackgrounded { .. } => {
                     panic!("the dummy never backgrounds a tool")
                 }

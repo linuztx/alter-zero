@@ -173,6 +173,7 @@ impl ProvidersFile {
             temperature: sel.temperature,
             thinking: sel.thinking,
             vision: sel.vision,
+            cache_key: sel.cache_key.clone(),
             extra_headers: provider
                 .extra_headers
                 .iter()
@@ -201,6 +202,11 @@ pub struct Selection {
     /// of letting the provider fail the turn; `None` attaches optimistically.
     /// See `docs/tools.md`.
     pub vision: Option<bool>,
+    /// A stable per-session cache-affinity key, sent as the request's
+    /// `prompt_cache_key` (and, for OpenRouter, `session_id`) so repeated
+    /// requests land on the same provider/server and hit its warm prompt
+    /// cache. The boundary mints one per process. See `docs/prompt-caching.md`.
+    pub cache_key: Option<String>,
 }
 
 /// The fully-resolved config one [`super::openai::OpenAiClient`] talks with.
@@ -219,6 +225,8 @@ pub struct ModelConfig {
     pub thinking: Option<ThinkingMode>,
     /// The model's image-input support (see [`Selection::vision`]).
     pub vision: Option<bool>,
+    /// The per-session cache-affinity key (see [`Selection::cache_key`]).
+    pub cache_key: Option<String>,
     pub extra_headers: Vec<(String, String)>,
     /// Provider kwargs merged into the request body (e.g. `venice_parameters`).
     pub extra_body: serde_json::Map<String, serde_json::Value>,
@@ -238,6 +246,7 @@ impl ModelConfig {
             temperature: None,
             thinking: None,
             vision: None,
+            cache_key: None,
             extra_headers: Vec::new(),
             extra_body: serde_json::Map::new(),
         }
@@ -391,6 +400,7 @@ api_base = "https://a/v1"
             temperature: Some(0.7),
             thinking: None,
             vision: None,
+            cache_key: None,
         };
         let cfg = file.model_config(&sel).expect("resolves");
         assert_eq!(cfg.model, "anthropic/claude-3.5-haiku");
@@ -418,6 +428,24 @@ api_base = "https://a/v1"
             None,
             "unknown by default — attach optimistically"
         );
+    }
+
+    #[test]
+    fn model_config_carries_the_selections_cache_key() {
+        // The boundary's per-session affinity key rides the resolved config so
+        // the payload builder can pin requests to a warm cache
+        // (docs/prompt-caching.md).
+        let file = ProvidersFile::builtin();
+        let sel = Selection {
+            provider_id: "openrouter".to_string(),
+            model: "openai/gpt-4o-mini".to_string(),
+            api_key: Some("k".to_string()),
+            cache_key: Some("alter-zero-42".to_string()),
+            ..Default::default()
+        };
+        let cfg = file.model_config(&sel).expect("resolves");
+        assert_eq!(cfg.cache_key.as_deref(), Some("alter-zero-42"));
+        assert_eq!(ModelConfig::fallback().cache_key, None);
     }
 
     #[test]
