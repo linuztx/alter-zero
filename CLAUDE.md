@@ -593,8 +593,10 @@ and an Esc-undo of the turn restores the literal `/init` (palette reopened),
 not the prompt. **The generated guide feeds back into the model's context**
 (`docs/project-doc.md` — codex's project doc): every turn start re-reads the
 project's `AGENTS.md` files (the pure `project_doc` module — nearest-`.git`
-root→cwd discovery, codex's 32 KiB cap, the
-`# AGENTS.md instructions … <INSTRUCTIONS>` fragment; the read is
+root→cwd discovery, the first of `AGENTS.override.md`/`AGENTS.md` per dir
+read bytes-lossily, codex's 32 KiB cap via `ALTER_ZERO_PROJECT_DOC_MAX_BYTES`
+with `0` disabling, the `# AGENTS.md instructions … <INSTRUCTIONS>` fragment;
+the read is
 `main.rs`'s `start_turn` + a startup seed) into `App::user_instructions`, and
 `context::context_messages_with` injects it as the derived context's leading
 user entry — in front of the post-`/compact` shape too, never entering

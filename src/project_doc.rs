@@ -20,12 +20,34 @@
 use std::path::{Path, PathBuf};
 
 /// Codex's `project_doc_max_bytes` default: the total byte budget across
-/// every discovered `AGENTS.md`.
+/// every discovered `AGENTS.md`. Overridable via
+/// `ALTER_ZERO_PROJECT_DOC_MAX_BYTES` ([`doc_budget`] — `0` disables
+/// loading entirely, codex's `max_total == 0` early out).
 pub const PROJECT_DOC_MAX_BYTES: usize = 32 * 1024;
 
 /// The filename scanned for project instructions (codex's
 /// `DEFAULT_AGENTS_MD_FILENAME`).
 pub const PROJECT_DOC_FILENAME: &str = "AGENTS.md";
+
+/// The git-ignorable local override (codex's `LOCAL_AGENTS_MD_FILENAME`):
+/// per directory the first existing [`PROJECT_DOC_FILENAMES`] candidate
+/// contributes, so a personal override replaces its directory's checked-in
+/// guide without touching the repo.
+pub const PROJECT_DOC_OVERRIDE_FILENAME: &str = "AGENTS.override.md";
+
+/// Candidate filenames per directory, in priority order.
+pub const PROJECT_DOC_FILENAMES: [&str; 2] = [PROJECT_DOC_OVERRIDE_FILENAME, PROJECT_DOC_FILENAME];
+
+/// The byte budget from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES`'s value: a parsed
+/// number wins (`0` = off), anything else — unset, blank, garbage — is
+/// codex's [`PROJECT_DOC_MAX_BYTES`] default. Pure (the boundary hands in the
+/// env read), like `term`'s env predicate.
+#[must_use]
+pub fn doc_budget(env_value: Option<&str>) -> usize {
+    env_value
+        .and_then(|v| v.trim().parse::<usize>().ok())
+        .unwrap_or(PROJECT_DOC_MAX_BYTES)
+}
 
 /// The directories searched for a project doc: the project root down to the
 /// cwd, inclusive — codex's cursor walk (cwd up to `root`, then reversed so
@@ -138,26 +160,71 @@ pub fn find_project_root(cwd: &Path) -> Option<PathBuf> {
 
 /// Load the project's AGENTS.md instructions for `cwd`, rendered as the
 /// context fragment [`instructions_message`] — or `None` when no doc exists.
-/// Boundary: composes [`find_project_root`], [`doc_chain`], one read per
-/// chain directory, [`combine_docs`] under [`PROJECT_DOC_MAX_BYTES`]. A
-/// missing or unreadable file is simply skipped (codex ignores NotFound).
+/// The budget comes from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES` via
+/// [`doc_budget`] (`0` disables loading entirely).
 #[must_use]
 pub fn load_user_instructions(cwd: &Path) -> Option<String> {
+    load_user_instructions_with(
+        cwd,
+        doc_budget(
+            std::env::var("ALTER_ZERO_PROJECT_DOC_MAX_BYTES")
+                .ok()
+                .as_deref(),
+        ),
+    )
+}
+
+/// [`load_user_instructions`] under an explicit budget. Boundary: composes
+/// [`find_project_root`], [`doc_chain`], one [`read_first_doc`] per chain
+/// directory, [`combine_docs`]. A missing or unreadable file is simply
+/// skipped (codex ignores NotFound); a zero budget skips even the discovery.
+#[must_use]
+pub fn load_user_instructions_with(cwd: &Path, max_bytes: usize) -> Option<String> {
+    if max_bytes == 0 {
+        return None;
+    }
     let root = find_project_root(cwd);
     let docs: Vec<String> = doc_chain(root.as_deref(), cwd)
         .iter()
-        .filter_map(|dir| std::fs::read_to_string(dir.join(PROJECT_DOC_FILENAME)).ok())
+        .filter_map(|dir| read_first_doc(dir))
         .collect();
-    let combined = combine_docs(&docs, PROJECT_DOC_MAX_BYTES)?;
+    let combined = combine_docs(&docs, max_bytes)?;
     Some(instructions_message(
         &combined,
         Some(&cwd.display().to_string()),
     ))
 }
 
+/// The first readable [`PROJECT_DOC_FILENAMES`] candidate in `dir`, decoded
+/// lossily — codex reads bytes and `from_utf8_lossy`s them, so one stray
+/// invalid byte can never silently drop the whole guide (the
+/// `read_to_string` trap).
+fn read_first_doc(dir: &Path) -> Option<String> {
+    PROJECT_DOC_FILENAMES.iter().find_map(|name| {
+        let bytes = std::fs::read(dir.join(name)).ok()?;
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- doc_budget (the ALTER_ZERO_PROJECT_DOC_MAX_BYTES knob) ---
+
+    #[test]
+    fn doc_budget_defaults_and_parses_the_env_override() {
+        // Unset / blank / garbage → codex's 32 KiB default; a number wins;
+        // `0` is the documented off switch (it flows into the zero-budget
+        // early return below).
+        assert_eq!(doc_budget(None), PROJECT_DOC_MAX_BYTES);
+        assert_eq!(doc_budget(Some("")), PROJECT_DOC_MAX_BYTES);
+        assert_eq!(doc_budget(Some("  ")), PROJECT_DOC_MAX_BYTES);
+        assert_eq!(doc_budget(Some("not a number")), PROJECT_DOC_MAX_BYTES);
+        assert_eq!(doc_budget(Some("1234")), 1234);
+        assert_eq!(doc_budget(Some(" 64 ")), 64);
+        assert_eq!(doc_budget(Some("0")), 0);
+    }
 
     // --- doc_chain ---
 
@@ -321,5 +388,57 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir(root.join(".git")).unwrap();
         assert_eq!(load_user_instructions(&root), None);
+    }
+
+    #[test]
+    fn an_override_doc_wins_over_agents_md_in_its_directory() {
+        // Codex's LOCAL_AGENTS_MD_FILENAME: per directory the first existing
+        // candidate contributes — the git-ignorable AGENTS.override.md beats
+        // the checked-in guide; a chain dir with only AGENTS.md still counts.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("repo");
+        let deep = root.join("app");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "Checked-in root guide.").unwrap();
+        std::fs::write(root.join("AGENTS.override.md"), "Local root override.").unwrap();
+        std::fs::write(deep.join("AGENTS.md"), "App guide.").unwrap();
+        let rendered = load_user_instructions(&deep).unwrap();
+        assert!(rendered.contains("Local root override."), "{rendered}");
+        assert!(
+            !rendered.contains("Checked-in root guide."),
+            "the override replaces its directory's AGENTS.md: {rendered}"
+        );
+        assert!(rendered.contains("App guide."), "{rendered}");
+    }
+
+    #[test]
+    fn load_user_instructions_survives_invalid_utf8() {
+        // Codex reads bytes and from_utf8_lossy's them; a stray invalid byte
+        // must not silently drop the whole guide (the read_to_string trap).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), b"Use TDD \xFF always.").unwrap();
+        let rendered = load_user_instructions(&dir).unwrap();
+        assert!(rendered.contains("Use TDD"), "{rendered}");
+        assert!(rendered.contains("always."), "{rendered}");
+        assert!(
+            rendered.contains('\u{FFFD}'),
+            "the invalid byte decodes to the replacement char: {rendered}"
+        );
+    }
+
+    #[test]
+    fn a_zero_budget_disables_loading_entirely() {
+        // The knob's off switch (ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0): no
+        // discovery, no reads, no fragment — codex's max_total == 0 early out.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), "A real guide.").unwrap();
+        assert_eq!(load_user_instructions_with(&dir, 0), None);
+        // A tiny budget still loads (truncated) — 0 alone is the switch.
+        assert!(load_user_instructions_with(&dir, 6).is_some());
     }
 }

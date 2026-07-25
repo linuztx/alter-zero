@@ -45,7 +45,13 @@ Codex's discovery (`codex-rs/core/src/agents_md.rs`) and injection
 The port keeps the project's pure-core / boundary split.
 
 - **`src/project_doc.rs`** (new module) — the pure pieces:
-  - `PROJECT_DOC_MAX_BYTES` — codex's 32 KiB default.
+  - `PROJECT_DOC_MAX_BYTES` — codex's 32 KiB default; `doc_budget` parses
+    the `ALTER_ZERO_PROJECT_DOC_MAX_BYTES` override (codex's
+    `project_doc_max_bytes` config knob in the house env style — a number
+    wins, `0` disables loading entirely, anything else is the default).
+  - `PROJECT_DOC_FILENAMES` — per directory the first existing candidate
+    contributes: `AGENTS.override.md` (codex's git-ignorable local
+    override) beats the checked-in `AGENTS.md`.
   - `doc_chain(root, cwd)` — the directories from the project root down to
     the cwd, codex's cursor walk (cwd up to root, reversed). No root → just
     the cwd.
@@ -60,10 +66,14 @@ The port keeps the project's pure-core / boundary split.
   precedent for library I/O):
   - `find_project_root(cwd)` — nearest ancestor-or-self containing `.git`
     (a dir *or* a worktree's gitfile).
-  - `load_user_instructions(cwd)` — root → chain → read each `AGENTS.md` →
-    combine → render, returning the full instructions message (or `None`
-    when no doc exists). One stat per ancestor + at most a few small reads:
-    cheap enough to run per turn.
+  - `load_user_instructions(cwd)` — root → chain → read the first
+    candidate per directory (raw bytes, `from_utf8_lossy` like codex, so
+    one stray invalid byte never silently drops a whole guide) → combine
+    under the env-resolved budget → render, returning the full instructions
+    message (or `None` when no doc exists / the budget is `0`). One stat
+    per ancestor + at most a few small reads: cheap enough to run per turn.
+    `load_user_instructions_with` is the same under an explicit budget (the
+    testable seam).
 
 - **`context::context_messages_with(instructions, history)`** — the derived
   context grows an optional leading **user** entry holding the rendered
@@ -100,11 +110,12 @@ The port keeps the project's pure-core / boundary split.
   over a `--- project-doc ---` separator). We have no other global
   instruction source; a `~/.alter-zero/AGENTS.md` would be a follow-up, and
   the separator logic with it.
-- **No config knobs** — codex's `project_doc_max_bytes`,
-  `project_doc_fallback_filenames`, and `project_root_markers` are config
-  surface we don't have; the defaults (32 KiB, `AGENTS.md`, `.git`) are
-  compiled in. `AGENTS.override.md` (codex's newer local-override
-  candidate) is omitted with them.
+- **No fallback-filename / root-marker config** — codex's
+  `project_doc_fallback_filenames` and `project_root_markers` are config
+  surface we don't have; the candidates (`AGENTS.override.md`,
+  `AGENTS.md`) and the `.git` marker are compiled in. The byte budget *is*
+  overridable (`ALTER_ZERO_PROJECT_DOC_MAX_BYTES`, `0` = off) — it doubles
+  as the feature's kill switch.
 - **No history recording** — the instructions are derived context, injected
   per request like the system prompt; they never enter `App::history`, the
   rollout file, or the transcript. `/resume` and the Esc-Esc backtrack
@@ -114,10 +125,16 @@ The port keeps the project's pure-core / boundary split.
 
 - `project_doc::tests` — the chain order (root→cwd, root == cwd, no root),
   the budget (skip blanks, truncate on the boundary, spend-and-stop, `None`
-  when empty), the fragment format (both marker lines, the `for` clause
-  dropped without a directory), and the tempfile fs walk (nested docs
-  collected in order, a `.git` *file* accepted, no marker → cwd only,
-  missing docs skipped).
+  when empty), the env knob (`doc_budget` parsing, the `0` off switch), the
+  fragment format (both marker lines, the `for` clause dropped without a
+  directory), and the tempfile fs walk (nested docs collected in order, the
+  override beating its directory's `AGENTS.md`, invalid UTF-8 surviving
+  lossily, a `.git` *file* accepted, no marker → cwd only, missing docs
+  skipped).
+- `scripts/smoke.sh` Phase 52 — the boundary end to end on the dummy: a
+  planted `AGENTS.md` shows under `# AGENTS.md instructions` in the Ctrl+D
+  view before any turn, `/init` submits the bundled prompt as the user
+  message, and a mid-turn `/init` is rejected with the busy toast.
 - `context::tests` — the leading user entry, its merge with a first user
   message, its presence in front of the compacted shape, and `None`/blank
   leaving the derivation untouched.
