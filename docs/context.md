@@ -17,7 +17,11 @@ Three features share one data model, so they share one document:
 The design decision everything else follows from: there is **no second store**
 of the conversation. The pure [`context`](../src/context.rs) module derives
 the context window from `App::history` on demand —
-`context_messages(&app.history) -> Vec<ContextMessage>` — because `history`
+`context_messages(&app.history) -> Vec<ContextMessage>`, or
+`context_messages_with(instructions, &app.history)` when the project's
+AGENTS.md instructions lead it (`docs/project-doc.md`; the two emptiness
+checks deliberately derive *without* them, so a standing guide alone is
+still "nothing to compact") — because `history`
 is already the single source of truth the TUI keeps correct everywhere it
 matters:
 

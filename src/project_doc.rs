@@ -186,7 +186,7 @@ pub fn load_user_instructions_with(cwd: &Path, max_bytes: usize) -> Option<Strin
     let root = find_project_root(cwd);
     let docs: Vec<String> = doc_chain(root.as_deref(), cwd)
         .iter()
-        .filter_map(|dir| read_first_doc(dir))
+        .filter_map(|dir| read_first_doc(dir, max_bytes))
         .collect();
     let combined = combine_docs(&docs, max_bytes)?;
     Some(instructions_message(
@@ -195,15 +195,33 @@ pub fn load_user_instructions_with(cwd: &Path, max_bytes: usize) -> Option<Strin
     ))
 }
 
-/// The first readable [`PROJECT_DOC_FILENAMES`] candidate in `dir`, decoded
-/// lossily — codex reads bytes and `from_utf8_lossy`s them, so one stray
-/// invalid byte can never silently drop the whole guide (the
-/// `read_to_string` trap).
-fn read_first_doc(dir: &Path) -> Option<String> {
+/// The first readable [`PROJECT_DOC_FILENAMES`] candidate in `dir`, read
+/// under `cap` bytes and decoded lossily — codex reads bytes and
+/// `from_utf8_lossy`s them, so one stray invalid byte can never silently
+/// drop the whole guide (the `read_to_string` trap). A doc cut at the cap
+/// may end in a replacement char; codex truncates raw bytes the same way.
+fn read_first_doc(dir: &Path, cap: usize) -> Option<String> {
     PROJECT_DOC_FILENAMES.iter().find_map(|name| {
-        let bytes = std::fs::read(dir.join(name)).ok()?;
+        let bytes = read_capped(&dir.join(name), cap)?;
         Some(String::from_utf8_lossy(&bytes).into_owned())
     })
+}
+
+/// At most `cap` bytes of `path`. The budget bounds the **I/O**, not just
+/// the folded output: a huge file that merely happens to be named
+/// `AGENTS.md` must never be slurped whole — this loader runs at startup
+/// *and* at every turn start, so an unbounded read would block the raw-mode
+/// terminal repeatedly (the `main.rs::read_capped` pattern, and the same
+/// class of bug as the "hangs in `~`" checkpoint guard). `None` when the
+/// file is missing or unreadable — the caller then tries the next candidate.
+fn read_capped(path: &Path, cap: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).ok()?;
+    let mut data = Vec::new();
+    file.take(u64::try_from(cap).unwrap_or(u64::MAX))
+        .read_to_end(&mut data)
+        .ok()?;
+    Some(data)
 }
 
 #[cfg(test)]
@@ -427,6 +445,43 @@ mod tests {
             rendered.contains('\u{FFFD}'),
             "the invalid byte decodes to the replacement char: {rendered}"
         );
+    }
+
+    #[test]
+    fn read_capped_reads_at_most_the_budget() {
+        // The budget must bound the *I/O*, not just the folded output: a
+        // giant file that merely happens to be named AGENTS.md cannot be
+        // slurped whole into memory while the raw-mode terminal waits for
+        // its first frame — and this loader re-runs at every turn start, so
+        // an unbounded read would be paid over and over (the
+        // `main.rs::read_capped` / "hangs in ~" class of bug).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("AGENTS.md");
+        std::fs::write(&path, vec![b'x'; 100 * 1024]).unwrap();
+        assert_eq!(read_capped(&path, 64).expect("readable").len(), 64);
+        assert!(read_capped(&path, 0).expect("readable").is_empty());
+        assert_eq!(
+            read_capped(&tmp.path().join("missing.md"), 64),
+            None,
+            "an unreadable doc is skipped, not an error"
+        );
+    }
+
+    #[test]
+    fn a_huge_doc_folds_down_to_the_budget() {
+        // The observable end of the same guarantee: an oversized guide still
+        // loads, bounded — never the whole file.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("proj");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("AGENTS.md"), vec![b'x'; 100 * 1024]).unwrap();
+        let rendered = load_user_instructions_with(&dir, 64).expect("loads");
+        let body = rendered
+            .split_once("<INSTRUCTIONS>\n")
+            .and_then(|(_, rest)| rest.split_once("\n</INSTRUCTIONS>"))
+            .map(|(body, _)| body)
+            .expect("the fragment wraps a body");
+        assert_eq!(body.len(), 64, "the body is the budget, not the file");
     }
 
     #[test]

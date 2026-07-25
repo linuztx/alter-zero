@@ -74,6 +74,13 @@ The port keeps the project's pure-core / boundary split.
     per ancestor + at most a few small reads: cheap enough to run per turn.
     `load_user_instructions_with` is the same under an explicit budget (the
     testable seam).
+  - **The reads are capped at the budget** (`read_capped` —
+    `File::take(cap)`, `main.rs::read_capped`'s pattern). The budget has to
+    bound the *I/O*, not just the folded output: a huge file that merely
+    happens to be named `AGENTS.md` would otherwise be slurped whole while
+    the raw-mode terminal waits for its first frame — and because this
+    loader re-runs at **every turn start**, that cost would be paid over
+    and over. Same class as the "hangs in `~`" checkpoint guard.
 
 - **`context::context_messages_with(instructions, history)`** — the derived
   context grows an optional leading **user** entry holding the rendered

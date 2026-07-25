@@ -5409,8 +5409,11 @@ impl App {
         self.history_generation += 1;
         self.streaming = None;
         self.compact_buffer = None;
-        // A fresh slate: the gauge drops to zero and auto-compact re-arms.
-        self.context_used = 0;
+        // A fresh slate — but the system prompt and the standing AGENTS.md
+        // instructions still ride the next request, so the gauge re-seats on
+        // the estimate rather than hard-zeroing (a bare session still reads
+        // 0). Auto-compact re-arms.
+        self.refresh_context_used();
         self.auto_compact_blocked = false;
         self.tool_queue.clear();
         self.status = None;
@@ -8636,6 +8639,60 @@ mod tests {
         let without = run_turn(None);
         let with = run_turn(Some("a long AGENTS.md contributor guide to count"));
         assert!(with > without, "{with} vs {without}");
+    }
+
+    #[test]
+    fn clear_re_seats_the_gauge_on_what_still_rides_the_next_request() {
+        // /clear wipes the conversation, but the system prompt and the
+        // standing AGENTS.md instructions still ride the very next request —
+        // hard-zeroing the gauge would under-report them. It re-seats on the
+        // estimate instead; a bare session still reads 0.
+        let mut app = App::new();
+        app.set_system_prompt(Some("a system prompt".to_string()));
+        app.set_user_instructions(Some("standing project instructions".to_string()));
+        app.record_user_message("hello there");
+        app.begin_stream();
+        app.finish_stream();
+        app.end_turn(1);
+        app.clear_conversation();
+        assert!(
+            app.context_used() > 0,
+            "the prompt + instructions still count after a clear"
+        );
+
+        let mut bare = App::new();
+        bare.record_user_message("hello there");
+        bare.begin_stream();
+        bare.finish_stream();
+        bare.end_turn(1);
+        bare.clear_conversation();
+        assert_eq!(bare.context_used(), 0, "nothing standing → a true zero");
+    }
+
+    #[test]
+    fn an_instructions_only_context_has_nothing_to_compact() {
+        // The instructions are derived context, not conversation: with no
+        // history they must not make /compact or auto-compact think there is
+        // something to summarize (both emptiness checks deliberately derive
+        // WITHOUT them — this pins that).
+        let mut app = App::new();
+        app.set_user_instructions(Some("standing project instructions".to_string()));
+        type_str(&mut app, "/compact");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::Toast(COMPACT_EMPTY_NOTICE.to_string()),
+            "an instructions-only context is still nothing to compact"
+        );
+        // And the auto trigger stays put even far past the threshold.
+        app.set_context_window(Some(10));
+        app.begin_stream();
+        app.apply_usage(&usage_of(1_000, 0));
+        app.finish_stream();
+        app.end_turn(1);
+        assert!(
+            !app.should_auto_compact(),
+            "auto-compact never fires on an instructions-only context"
+        );
     }
 
     #[test]
