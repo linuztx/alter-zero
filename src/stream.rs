@@ -239,26 +239,33 @@ const DUMMY_PING_FAIL: &str = "ping: cannot resolve x.invalid: Unknown host\nexi
 
 /// The dummy's **markdown table** demo reply, played for any prompt mentioning
 /// "table" (opt-in, like the "parallel" batch): prose, a 10-row GFM table whose
-/// cells carry `` `code` `` spans, then closing prose. Its turn is text-only —
+/// cells carry `` `code` `` spans **and a two-column-wide status emoji**, then
+/// closing prose. Its turn is text-only —
 /// no thinking phase and no tool calls, which would split the reply around them
 /// and flush the block early — so the whole forming table previews in the strip
 /// and its block commits at the close (docs/table-streaming.md). This is the
 /// reported blank-band regression's shape: the strip collapses from the tall
 /// forming-table preview to one row in the same frame the block's rows flush,
 /// which the smoke suite guards (the box must stay flush at the bottom).
+///
+/// The emoji make it the **emoji-table** shape too: a wide grapheme costs two
+/// terminal columns, so a mismeasured one tears the grid's right border out of
+/// line — the reported "emoji cuts the table" (`term::printable_cells`,
+/// docs/table-streaming.md), which the smoke suite guards by asserting every
+/// grid row is the same width.
 const DUMMY_TABLE_REPLY: &str = "Here's a table with data that uses backticks:\n\n\
 | ID | Name | Code Snippet | Description |\n\
 |----|------|--------------|-------------|\n\
-| 1 | Hello World | `` `print(\"Hello\")` `` | Basic greeting function |\n\
-| 2 | SQL Query | `` `SELECT * FROM users` `` | Database selection query |\n\
-| 3 | Markdown | `` `**bold text**` `` | Formatting example |\n\
-| 4 | Shell Command | `` `ls -la` `` | List directory contents |\n\
-| 5 | JavaScript | `` `const x = 42;` `` | Variable declaration |\n\
-| 6 | Rust | `` `let mut vec = Vec::new();` `` | Mutable vector creation |\n\
-| 7 | Python | `` `def foo(): return None` `` | Empty function definition |\n\
-| 8 | HTML | `` `<div class=\"container\">` `` | Container element |\n\
-| 9 | CSS | `` `.class { color: red; }` `` | Style rule |\n\
-| 10 | Regex | `` `/^[A-Z]+$/` `` | Pattern matching |\n\n\
+| 1 | Hello World | `` `print(\"Hello\")` `` | ✅ Basic greeting function |\n\
+| 2 | SQL Query | `` `SELECT * FROM users` `` | ✅ Database selection query |\n\
+| 3 | Markdown | `` `**bold text**` `` | ✅ Formatting example |\n\
+| 4 | Shell Command | `` `ls -la` `` | ✅ List directory contents |\n\
+| 5 | JavaScript | `` `const x = 42;` `` | ❌ Variable declaration |\n\
+| 6 | Rust | `` `let mut vec = Vec::new();` `` | ✅ Mutable vector creation |\n\
+| 7 | Python | `` `def foo(): return None` `` | ✅ Empty function definition |\n\
+| 8 | HTML | `` `<div class=\"container\">` `` | ❌ Container element |\n\
+| 9 | CSS | `` `.class { color: red; }` `` | ✅ Style rule |\n\
+| 10 | Regex | `` `/^[A-Z]+$/` `` | ✅ Pattern matching |\n\n\
 The backticks are wrapped in double backticks (`` `code` ``) so they display \
 properly in Markdown.";
 

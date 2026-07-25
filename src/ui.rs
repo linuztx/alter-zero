@@ -1815,19 +1815,52 @@ fn natural_col_widths(rows: &[Vec<Vec<(String, Style)>>], ncols: usize) -> Vec<u
     w
 }
 
+/// The per-column **word** width — the widest single unbreakable word over
+/// `rows`, words tokenized exactly as [`wrap_inline`] will break them. A column
+/// allocated at least this many display columns wraps only at spaces; below it,
+/// some word has to hard-break mid-token. [`allocate_column_widths`] seats every
+/// column here first, which is what keeps a 33-column IPv6 (or a bare
+/// `OPENROUTER_API_KEY`) whole while a column that *can* wrap gives way.
+fn natural_word_widths(rows: &[Vec<Vec<(String, Style)>>], ncols: usize) -> Vec<usize> {
+    let mut w = vec![1usize; ncols];
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            for word in tokenize_words(cell) {
+                w[i] = w[i].max(segments_cols(&word));
+            }
+        }
+    }
+    w
+}
+
 /// Allocate the per-column widths for a grid that must fit `avail` display
-/// columns, given each column's `natural` (widest cell) width. When the natural
-/// grid fits, the natural widths are returned (a tight, one-row-per-line grid).
-/// When it overflows, the overflow is taken from the **widest column first**
-/// (one display column at a time, ties leftmost-first so equal columns level
-/// evenly), floored at [`TABLE_MIN_COL`] — codex's fit: a short cell
-/// (`facebook.com`, a `Packets` header) keeps its natural width, and the
-/// wrapping lands entirely on the genuinely wide content (a 33-column IPv6, a
-/// long description). The old proportional shrink starved *every* column when
-/// one was huge, breaking short words mid-cell (the reported bug). The shrunk
-/// widths are **wrap** widths, so cells word-wrap into them (taller rows)
-/// rather than truncating with a `…` (docs/table-streaming.md).
-fn allocate_column_widths(natural: &[usize], avail: usize) -> Vec<usize> {
+/// columns, given each column's `natural` (widest cell) width and `word` width
+/// (its widest single unbreakable word — [`natural_word_widths`]).
+///
+/// Three cases, in order — Claude Code's fit (docs/table-streaming.md):
+///
+/// 1. **The natural grid fits.** Return it: the table stays as narrow as its
+///    content rather than stretching to the terminal.
+/// 2. **It overflows but every column's word-safe floor fits.** Each column is
+///    seated at `min(natural, word)` — the width it needs to wrap at *spaces*
+///    only — and the surplus is split in proportion to each column's **unmet
+///    demand** (`natural - floor`), largest-remainder so the columns fill the
+///    budget exactly. This is what makes a table read like Claude Code's: a
+///    column whose width is driven by one long outlier (`cargo clippy
+///    --all-targets -- -D warnings`) doesn't hoard room every other row wastes,
+///    and the column with the genuinely long content gets it instead. It also
+///    keeps an unbreakable token (a 33-column IPv6) whole whenever another
+///    column can give way at a space.
+/// 3. **Even the floors overflow.** Some token has to hard-break, so level the
+///    **widest column** down one display column at a time (ties leftmost-first),
+///    floored at [`TABLE_MIN_COL`]: a short cell (`facebook.com`, a `Packets`
+///    header) keeps its natural width for as long as possible. A proportional
+///    shrink here would starve *every* column at once, breaking short words
+///    mid-cell (an earlier bug).
+///
+/// Allocated widths are **wrap** widths throughout, so cells word-wrap into
+/// them (taller rows) rather than truncating with a `…`.
+fn allocate_column_widths(natural: &[usize], word: &[usize], avail: usize) -> Vec<usize> {
     let n = natural.len();
     if n == 0 {
         return Vec::new();
@@ -1838,8 +1871,58 @@ fn allocate_column_widths(natural: &[usize], avail: usize) -> Vec<usize> {
     if total == 0 || total <= content_avail {
         return natural.to_vec();
     }
+    // The width each column needs to wrap at spaces only — never more than its
+    // natural width, never below the floor a bordered cell needs to be legible.
+    let floor: Vec<usize> = natural
+        .iter()
+        .zip(word)
+        .map(|(&nat, &w)| nat.min(w.max(TABLE_MIN_COL)))
+        .collect();
+    let seated: usize = floor.iter().sum();
+    if seated > content_avail {
+        return level_widest_columns(natural, content_avail);
+    }
+    // Spend the surplus where the content still doesn't fit. `demand_total`
+    // exceeds `surplus` (the naturals overflow by definition), so no column can
+    // be handed more than it asked for.
+    let surplus = content_avail - seated;
+    let demand: Vec<usize> = natural.iter().zip(&floor).map(|(&n, &f)| n - f).collect();
+    let demand_total: usize = demand.iter().sum();
+    if demand_total == 0 {
+        return floor;
+    }
+    let mut w = floor;
+    let mut spent = 0usize;
+    // (remainder, index) — largest-remainder rounding hands out the columns
+    // integer division dropped, so the grid fills `content_avail` exactly.
+    let mut remainders: Vec<(usize, usize)> = Vec::with_capacity(n);
+    for (i, &d) in demand.iter().enumerate() {
+        let exact = surplus * d;
+        w[i] += exact / demand_total;
+        spent += exact / demand_total;
+        remainders.push((exact % demand_total, i));
+    }
+    remainders.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut left = surplus - spent;
+    for &(_, i) in &remainders {
+        if left == 0 {
+            break;
+        }
+        if w[i] < natural[i] {
+            w[i] += 1;
+            left -= 1;
+        }
+    }
+    w
+}
+
+/// Case 3 of [`allocate_column_widths`]: shrink the **widest** column one
+/// display column at a time (ties leftmost-first, so equal columns level
+/// evenly) until the grid fits `content_avail`, never below
+/// [`TABLE_MIN_COL`].
+fn level_widest_columns(natural: &[usize], content_avail: usize) -> Vec<usize> {
     // Pre-clamp to the whole content budget (a lone column can never usefully
-    // exceed it), bounding the loop below to O(content_avail · n) even for a
+    // exceed it), bounding the loop to O(content_avail · n) even for a
     // pathological megabyte-wide cell — the preview re-renders per frame.
     let mut w: Vec<usize> = natural
         .iter()
@@ -1954,7 +2037,11 @@ fn table_column_widths(
         rows.iter()
             .map(|r| normalize_row(r, ncols, Style::default())),
     );
-    allocate_column_widths(&natural_col_widths(&all, ncols), content_width as usize)
+    allocate_column_widths(
+        &natural_col_widths(&all, ncols),
+        &natural_word_widths(&all, ncols),
+        content_width as usize,
+    )
 }
 
 /// The opening rows of a table: the top border, the (word-wrapped, bold) header
@@ -7085,16 +7172,55 @@ mod tests {
     }
 
     #[test]
-    fn allocate_column_widths_takes_from_the_widest_first() {
-        // The ping-summary fit bug: Host(12) IP(33) Packets(7) Loss(4) RTT(21)
-        // must fit avail 85 (content 69, 8 over). The old proportional shrink
-        // starved EVERY column ("facebook.co/m", "Packe/ts", "Los/s"); the fix
-        // takes the whole overflow from the widest column (the IPv6 one), so
-        // short cells keep their natural width — codex's fit.
+    fn allocate_column_widths_spends_the_surplus_where_the_content_is() {
+        // The reported screenshot's shape: column 1's natural width is driven by
+        // ONE long cell (`cargo clippy --all-targets -- -D warnings`, 40) while
+        // every other cell in it is ≤ 17; column 2 holds a ~104-column value.
+        // Levelling the two widths gave column 1 ~35 columns it never used and
+        // starved column 2 into four wrapped rows. Word-safe floors [13, 18] fit
+        // in the 71-column budget, so the 40-column surplus is split by unmet
+        // demand (27:86) — the value column ends with roughly twice the room,
+        // Claude Code's layout.
+        let w = allocate_column_widths(&[40, 104], &[13, 18], 78);
+        assert_eq!(w, vec![23, 48]);
         assert_eq!(
-            allocate_column_widths(&[12, 33, 7, 4, 21], 85),
-            vec![12, 25, 7, 4, 21]
+            w.iter().sum::<usize>(),
+            71,
+            "columns fill the content width"
         );
+    }
+
+    #[test]
+    fn allocate_column_widths_wraps_words_before_shattering_a_token() {
+        // The ping-summary fit: Host(12) IP(33) Packets(7) Loss(4) RTT(21) must
+        // fit avail 85 (content 69, 8 over). The IPv6 column is a single
+        // unbreakable 33-column token; the RTT column wraps at spaces. Taking
+        // the overflow from the *widest* column hard-broke the address
+        // mid-token, so the overflow comes from the column that can wrap
+        // cleanly instead — and the short cells still keep their natural width.
+        assert_eq!(
+            allocate_column_widths(&[12, 33, 7, 4, 21], &[12, 33, 7, 4, 11], 85),
+            vec![12, 33, 7, 4, 13]
+        );
+    }
+
+    #[test]
+    fn allocate_column_widths_levels_the_widest_when_no_floor_fits() {
+        // When even the word-safe floors overflow the budget, some token has to
+        // hard-break: fall back to levelling the widest column down one display
+        // column at a time (ties leftmost-first), which keeps a short column
+        // whole for as long as possible.
+        let w = allocate_column_widths(&[8, 20], &[8, 20], 20);
+        assert_eq!(
+            w.iter().sum::<usize>(),
+            13,
+            "columns fill the content width"
+        );
+        assert!(
+            w[1] > w[0],
+            "the wider natural column keeps more room: {w:?}"
+        );
+        assert!(w.iter().all(|&c| c >= TABLE_MIN_COL), "floored: {w:?}");
     }
 
     #[test]
@@ -7149,27 +7275,11 @@ mod tests {
     }
 
     #[test]
-    fn allocate_column_widths_fits_naturally_or_levels_the_widest() {
-        use markdown::Alignment::None as A;
-        let _ = A; // (alignment isn't part of width allocation)
+    fn allocate_column_widths_keeps_a_grid_that_fits_natural() {
         // Fits: the natural grid (2+3 content + 7 overhead = 12) is ≤ avail, so
-        // columns keep their natural widths.
-        assert_eq!(allocate_column_widths(&[2, 3], 40), vec![2, 3]);
-        // Overflows: avail 20 → content_avail 13 for naturals [8, 20] (total
-        // 28). The widest-first shrink levels both toward the budget — the
-        // wider natural column still ends with more room, and nothing drops
-        // below the floor.
-        let w = allocate_column_widths(&[8, 20], 20);
-        assert_eq!(
-            w.iter().sum::<usize>(),
-            13,
-            "columns fill the content width"
-        );
-        assert!(
-            w[1] > w[0],
-            "the wider natural column keeps more room: {w:?}"
-        );
-        assert!(w.iter().all(|&c| c >= TABLE_MIN_COL), "floored: {w:?}");
+        // columns keep their natural widths and the table stays as narrow as its
+        // content — never stretched to the terminal.
+        assert_eq!(allocate_column_widths(&[2, 3], &[2, 3], 40), vec![2, 3]);
     }
 
     #[test]
@@ -7651,6 +7761,99 @@ mod tests {
                 .any(|r| r.contains("│ 10.1 km/h from NNE (28°)")),
             "the widest cell sits on one line: {rows:#?}"
         );
+    }
+
+    /// The rendered cell widths of a table's grid, read off its `┌──┬──┐` top
+    /// border — the widths the columns were actually allocated, minus the two
+    /// pad spaces each side of a cell.
+    fn grid_column_widths(rows: &[String]) -> Vec<usize> {
+        // The border may carry the message bullet (`● ┌──…`) when the table is
+        // the reply's first block, so slice from the corner itself.
+        let top = rows
+            .iter()
+            .find_map(|r| r.find('┌').map(|i| &r[i..]))
+            .expect("a grid top border");
+        top.trim()
+            .trim_start_matches('┌')
+            .trim_end_matches('┐')
+            .split('┬')
+            .map(|seg| cols(seg).saturating_sub(2))
+            .collect()
+    }
+
+    #[test]
+    fn assistant_table_gives_the_content_heavy_column_the_room() {
+        // The reported screenshot (img1 → img2): one long cell in the Check
+        // column pulled it to ~35 columns — width every *other* row wasted —
+        // while the Result column, holding a ~100-column value, was starved into
+        // four wrapped rows. Claude Code gives each column what its longest word
+        // needs and spends the rest where the content is, so Result ends up the
+        // wide one.
+        let text = "| Check | Result |\n\
+                    |-------|--------|\n\
+                    | `cargo fmt --check` | ✅ clean |\n\
+                    | `cargo clippy --all-targets -- -D warnings` | ✅ pass (exit 0) |\n\
+                    | `cargo test` | ✅ all tests pass, 0 failures (23 live-API tests \
+                    skipped — need `OPENROUTER_API_KEY` / `A0_VENICE_API_KEY`) |\n\
+                    | tmux | ✅ installed — tmux 3.6b (`/usr/bin/tmux`) |";
+        let rows: Vec<String> = message_lines(Role::Assistant, text, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        let w = grid_column_widths(&rows);
+        assert!(
+            w[1] > w[0],
+            "the content-heavy column gets the room: {w:?} in {rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("│ cargo fmt --check ")),
+            "a short cell still sits on one line: {rows:#?}"
+        );
+        assert!(
+            rows.iter().any(|r| r.contains("0 failures (23 live-API")),
+            "the wide value keeps a scannable run per row: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn emoji_table_rows_all_end_at_the_same_column() {
+        // A 2-column-wide grapheme must be measured as two columns everywhere —
+        // the cell's natural width, its wrap, and its pad — so an emoji row is
+        // exactly as wide as a border row. (The terminal-side half of this bug
+        // was the wide-grapheme filler cell the draw paths used to print, see
+        // `term::printable_cells`.)
+        let text = "| Check | Result |\n\
+                    |-------|--------|\n\
+                    | fmt | ✅ clean |\n\
+                    | test | ❌ 3 failures |\n\
+                    | docs | 世界 ok |";
+        for width in [24u16, 40, 60, 80, 120] {
+            let rows: Vec<String> = message_lines(Role::Assistant, text, width)
+                .iter()
+                .map(plain)
+                .collect();
+            let grid: Vec<&String> = rows.iter().filter(|r| r.contains('│')).collect();
+            assert!(!grid.is_empty(), "a grid at width {width}: {rows:#?}");
+            let widths: Vec<usize> = rows
+                .iter()
+                .filter(|r| {
+                    let t = r.trim_start();
+                    t.starts_with('│')
+                        || t.starts_with('┌')
+                        || t.starts_with('├')
+                        || t.starts_with('└')
+                })
+                .map(|r| cols(r.trim_end()))
+                .collect();
+            assert!(
+                widths.windows(2).all(|p| p[0] == p[1]),
+                "every grid row is the same width at {width}: {widths:?} in {rows:#?}"
+            );
+            assert!(
+                widths[0] <= width as usize,
+                "the grid fits the terminal at {width}: {widths:?}"
+            );
+        }
     }
 
     #[test]

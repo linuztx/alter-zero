@@ -1892,6 +1892,25 @@ printf '%s\n' "$tableflush_pane"
 # against the 24-row pane: flush-at-bottom puts it on the last row; the bug
 # left it floating ~a strip-height higher with blank rows beneath.
 tableflush_footer_row=$(printf '%s\n' "$tableflush_pane" | grep -nF 'dummy_model_name ·' | tail -1 | cut -d: -f1)
+# The EMOJI half of the table bug (docs/table-streaming.md): the demo table's
+# Description cells open with a two-column ✅/❌, and every grid row on screen
+# must still be exactly as wide as the border rows. Pre-fix the draw paths also
+# printed the blank filler cell ratatui reserves *after* a wide grapheme, so an
+# emoji row came out one column wider per emoji — the right border stepped out
+# of line and, on a table that fills the width, wrapped onto the next row.
+# Measured in awk's byte mode (the suite runs in a POSIX locale): map every
+# 3-byte box-drawing glyph to ONE ascii byte and each 3-byte emoji to TWO, then
+# a byte count is the display width.
+tableflush_row_widths=$(printf '%s\n' "$tableflush_pane" |
+	grep -E '^[[:space:]]*(│|┌|├|└)' |
+	sed 's/^[[:space:]]*//' |
+	awk '{
+		line = $0
+		gsub(/│|┌|┐|└|┘|├|┤|┬|┴|┼|─/, "#", line)
+		gsub(/✅|❌/, "##", line)
+		print length(line)
+	}' | sort -u | tr '\n' ' ')
+tableflush_emoji_rows=$(printf '%s\n' "$tableflush_pane" | grep -cE '^[[:space:]]*│.*(✅|❌)')
 tmux kill-session -t "$S41" 2>/dev/null
 
 # --- Phase 42: BACKGROUND SHELLS (docs/background.md). A long `!` command is
@@ -3103,6 +3122,15 @@ if ! printf '%s' "$tableflush_pane" | grep -qF "│ 10 │ Regex"; then
 fi
 if [ "${tableflush_footer_row:-0}" -lt 23 ]; then
 	echo "FAIL: Phase 41 — after the table turn the footer sits on row ${tableflush_footer_row:-none} of the 24-row pane: the box rose off the bottom, leaving a blank band beneath it" >&2
+	status=1
+fi
+# Every grid row the same width, emoji rows included (the wide-grapheme filler
+# cell must never be printed — `term::printable_cells`).
+if [ "${tableflush_emoji_rows:-0}" -lt 1 ]; then
+	echo "FAIL: Phase 41 — no emoji grid row reached the screen, so the wide-grapheme alignment check proved nothing" >&2
+	status=1
+elif [ "$(printf '%s' "$tableflush_row_widths" | wc -w)" -ne 1 ]; then
+	echo "FAIL: Phase 41 — the streamed table's grid rows are not all the same width (${tableflush_row_widths}): a wide grapheme (✅/❌) is costing an extra terminal column, so the right border steps out of line" >&2
 	status=1
 fi
 

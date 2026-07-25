@@ -47,7 +47,7 @@ use std::io::{self, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ratatui::backend::{Backend, ClearType, CrosstermBackend};
-use ratatui::buffer::{Buffer, Cell};
+use ratatui::buffer::{Buffer, Cell, CellWidth};
 use ratatui::crossterm::cursor::{Hide, Show};
 use ratatui::crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, KeyboardEnhancementFlags,
@@ -773,11 +773,12 @@ impl InlineViewport {
     fn draw_lines<'a>(&mut self, y: u16, n: u16, cells: &'a [Cell]) -> io::Result<&'a [Cell]> {
         let width = self.screen.width as usize;
         let (head, tail) = cells.split_at(width * n as usize);
-        if n > 0 {
-            let iter = head
-                .iter()
-                .enumerate()
-                .map(|(i, c)| ((i % width) as u16, y + (i / width) as u16, c));
+        if n > 0 && width > 0 {
+            // Row by row so a wide grapheme's filler can never be skipped
+            // across a line break ([`printable_cells`]).
+            let iter = head.chunks(width).enumerate().flat_map(|(row, cells)| {
+                printable_cells(cells).map(move |(x, c)| (x, y + row as u16, c))
+            });
             self.backend.draw(iter)?;
         }
         Ok(tail)
@@ -794,11 +795,45 @@ impl InlineViewport {
         }
         let iter = buffer
             .content
-            .iter()
+            .chunks(width)
             .enumerate()
-            .map(|(i, c)| (area.x + (i % width) as u16, area.y + (i / width) as u16, c));
+            .flat_map(|(row, cells)| {
+                printable_cells(cells).map(move |(x, c)| (area.x + x, area.y + row as u16, c))
+            });
         self.backend.draw(iter)
     }
+}
+
+/// One screen row's `cells` filtered down to those the backend must actually
+/// print, each paired with its column.
+///
+/// A wide grapheme (emoji, CJK) lives in a **single** buffer cell; the cells it
+/// visually covers are reset to a blank filler by `Buffer::set_stringn`.
+/// ratatui's own `Buffer::diff` skips those fillers — the backend prints the
+/// grapheme once and the terminal advances the extra columns by itself. Both of
+/// our draw paths hand cells to `Backend::draw` *without* going through `diff`
+/// ([`InlineViewport::draw_lines`] for scrollback, [`InlineViewport::blit`] for
+/// a full live-region repaint), so they have to skip the fillers themselves:
+/// printing one costs the terminal an extra column, shifting everything right
+/// of the grapheme. In prose that reads as a doubled space; in a table it
+/// pushes the row's remaining cells — the right border included — one column
+/// per emoji past the grid, and a full-width row spills onto the next line.
+/// That was the reported "emoji cuts the table" (`docs/table-streaming.md`).
+///
+/// Widths come from ratatui's own [`CellWidth`] — the same measure
+/// `set_stringn` reserved the fillers with — so the reservation and the skip
+/// can never disagree. Cheap and allocation-free: the hot path (a keystroke's
+/// live repaint, a streamed line's commit) walks each row once.
+fn printable_cells(row: &[Cell]) -> impl Iterator<Item = (u16, &Cell)> {
+    let mut fillers = 0u16;
+    row.iter().enumerate().filter_map(move |(x, cell)| {
+        if fillers > 0 {
+            fillers -= 1; // a column the previous wide grapheme already covers
+            return None;
+        }
+        fillers = cell.symbol().cell_width().saturating_sub(1);
+        Some((x as u16, cell))
+    })
 }
 
 /// Whether the terminal is currently switched to the alternate screen (the
@@ -865,7 +900,72 @@ fn keyboard_enhancement_disabled(value: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::keyboard_enhancement_disabled;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::text::Line;
+    use ratatui::widgets::{Paragraph, Widget};
+
+    use super::{keyboard_enhancement_disabled, printable_cells};
+
+    /// Render `line` into a `width`-wide one-row buffer the way both draw paths
+    /// do, then list the cells [`printable_cells`] would actually send to the
+    /// backend as `(column, symbol)`.
+    fn drawn(line: &str, width: u16) -> Vec<(u16, String)> {
+        let area = Rect::new(0, 0, width, 1);
+        let mut buffer = Buffer::empty(area);
+        Paragraph::new(Line::from(line.to_string())).render(area, &mut buffer);
+        printable_cells(&buffer.content)
+            .map(|(x, c)| (x, c.symbol().to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_wide_graphemes_filler_cell_is_never_drawn() {
+        // A wide grapheme occupies one buffer cell plus a blank filler
+        // (`Cell::reset`) for the column it visually covers. Printing that
+        // filler would advance the terminal an extra column per emoji, so
+        // everything right of it shifts — a table's right border lands off the
+        // grid and wraps (the reported "emoji cuts the table").
+        assert_eq!(
+            drawn("a✅b", 6),
+            vec![
+                (0, "a".to_string()),
+                (1, "✅".to_string()),
+                // column 2 is ✅'s filler — the terminal covers it itself.
+                (3, "b".to_string()),
+                (4, " ".to_string()),
+                (5, " ".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn narrow_graphemes_are_all_drawn() {
+        // The common case is untouched: every cell of an all-ASCII row is sent.
+        assert_eq!(
+            drawn("ab", 3),
+            vec![
+                (0, "a".to_string()),
+                (1, "b".to_string()),
+                (2, " ".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn back_to_back_wide_graphemes_each_skip_one_filler() {
+        // Two adjacent emoji: columns 1 and 3 are fillers, so the run is drawn
+        // at 0 and 2 — and the trailing pad keeps its own columns.
+        assert_eq!(
+            drawn("✅✅x", 6),
+            vec![
+                (0, "✅".to_string()),
+                (2, "✅".to_string()),
+                (4, "x".to_string()),
+                (5, " ".to_string()),
+            ]
+        );
+    }
 
     #[test]
     fn keyboard_enhancement_is_on_by_default() {

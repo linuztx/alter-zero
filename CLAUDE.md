@@ -748,7 +748,14 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   reserves the band and footer so the cursor stays put when they open; `tool_lines`
   and `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
-  never `chars().count()` — so CJK/emoji wrap and pad correctly.
+  never `chars().count()` — so CJK/emoji wrap and pad correctly. Measuring right
+  is only half of it: a **wide grapheme occupies one `Buffer` cell plus a blank
+  filler** for the column it covers, and ratatui only skips that filler inside
+  `Buffer::diff`. Any draw path that hands cells to `Backend::draw` directly
+  (`term::draw_lines`, `term::blit`) must filter through
+  `term::printable_cells` — printing the filler spends a third column on a
+  two-column glyph, shifting the rest of the row (the emoji that tore a table's
+  right border off the grid; `docs/table-streaming.md`).
 - **The input line is a `textarea::TextArea`, not a `String`.** Route all editing
   through it (`insert_char`/`delete_backward`/`move_*`/`take`/…), never raw string
   `push`/`pop`; read it with `.text()`. Its cursor is a byte offset on a grapheme

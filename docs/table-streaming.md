@@ -29,15 +29,10 @@ user watches it form in the live region the whole time.**
   and the block renders **whole** when it closes — a non-table line, an
   interrupting code fence, or end-of-message (`flush`). Column widths come from
   the header **and every data row** (`table_column_widths` →
-  `allocate_column_widths`), so the grid always fits its real content: wide
-  terminal → a tight natural grid; narrow → the overflow is taken from the
-  **widest column first** (ties leveled leftmost-first, floored at
-  `TABLE_MIN_COL`), so a short cell (`facebook.com`, a `Packets` header) keeps
-  its natural width and the wrapping lands on the genuinely wide content (a
-  33-column IPv6, a long description) — codex's fit; cells word-wrap into the
-  allocated widths (taller rows, never `…`). The old proportional shrink
-  starved *every* column when one was huge, breaking short words mid-cell.
-  The grid-vs-records decision (below) is made from the same full knowledge.
+  `allocate_column_widths`, see "Fitting the columns" below), so the grid always
+  fits its real content; cells word-wrap into the allocated widths (taller rows,
+  never `…`). The grid-vs-records decision (below) is made from the same full
+  knowledge.
 - **Grid style**: Claude Code's full grid — every data row is framed, with a
   `├──┼──┤` rule between consecutive rows (not just under the header), so each
   cell reads as its own box.
@@ -56,6 +51,64 @@ The preview generalizes from "the last rendered row" (one row) to "the batch
 render's uncommitted tail" (n rows) only while a table is open; prose, code, and
 every other construct keep the old single-row preview. A running tool's cell
 already previews multi-row, so the strip machinery was ready for this.
+
+## Fitting the columns (`allocate_column_widths`)
+
+Given each column's `natural` width (its widest cell) and `word` width (its
+widest single unbreakable word — `natural_word_widths`, tokenized exactly as
+`wrap_inline` will break it), three cases in order:
+
+1. **The natural grid fits.** Return it. The table stays as narrow as its
+   content instead of stretching to the terminal — Claude Code's look.
+2. **It overflows, but every column's word-safe floor fits.** Seat each column
+   at `min(natural, word)` — the width it needs to wrap at *spaces* only — then
+   split the surplus in proportion to each column's **unmet demand**
+   (`natural - floor`), largest-remainder so the columns fill the budget
+   exactly.
+3. **Even the floors overflow.** Some token has to hard-break, so level the
+   **widest** column down one display column at a time (ties leftmost-first,
+   floored at `TABLE_MIN_COL` — `level_widest_columns`): a short cell
+   (`facebook.com`, a `Packets` header) keeps its natural width for as long as
+   possible. A proportional shrink here starves *every* column at once and
+   breaks short words mid-cell (an earlier bug).
+
+Case 2 is what makes a table read like Claude Code's, and it replaced
+levelling-the-widest as the *general* fit. The reported screenshot is why:
+`| Check | Result |` where the Check column's natural width is set by ONE
+outlier (`cargo clippy --all-targets -- -D warnings`, 40 columns) while its
+other cells are ≤ 17, and Result holds a ~104-column value. Levelling gave
+[35, 36] — 18 columns of Check wasted on every other row while Result was
+starved into four wrapped rows. Word-safe floors are [13, 18], so the surplus
+splits 27:86 and the grid comes out [23, 48]: Result gets the room, matching
+Claude Code's layout for the same table. It also fixes the ping-summary shape
+more honestly than levelling did — a column holding one unbreakable 33-column
+IPv6 has that as its floor, so the overflow now comes from a column that can
+give way at a space instead of shattering the address mid-token.
+
+## Wide graphemes: the emoji that cut the table
+
+A ✅ is **two** terminal columns. Every width in the grid already measured it
+that way (`cols()` → `unicode-width`), so the rendered rows were correct — and
+yet an emoji row on screen came out one column wider *per emoji*, stepping its
+right border out of line and, on a table that filled the width, wrapping the
+border onto its own row. The reported "emoji cuts the table".
+
+The cause was one layer down, in the draw paths. ratatui's `Buffer` stores a
+wide grapheme in a **single** cell and resets the cell it visually covers to a
+blank filler (`Buffer::set_stringn`); its own `Buffer::diff` then *skips* that
+filler — the backend prints the grapheme once and the terminal advances the
+second column by itself. But `term::draw_lines` (scrollback) and `term::blit`
+(a full live-region repaint) hand cells to `Backend::draw` **without** going
+through `diff`, so they printed the filler as a space: three columns spent on a
+two-column glyph. `term::printable_cells` is the missing skip — it walks a row
+and drops the `cell_width - 1` cells after each wide grapheme, measuring with
+ratatui's own `CellWidth` so the reservation and the skip can never disagree.
+(The incremental `prev.diff(buf)` path was always correct, which is why the
+forming table sometimes looked right and sometimes didn't.)
+
+This was never table-specific — every emoji and every CJK character in prose
+was drawn a column too wide too (a doubled space after `✅`). A table just
+makes it visible, because a grid has a right edge to tear.
 
 ### Why this is prefix-stable by construction
 
@@ -219,8 +272,24 @@ render fallback keep the old single-row behaviour), and the strip's
   `committed + preview` to be the *whole* batch render).
 - `preview_never_shows_a_committed_row_while_streaming` — unchanged property,
   now over every preview row.
-- The pure helpers keep their tests (`allocate_column_widths_*`,
-  `table_cells_wrap_*`, records deciders/renderers, `table_content_rows_*`).
+- The fit: `allocate_column_widths_spends_the_surplus_where_the_content_is`
+  (the screenshot's shape → [23, 48], not a levelled [35, 36]),
+  `allocate_column_widths_wraps_words_before_shattering_a_token` (the ping
+  table keeps its IPv6 whole), `allocate_column_widths_levels_the_widest_when_no_floor_fits`
+  (the case-3 fallback), `allocate_column_widths_keeps_a_grid_that_fits_natural`,
+  and end-to-end `assistant_table_gives_the_content_heavy_column_the_room`.
+- Wide graphemes: `emoji_table_rows_all_end_at_the_same_column` — every grid row
+  of an emoji/CJK table is the same width at five widths — plus
+  `term::tests::a_wide_graphemes_filler_cell_is_never_drawn` and its siblings
+  (`narrow_graphemes_are_all_drawn`,
+  `back_to_back_wide_graphemes_each_skip_one_filler`) pinning
+  `printable_cells`. The boundary half is `smoke.sh` Phase 41: the dummy's demo
+  table now carries ✅/❌ status cells and the phase asserts **every** grid row
+  on screen is the same display width. Pre-fix that check reports
+  `[1 65 69 71 72 78]` — the emoji rows' right border torn off and wrapped onto
+  a row of its own.
+- The other pure helpers keep their tests (`table_cells_wrap_*`, records
+  deciders/renderers, `table_content_rows_*`).
 
 ## What's unchanged
 
@@ -230,4 +299,7 @@ any open table first). Detection is still `markdown::is_table_row` /
 Cells are still inline-parsed and columns sized to *rendered* widths
 (`docs/markdown.md`). Verified end-to-end against a real model via OpenRouter:
 the issue's weather table streams as a live forming grid and commits with
-columns fit to every row; a fenced one renders as code.
+columns fit to every row; a fenced one renders as code. The emoji table from the
+report was re-driven the same way — pre-fix its emoji rows measured 29 terminal
+columns against the borders' 28, post-fix every row measures 28, and a
+20-row ✅/❌ table previews in the strip with its grid intact while forming.
