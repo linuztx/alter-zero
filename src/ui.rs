@@ -1966,8 +1966,14 @@ fn table_border_row(col_w: &[usize], left: char, mid: char, right: char) -> Vec<
 /// (which hard-breaks an over-wide token grapheme-by-grapheme, like codex/img2).
 /// Returns as many rows as the tallest wrapped cell — so a data row spans several
 /// rows when its cells wrap — each `│`-framed with single-space margins, its
-/// styled segments padded/aligned per column, blank where a shorter cell has no
-/// line for that row.
+/// styled segments padded/aligned per column.
+///
+/// A cell shorter than the row is **centred vertically** in it (Claude Code's
+/// look): beside a neighbour that wrapped to three rows, a one-line cell sits on
+/// the middle row rather than the top, so the two read as one record. The
+/// leading blank rows round down, so a one-line cell in a two-row row stays on
+/// top (`(height - lines) / 2`, matching how [`pad_cell_line`] rounds its
+/// horizontal centring).
 fn table_row_lines(
     cells: &[Vec<(String, Style)>],
     col_w: &[usize],
@@ -1985,7 +1991,14 @@ fn table_row_lines(
             let mut spans = vec![Span::styled("│".to_string(), border)];
             for (i, cell_rows) in wrapped.iter().enumerate() {
                 spans.push(Span::raw(" "));
-                let line = cell_rows.get(r).cloned().unwrap_or_default();
+                // Where this cell's own rows start, so a short cell is centred
+                // in the row instead of hugging its top.
+                let top = height.saturating_sub(cell_rows.len()) / 2;
+                let line = r
+                    .checked_sub(top)
+                    .and_then(|k| cell_rows.get(k))
+                    .cloned()
+                    .unwrap_or_default();
                 spans.extend(pad_cell_line(line, col_w[i], aligns[i]));
                 spans.push(Span::raw(" "));
                 spans.push(Span::styled("│".to_string(), border));
@@ -2053,10 +2066,25 @@ fn table_open_rows(
 ) -> Vec<Vec<Span<'static>>> {
     let header_style = Style::new().add_modifier(Modifier::BOLD);
     let header_cells = normalize_row(header, aligns.len(), header_style);
+    let header_aligns: Vec<markdown::Alignment> =
+        aligns.iter().copied().map(header_align).collect();
     let mut out = vec![table_border_row(col_w, '┌', '┬', '┐')];
-    out.extend(table_row_lines(&header_cells, col_w, aligns));
+    out.extend(table_row_lines(&header_cells, col_w, &header_aligns));
     out.push(table_border_row(col_w, '├', '┼', '┤'));
     out
+}
+
+/// How a **header** cell aligns given the column's delimiter `align`: centred
+/// when the delimiter declared nothing (Claude Code's look — a centred label
+/// over left-aligned data reads as a column heading rather than a first row),
+/// otherwise the alignment the author actually asked for. Only the default
+/// changes; a declared `:--`/`:-:`/`--:` still wins, since a markdown renderer
+/// must not discard stated intent.
+fn header_align(align: markdown::Alignment) -> markdown::Alignment {
+    match align {
+        markdown::Alignment::None => markdown::Alignment::Center,
+        declared => declared,
+    }
 }
 
 /// The bold header style shared by grid header cells and record labels.
@@ -7062,6 +7090,103 @@ mod tests {
     }
 
     #[test]
+    fn table_header_cells_center_by_default() {
+        // Claude Code's look: a header cell is CENTERED in its column, while the
+        // data below it stays left-aligned. The delimiter here declares no
+        // alignment (`|---|`), which is the common case a model emits.
+        let lines: Vec<String> = [
+            "| Check | Result |",
+            "|-------|--------|",
+            "| cargo fmt | ok |",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert_eq!(
+            rows_text(&table_content_rows(&lines, 80)),
+            vec![
+                "┌───────────┬────────┐",
+                "│   Check   │ Result │",
+                "├───────────┼────────┤",
+                "│ cargo fmt │ ok     │",
+                "└───────────┴────────┘",
+            ]
+        );
+    }
+
+    #[test]
+    fn table_header_keeps_an_explicitly_declared_alignment() {
+        // Centering is only the *default* (`Alignment::None`). When the author
+        // declared an alignment with colons, the header honours it — a markdown
+        // renderer must not throw away stated intent.
+        let lines: Vec<String> = ["| head | x |", "| :--- | ---: |", "| a longer cell | y |"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let rows = rows_text(&table_content_rows(&lines, 80));
+        assert_eq!(
+            rows[1], "│ head          │ x │",
+            "an explicit `:---` keeps the header left: {rows:#?}"
+        );
+    }
+
+    #[test]
+    fn table_row_centers_a_short_cell_against_a_wrapped_one() {
+        // Claude Code centres a row's cells VERTICALLY: beside a cell that wrapped
+        // to three rows, a one-line cell sits on the middle row, not the top.
+        let cells = vec![
+            table_cell_segments("one two three", Style::default()),
+            table_cell_segments("x", Style::default()),
+        ];
+        let rows = table_row_lines(
+            &cells,
+            &[5, 3],
+            &[markdown::Alignment::None, markdown::Alignment::None],
+        );
+        assert_eq!(
+            rows_text(&rows),
+            vec!["│ one   │     │", "│ two   │ x   │", "│ three │     │"]
+        );
+    }
+
+    #[test]
+    fn assistant_table_centers_headers_and_short_cells_like_claude_code() {
+        // The reported screenshot, end to end: `Check`/`Result` centred in their
+        // columns, and a one-line cell vertically centred beside its wrapped
+        // neighbour — so `✅ pass (exit 0)` shares a row with `--all-targets`
+        // (the middle of the three) rather than sitting at the top, and
+        // `cargo test` shares a row with the middle line of its Result cell.
+        let text = "| Check | Result |\n\
+                    |-------|--------|\n\
+                    | `cargo fmt --check` | ✅ clean |\n\
+                    | `cargo clippy --all-targets -- -D warnings` | ✅ pass (exit 0) |\n\
+                    | `cargo test` | ✅ all tests pass, 0 failures (23 live-API tests \
+                    skipped — need `OPENROUTER_API_KEY` / `A0_VENICE_API_KEY`) |";
+        let rows: Vec<String> = message_lines(Role::Assistant, text, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        let header = rows
+            .iter()
+            .find(|r| r.contains("Check") && r.contains("Result"))
+            .expect("a header row");
+        assert!(
+            header.starts_with("● │   ") || header.starts_with("  │   "),
+            "the header cell is centred, not flush left: {header:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("--all-targets") && r.contains("✅ pass (exit 0)")),
+            "the one-line Result cell sits on the middle row of its neighbour: {rows:#?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|r| r.contains("cargo test") && r.contains("skipped — need")),
+            "`cargo test` sits on the middle row of its Result cell: {rows:#?}"
+        );
+    }
+
+    #[test]
     fn table_content_rows_aligns_per_delimiter() {
         // Left, right, and center alignment from the delimiter colons.
         let lines: Vec<String> = ["| a | b | c |", "| :-- | --: | :-: |", "| x | yy | zzz |"]
@@ -7711,7 +7836,8 @@ mod tests {
     #[test]
     fn assistant_message_renders_a_table_inline() {
         // A table inside a reply: bullet on the first row, the grid indented under
-        // it, an interior blank kept between the prose and the table.
+        // it, an interior blank kept between the prose and the table. The header
+        // labels are centred over their left-aligned data (`header_align`).
         let text = "Here:\n\n| Name | Type |\n|------|------|\n| Alpha | String |";
         let rows: Vec<String> = message_lines(Role::Assistant, text, 40)
             .iter()
@@ -7723,7 +7849,7 @@ mod tests {
                 "● Here:",
                 "  ",
                 "  ┌───────┬────────┐",
-                "  │ Name  │ Type   │",
+                "  │ Name  │  Type  │",
                 "  ├───────┼────────┤",
                 "  │ Alpha │ String │",
                 "  └───────┴────────┘",

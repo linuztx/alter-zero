@@ -35,7 +35,19 @@ user watches it form in the live region the whole time.**
   knowledge.
 - **Grid style**: Claude Code's full grid — every data row is framed, with a
   `├──┼──┤` rule between consecutive rows (not just under the header), so each
-  cell reads as its own box.
+  cell reads as its own box. Two placement rules finish the look (both visible in
+  the reported screenshot):
+  - **Headers centre.** A header cell is centred in its column when the
+    delimiter declared no alignment — `ui::header_align` maps
+    `Alignment::None` → `Center` — so a centred label sits over left-aligned
+    data and reads as a column heading rather than a first row. A *declared*
+    `:--`/`:-:`/`--:` still wins for the header too: the default changes, stated
+    intent doesn't.
+  - **Short cells centre vertically.** `table_row_lines` seats each cell's rows
+    at `(height - lines) / 2` inside the row, so beside a neighbour that wrapped
+    to three rows a one-line cell lands on the **middle** row and the two read as
+    one record. Rounding down means a one-line cell in a two-row row stays on
+    top, matching how `pad_cell_line` rounds its horizontal centring.
 - **Streaming**: while the block is open, nothing of it commits to scrollback
   (scrollback is immutable; a committed row can't be re-widened). Instead the
   streaming **strip previews the entire forming table** — `StreamRender::preview`
@@ -337,6 +349,13 @@ render fallback keep the old single-row behaviour), and the strip's
   catches a fix that covered `draw_lines`/`blit` but not `draw_overlay`. Against
   the unfixed emitters the inline check reports `[1 65 69 71 72 78]` (the torn
   border wrapped onto its own row) and the overlay check `[65 69 71 72 78]`.
+- Placement: `table_header_cells_center_by_default`,
+  `table_header_keeps_an_explicitly_declared_alignment` (a `:---` column stays
+  left), `table_row_centers_a_short_cell_against_a_wrapped_one` (the one-liner
+  lands on the middle of three rows), and end-to-end
+  `assistant_table_centers_headers_and_short_cells_like_claude_code` — the
+  screenshot's table, asserting `✅ pass (exit 0)` shares a row with
+  `--all-targets` and `cargo test` with the middle line of its Result cell.
 - The other pure helpers keep their tests (`table_cells_wrap_*`, records
   deciders/renderers, `table_content_rows_*`).
 

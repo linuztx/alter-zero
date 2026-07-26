@@ -324,13 +324,21 @@ render as bullets with a checkbox.
 **In — GFM pipe tables.** A header row, a **delimiter** row (`|---|:-:|`, its
 column count + alignments govern the grid), and data rows render as a box-drawing
 grid (dim borders, bold header cells, per-column alignment, a `├──┼──┤` rule
-between every row — Claude Code's full grid). The block is
+between every row — Claude Code's full grid). Two touches complete that look: a
+**header cell centres** in its column when the delimiter declared no alignment
+(`ui::header_align` — a declared `:--`/`:-:`/`--:` still wins, so stated intent
+survives), and a cell shorter than its row is **centred vertically** in it, so a
+one-line value sits on the middle row of a neighbour that wrapped to three
+rather than hugging its top. The block is
 **buffered whole** and renders when it closes, with column widths fit to the
-header **and every data row** — so a wide later row can never shatter the grid —
-and a grid that overflows the width shrinks its **widest column first** (codex's
-fit: short cells keep their natural width, the wrapping lands on the wide
-content), cells **word-wrapping** into the allocated widths (taller rows)
-instead of truncating with `…`. A **hard-wrapped row** — source carrying a
+header **and every data row** — so a wide later row can never shatter the grid.
+When the natural grid overflows the width, each column is first seated at the
+width its longest **word** needs and the surplus split by unmet demand
+(`allocate_column_widths`), so the column with the genuinely long content gets
+the room instead of every column levelling to the same size; only when even
+those floors don't fit does it fall back to shrinking the widest column. Cells
+**word-wrap** into the allocated widths (taller rows) instead of truncating with
+`…`. A **hard-wrapped row** — source carrying a
 line break mid-row, so a pipe-carrying fragment line (`96.4 ms |`) follows its
 leading-pipe row — **re-joins** the row it wrapped from instead of minting a
 phantom one-cell row (`ui::join_wrapped_table_row`, `docs/table-streaming.md`).
