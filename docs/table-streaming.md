@@ -85,7 +85,7 @@ more honestly than levelling did — a column holding one unbreakable 33-column
 IPv6 has that as its floor, so the overflow now comes from a column that can
 give way at a space instead of shattering the address mid-token.
 
-## Wide graphemes: the emoji that cut the table
+## Wide glyphs: the emoji that cut the table
 
 A ✅ is **two** terminal columns. Every width in the grid already measured it
 that way (`cols()` → `unicode-width`), so the rendered rows were correct — and
@@ -93,22 +93,60 @@ yet an emoji row on screen came out one column wider *per emoji*, stepping its
 right border out of line and, on a table that filled the width, wrapping the
 border onto its own row. The reported "emoji cuts the table".
 
-The cause was one layer down, in the draw paths. ratatui's `Buffer` stores a
-wide grapheme in a **single** cell and resets the cell it visually covers to a
-blank filler (`Buffer::set_stringn`); its own `Buffer::diff` then *skips* that
-filler — the backend prints the grapheme once and the terminal advances the
-second column by itself. But `term::draw_lines` (scrollback) and `term::blit`
-(a full live-region repaint) hand cells to `Backend::draw` **without** going
-through `diff`, so they printed the filler as a space: three columns spent on a
-two-column glyph. `term::printable_cells` is the missing skip — it walks a row
-and drops the `cell_width - 1` cells after each wide grapheme, measuring with
-ratatui's own `CellWidth` so the reservation and the skip can never disagree.
-(The incremental `prev.diff(buf)` path was always correct, which is why the
-forming table sometimes looked right and sometimes didn't.)
+The cause was one layer down, at the write boundary. ratatui's `Buffer` stores a
+wide glyph in a **single** cell and resets the cells it visually covers to a
+blank **shadow** (`Buffer::set_stringn`); its own `Buffer::diff` then *skips*
+those shadows — the backend prints the glyph once and the terminal advances the
+remaining columns by itself. But `term.rs`'s hand-rolled full-cell paints hand
+cells to `Backend::draw` **without** going through `diff`, so they printed the
+shadow as a space: three columns spent on a two-column glyph.
 
-This was never table-specific — every emoji and every CJK character in prose
-was drawn a column too wide too (a doubled space after `✅`). A table just
-makes it visible, because a grid has a right edge to tear.
+`term::visible_cells` is the missing skip. It walks the buffer and drops each
+wide cell's `cell_width - 1` followers, measuring with ratatui's own `CellWidth`
+— the same measure `set_stringn` reserved them with, so the reservation and the
+skip can never disagree — clamped to the row so a shadow never crosses a line
+boundary. With the skip, the backend's position check issues an absolute
+`MoveTo` across the gap, so the next glyph lands on its true column however wide
+the terminal actually drew the cluster.
+
+**All three** paints go through it, and that count is the whole point:
+
+| paint | what it draws |
+| --- | --- |
+| `draw_lines` | `insert_before`'s scrollback commits, and `reflow` |
+| `blit` | a full live-region repaint (the forming table's strip) |
+| `draw_overlay` | the alt screen — Ctrl+O transcript, `/resume`, Ctrl+D |
+
+Fixing only the first two leaves the tear alive in the Ctrl+O transcript, the
+one view you open to read a table in full: measured at 80 columns, its emoji
+rows came out 29 against the borders' 28. `smoke.sh` Phase 41 therefore checks
+the inline pane **and** the overlay. (The incremental `prev.diff(buf)` path was
+always correct, which is why the live region sometimes looked right and
+sometimes didn't.)
+
+One targeted exception, ported from `Buffer::diff`'s VS16 workaround: terminals
+disagree on the width of an emoji **presentation sequence** (`…U+FE0F`), so on
+one that draws it narrow a skipped shadow could keep stale screen content
+visible beside the glyph. For a VS16-bearing wide cell the shadow cells are
+emitted **first** — scrubbing what the glyph may not cover — then the glyph
+itself, last, so it lands whole on the terminals that do render it wide. This is
+insurance rather than a fix for anything reproducible here: measured via cursor
+position, tmux 3.6b draws ⚠️ at two columns, agreeing with `unicode-width`.
+
+This was never table-specific — every emoji and CJK character in prose was drawn
+a column too wide too (the doubled space after `✅`). A table just makes it
+visible, because a grid has a right edge to tear.
+
+### The limit: clusters the terminal measures differently
+
+The skip keeps our model and the terminal in step only where they agree on the
+cluster's width. They mostly do — measured against tmux 3.6b, `✅ ❌ ⚠️ 🇵🇭 世
+👍🏽 1️⃣` are all two columns, exactly what `cols()` reports. A **ZWJ sequence** is
+the exception: `👨‍👩‍👧‍👦` is 2 columns to `unicode-width` and 4 to tmux, so a
+table row holding one still drifts. Nothing in the app can fix that — the width
+of a ZWJ sequence is not portable, and Claude Code has the same limit — which is
+why `cols_measures_emoji_clusters_as_two_columns` pins the policy we *do*
+control rather than pretending to solve it.
 
 ### Why this is prefix-stable by construction
 
@@ -278,16 +316,27 @@ render fallback keep the old single-row behaviour), and the strip's
   table keeps its IPv6 whole), `allocate_column_widths_levels_the_widest_when_no_floor_fits`
   (the case-3 fallback), `allocate_column_widths_keeps_a_grid_that_fits_natural`,
   and end-to-end `assistant_table_gives_the_content_heavy_column_the_room`.
-- Wide graphemes: `emoji_table_rows_all_end_at_the_same_column` — every grid row
-  of an emoji/CJK table is the same width at five widths — plus
-  `term::tests::a_wide_graphemes_filler_cell_is_never_drawn` and its siblings
-  (`narrow_graphemes_are_all_drawn`,
-  `back_to_back_wide_graphemes_each_skip_one_filler`) pinning
-  `printable_cells`. The boundary half is `smoke.sh` Phase 41: the dummy's demo
-  table now carries ✅/❌ status cells and the phase asserts **every** grid row
-  on screen is the same display width. Pre-fix that check reports
-  `[1 65 69 71 72 78]` — the emoji rows' right border torn off and wrapped onto
-  a row of its own.
+- Wide glyphs, the `ui` side: `emoji_table_rows_all_end_at_the_same_column`
+  (every grid row of an emoji/CJK table is the same width at five widths),
+  `table_rows_with_mixed_emoji_clusters_render_the_same_width` (one grid mixing
+  VS16, ZWJ and skin-tone clusters), and
+  `cols_measures_emoji_clusters_as_two_columns` — the dependency-regression
+  guard pinning the two-column policy across seven cluster kinds, since all the
+  column math rests on it.
+- Wide glyphs, the `term` side: six tests pin `visible_cells` —
+  `visible_cells_skips_the_cells_shadowed_by_a_wide_glyph`,
+  `..._skips_the_shadow_of_every_wide_cluster_kind` (CJK, a ZWJ family, a
+  halfwidth-katakana dakuten pair), `visible_cells_emits_every_cell_of_a_narrow_row`,
+  `back_to_back_wide_glyphs_each_skip_one_shadow`,
+  `visible_cells_scrubs_then_redraws_a_vs16_shadow` (the emission *order*), and
+  `visible_cells_shadow_stays_in_its_row_and_the_origin_offsets` (the row clamp
+  + `blit`'s area offset).
+- The boundary half is `smoke.sh` Phase 41: the dummy's demo table carries ✅/❌
+  status cells, and the phase asserts every grid row is the same display width
+  in the inline pane **and** in the Ctrl+O overlay — the second check is what
+  catches a fix that covered `draw_lines`/`blit` but not `draw_overlay`. Against
+  the unfixed emitters the inline check reports `[1 65 69 71 72 78]` (the torn
+  border wrapped onto its own row) and the overlay check `[65 69 71 72 78]`.
 - The other pure helpers keep their tests (`table_cells_wrap_*`, records
   deciders/renderers, `table_content_rows_*`).
 

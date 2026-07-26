@@ -250,7 +250,7 @@ const DUMMY_PING_FAIL: &str = "ping: cannot resolve x.invalid: Unknown host\nexi
 ///
 /// The emoji make it the **emoji-table** shape too: a wide grapheme costs two
 /// terminal columns, so a mismeasured one tears the grid's right border out of
-/// line — the reported "emoji cuts the table" (`term::printable_cells`,
+/// line — the reported "emoji cuts the table" (`term::visible_cells`,
 /// docs/table-streaming.md), which the smoke suite guards by asserting every
 /// grid row is the same width.
 const DUMMY_TABLE_REPLY: &str = "Here's a table with data that uses backticks:\n\n\

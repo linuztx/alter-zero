@@ -7816,12 +7816,60 @@ mod tests {
     }
 
     #[test]
+    fn cols_measures_emoji_clusters_as_two_columns() {
+        // The Claude-Code / string-width policy, delivered by unicode-width 0.2:
+        // every emoji cluster — a VS16 presentation pair, a ZWJ sequence, a
+        // skin-tone modifier, a flag, a keycap — is TWO columns, matching how
+        // modern terminals draw them. All the table column math (natural widths,
+        // allocation, cell padding) rests on this, so a dependency regression
+        // here would shatter emoji grids again.
+        for (cluster, what) in [
+            ("✅", "EAW-wide check mark"),
+            ("⚠\u{FE0F}", "VS16 emoji-presentation pair"),
+            ("👍🏽", "skin-tone modifier sequence"),
+            ("👨\u{200D}👩\u{200D}👧\u{200D}👦", "family ZWJ sequence"),
+            ("🇵🇭", "regional-indicator flag pair"),
+            ("1\u{FE0F}\u{20E3}", "keycap sequence"),
+            ("❤\u{FE0F}\u{200D}🔥", "ZWJ sequence over a VS16 base"),
+        ] {
+            assert_eq!(cols(cluster), 2, "{what}: {cluster:?}");
+        }
+    }
+
+    #[test]
+    fn table_rows_with_mixed_emoji_clusters_render_the_same_width() {
+        // Every rendered row — borders and content rows alike — spans the same
+        // display columns whatever mix of clusters the cells hold, so the `│`
+        // seams line up.
+        let lines: Vec<String> = [
+            "| Status | Name | Note |",
+            "| --- | --- | --- |",
+            "| ✅ | build | emoji cell |",
+            "| ⚠\u{FE0F} | lint 🔥 | mixed 👍🏽 emoji |",
+            "| 👨\u{200D}👩\u{200D}👧\u{200D}👦 | family | ZWJ cluster |",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let rows = table_content_rows(&lines, 60);
+        assert!(rows.len() > 5, "a full grid renders: {rows:?}");
+        let widths: Vec<usize> = rows
+            .iter()
+            .map(|r| r.iter().map(|s| cols(&s.content)).sum())
+            .collect();
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "every grid row spans the same columns: {widths:?}"
+        );
+    }
+
+    #[test]
     fn emoji_table_rows_all_end_at_the_same_column() {
         // A 2-column-wide grapheme must be measured as two columns everywhere —
         // the cell's natural width, its wrap, and its pad — so an emoji row is
         // exactly as wide as a border row. (The terminal-side half of this bug
         // was the wide-grapheme filler cell the draw paths used to print, see
-        // `term::printable_cells`.)
+        // `term::visible_cells`.)
         let text = "| Check | Result |\n\
                     |-------|--------|\n\
                     | fmt | ✅ clean |\n\

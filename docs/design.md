@@ -899,6 +899,28 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
   never shows a half-painted frame or the cursor mid-flight — the same trick codex
   wraps its draws in (terminals without 2026 ignore the markers). `draw_overlay`
   brackets its full-screen paint the same way.
+- Every full-cell paint — `insert_before`'s scrollback writes and `reflow`
+  (`draw_lines`), `draw`'s live-region blit, `draw_overlay`'s alt-screen frames
+  — goes through **`visible_cells`**, the pure emitter that skips the cells
+  **shadowed by a wide glyph** (the blank continuation cells the buffer resets
+  behind an emoji/CJK cluster). Emitting those sequentially printed their `" "`
+  one column *past* the glyph — the terminal's cursor had already advanced the
+  glyph's full width — shifting the rest of the row right by one per wide glyph:
+  every `│` seam misaligned, and a full-width table row pushed past the terminal
+  edge wrapped, "cutting" the grid whenever a cell held an emoji. (ratatui's own
+  `Terminal` never emits them: `Buffer::diff` skips shadowed cells, so the
+  hand-rolled full paints must too.) With the skip the backend's position check
+  issues an absolute `MoveTo` across the gap, so the next glyph lands on its true
+  column no matter how wide the terminal drew the cluster. All **three** paints
+  matter: covering only `draw_lines`/`blit` left the Ctrl+O transcript tearing on
+  its own. One targeted exception, ported from `Buffer::diff`'s VS16 workaround:
+  for an emoji **presentation sequence** (`…U+FE0F`) the shadow cells are emitted
+  *first*, scrubbing stale content the glyph may not cover on terminals that draw
+  it narrow, then the glyph last so it lands whole on the ones that draw it wide.
+  `visible_cells` is one of `term.rs`'s pure, unit-tested corners (the emission
+  order is asserted directly); the end-to-end rendering is smoke-covered
+  (Phase 41, inline pane *and* overlay). See `docs/table-streaming.md`
+  (*Wide glyphs*).
 - `set_view_height(height)` — reseat the tracked viewport height *without*
   redrawing. `insert_before` reserves `view.height` rows *below* the lines it
   commits (to keep the box on screen), and the streaming strip (preview + gap +
@@ -941,7 +963,9 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
     (`smoke.sh` Phases 16 and 17).
 
 `term.rs` is, like `main.rs`, an I/O boundary verified via `scripts/smoke.sh`
-rather than unit tests; all the geometry it consumes is pure and tested in `ui`.
+rather than unit tests; all the geometry it consumes is pure and tested in `ui`,
+and its own pure corners — the `visible_cells` wide-glyph emitter, the
+`keyboard_enhancement_disabled` predicate — are unit-tested in place.
 
 ## Known limitations (v1 — iterate later)
 

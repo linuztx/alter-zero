@@ -42,7 +42,9 @@ cross-session input-history file — `main.rs::InputHistoryStore`, whose JSONL
 format/parse core is the pure `history` module, `docs/history-persistence.md`) — verified via `scripts/smoke.sh`, not
 unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
-`docs/shift-enter.md`); `frame`'s async scheduler **task** is smoke-covered too
+`docs/shift-enter.md` — or its `visible_cells` cell emitter, which skips the
+cells shadowed by a wide emoji/CJK glyph so painted rows never drift — see
+`docs/table-streaming.md` *Wide glyphs*); `frame`'s async scheduler **task** is smoke-covered too
 (its rate-limit/coalesce math is unit-tested). Keep logic out of the boundary;
 the geometry *policy* `term.rs` acts on — live-region height, the box's re-pin,
 the cursor seat — comes from pure `ui` helpers it calls (`ui::live_height`,
@@ -749,13 +751,15 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   and `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly. Measuring right
-  is only half of it: a **wide grapheme occupies one `Buffer` cell plus a blank
-  filler** for the column it covers, and ratatui only skips that filler inside
-  `Buffer::diff`. Any draw path that hands cells to `Backend::draw` directly
-  (`term::draw_lines`, `term::blit`) must filter through
-  `term::printable_cells` — printing the filler spends a third column on a
-  two-column glyph, shifting the rest of the row (the emoji that tore a table's
-  right border off the grid; `docs/table-streaming.md`).
+  is only half of it: a **wide glyph occupies one `Buffer` cell plus a blank
+  shadow** for each column it covers, and ratatui only skips those shadows inside
+  `Buffer::diff`. **Every** paint that hands cells to `Backend::draw` directly
+  must go through `term::visible_cells` — there are three (`draw_lines` for
+  scrollback + `reflow`, `blit` for the live region, `draw_overlay` for the alt
+  screen), and missing any one leaves the bug alive in that view alone. Printing
+  a shadow spends a third column on a two-column glyph, shifting the rest of the
+  row: the emoji that tore a table's right border off the grid
+  (`docs/table-streaming.md` *Wide glyphs*, `smoke.sh` Phase 41).
 - **The input line is a `textarea::TextArea`, not a `String`.** Route all editing
   through it (`insert_char`/`delete_backward`/`move_*`/`take`/…), never raw string
   `push`/`pop`; read it with `.text()`. Its cursor is a byte offset on a grapheme

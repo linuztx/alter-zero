@@ -43,6 +43,7 @@
 //! [`draw`]: InlineViewport::draw
 //! [`reflow`]: InlineViewport::reflow
 
+use std::collections::VecDeque;
 use std::io::{self, Stdout, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -660,11 +661,7 @@ impl InlineViewport {
         let mut buf = Buffer::empty(self.screen);
         render(self.screen, &mut buf);
         let width = self.screen.width as usize;
-        let iter = buf
-            .content
-            .iter()
-            .enumerate()
-            .map(|(i, c)| ((i % width) as u16, (i / width) as u16, c));
+        let iter = visible_cells(&buf.content, width, Position::new(0, 0));
         // Atomic frame (see `draw`): the overlay swaps in one shot, so scrolling it
         // never tears.
         queue!(self.backend, BeginSynchronizedUpdate)?;
@@ -773,13 +770,9 @@ impl InlineViewport {
     fn draw_lines<'a>(&mut self, y: u16, n: u16, cells: &'a [Cell]) -> io::Result<&'a [Cell]> {
         let width = self.screen.width as usize;
         let (head, tail) = cells.split_at(width * n as usize);
-        if n > 0 && width > 0 {
-            // Row by row so a wide grapheme's filler can never be skipped
-            // across a line break ([`printable_cells`]).
-            let iter = head.chunks(width).enumerate().flat_map(|(row, cells)| {
-                printable_cells(cells).map(move |(x, c)| (x, y + row as u16, c))
-            });
-            self.backend.draw(iter)?;
+        if n > 0 {
+            self.backend
+                .draw(visible_cells(head, width, Position::new(0, y)))?;
         }
         Ok(tail)
     }
@@ -793,46 +786,81 @@ impl InlineViewport {
         if width == 0 {
             return Ok(());
         }
-        let iter = buffer
-            .content
-            .chunks(width)
-            .enumerate()
-            .flat_map(|(row, cells)| {
-                printable_cells(cells).map(move |(x, c)| (area.x + x, area.y + row as u16, c))
-            });
-        self.backend.draw(iter)
+        self.backend.draw(visible_cells(
+            &buffer.content,
+            width,
+            Position::new(area.x, area.y),
+        ))
     }
 }
 
-/// One screen row's `cells` filtered down to those the backend must actually
-/// print, each paired with its column.
+/// The cells of a rendered buffer that should actually reach the terminal: each
+/// `width`-column row's cells at their `origin`-offset coordinates, **minus the
+/// cells shadowed by a preceding wide glyph** — the blank continuation cells
+/// `Buffer::set_stringn` resets behind an emoji/CJK cluster (a glyph's
+/// `cell_width - 1` followers).
 ///
-/// A wide grapheme (emoji, CJK) lives in a **single** buffer cell; the cells it
-/// visually covers are reset to a blank filler by `Buffer::set_stringn`.
-/// ratatui's own `Buffer::diff` skips those fillers — the backend prints the
-/// grapheme once and the terminal advances the extra columns by itself. Both of
-/// our draw paths hand cells to `Backend::draw` *without* going through `diff`
-/// ([`InlineViewport::draw_lines`] for scrollback, [`InlineViewport::blit`] for
-/// a full live-region repaint), so they have to skip the fillers themselves:
-/// printing one costs the terminal an extra column, shifting everything right
-/// of the grapheme. In prose that reads as a doubled space; in a table it
-/// pushes the row's remaining cells — the right border included — one column
-/// per emoji past the grid, and a full-width row spills onto the next line.
-/// That was the reported "emoji cuts the table" (`docs/table-streaming.md`).
+/// Emitting a shadowed cell prints its `" "` one column PAST the glyph (the
+/// terminal's cursor already advanced the glyph's full width), shifting the rest
+/// of the row right by one per wide glyph — which misaligned every row-final
+/// `│` and pushed full-width table rows past the terminal edge, where the wrap
+/// "cut" the grid whenever a cell held an emoji (`docs/table-streaming.md`).
+/// Skipping them mirrors ratatui's own `Buffer::diff`, whose `Terminal::flush`
+/// never emits shadowed cells: the backend's position check then issues an
+/// absolute `MoveTo` across the gap, so the next glyph lands on its true column
+/// no matter how wide the terminal actually drew the cluster. Widths come from
+/// ratatui's own [`CellWidth`] — the same measure `set_stringn` reserved the
+/// shadows with — so the reservation and the skip can never disagree, and the
+/// shadow is clamped to the row so it never crosses a line boundary.
 ///
-/// Widths come from ratatui's own [`CellWidth`] — the same measure
-/// `set_stringn` reserved the fillers with — so the reservation and the skip
-/// can never disagree. Cheap and allocation-free: the hot path (a keystroke's
-/// live repaint, a streamed line's commit) walks each row once.
-fn printable_cells(row: &[Cell]) -> impl Iterator<Item = (u16, &Cell)> {
-    let mut fillers = 0u16;
-    row.iter().enumerate().filter_map(move |(x, cell)| {
-        if fillers > 0 {
-            fillers -= 1; // a column the previous wide grapheme already covers
-            return None;
+/// One targeted exception, ported from `Buffer::diff`'s VS16 workaround:
+/// terminals disagree on the width of an emoji **presentation sequence**
+/// (`…\u{FE0F}`), so on one that draws it narrow a skipped shadow could keep
+/// stale screen content visible beside the glyph. For a VS16-bearing wide cell
+/// the shadow cells are emitted *first* (scrubbing what the glyph may not
+/// cover — the backend `MoveTo`s them absolutely), then the glyph itself, drawn
+/// last so it lands whole on the terminals that do render it wide.
+///
+/// Shared by **all three** full-cell paints — [`InlineViewport::draw_lines`]
+/// (scrollback commits + `reflow`), [`InlineViewport::blit`] (live-region
+/// repaints), and [`InlineViewport::draw_overlay`] (the alt-screen transcript,
+/// `/resume` picker and Ctrl+D context view). Missing any one of them leaves the
+/// tear alive in that view alone, which is why `smoke.sh` Phase 41 now checks
+/// the inline pane *and* the Ctrl+O overlay.
+fn visible_cells(
+    cells: &[Cell],
+    width: usize,
+    origin: Position,
+) -> impl Iterator<Item = (u16, u16, &Cell)> {
+    let width = width.max(1);
+    let at = move |i: usize| {
+        (
+            origin.x + (i % width) as u16,
+            origin.y + (i / width) as u16,
+            &cells[i],
+        )
+    };
+    let mut i = 0usize;
+    let mut queued: VecDeque<usize> = VecDeque::new(); // emission order, by index
+    std::iter::from_fn(move || {
+        loop {
+            if let Some(j) = queued.pop_front() {
+                return Some(at(j));
+            }
+            if i >= cells.len() {
+                return None;
+            }
+            let cell = &cells[i];
+            let col = i % width;
+            let shadow = (cell.symbol().cell_width() as usize)
+                .saturating_sub(1)
+                .min(width - 1 - col);
+            if shadow > 0 && cell.symbol().contains('\u{FE0F}') {
+                queued.extend(i + 1..=i + shadow); // scrub the shadow first…
+            }
+            queued.push_back(i); // …then the glyph itself (or the lone cell)
+            i += 1 + shadow;
         }
-        fillers = cell.symbol().cell_width().saturating_sub(1);
-        Some((x as u16, cell))
     })
 }
 
@@ -900,38 +928,37 @@ fn keyboard_enhancement_disabled(value: Option<&str>) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use ratatui::text::Line;
-    use ratatui::widgets::{Paragraph, Widget};
+    use ratatui::buffer::{Buffer, Cell};
+    use ratatui::layout::{Position, Rect};
+    use ratatui::style::Style;
 
-    use super::{keyboard_enhancement_disabled, printable_cells};
+    use super::{keyboard_enhancement_disabled, visible_cells};
 
-    /// Render `line` into a `width`-wide one-row buffer the way both draw paths
-    /// do, then list the cells [`printable_cells`] would actually send to the
-    /// backend as `(column, symbol)`.
+    /// Render `line` into a `width`-wide one-row buffer the way every full-cell
+    /// paint does, then list what [`visible_cells`] would actually send to the
+    /// backend, as `(column, symbol)` in emission order.
     fn drawn(line: &str, width: u16) -> Vec<(u16, String)> {
-        let area = Rect::new(0, 0, width, 1);
-        let mut buffer = Buffer::empty(area);
-        Paragraph::new(Line::from(line.to_string())).render(area, &mut buffer);
-        printable_cells(&buffer.content)
-            .map(|(x, c)| (x, c.symbol().to_string()))
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
+        buf.set_string(0, 0, line, Style::default());
+        visible_cells(&buf.content, width as usize, Position::new(0, 0))
+            .map(|(x, _, c)| (x, c.symbol().to_string()))
             .collect()
     }
 
     #[test]
-    fn a_wide_graphemes_filler_cell_is_never_drawn() {
-        // A wide grapheme occupies one buffer cell plus a blank filler
-        // (`Cell::reset`) for the column it visually covers. Printing that
-        // filler would advance the terminal an extra column per emoji, so
-        // everything right of it shifts — a table's right border lands off the
-        // grid and wraps (the reported "emoji cuts the table").
+    fn visible_cells_skips_the_cells_shadowed_by_a_wide_glyph() {
+        // A wide glyph occupies one buffer cell plus a reset continuation cell
+        // for the column it covers on screen. Emitting that continuation cell
+        // prints a real space one column PAST the glyph (the terminal's cursor
+        // already advanced two), drifting the rest of the row right — the bug
+        // that misaligned and wrapped ("cut") table rows holding emoji. The
+        // emitter must skip shadowed cells, exactly like `Buffer::diff`.
         assert_eq!(
-            drawn("a✅b", 6),
+            drawn("a🔥b", 6),
             vec![
                 (0, "a".to_string()),
-                (1, "✅".to_string()),
-                // column 2 is ✅'s filler — the terminal covers it itself.
+                (1, "🔥".to_string()),
+                // column 2 is 🔥's shadow — the terminal covers it itself.
                 (3, "b".to_string()),
                 (4, " ".to_string()),
                 (5, " ".to_string()),
@@ -940,8 +967,30 @@ mod tests {
     }
 
     #[test]
-    fn narrow_graphemes_are_all_drawn() {
-        // The common case is untouched: every cell of an all-ASCII row is sent.
+    fn visible_cells_skips_the_shadow_of_every_wide_cluster_kind() {
+        // CJK, a ZWJ family sequence, and a halfwidth-katakana dakuten pair all
+        // occupy two columns per ratatui's `CellWidth` — the measure the buffer
+        // used when it reset the continuation cell — so each shadows exactly the
+        // one cell after it.
+        for glyph in ["你", "👨\u{200D}👩\u{200D}👧\u{200D}👦", "ｶ\u{FF9E}"] {
+            let out = drawn(&format!("{glyph}x"), 6);
+            assert_eq!(out[0].1, glyph, "the cluster survives whole");
+            assert_eq!(
+                out[1],
+                (2, "x".to_string()),
+                "the next emitted cell sits AFTER the shadow: {glyph:?}"
+            );
+            assert!(
+                !out.iter().any(|(x, _)| *x == 1),
+                "the shadowed column is never emitted: {glyph:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn visible_cells_emits_every_cell_of_a_narrow_row() {
+        // The common case is untouched: every cell of an all-ASCII row is sent,
+        // in order, with no gaps for the backend to `MoveTo` across.
         assert_eq!(
             drawn("ab", 3),
             vec![
@@ -953,8 +1002,8 @@ mod tests {
     }
 
     #[test]
-    fn back_to_back_wide_graphemes_each_skip_one_filler() {
-        // Two adjacent emoji: columns 1 and 3 are fillers, so the run is drawn
+    fn back_to_back_wide_glyphs_each_skip_one_shadow() {
+        // Two adjacent emoji: columns 1 and 3 are shadows, so the run is drawn
         // at 0 and 2 — and the trailing pad keeps its own columns.
         assert_eq!(
             drawn("✅✅x", 6),
@@ -964,6 +1013,52 @@ mod tests {
                 (4, "x".to_string()),
                 (5, " ".to_string()),
             ]
+        );
+    }
+
+    #[test]
+    fn visible_cells_scrubs_then_redraws_a_vs16_shadow() {
+        // Terminals disagree on VS16 emoji-presentation width, so the shadowed
+        // cell can be left showing stale screen content on one that draws the
+        // glyph narrow. For a VS16-bearing wide glyph the shadow is emitted
+        // FIRST — scrubbing whatever the glyph won't cover — and the glyph
+        // itself last, whole, over its own column. `Buffer::diff` carries the
+        // same targeted workaround; every other wide cluster keeps the plain
+        // skip (asserted above).
+        assert_eq!(
+            drawn("e⚠\u{FE0F}w", 6),
+            vec![
+                (0, "e".to_string()),
+                (2, " ".to_string()),
+                (1, "⚠\u{FE0F}".to_string()),
+                (3, "w".to_string()),
+                (4, " ".to_string()),
+                (5, " ".to_string()),
+            ],
+            "the scrub space goes out before the glyph, the walk resumes after"
+        );
+    }
+
+    #[test]
+    fn visible_cells_shadow_stays_in_its_row_and_the_origin_offsets() {
+        // A wide glyph ending row 0 must not swallow row 1's first cell, and
+        // blit's area offset must land on every coordinate.
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 2));
+        buf.set_string(0, 0, "ab🔥", Style::default());
+        buf.set_string(0, 1, "cd", Style::default());
+        let out: Vec<(u16, u16, &Cell)> =
+            visible_cells(&buf.content, 4, Position::new(2, 5)).collect();
+        let coords: Vec<(u16, u16)> = out.iter().map(|&(x, y, _)| (x, y)).collect();
+        assert_eq!(
+            coords,
+            vec![(2, 5), (3, 5), (4, 5), (2, 6), (3, 6), (4, 6), (5, 6)],
+            "row 0 drops only its shadowed column; row 1 emits in full"
+        );
+        assert_eq!(out[2].2.symbol(), "🔥");
+        assert_eq!(
+            out[3].2.symbol(),
+            "c",
+            "row 1 starts fresh — a shadow never crosses a row boundary"
         );
     }
 
