@@ -141,8 +141,8 @@ marker: the 20k-approx-token budget of recent user texts + the
 `● Context compacted · {before} → {after} tokens` cell the visible record;
 with the model's **context window** known — `/v1/models` `context_length`
 via `ModelEntry::context`, persisted in `config.json`, overridable via
-`ALTER_ZERO_CONTEXT_WINDOW` — the footer shows a `{used}%/{window}` gauge
-(usage-frame fed, tokenizer-estimated offline) and the loop **auto-runs** the
+`ALTER_ZERO_CONTEXT_WINDOW` — the footer shows a `{used}/{window} ({pct}%)`
+gauge (usage-frame fed, tokenizer-estimated offline) and the loop **auto-runs** the
 same turn past codex's 90% threshold (`App::should_auto_compact`, one
 attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`.
 

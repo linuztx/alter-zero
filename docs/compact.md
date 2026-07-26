@@ -127,8 +127,11 @@ the same threshold — **90% of the model's context window**
   dummy) via `ALTER_ZERO_CONTEXT_WINDOW`. Unknown window → no gauge, no
   auto-compact.
 - **The gauge** shows in the footer whenever the window is known:
-  `{model} · {cwd} · {used}%/{window}` (e.g. `6.0%/300k`, one decimal, the
-  window humanized by the summary's token formatter). `used` is the last
+  `{model} · {cwd} · {used}/{window} ({pct}%)` (e.g. `1.3k/160k (0.8%)` — both
+  counts humanized by the summary's token formatter, the share one decimal).
+  Showing the raw size beside the share is the divergence from codex, which
+  prints the percentage alone: the absolute number is what tells you how much
+  room a big paste or a long tool output just cost. `used` is the last
   usage frame's `input + output` — the provider's own accounting of the
   re-sent context plus the reply that joins the next request — kept honest
   across mutations by a tokenizer re-estimate: after a compaction (codex's

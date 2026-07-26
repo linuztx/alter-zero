@@ -33,8 +33,8 @@ pub struct Settings {
     pub vision: Option<bool>,
     /// The saved model's context window in tokens, when its `/v1/models`
     /// record reported one — restored at startup so the footer's
-    /// `{used}%/{window}` gauge (and the auto-compact trigger) work without a
-    /// re-probe. Absent = unknown. See `docs/compact.md`.
+    /// `{used}/{window} ({pct}%)` gauge (and the auto-compact trigger) work
+    /// without a re-probe. Absent = unknown. See `docs/compact.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<u64>,
 }

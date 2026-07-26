@@ -1739,8 +1739,8 @@ pub struct App {
     /// `/v1/models` `context_length`, the saved settings, or the
     /// `ALTER_ZERO_CONTEXT_WINDOW` override — injected at the boundary via
     /// [`set_context_window`](Self::set_context_window)). Drives the footer's
-    /// `{used}%/{window}` gauge and the auto-compact trigger; `None` hides
-    /// both. See `docs/compact.md`.
+    /// `{used}/{window} ({pct}%)` gauge and the auto-compact trigger; `None`
+    /// hides both. See `docs/compact.md`.
     context_window: Option<u64>,
     /// The current context size in tokens: the last usage frame's
     /// `input + output` (the provider's own accounting of the re-sent context

@@ -192,7 +192,7 @@ unit-tested must be unit-tested.
   from; mid-turn a `Toast(COMPACT_BUSY_NOTICE)`, an empty context a
   `Toast(COMPACT_EMPTY_NOTICE)` — see `docs/compact.md`, `smoke.sh`
   Phase 50; with the model's context window known the footer carries a
-  `{used}%/{window}` gauge and the loop **auto-compacts** past codex's 90%
+  `{used}/{window} ({pct}%)` gauge and the loop **auto-compacts** past codex's 90%
   threshold, the cell tagged `· auto` — Phase 51). A `Notice` is recorded as
   a `Role::System` message and committed to scrollback like any other. Adding a
   command later is a one-line registry edit + an effect arm in

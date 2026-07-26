@@ -77,7 +77,13 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   `FOOTER_INDENT_COLS`) + `{model} · {cwd}`, every span dim
   (`FOOTER_COLOR`/`FOOTER_SEPARATOR`); the content is truncated with a
   trailing `…` when it overflows the width (codex's
-  `truncate_line_with_ellipsis_if_overflow`).
+  `truncate_line_with_ellipsis_if_overflow`). Two later segments append to the
+  same dim ` · ` chain when they apply — the **context gauge**
+  `{used}/{window} ({pct}%)` whenever the model's context window is known
+  (`1.3k/160k (0.8%)`, both counts through `format_token_count`, the share one
+  decimal — `docs/compact.md`) and the running **background shell** count
+  (`docs/background.md`) — so a full row reads
+  `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%)`.
 - `display_cwd(path, home) -> String` — codex's `format_directory_display`
   relativization: `~` for home itself, `~/sub` under home, the absolute path
   otherwise (or when no home is known). Pure — `main.rs` passes

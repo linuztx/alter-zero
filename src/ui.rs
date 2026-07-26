@@ -3426,16 +3426,20 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         Span::styled(FOOTER_SEPARATOR.to_string(), dim),
         Span::styled(session.cwd.clone(), dim),
     ]);
-    // The context gauge — `{used}%/{window}` (e.g. `6.0%/300k`) — whenever
-    // the active model's window is known, so the user sees auto-compact
-    // approaching (docs/compact.md).
+    // The context gauge — `{used}/{window} ({pct}%)` (e.g. `1.3k/160k
+    // (0.8%)`) — whenever the active model's window is known, so the user
+    // sees both the raw context size and auto-compact approaching
+    // (docs/compact.md). Both counts are humanized by the status line's token
+    // formatter; the share keeps one decimal.
     if let Some(window) = app.context_window() {
+        let used = app.context_used();
         #[allow(clippy::cast_precision_loss)] // display only — one decimal
-        let pct = app.context_used() as f64 * 100.0 / window as f64;
+        let pct = used as f64 * 100.0 / window as f64;
         segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));
         segments.push(Span::styled(
             format!(
-                "{pct:.1}%/{}",
+                "{}/{} ({pct:.1}%)",
+                format_token_count(usize::try_from(used).unwrap_or(usize::MAX)),
                 format_token_count(usize::try_from(window).unwrap_or(usize::MAX))
             ),
             dim,
@@ -13047,7 +13051,43 @@ mod tests {
             cache_write: 0,
         });
         let text = plain(&footer_line(&app, 120));
-        assert!(text.contains("6.0%/300k"), "{text}");
+        assert!(text.contains("18k/300k (6.0%)"), "{text}");
+    }
+
+    #[test]
+    fn the_footer_gauge_humanizes_the_used_tokens_beside_the_window() {
+        // The numerator is the live context size, humanized like the window
+        // (`1.3k/160k (0.8%)`) — the raw count the percentage alone hid.
+        let mut app = App::new();
+        app.set_session_info("deepseek-v3.2", "~/Codes/tmp");
+        app.set_context_window(Some(160_000));
+        app.begin_stream();
+        app.apply_usage(&crate::stream::TokenUsage {
+            input: 1_250,
+            output: 50,
+            cached: 0,
+            cache_write: 0,
+        });
+        let text = plain(&footer_line(&app, 120));
+        assert!(text.contains("1.3k/160k (0.8%)"), "{text}");
+    }
+
+    #[test]
+    fn the_footer_gauge_shows_a_small_context_bare() {
+        // Under a thousand the formatter stays bare (`842`), so a fresh
+        // session reads `842/160k (0.5%)` rather than `0.8k/160k`.
+        let mut app = App::new();
+        app.set_session_info("deepseek-v3.2", "~/Codes/tmp");
+        app.set_context_window(Some(160_000));
+        app.begin_stream();
+        app.apply_usage(&crate::stream::TokenUsage {
+            input: 800,
+            output: 42,
+            cached: 0,
+            cache_write: 0,
+        });
+        let text = plain(&footer_line(&app, 120));
+        assert!(text.contains("842/160k (0.5%)"), "{text}");
     }
 
     #[test]

@@ -310,7 +310,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // only against a real provider (the dummy sees no wire).
     let mut active_vision: Option<bool> = if real_backend { saved_vision } else { None };
     // The active model's context window (docs/compact.md), tracked beside
-    // active_vision: drives the footer's `{used}%/{window}` gauge and the
+    // active_vision: drives the footer's `{used}/{window} ({pct}%)` gauge and the
     // auto-compact trigger. `ALTER_ZERO_CONTEXT_WINDOW` overrides whatever the
     // provider reports (and is the only way to get a gauge on the dummy);
     // otherwise the saved selection seeds it and the probe/{`/model`} keep it

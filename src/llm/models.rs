@@ -34,7 +34,7 @@ pub struct ModelEntry {
     /// attaches optimistically, exactly as before. See `docs/tools.md`.
     pub vision: Option<bool>,
     /// The model's context window in tokens, when the record reports one —
-    /// drives the footer's `{used}%/{window}` gauge and the auto-compact
+    /// drives the footer's `{used}/{window} ({pct}%)` gauge and the auto-compact
     /// trigger. `None` = unknown (a bare OpenAI-style list; the gauge hides
     /// and auto-compact stays off). See `docs/compact.md`.
     pub context: Option<u64>,
