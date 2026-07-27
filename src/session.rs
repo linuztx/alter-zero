@@ -1178,4 +1178,65 @@ mod tests {
         assert_eq!((parsed.tokens, parsed.cached), (0, 0));
         assert_eq!(parsed.secs, 4);
     }
+
+    #[test]
+    fn agent_records_round_trip() {
+        let group = HistoryItem::AgentGroup(AgentGroup {
+            background: true,
+            agents: vec![AgentGroupEntry {
+                id: "a1".into(),
+                description: "Fetch Warsaw".into(),
+                agent_type: "general-purpose".into(),
+                prompt: "weather?".into(),
+                status: AgentStatus::Done,
+                tool_uses: 2,
+                tokens: 1600,
+                secs: 39,
+                result: "19°C".into(),
+                tool_headers: vec!["Bash(curl)".into()],
+                output: "launched".into(),
+            }],
+            timestamp: "t".into(),
+        });
+        let notice = HistoryItem::AgentNotice(AgentNotice {
+            id: "a1".into(),
+            description: "Fetch Warsaw".into(),
+            status: AgentStatus::Interrupted,
+            secs: 12,
+            result: String::new(),
+            timestamp: "t".into(),
+        });
+        let text = format!(
+            "{}\n{}\n{}\n",
+            meta_line(&meta(), "s"),
+            item_line(&group, "s"),
+            item_line(&notice, "s"),
+        );
+        let (_, items) = parse_session(&text).expect("parses");
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], group);
+        assert_eq!(items[1], notice);
+        // A still-running recorded status reads back as interrupted (agents
+        // don't survive a session).
+        let running = item_line(
+            &HistoryItem::AgentGroup(AgentGroup {
+                background: true,
+                agents: vec![AgentGroupEntry {
+                    status: AgentStatus::Running,
+                    ..match &group {
+                        HistoryItem::AgentGroup(g) => g.agents[0].clone(),
+                        _ => unreachable!(),
+                    }
+                }],
+                timestamp: "t".into(),
+            }),
+            "s",
+        );
+        let text = format!("{}\n{running}\n", meta_line(&meta(), "s"));
+        let (_, items) = parse_session(&text).expect("parses");
+        let HistoryItem::AgentGroup(g) = &items[0] else {
+            panic!()
+        };
+        assert_eq!(g.agents[0].status, AgentStatus::Interrupted);
+    }
 }

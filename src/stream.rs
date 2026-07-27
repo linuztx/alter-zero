@@ -1550,4 +1550,42 @@ mod tests {
             StreamEvent::Error("backend exploded".to_string())
         );
     }
+
+    #[test]
+    fn an_agents_prompt_scripts_the_two_agent_demo() {
+        let events = turn_events("call agents for weather", 0);
+        let batch = events.iter().find_map(|e| match e {
+            StreamEvent::AgentBatch { background, agents } => Some((background, agents)),
+            _ => None,
+        });
+        let (background, agents) = batch.expect("the demo announces a group");
+        assert!(!background, "foreground by default");
+        assert_eq!(agents.len(), 2);
+        assert!(agents[0].description.contains("Warsaw"));
+        assert!(agents[0].id.starts_with('a'));
+        let done = events.iter().find_map(|e| match e {
+            StreamEvent::AgentGroupDone { agents, .. } => Some(agents),
+            _ => None,
+        });
+        let done = done.expect("the demo resolves the group");
+        assert_eq!(done.len(), 2);
+        assert!(done.iter().all(|d| d.ok));
+        assert_eq!(events.last(), Some(&StreamEvent::StreamDone));
+        // A "background" prompt launches in background mode with launch texts.
+        let events = turn_events("call background agents", 0);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::AgentBatch {
+                background: true,
+                ..
+            }
+        )));
+        // /init's canned prompt names AGENTS.md — never the demo.
+        let events = turn_events("Generate a file named AGENTS.md", 0);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::AgentBatch { .. }))
+        );
+    }
 }

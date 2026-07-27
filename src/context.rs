@@ -1293,4 +1293,76 @@ mod tests {
         assert!(ctx[0].text.contains(SUMMARY_PREFIX));
         assert!(ctx[0].text.ends_with("new question"));
     }
+
+    #[test]
+    fn an_agent_group_replays_native_agent_calls_and_results() {
+        use crate::agents::AgentStatus;
+        let entry = |id: &str, desc: &str, output: &str| crate::app::AgentGroupEntry {
+            id: id.to_string(),
+            description: desc.to_string(),
+            agent_type: "general-purpose".to_string(),
+            prompt: format!("weather in {desc}?"),
+            status: AgentStatus::Done,
+            tool_uses: 1,
+            tokens: 100,
+            secs: 5,
+            result: "later display update".to_string(),
+            tool_headers: vec![],
+            output: output.to_string(),
+        };
+        let history = vec![
+            HistoryItem::Message(Message {
+                role: Role::User,
+                text: "check both".into(),
+                timestamp: String::new(),
+                images: vec![],
+            }),
+            HistoryItem::AgentGroup(crate::app::AgentGroup {
+                background: false,
+                agents: vec![entry("a1", "Warsaw", "19°C"), entry("a2", "Manila", "28°C")],
+                timestamp: String::new(),
+            }),
+        ];
+        let messages = context_messages(&history);
+        assert_eq!(messages.len(), 4, "user, assistant calls, two results");
+        assert_eq!(messages[1].role, ContextRole::Assistant);
+        assert_eq!(messages[1].tool_calls.len(), 2);
+        assert_eq!(messages[1].tool_calls[0].name, "agent");
+        let args: serde_json::Value =
+            serde_json::from_str(&messages[1].tool_calls[0].arguments).unwrap();
+        assert_eq!(args["description"], "Warsaw");
+        assert_eq!(args["prompt"], "weather in Warsaw?");
+        assert_eq!(args["run_in_background"], false);
+        // Each result answers its call — carrying the immutable wire output,
+        // never the display fields a later completion updates.
+        assert_eq!(messages[2].role, ContextRole::Tool);
+        assert_eq!(
+            messages[2].tool_call_id,
+            messages[1].tool_calls[0].id.clone().into()
+        );
+        assert_eq!(messages[2].text, "19°C");
+        assert_eq!(messages[3].text, "28°C");
+    }
+
+    #[test]
+    fn an_agent_notice_replays_as_a_bracketed_user_note() {
+        use crate::agents::AgentStatus;
+        let history = vec![HistoryItem::AgentNotice(crate::app::AgentNotice {
+            id: "a1".into(),
+            description: "Fetch Warsaw".into(),
+            status: AgentStatus::Done,
+            secs: 35,
+            result: "19°C and sunny".into(),
+            timestamp: String::new(),
+        })];
+        let messages = context_messages(&history);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, ContextRole::User);
+        assert!(
+            messages[0]
+                .text
+                .starts_with("[background agent] Agent \"Fetch Warsaw\"")
+        );
+        assert!(messages[0].text.contains("19°C and sunny"));
+    }
 }

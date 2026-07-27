@@ -5449,7 +5449,9 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     for (i, run) in agents.iter().enumerate() {
         let selected = selection == Some(i + 1);
         let viewed = app.agent_view.as_deref() == Some(run.id.as_str());
-        let marker = if selected {
+        // The `❯` marks the explicit selection — or, with none active, the
+        // agent whose session view is open (the user's reference look).
+        let marker = if selected || (selection.is_none() && viewed) {
             AGENT_LIST_MARKER
         } else {
             AGENT_LIST_INDENT
@@ -17049,5 +17051,263 @@ mod tests {
         let texts: Vec<String> = background_view_lines(&app, 60).iter().map(plain).collect();
         assert!(texts.iter().any(|l| l.contains("Background")));
         assert!(!texts.iter().any(|l| l.contains("Shell details")));
+    }
+
+    // ===== The Agent tool's cells + roster (docs/agent-tool.md) =====
+
+    fn agent_entry(
+        id: &str,
+        desc: &str,
+        status: crate::agents::AgentStatus,
+    ) -> crate::app::AgentGroupEntry {
+        crate::app::AgentGroupEntry {
+            id: id.to_string(),
+            description: desc.to_string(),
+            agent_type: "general-purpose".to_string(),
+            prompt: format!("What is the weather in {desc}?"),
+            status,
+            tool_uses: 2,
+            tokens: 16_100,
+            secs: 39,
+            result: "It is 19°C.".to_string(),
+            tool_headers: vec!["Bash(curl wttr.in)".to_string()],
+            output: "It is 19°C.".to_string(),
+        }
+    }
+
+    #[test]
+    fn agent_group_lines_render_the_finished_tree() {
+        use crate::agents::AgentStatus;
+        let group = crate::app::AgentGroup {
+            background: false,
+            agents: vec![
+                agent_entry("a1", "Fetch Warsaw", AgentStatus::Done),
+                agent_entry("a2", "Fetch Manila", AgentStatus::Done),
+            ],
+            timestamp: String::new(),
+        };
+        let lines = agent_group_lines(&group, 80);
+        let texts: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(texts[0], "● 2 agents finished (ctrl+o to expand)");
+        assert_eq!(texts[1], "   ├ Fetch Warsaw · 2 tool uses · 16.1k tokens");
+        assert_eq!(texts[2], "   │ ⎿  Done");
+        assert_eq!(texts[3], "   └ Fetch Manila · 2 tool uses · 16.1k tokens");
+        assert_eq!(texts[4], "     ⎿  Done");
+        // All clean → green bullet; one interrupted → red.
+        assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_OK_COLOR));
+        let mut stopped = group.clone();
+        stopped.agents[1].status = AgentStatus::Interrupted;
+        let lines = agent_group_lines(&stopped, 80);
+        assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_FAIL_COLOR));
+        assert_eq!(plain(&lines[4]), "     ⎿  Interrupted");
+    }
+
+    #[test]
+    fn agent_group_lines_render_the_background_launch() {
+        use crate::agents::AgentStatus;
+        let group = crate::app::AgentGroup {
+            background: true,
+            agents: vec![
+                agent_entry("a1", "Fetch Warsaw", AgentStatus::Running),
+                agent_entry("a2", "Fetch Manila", AgentStatus::Running),
+            ],
+            timestamp: String::new(),
+        };
+        let texts: Vec<String> = agent_group_lines(&group, 80).iter().map(plain).collect();
+        assert_eq!(texts[0], "● 2 background agents launched (↓ to manage)");
+        assert_eq!(texts[1], "   ├ Fetch Warsaw");
+        assert_eq!(texts[2], "   └ Fetch Manila");
+        assert_eq!(texts.len(), 3, "description-only rows, no status");
+    }
+
+    #[test]
+    fn the_live_group_previews_its_tree_and_the_rows_agree() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(
+            false,
+            &[crate::stream::AgentSpec {
+                id: "a1".into(),
+                description: "Fetch Warsaw".into(),
+                agent_type: "general-purpose".into(),
+                prompt: "warsaw?".into(),
+                background: false,
+            }],
+        );
+        let lines = live_agent_group_lines(&app, 80);
+        let texts: Vec<String> = lines.iter().map(plain).collect();
+        assert_eq!(texts[0], "● Running 1 agent… (ctrl+o to expand)");
+        assert_eq!(texts[1], "   └ Fetch Warsaw");
+        assert_eq!(texts[2], "     ⎿  Initializing…");
+        // The strip sizes from the same walk (the box/cursor geometry contract).
+        assert_eq!(usize::from(preview_rows(&app, 80)), texts.len());
+        // …and rendering the live region upholds the debug_assert.
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        render_live(area, &mut buf, &app);
+    }
+
+    #[test]
+    fn agent_cell_lines_expand_prompt_response_and_done() {
+        use crate::agents::AgentStatus;
+        let group = crate::app::AgentGroup {
+            background: false,
+            agents: vec![agent_entry("a1", "Fetch Warsaw", AgentStatus::Done)],
+            timestamp: String::new(),
+        };
+        let texts: Vec<String> = agent_group_full_lines(&group, 100)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(texts[0], "● Agent(Fetch Warsaw)");
+        assert_eq!(texts[1], "  ⎿  Prompt:");
+        assert_eq!(texts[2], "       What is the weather in Fetch Warsaw?");
+        assert!(texts.contains(&"     Bash(curl wttr.in)".to_string()));
+        assert!(texts.contains(&"  ⎿  Response:".to_string()));
+        assert!(texts.contains(&"       It is 19°C.".to_string()));
+        assert!(
+            texts
+                .last()
+                .unwrap()
+                .contains("Done (2 tool uses · 16.1k tokens · 39s)")
+        );
+        // An interrupted agent ends with the bare Interrupted footer instead.
+        let mut stopped = group;
+        stopped.agents[0].status = AgentStatus::Interrupted;
+        let texts: Vec<String> = agent_group_full_lines(&stopped, 100)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(texts.last().unwrap(), "  ⎿  Interrupted");
+    }
+
+    #[test]
+    fn the_transcript_expands_agent_groups_and_notices() {
+        use crate::agents::AgentStatus;
+        let mut app = App::new();
+        app.history
+            .push(HistoryItem::AgentGroup(crate::app::AgentGroup {
+                background: false,
+                agents: vec![agent_entry("a1", "Fetch Warsaw", AgentStatus::Done)],
+                timestamp: String::new(),
+            }));
+        app.history
+            .push(HistoryItem::AgentNotice(crate::app::AgentNotice {
+                id: "a1".into(),
+                description: "Fetch Warsaw".into(),
+                status: AgentStatus::Done,
+                secs: 35,
+                result: "19°C".into(),
+                timestamp: String::new(),
+            }));
+        let texts: Vec<String> = transcript_lines(&app, 100).iter().map(plain).collect();
+        assert!(texts.contains(&"● Agent(Fetch Warsaw)".to_string()));
+        assert!(
+            texts
+                .iter()
+                .any(|t| t == "● Agent \"Fetch Warsaw\" finished · 35s")
+        );
+    }
+
+    #[test]
+    fn the_footer_roster_lists_main_and_the_agents() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(
+            false,
+            &[crate::stream::AgentSpec {
+                id: "a1".into(),
+                description: "Fetch current weather and time in Warsaw".into(),
+                agent_type: "general-purpose".into(),
+                prompt: "warsaw?".into(),
+                background: false,
+            }],
+        );
+        app.set_agent_runtime("a1", Duration::from_secs(48));
+        assert_eq!(agent_list_rows(&app), 3, "blank + main + one agent");
+        let texts: Vec<String> = agent_list_lines(&app, 100).iter().map(plain).collect();
+        assert_eq!(texts[0], "");
+        assert_eq!(texts[1], "  ● main");
+        assert!(
+            texts[2].starts_with("  ◯ general-purpose  Fetch current weather and time in Warsaw"),
+            "{}",
+            texts[2]
+        );
+        assert!(texts[2].ends_with(" 48s"), "{}", texts[2]);
+        // A narrow width truncates the description, never the suffix.
+        let narrow: Vec<String> = agent_list_lines(&app, 46).iter().map(plain).collect();
+        assert!(narrow[2].contains('…'), "{}", narrow[2]);
+        assert!(narrow[2].ends_with(" 48s"), "{}", narrow[2]);
+    }
+
+    #[test]
+    fn the_roster_selection_marks_rows_and_swaps_the_footer_hint() {
+        let mut app = App::new();
+        app.set_session_info("dummy_model_name", "~/repo");
+        app.begin_stream();
+        app.start_agent_group(
+            false,
+            &[crate::stream::AgentSpec {
+                id: "a1".into(),
+                description: "Fetch Warsaw".into(),
+                agent_type: "general-purpose".into(),
+                prompt: "warsaw?".into(),
+                background: false,
+            }],
+        );
+        // ↓ opens the selection on `● main`.
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let texts: Vec<String> = agent_list_lines(&app, 100).iter().map(plain).collect();
+        assert!(texts[1].starts_with("❯ ● main"), "{}", texts[1]);
+        assert_eq!(
+            plain(&agent_hint_line(&app)),
+            "  ↑/↓ to select · Enter to view"
+        );
+        assert_eq!(footer_rows(&app, 0), 1, "the hint takes the footer slot");
+        // ↓ moves onto the agent row; the hint gains the stop key.
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let texts: Vec<String> = agent_list_lines(&app, 100).iter().map(plain).collect();
+        assert!(texts[2].starts_with("❯ ◯ "), "{}", texts[2]);
+        assert_eq!(plain(&agent_hint_line(&app)), "  Enter to view · x to stop");
+    }
+
+    #[test]
+    fn the_agent_view_swaps_the_strip_to_the_agents_stream() {
+        let mut app = App::new();
+        app.set_session_info("dummy_model_name", "~/repo");
+        app.begin_stream();
+        app.start_agent_group(
+            false,
+            &[crate::stream::AgentSpec {
+                id: "a1".into(),
+                description: "Fetch Warsaw".into(),
+                agent_type: "general-purpose".into(),
+                prompt: "warsaw?".into(),
+                background: false,
+            }],
+        );
+        app.apply_agent_event(
+            "a1",
+            &crate::stream::StreamEvent::ToolStart {
+                name: "Bash".into(),
+                args: "curl wttr.in".into(),
+            },
+        );
+        app.open_agent_view("a1");
+        // The preview previews the AGENT's running tool, not the main group.
+        let area = Rect::new(0, 0, 80, 24);
+        let mut buf = Buffer::empty(area);
+        render_live(area, &mut buf, &app);
+        let all: String = (0..24).map(|y| row(&buf, y, 80) + "\n").collect();
+        assert!(all.contains("Bash(curl wttr.in)"), "{all}");
+        assert!(
+            all.contains(" Fetch Warsaw "),
+            "the box rule carries the label: {all}"
+        );
+        assert!(
+            all.contains("❯ ◯ "),
+            "the roster marks the viewed agent: {all}"
+        );
     }
 }

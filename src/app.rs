@@ -5391,6 +5391,11 @@ impl App {
                     .get(selected - 1)
                     .map(|a| a.id.clone());
                 if let Some(id) = agent {
+                    // The selection hands over to the view: the composer owns
+                    // the keys again (typing chats), and the roster's `❯`
+                    // stays on the viewed agent implicitly
+                    // (`ui::agent_list_lines`).
+                    self.agent_selection = None;
                     if self.agent_view.as_deref() == Some(id.as_str()) {
                         // Already viewing it — nothing to switch.
                         return Some(Action::None);
@@ -13457,5 +13462,309 @@ mod tests {
             app.background_view,
             Some(BackgroundView::Details { .. })
         ));
+    }
+
+    // ===== The Agent tool (docs/agent-tool.md) =====
+
+    /// A two-agent batch announcement, the dummy demo's shape.
+    fn agent_specs(background: bool) -> Vec<AgentSpec> {
+        let spec = |id: &str, desc: &str, prompt: &str| AgentSpec {
+            id: id.to_string(),
+            description: desc.to_string(),
+            agent_type: crate::agents::GENERAL_PURPOSE.to_string(),
+            prompt: prompt.to_string(),
+            background,
+        };
+        vec![
+            spec(
+                "a1",
+                "Fetch Warsaw weather",
+                "What is the weather in Warsaw?",
+            ),
+            spec(
+                "a2",
+                "Fetch Manila weather",
+                "What is the weather in Manila?",
+            ),
+        ]
+    }
+
+    #[test]
+    fn agent_batch_seeds_the_roster_and_the_live_group() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(false, &agent_specs(false));
+        assert_eq!(app.agents().len(), 2);
+        assert_eq!(app.agents()[0].description, "Fetch Warsaw weather");
+        assert_eq!(app.visible_agents().len(), 2);
+        let live = app.agent_group().expect("group live");
+        assert_eq!(live.ids, vec!["a1", "a2"]);
+        assert!(!live.background);
+    }
+
+    #[test]
+    fn finish_agent_group_snapshots_the_roster_around_the_outputs() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(false, &agent_specs(false));
+        // a1 streams a tool round + a final reply on the agent channel.
+        for event in [
+            StreamEvent::ToolStart {
+                name: "Bash".into(),
+                args: "curl wttr.in".into(),
+            },
+            StreamEvent::ToolEnd {
+                output: "+19°C".into(),
+                ok: true,
+                truncated: false,
+            },
+            StreamEvent::Chunk("Warsaw is 19°C.".into()),
+            StreamEvent::StreamDone,
+        ] {
+            app.apply_agent_event("a1", &event);
+        }
+        let group = app.finish_agent_group(
+            false,
+            &[
+                AgentCallDone {
+                    id: "a1".into(),
+                    output: "Warsaw is 19°C.".into(),
+                    ok: true,
+                },
+                AgentCallDone {
+                    id: "a2".into(),
+                    output: AGENT_STOPPED_OUTPUT.into(),
+                    ok: false,
+                },
+            ],
+        );
+        assert!(app.agent_group().is_none(), "live cell cleared");
+        assert!(matches!(
+            app.history.last(),
+            Some(HistoryItem::AgentGroup(_))
+        ));
+        assert_eq!(group.agents.len(), 2);
+        assert_eq!(group.agents[0].status, crate::agents::AgentStatus::Done);
+        assert_eq!(group.agents[0].tool_uses, 1);
+        assert_eq!(group.agents[0].result, "Warsaw is 19°C.");
+        assert_eq!(group.agents[0].tool_headers, vec!["Bash(curl wttr.in)"]);
+        assert_eq!(group.agents[0].output, "Warsaw is 19°C.");
+        assert!(!group.ok(), "a2 never finished — the cell is red");
+    }
+
+    #[test]
+    fn interrupt_resolves_a_live_agent_group_locally() {
+        let mut app = App::new();
+        app.record_user_message("go");
+        app.begin_stream();
+        app.push_chunk("spawning ");
+        app.flush_streaming_segment();
+        app.start_agent_group(false, &agent_specs(false));
+        let Some(InterruptedTurn::Kept { agents, notice, .. }) = app.interrupt_turn() else {
+            panic!("a live group forces the keep path");
+        };
+        let group = agents.expect("the group resolved with the turn");
+        assert!(group.agents.iter().all(|entry| {
+            entry.status == crate::agents::AgentStatus::Interrupted
+                && entry.output == AGENT_STOPPED_OUTPUT
+        }));
+        assert_eq!(notice, Some(INTERRUPT_NOTICE));
+        assert!(app.agent_group().is_none());
+        // The roster entries settled too (they linger until swept).
+        assert!(app.agents().iter().all(|run| run.status.is_final()));
+    }
+
+    #[test]
+    fn a_live_agent_group_blocks_the_interrupt_undo() {
+        let mut app = App::new();
+        app.record_user_message("go");
+        app.begin_stream();
+        // Nothing streamed, but a group is live: undo would orphan it.
+        app.start_agent_group(false, &agent_specs(false));
+        assert!(matches!(
+            app.interrupt_turn(),
+            Some(InterruptedTurn::Kept { .. })
+        ));
+    }
+
+    #[test]
+    fn a_background_agent_completion_returns_its_notice() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(true, &agent_specs(true));
+        app.finish_agent_group(
+            true,
+            &[
+                AgentCallDone {
+                    id: "a1".into(),
+                    output: "launched a1".into(),
+                    ok: true,
+                },
+                AgentCallDone {
+                    id: "a2".into(),
+                    output: "launched a2".into(),
+                    ok: true,
+                },
+            ],
+        );
+        // The cell is green and description-only; the roster keeps running.
+        assert!(app.agents().iter().all(|run| !run.status.is_final()));
+        // a1 finishes later, on the agent channel.
+        app.apply_agent_event("a1", &StreamEvent::Chunk("28°C".into()));
+        let notice = app
+            .apply_agent_event("a1", &StreamEvent::StreamDone)
+            .expect("a background settle owes a notice");
+        assert_eq!(notice.id, "a1");
+        assert!(notice.ok());
+        assert_eq!(notice.result, "28°C");
+        assert!(
+            notice
+                .headline()
+                .starts_with("Agent \"Fetch Warsaw weather\" finished")
+        );
+        // Settling updates the recorded group entry for the Ctrl+O cell.
+        let generation = app.history_generation();
+        app.record_agent_notice(&notice);
+        app.settle_agent_completion(&notice);
+        assert!(app.history_generation() > generation);
+        let Some(HistoryItem::AgentGroup(group)) = app
+            .history
+            .iter()
+            .find(|item| matches!(item, HistoryItem::AgentGroup(_)))
+        else {
+            panic!("group recorded");
+        };
+        assert_eq!(group.agents[0].status, crate::agents::AgentStatus::Done);
+        assert_eq!(group.agents[0].result, "28°C");
+        assert_eq!(
+            group.agents[0].output, "launched a1",
+            "the wire result never changes"
+        );
+    }
+
+    #[test]
+    fn down_steps_onto_the_shell_indicator_then_into_the_roster() {
+        let mut app = App::new();
+        app.bg_started("b1", "sleep 99", None, true);
+        app.begin_stream();
+        app.start_agent_group(false, &agent_specs(false));
+        assert_eq!(app.on_key(key(KeyCode::Down)), Action::None);
+        assert!(app.background_focused(), "shells first");
+        assert_eq!(app.on_key(key(KeyCode::Down)), Action::None);
+        assert!(!app.background_focused());
+        assert_eq!(app.agent_selection(), Some(0), "then the roster's main row");
+        assert_eq!(app.on_key(key(KeyCode::Down)), Action::None);
+        assert_eq!(app.agent_selection(), Some(1));
+        // x on the selected agent stops it.
+        assert_eq!(
+            app.on_key(key(KeyCode::Char('x'))),
+            Action::StopAgent("a1".to_string())
+        );
+        // Esc dismisses the selection.
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::None);
+        assert_eq!(app.agent_selection(), None);
+    }
+
+    #[test]
+    fn down_opens_the_roster_directly_without_shells() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(false, &agent_specs(false));
+        assert_eq!(app.on_key(key(KeyCode::Down)), Action::None);
+        assert_eq!(app.agent_selection(), Some(0));
+        // ↑ from the main row exits the selection.
+        assert_eq!(app.on_key(key(KeyCode::Up)), Action::None);
+        assert_eq!(app.agent_selection(), None);
+    }
+
+    #[test]
+    fn enter_views_an_agent_and_the_composer_chats_with_it() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(false, &agent_specs(false));
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::ViewAgent("a1".to_string())
+        );
+        assert_eq!(app.agent_view.as_deref(), Some("a1"));
+        // Typing + Enter chats with the viewed agent, recording into its
+        // transcript.
+        app.input = TextArea::from_text("and humidity?");
+        assert_eq!(
+            app.on_key(key(KeyCode::Enter)),
+            Action::AgentChat {
+                id: "a1".to_string(),
+                text: "and humidity?".to_string()
+            }
+        );
+        let run = app.agent("a1").unwrap();
+        assert!(matches!(
+            run.history.last(),
+            Some(HistoryItem::Message(m)) if m.text == "and humidity?" && m.role == Role::User
+        ));
+        // Esc with an empty composer leaves the view.
+        assert_eq!(app.on_key(key(KeyCode::Esc)), Action::LeaveAgentView);
+        assert!(app.agent_view.is_none());
+    }
+
+    #[test]
+    fn enter_on_main_from_an_agent_view_returns_to_the_main_session() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(false, &agent_specs(false));
+        app.open_agent_view("a1");
+        // ↓ inside the view opens the roster selection on the `● main` row.
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.agent_selection(), Some(0));
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::LeaveAgentView);
+        assert!(app.agent_view.is_none());
+        assert_eq!(app.agent_selection(), None);
+    }
+
+    #[test]
+    fn stop_agent_hides_the_row_and_a_background_stop_owes_a_notice() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(true, &agent_specs(true));
+        app.finish_agent_group(
+            true,
+            &[
+                AgentCallDone {
+                    id: "a1".into(),
+                    output: "launched".into(),
+                    ok: true,
+                },
+                AgentCallDone {
+                    id: "a2".into(),
+                    output: "launched".into(),
+                    ok: true,
+                },
+            ],
+        );
+        let notice = app
+            .stop_agent("a1")
+            .expect("a live agent was stopped")
+            .expect("a background stop owes a notice");
+        assert_eq!(notice.status, crate::agents::AgentStatus::Interrupted);
+        assert!(notice.headline().contains("was stopped by user"));
+        assert_eq!(app.visible_agents().len(), 1, "the row left at once");
+    }
+
+    #[test]
+    fn clear_wipes_the_roster_and_the_live_group() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(false, &agent_specs(false));
+        // Type the command so the palette opens (a direct set bypasses it);
+        // mid-turn /clear is a kill, agents included.
+        for c in "/clear".chars() {
+            app.on_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.on_key(key(KeyCode::Enter)), Action::Clear);
+        assert!(app.agents().is_empty());
+        assert!(app.agent_group().is_none());
+        assert!(app.agent_view.is_none());
     }
 }

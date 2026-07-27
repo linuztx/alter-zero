@@ -1521,4 +1521,67 @@ mod tests {
         let (h, _) = truncate_output("aé", 2);
         assert_eq!(h, "a", "the 2-byte é is dropped rather than split");
     }
+
+    #[test]
+    fn the_agent_tool_joins_the_main_set_but_never_a_subagents() {
+        let names: Vec<String> = tool_specs_with_agents()
+            .iter()
+            .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["bash", "read", "write", "edit", "agent"]);
+        let base: Vec<String> = tool_specs()
+            .iter()
+            .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert!(!base.contains(&"agent".to_string()));
+        // The agent schema: description+prompt required, the optional pair.
+        let spec = &tool_specs_with_agents()[4]["function"]["parameters"];
+        assert_eq!(
+            spec["required"],
+            serde_json::json!(["description", "prompt"])
+        );
+        assert!(spec["properties"]["run_in_background"].is_object());
+        assert!(spec["properties"]["subagent_type"].is_object());
+        // Subagent sets: explore is read-only, everything else the full four.
+        let explore: Vec<String> = subagent_tool_specs("explore")
+            .iter()
+            .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(explore, ["bash", "read"]);
+        let general: Vec<String> = subagent_tool_specs("general-purpose")
+            .iter()
+            .map(|spec| spec["function"]["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(general, ["bash", "read", "write", "edit"]);
+    }
+
+    #[test]
+    fn agent_args_default_to_background_general_purpose() {
+        let args: AgentArgs =
+            parse_args(r#"{"description":"Fetch Warsaw","prompt":"weather?"}"#).unwrap();
+        assert_eq!(args.agent_type(), "general-purpose");
+        assert!(args.background(), "the schema default is background");
+        let args: AgentArgs = parse_args(
+            r#"{"description":"d","prompt":"p","subagent_type":"explore","run_in_background":false}"#,
+        )
+        .unwrap();
+        assert_eq!(args.agent_type(), "explore");
+        assert!(!args.background());
+        assert!(
+            parse_args::<AgentArgs>(r#"{"prompt":"p"}"#).is_err(),
+            "description is required"
+        );
+    }
+
+    #[test]
+    fn agent_calls_display_and_summarize_by_description() {
+        assert_eq!(display_name("agent"), "Agent");
+        assert_eq!(
+            summarize_call(
+                "agent",
+                r#"{"description":"Fetch Warsaw","prompt":"long..."}"#
+            ),
+            "Fetch Warsaw"
+        );
+    }
 }

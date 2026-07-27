@@ -982,4 +982,71 @@ mod tests {
         // Round 2 saw [user, assistant(tool_calls), tool result] — the loop kept going.
         assert_eq!(*seen_lens.borrow(), vec![1, 3]);
     }
+
+    #[test]
+    fn agent_calls_route_to_the_launcher_and_results_keep_call_order() {
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![
+            call("c1", "agent", r#"{"description":"d","prompt":"p"}"#),
+            call("c2", "bash", r#"{"command":"ls"}"#),
+        ];
+        let mut messages = vec![ChatMessage::user("go")];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |c, _sink| {
+                assert_eq!(c.name, "bash", "agent calls never reach the executor");
+                ToolOutcome::ok("listing")
+            },
+            Vec::new,
+            |agent_calls| {
+                assert_eq!(agent_calls.len(), 1);
+                assert_eq!(agent_calls[0].id, "c1");
+                vec![("c1".to_string(), "agent result".to_string())]
+            },
+        );
+        let events = drain(&mut rx);
+        // The ordinary batch announces only the bash call.
+        assert!(events.iter().any(|e| matches!(
+            e,
+            StreamEvent::ToolBatch(items) if items.len() == 1 && items[0].name == "Bash"
+        )));
+        // The tool results append in the model's original call order.
+        let results: Vec<(String, String)> = messages
+            .iter()
+            .filter(|m| m.role == "tool")
+            .map(|m| {
+                (
+                    m.tool_call_id.clone().unwrap(),
+                    match &m.content {
+                        crate::llm::MessageContent::Text(t) => t.clone(),
+                        crate::llm::MessageContent::Parts(_) => String::new(),
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(
+            results,
+            vec![
+                ("c1".to_string(), "agent result".to_string()),
+                ("c2".to_string(), "listing".to_string()),
+            ]
+        );
+    }
 }
