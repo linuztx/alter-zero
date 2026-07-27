@@ -110,7 +110,10 @@ it with a dim `(ctrl+b to run in background)` row that waits a few seconds —
 `App::command_elapsed` — so a fast command never flashes it, Claude-Code-style;
 Ctrl+B itself works the whole time); the cell resolves `⎿ Running in the
 background (↓ to manage)`, the footer
-counts `· N shells`, **↓ from an empty composer opens the inline manager band**
+counts `· N shells` — and that count is the band's **entry point**: **↓ from an
+empty composer lights the indicator on cyan** (`App::background_focus`, the
+rest of the footer untouched; Esc/↑/Ctrl+C dismiss it, any other key clears it
+and acts) and **Enter opens the inline manager band**
 (list → per-shell details with a live-tailing output box → `x` stops), and a
 completion is **immediate feedback**: its model-facing note posts onto the
 registry's notice board the moment it exits (the in-flight agent takes the
@@ -694,7 +697,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   user-/shell-message style, with a blank row dividing each entry from the next),
   the
   session footer (`FOOTER_*` — the two-space `FOOTER_INDENT`, the ` · `
-  `FOOTER_SEPARATOR`, the dim `FOOTER_COLOR`; `footer_rows`/`footer_line`,
+  `FOOTER_SEPARATOR`, the dim `FOOTER_COLOR`, plus the cyan
+  `FOOTER_FOCUS_BG`/`FOOTER_FOCUS_FG` that light the ↓-focused shell-count
+  segment (`docs/background.md`); `footer_rows`/`footer_line`,
   ellipsis-truncated at narrow widths, with `display_cwd` formatting the
   `~`-relative path), the transient toast row above the box (`TOAST_*` — the
   two-space `TOAST_INDENT`, the dim `TOAST_COLOR` (info) / red `TOAST_ERROR_COLOR`

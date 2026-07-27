@@ -1973,6 +1973,13 @@ pub struct App {
     /// the `No tasks currently running` empty state after they all finish).
     /// Reset by `/clear` (which also kills the shells).
     had_background: bool,
+    /// Is the footer's `{n} shell(s)` indicator **focused** — lit on cyan,
+    /// waiting for the Enter that opens the manager band? ↓ from an idle
+    /// composer sets it (Claude-Code-style: step onto the indicator first,
+    /// don't jump straight into the band), any other key clears it, and the
+    /// last shell exiting clears it with the indicator. See
+    /// `docs/background.md`.
+    background_focus: bool,
     /// The open ↓ background manager band; `None` when closed. Inline like
     /// [`model_picker`](Self::model_picker) — it replaces the composer and
     /// owns every key while open. See `docs/background.md`.
@@ -2347,6 +2354,17 @@ impl App {
         if self.view == View::Conversation && self.background_view.is_some() {
             return self.on_key_background(key);
         }
+        // A lit footer shell indicator (↓ pressed, the band not open yet)
+        // claims a handful of keys first — Enter opens the band, Esc/↑/Ctrl+C
+        // dismiss the highlight — and lets every other key through after
+        // clearing it. It sits above the Ctrl+C global so a lit indicator
+        // absorbs that press instead of quitting. See `docs/background.md`.
+        if self.view == View::Conversation
+            && self.background_focus
+            && let Some(action) = self.on_key_background_focus(key)
+        {
+            return action;
+        }
         // Ctrl+C: in the conversation, a first press with text in the input
         // clears the draft instead of quitting (codex's composer-clear step —
         // see docs/design.md); otherwise it quits, from either screen. The
@@ -2702,11 +2720,18 @@ impl App {
                     self.recall_input(&text);
                     return Action::None;
                 }
-                // ↓ from an empty composer opens the background manager once
-                // any shell has run (`docs/background.md`) — history recall
-                // was tried first, so a mid-recall ↓ still steps the history.
+                // ↓ from an empty composer steps onto the footer's shell
+                // indicator once any shell has run (`docs/background.md`) —
+                // history recall was tried first, so a mid-recall ↓ still
+                // steps the history. With shells running the indicator lights
+                // up and waits for Enter; with none left there is no indicator
+                // to light, so ↓ opens the (empty-state) band outright.
                 if self.background_openable() {
-                    self.open_background_view();
+                    if self.background.is_empty() {
+                        self.open_background_view();
+                    } else {
+                        self.background_focus = true;
+                    }
                     return Action::None;
                 }
                 self.input.move_down();
@@ -4480,6 +4505,15 @@ impl App {
         self.had_background
     }
 
+    /// Is the footer's shell indicator lit (↓ pressed, Enter pending)?
+    /// [`ui::footer_line`] paints that segment on cyan while it is.
+    ///
+    /// [`ui::footer_line`]: crate::ui::footer_line
+    #[must_use]
+    pub const fn background_focused(&self) -> bool {
+        self.background_focus
+    }
+
     /// A background shell started (the registry's `BgEvent::Started`): list it
     /// so the footer count, the summary suffix, and the ↓ manager see it.
     pub fn bg_started(
@@ -4541,6 +4575,11 @@ impl App {
     pub fn bg_exited(&mut self, id: &str, code: Option<i32>, killed: bool) -> Option<BgCompletion> {
         let index = self.background.iter().position(|shell| shell.id == id)?;
         let shell = self.background.remove(index);
+        // The footer's indicator goes with the last shell — nothing left to
+        // keep lit (docs/background.md).
+        if self.background.is_empty() {
+            self.background_focus = false;
+        }
         match &mut self.background_view {
             Some(BackgroundView::Details { id: watched }) if *watched == id => {
                 self.background_view = Some(BackgroundView::List {
@@ -4620,11 +4659,41 @@ impl App {
 
     /// Open the ↓ manager band on the shell list, dismissing whatever shared
     /// the composer (the shortcuts band; the pickers own their keys, so they
-    /// can't be open here).
+    /// can't be open here) — including the footer highlight the band replaces.
     pub fn open_background_view(&mut self) {
         self.shortcuts_open = false;
         self.backtrack = Backtrack::default();
+        self.background_focus = false;
         self.background_view = Some(BackgroundView::List { selected: 0 });
+    }
+
+    /// Keys while the footer's shell indicator is lit — the step ↓ takes
+    /// *before* the band opens (Claude-Code-style, `docs/background.md`).
+    /// `Enter` opens the manager the indicator points at; `Esc`, `↑` and
+    /// `Ctrl+C` dismiss the highlight; a second `↓` keeps it (there is only
+    /// the one indicator). Returns `None` for every other key — the highlight
+    /// clears and the key goes on to do its normal job (codex's
+    /// reset-after-activity, the `?` band's rule).
+    fn on_key_background_focus(&mut self, key: KeyEvent) -> Option<Action> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            self.background_focus = false;
+            return Some(Action::None);
+        }
+        match key.code {
+            KeyCode::Enter => {
+                self.open_background_view();
+                Some(Action::None)
+            }
+            KeyCode::Down => Some(Action::None),
+            KeyCode::Esc | KeyCode::Up => {
+                self.background_focus = false;
+                Some(Action::None)
+            }
+            _ => {
+                self.background_focus = false;
+                None
+            }
+        }
     }
 
     /// Close the ↓ manager band; the composer returns on the next draw.
@@ -5434,6 +5503,7 @@ impl App {
         // nothing and owe no notice (docs/background.md).
         self.background.clear();
         self.background_view = None;
+        self.background_focus = false;
         self.pending_bg.clear();
         self.had_background = false;
     }
@@ -12319,16 +12389,94 @@ mod tests {
         app.on_key(key(KeyCode::Down));
         assert!(app.background_view.is_none());
         app.bg_started("bash_1", "ping x.com", None, true);
+        // ↓ highlights the footer's indicator first; Enter opens the band.
         app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Enter));
         assert_eq!(
             app.background_view,
             Some(BackgroundView::List { selected: 0 })
         );
-        // …and it opens on the empty state even after every shell finished.
+        // …and it opens on the empty state even after every shell finished —
+        // with no indicator left in the footer, ↓ has nothing to highlight.
         app.close_background_view();
         app.bg_exited("bash_1", Some(0), false);
         app.on_key(key(KeyCode::Down));
         assert!(app.background_view.is_some(), "the empty state still opens");
+        assert!(
+            !app.background_focused(),
+            "no running shell, no indicator to light up"
+        );
+    }
+
+    #[test]
+    fn down_highlights_the_footer_shell_indicator_before_opening_the_manager() {
+        let mut app = app_with_shells(&["a"]);
+        app.on_key(key(KeyCode::Down));
+        assert!(
+            app.background_focused(),
+            "↓ lights up the footer's shell count first"
+        );
+        assert!(
+            app.background_view.is_none(),
+            "…and opens no band until Enter"
+        );
+        // A second ↓ keeps the highlight — there is only the one indicator.
+        app.on_key(key(KeyCode::Down));
+        assert!(app.background_focused());
+        assert!(app.background_view.is_none());
+        // Enter opens the manager band and drops the highlight.
+        app.on_key(key(KeyCode::Enter));
+        assert_eq!(
+            app.background_view,
+            Some(BackgroundView::List { selected: 0 })
+        );
+        assert!(!app.background_focused(), "the band replaces the highlight");
+    }
+
+    #[test]
+    fn esc_up_and_ctrl_c_clear_the_shell_highlight_without_quitting() {
+        let mut app = app_with_shells(&["a"]);
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(
+            app.on_key(key(KeyCode::Esc)),
+            Action::None,
+            "Esc dismisses the highlight instead of quitting"
+        );
+        assert!(!app.background_focused());
+        assert!(!app.backtrack.primed, "…and never arms the backtrack");
+        // ↑ steps back out of the footer the way ↓ stepped into it.
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Up));
+        assert!(!app.background_focused());
+        // Ctrl+C clears the highlight first, like it clears a draft.
+        app.on_key(key(KeyCode::Down));
+        assert_eq!(app.on_key(ctrl('c')), Action::None);
+        assert!(!app.background_focused());
+    }
+
+    #[test]
+    fn any_other_key_clears_the_shell_highlight_and_still_acts() {
+        let mut app = app_with_shells(&["a"]);
+        app.on_key(key(KeyCode::Down));
+        app.on_key(key(KeyCode::Char('h')));
+        assert!(!app.background_focused(), "typing dismisses the highlight");
+        assert_eq!(app.input.text(), "h", "…and the key still types");
+    }
+
+    #[test]
+    fn the_last_shell_exiting_clears_the_shell_highlight() {
+        let mut app = app_with_shells(&["a", "b"]);
+        app.on_key(key(KeyCode::Down));
+        app.bg_exited("bash_1", Some(0), false);
+        assert!(
+            app.background_focused(),
+            "one shell still runs — the indicator stays"
+        );
+        app.bg_exited("bash_2", Some(0), false);
+        assert!(
+            !app.background_focused(),
+            "the indicator went with the last shell"
+        );
     }
 
     #[test]
@@ -12338,13 +12486,16 @@ mod tests {
         app.input = TextArea::from_text("draft");
         app.on_key(key(KeyCode::Down));
         assert!(
-            app.background_view.is_none(),
+            app.background_view.is_none() && !app.background_focused(),
             "a draft keeps ↓ for the cursor"
         );
         app.input.clear();
         app.on_key(key(KeyCode::Char('!')));
         app.on_key(key(KeyCode::Down));
-        assert!(app.background_view.is_none(), "shell mode keeps ↓ too");
+        assert!(
+            app.background_view.is_none() && !app.background_focused(),
+            "shell mode keeps ↓ too"
+        );
     }
 
     #[test]

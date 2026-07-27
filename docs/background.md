@@ -3,8 +3,9 @@
 Claude-Code-style background command execution: the model can launch a `bash`
 command that keeps running while the conversation continues, the user can move
 a running command to the background with **Ctrl+B**, and a **↓ manager band**
-(opened from an empty composer) lists the running shells, streams a selected
-shell's output live, and can stop one. When a background shell finishes, the
+(reached from an empty composer — ↓ lights up the footer's shell indicator,
+Enter opens the band) lists the running shells, streams a selected shell's
+output live, and can stop one. When a background shell finishes, the
 feedback is **immediate** — mid-turn, its model-facing note is posted onto the
 registry's notice board (the in-flight agent takes the board before each round,
 so a shell the model just `kill`ed — or the user just `x`-stopped — is known to
@@ -150,15 +151,49 @@ swapped on every interrupt/`/clear`, and these events must survive that.
 - `/clear` kills everything (the conversation reset is a hard reset);
   quitting kills everything (no orphan pings).
 
+### The footer's shell indicator, and ↓ focusing it (`App::background_focus`)
+
+The footer's running count (`{model} · {cwd} · {n} shell(s)`) is also the
+**entry point**, Claude-Code-style: ↓ does not jump straight into the manager,
+it **steps onto the indicator** — that one segment lights up on the palette
+cyan (`ui`'s `FOOTER_FOCUS_BG`/`FOOTER_FOCUS_FG`) and waits, while every other
+footer segment keeps its text *and* its dim styling:
+
+```
+────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────
+  kimi-k3 medium · ~/Codes/rust/alter-zero · 1.8k/1M (0.2%) · 1 shell
+                                                              ▔▔▔▔▔▔▔ cyan
+```
+
+- `App::background_focus` is the pure flag (`App::background_focused()` is what
+  `ui::footer_line` paints from). It is set by ↓ from an idle composer — the
+  same `background_openable` gate as before (empty composer, no
+  palette/file-picker/search/shell-mode, history recall tried first) — but
+  **only while a shell is actually running**: with `had_background` true and
+  nothing left running there is no indicator to light, so ↓ opens the band's
+  `No tasks currently running` empty state outright, as it always did.
+- While lit, `App::on_key_background_focus` claims a few keys ahead of
+  everything else (routed at the top of `on_key`, right after the band, so it
+  also wins over the global Ctrl+C): **Enter** opens the manager band, **Esc**
+  / **↑** / **Ctrl+C** dismiss the highlight, a second **↓** keeps it (there is
+  only the one indicator). Every other key clears the highlight and then does
+  its normal job — codex's reset-after-activity, the `?` band's rule — so
+  typing dismisses it and types.
+- The highlight is dropped by anything that removes the indicator: the **last
+  shell exiting** (`bg_exited`), opening the band (`open_background_view`), and
+  `/clear`.
+
 ### The ↓ manager band (`App::background_view` + `ui`)
 
 An **inline** band that replaces the composer, exactly like the `/model`
 picker (never an alternate-screen overlay): `Option<BackgroundView>` with
 `List {selected}` and `Details {id}` modes, owning every key while open.
 
-- **↓ from an empty composer** (no palette/file picker/search/shell-mode, not
-  recalling history) opens the list once any shell has ever run
-  (`had_background`); the empty state shows `No tasks currently running`.
+- **Enter on the lit footer indicator** opens the list (↓ from an empty
+  composer with no shell running still opens it directly — nothing to light);
+  the empty state shows `No tasks currently running`.
 - List: `Background` title, `{n} active shells`, `❯`-marked selectable rows
   (`{command} (running)`), hints
   `↑/↓ to select · Enter to view · x to stop · Esc to close`.
@@ -171,7 +206,8 @@ picker (never an alternate-screen overlay): `Option<BackgroundView>` with
 - `x` returns `Action::KillBackground(id)`; the loop kills via the registry
   and the resulting `Exited` event removes the row (details falls back to the
   list; the list falls back to the empty state).
-- The footer gains a running count: `{model} · {cwd} · {n} shell(s)`.
+- The footer gains a running count: `{model} · {cwd} · {n} shell(s)` — which
+  doubles as the band's entry point (see above).
 
 ### Ctrl+B
 
@@ -224,3 +260,8 @@ over the launch facts, see Protocol above), the `!` shell via its normal
   each exactly once.
 - The band is inline state, not a `View` — all four alternate-screen views
   and the resize repaint behave exactly as before.
+- The footer highlight is **not a mode**: it claims only Enter/Esc/↑/↓/Ctrl+C
+  and lets every other key through (after clearing itself), so no keystroke
+  can be stranded on it. It also changes no geometry — the footer row it
+  paints is the one `ui::footer_rows` already reserved, so `live_height`, the
+  cursor seat, and the scrollback commits are untouched by it.

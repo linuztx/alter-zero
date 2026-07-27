@@ -737,6 +737,14 @@ const FOOTER_SEPARATOR: &str = " · ";
 /// The footer's text colour — every segment dim, codex's no-theme-colours
 /// status-line style.
 const FOOTER_COLOR: Color = TOOL_DIM_COLOR;
+/// The **focused** shell indicator's fill: ↓ lights the footer's `{n} shell(s)`
+/// segment on the palette-selection cyan and waits for the Enter that opens the
+/// ↓ manager band (Claude-Code-style — see `docs/background.md`). Only that one
+/// segment changes; the model / cwd / context-gauge segments stay dim.
+const FOOTER_FOCUS_BG: Color = MENU_SELECTED_COLOR;
+/// The focused indicator's ink on that cyan fill — near-black, so the lit
+/// segment reads as a chip rather than a smudge.
+const FOOTER_FOCUS_FG: Color = Color::Rgb(0x1E, 0x1E, 0x1E);
 
 // --- The transient toast: a one-line, self-clearing status message pinned just
 // above the box (`Copied last message to clipboard`, `/resume is disabled …`).
@@ -3446,12 +3454,20 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         ));
     }
     // Running background shells append a `· {n} shell(s)` count — the ↓
-    // manager's ambient reminder (docs/background.md).
+    // manager's ambient reminder (docs/background.md). ↓ *focuses* that
+    // segment: it lights up on cyan and waits for the Enter that opens the
+    // manager band, while every other segment keeps its dim styling, so the
+    // row loses none of its context.
     let shells = app.background().len();
     if shells > 0 {
         let plural = if shells == 1 { "" } else { "s" };
+        let style = if app.background_focused() {
+            Style::new().fg(FOOTER_FOCUS_FG).bg(FOOTER_FOCUS_BG)
+        } else {
+            dim
+        };
         segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));
-        segments.push(Span::styled(format!("{shells} shell{plural}"), dim));
+        segments.push(Span::styled(format!("{shells} shell{plural}"), style));
     }
     let mut budget = (width as usize).saturating_sub(cols(FOOTER_INDENT));
     let mut spans = vec![Span::raw(FOOTER_INDENT)];
@@ -15987,6 +16003,44 @@ mod tests {
         assert_eq!(
             plain(&footer_line(&app, 80)).trim_end(),
             "  kimi-k2 · ~/repo · 2 shells"
+        );
+    }
+
+    #[test]
+    fn the_focused_footer_shell_count_lights_up_on_cyan() {
+        let mut app = App::new();
+        app.set_session_info("kimi-k2", "~/repo");
+        app.bg_started("bash_1", "ping x.com", None, true);
+        let shell_span = |line: &Line<'static>| {
+            line.spans
+                .iter()
+                .find(|s| s.content.contains("shell"))
+                .expect("the footer carries a shell segment")
+                .clone()
+        };
+        let idle = shell_span(&footer_line(&app, 80));
+        assert_eq!(idle.style.bg, None, "unfocused it stays dim like the rest");
+        assert_eq!(idle.style.fg, Some(FOOTER_COLOR));
+        // ↓ focuses the indicator: only that segment lights up — the model,
+        // cwd and gauge segments keep their text and their dim styling.
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let focused = footer_line(&app, 80);
+        assert_eq!(
+            plain(&focused).trim_end(),
+            "  kimi-k2 · ~/repo · 1 shell",
+            "the other footer segments stay put"
+        );
+        let lit = shell_span(&focused);
+        assert_eq!(lit.style.bg, Some(FOOTER_FOCUS_BG));
+        assert_eq!(lit.style.fg, Some(FOOTER_FOCUS_FG));
+        assert!(
+            focused
+                .spans
+                .iter()
+                .filter(|s| !s.content.contains("shell"))
+                .all(|s| s.style.bg.is_none()),
+            "nothing else is highlighted"
         );
     }
 

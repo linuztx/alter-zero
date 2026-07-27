@@ -83,7 +83,13 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   (`1.3k/160k (0.8%)`, both counts through `format_token_count`, the share one
   decimal — `docs/compact.md`) and the running **background shell** count
   (`docs/background.md`) — so a full row reads
-  `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%)`.
+  `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell`.
+  That last segment is the one **focusable** one: ↓ from an idle composer
+  lights it on the palette cyan (`FOOTER_FOCUS_BG`/`FOOTER_FOCUS_FG`) and
+  Enter opens the ↓ manager band, Claude-Code-style. Only that span's style
+  changes — the row keeps every other segment, dim as ever — and the
+  truncation path carries the style through, so a narrow width cuts the lit
+  segment without losing the highlight (see `docs/background.md`).
 - `display_cwd(path, home) -> String` — codex's `format_directory_display`
   relativization: `~` for home itself, `~/sub` under home, the absolute path
   otherwise (or when no home is known). Pure — `main.rs` passes
@@ -128,7 +134,9 @@ reseat, resizes) already accounts for the row.
   open — and 1 whenever a Ctrl+R search is open or shell mode is on, session
   info or not (see `docs/history-search.md` / `docs/shell-command.md`, which
   test the slot's other occupants); `footer_line` renders `  {model} · {cwd}` all-dim with the dim
-  separator; it truncates with `…` at narrow widths; `display_cwd` maps home →
+  separator; a ↓-focused shell count lights up on cyan while every other
+  segment keeps its text and dim styling; it truncates with `…` at narrow
+  widths; `display_cwd` maps home →
   `~`, under-home → `~/sub`, outside/unknown home → absolute; `live_height`
   grows one row with the footer; `render_live` paints the footer on the last
   row (and not while the palette is open); the cursor doesn't move when the
