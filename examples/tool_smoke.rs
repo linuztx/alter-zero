@@ -13,6 +13,7 @@
 
 use std::time::Duration;
 
+use alter_zero::agents::{AgentEvent, AgentRegistry};
 use alter_zero::context::{ContextMessage, ContextRole};
 use alter_zero::llm::LlmBackend;
 use alter_zero::llm::config::{ProvidersFile, Selection};
@@ -51,7 +52,30 @@ fn main() {
 
     println!("== model: {model} ==\n== prompt: {prompt}\n");
 
-    let backend = LlmBackend::new(cfg);
+    // The subagent registry (docs/agent-tool.md): enables the `agent` tool and
+    // prints each subagent's events dim, tagged by id, from a drain thread.
+    let (agent_tx, mut agent_rx) = unbounded_channel::<AgentEvent>();
+    let agent_registry = AgentRegistry::new(agent_tx);
+    let _agent_drain = std::thread::spawn(move || {
+        while let Some(AgentEvent::Stream { id, event }) = agent_rx.blocking_recv() {
+            match event {
+                StreamEvent::Chunk(c) => print!("\x1b[90m[{id}] {c}\x1b[0m"),
+                StreamEvent::ToolStart { name, args } => {
+                    println!("\n\x1b[90m[{id}] ● {name}({args})\x1b[0m");
+                }
+                StreamEvent::ToolEnd { ok, .. } => {
+                    println!("\x1b[90m[{id}] ⎿ ok={ok}\x1b[0m");
+                }
+                StreamEvent::StreamDone => println!("\n\x1b[90m[{id}] done\x1b[0m"),
+                StreamEvent::Error(e) => println!("\n\x1b[90m[{id}] error: {e}\x1b[0m"),
+                _ => {}
+            }
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+        }
+    });
+
+    let backend = LlmBackend::new(cfg).with_agents(agent_registry);
     assert!(backend.tools_enabled(), "tools should be on by default");
 
     let (tx, mut rx) = unbounded_channel();

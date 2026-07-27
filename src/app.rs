@@ -5107,6 +5107,29 @@ impl App {
                     agent.background = true;
                 }
             }
+        } else {
+            // A **foreground** resolution IS its members' resolution: any
+            // entry not yet settled from its own event stream (a backend
+            // whose events raced the drain, or the offline dummy — which
+            // scripts no per-agent events at all) settles from the call's
+            // outcome, so the tree shows `⎿ Done` and the linger sweep can
+            // arm. The stopped note maps to Interrupted, not Failed.
+            for done in results {
+                if let Some(agent) = self.agents.iter_mut().find(|agent| agent.id == done.id)
+                    && !agent.status.is_final()
+                {
+                    agent.status = if done.ok {
+                        AgentStatus::Done
+                    } else if done.output == AGENT_STOPPED_OUTPUT {
+                        AgentStatus::Interrupted
+                    } else {
+                        AgentStatus::Failed
+                    };
+                    if done.ok && agent.result.is_none() {
+                        agent.result = Some(done.output.clone());
+                    }
+                }
+            }
         }
         let entries = results
             .iter()

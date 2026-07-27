@@ -1486,11 +1486,28 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 for (id, started) in &agent_clocks {
                     app.set_agent_runtime(id, started.elapsed());
                 }
+                // Arm a linger deadline for every settled roster entry that
+                // lacks one — self-healing over every settle path (a group
+                // resolution, an Esc interrupt, a backend error, an `x`), so
+                // no path can strand a finished row.
+                let now = Instant::now();
+                let settled: Vec<String> = app
+                    .agents()
+                    .iter()
+                    .filter(|run| run.status.is_final())
+                    .map(|run| run.id.clone())
+                    .collect();
+                for id in settled {
+                    agent_expiry.entry(id).or_insert(now + AGENT_LINGER);
+                }
                 // Sweep finished agents whose linger expired — deferred while
                 // the user is inside that agent's session view (the deadline
-                // pushes forward, so leaving restarts the full linger).
-                let now = Instant::now();
+                // pushes forward, so leaving restarts the full linger), and a
+                // timer whose agent reopened (a chat continuation) is dropped.
                 agent_expiry.retain(|id, deadline| {
+                    if app.agent(id).is_none_or(|run| !run.status.is_final()) {
+                        return false;
+                    }
                     if app.agent_view.as_deref() == Some(id.as_str()) {
                         *deadline = now + AGENT_LINGER;
                         return true;

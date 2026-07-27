@@ -443,6 +443,12 @@ unit-tested must be unit-tested.
   codex's pager close key) returns to the chat instead of quitting — unless
   idle with a backtrack target, when Esc begins the preview in place. Sending
   is disabled while a reply is streaming.
+- **Subagents** (`docs/agent-tool.md`): the model's `agent` tool launches
+  autonomous side-agents — a live tree cell while a foreground group runs, a
+  persistent `● main` + `◯ …` roster under the footer (↓ selects, Enter opens
+  an agent's own inline session view the user can chat in, `x` stops),
+  background completions noticing + auto-following-up like background shells,
+  and per-agent `● Agent(…)` expansions in the Ctrl+O transcript.
 
 ## Architecture
 

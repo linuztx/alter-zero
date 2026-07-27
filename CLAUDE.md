@@ -30,7 +30,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `checkpoint`, `project_doc`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
@@ -124,7 +124,36 @@ safe boundary — a tool resolution mid-turn, else the turn end — while a
 model-launched note **no agent read** auto-starts a follow-up turn that tells
 the model the result when nothing else is queued (an agent that already heard
 it mid-turn owes no follow-up), `Done for Ns · N shells still running` on the
-summary) in `docs/background.md`; and the **tty detach** (every shell child —
+summary) in `docs/background.md`; and the **`Agent` tool** (Claude-Code-style subagents,
+`docs/agent-tool.md`: the model launches autonomous side-agents —
+`description`/`prompt`/`subagent_type`/`run_in_background` (default true) —
+each running its own `run_agent` tool loop over a fresh context on its own
+thread, reporting on a dedicated `agents::AgentEvent` channel (a seventh
+`select!` source — agents outlive turns); a foreground group shows the live
+blue `● Running {n} agents…` tree (per-agent description · tool uses · tokens
+· activity, Ctrl+B moves the group to the background) committing as
+`● {n} agents finished (ctrl+o to expand)` with `⎿ Done`/`⎿ Interrupted` rows,
+a background launch resolves at once as `● {n} background agents launched
+(↓ to manage)` with each completion posting its model-facing note on the
+shared notice board (the in-flight turn hears it mid-round, an idle
+completion auto-starts the follow-up turn — the background-shell pattern) and
+its green/red `● Agent "…" finished · Ns` cell settling at the same safe
+boundaries; the footer gains a persistent roster — `● main` over
+`◯ {type}  {description} {elapsed} · ↓ {tokens} tokens` rows — that ↓ steps
+into **after** the shell indicator (`❯` selection, Enter views, `x` stops
+immediately, hint lines in the footer slot; finished agents linger coloured
+`AGENT_LINGER` then sweep); Enter on an agent opens its **inline session
+view** — a purge-rebuild showing the agent's own transcript under the banner,
+the composer's top rule labelled with its description, typing **chats with
+the agent** (queued into its running loop at the next round boundary via the
+registry's pending-input seam, or a continuation run over its stored message
+list when idle), Esc returning to the purge-rebuilt main view (main commits
+are suppressed while the view is up, invariant-4 style); the Ctrl+O
+transcript expands each agent as `● Agent({description})` with `⎿ Prompt:`,
+the nested tool headers, `⎿ Response:`, and `⎿ Done ({n} tool uses ·
+{tokens} tokens · {s}s)`; the parent's calls replay as native `agent`
+tool_calls + results (`context.rs`), the records round-trip (`session.rs`),
+and subagents never get the `agent` tool — no nesting); and the **tty detach** (every shell child —
 model `bash`, `!`, background — spawned into a fresh session with no
 controlling terminal via `subprocess::spawn_detached_shell`'s
 setsid-binary → helper-re-exec → attached tier chain, so a `/dev/tty`
