@@ -12467,6 +12467,27 @@ mod tests {
     }
 
     #[test]
+    fn the_overlay_globals_clear_the_shell_highlight_on_their_way_past() {
+        // Ctrl+O and Ctrl+D are dispatched *above* the composer, so the
+        // highlight has to clear as they pass — otherwise the transcript /
+        // context overlay is returned from onto a stale lit indicator (the
+        // footer isn't even painted under the overlay) whose Enter would then
+        // open the band. This pins the routing: moving the focus handler below
+        // those globals breaks it.
+        for global in [ctrl('o'), ctrl('d')] {
+            let mut app = app_with_shells(&["a"]);
+            app.on_key(key(KeyCode::Down));
+            assert!(app.background_focused(), "precondition: lit");
+            app.on_key(global);
+            assert!(
+                !app.background_focused(),
+                "{global:?} returned from the overlay onto a stale highlight"
+            );
+            assert_ne!(app.view, View::Conversation, "…and it still opened");
+        }
+    }
+
+    #[test]
     fn any_other_key_clears_the_shell_highlight_and_still_acts() {
         let mut app = app_with_shells(&["a"]);
         app.on_key(key(KeyCode::Down));
