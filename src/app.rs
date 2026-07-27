@@ -4861,9 +4861,18 @@ impl App {
     /// Can Ctrl+B move the current command to the background? True while the
     /// front tool is a **running command** — a model `bash` call or a `!`
     /// shell turn — the only runners that poll the registry's background
-    /// request. See `docs/background.md`.
+    /// request — **or while a foreground agent group runs** (its wait loop
+    /// polls the same latch and hands the rest of the group over,
+    /// `docs/agent-tool.md`). See `docs/background.md`.
     #[must_use]
     pub fn can_move_to_background(&self) -> bool {
+        if self
+            .agent_group
+            .as_ref()
+            .is_some_and(|group| !group.background)
+        {
+            return true;
+        }
         self.tool_queue.front().is_some_and(|tool| {
             tool.status == ToolStatus::Running && (tool.shell || tool.name == "Bash")
         })
@@ -13773,6 +13782,40 @@ mod tests {
         assert_eq!(notice.status, crate::agents::AgentStatus::Interrupted);
         assert!(notice.headline().contains("was stopped by user"));
         assert_eq!(app.visible_agents().len(), 1, "the row left at once");
+    }
+
+    #[test]
+    fn a_live_foreground_group_enables_ctrl_b() {
+        let mut app = App::new();
+        app.begin_stream();
+        assert!(!app.can_move_to_background(), "nothing runs yet");
+        app.start_agent_group(false, &agent_specs(false));
+        assert!(
+            app.can_move_to_background(),
+            "a foreground group polls the latch"
+        );
+        app.finish_agent_group(
+            false,
+            &[
+                AgentCallDone {
+                    id: "a1".into(),
+                    output: "r1".into(),
+                    ok: true,
+                },
+                AgentCallDone {
+                    id: "a2".into(),
+                    output: "r2".into(),
+                    ok: true,
+                },
+            ],
+        );
+        assert!(
+            !app.can_move_to_background(),
+            "resolved — nothing to hand over"
+        );
+        // A background group never offers the hand-off (it is already there).
+        app.start_agent_group(true, &agent_specs(true));
+        assert!(!app.can_move_to_background());
     }
 
     #[test]
