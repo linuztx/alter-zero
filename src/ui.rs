@@ -16045,6 +16045,36 @@ mod tests {
     }
 
     #[test]
+    fn render_live_paints_the_focused_count_on_the_footer_row() {
+        // The painted cells, not just the styled spans: the tint must cover
+        // exactly the `1 shell` columns on the live region's last row — the
+        // ` · ` separator before it stays untinted, so the highlight hugs the
+        // indicator instead of bleeding across the footer.
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new();
+        app.set_session_info("kimi-k2", "~/repo");
+        app.bg_started("bash_1", "ping x.com", None, true);
+        app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
+        let mut buf = buffer(60, h);
+        render_live(buf.area, &mut buf, &app);
+        let last = row(&buf, h - 1, 60);
+        assert!(last.starts_with("  kimi-k2 · ~/repo · 1 shell"), "{last:?}");
+        // Column, not byte offset — the ` · ` separators are multi-byte.
+        let byte = last.find("1 shell").expect("the count");
+        let start = u16::try_from(cols(&last[..byte])).unwrap();
+        for x in start..start + u16::try_from(cols("1 shell")).unwrap() {
+            assert_eq!(buf[(x, h - 1)].bg, FOOTER_FOCUS_BG, "tinted at column {x}");
+            assert_eq!(buf[(x, h - 1)].fg, FOOTER_FOCUS_FG, "ink at column {x}");
+        }
+        assert_ne!(
+            buf[(start - 1, h - 1)].bg,
+            FOOTER_FOCUS_BG,
+            "the separator before the count stays clean"
+        );
+    }
+
+    #[test]
     fn background_notice_lines_render_the_headline_with_outcome_colours() {
         let ok = background_notice_lines(&bg_notice(Some(0), false), 80);
         assert_eq!(

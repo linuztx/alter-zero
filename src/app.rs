@@ -1968,11 +1968,6 @@ pub struct App {
     /// [`bg_output`]: App::bg_output
     /// [`bg_exited`]: App::bg_exited
     background: Vec<BackgroundShell>,
-    /// Whether any background shell has ever started this session — the ↓
-    /// gate: once true, ↓ from an empty composer opens the manager (showing
-    /// the `No tasks currently running` empty state after they all finish).
-    /// Reset by `/clear` (which also kills the shells).
-    had_background: bool,
     /// Is the footer's `{n} shell(s)` indicator **focused** — lit on cyan,
     /// waiting for the Enter that opens the manager band? ↓ from an idle
     /// composer sets it (Claude-Code-style: step onto the indicator first,
@@ -2721,17 +2716,11 @@ impl App {
                     return Action::None;
                 }
                 // ↓ from an empty composer steps onto the footer's shell
-                // indicator once any shell has run (`docs/background.md`) —
-                // history recall was tried first, so a mid-recall ↓ still
-                // steps the history. With shells running the indicator lights
-                // up and waits for Enter; with none left there is no indicator
-                // to light, so ↓ opens the (empty-state) band outright.
-                if self.background_openable() {
-                    if self.background.is_empty() {
-                        self.open_background_view();
-                    } else {
-                        self.background_focus = true;
-                    }
+                // indicator while one is running (`docs/background.md`) — it
+                // lights up and Enter opens the manager. History recall was
+                // tried first, so a mid-recall ↓ still steps the history.
+                if self.background_focusable() {
+                    self.background_focus = true;
                     return Action::None;
                 }
                 self.input.move_down();
@@ -4498,13 +4487,6 @@ impl App {
         self.background.iter().find(|shell| shell.id == id)
     }
 
-    /// Has any background shell ever started this session? The ↓ manager
-    /// opens once true (showing the empty state after they all finish).
-    #[must_use]
-    pub const fn background_ever(&self) -> bool {
-        self.had_background
-    }
-
     /// Is the footer's shell indicator lit (↓ pressed, Enter pending)?
     /// [`ui::footer_line`] paints that segment on cyan while it is.
     ///
@@ -4523,7 +4505,6 @@ impl App {
         description: Option<String>,
         from_model: bool,
     ) {
-        self.had_background = true;
         self.background.push(BackgroundShell {
             id: id.to_string(),
             command: command.to_string(),
@@ -4643,14 +4624,14 @@ impl App {
         })
     }
 
-    /// Should ↓ open the background manager? Only from an idle-looking
-    /// composer — empty, not in shell mode, no palette/file band open — and
-    /// only once a background shell has ever run ([`background_ever`]), so ↓
-    /// keeps its history-recall/cursor meaning otherwise.
-    ///
-    /// [`background_ever`]: App::background_ever
-    fn background_openable(&self) -> bool {
-        self.had_background
+    /// Should ↓ light up the footer's shell indicator? Only from an
+    /// idle-looking composer — empty, not in shell mode, no palette/file band
+    /// open — and only while a shell is actually **running**: the highlight
+    /// lands *on* the footer's `{n} shell(s)` segment, so with no segment
+    /// there is nothing to light and ↓ keeps its history-recall/cursor
+    /// meaning. The manager has no hidden keybinding — no count, no way in.
+    fn background_focusable(&self) -> bool {
+        !self.background.is_empty()
             && self.input.is_empty()
             && !self.shell_mode
             && self.command_menu.is_none()
@@ -4680,7 +4661,14 @@ impl App {
             return Some(Action::None);
         }
         match key.code {
-            KeyCode::Enter => {
+            // A *plain* Enter opens the band. Alt/Shift+Enter stay the newline
+            // keys (docs/shift-enter.md) — they fall through below, dismissing
+            // the highlight and inserting the newline, like Ctrl+J does.
+            KeyCode::Enter
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+            {
                 self.open_background_view();
                 Some(Action::None)
             }
@@ -5505,7 +5493,6 @@ impl App {
         self.background_view = None;
         self.background_focus = false;
         self.pending_bg.clear();
-        self.had_background = false;
     }
 }
 
@@ -12214,11 +12201,10 @@ mod tests {
     }
 
     #[test]
-    fn bg_started_lists_the_shell_and_sets_the_ever_gate() {
+    fn bg_started_lists_the_shell_for_the_footer_and_the_manager() {
         let mut app = App::new();
-        assert!(!app.background_ever());
+        assert!(app.background().is_empty());
         app.bg_started("bash_1", "ping x.com", Some("Ping x".into()), true);
-        assert!(app.background_ever());
         assert_eq!(app.background().len(), 1);
         let shell = &app.background()[0];
         assert_eq!(shell.id, "bash_1");
@@ -12383,10 +12369,11 @@ mod tests {
     }
 
     #[test]
-    fn down_from_an_empty_composer_opens_the_manager_once_a_shell_ever_ran() {
+    fn down_reaches_the_manager_only_while_a_shell_is_running() {
         let mut app = App::new();
         // Before any shell: ↓ keeps its old meaning (a cursor no-op here).
         app.on_key(key(KeyCode::Down));
+        assert!(!app.background_focused());
         assert!(app.background_view.is_none());
         app.bg_started("bash_1", "ping x.com", None, true);
         // ↓ highlights the footer's indicator first; Enter opens the band.
@@ -12396,16 +12383,41 @@ mod tests {
             app.background_view,
             Some(BackgroundView::List { selected: 0 })
         );
-        // …and it opens on the empty state even after every shell finished —
-        // with no indicator left in the footer, ↓ has nothing to highlight.
+        // Once every shell has finished the footer carries no count, so ↓ has
+        // nothing to light up — and no hidden way into the manager either.
         app.close_background_view();
         app.bg_exited("bash_1", Some(0), false);
         app.on_key(key(KeyCode::Down));
-        assert!(app.background_view.is_some(), "the empty state still opens");
+        assert!(!app.background_focused());
         assert!(
-            !app.background_focused(),
-            "no running shell, no indicator to light up"
+            app.background_view.is_none(),
+            "no indicator on screen, no keybinding"
         );
+    }
+
+    #[test]
+    fn the_newline_keys_keep_their_meaning_under_the_highlight() {
+        // Shift/Alt+Enter and Ctrl+J are the newline keys (docs/shift-enter.md):
+        // a lit indicator must not swallow them — only a *plain* Enter opens
+        // the band.
+        for newline in [
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+        ] {
+            let mut app = app_with_shells(&["a"]);
+            app.on_key(key(KeyCode::Down));
+            app.on_key(newline);
+            assert!(
+                app.background_view.is_none(),
+                "{newline:?} is a newline key, not the band's opener"
+            );
+            assert_eq!(app.input.text(), "\n", "{newline:?} inserted a newline");
+            assert!(
+                !app.background_focused(),
+                "{newline:?} still dismisses the highlight"
+            );
+        }
     }
 
     #[test]
@@ -12655,7 +12667,10 @@ mod tests {
         assert!(app.background().is_empty());
         assert!(app.background_view.is_none());
         assert!(app.take_pending_bg_completions().is_empty());
-        assert!(!app.background_ever(), "the ↓ gate resets with the slate");
+        assert!(
+            !app.background_focused(),
+            "no indicator left to light after the slate is wiped"
+        );
     }
 
     #[test]
