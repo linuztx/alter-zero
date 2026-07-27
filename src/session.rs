@@ -20,7 +20,11 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app::{DONE_VERBS, HistoryItem, Message, Role, ToolCall, ToolStatus, TurnSummary};
+use crate::agents::AgentStatus;
+use crate::app::{
+    AgentGroup, AgentGroupEntry, AgentNotice, DONE_VERBS, HistoryItem, Message, Role, ToolCall,
+    ToolStatus, TurnSummary,
+};
 use crate::checkpoint::Checkpoint;
 
 /// The `session_meta` payload — the first line of every rollout file (codex's
@@ -104,6 +108,77 @@ enum ItemRecord {
     /// stays compacted. Old builds skip the unknown record type (and see the
     /// full uncompacted context — the graceful degradation).
     Compaction(CompactionRecord),
+    /// A resolved subagent group (`docs/agent-tool.md`). Old builds skip the
+    /// unknown record type (the forward-compatibility contract).
+    AgentGroup(AgentGroupRecord),
+    /// A background agent's completion notice (`docs/agent-tool.md`).
+    AgentNotice(AgentNoticeRecord),
+}
+
+/// An [`AgentGroup`] on disk (`docs/agent-tool.md`).
+///
+/// [`AgentGroup`]: crate::app::AgentGroup
+#[derive(Serialize, Deserialize)]
+struct AgentGroupRecord {
+    background: bool,
+    agents: Vec<AgentEntryRecord>,
+    timestamp: String,
+}
+
+/// One [`AgentGroupEntry`] on disk. `status` is the lowercase status name; an
+/// unknown one parses as `interrupted` (the conservative red).
+///
+/// [`AgentGroupEntry`]: crate::app::AgentGroupEntry
+#[derive(Serialize, Deserialize)]
+struct AgentEntryRecord {
+    id: String,
+    description: String,
+    agent_type: String,
+    prompt: String,
+    status: String,
+    tool_uses: usize,
+    tokens: u64,
+    secs: u64,
+    result: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tool_headers: Vec<String>,
+    output: String,
+}
+
+/// An [`AgentNotice`] on disk (`docs/agent-tool.md`).
+///
+/// [`AgentNotice`]: crate::app::AgentNotice
+#[derive(Serialize, Deserialize)]
+struct AgentNoticeRecord {
+    id: String,
+    description: String,
+    status: String,
+    secs: u64,
+    result: String,
+    timestamp: String,
+}
+
+/// The lowercase on-disk name of an agent status.
+const fn agent_status_name(status: AgentStatus) -> &'static str {
+    match status {
+        AgentStatus::Pending => "pending",
+        AgentStatus::Running => "running",
+        AgentStatus::Done => "done",
+        AgentStatus::Failed => "failed",
+        AgentStatus::Interrupted => "interrupted",
+    }
+}
+
+/// The agent status a recorded name maps back to. Unknown names — and the
+/// transient `pending`/`running` of a rollout cut short mid-run (a resumed
+/// session's agents are gone) — read back as `interrupted`, the conservative
+/// "this never finished" red.
+fn agent_status_from(name: &str) -> AgentStatus {
+    match name {
+        "done" => AgentStatus::Done,
+        "failed" => AgentStatus::Failed,
+        _ => AgentStatus::Interrupted,
+    }
 }
 
 /// A [`Compaction`] marker on disk (`docs/compact.md`): the model-written
@@ -312,6 +387,40 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             after: compaction.after,
             auto: compaction.auto,
         }),
+        // The recorder mirrors history append-only, so a background entry's
+        // later completion update (`App::settle_agent_completion`) never
+        // rewrites this line — the AgentNotice line recorded after it carries
+        // the outcome, and a resumed still-`running` entry reads back as
+        // interrupted (agents don't survive a session).
+        HistoryItem::AgentGroup(group) => ItemRecord::AgentGroup(AgentGroupRecord {
+            background: group.background,
+            agents: group
+                .agents
+                .iter()
+                .map(|entry| AgentEntryRecord {
+                    id: entry.id.clone(),
+                    description: entry.description.clone(),
+                    agent_type: entry.agent_type.clone(),
+                    prompt: entry.prompt.clone(),
+                    status: agent_status_name(entry.status).to_string(),
+                    tool_uses: entry.tool_uses,
+                    tokens: entry.tokens,
+                    secs: entry.secs,
+                    result: entry.result.clone(),
+                    tool_headers: entry.tool_headers.clone(),
+                    output: entry.output.clone(),
+                })
+                .collect(),
+            timestamp: group.timestamp.clone(),
+        }),
+        HistoryItem::AgentNotice(notice) => ItemRecord::AgentNotice(AgentNoticeRecord {
+            id: notice.id.clone(),
+            description: notice.description.clone(),
+            status: agent_status_name(notice.status).to_string(),
+            secs: notice.secs,
+            result: notice.result.clone(),
+            timestamp: notice.timestamp.clone(),
+        }),
     };
     line(stamp, record)
 }
@@ -414,6 +523,39 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     code: notice.code,
                     killed: notice.killed,
                     output_tail: notice.output_tail,
+                    timestamp: notice.timestamp,
+                }));
+            }
+            ItemRecord::AgentGroup(group) => {
+                items.push(HistoryItem::AgentGroup(AgentGroup {
+                    background: group.background,
+                    agents: group
+                        .agents
+                        .into_iter()
+                        .map(|entry| AgentGroupEntry {
+                            id: entry.id,
+                            description: entry.description,
+                            agent_type: entry.agent_type,
+                            prompt: entry.prompt,
+                            status: agent_status_from(&entry.status),
+                            tool_uses: entry.tool_uses,
+                            tokens: entry.tokens,
+                            secs: entry.secs,
+                            result: entry.result,
+                            tool_headers: entry.tool_headers,
+                            output: entry.output,
+                        })
+                        .collect(),
+                    timestamp: group.timestamp,
+                }));
+            }
+            ItemRecord::AgentNotice(notice) => {
+                items.push(HistoryItem::AgentNotice(AgentNotice {
+                    id: notice.id,
+                    description: notice.description,
+                    status: agent_status_from(&notice.status),
+                    secs: notice.secs,
+                    result: notice.result,
                     timestamp: notice.timestamp,
                 }));
             }

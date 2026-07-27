@@ -3,6 +3,9 @@
 //! The binary (`main.rs`) is a thin shell around these modules so that all the
 //! real logic lives in pure, unit-testable functions. See `docs/design.md`.
 //!
+//! - [`agents`]      — the model's `Agent` tool: the subagent roster state and
+//!   the registry behind launching, stopping, and chatting with subagents
+//!   (pure state + boundary registry; see `docs/agent-tool.md`).
 //! - [`app`]         — conversation state and the pure key/stream update logic.
 //! - [`background`]  — background shell processes: the registry behind
 //!   `run_in_background`, Ctrl+B, and the ↓ manager (boundary; see
@@ -46,6 +49,7 @@
 //! - [`ui`]          — pure rendering helpers (word-wrap, message lines, live
 //!   region).
 
+pub mod agents;
 pub mod app;
 pub mod background;
 pub mod checkpoint;

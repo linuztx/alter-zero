@@ -27,6 +27,31 @@ pub struct ToolCallSummary {
     pub args: String,
 }
 
+/// One subagent announced by a [`StreamEvent::AgentBatch`]: the identity the
+/// roster entry ([`crate::agents::AgentRun`]) is created from. `id` is the
+/// registry id its agent-channel events will carry; `background` mirrors the
+/// batch's flag (every spec in one batch shares it). See `docs/agent-tool.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentSpec {
+    pub id: String,
+    pub description: String,
+    pub agent_type: String,
+    pub prompt: String,
+    pub background: bool,
+}
+
+/// One `agent` tool call's resolution inside a [`StreamEvent::AgentGroupDone`]:
+/// the model-facing tool-result text for the agent `id` — the framed final
+/// response (foreground), the launch acknowledgement (background), or the
+/// stopped/failed note. `ok` picks the recorded entry's red/green when the
+/// roster can no longer say (it mirrors the subagent's own outcome).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentCallDone {
+    pub id: String,
+    pub output: String,
+    pub ok: bool,
+}
+
 /// Real token usage reported by the provider for one completed request round
 /// — the final `usage` frame of an OpenAI-compatible stream (asked for via
 /// `stream_options.include_usage`). Unlike the app-side tiktoken estimate it
@@ -114,6 +139,29 @@ pub enum StreamEvent {
     /// Only the real `bash` executor emits this today; a backend that never
     /// streams simply omits it.
     ToolOutput(String),
+    /// The model launched a **group of subagents** this round (its `agent`
+    /// tool calls), announced up front like a [`StreamEvent::ToolBatch`]: the
+    /// loop seeds the roster (one [`crate::agents::AgentRun`] per spec) and
+    /// shows the live group cell — `● Running {n} agents…` over the per-agent
+    /// tree rows — while each agent's own stream reports on the dedicated
+    /// agent channel. A `background` group resolves immediately (its
+    /// [`StreamEvent::AgentGroupDone`] follows at once); a foreground group
+    /// stays live until every agent finishes. See `docs/agent-tool.md`.
+    AgentBatch {
+        background: bool,
+        agents: Vec<AgentSpec>,
+    },
+    /// The announced agent group resolved: every foreground agent finished
+    /// (or the background launch was acknowledged, or Ctrl+B moved the rest
+    /// to the background — `background` reports the *resolved* mode). Carries
+    /// each call's model-facing tool-result text; the loop drains the agent
+    /// channel first (the terminal roster events were enqueued before this
+    /// was sent), then records the [`crate::app::AgentGroup`] history item
+    /// and commits the group cell. See `docs/agent-tool.md`.
+    AgentGroupDone {
+        background: bool,
+        agents: Vec<AgentCallDone>,
+    },
     /// The model began a "thinking" (reasoning) phase. The loop shows
     /// `· Thinking for Ns` in the live status line until the matching
     /// [`StreamEvent::ThinkingEnd`] arrives.
@@ -236,6 +284,37 @@ const DUMMY_PING_FACEBOOK: &str = "PING facebook.com (157.240.1.35): 56 data byt
     --- facebook.com ping statistics ---\n\
     2 packets transmitted, 2 packets received, 0.0% packet loss";
 const DUMMY_PING_FAIL: &str = "ping: cannot resolve x.invalid: Unknown host\nexit status 68";
+
+/// The dummy's **subagent demo** (`docs/agent-tool.md`), played for a prompt
+/// mentioning "agents" (opt-in, like "parallel"/"table" — but never for
+/// `/init`, whose canned prompt names `AGENTS.md`): a two-agent group is
+/// announced, "runs" for [`AGENT_DELAY`] (the live tree cell shows, each row
+/// `⎿ Initializing…`), then resolves with canned final responses. A prompt
+/// also mentioning "background" launches the group in background mode instead
+/// — the calls resolve at once with launch texts and the roster entries stay
+/// running (stoppable with `x`, the manager demo). Each entry is
+/// `(id, description, prompt, response)`; ids use the roster's `a…` shape.
+const DUMMY_AGENTS: &[(&str, &str, &str, &str)] = &[
+    (
+        "ademowars",
+        "Fetch current weather and time in Warsaw",
+        "What is the current weather and time in Warsaw, Poland? Provide the \
+         temperature, conditions, and local time.",
+        "Warsaw is currently 19°C and partly cloudy; the local time is 14:32 CEST.",
+    ),
+    (
+        "ademomnla",
+        "Fetch current weather and time in Manila",
+        "What is the current weather and time in Manila, Philippines? Provide the \
+         temperature, conditions, and local time.",
+        "Manila is currently 28°C with patchy rain; the local time is 20:32 PST.",
+    ),
+];
+
+/// How long the dummy's scripted agent group "runs" between its announcement
+/// and its resolution — long enough that the live tree cell (and the footer
+/// roster's `Initializing…` rows) are visible.
+pub const AGENT_DELAY: Duration = Duration::from_millis(1600);
 
 /// The dummy's **markdown table** demo reply, played for any prompt mentioning
 /// "table" (opt-in, like the "parallel" batch): prose, a 10-row GFM table whose
@@ -404,6 +483,50 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
         events.push(StreamEvent::StreamDone);
         return events;
     }
+    // An "agents" prompt plays the subagent demo (docs/agent-tool.md): the
+    // first half of the text, then the scripted two-agent group — announced,
+    // "running" for AGENT_DELAY, resolved — then the closing text. Never for
+    // /init (its canned prompt names AGENTS.md).
+    let lower = prompt.to_lowercase();
+    if lower.contains("agents") && !lower.contains("agents.md") {
+        let background = lower.contains("background");
+        events.extend(chunks(&first).into_iter().map(StreamEvent::Chunk));
+        events.push(StreamEvent::AgentBatch {
+            background,
+            agents: DUMMY_AGENTS
+                .iter()
+                .map(|&(id, description, prompt, _)| AgentSpec {
+                    id: id.to_string(),
+                    description: description.to_string(),
+                    agent_type: "general-purpose".to_string(),
+                    prompt: prompt.to_string(),
+                    background,
+                })
+                .collect(),
+        });
+        events.push(StreamEvent::AgentGroupDone {
+            background,
+            agents: DUMMY_AGENTS
+                .iter()
+                .map(|&(id, description, _, response)| AgentCallDone {
+                    id: id.to_string(),
+                    output: if background {
+                        format!(
+                            "Background agent launched with ID: {id} \
+                             (\"{description}\"). You will be notified when it \
+                             completes."
+                        )
+                    } else {
+                        response.to_string()
+                    },
+                    ok: true,
+                })
+                .collect(),
+        });
+        events.extend(chunks(&second).into_iter().map(StreamEvent::Chunk));
+        events.push(StreamEvent::StreamDone);
+        return events;
+    }
     events.extend(chunks(&first).into_iter().map(StreamEvent::Chunk));
     events.push(StreamEvent::ThinkingStart);
     events.extend(
@@ -558,6 +681,15 @@ pub trait ReplySource {
     fn system_prompt(&self) -> Option<String> {
         None
     }
+
+    /// Send a chat message into a running/settled subagent's session
+    /// (`docs/agent-tool.md`): queued into its loop at the next round
+    /// boundary, or a continuation run when it is idle. Returns whether the
+    /// message was accepted. The default (the dummy, backends without a
+    /// subagent registry) declines — the loop raises a toast.
+    fn spawn_agent_chat(&self, _id: &str, _text: &str) -> bool {
+        false
+    }
 }
 
 /// The built-in canned-reply backend used by the demo.
@@ -632,6 +764,10 @@ impl ReplySource for DummyAi {
                 let pause = match &event {
                     StreamEvent::Chunk(_) => Some(CHUNK_DELAY),
                     StreamEvent::ToolStart { .. } => Some(TOOL_DELAY),
+                    // A foreground agent group "runs" between its announcement
+                    // and its resolution so the live tree cell shows; a
+                    // background launch resolves at once (docs/agent-tool.md).
+                    StreamEvent::AgentBatch { background, .. } if !background => Some(AGENT_DELAY),
                     // Each streamed output line pauses like a word so the live
                     // cell visibly tails (docs/tool-streaming.md).
                     StreamEvent::ToolOutput(_) => Some(CHUNK_DELAY),
@@ -1290,6 +1426,7 @@ mod tests {
                 StreamEvent::ToolStart { .. } => tool_starts += 1,
                 StreamEvent::ToolEnd { .. } => tool_ends += 1,
                 StreamEvent::ToolOutput(_) => tool_output_chunks += 1,
+                StreamEvent::AgentBatch { .. } | StreamEvent::AgentGroupDone { .. } => {}
                 StreamEvent::ThinkingStart => think_starts += 1,
                 StreamEvent::ThinkingChunk(_) => think_chunks += 1,
                 StreamEvent::ThinkingEnd => think_ends += 1,

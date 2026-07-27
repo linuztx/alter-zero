@@ -494,8 +494,54 @@ fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
             HistoryItem::Background(notice) => {
                 push_text(out, ContextRole::User, notice.context_text(), vec![]);
             }
+            // A resolved subagent group (`docs/agent-tool.md`): the parent
+            // made one `agent` call per entry and received one result — the
+            // native tool-call pair replays exactly that: every call folded
+            // onto the assistant entry, then the results in call order, each
+            // carrying the **immutable** model-facing `output` (the framed
+            // response / launch acknowledgement / stopped note the model
+            // actually read — never the display fields a later completion
+            // updates).
+            HistoryItem::AgentGroup(group) => {
+                let mut ids = Vec::with_capacity(group.agents.len());
+                for entry in &group.agents {
+                    let id = format!("call_{tool_seq}");
+                    tool_seq += 1;
+                    let call =
+                        ContextToolCall::new(id.clone(), "agent", agent_arguments(entry, group));
+                    match out.last_mut() {
+                        Some(last) if last.role == ContextRole::Assistant => {
+                            last.tool_calls.push(call);
+                        }
+                        _ => out.push(ContextMessage::assistant_tool_calls("", vec![call])),
+                    }
+                    ids.push(id);
+                }
+                for (id, entry) in ids.into_iter().zip(&group.agents) {
+                    out.push(ContextMessage::tool_result(id, entry.output.clone()));
+                }
+            }
+            // A background agent's completion: the bracketed user-role note
+            // carrying the outcome and the final response, exactly like a
+            // background shell's (docs/agent-tool.md).
+            HistoryItem::AgentNotice(notice) => {
+                push_text(out, ContextRole::User, notice.context_text(), vec![]);
+            }
         }
     }
+}
+
+/// Reconstruct an `agent` call's JSON argument object from its recorded
+/// entry — the [`reconstruct_arguments`] twin for subagents (history keeps the
+/// typed fields, not the raw argument JSON).
+fn agent_arguments(entry: &crate::app::AgentGroupEntry, group: &crate::app::AgentGroup) -> String {
+    serde_json::json!({
+        "description": entry.description,
+        "prompt": entry.prompt,
+        "subagent_type": entry.agent_type,
+        "run_in_background": group.background,
+    })
+    .to_string()
 }
 
 #[cfg(test)]

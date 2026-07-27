@@ -61,14 +61,16 @@ pub enum RoundOutcome {
 /// The take sits after the cancel check so an abandoned turn can't steal
 /// notes owed to the boundary's automatic follow-up turn. See
 /// `docs/background.md`.
+#[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
 pub fn run_agent(
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
     max_iterations: usize,
-    mut messages: Vec<ChatMessage>,
+    messages: &mut Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(&str)) -> ToolOutcome,
     mut pending_notices: impl FnMut() -> Vec<String>,
+    mut run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
 ) {
     let mut iterations = 0usize;
     loop {
@@ -78,7 +80,7 @@ pub fn run_agent(
         for note in pending_notices() {
             messages.push(ChatMessage::user(note));
         }
-        match round(&messages) {
+        match round(messages) {
             RoundOutcome::Complete => {
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
@@ -103,20 +105,37 @@ pub fn run_agent(
                     return;
                 }
                 messages.push(assistant);
-                // Announce the whole batch up front — before any tool runs — so
-                // the UI shows every requested call at once, the ones not yet
-                // executing as `⎿ Waiting…`. Each entry's (name, args) equals the
-                // matching ToolStart's; execution below is still sequential. See
-                // `docs/parallel-tools.md`.
-                let _ = tx.send(StreamEvent::ToolBatch(
-                    calls
-                        .iter()
-                        .map(|call| ToolCallSummary {
-                            name: display_name(&call.name),
-                            args: summarize_call(&call.name, &call.arguments),
-                        })
-                        .collect(),
-                ));
+                // The round's `agent` calls take their own path
+                // (`docs/agent-tool.md`): the `run_agents` closure launches
+                // them all **concurrently**, emits the AgentBatch /
+                // AgentGroupDone events, waits for foreground completion
+                // (polling this same cancel), and returns each call's tool
+                // result. The ordinary calls run sequentially exactly as
+                // before; every result then appends in the model's original
+                // call order (strict providers pair results by contiguity).
+                let (agent_calls, rest): (Vec<&ToolCallRequest>, Vec<&ToolCallRequest>) = calls
+                    .iter()
+                    .partition(|call| call.name == super::tools::AGENT_TOOL_NAME);
+                let mut results: Vec<(String, String)> = Vec::with_capacity(calls.len());
+                if !agent_calls.is_empty() {
+                    let owned: Vec<ToolCallRequest> = agent_calls.into_iter().cloned().collect();
+                    results.extend(run_agents(&owned));
+                }
+                // Announce the ordinary batch up front — before any tool runs
+                // — so the UI shows every requested call at once, the ones not
+                // yet executing as `⎿ Waiting…`. Each entry's (name, args)
+                // equals the matching ToolStart's; execution below is still
+                // sequential. See `docs/parallel-tools.md`.
+                if !rest.is_empty() {
+                    let _ = tx.send(StreamEvent::ToolBatch(
+                        rest.iter()
+                            .map(|call| ToolCallSummary {
+                                name: display_name(&call.name),
+                                args: summarize_call(&call.name, &call.arguments),
+                            })
+                            .collect(),
+                    ));
+                }
                 // An image `read`'s pixels: collected per call and attached
                 // AFTER the round's tool results, which must stay contiguous
                 // (strict providers require every tool_call answered directly
@@ -127,9 +146,11 @@ pub fn run_agent(
                 // shape into later turns (`crate::context`). See
                 // `docs/tools.md`.
                 let mut attachments: Vec<ChatMessage> = Vec::new();
-                for call in &calls {
+                let mut cancelled_mid_tools = false;
+                for call in &rest {
                     if cancel.is_cancelled() {
-                        return;
+                        cancelled_mid_tools = true;
+                        break;
                     }
                     let _ = tx.send(StreamEvent::ToolStart {
                         name: display_name(&call.name),
@@ -162,7 +183,7 @@ pub fn run_agent(
                             });
                         }
                     }
-                    messages.push(ChatMessage::tool_result(&call.id, &outcome.output));
+                    results.push((call.id.clone(), outcome.output.clone()));
                     if let Some(url) = outcome.image {
                         let path = summarize_call(&call.name, &call.arguments);
                         attachments.push(ChatMessage::with_parts(
@@ -174,10 +195,20 @@ pub fn run_agent(
                         ));
                     }
                 }
+                // Results append in the model's original call order (an
+                // unexecuted call — a cancel landed first — is answered so
+                // the stored list stays well-formed for a continuation).
+                for call in &calls {
+                    let output = results
+                        .iter()
+                        .find(|(id, _)| id == &call.id)
+                        .map_or_else(|| "[not executed]".to_string(), |(_, out)| out.clone());
+                    messages.push(ChatMessage::tool_result(&call.id, &output));
+                }
                 messages.append(&mut attachments);
                 // A cancel that landed during a tool run reaps us here rather
                 // than spending another round that would just return Cancelled.
-                if cancel.is_cancelled() {
+                if cancelled_mid_tools || cancel.is_cancelled() {
                     return;
                 }
                 iterations += 1;
@@ -228,10 +259,11 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("hi")],
+            &mut vec![ChatMessage::user("hi")],
             |_msgs| RoundOutcome::Complete,
             |_call, _sink| panic!("no tools should run"),
             Vec::new,
+            |_calls| Vec::new(),
         );
         assert_eq!(drain(&mut rx), vec![StreamEvent::StreamDone]);
     }
@@ -246,7 +278,7 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("run ls")],
+            &mut vec![ChatMessage::user("run ls")],
             |_msgs| {
                 let mut n = rounds.borrow_mut();
                 *n += 1;
@@ -261,6 +293,7 @@ mod tests {
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.name)),
             Vec::new,
+            |_calls| Vec::new(),
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -306,7 +339,7 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("run it")],
+            &mut vec![ChatMessage::user("run it")],
             |_msgs| {
                 let mut n = rounds.borrow_mut();
                 *n += 1;
@@ -325,6 +358,7 @@ mod tests {
                 ToolOutcome::ok("Exit code: 0\na\nb")
             },
             Vec::new,
+            |_calls| Vec::new(),
         );
         let events = drain(&mut rx);
         let start = events
@@ -374,7 +408,7 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("ping them")],
+            &mut vec![ChatMessage::user("ping them")],
             |_msgs| {
                 let mut n = rounds.borrow_mut();
                 *n += 1;
@@ -389,6 +423,7 @@ mod tests {
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
             Vec::new,
+            |_calls| Vec::new(),
         );
         let events = drain(&mut rx);
         // The very first event announces the batch, carrying all three calls in
@@ -451,7 +486,7 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("read a")],
+            &mut vec![ChatMessage::user("read a")],
             |msgs| {
                 seen_lens.borrow_mut().push(msgs.len());
                 let mut n = rounds.borrow_mut();
@@ -467,6 +502,7 @@ mod tests {
             },
             |_c, _sink| ToolOutcome::ok("file contents"),
             Vec::new,
+            |_calls| Vec::new(),
         );
         drain(&mut rx);
         // Round 1 saw [user]; round 2 saw [user, assistant(tool_calls), tool].
@@ -481,10 +517,11 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("x")],
+            &mut vec![ChatMessage::user("x")],
             |_msgs| RoundOutcome::Failed(LlmError::Http("boom".to_string())),
             |_c, _sink| panic!("no tools"),
             Vec::new,
+            |_calls| Vec::new(),
         );
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
@@ -499,10 +536,11 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("x")],
+            &mut vec![ChatMessage::user("x")],
             |_msgs| RoundOutcome::Cancelled,
             |_c, _sink| panic!("no tools"),
             Vec::new,
+            |_calls| Vec::new(),
         );
         assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
     }
@@ -516,10 +554,11 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("x")],
+            &mut vec![ChatMessage::user("x")],
             |_msgs| panic!("round should not run once cancelled"),
             |_c, _sink| panic!("no tools"),
             Vec::new,
+            |_calls| Vec::new(),
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -537,7 +576,7 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("x")],
+            &mut vec![ChatMessage::user("x")],
             |_msgs| RoundOutcome::ToolCalls {
                 assistant: assistant_with(&calls),
                 calls: calls.clone(),
@@ -549,6 +588,7 @@ mod tests {
                 ToolOutcome::ok(format!("ran {}", c.arguments))
             },
             Vec::new,
+            |_calls| Vec::new(),
         );
         assert_eq!(
             *ran.borrow(),
@@ -575,13 +615,14 @@ mod tests {
             &tx,
             &cancel,
             3,
-            vec![ChatMessage::user("x")],
+            &mut vec![ChatMessage::user("x")],
             |_msgs| RoundOutcome::ToolCalls {
                 assistant: assistant_with(&calls),
                 calls: calls.clone(),
             },
             |_c, _sink| ToolOutcome::ok("again"),
             Vec::new,
+            |_calls| Vec::new(),
         );
         let events = drain(&mut rx);
         let errors: Vec<_> = events
@@ -612,7 +653,7 @@ mod tests {
             &tx,
             &cancel,
             2,
-            vec![ChatMessage::user("x")],
+            &mut vec![ChatMessage::user("x")],
             |_msgs| {
                 let mut n = rounds.borrow_mut();
                 *n += 1;
@@ -627,6 +668,7 @@ mod tests {
             },
             |_c, _sink| ToolOutcome::ok("done"),
             Vec::new,
+            |_calls| Vec::new(),
         );
         let events = drain(&mut rx);
         assert!(
@@ -667,7 +709,7 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("kill the server")],
+            &mut vec![ChatMessage::user("kill the server")],
             |msgs| {
                 let mut n = rounds.borrow_mut();
                 *n += 1;
@@ -692,6 +734,7 @@ mod tests {
                     Vec::new()
                 }
             },
+            |_calls| Vec::new(),
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -723,13 +766,14 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("hi")],
+            &mut vec![ChatMessage::user("hi")],
             |msgs| {
                 *seen.borrow_mut() = msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
                 RoundOutcome::Complete
             },
             |_c, _sink| panic!("no tools requested"),
             || pending.borrow_mut().take().into_iter().collect(),
+            |_calls| Vec::new(),
         );
         drain(&mut rx);
         assert_eq!(
@@ -753,10 +797,11 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("x")],
+            &mut vec![ChatMessage::user("x")],
             |_msgs| panic!("no round once cancelled"),
             |_c, _sink| panic!("no tools"),
             || panic!("no notice take once cancelled"),
+            |_calls| Vec::new(),
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -783,7 +828,7 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("look at shot.png")],
+            &mut vec![ChatMessage::user("look at shot.png")],
             |msgs| {
                 let mut n = rounds.borrow_mut();
                 *n += 1;
@@ -809,6 +854,7 @@ mod tests {
                 }
             },
             Vec::new,
+            |_calls| Vec::new(),
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -853,7 +899,7 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("read a.txt")],
+            &mut vec![ChatMessage::user("read a.txt")],
             |msgs| {
                 let mut n = rounds.borrow_mut();
                 *n += 1;
@@ -869,6 +915,7 @@ mod tests {
             },
             |_c, _sink| ToolOutcome::ok("1 alpha"),
             Vec::new,
+            |_calls| Vec::new(),
         );
         drain(&mut rx);
         let roles: Vec<String> = seen_round2
@@ -898,7 +945,7 @@ mod tests {
             &tx,
             &cancel,
             MAX_TOOL_ITERATIONS,
-            vec![ChatMessage::user("ping in background")],
+            &mut vec![ChatMessage::user("ping in background")],
             |msgs| {
                 seen_lens.borrow_mut().push(msgs.len());
                 let mut n = rounds.borrow_mut();
@@ -914,6 +961,7 @@ mod tests {
             },
             |_c, _sink| ToolOutcome::backgrounded("bash_1", "Command running with ID: bash_1"),
             Vec::new,
+            |_calls| Vec::new(),
         );
         let events = drain(&mut rx);
         assert!(

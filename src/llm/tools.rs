@@ -139,9 +139,84 @@ pub fn tool_specs() -> Vec<Value> {
     vec![bash_spec(), read_spec(), write_spec(), edit_spec()]
 }
 
+/// [`tool_specs`] plus the `agent` tool — the **main** backend's set when a
+/// subagent registry is attached (`docs/agent-tool.md`). A subagent itself
+/// never gets `agent` (no nesting), so it keeps [`tool_specs`] — or the
+/// reduced [`subagent_tool_specs`] its type allows.
+#[must_use]
+pub fn tool_specs_with_agents() -> Vec<Value> {
+    let mut specs = tool_specs();
+    specs.push(agent_spec());
+    specs
+}
+
+/// The tool set a subagent of `agent_type` is offered: `explore` is
+/// read-only (`bash` + `read` — the reference's read-only search agent),
+/// everything else (the default `general-purpose`) gets all four. Never
+/// includes `agent`.
+#[must_use]
+pub fn subagent_tool_specs(agent_type: &str) -> Vec<Value> {
+    match agent_type {
+        "explore" => vec![bash_spec(), read_spec()],
+        _ => tool_specs(),
+    }
+}
+
 /// The tool names offered, in definition order — handy for the system prompt
 /// and tests.
 pub const TOOL_NAMES: [&str; 4] = ["bash", "read", "write", "edit"];
+
+/// The wire name of the subagent-launching tool (`docs/agent-tool.md`).
+pub const AGENT_TOOL_NAME: &str = "agent";
+
+fn agent_spec() -> Value {
+    function_spec(
+        AGENT_TOOL_NAME,
+        "Launch a new agent to handle a task autonomously. The agent runs its \
+         own tool loop (shell, file reads/writes) over a fresh context, works \
+         in the same directory, and reports back: its final message is \
+         returned to you as this tool's result. Launch several agents in one \
+         message to run them concurrently — each is independent and cannot \
+         see the others (or this conversation), so give each a complete, \
+         self-contained prompt and tell it what to return. By default agents \
+         run in the background: the call returns at once with an agent ID and \
+         you are notified with the final response when one completes — set \
+         run_in_background to false when you need the result before \
+         continuing. The user can watch, stop, or message your agents while \
+         they run.",
+        json!({
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "A short (3-5 word) description of the task, \
+                        shown in the UI."
+                },
+                "prompt": {
+                    "type": "string",
+                    "description": "The task for the agent to perform — \
+                        complete and self-contained, including what to return."
+                },
+                "subagent_type": {
+                    "type": "string",
+                    "description": "The type of specialized agent to use: \
+                        \"general-purpose\" (default — all tools) or \
+                        \"explore\" (read-only: shell and file reads, for \
+                        searching and research)."
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Agents run in the background by default; \
+                        you will be notified when one completes. Set to false \
+                        to run this agent synchronously when you need its \
+                        result before continuing."
+                }
+            },
+            "required": ["description", "prompt"],
+            "additionalProperties": false
+        }),
+    )
+}
 
 fn function_spec(name: &str, description: &str, parameters: Value) -> Value {
     json!({
@@ -297,6 +372,36 @@ fn edit_spec() -> Value {
     )
 }
 
+/// Parsed `agent` arguments (`docs/agent-tool.md`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct AgentArgs {
+    pub description: String,
+    pub prompt: String,
+    /// The specialized type (default `general-purpose`).
+    #[serde(default)]
+    pub subagent_type: Option<String>,
+    /// The schema default is **true** — background launch.
+    #[serde(default)]
+    pub run_in_background: Option<bool>,
+}
+
+impl AgentArgs {
+    /// The effective subagent type.
+    #[must_use]
+    pub fn agent_type(&self) -> &str {
+        self.subagent_type
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or(crate::agents::GENERAL_PURPOSE)
+    }
+
+    /// The effective background flag (the schema default is `true`).
+    #[must_use]
+    pub fn background(&self) -> bool {
+        self.run_in_background.unwrap_or(true)
+    }
+}
+
 /// Parsed `bash` arguments.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct BashArgs {
@@ -370,6 +475,7 @@ pub fn display_name(name: &str) -> String {
         "read" => "Read".to_string(),
         "write" => "Write".to_string(),
         "edit" => "Edit".to_string(),
+        AGENT_TOOL_NAME => "Agent".to_string(),
         other => other.to_string(),
     }
 }
@@ -390,6 +496,7 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
     let summary = match name {
         "bash" => field("command"),
         "read" | "write" | "edit" => field("path"),
+        AGENT_TOOL_NAME => field("description"),
         _ => None,
     };
     let summary = summary.unwrap_or_else(|| arguments.trim().to_string());

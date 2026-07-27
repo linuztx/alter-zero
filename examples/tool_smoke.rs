@@ -83,6 +83,23 @@ fn main() {
                     );
                 }
             }
+            StreamEvent::AgentBatch { background, agents } => {
+                let mode = if background { "background " } else { "" };
+                println!(
+                    "\n\x1b[90m[{} {mode}agent(s) launched]\x1b[0m",
+                    agents.len()
+                );
+                for agent in &agents {
+                    println!("\x1b[90m  ├ {} ({})\x1b[0m", agent.description, agent.id);
+                }
+            }
+            StreamEvent::AgentGroupDone { agents, .. } => {
+                println!("\n\x1b[90m[agent group resolved]\x1b[0m");
+                for agent in &agents {
+                    let head: String = agent.output.lines().take(6).collect::<Vec<_>>().join("\n");
+                    println!("\x1b[90m  ⎿ {} ok={}\x1b[0m\n{head}", agent.id, agent.ok);
+                }
+            }
             StreamEvent::ToolStart { name, args } => {
                 println!("\n\x1b[34m● {name}({args})\x1b[0m");
             }

@@ -48,6 +48,7 @@ use ratatui::layout::Rect;
 use ratatui::text::Line;
 use tokio_stream::StreamExt;
 
+use alter_zero::agents::{AGENT_LINGER, AgentEvent, AgentRegistry};
 use alter_zero::app::{
     Action, App, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE, COPY_EMPTY_NOTICE,
     COPY_OK_NOTICE, HistoryItem, InterruptedTurn, ProviderChoice, QueuedTurn, Role, ToastKind,
@@ -175,6 +176,16 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     )
     .with_detach_helper(std::env::current_exe().ok());
     let mut bg_clocks: HashMap<String, Instant> = HashMap::new();
+    // The subagent registry (docs/agent-tool.md): the model's `agent` tool
+    // launches run their own loops on their own threads, reporting on a
+    // dedicated channel — a seventh `select!` source, because agents outlive
+    // turns exactly like background shells. The started clocks and the
+    // finished agents' linger deadlines live here at the boundary (the
+    // toast-deadline pattern).
+    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel::<AgentEvent>();
+    let agent_registry = AgentRegistry::new(agent_tx);
+    let mut agent_clocks: HashMap<String, Instant> = HashMap::new();
+    let mut agent_expiry: HashMap<String, Instant> = HashMap::new();
     // The reply backend. The dummy is the default (and the fallback) so the app
     // always runs offline; a real OpenAI-compatible model activates only when a
     // provider, a model, and an API key all resolve and `ALTER_ZERO_DUMMY` isn't
@@ -287,6 +298,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             system_prompt.clone(),
             startup_delay,
             &registry,
+            &agent_registry,
         )
     };
     let mut active_model = backend.model_name();
@@ -441,6 +453,10 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // as it streams — O(reply) over the whole stream, not O(reply²). It also
     // renders the strip's cheap preview line. See `docs/markdown.md`.
     let mut render = ui::StreamRender::new();
+    // The agent session view's own incremental renderer (docs/agent-tool.md):
+    // reset when a view opens, it commits the viewed agent's reply lines to
+    // scrollback exactly like `render` does the main turn's.
+    let mut agent_render = ui::StreamRender::new();
     // The Ctrl+O overlay's incrementally-built transcript: each committed item
     // is rendered once (the loop-bottom `transcript.warm`) and retained across
     // overlay closes, so opening the overlay — even right after a big `/resume`
@@ -562,6 +578,77 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // and commits the stopped notice
                                 // (docs/background.md).
                                 registry.kill(&id);
+                            }
+                            Action::StopAgent(id) => {
+                                // `x` on a roster row: cancel the subagent
+                                // thread and settle the entry as interrupted —
+                                // the row leaves the footer at once
+                                // (docs/agent-tool.md). A background agent's
+                                // stopped notice settles like a completion (a
+                                // foreground one resolves with its group when
+                                // the backend's wait loop sees the kill).
+                                let _ = agent_registry.kill(&id);
+                                agent_clocks.remove(&id);
+                                agent_expiry.remove(&id);
+                                if let Some(notice) = app.stop_agent(&id).flatten() {
+                                    registry.post_notice(notice.context_text(), true);
+                                    app.defer_agent_notice(notice);
+                                    // The stopped background agent is done for
+                                    // good — drop it from the roster now (the
+                                    // user's `x` removes the row right away).
+                                    app.remove_agent(&id);
+                                    agent_registry.remove(&id);
+                                    if !app.turn_active() {
+                                        inflight = dispatch_after_turn(
+                                            term, &mut app, &tx, backend.as_ref(), &registry,
+                                            &mut render, &mut clocks,
+                                            &checkpoints, &mut recorder,
+                                        )?;
+                                    }
+                                }
+                                frame.schedule_frame();
+                            }
+                            Action::ViewAgent(_) => {
+                                // Enter on a roster row: swap the screen to
+                                // that agent's own inline session — purge +
+                                // rebuild from its transcript, the /clear
+                                // shape (docs/agent-tool.md).
+                                repaint_agent_view(term, &mut app, &mut agent_render)?;
+                            }
+                            Action::LeaveAgentView => {
+                                // Esc (or Enter on `● main`): back to the main
+                                // conversation — purge + rebuild from history,
+                                // the in-flight partial included. The viewed
+                                // agent's linger re-arms via the sweep (its
+                                // deadline was pushed while viewed).
+                                repaint_conversation(
+                                    term, &mut app, &mut render, ReflowClear::Purge,
+                                )?;
+                            }
+                            Action::AgentChat { id, text } => {
+                                // Enter inside an agent session: deliver the
+                                // draft to the agent — queued into its running
+                                // loop, or a continuation run when idle
+                                // (docs/agent-tool.md). The transcript already
+                                // recorded it; commit the bubble in place.
+                                if backend.spawn_agent_chat(&id, &text) {
+                                    let width = term.screen().width;
+                                    term.insert_before(ui::message_lines(
+                                        Role::User, &text, width,
+                                    ));
+                                    term.insert_before(vec![Line::default()]);
+                                    agent_clocks.entry(id.clone()).or_insert_with(Instant::now);
+                                    agent_expiry.remove(&id);
+                                } else {
+                                    present_toast(
+                                        &mut app,
+                                        &mut toast_deadline,
+                                        &frame,
+                                        "Agent chat is not available with this backend"
+                                            .to_string(),
+                                        ToastKind::Error,
+                                    );
+                                }
                             }
                             Action::MoveToBackground => {
                                 // Ctrl+B on a running command: raise the latch
@@ -724,6 +811,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // phantom follow-up turn about them.
                                 registry.kill_all();
                                 let _ = registry.take_pending_notices();
+                                // …and the subagents (docs/agent-tool.md): the
+                                // wiped roster drops their late events.
+                                agent_registry.kill_all();
+                                agent_clocks.clear();
+                                agent_expiry.clear();
                                 // A cleared conversation starts a fresh session
                                 // file (codex's /new); the old one keeps what it
                                 // had (docs/resume.md). Re-seed the checkpoint
@@ -792,17 +884,29 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                             &checkpoints, &mut recorder,
                                         )?;
                                     }
-                                    Some(InterruptedTurn::Kept { partial, tool, notice }) => {
+                                    Some(InterruptedTurn::Kept { partial, tool, notice, agents }) => {
                                         // Something streamed — keep it, commit the
                                         // notice (None for a `!` shell turn, whose
                                         // `⎿ Interrupted by user` cell already says
-                                        // it — req 2). `commit_turn_failure`'s
+                                        // it — req 2). A live agent group resolved
+                                        // as interrupted: stop its subagent threads
+                                        // (the abandoned backend's own kill sweep
+                                        // may still be parked in a network read)
+                                        // and commit its red tree cell
+                                        // (docs/agent-tool.md).
+                                        // `commit_turn_failure`'s
                                         // `render.finish(partial)` needs the
                                         // committed-lines cache intact (it flushes
                                         // only the not-yet-committed tail), so
                                         // reset `render` AFTER it, never before.
+                                        if let Some(group) = &agents {
+                                            for entry in &group.agents {
+                                                let _ = agent_registry.kill(&entry.id);
+                                                agent_clocks.remove(&entry.id);
+                                            }
+                                        }
                                         commit_turn_failure(
-                                            term, &app, &mut render, partial, tool, notice,
+                                            term, &app, &mut render, partial, tool, agents, notice,
                                         );
                                         render.reset();
                                         // The user interrupted to send their queued
@@ -1050,7 +1154,8 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                                 cfg,
                                                 system_prompt.clone(),
                                             )
-                                            .with_background(registry.clone()),
+                                            .with_background(registry.clone())
+                                            .with_agents(agent_registry.clone()),
                                         );
                                         active_provider = Some(provider.clone());
                                         active_model = id.clone();
@@ -1295,9 +1400,46 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             //    only committed to scrollback in the conversation view (in the
             //    overlay we hold off and repaint on return).
             Some(stream_event) = reply_rx.recv() => {
-                if on_stream_event(
-                    term, &mut app, &mut render, &mut clocks, stream_event,
-                )? {
+                // A launched agent group: start each member's runtime clock
+                // (the boundary owns the clocks — docs/agent-tool.md).
+                if let StreamEvent::AgentBatch { agents, .. } = &stream_event {
+                    for spec in agents {
+                        agent_clocks.insert(spec.id.clone(), Instant::now());
+                    }
+                }
+                // A resolving agent group: the subagents' terminal events were
+                // enqueued on the agent channel *before* the backend sent this
+                // resolution, so drain that channel first — the roster
+                // snapshots the recorded group entries are built from are then
+                // final (docs/agent-tool.md).
+                let group_done_ids: Option<Vec<String>> =
+                    if let StreamEvent::AgentGroupDone { agents, background } = &stream_event {
+                        (!background).then(|| agents.iter().map(|a| a.id.clone()).collect())
+                    } else {
+                        None
+                    };
+                if matches!(&stream_event, StreamEvent::AgentGroupDone { .. }) {
+                    while let Ok(AgentEvent::Stream { id, event }) = agent_rx.try_recv() {
+                        on_agent_event(
+                            term, &mut app, &mut agent_render, &registry, &agent_registry,
+                            &mut agent_clocks, &mut agent_expiry, &id, event,
+                        )?;
+                    }
+                }
+                let resolved = on_stream_event(
+                    term, &mut app, &mut render, &mut clocks, &agent_registry, stream_event,
+                )?;
+                // A foreground group's members are settled now — arm their
+                // linger sweeps (a background group's keep running).
+                if let Some(ids) = group_done_ids {
+                    for id in ids {
+                        agent_clocks.remove(&id);
+                        if app.agent(&id).is_some_and(|run| run.status.is_final()) {
+                            agent_expiry.insert(id, Instant::now() + AGENT_LINGER);
+                        }
+                    }
+                }
+                if resolved {
                     // The stream ended. Settle any background completions
                     // still held (most settle earlier, at a tool boundary —
                     // this catches ones that landed during the final text),
@@ -1339,6 +1481,27 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 for (id, started) in &bg_clocks {
                     app.set_background_runtime(id, started.elapsed());
                 }
+                // …and each running agent's, so the roster's elapsed ticks
+                // (docs/agent-tool.md).
+                for (id, started) in &agent_clocks {
+                    app.set_agent_runtime(id, started.elapsed());
+                }
+                // Sweep finished agents whose linger expired — deferred while
+                // the user is inside that agent's session view (the deadline
+                // pushes forward, so leaving restarts the full linger).
+                let now = Instant::now();
+                agent_expiry.retain(|id, deadline| {
+                    if app.agent_view.as_deref() == Some(id.as_str()) {
+                        *deadline = now + AGENT_LINGER;
+                        return true;
+                    }
+                    if now >= *deadline {
+                        app.remove_agent(id);
+                        agent_registry.remove(id);
+                        return false;
+                    }
+                    true
+                });
                 // Expire the transient toast when its deadline passes (so this
                 // very frame paints without it); while it still lingers, keep a
                 // frame pending for the eventual clear — a coalesced keystroke
@@ -1368,8 +1531,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     View::ContextDebug => draw_context_view(term, &mut app)?,
                 }
                 // The ↓ manager band re-arms frames like an active turn: its
-                // details view's Runtime ticks with no events otherwise.
-                if app.turn_active() || app.background_view.is_some() {
+                // details view's Runtime ticks with no events otherwise — and
+                // so does a non-empty agent roster (its elapsed counters tick,
+                // and the linger sweep above needs the frames to fire).
+                if app.turn_active()
+                    || app.background_view.is_some()
+                    || !app.agents().is_empty()
+                {
                     frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
                 }
             }
@@ -1537,6 +1705,30 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 }
                 frame.schedule_frame();
             }
+
+            // 8. A subagent event (docs/agent-tool.md): fold it into the
+            //    roster entry — the footer list, the live group cell, and the
+            //    Ctrl+O cells all render from there — committing incrementally
+            //    when the user is inside that agent's session view. A settled
+            //    **background** agent posts its model-facing note on the
+            //    board (the in-flight main turn hears it at its next round)
+            //    and defers its notice cell; with nothing in flight the
+            //    boundary dispatch settles it at once and starts the
+            //    automatic follow-up turn (the background-shell pattern).
+            Some(AgentEvent::Stream { id, event }) = agent_rx.recv() => {
+                on_agent_event(
+                    term, &mut app, &mut agent_render, &registry, &agent_registry,
+                    &mut agent_clocks, &mut agent_expiry, &id, event,
+                )?;
+                if !app.turn_active() && app.has_pending_agent_notices() {
+                    inflight = dispatch_after_turn(
+                        term, &mut app, &tx, backend.as_ref(), &registry,
+                        &mut render, &mut clocks,
+                        &checkpoints, &mut recorder,
+                    )?;
+                }
+                frame.schedule_frame();
+            }
         }
 
         // Auto-compact (docs/compact.md): past codex's 90%-of-window
@@ -1622,8 +1814,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     }
     // Kill every background shell on the way out — the sweep is synchronous
     // (direct process-group kills), so quitting can't orphan a `ping`
-    // (docs/background.md).
+    // (docs/background.md) — and cancel every subagent (their threads observe
+    // the token and die with the process either way; the cancel stops their
+    // in-flight requests promptly — docs/agent-tool.md).
     registry.kill_all();
+    agent_registry.kill_all();
     Ok(())
 }
 
@@ -1985,6 +2180,7 @@ fn build_backend(
     system_prompt: Option<String>,
     startup_delay: Duration,
     registry: &BackgroundRegistry,
+    agents: &AgentRegistry,
 ) -> Box<dyn ReplySource> {
     if !dummy_forced()
         && let (Some(provider), Some(model)) = (provider, model)
@@ -2000,7 +2196,9 @@ fn build_backend(
         && cfg.is_usable()
     {
         return Box::new(
-            LlmBackend::with_system_prompt(cfg, system_prompt).with_background(registry.clone()),
+            LlmBackend::with_system_prompt(cfg, system_prompt)
+                .with_background(registry.clone())
+                .with_agents(agents.clone()),
         );
     }
     Box::new(DummyAi::with_startup_delay(startup_delay))
@@ -2114,10 +2312,18 @@ fn start_turn(
     let image_count = images.len();
     let paths: Vec<PathBuf> = images.iter().map(|(_, path)| path.clone()).collect();
     let mut per_text = paste::distribute_images(&texts, images);
+    // Committing is suppressed while an agent session view covers the screen
+    // (a queued main turn can dispatch there) — the return's purge-rebuild
+    // regenerates the bubbles from history (docs/agent-tool.md). Under the
+    // Ctrl+O overlay the inserts merely queue and the return's reflow drops +
+    // regenerates them, as before.
+    let committing = app.agent_view.is_none();
     for (text, attached) in texts.iter().zip(&mut per_text) {
         app.record_user_message_with_images(text, std::mem::take(attached));
-        term.insert_before(ui::message_lines(Role::User, text, width));
-        term.insert_before(vec![Line::default()]);
+        if committing {
+            term.insert_before(ui::message_lines(Role::User, text, width));
+            term.insert_before(vec![Line::default()]);
+        }
     }
     app.begin_stream();
     // Count the user's uploaded input into the tally (arrow ↑) so the status
@@ -2167,14 +2373,19 @@ fn commit_notice(
     text: &str,
 ) {
     let width = term.screen().width;
-    if let Some(segment) = app.flush_streaming_segment() {
+    let committing = app.agent_view.is_none();
+    if let Some(segment) = app.flush_streaming_segment()
+        && committing
+    {
         term.insert_before(render.finish(&segment, width));
         term.insert_before(vec![Line::default()]);
         render.reset();
     }
     record(app, text);
-    term.insert_before(ui::message_lines(role, text, width));
-    term.insert_before(vec![Line::default()]);
+    if committing {
+        term.insert_before(ui::message_lines(role, text, width));
+        term.insert_before(vec![Line::default()]);
+    }
 }
 
 /// Commit a red error notice (a Ctrl+V clipboard failure, a `/copy` error) —
@@ -2231,6 +2442,7 @@ fn commit_turn_failure(
     render: &mut ui::StreamRender,
     partial: Option<String>,
     tool: Option<alter_zero::app::ToolCall>,
+    agents: Option<alter_zero::app::AgentGroup>,
     notice: Option<&str>,
 ) {
     let width = term.screen().width;
@@ -2241,6 +2453,12 @@ fn commit_turn_failure(
     }
     if let Some(tool) = tool {
         term.insert_before(ui::tool_lines(&tool, width));
+        term.insert_before(vec![Line::default()]);
+    }
+    // The agent group the death resolved (its members marked interrupted) —
+    // the red tree cell, before the notice (docs/agent-tool.md).
+    if let Some(group) = agents {
+        term.insert_before(ui::agent_group_lines(&group, width));
         term.insert_before(vec![Line::default()]);
     }
     if let Some(notice) = notice {
@@ -2271,9 +2489,12 @@ fn run_shell(
     // begin_shell records the cell's `! command` header (Role::Shell) in
     // history; commit it with NO trailing blank — the `⎿ Running…` preview
     // (and later the committed `⎿` output) sits flush below it, forming the
-    // codex-style exec cell (docs/shell-command.md).
+    // codex-style exec cell (docs/shell-command.md). Suppressed under an
+    // agent session view like every main commit (docs/agent-tool.md).
     app.begin_shell(&command);
-    term.insert_before(ui::message_lines(Role::Shell, &command, width));
+    if app.agent_view.is_none() {
+        term.insert_before(ui::message_lines(Role::Shell, &command, width));
+    }
     render.reset();
     clocks.turn_start = Some(Instant::now());
     clocks.thinking_start = None;
@@ -2294,9 +2515,10 @@ fn run_shell(
 /// can never split a committed reply (invariants 2/3). See
 /// `docs/background.md`.
 fn settle_bg_completions(term: &mut InlineViewport, app: &mut App) {
+    let committing = app.view == View::Conversation && app.agent_view.is_none();
     for completion in app.take_pending_bg_completions() {
         let notice = app.record_background_notice(&completion);
-        if app.view == View::Conversation {
+        if committing {
             let width = term.screen().width;
             // A completion can settle right after a turn whose strip just
             // collapsed — reseat the viewport like every post-stream commit
@@ -2305,6 +2527,20 @@ fn settle_bg_completions(term: &mut InlineViewport, app: &mut App) {
             // no-op sync; `paint_live` re-syncs before any pending flush).
             term.set_view_height(live_region_height(app, term.screen()));
             term.insert_before(ui::background_notice_lines(&notice, width));
+            term.insert_before(vec![Line::default()]);
+        }
+    }
+    // Background-agent completions settle at the same boundaries — the green
+    // `● Agent "…" finished` / red stopped cell — and update the recorded
+    // group entry so the Ctrl+O cell shows the final response
+    // (docs/agent-tool.md).
+    for notice in app.take_pending_agent_notices() {
+        app.record_agent_notice(&notice);
+        app.settle_agent_completion(&notice);
+        if committing {
+            let width = term.screen().width;
+            term.set_view_height(live_region_height(app, term.screen()));
+            term.insert_before(ui::agent_notice_lines(&notice, width));
             term.insert_before(vec![Line::default()]);
         }
     }
@@ -2664,14 +2900,53 @@ fn on_stream_event(
     app: &mut App,
     render: &mut ui::StreamRender,
     clocks: &mut StatusClocks,
+    agent_registry: &AgentRegistry,
     event: StreamEvent,
 ) -> io::Result<bool> {
     let width = term.screen().width;
     // Lines are only committed to scrollback in the conversation view; in the
-    // overlay we hold off and repaint the inline view on return, so the stream
-    // keeps advancing without touching the alt screen.
-    let committing = app.view == View::Conversation;
+    // overlay — and while an agent session view covers the screen — we hold
+    // off and repaint the inline view on return, so the stream keeps
+    // advancing without touching what the user is looking at.
+    let committing = app.view == View::Conversation && app.agent_view.is_none();
     match event {
+        StreamEvent::AgentBatch { background, agents } => {
+            // The model launched a group of subagents: finalise the text
+            // before them (the ToolBatch dance), settle held completions at
+            // this safe boundary, then seed the roster + the live group cell.
+            // No scrollback commit — the cell is live until the group
+            // resolves. See docs/agent-tool.md.
+            if let Some(segment) = app.flush_streaming_segment()
+                && committing
+            {
+                term.insert_before(render.finish(&segment, width));
+                term.insert_before(vec![Line::default()]);
+            }
+            render.reset();
+            settle_bg_completions(term, app);
+            app.start_agent_group(background, &agents);
+            // The delayed Ctrl+B hint clock — a foreground group can be moved
+            // to the background like a running command (docs/background.md).
+            if !background {
+                clocks.command_start = Some(Instant::now());
+            }
+            Ok(false)
+        }
+        StreamEvent::AgentGroupDone { background, agents } => {
+            // The group resolved: record the tree cell and commit it — a tool
+            // resolution boundary like ToolEnd (the caller drained the agent
+            // channel first, so the roster snapshots are final). See
+            // docs/agent-tool.md.
+            let group = app.finish_agent_group(background, &agents);
+            if committing {
+                term.set_view_height(live_region_height(app, term.screen()));
+                term.insert_before(ui::agent_group_lines(&group, width));
+                term.insert_before(vec![Line::default()]);
+            }
+            settle_bg_completions(term, app);
+            clocks.command_start = None;
+            Ok(false)
+        }
         StreamEvent::Chunk(chunk) => {
             app.push_chunk(&chunk);
             if committing && let Some(text) = app.streaming_text() {
@@ -2894,20 +3169,30 @@ fn on_stream_event(
             Ok(false)
         }
         StreamEvent::Error(message) => {
-            if let Some(failure) = app.fail_stream(&message)
-                && committing
-            {
-                // Flush whatever streamed before the failure, then the tool the
-                // error killed mid-run (resolved red), then the red error
-                // notice — the Esc interrupt's exact commit shape.
-                commit_turn_failure(
-                    term,
-                    app,
-                    render,
-                    failure.partial,
-                    failure.tool,
-                    Some(&failure.error),
-                );
+            if let Some(failure) = app.fail_stream(&message) {
+                // A live agent group died with the turn: its subagent threads
+                // keep running unless killed here (the backend thread that
+                // owned the wait loop is gone). Idempotent for agents the
+                // backend already resolved. See docs/agent-tool.md.
+                if let Some(group) = &failure.agents {
+                    for entry in &group.agents {
+                        let _ = agent_registry.kill(&entry.id);
+                    }
+                }
+                if committing {
+                    // Flush whatever streamed before the failure, then the tool
+                    // the error killed mid-run (resolved red), then the red
+                    // error notice — the Esc interrupt's exact commit shape.
+                    commit_turn_failure(
+                        term,
+                        app,
+                        render,
+                        failure.partial,
+                        failure.tool,
+                        failure.agents,
+                        Some(&failure.error),
+                    );
+                }
             }
             render.reset();
             clocks.turn_start = None;
@@ -2915,6 +3200,140 @@ fn on_stream_event(
             Ok(true)
         }
     }
+}
+
+/// Fold one subagent event into its roster entry (`docs/agent-tool.md`) —
+/// and, while the user is **inside that agent's session view**, commit it to
+/// the screen incrementally through `agent_render`, mirroring
+/// [`on_stream_event`]'s commit shape over the agent's own state. A settled
+/// **background** agent posts its model-facing note on the shared board (the
+/// in-flight main turn hears it at its next round — the background-shell
+/// pattern) and defers its notice cell to the next safe boundary; any settle
+/// arms the entry's linger sweep and stops its runtime clock.
+#[allow(clippy::too_many_arguments)] // the loop's agent plumbing
+fn on_agent_event(
+    term: &mut InlineViewport,
+    app: &mut App,
+    agent_render: &mut ui::StreamRender,
+    registry: &BackgroundRegistry,
+    agent_registry: &AgentRegistry,
+    agent_clocks: &mut HashMap<String, Instant>,
+    agent_expiry: &mut HashMap<String, Instant>,
+    id: &str,
+    event: StreamEvent,
+) -> io::Result<()> {
+    let width = term.screen().width;
+    let viewing = app.view == View::Conversation && app.agent_view.as_deref() == Some(id);
+    // Freeze the entry's runtime at its live value before a settling event
+    // (the per-frame injection stops once the status is final).
+    if let Some(started) = agent_clocks.get(id) {
+        app.set_agent_runtime(id, started.elapsed());
+    }
+    // The view's segment boundaries: the agent's streamed text finalises
+    // before a tool cell / the end of the run, exactly like the main loop's
+    // flush points. Committed BEFORE the fold (the fold consumes the buffer).
+    if viewing
+        && matches!(
+            event,
+            StreamEvent::ToolBatch(_)
+                | StreamEvent::ToolStart { .. }
+                | StreamEvent::StreamDone
+                | StreamEvent::Error(_)
+        )
+        && let Some(text) = app
+            .viewed_agent()
+            .and_then(|run| run.streaming.clone())
+            .filter(|text| !text.is_empty())
+    {
+        term.insert_before(agent_render.finish(&text, width));
+        term.insert_before(vec![Line::default()]);
+        agent_render.reset();
+    }
+    let settled = app.apply_agent_event(id, &event);
+    if viewing {
+        match &event {
+            StreamEvent::Chunk(_) => {
+                if let Some(text) = app.viewed_agent().and_then(|run| run.streaming.as_deref()) {
+                    let lines = agent_render.commit(text, width);
+                    term.insert_before(lines);
+                }
+            }
+            StreamEvent::ToolEnd { .. } | StreamEvent::ToolBackgrounded { .. } => {
+                // The resolved call was pushed onto the agent's transcript —
+                // commit its collapsed cell (the main ToolEnd dance).
+                let tool = app.viewed_agent().and_then(|run| match run.history.last() {
+                    Some(HistoryItem::Tool(tool)) => Some(tool.clone()),
+                    _ => None,
+                });
+                if let Some(tool) = tool {
+                    term.set_view_height(live_region_height(app, term.screen()));
+                    term.insert_before(ui::tool_lines(&tool, width));
+                    term.insert_before(vec![Line::default()]);
+                }
+            }
+            StreamEvent::Error(message) => {
+                term.set_view_height(live_region_height(app, term.screen()));
+                term.insert_before(ui::message_lines(Role::Error, message, width));
+                term.insert_before(vec![Line::default()]);
+            }
+            StreamEvent::StreamDone => {
+                // The strip collapses (the agent's status clears) — reseat so
+                // the box stays flush (invariant 3). No summary cell: the
+                // agent session keeps codex's quiet end.
+                term.set_view_height(live_region_height(app, term.screen()));
+            }
+            _ => {}
+        }
+    }
+    if let Some(notice) = settled {
+        // A background agent completed on its own: the model-facing note
+        // goes on the shared board (from_model — its untaken presence at a
+        // turn boundary starts the automatic follow-up turn), the notice
+        // cell defers to the next safe boundary (docs/agent-tool.md).
+        registry.post_notice(notice.context_text(), true);
+        app.defer_agent_notice(notice);
+    }
+    if app.agent(id).is_some_and(|run| run.status.is_final()) {
+        agent_clocks.remove(id);
+        agent_expiry.insert(id.to_string(), Instant::now() + AGENT_LINGER);
+    }
+    let _ = agent_registry; // the kill paths live in the action arms
+    Ok(())
+}
+
+/// Rebuild the screen as an **agent session view** (`docs/agent-tool.md`):
+/// purge scrollback + screen (the `/clear` shape — the main conversation
+/// returns the same way), then the banner over the agent's own transcript,
+/// with the live region (the agent's strip + the labelled composer + footer +
+/// roster) painted below in the same synchronized frame. The in-flight
+/// partial commits through `agent_render` so later chunks append seamlessly.
+fn repaint_agent_view(
+    term: &mut InlineViewport,
+    app: &mut App,
+    agent_render: &mut ui::StreamRender,
+) -> io::Result<()> {
+    let screen = term.screen();
+    agent_render.reset();
+    let Some(run) = app.viewed_agent() else {
+        return Ok(());
+    };
+    let history = run.history.clone();
+    let streaming = run.streaming.clone().filter(|text| !text.is_empty());
+    let app: &App = app;
+    let height = live_region_height(app, screen);
+    let mut tail = ui::conversation_lines(&history, screen.width);
+    if let Some(text) = &streaming {
+        tail.extend(agent_render.committed_rows(text, screen.width));
+    }
+    let tail = ui::banner_tail(ui::header_lines(app, screen.width), tail, usize::MAX);
+    term.reflow(
+        tail,
+        height,
+        ReflowClear::Purge,
+        |area, buf| ui::render_live_with_preview(area, buf, app, None),
+        app,
+    )?;
+    Ok(())
 }
 
 /// Schedule the redraw for a just-handled key. A plain typed character that
@@ -3043,6 +3462,7 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
         ui::toast_rows(app),
         band,
         ui::footer_rows(app, band),
+        ui::agent_list_rows(app),
     )
 }
 

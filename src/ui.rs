@@ -900,11 +900,18 @@ const fn strip_rows(has_status: bool, preview_rows: u16) -> u16 {
 /// [`render_live`]/[`cursor_position`]/`main.rs` to feed `strip_rows`.
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
-    // A live tool queue previews every call's cell (a **parallel batch** shows
-    // the running one + each `⎿ Waiting…` sibling, blank-separated); a `!` shell
+    // An agent session view previews the *viewed agent's* stream — its live
+    // tool cells or its reply's last row (docs/agent-tool.md).
+    if let Some(run) = app.viewed_agent() {
+        return u16::try_from(agent_view_preview_lines(run, width).len()).unwrap_or(u16::MAX);
+    }
+    // A live agent group previews its whole tree cell (over the tool queue's
+    // cells when a mixed round runs both — docs/agent-tool.md); a live tool
+    // queue previews every call's cell (a **parallel batch** shows the
+    // running one + each `⎿ Waiting…` sibling, blank-separated); a `!` shell
     // run its single `⎿ Running… (Ns)` row. Sized from the same walk the strip
     // draws ([`preview_tool_lines`]) so the count and the paint agree.
-    if !app.tool_queue().is_empty() {
+    if app.agent_group().is_some() || !app.tool_queue().is_empty() {
         return u16::try_from(preview_tool_lines(app, width).len()).unwrap_or(u16::MAX);
     }
     // A streaming reply previews its last row — or, while a table is forming,
@@ -949,6 +956,12 @@ pub fn stream_preview_max_rows(term_height: u16) -> usize {
 /// `strip_rows` (and to gate the status render in [`render_live`]).
 #[must_use]
 pub fn strip_has_status(app: &App) -> bool {
+    // An agent session view shows the *viewed agent's* status while it runs
+    // — the main turn's spinner belongs to the main screen
+    // (docs/agent-tool.md).
+    if let Some(run) = app.viewed_agent() {
+        return !run.status.is_final();
+    }
     app.status().is_some_and(|status| !status.shell)
 }
 
@@ -984,6 +997,7 @@ pub fn live_height(
     toast_rows: u16,
     band_rows: u16,
     footer_rows: u16,
+    agent_rows: u16,
 ) -> u16 {
     // Summed in usize: `rows` and `queued_rows` are both unbounded (a recalled
     // multi-megabyte paste wraps to tens of thousands of rows, and the queue
@@ -996,7 +1010,8 @@ pub fn live_height(
         + usize::from(INPUT_CHROME_ROWS)
         + rows
         + usize::from(band_rows)
-        + usize::from(footer_rows))
+        + usize::from(footer_rows)
+        + usize::from(agent_rows))
     .min(usize::from(term_height.max(1))) as u16
 }
 
@@ -1174,7 +1189,8 @@ fn live_layout(
     toast_rows: u16,
     band_rows: u16,
     footer_rows: u16,
-) -> [Rect; 4] {
+    agent_rows: u16,
+) -> [Rect; 5] {
     Layout::vertical([
         // Saturating: `queued_rows` is uncapped, and the layout clamp below
         // (not this sum) is what bounds it to the area.
@@ -1186,6 +1202,7 @@ fn live_layout(
         Constraint::Min(0),
         Constraint::Length(band_rows),
         Constraint::Length(footer_rows),
+        Constraint::Length(agent_rows),
     ])
     .areas(area)
 }
@@ -1221,8 +1238,9 @@ fn input_box(
     toast_rows: u16,
     band_rows: u16,
     footer_rows: u16,
+    agent_rows: u16,
 ) -> InputBox {
-    let [_, frame, _, _] = live_layout(
+    let [_, frame, _, _, _] = live_layout(
         area,
         has_status,
         preview_rows,
@@ -1230,6 +1248,7 @@ fn input_box(
         toast_rows,
         band_rows,
         footer_rows,
+        agent_rows,
     );
     let text = frame.inner(Margin::new(0, 1)); // inset past the top & bottom rules
     let field = field_width(area.width);
@@ -2754,7 +2773,9 @@ fn preview_lines(
     width: u16,
     stream_preview: Option<&[Line<'static>]>,
 ) -> Vec<Line<'static>> {
-    if !app.tool_queue().is_empty() {
+    if let Some(run) = app.viewed_agent() {
+        agent_view_preview_lines(run, width)
+    } else if app.agent_group().is_some() || !app.tool_queue().is_empty() {
         preview_tool_lines(app, width)
     } else if let Some(lines) = stream_preview {
         lines.to_vec()
@@ -2786,8 +2807,11 @@ fn preview_lines(
 fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let elapsed = app.status().map_or(Duration::ZERO, |s| s.elapsed);
     let mut lines = Vec::new();
+    // The round's live agent group leads the strip — its blue tree cell over
+    // any ordinary tool cells of a mixed round (docs/agent-tool.md).
+    lines.extend(live_agent_group_lines(app, width));
     for (i, tool) in app.tool_queue().iter().enumerate() {
-        if i > 0 {
+        if i > 0 || !lines.is_empty() {
             lines.push(Line::default()); // blank row between batch cells
         }
         if tool.shell && tool.status == ToolStatus::Running {
@@ -2859,11 +2883,13 @@ pub fn render_live_with_preview(
     // The band below the box holds the palette, the shortcuts overview, *or* the
     // `@` file picker (band_rows — mutually exclusive). Queued messages render
     // in the strip *above* the box instead; the session-context footer takes
-    // the very last row unless a band displaces it.
+    // the very last row unless a band displaces it, and the agent roster's
+    // rows sit below it (docs/agent-tool.md).
     let band = band_rows(app);
     let queued = queued_rows(app, area.width);
     let toast = toast_rows(app);
     let footer = footer_rows(app, band);
+    let agent_rows = agent_list_rows(app);
     // The preview row + its gap are only reserved when there is something to
     // preview; the pre-stream pause shows status-only (no stray blank line).
     // The status row + its gap are reserved unless this is a `!` shell turn,
@@ -2884,8 +2910,9 @@ pub fn render_live_with_preview(
         "preview_rows() must equal the drawn preview_lines()"
     );
     let has_status = strip_has_status(app);
-    let [strip, _, band_area, footer_area] =
-        live_layout(area, has_status, preview_n, queued, toast, band, footer);
+    let [strip, _, band_area, footer_area, agent_area] = live_layout(
+        area, has_status, preview_n, queued, toast, band, footer, agent_rows,
+    );
     // Rows the preview slot (content + its trailing gap) / status each occupy at
     // the strip's top (0 when absent).
     let preview_slot = if preview_n > 0 {
@@ -2915,16 +2942,25 @@ pub fn render_live_with_preview(
     // The live status line, pinned below the preview (or at the strip top during
     // the pause), just above the box, while a turn is in flight — suppressed for
     // a `!` shell turn (has_status false), whose elapsed rides the preview above.
-    if has_status && let Some(status) = app.status() {
-        let status_y = strip.y + preview_slot;
-        if status_y < strip.y + strip.height {
-            let status_area = Rect {
-                x: strip.x,
-                y: status_y,
-                width: strip.width,
-                height: STATUS_ROWS,
-            };
-            Paragraph::new(status_line(status)).render(status_area, buf);
+    // An agent session view shows the *viewed agent's* synthesized status
+    // instead of the main turn's (docs/agent-tool.md).
+    if has_status {
+        let line = if let Some(run) = app.viewed_agent() {
+            Some(status_line(&agent_view_status(run)))
+        } else {
+            app.status().map(status_line)
+        };
+        if let Some(line) = line {
+            let status_y = strip.y + preview_slot;
+            if status_y < strip.y + strip.height {
+                let status_area = Rect {
+                    x: strip.x,
+                    y: status_y,
+                    width: strip.width,
+                    height: STATUS_ROWS,
+                };
+                Paragraph::new(line).render(status_area, buf);
+            }
         }
     }
 
@@ -2966,13 +3002,24 @@ pub fn render_live_with_preview(
         }
     }
 
-    // The input box: a top/bottom rule framing the wrapped input rows.
+    // The input box: a top/bottom rule framing the wrapped input rows. An
+    // agent session view carries the agent's description as a right-aligned
+    // label on the top rule (docs/agent-tool.md).
     let bx = input_box(
-        area, &app.input, has_status, preview_n, queued, toast, band, footer,
+        area, &app.input, has_status, preview_n, queued, toast, band, footer, agent_rows,
     );
-    let block = Block::new()
+    let mut block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(BORDER_COLOR));
+    if let Some(run) = app.viewed_agent() {
+        block = block.title_top(
+            Line::from(Span::styled(
+                format!(" {} ", run.description),
+                Style::new().fg(TOOL_DIM_COLOR),
+            ))
+            .right_aligned(),
+        );
+    }
     block.render(bx.frame, buf);
 
     // While a Ctrl+R search previews a match, the query's occurrences in it
@@ -3022,8 +3069,9 @@ pub fn render_live_with_preview(
     // The session-context footer on the region's last row — only when no band
     // is open (the band takes its place; see docs/footer.md). An open Ctrl+R
     // search (docs/history-search.md), a `!command` shell mode
-    // (docs/shell-command.md), or a primed backtrack (docs/backtrack.md)
-    // takes the same slot with its own line.
+    // (docs/shell-command.md), a primed backtrack (docs/backtrack.md), or the
+    // roster selection's hints (docs/agent-tool.md) take the same slot with
+    // their own line.
     if footer > 0 {
         let line = if let Some(search) = app.history_search.as_ref() {
             search_line(search)
@@ -3031,10 +3079,18 @@ pub fn render_live_with_preview(
             shell_mode_line()
         } else if app.backtrack.primed {
             backtrack_hint_line()
+        } else if app.agent_selection().is_some() {
+            agent_hint_line(app)
         } else {
             footer_line(app, footer_area.width)
         };
         Paragraph::new(line).render(footer_area, buf);
+    }
+
+    // The agent roster below the footer — the persistent `● main` + `◯ …`
+    // list while agents exist (docs/agent-tool.md).
+    if agent_rows > 0 {
+        Paragraph::new(agent_list_lines(app, agent_area.width)).render(agent_area, buf);
     }
 }
 
@@ -3309,6 +3365,11 @@ pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'stat
 /// `live_height`'s terminal-height clamp still bounds the region as a whole.
 #[must_use]
 pub fn queued_rows(app: &App, width: u16) -> u16 {
+    // An agent session view shows the agent's world — the main session's
+    // queued follow-ups stay off it (they re-appear on return).
+    if app.agent_view.is_some() {
+        return 0;
+    }
     // Saturating: the queue is uncapped, and a plain `as` cast would silently
     // wrap a >65,535-row backlog into a tiny (wrong) height.
     queued_lines(app, width).len().min(usize::from(u16::MAX)) as u16
@@ -3390,6 +3451,11 @@ pub fn footer_rows(app: &App, band_rows: u16) -> u16 {
     // empty composer, so no band/search/shell can be open with it; see
     // docs/backtrack.md).
     if app.backtrack.primed {
+        return 1;
+    }
+    // The roster selection's hint line likewise (its gate requires an empty
+    // composer with no palette/picker open; see docs/agent-tool.md).
+    if app.agent_selection().is_some() {
         return 1;
     }
     u16::from(app.session.is_some() && band_rows == 0)
@@ -4872,6 +4938,641 @@ pub fn background_notice_lines(
         .collect()
 }
 
+// --- The `Agent` tool (docs/agent-tool.md) ---
+
+/// The tree connectors of a group cell's per-agent rows: `   ├ {description}`
+/// for every agent but the last, `   └ {description}` for the last, with the
+/// status row's gutter continuing the rail (`   │ ⎿  Done` / `     ⎿  Done`).
+const AGENT_TREE_INDENT: &str = "   ";
+const AGENT_TREE_MID: &str = "├ ";
+const AGENT_TREE_LAST: &str = "└ ";
+const AGENT_TREE_PIPE: &str = "│ ";
+const AGENT_TREE_BLANK: &str = "  ";
+/// The status row's corner inside the tree (`⎿  Done`).
+const AGENT_TREE_CORNER: &str = "⎿  ";
+/// The committed background-launch header's manager hint.
+const AGENT_MANAGE_HINT: &str = " (↓ to manage)";
+/// The Ctrl+O cell's `Prompt:` / `Response:` section labels (green bold,
+/// Claude Code's transcript look).
+const AGENT_PROMPT_LABEL: &str = "Prompt:";
+const AGENT_RESPONSE_LABEL: &str = "Response:";
+const AGENT_SECTION_COLOR: Color = TOOL_OK_COLOR;
+/// Indent of a Ctrl+O agent cell's section bodies (under the `⎿  ` corner's
+/// label, one level further in) and of its nested tool-header lines.
+const AGENT_BODY_INDENT: &str = "       ";
+const AGENT_NESTED_INDENT: &str = "     ";
+/// The footer roster (the persistent agent list under the footer): the
+/// selection marker, the main row's bullet, and an agent row's circle.
+const AGENT_LIST_MARKER: &str = "❯ ";
+const AGENT_LIST_INDENT: &str = "  ";
+const AGENT_MAIN_BULLET: &str = "● ";
+const AGENT_ROW_BULLET: &str = "◯ ";
+const AGENT_MAIN_LABEL: &str = "main";
+/// The roster selection's footer hints (they take the footer line's slot).
+const AGENT_HINT_MAIN: &[(&str, &str)] = &[("↑/↓", " to select"), ("Enter", " to view")];
+const AGENT_HINT_AGENT: &[(&str, &str)] = &[("Enter", " to view"), ("x", " to stop")];
+
+/// The group header's noun phrase: `2 agents` / `1 agent`.
+fn agent_count_phrase(count: usize) -> String {
+    if count == 1 {
+        "1 agent".to_string()
+    } else {
+        format!("{count} agents")
+    }
+}
+
+/// ` · {n} tool use[s] · {tokens} tokens` — a tree row's counters clause
+/// (omitted while both are zero, and on a background-launch cell).
+fn agent_counters_clause(tool_uses: usize, tokens: u64) -> String {
+    let mut clause = String::new();
+    if tool_uses > 0 || tokens > 0 {
+        let plural = if tool_uses == 1 { "" } else { "s" };
+        clause.push_str(&format!(" · {tool_uses} tool use{plural}"));
+        clause.push_str(&format!(
+            " · {} tokens",
+            format_token_count(usize::try_from(tokens).unwrap_or(usize::MAX))
+        ));
+    }
+    clause
+}
+
+/// One agent's two tree rows: the connector + description + dim counters,
+/// then the rail + `⎿  {status}`. Rows truncate at the width (Claude Code's
+/// truncate-end), so the tree never wraps.
+fn agent_tree_rows(
+    is_last: bool,
+    description: &str,
+    counters: &str,
+    status: Option<(&str, Color)>,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let budget = (width as usize)
+        .saturating_sub(cols(AGENT_TREE_INDENT) + cols(AGENT_TREE_MID))
+        .max(1);
+    let connector = if is_last {
+        AGENT_TREE_LAST
+    } else {
+        AGENT_TREE_MID
+    };
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let mut description = description.to_string();
+    let counters_cols = cols(counters);
+    if cols(&description) + counters_cols > budget {
+        description = truncate_cols(&description, budget.saturating_sub(counters_cols + 1));
+        description.push('…');
+    }
+    let mut lines = vec![Line::from(vec![
+        Span::styled(AGENT_TREE_INDENT.to_string(), dim),
+        Span::styled(connector.to_string(), dim),
+        Span::styled(description, Style::new().fg(TOOL_OUTPUT_COLOR)),
+        Span::styled(counters.to_string(), dim),
+    ])];
+    if let Some((status, color)) = status {
+        let rail = if is_last {
+            AGENT_TREE_BLANK
+        } else {
+            AGENT_TREE_PIPE
+        };
+        lines.push(Line::from(vec![
+            Span::styled(AGENT_TREE_INDENT.to_string(), dim),
+            Span::styled(rail.to_string(), dim),
+            Span::styled(AGENT_TREE_CORNER.to_string(), dim),
+            Span::styled(
+                truncate_cols(status, budget.saturating_sub(cols(AGENT_TREE_CORNER))),
+                Style::new().fg(color),
+            ),
+        ]));
+    }
+    lines
+}
+
+/// The group cell's `● {header}` row: the coloured bullet, the white header
+/// text, and a dim trailing hint.
+fn agent_group_header(color: Color, text: String, hint: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            TOOL_BULLET.to_string(),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(text, Style::new().fg(TOOL_NAME_COLOR)),
+        Span::styled(hint.to_string(), Style::new().fg(TOOL_DIM_COLOR)),
+    ])
+}
+
+/// A **committed** agent group's tree cell (`docs/agent-tool.md`):
+/// `● {n} background agents launched (↓ to manage)` over description-only
+/// rows for a background launch, else `● {n} agents finished (ctrl+o to
+/// expand)` over counter rows with a `⎿ Done` / `⎿ Interrupted` / `⎿ Failed`
+/// status row per agent — green bullet when every agent finished cleanly,
+/// red otherwise.
+#[must_use]
+pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line<'static>> {
+    let color = if group.ok() {
+        TOOL_OK_COLOR
+    } else {
+        TOOL_FAIL_COLOR
+    };
+    let mut lines = if group.background {
+        vec![agent_group_header(
+            color,
+            format!(
+                "{} background {} launched",
+                group.agents.len(),
+                if group.agents.len() == 1 {
+                    "agent"
+                } else {
+                    "agents"
+                }
+            ),
+            AGENT_MANAGE_HINT,
+        )]
+    } else {
+        vec![agent_group_header(
+            color,
+            format!("{} finished", agent_count_phrase(group.agents.len())),
+            EXPAND_HINT,
+        )]
+    };
+    let count = group.agents.len();
+    for (i, entry) in group.agents.iter().enumerate() {
+        let is_last = i + 1 == count;
+        if group.background {
+            lines.extend(agent_tree_rows(
+                is_last,
+                &entry.description,
+                "",
+                None,
+                width,
+            ));
+        } else {
+            let status_color = match entry.status {
+                s if s.ok() => TOOL_DIM_COLOR,
+                crate::agents::AgentStatus::Running | crate::agents::AgentStatus::Pending => {
+                    TOOL_DIM_COLOR
+                }
+                _ => TOOL_FAIL_COLOR,
+            };
+            lines.extend(agent_tree_rows(
+                is_last,
+                &entry.description,
+                &agent_counters_clause(entry.tool_uses, entry.tokens),
+                Some((entry.status.label(), status_color)),
+                width,
+            ));
+        }
+    }
+    lines
+}
+
+/// The **live** agent group's tree cell — the strip preview while the round's
+/// agents run: a blue `● Running {n} agents… (ctrl+o to expand)` header over
+/// live tree rows (counters ticking, the status row showing each agent's
+/// current activity). Rendered from the roster entries the live group names;
+/// an id already swept renders nothing (it settled long ago).
+#[must_use]
+pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(live) = app.agent_group() else {
+        return Vec::new();
+    };
+    let runs: Vec<&crate::agents::AgentRun> =
+        live.ids.iter().filter_map(|id| app.agent(id)).collect();
+    if runs.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![agent_group_header(
+        TOOL_RUNNING_COLOR,
+        format!("Running {}…", agent_count_phrase(runs.len())),
+        EXPAND_HINT,
+    )];
+    let count = runs.len();
+    for (i, run) in runs.iter().enumerate() {
+        let activity = run.activity();
+        let status_color = match run.status {
+            crate::agents::AgentStatus::Failed | crate::agents::AgentStatus::Interrupted => {
+                TOOL_FAIL_COLOR
+            }
+            _ => TOOL_DIM_COLOR,
+        };
+        lines.extend(agent_tree_rows(
+            i + 1 == count,
+            &run.description,
+            &agent_counters_clause(run.tool_uses, run.tokens),
+            Some((activity.as_str(), status_color)),
+            width,
+        ));
+    }
+    // The whole group can be moved to the background with Ctrl+B — the
+    // delayed discoverability hint, exactly like a running bash cell's
+    // (docs/background.md). Live-only by construction.
+    if !live.background
+        && app
+            .command_elapsed()
+            .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
+    {
+        lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));
+    }
+    lines
+}
+
+/// A background agent's completion notice cell: the coloured `●` — green for
+/// a clean finish, red for a stop/failure — over the one-line headline
+/// (`Agent "{description}" finished · 35s`). The final response the notice
+/// carries is context-only, never rendered. See `docs/agent-tool.md`.
+#[must_use]
+pub fn agent_notice_lines(notice: &crate::app::AgentNotice, width: u16) -> Vec<Line<'static>> {
+    let color = if notice.ok() {
+        BG_NOTICE_OK_COLOR
+    } else {
+        BG_NOTICE_FAIL_COLOR
+    };
+    let bullet_style = Style::new().fg(color).add_modifier(Modifier::BOLD);
+    let content_width = width.saturating_sub(BULLET_WIDTH).max(1);
+    wrap_text(&notice.headline(), content_width)
+        .into_iter()
+        .enumerate()
+        .map(|(i, line)| {
+            if i == 0 {
+                Line::from(vec![
+                    Span::styled(AI_BULLET.to_string(), bullet_style),
+                    Span::raw(line),
+                ])
+            } else {
+                Line::from(vec![Span::raw(INDENT.to_string()), Span::raw(line)])
+            }
+        })
+        .collect()
+}
+
+/// What one Ctrl+O agent cell renders — bridged from either a **recorded**
+/// [`crate::app::AgentGroupEntry`] or a **live** roster
+/// [`crate::agents::AgentRun`], so the two views share one renderer.
+struct AgentCellView {
+    description: String,
+    status: crate::agents::AgentStatus,
+    background: bool,
+    prompt: String,
+    tool_headers: Vec<String>,
+    /// The live activity row (`Running…`) — live cells only.
+    activity: Option<String>,
+    result: String,
+    tool_uses: usize,
+    tokens: u64,
+    secs: u64,
+}
+
+impl AgentCellView {
+    fn of_entry(entry: &crate::app::AgentGroupEntry, background: bool) -> Self {
+        Self {
+            description: entry.description.clone(),
+            status: entry.status,
+            background,
+            prompt: entry.prompt.clone(),
+            tool_headers: entry.tool_headers.clone(),
+            activity: None,
+            result: entry.result.clone(),
+            tool_uses: entry.tool_uses,
+            tokens: entry.tokens,
+            secs: entry.secs,
+        }
+    }
+
+    fn of_run(run: &crate::agents::AgentRun) -> Self {
+        let mut tool_headers: Vec<String> = run
+            .history
+            .iter()
+            .filter_map(|item| match item {
+                HistoryItem::Tool(tool) => Some(format!("{}({})", tool.name, tool.args)),
+                _ => None,
+            })
+            .collect();
+        for tool in &run.tool_queue {
+            tool_headers.push(format!("{}({})", tool.name, tool.args));
+        }
+        Self {
+            description: run.description.clone(),
+            status: run.status,
+            background: run.background,
+            prompt: run.prompt.clone(),
+            tool_headers,
+            activity: (!run.status.is_final()).then(|| match run.status {
+                crate::agents::AgentStatus::Pending => "Initializing…".to_string(),
+                _ => "Running…".to_string(),
+            }),
+            result: run.result.clone().unwrap_or_default(),
+            tool_uses: run.tool_uses,
+            tokens: run.tokens,
+            secs: run.runtime.as_secs(),
+        }
+    }
+}
+
+/// One agent's expanded Ctrl+O cell: the `● Agent({description})` header
+/// (bullet coloured by status), the `⎿ Prompt:` block, the nested tool-call
+/// headers it ran, the `⎿ Response:` block once a final response exists, and
+/// the `⎿ Done ({n} tool uses · {tokens} tokens · {s}s)` /
+/// `⎿ Interrupted` / `⎿ Failed` footer. See `docs/agent-tool.md`.
+fn agent_cell_lines(cell: &AgentCellView, width: u16) -> Vec<Line<'static>> {
+    let bullet_color = match cell.status {
+        crate::agents::AgentStatus::Done => TOOL_OK_COLOR,
+        crate::agents::AgentStatus::Failed | crate::agents::AgentStatus::Interrupted => {
+            TOOL_FAIL_COLOR
+        }
+        _ => TOOL_RUNNING_COLOR,
+    };
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let white = Style::new().fg(TOOL_OUTPUT_COLOR);
+    let section = Style::new()
+        .fg(AGENT_SECTION_COLOR)
+        .add_modifier(Modifier::BOLD);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            TOOL_BULLET.to_string(),
+            Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Agent".to_string(),
+            Style::new()
+                .fg(TOOL_NAME_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("({})", cell.description),
+            Style::new().fg(TOOL_ARGS_COLOR),
+        ),
+    ])];
+    // ⎿  Prompt: over the indented prompt body.
+    lines.push(Line::from(vec![
+        Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
+        Span::styled(AGENT_PROMPT_LABEL.to_string(), section),
+    ]));
+    let body_width = width.saturating_sub(cols(AGENT_BODY_INDENT) as u16).max(1);
+    for row in wrap_text(&cell.prompt, body_width) {
+        lines.push(Line::from(vec![
+            Span::raw(AGENT_BODY_INDENT.to_string()),
+            Span::styled(row, white),
+        ]));
+    }
+    // The nested tool calls it ran (headers only — the agent session view has
+    // the full cells), then the live activity row.
+    if !cell.tool_headers.is_empty() || cell.activity.is_some() {
+        lines.push(Line::default());
+        let nested_width = width
+            .saturating_sub(cols(AGENT_NESTED_INDENT) as u16)
+            .max(1);
+        for header in &cell.tool_headers {
+            for (i, row) in wrap_text(header, nested_width).into_iter().enumerate() {
+                let indent = if i == 0 {
+                    AGENT_NESTED_INDENT.to_string()
+                } else {
+                    format!("{AGENT_NESTED_INDENT}  ")
+                };
+                lines.push(Line::from(vec![
+                    Span::raw(indent),
+                    Span::styled(row, white),
+                ]));
+            }
+        }
+        if let Some(activity) = &cell.activity {
+            lines.push(Line::from(vec![
+                Span::raw(AGENT_NESTED_INDENT.to_string()),
+                Span::styled(activity.clone(), dim),
+            ]));
+        }
+    }
+    // ⎿  Response: once a final response exists.
+    if !cell.result.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
+            Span::styled(AGENT_RESPONSE_LABEL.to_string(), section),
+        ]));
+        for row in wrap_text(&cell.result, body_width) {
+            lines.push(Line::from(vec![
+                Span::raw(AGENT_BODY_INDENT.to_string()),
+                Span::styled(row, white),
+            ]));
+        }
+    }
+    // The settle footer.
+    let footer: Option<(String, Color)> = match cell.status {
+        crate::agents::AgentStatus::Done => Some((
+            format!(
+                "Done ({} tool use{} · {} tokens · {}s)",
+                cell.tool_uses,
+                if cell.tool_uses == 1 { "" } else { "s" },
+                format_token_count(usize::try_from(cell.tokens).unwrap_or(usize::MAX)),
+                cell.secs,
+            ),
+            TOOL_DIM_COLOR,
+        )),
+        crate::agents::AgentStatus::Interrupted => {
+            Some(("Interrupted".to_string(), TOOL_FAIL_COLOR))
+        }
+        crate::agents::AgentStatus::Failed => Some(("Failed".to_string(), TOOL_FAIL_COLOR)),
+        _ if cell.background => Some((TOOL_BACKGROUNDED.to_string(), TOOL_DIM_COLOR)),
+        _ => None,
+    };
+    if let Some((text, color)) = footer {
+        lines.push(Line::from(vec![
+            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
+            Span::styled(text, Style::new().fg(color)),
+        ]));
+    }
+    lines
+}
+
+/// A committed [`crate::app::AgentGroup`]'s Ctrl+O expansion: one
+/// [`agent_cell_lines`] cell per entry, blank-separated.
+fn agent_group_full_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (i, entry) in group.agents.iter().enumerate() {
+        if i > 0 {
+            lines.push(Line::default());
+        }
+        lines.extend(agent_cell_lines(
+            &AgentCellView::of_entry(entry, group.background),
+            width,
+        ));
+    }
+    lines
+}
+
+/// How many rows the footer's agent roster occupies: 0 with no visible
+/// agents, else a blank spacer + the `● main` row + one row per agent.
+/// [`live_height`] adds this below the footer; [`render_live`] paints exactly
+/// these rows.
+#[must_use]
+pub fn agent_list_rows(app: &App) -> u16 {
+    let agents = app.visible_agents().len();
+    if agents == 0 {
+        return 0;
+    }
+    u16::try_from(2 + agents).unwrap_or(u16::MAX)
+}
+
+/// The footer roster: a blank spacer, the `● main` row, then one
+/// `◯ {type}  {description} {elapsed} · ↓ {tokens} tokens` row per visible
+/// agent — the `❯` selection marker on the active row, the viewed session
+/// bold, finished agents' `◯` coloured green/red for their linger. See
+/// `docs/agent-tool.md`.
+#[must_use]
+pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let agents = app.visible_agents();
+    if agents.is_empty() {
+        return Vec::new();
+    }
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let selection = app.agent_selection();
+    let mut lines = vec![Line::default()];
+    // The `● main` row.
+    let main_selected = selection == Some(0);
+    let main_viewed = app.agent_view.is_none();
+    let marker = if main_selected {
+        AGENT_LIST_MARKER
+    } else {
+        AGENT_LIST_INDENT
+    };
+    let mut main_style = if main_selected {
+        Style::new().fg(MENU_SELECTED_COLOR)
+    } else if main_viewed {
+        Style::new().fg(TOOL_OUTPUT_COLOR)
+    } else {
+        dim
+    };
+    if main_viewed {
+        main_style = main_style.add_modifier(Modifier::BOLD);
+    }
+    lines.push(Line::from(vec![
+        Span::styled(marker.to_string(), Style::new().fg(MENU_SELECTED_COLOR)),
+        Span::styled(AGENT_MAIN_BULLET.to_string(), main_style),
+        Span::styled(AGENT_MAIN_LABEL.to_string(), main_style),
+    ]));
+    for (i, run) in agents.iter().enumerate() {
+        let selected = selection == Some(i + 1);
+        let viewed = app.agent_view.as_deref() == Some(run.id.as_str());
+        let marker = if selected {
+            AGENT_LIST_MARKER
+        } else {
+            AGENT_LIST_INDENT
+        };
+        let bullet_style = match run.status {
+            s if s.is_final() && s.ok() => Style::new().fg(TOOL_OK_COLOR),
+            s if s.is_final() => Style::new().fg(TOOL_FAIL_COLOR),
+            _ if selected => Style::new().fg(MENU_SELECTED_COLOR),
+            _ => dim,
+        };
+        let mut text_style = if selected {
+            Style::new().fg(MENU_SELECTED_COLOR)
+        } else {
+            dim
+        };
+        if viewed {
+            text_style = text_style.add_modifier(Modifier::BOLD);
+        }
+        // `{type}  {description}` truncated so the ` {elapsed} · ↓ {n} tokens`
+        // suffix always fits.
+        let mut suffix = format!(" {}", format_elapsed(run.runtime.as_secs()));
+        if run.tokens > 0 {
+            suffix.push_str(&format!(
+                " · {} {} tokens",
+                STATUS_ARROW_DOWN,
+                format_token_count(usize::try_from(run.tokens).unwrap_or(usize::MAX))
+            ));
+        }
+        let lead = format!("{}{}", marker, AGENT_ROW_BULLET);
+        let budget = (width as usize)
+            .saturating_sub(cols(&lead) + cols(&suffix))
+            .max(1);
+        let mut name = format!("{}  {}", run.agent_type, run.description);
+        if cols(&name) > budget {
+            name = truncate_cols(&name, budget.saturating_sub(1));
+            name.push('…');
+        }
+        lines.push(Line::from(vec![
+            Span::styled(marker.to_string(), Style::new().fg(MENU_SELECTED_COLOR)),
+            Span::styled(AGENT_ROW_BULLET.to_string(), bullet_style),
+            Span::styled(name, text_style),
+            Span::styled(suffix, dim),
+        ]));
+    }
+    lines
+}
+
+/// The roster selection's footer hint line — `↑/↓ to select · Enter to view`
+/// on the `● main` row, `Enter to view · x to stop` on an agent row — taking
+/// the footer's slot while the selection is active (the shell-mode-line
+/// pattern).
+#[must_use]
+pub fn agent_hint_line(app: &App) -> Line<'static> {
+    let entries = if app.agent_selection() == Some(0) {
+        AGENT_HINT_MAIN
+    } else {
+        AGENT_HINT_AGENT
+    };
+    let mut spans = vec![Span::raw(FOOTER_INDENT)];
+    for (i, (key, label)) in entries.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(
+                FOOTER_SEPARATOR.to_string(),
+                Style::new().fg(FOOTER_COLOR),
+            ));
+        }
+        spans.push(Span::styled(
+            (*key).to_string(),
+            Style::new().fg(SHORTCUTS_KEY_COLOR),
+        ));
+        spans.push(Span::styled(
+            (*label).to_string(),
+            Style::new().fg(FOOTER_COLOR),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// The synthesized status for an **agent session view**'s strip — the viewed
+/// agent's own spinner line (`Working… (elapsed · ↓ tokens · esc to
+/// interrupt)` shape, without the interrupt hint's meaning changing: Esc
+/// leaves the view). Built per draw from the roster entry.
+#[must_use]
+pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatus {
+    crate::app::TurnStatus {
+        verb: "Working",
+        done_verb: "Done",
+        tokens: usize::try_from(run.tokens).unwrap_or(usize::MAX),
+        arrow: crate::app::TokenArrow::Down,
+        elapsed: run.runtime,
+        thinking: None,
+        shell: false,
+        retry: None,
+    }
+}
+
+/// The agent session view's strip preview: the viewed agent's live tool
+/// cells (the batch queue, blank-separated) or its streaming reply's last
+/// row. Empty when idle. The [`preview_lines`]/[`preview_rows`] pair calls
+/// this for a viewed agent so the two agree.
+fn agent_view_preview_lines(run: &crate::agents::AgentRun, width: u16) -> Vec<Line<'static>> {
+    if !run.tool_queue.is_empty() {
+        let mut lines = Vec::new();
+        for (i, tool) in run.tool_queue.iter().enumerate() {
+            if i > 0 {
+                lines.push(Line::default());
+            }
+            lines.extend(tool_lines(tool, width));
+        }
+        return lines;
+    }
+    run.streaming
+        .as_deref()
+        .filter(|t| !t.is_empty())
+        .map(|text| {
+            message_lines(Role::Assistant, text, width)
+                .pop()
+                .unwrap_or_default()
+        })
+        .into_iter()
+        .collect()
+}
+
 /// The stamp footer under a **user** message in the transcript: a blank row,
 /// then the dim timestamp right-aligned flush to `width`. Empty for an empty
 /// timestamp (no clock injected). Only user messages get this — the other item
@@ -4959,6 +5660,12 @@ fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>,
         HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
         HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
         HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
+        // The transcript expands the group into one `● Agent({description})`
+        // cell per subagent — prompt, nested tool headers, response, and the
+        // Done/Interrupted footer (docs/agent-tool.md); the inline view shows
+        // the collapsed tree cell.
+        HistoryItem::AgentGroup(g) => lines.extend(agent_group_full_lines(g, width)),
+        HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
         // The transcript expands the marker with its summary body — the
         // inline view keeps it collapsed (docs/compact.md).
         HistoryItem::Compaction(c) => lines.extend(compaction_full_lines(c, width)),
@@ -5092,6 +5799,10 @@ struct TranscriptSig {
     tool_queue: Option<(usize, ToolStatus, usize)>,
     queued_len: usize,
     backtrack_selected: Option<usize>,
+    /// The subagent roster's mutation counter — a live agent streaming (its
+    /// tree counters, its Ctrl+O cell) invalidates the tail exactly like a
+    /// streaming tool (docs/agent-tool.md).
+    agents_generation: u64,
 }
 
 impl TranscriptSig {
@@ -5108,6 +5819,7 @@ impl TranscriptSig {
                 .map(|t| (queue.len(), t.status, t.output.len())),
             queued_len: app.queued.len(),
             backtrack_selected: app.backtrack.selected,
+            agents_generation: app.agents_generation(),
         }
     }
 }
@@ -5248,6 +5960,18 @@ impl TranscriptCache {
             self.lines
                 .extend(message_lines(Role::Assistant, text, width));
             self.lines.push(Line::default());
+        }
+        // The live agent group's members expand as their own `● Agent(…)`
+        // cells — activity live — before the tool queue, mirroring the strip's
+        // order (docs/agent-tool.md). Committed groups render from history.
+        if let Some(live) = app.agent_group() {
+            for id in &live.ids {
+                if let Some(run) = app.agent(id) {
+                    self.lines
+                        .extend(agent_cell_lines(&AgentCellView::of_run(run), width));
+                    self.lines.push(Line::default());
+                }
+            }
         }
         for tool in app.tool_queue() {
             self.lines.extend(tool_full_lines(tool, width));
@@ -6870,6 +7594,8 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
             HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
+            HistoryItem::AgentGroup(g) => lines.extend(agent_group_lines(g, width)),
+            HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
             HistoryItem::Compaction(c) => lines.extend(compaction_lines(c, width)),
         }
         // Blank spacer after every item — except a shell command's header:
@@ -7005,8 +7731,9 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // While a Ctrl+R search is open the hardware cursor tracks the end of the
     // *footer query*, not the textarea preview — the shell reverse-i-search
     // feel (codex's history_search_cursor_pos), clamped inside the row.
+    let agent_rows = agent_list_rows(app);
     if let Some(search) = &app.history_search {
-        let [_, _, _, footer_area] = live_layout(
+        let [_, _, _, footer_area, _] = live_layout(
             area,
             has_status,
             preview,
@@ -7014,6 +7741,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
             toast,
             band,
             footer,
+            agent_rows,
         );
         if footer_area.height > 0 && footer_area.width > 0 {
             let x = (cols(FOOTER_INDENT) + cols(SEARCH_PROMPT) + cols(&search.query))
@@ -7030,6 +7758,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         toast,
         band,
         footer,
+        agent_rows,
     );
     // The frame can collapse below its two rules (a tall strip/queue on a
     // short terminal): `Rect::inner` then returns `Rect::ZERO`, whose origin
@@ -9270,7 +9999,7 @@ mod tests {
         }
         app.set_status_times(Duration::from_secs(9), None);
         let pv = preview_rows(&app, 60);
-        let h = live_height(&app.input, 60, 24, true, pv, 0, 0, 0, 0);
+        let h = live_height(&app.input, 60, 24, true, pv, 0, 0, 0, 0, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -11458,7 +12187,7 @@ mod tests {
         app.begin_stream();
         app.push_chunk("hi");
         app.set_status_times(Duration::from_secs(3), None);
-        let h = live_height(&app.input, 40, 24, true, 1, 0, 0, 0, 0);
+        let h = live_height(&app.input, 40, 24, true, 1, 0, 0, 0, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -11482,7 +12211,7 @@ mod tests {
         // No preview content yet → the strip is status + gap only (no preview
         // row, no preview gap): exactly the box + status + the two gaps.
         assert_eq!(preview_rows(&app, 60), 0);
-        let h = live_height(&app.input, 60, 24, true, 0, 0, 0, 0, 0);
+        let h = live_height(&app.input, 60, 24, true, 0, 0, 0, 0, 0, 0);
         assert_eq!(
             h,
             STATUS_ROWS + STATUS_GAP_ROWS + INPUT_CHROME_ROWS + 1,
@@ -11518,7 +12247,7 @@ mod tests {
     fn render_live_grows_the_box_and_wraps_input_across_rows() {
         let mut app = App::new();
         app.input = TextArea::from_text("first\nsecond");
-        let h = live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 0);
+        let h = live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 0, 0);
         assert_eq!(h, 4, "two rules + two input rows (no strip when idle)");
         let mut buf = buffer(20, h);
         render_live(buf.area, &mut buf, &app);
@@ -11548,7 +12277,10 @@ mod tests {
                 .join("\n"),
         );
         let term_h = 6; // live clamps to 6 → text rows = 6 - 2 = 4
-        assert_eq!(live_height(&app.input, 20, term_h, false, 0, 0, 0, 0, 0), 6);
+        assert_eq!(
+            live_height(&app.input, 20, term_h, false, 0, 0, 0, 0, 0, 0),
+            6
+        );
         let mut buf = buffer(20, 6);
         render_live(buf.area, &mut buf, &app);
 
@@ -11666,7 +12398,7 @@ mod tests {
             0,
             0,
             20,
-            live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 0),
+            live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 0, 0),
         );
         assert_eq!(cursor_position(area, &app), (4, 2));
     }
@@ -12130,11 +12862,11 @@ mod tests {
         // (no preview strip) = LIVE_MIN_HEIGHT (3).
         assert_eq!(LIVE_MIN_HEIGHT, 3);
         assert_eq!(
-            live_height(&TextArea::from_text(""), 40, 24, false, 0, 0, 0, 0, 0),
+            live_height(&TextArea::from_text(""), 40, 24, false, 0, 0, 0, 0, 0, 0),
             LIVE_MIN_HEIGHT
         );
         assert_eq!(
-            live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0, 0, 0, 0),
+            live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0, 0, 0, 0, 0),
             LIVE_MIN_HEIGHT
         );
     }
@@ -12147,8 +12879,8 @@ mod tests {
         for input in ["", "hi", "a\nb\nc"] {
             let ta = TextArea::from_text(input);
             assert_eq!(
-                live_height(&ta, 40, 24, true, 1, 0, 0, 0, 0),
-                live_height(&ta, 40, 24, false, 0, 0, 0, 0, 0) + 4,
+                live_height(&ta, 40, 24, true, 1, 0, 0, 0, 0, 0),
+                live_height(&ta, 40, 24, false, 0, 0, 0, 0, 0, 0) + 4,
                 "streaming adds the preview + gap + status + gap rows for {input:?}"
             );
         }
@@ -12164,6 +12896,7 @@ mod tests {
                 40,
                 24,
                 false,
+                0,
                 0,
                 0,
                 0,
@@ -12190,6 +12923,7 @@ mod tests {
                 0,
                 0,
                 0,
+                0,
                 0
             ),
             5
@@ -12200,7 +12934,7 @@ mod tests {
     fn live_height_is_clamped_to_the_terminal_height() {
         let many = TextArea::from_text(&"a\n".repeat(50));
         assert_eq!(
-            live_height(&many, 40, 10, false, 0, 0, 0, 0, 0),
+            live_height(&many, 40, 10, false, 0, 0, 0, 0, 0, 0),
             10,
             "never taller than the screen"
         );
@@ -12294,7 +13028,7 @@ mod tests {
                         // 2-row preview cell → 2 + gap + status + gap = 5) +
                         // band (3) + footer (1) = 9.
                         for h in [LIVE_MIN_HEIGHT + 6, 12, 24] {
-                            let [strip, input, band, footer] = live_layout(
+                            let [strip, input, band, footer, _] = live_layout(
                                 Rect::new(0, 0, 40, h),
                                 streaming,
                                 preview_rows,
@@ -12302,6 +13036,7 @@ mod tests {
                                 0,
                                 band_rows,
                                 footer_rows,
+                                0,
                             );
                             assert_eq!(
                                 strip.height + input.height + band.height + footer.height,
@@ -12347,7 +13082,7 @@ mod tests {
         app.queued.push_back(batch(&["world"]));
         app.input = TextArea::from_text("x");
         let q = queued_rows(&app, 40);
-        let h = live_height(&app.input, 40, 24, true, 1, q, 0, 0, 0);
+        let h = live_height(&app.input, 40, 24, true, 1, q, 0, 0, 0, 0);
         let area = Rect::new(0, 0, 40, h);
         let mut buf = buffer(40, h);
         render_live(area, &mut buf, &app);
@@ -12706,7 +13441,7 @@ mod tests {
             "the whole batch (3 cells + 2 gaps + the running cell's hint) is previewed"
         );
         let pv = preview_rows(&app, 40);
-        let h = live_height(&app.input, 40, 30, true, pv, 0, 0, 0, 0);
+        let h = live_height(&app.input, 40, 30, true, pv, 0, 0, 0, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -12735,7 +13470,18 @@ mod tests {
         let mut app = App::new();
         app.begin_stream();
         app.start_tool("Bash", "sleep 1");
-        let h = live_height(&app.input, 40, 24, true, preview_rows(&app, 40), 0, 0, 0, 0);
+        let h = live_height(
+            &app.input,
+            40,
+            24,
+            true,
+            preview_rows(&app, 40),
+            0,
+            0,
+            0,
+            0,
+            0,
+        );
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         assert!(
@@ -12771,7 +13517,7 @@ mod tests {
             pv > 2,
             "a wrapped header + ⎿ Running… is more than two rows: {pv}"
         );
-        let h = live_height(&app.input, width, 24, true, pv, 0, 0, 0, 0);
+        let h = live_height(&app.input, width, 24, true, pv, 0, 0, 0, 0, 0);
         let mut buf = buffer(width, h);
         render_live(buf.area, &mut buf, &app);
         let rows: Vec<String> = (0..h).map(|y| row(&buf, y, width)).collect();
@@ -13116,7 +13862,7 @@ mod tests {
 
     #[test]
     fn live_height_adds_the_command_menu_band() {
-        let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0, 0, 0, 0);
+        let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0, 0, 0, 0, 0);
         let open = live_height(
             &TextArea::from_text("/"),
             40,
@@ -13127,6 +13873,7 @@ mod tests {
             0,
             MENU_MAX_ROWS,
             0,
+            0,
         );
         assert_eq!(open, closed + MENU_MAX_ROWS, "the menu band adds its rows");
     }
@@ -13135,7 +13882,7 @@ mod tests {
     fn render_live_draws_the_command_menu_below_the_box() {
         let app = palette("/", 0);
         let menu = menu_rows(&app);
-        let h = live_height(&app.input, 40, 24, false, 0, 0, 0, menu, 0);
+        let h = live_height(&app.input, 40, 24, false, 0, 0, 0, menu, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -13162,7 +13909,7 @@ mod tests {
             0,
             0,
             40,
-            live_height(&TextArea::from_text("/"), 40, 24, false, 0, 0, 0, 0, 0),
+            live_height(&TextArea::from_text("/"), 40, 24, false, 0, 0, 0, 0, 0, 0),
         );
         let closed = cursor_position(closed_area, &app);
         app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
@@ -13171,7 +13918,18 @@ mod tests {
             0,
             0,
             40,
-            live_height(&TextArea::from_text("/"), 40, 24, false, 0, 0, 0, menu, 0),
+            live_height(
+                &TextArea::from_text("/"),
+                40,
+                24,
+                false,
+                0,
+                0,
+                0,
+                menu,
+                0,
+                0,
+            ),
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the menu opens");
@@ -13303,8 +14061,19 @@ mod tests {
     fn live_height_adds_the_shortcuts_band() {
         let mut app = App::new();
         app.shortcuts_open = true;
-        let closed = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0);
-        let open = live_height(&app.input, 40, 24, false, 0, 0, 0, shortcuts_rows(&app), 0);
+        let closed = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 0);
+        let open = live_height(
+            &app.input,
+            40,
+            24,
+            false,
+            0,
+            0,
+            0,
+            shortcuts_rows(&app),
+            0,
+            0,
+        );
         assert_eq!(open, closed + shortcuts_rows(&app));
     }
 
@@ -13312,7 +14081,18 @@ mod tests {
     fn render_live_draws_the_shortcuts_band_below_the_box() {
         let mut app = App::new();
         app.shortcuts_open = true;
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, shortcuts_rows(&app), 0);
+        let h = live_height(
+            &app.input,
+            60,
+            24,
+            false,
+            0,
+            0,
+            0,
+            shortcuts_rows(&app),
+            0,
+            0,
+        );
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -13333,7 +14113,7 @@ mod tests {
             0,
             0,
             40,
-            live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0),
+            live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 0),
         );
         let closed = cursor_position(closed_area, &app);
         app.shortcuts_open = true;
@@ -13341,7 +14121,18 @@ mod tests {
             0,
             0,
             40,
-            live_height(&app.input, 40, 24, false, 0, 0, 0, shortcuts_rows(&app), 0),
+            live_height(
+                &app.input,
+                40,
+                24,
+                false,
+                0,
+                0,
+                0,
+                shortcuts_rows(&app),
+                0,
+                0,
+            ),
         );
         let open = cursor_position(open_area, &app);
         assert_eq!(open, closed, "cursor unchanged when the band opens");
@@ -13518,10 +14309,10 @@ mod tests {
     fn live_height_grows_with_the_queue() {
         let mut app = App::new();
         app.begin_stream();
-        let without = live_height(&app.input, 40, 24, true, 1, 0, 0, 0, 0);
+        let without = live_height(&app.input, 40, 24, true, 1, 0, 0, 0, 0, 0);
         app.queued.push_back(batch(&["world"]));
         let q = queued_rows(&app, 40);
-        let with = live_height(&app.input, 40, 24, true, 1, q, 0, 0, 0);
+        let with = live_height(&app.input, 40, 24, true, 1, q, 0, 0, 0, 0);
         assert_eq!(with, without + q, "the queue grows the region by its rows");
         assert_eq!(q, 1, "one short queued message is one row");
     }
@@ -13532,7 +14323,7 @@ mod tests {
         app.begin_stream();
         app.queued.push_back(batch(&["world"]));
         let q = queued_rows(&app, 40);
-        let h = live_height(&app.input, 40, 24, true, 1, q, 0, 0, 0);
+        let h = live_height(&app.input, 40, 24, true, 1, q, 0, 0, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 40)).collect();
@@ -13565,7 +14356,18 @@ mod tests {
         app.shortcuts_open = true;
         app.queued.push_back(batch(&["world"]));
         let q = queued_rows(&app, 40);
-        let h = live_height(&app.input, 40, 24, true, 1, q, 0, shortcuts_rows(&app), 0);
+        let h = live_height(
+            &app.input,
+            40,
+            24,
+            true,
+            1,
+            q,
+            0,
+            shortcuts_rows(&app),
+            0,
+            0,
+        );
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 40)).collect();
@@ -13893,8 +14695,8 @@ mod tests {
     fn live_height_adds_the_footer_row() {
         let ta = TextArea::from_text("hi");
         assert_eq!(
-            live_height(&ta, 40, 24, false, 0, 0, 0, 0, 1),
-            live_height(&ta, 40, 24, false, 0, 0, 0, 0, 0) + 1,
+            live_height(&ta, 40, 24, false, 0, 0, 0, 0, 1, 0),
+            live_height(&ta, 40, 24, false, 0, 0, 0, 0, 0, 0) + 1,
             "the footer adds its row at the very bottom"
         );
     }
@@ -13902,7 +14704,7 @@ mod tests {
     #[test]
     fn render_live_paints_the_footer_on_the_last_row() {
         let app = with_session();
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);
@@ -13919,7 +14721,7 @@ mod tests {
         let mut app = with_session();
         app.begin_stream();
         app.push_chunk("hello");
-        let h = live_height(&app.input, 60, 24, true, 1, 0, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, true, 1, 0, 0, 0, 1, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         assert!(
@@ -13941,9 +14743,9 @@ mod tests {
     #[test]
     fn live_height_reserves_exactly_one_row_for_the_toast() {
         let mut app = App::new();
-        let without = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0);
+        let without = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 0);
         app.show_toast("hi", ToastKind::Info);
-        let with = live_height(&app.input, 60, 24, false, 0, 0, toast_rows(&app), 0, 0);
+        let with = live_height(&app.input, 60, 24, false, 0, 0, toast_rows(&app), 0, 0, 0);
         assert_eq!(with, without + 1, "the toast adds exactly one row");
     }
 
@@ -13951,7 +14753,7 @@ mod tests {
     fn render_live_paints_the_toast_directly_above_the_box_when_idle() {
         let mut app = App::new();
         app.show_toast("Copied last message to clipboard", ToastKind::Info);
-        let h = live_height(&app.input, 60, 24, false, 0, 0, toast_rows(&app), 0, 0);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, toast_rows(&app), 0, 0, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         assert!(
@@ -13977,7 +14779,7 @@ mod tests {
             "/resume is disabled while a task is in progress",
             ToastKind::Info,
         );
-        let h = live_height(&app.input, 60, 24, true, 1, 0, toast_rows(&app), 0, 0);
+        let h = live_height(&app.input, 60, 24, true, 1, 0, toast_rows(&app), 0, 0, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         // The toast sits on the strip's last row — directly above the box's top
@@ -14034,6 +14836,7 @@ mod tests {
             0,
             band,
             footer_rows(&app, band),
+            0,
         );
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
@@ -14054,10 +14857,10 @@ mod tests {
         // must not move the cursor.
         let mut app = App::new();
         app.input = TextArea::from_text("hi");
-        let bare_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0);
+        let bare_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 0);
         let bare = cursor_position(Rect::new(0, 0, 40, bare_h), &app);
         app.set_session_info("dummy_model_name", "~/alter-zero");
-        let footer_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 1);
+        let footer_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 1, 0);
         let with_footer = cursor_position(Rect::new(0, 0, 40, footer_h), &app);
         assert_eq!(with_footer, bare, "cursor unchanged by the footer row");
     }
@@ -14189,6 +14992,7 @@ mod tests {
                             0,
                             band,
                             footer_rows(app, band),
+                            0,
                         );
                         let area = Rect::new(0, 0, w, lh.clamp(1, h.max(1)));
                         let mut buf = Buffer::empty(area);
@@ -14249,7 +15053,7 @@ mod tests {
     fn the_search_line_displaces_the_session_footer() {
         let mut app = searching(&["git status"], "git");
         app.set_session_info("dummy_model_name", "~/alter-zero");
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);
@@ -14314,7 +15118,7 @@ mod tests {
     #[test]
     fn the_cursor_sits_at_the_end_of_the_query_in_the_search_line() {
         let app = searching(&["git status"], "git");
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
         let area = Rect::new(0, 0, 60, h);
         let (x, y) = cursor_position(area, &app);
         assert_eq!(y, h - 1, "on the footer row, not in the textarea");
@@ -14325,7 +15129,7 @@ mod tests {
     #[test]
     fn the_search_cursor_clamps_inside_a_narrow_terminal() {
         let app = searching(&["git status"], "a very very long query indeed");
-        let h = live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 1);
+        let h = live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 1, 0);
         let area = Rect::new(0, 0, 20, h);
         let (x, _) = cursor_position(area, &app);
         assert!(x < 20, "clamped inside the width (codex clamps the same)");
@@ -14335,7 +15139,7 @@ mod tests {
     fn the_previewed_match_highlights_the_query_reversed() {
         let app = searching(&["git status"], "stat");
         assert_eq!(app.input.text(), "git status", "the match previews");
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         // The input row is "❯ git status" on the row inside the box frame:
@@ -14392,7 +15196,7 @@ mod tests {
     fn the_shell_mode_line_displaces_the_session_footer() {
         let mut app = shelling("ls -la");
         app.set_session_info("dummy_model_name", "~/alter-zero");
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);
@@ -14416,7 +15220,7 @@ mod tests {
     fn shell_mode_swaps_the_composer_prompt_for_a_red_bang() {
         // The absorbed `!` renders back as the prompt: `! pwd`, not `❯ pwd`.
         let app = shelling("pwd");
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         assert_eq!(row(&buf, 1, 60).trim_end(), "! pwd");
@@ -14432,7 +15236,7 @@ mod tests {
         // Unlike the Ctrl+R search (which owns the footer cursor), shell mode
         // keeps the cursor on the composer's command line.
         let app = shelling("ls");
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
         let area = Rect::new(0, 0, 60, h);
         let (_, y) = cursor_position(area, &app);
         assert!(y < h - 1, "cursor is in the box, not on the footer row");
@@ -14706,6 +15510,7 @@ mod tests {
             0,
             0,
             footer_rows(&app, 0),
+            0,
         );
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
@@ -14811,7 +15616,7 @@ mod tests {
     fn render_live_draws_the_file_picker_below_the_box() {
         let app = file_picker("ma", vec![fmatch("src/main.rs")], 0);
         let band = file_menu_rows(&app);
-        let h = live_height(&app.input, 40, 24, false, 0, 0, 0, band, 0);
+        let h = live_height(&app.input, 40, 24, false, 0, 0, 0, band, 0, 0);
         let mut buf = buffer(40, h);
         render_live(buf.area, &mut buf, &app);
         let all: String = (0..h)
@@ -14971,7 +15776,7 @@ mod tests {
         app.set_session_info("model", "~/repo");
         app.backtrack.primed = true;
         let footer = footer_rows(&app, 0);
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, footer);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, footer, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);
@@ -15732,7 +16537,7 @@ mod tests {
         // plus the same text queued mid-turn used to overflow the u16 row sum
         // and panic in dev builds (overflow checks on).
         let input = TextArea::from_text(&"x".repeat(170_000));
-        let h = live_height(&input, 10, 24, true, 0, 60_000, 0, 0, 1);
+        let h = live_height(&input, 10, 24, true, 0, 60_000, 0, 0, 1, 0);
         assert_eq!(h, 24, "clamped to the terminal height");
     }
 
@@ -16055,7 +16860,7 @@ mod tests {
         app.set_session_info("kimi-k2", "~/repo");
         app.bg_started("bash_1", "ping x.com", None, true);
         app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1);
+        let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
         let mut buf = buffer(60, h);
         render_live(buf.area, &mut buf, &app);
         let last = row(&buf, h - 1, 60);

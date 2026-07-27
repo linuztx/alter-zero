@@ -15,10 +15,11 @@ use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::openai::{Delta, OpenAiClient};
 use super::retry::{self, AttemptResult, MAX_RETRIES};
-use super::tools::{self, ToolCallRequest};
+use super::tools::{self, AgentArgs, ToolCallRequest};
 use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
+use crate::agents::{AgentEvent, AgentRegistry};
 use crate::context::ContextMessage;
-use crate::stream::{CancelToken, ReplySource, StreamEvent};
+use crate::stream::{AgentCallDone, AgentSpec, CancelToken, ReplySource, StreamEvent};
 
 /// The default system prompt for the real backend — the "Alter Zero" agent
 /// identity, authored in [`prompts/alter_zero.md`](../../prompts/alter_zero.md)
@@ -49,6 +50,10 @@ pub struct LlmBackend {
     /// notes on a known non-vision model) and the `read` tool's image branch
     /// (`docs/tools.md`).
     vision: Option<bool>,
+    /// The shared subagent registry, when the boundary attached one — enables
+    /// the `agent` tool (`docs/agent-tool.md`). Attaching it swaps the
+    /// client's tool set to include `agent`.
+    agents: Option<AgentRegistry>,
 }
 
 impl LlmBackend {
@@ -97,6 +102,7 @@ impl LlmBackend {
             tools_enabled,
             background: None,
             vision,
+            agents: None,
         }
     }
 
@@ -106,6 +112,23 @@ impl LlmBackend {
     #[must_use]
     pub fn with_background(mut self, registry: crate::background::BackgroundRegistry) -> Self {
         self.background = Some(registry);
+        self
+    }
+
+    /// Attach the shared subagent registry, **enabling the `agent` tool**
+    /// (`docs/agent-tool.md`): the client's tool set gains the `agent` spec
+    /// (tools must already be enabled — a tools-off backend stays agent-less).
+    /// The boundary calls this on every main backend it builds; the one-off
+    /// `/compact` backend and subagents themselves never do.
+    #[must_use]
+    pub fn with_agents(mut self, registry: AgentRegistry) -> Self {
+        if self.tools_enabled {
+            self.client = self
+                .client
+                .clone()
+                .with_tools(tools::tool_specs_with_agents());
+            self.agents = Some(registry);
+        }
         self
     }
 
@@ -351,16 +374,18 @@ impl ReplySource for LlmBackend {
         let system = self.system_prompt.clone();
         let background = self.background.clone();
         let vision = self.vision;
+        let agents = self.agents.clone();
+        let subagent = self.subagent_config();
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
             // non-vision model gets omission notes instead of parts
             // (docs/tools.md).
-            let messages =
+            let mut messages =
                 build_messages_for(vision, system.as_deref(), &prompt, &context, image_data_url);
             let mut executor = RealToolExecutor::new().with_vision(vision);
             let notices = background.clone();
-            if let Some(registry) = background {
+            if let Some(registry) = background.clone() {
                 // The registry carries the terminal-detach helper from
                 // `main.rs`; hand it to the executor so foreground `bash`
                 // children detach exactly like `launch`ed ones (crate::spawn).
@@ -379,12 +404,13 @@ impl ReplySource for LlmBackend {
             // round it takes the registry's completion notice board, so a
             // background shell that finished (or was killed) since the last
             // request is known to the model within this same turn
-            // (docs/background.md).
+            // (docs/background.md). The round's `agent` calls go to the
+            // subagent launcher instead (docs/agent-tool.md).
             agent::run_agent(
                 &tx,
                 &cancel,
                 agent::MAX_TOOL_ITERATIONS,
-                messages,
+                &mut messages,
                 |msgs| stream_round(&client, msgs, &tx, &cancel),
                 |call, on_output| executor.execute(call, &cancel, on_output),
                 || match &notices {
@@ -394,6 +420,27 @@ impl ReplySource for LlmBackend {
                         .map(|note| note.context)
                         .collect(),
                     None => Vec::new(),
+                },
+                |calls| match &agents {
+                    Some(registry) => run_agent_calls(
+                        &subagent,
+                        registry,
+                        background.as_ref(),
+                        &tx,
+                        &cancel,
+                        calls,
+                    ),
+                    // No registry attached (the tool isn't offered) — a call
+                    // that somehow arrives is declined recoverably.
+                    None => calls
+                        .iter()
+                        .map(|call| {
+                            (
+                                call.id.clone(),
+                                "the agent tool is not available here".to_string(),
+                            )
+                        })
+                        .collect(),
                 },
             );
         })
@@ -406,6 +453,359 @@ impl ReplySource for LlmBackend {
     fn system_prompt(&self) -> Option<String> {
         self.system_prompt.clone()
     }
+
+    /// Send a chat message into a subagent's session (`docs/agent-tool.md`):
+    /// queued into its running loop, or a continuation run over its stored
+    /// conversation when idle. `false` when agents aren't enabled here or the
+    /// id is unknown/busy-less-stored.
+    fn spawn_agent_chat(&self, id: &str, text: &str) -> bool {
+        let Some(registry) = &self.agents else {
+            return false;
+        };
+        if registry.queue_input(id, text) {
+            return true;
+        }
+        let Some((mut messages, cancel)) = registry.begin_continuation(id) else {
+            return false;
+        };
+        messages.push(ChatMessage::user(text));
+        spawn_subagent_run(
+            &self.subagent_config(),
+            registry.clone(),
+            id.to_string(),
+            registry.agent_type(id),
+            messages,
+            cancel,
+        );
+        true
+    }
+}
+
+/// Everything a subagent run needs off the backend, bundled so the launcher
+/// closure and the chat continuation share one shape.
+#[derive(Clone)]
+struct SubagentConfig {
+    client: OpenAiClient,
+    /// The subagent's system prompt: the main prompt (persona + environment +
+    /// tools note) with the subagent note appended (`prompts/subagent.md`).
+    system_prompt: Option<String>,
+    vision: Option<bool>,
+    detach_helper: Option<std::path::PathBuf>,
+}
+
+impl LlmBackend {
+    /// The bundled config a subagent run needs (see [`SubagentConfig`]).
+    fn subagent_config(&self) -> SubagentConfig {
+        let suffix = SUBAGENT_SYSTEM_SUFFIX.trim();
+        let system_prompt = Some(match &self.system_prompt {
+            Some(base) => format!("{base}\n\n{suffix}"),
+            None => suffix.to_string(),
+        });
+        SubagentConfig {
+            client: self.client.clone(),
+            system_prompt,
+            vision: self.vision,
+            detach_helper: self
+                .background
+                .as_ref()
+                .and_then(crate::background::BackgroundRegistry::detach_helper),
+        }
+    }
+}
+
+/// The subagent note appended to a subagent's system prompt, authored in
+/// [`prompts/subagent.md`](../../prompts/subagent.md) (the maintainable-
+/// markdown seam every prompt fragment uses).
+const SUBAGENT_SYSTEM_SUFFIX: &str = include_str!("../../prompts/subagent.md");
+
+/// How often the foreground wait loop polls its agents / the parent cancel /
+/// the Ctrl+B latch.
+const AGENT_WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(30);
+
+/// The model-facing acknowledgement of a background agent launch — the tool
+/// result a `run_in_background` `agent` call returns at once (the reference
+/// wording, adapted). See `docs/agent-tool.md`.
+#[must_use]
+pub fn agent_launch_text(id: &str, description: &str) -> String {
+    format!(
+        "Async agent launched successfully.\n\
+         agentId: {id} (\"{description}\")\n\
+         The agent is working in the background. You will be notified \
+         automatically with its final response when it completes. Do not wait \
+         or poll for it — continue with the rest of the task (or end your \
+         turn) and briefly tell the user what you launched."
+    )
+}
+
+/// The model-facing result of a **Ctrl+B handoff** on a running foreground
+/// agent group — the user moved it to the background mid-wait, so the model
+/// must not expect the response in this result (the bash handoff's twin,
+/// `docs/background.md`).
+#[must_use]
+pub fn agent_handoff_text(id: &str, description: &str) -> String {
+    format!(
+        "The user moved this agent to the background while it was running — \
+         it keeps running there, so its final response will not arrive in \
+         this result.\n{}",
+        agent_launch_text(id, description),
+    )
+}
+
+/// The tool result of a settled foreground agent: its final response — or
+/// the reference's placeholder when it answered with nothing, the stopped
+/// note for a user kill, and a failure note otherwise.
+fn agent_result_text(outcome: Option<Result<String, String>>) -> (String, bool) {
+    match outcome {
+        Some(Ok(text)) if text.trim().is_empty() => (
+            "(Subagent completed but returned no output.)".to_string(),
+            true,
+        ),
+        Some(Ok(text)) => (text, true),
+        Some(Err(error)) if error == "stopped by the user" => {
+            (crate::app::AGENT_STOPPED_OUTPUT.to_string(), false)
+        }
+        Some(Err(error)) => (format!("[agent failed: {error}]"), false),
+        None => (crate::app::AGENT_STOPPED_OUTPUT.to_string(), false),
+    }
+}
+
+/// One launched subagent as the wait loop tracks it.
+struct LaunchedAgent {
+    call_id: String,
+    spec: AgentSpec,
+}
+
+/// Run one round's `agent` tool calls (`docs/agent-tool.md`): parse each
+/// call, spawn every subagent **concurrently**, announce the background and
+/// foreground groups (`StreamEvent::AgentBatch`), resolve the background
+/// group at once with launch acknowledgements, wait for the foreground group
+/// — polling the parent `cancel` (an Esc kills the group) and the background
+/// registry's Ctrl+B latch (moving the rest of the group over) — and resolve
+/// it (`StreamEvent::AgentGroupDone`). Returns each call's `(call id, tool
+/// result)`.
+fn run_agent_calls(
+    config: &SubagentConfig,
+    registry: &AgentRegistry,
+    background: Option<&crate::background::BackgroundRegistry>,
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+    calls: &[ToolCallRequest],
+) -> Vec<(String, String)> {
+    let mut results: Vec<(String, String)> = Vec::new();
+    let mut foreground: Vec<LaunchedAgent> = Vec::new();
+    let mut launched_background: Vec<LaunchedAgent> = Vec::new();
+    for call in calls {
+        let args: AgentArgs = match tools::parse_args(&call.arguments) {
+            Ok(args) => args,
+            Err(e) => {
+                results.push((call.id.clone(), e));
+                continue;
+            }
+        };
+        let (id, agent_cancel) = registry.register(args.agent_type());
+        let spec = AgentSpec {
+            id: id.clone(),
+            description: args.description.clone(),
+            agent_type: args.agent_type().to_string(),
+            prompt: args.prompt.clone(),
+            background: args.background(),
+        };
+        // A subagent conversation starts fresh: the (augmented) system
+        // prompt, then the task as the first user message.
+        let mut messages = Vec::new();
+        if let Some(system) = &config.system_prompt {
+            messages.push(ChatMessage::system(system));
+        }
+        messages.push(ChatMessage::user(&args.prompt));
+        spawn_subagent_run(
+            config,
+            registry.clone(),
+            id.clone(),
+            args.agent_type().to_string(),
+            messages,
+            agent_cancel,
+        );
+        let launched = LaunchedAgent {
+            call_id: call.id.clone(),
+            spec,
+        };
+        if args.background() {
+            launched_background.push(launched);
+        } else {
+            foreground.push(launched);
+        }
+    }
+    // The background group: announced and resolved at once with launch
+    // acknowledgements — the agents keep running on their own threads.
+    if !launched_background.is_empty() {
+        let _ = tx.send(StreamEvent::AgentBatch {
+            background: true,
+            agents: launched_background.iter().map(|l| l.spec.clone()).collect(),
+        });
+        let mut dones = Vec::new();
+        for launched in &launched_background {
+            let text = agent_launch_text(&launched.spec.id, &launched.spec.description);
+            results.push((launched.call_id.clone(), text.clone()));
+            dones.push(AgentCallDone {
+                id: launched.spec.id.clone(),
+                output: text,
+                ok: true,
+            });
+        }
+        let _ = tx.send(StreamEvent::AgentGroupDone {
+            background: true,
+            agents: dones,
+        });
+    }
+    // The foreground group: announced, then awaited.
+    if !foreground.is_empty() {
+        let _ = tx.send(StreamEvent::AgentBatch {
+            background: false,
+            agents: foreground.iter().map(|l| l.spec.clone()).collect(),
+        });
+        let mut handed_off = false;
+        loop {
+            if foreground
+                .iter()
+                .all(|launched| registry.is_done(&launched.spec.id))
+            {
+                break;
+            }
+            if cancel.is_cancelled() {
+                // Esc: stop the group's still-running agents (background
+                // agents launched above keep running — they are independent).
+                for launched in &foreground {
+                    let _ = registry.kill(&launched.spec.id);
+                }
+                break;
+            }
+            if background
+                .is_some_and(crate::background::BackgroundRegistry::take_background_request)
+            {
+                // Ctrl+B: the rest of the group moves to the background.
+                handed_off = true;
+                break;
+            }
+            std::thread::sleep(AGENT_WAIT_POLL);
+        }
+        let mut dones = Vec::new();
+        for launched in &foreground {
+            let (text, ok) = if handed_off && !registry.is_done(&launched.spec.id) {
+                (
+                    agent_handoff_text(&launched.spec.id, &launched.spec.description),
+                    true,
+                )
+            } else {
+                agent_result_text(registry.outcome(&launched.spec.id))
+            };
+            results.push((launched.call_id.clone(), text.clone()));
+            dones.push(AgentCallDone {
+                id: launched.spec.id.clone(),
+                output: text,
+                ok,
+            });
+        }
+        let _ = tx.send(StreamEvent::AgentGroupDone {
+            background: handed_off,
+            agents: dones,
+        });
+    }
+    results
+}
+
+/// Spawn one subagent run (the initial task, or a chat continuation) on its
+/// own thread: its `run_agent` loop streams tagged events onto the agent
+/// channel via a forwarder, its chat inputs arrive through the registry's
+/// pending-input seam, and its outcome + final message list land back in the
+/// registry for the parent's wait loop / a later continuation. See
+/// `docs/agent-tool.md`.
+fn spawn_subagent_run(
+    config: &SubagentConfig,
+    registry: AgentRegistry,
+    id: String,
+    agent_type: String,
+    mut messages: Vec<ChatMessage>,
+    cancel: CancelToken,
+) {
+    let client = config
+        .client
+        .clone()
+        .with_tools(tools::subagent_tool_specs(&agent_type));
+    let vision = config.vision;
+    let detach = config.detach_helper.clone();
+    thread::spawn(move || {
+        // The forwarder tags every event with the agent id and tracks the
+        // final reply text + terminal outcome (the last uninterrupted text
+        // run is the agent's final message — a new tool round resets it).
+        let (tx2, mut rx2) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
+        let forward_registry = registry.clone();
+        let forward_id = id.clone();
+        let forwarder = thread::spawn(move || {
+            let mut final_text = String::new();
+            let mut outcome: Option<Result<(), String>> = None;
+            while let Some(event) = rx2.blocking_recv() {
+                match &event {
+                    StreamEvent::Chunk(chunk) => final_text.push_str(chunk),
+                    StreamEvent::ToolBatch(_)
+                    | StreamEvent::ToolStart { .. }
+                    | StreamEvent::AgentBatch { .. } => final_text.clear(),
+                    StreamEvent::StreamDone => outcome = Some(Ok(())),
+                    StreamEvent::Error(e) => outcome = Some(Err(e.clone())),
+                    _ => {}
+                }
+                forward_registry.send(AgentEvent::Stream {
+                    id: forward_id.clone(),
+                    event,
+                });
+            }
+            (final_text, outcome)
+        });
+        let executor = RealToolExecutor::new()
+            .with_vision(vision)
+            .with_detach_helper(detach);
+        let inputs_registry = registry.clone();
+        let inputs_id = id.clone();
+        agent::run_agent(
+            &tx2,
+            &cancel,
+            agent::MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |msgs| stream_round(&client, msgs, &tx2, &cancel),
+            |call, on_output| executor.execute(call, &cancel, on_output),
+            // The chat seam: user messages sent into this agent's session
+            // arrive at its next round boundary (docs/agent-tool.md).
+            || inputs_registry.take_pending_inputs(&inputs_id),
+            // Subagents cannot nest agents (the tool isn't offered; a
+            // hallucinated call is declined recoverably).
+            |calls| {
+                calls
+                    .iter()
+                    .map(|call| {
+                        (
+                            call.id.clone(),
+                            "agents cannot launch further agents".to_string(),
+                        )
+                    })
+                    .collect()
+            },
+        );
+        drop(tx2);
+        let (final_text, outcome) = forwarder.join().unwrap_or_default();
+        let outcome = match outcome {
+            Some(Ok(())) => {
+                // Store the final reply so a chat continuation resumes from
+                // the complete exchange.
+                if !final_text.is_empty() {
+                    messages.push(ChatMessage::new("assistant", &final_text));
+                }
+                Ok(final_text)
+            }
+            Some(Err(error)) => Err(error),
+            // Cancelled (killed) — the registry's kill outcome stands.
+            None => Err("stopped by the user".to_string()),
+        };
+        registry.finish(&id, outcome, messages);
+    });
 }
 
 /// Stream one round of the conversation: one HTTP request (with the existing
