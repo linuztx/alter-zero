@@ -113,6 +113,13 @@ pub struct AgentRun {
     /// Set by the user's `x` — the footer roster hides the row at once
     /// (while the entry's data stays for its group's resolution).
     pub hidden: bool,
+    /// The **sticky** activity line — `{Name}: {detail}` from the newest
+    /// [`StreamEvent::ToolStart`] (a `bash` call's model-supplied
+    /// `description`, else its args summary). Kept until the *next* tool
+    /// starts, so the tree row shows what the agent is doing (or just did)
+    /// rather than dropping to a generic `Working…` between calls
+    /// (`docs/agent-tool.md`).
+    pub last_activity: Option<String>,
 }
 
 impl AgentRun {
@@ -148,6 +155,7 @@ impl AgentRun {
             result: None,
             error: None,
             hidden: false,
+            last_activity: None,
         }
     }
 
@@ -190,9 +198,16 @@ impl AgentRun {
                     });
                 }
             }
-            StreamEvent::ToolStart { name, args } => {
+            StreamEvent::ToolStart { name, args, detail } => {
                 self.flush_segment();
                 self.tool_uses += 1;
+                // The sticky tree-row activity: the model's own description
+                // when it gave one (`Bash: Fetching current weather…`), else
+                // the args summary (`Write: game.py`).
+                self.last_activity = Some(format!(
+                    "{name}: {}",
+                    detail.as_deref().unwrap_or(args.as_str())
+                ));
                 match self.tool_queue.front_mut() {
                     Some(front) if front.status == ToolStatus::Waiting => {
                         front.status = ToolStatus::Running;
@@ -303,15 +318,20 @@ impl AgentRun {
         self.error = None;
     }
 
-    /// The tree row's live activity: what the agent is doing right now.
+    /// The tree row's activity: what the agent is doing — or, between tool
+    /// calls, what it just did (the sticky [`last_activity`] holds until the
+    /// next call starts, so the row keeps its context instead of dropping to
+    /// `Working…` while the agent reasons over a result).
+    ///
+    /// [`last_activity`]: AgentRun::last_activity
     #[must_use]
     pub fn activity(&self) -> String {
         match self.status {
             AgentStatus::Pending => AgentStatus::Pending.label().to_string(),
-            AgentStatus::Running => match self.tool_queue.front() {
-                Some(tool) => format!("{}({})", tool.name, tool.args),
-                None => "Working…".to_string(),
-            },
+            AgentStatus::Running => self
+                .last_activity
+                .clone()
+                .unwrap_or_else(|| "Working…".to_string()),
             settled => settled.label().to_string(),
         }
     }
@@ -685,9 +705,14 @@ mod tests {
         assert!(!run.apply(&StreamEvent::ToolStart {
             name: "Bash".into(),
             args: "curl wttr.in".into(),
+            detail: Some("Fetching Warsaw weather".into()),
         }));
         assert_eq!(run.tool_uses, 1);
-        assert_eq!(run.activity(), "Bash(curl wttr.in)");
+        assert_eq!(
+            run.activity(),
+            "Bash: Fetching Warsaw weather",
+            "the model's own description leads the activity line"
+        );
         assert!(!run.apply(&StreamEvent::ToolOutput("+19°C\n".into())));
         assert!(!run.apply(&StreamEvent::ToolEnd {
             output: "+19°C".into(),
@@ -738,6 +763,7 @@ mod tests {
         run.apply(&StreamEvent::ToolStart {
             name: "Bash".into(),
             args: "sleep 99".into(),
+            detail: None,
         });
         assert!(run.apply(&StreamEvent::Error("boom".into())));
         assert_eq!(run.status, AgentStatus::Failed);

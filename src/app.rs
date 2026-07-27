@@ -2598,13 +2598,11 @@ impl App {
         // Ctrl+O toggles the full-screen tool-output view from either screen —
         // even mid-stream, so the conversation keeps updating underneath it.
         // (Not from the /resume picker or the Ctrl+D view: the full-screen
-        // views share the alternate screen, so they never stack. Nor from an
-        // agent session view — its transcript is the agent's, not the main
-        // history the overlay renders; see docs/agent-tool.md.)
+        // views share the alternate screen, so they never stack.) In an agent
+        // session view it shows the *viewed agent's* transcript
+        // (docs/agent-tool.md).
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
-            if matches!(self.view, View::ResumePicker | View::ContextDebug)
-                || self.agent_view.is_some()
-            {
+            if matches!(self.view, View::ResumePicker | View::ContextDebug) {
                 return Action::None;
             }
             self.toggle_tool_view();
@@ -2612,11 +2610,10 @@ impl App {
         }
         // Ctrl+D toggles the full-screen context-debug view — the raw LLM
         // context window — with the same rules as Ctrl+O: works mid-stream,
-        // inert under the other full-screen views. See docs/context.md.
+        // inert under the other full-screen views. In an agent session view
+        // it derives the *viewed agent's* context. See docs/context.md.
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
-            if matches!(self.view, View::ResumePicker | View::ToolOutput)
-                || self.agent_view.is_some()
-            {
+            if matches!(self.view, View::ResumePicker | View::ToolOutput) {
                 return Action::None;
             }
             self.toggle_context_debug();
@@ -3089,12 +3086,7 @@ impl App {
             self.command_menu = None;
             return;
         }
-        // An agent session view has no slash commands — they act on the main
-        // session, so the draft is plain chat text (docs/agent-tool.md).
-        if self.agent_view.is_some() {
-            self.command_menu = None;
-            return;
-        }
+
         match command_query(self.input.text()) {
             None => self.command_menu = None,
             Some(query) => {
@@ -3626,7 +3618,11 @@ impl App {
             // Esc in a plain Ctrl+O view *begins* the preview in place when
             // idle with a target — codex's Ctrl+T → Esc path; without one
             // (or mid-turn) it keeps closing the overlay below.
-            KeyCode::Esc if !self.turn_active() && self.has_backtrack_target() => {
+            KeyCode::Esc
+                if !self.turn_active()
+                    && self.agent_view.is_none()
+                    && self.has_backtrack_target() =>
+            {
                 self.begin_backtrack_preview();
                 Action::None
             }
@@ -13544,6 +13540,7 @@ mod tests {
             StreamEvent::ToolStart {
                 name: "Bash".into(),
                 args: "curl wttr.in".into(),
+                detail: None,
             },
             StreamEvent::ToolEnd {
                 output: "+19°C".into(),
@@ -13816,6 +13813,45 @@ mod tests {
         // A background group never offers the hand-off (it is already there).
         app.start_agent_group(true, &agent_specs(true));
         assert!(!app.can_move_to_background());
+    }
+
+    #[test]
+    fn the_agent_view_keeps_the_full_composer() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(false, &agent_specs(false));
+        app.open_agent_view("a1");
+        // The slash palette opens like in the main session…
+        app.on_key(key(KeyCode::Char('/')));
+        assert!(
+            app.command_menu.is_some(),
+            "the palette opens in an agent view"
+        );
+        app.on_key(key(KeyCode::Esc)); // dismiss the palette
+        app.on_key(key(KeyCode::Backspace)); // empty the composer again
+        // …the `?` shortcuts band toggles…
+        app.on_key(key(KeyCode::Char('?')));
+        assert!(app.shortcuts_open);
+        app.on_key(key(KeyCode::Esc));
+        assert!(!app.shortcuts_open);
+        // …Ctrl+R opens the history search…
+        app.on_key(ctrl('r'));
+        assert!(app.history_search.is_some());
+        app.on_key(key(KeyCode::Esc));
+        // …and Ctrl+O / Ctrl+D toggle their overlays (showing the agent's
+        // transcript/context — the view stays an agent view underneath).
+        assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+        assert_eq!(app.view, View::ToolOutput);
+        assert_eq!(app.on_key(ctrl('o')), Action::ToggleToolView);
+        assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+        assert_eq!(app.view, View::ContextDebug);
+        assert_eq!(app.on_key(ctrl('d')), Action::ToggleContextDebug);
+        assert_eq!(app.agent_view.as_deref(), Some("a1"), "the view survived");
+        // A leading `!` stays literal chat text — no shell mode in an agent
+        // session (the draft chats with the agent).
+        app.on_key(key(KeyCode::Char('!')));
+        assert!(!app.shell_mode);
+        assert_eq!(app.input.text(), "!");
     }
 
     #[test]

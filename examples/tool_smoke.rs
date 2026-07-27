@@ -60,7 +60,7 @@ fn main() {
         while let Some(AgentEvent::Stream { id, event }) = agent_rx.blocking_recv() {
             match event {
                 StreamEvent::Chunk(c) => print!("\x1b[90m[{id}] {c}\x1b[0m"),
-                StreamEvent::ToolStart { name, args } => {
+                StreamEvent::ToolStart { name, args, .. } => {
                     println!("\n\x1b[90m[{id}] ● {name}({args})\x1b[0m");
                 }
                 StreamEvent::ToolEnd { ok, .. } => {
@@ -124,7 +124,7 @@ fn main() {
                     println!("\x1b[90m  ⎿ {} ok={}\x1b[0m\n{head}", agent.id, agent.ok);
                 }
             }
-            StreamEvent::ToolStart { name, args } => {
+            StreamEvent::ToolStart { name, args, .. } => {
                 println!("\n\x1b[34m● {name}({args})\x1b[0m");
             }
             StreamEvent::ToolOutput(chunk) => {

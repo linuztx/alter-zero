@@ -530,10 +530,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // landed under the overlay upgrades the
                                     // repaint to Purge (the emulator reflowed
                                     // the main screen underneath — invariant 3).
-                                    repaint_conversation(
+                                    repaint_active_view(
                                         term,
                                         &mut app,
                                         &mut render,
+                                        &mut agent_render,
                                         overlay_return_clear(&mut overlay_resized),
                                     )?;
                                 }
@@ -678,9 +679,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     // in-place repaint keeps the terminal's own
                                     // scrollback (invariant 4 / Phase 7) — unless a
                                     // resize landed under the overlay, which forces
-                                    // the purge-rebuild every resize gets.
-                                    repaint_conversation(
-                                        term, &mut app, &mut render,
+                                    // the purge-rebuild every resize gets. An open
+                                    // agent session view repaints itself instead
+                                    // (docs/agent-tool.md).
+                                    repaint_active_view(
+                                        term, &mut app, &mut render, &mut agent_render,
                                         overlay_return_clear(&mut overlay_resized),
                                     )?;
                                 }
@@ -741,8 +744,8 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     draw_context_view(term, &mut app)?;
                                 } else {
                                     term.exit_overlay()?;
-                                    repaint_conversation(
-                                        term, &mut app, &mut render,
+                                    repaint_active_view(
+                                        term, &mut app, &mut render, &mut agent_render,
                                         overlay_return_clear(&mut overlay_resized),
                                     )?;
                                 }
@@ -974,8 +977,8 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // already back on the conversation — leave the
                                 // overlay and repaint, the Ctrl+O return.
                                 term.exit_overlay()?;
-                                repaint_conversation(
-                                    term, &mut app, &mut render,
+                                repaint_active_view(
+                                    term, &mut app, &mut render, &mut agent_render,
                                     overlay_return_clear(&mut overlay_resized),
                                 )?;
                             }
@@ -1043,7 +1046,12 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                         // the old chat above it and put only the
                                         // last screenful of the resumed one on
                                         // record (its earlier turns were never
-                                        // scrollback-committed in this run).
+                                        // scrollback-committed in this run). An
+                                        // open agent session view closes: the
+                                        // user picked a conversation, so the
+                                        // main screen is what they land on
+                                        // (the roster keeps its agents).
+                                        app.close_agent_view();
                                         repaint_conversation(
                                             term, &mut app, &mut render, ReflowClear::Purge,
                                         )?;
@@ -1057,7 +1065,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     None => {
                                         app.close_resume_picker();
                                         term.exit_overlay()?;
-                                        repaint_conversation(term, &mut app, &mut render, clear)?;
+                                        repaint_active_view(
+                                            term, &mut app, &mut render, &mut agent_render, clear,
+                                        )?;
                                         commit_error_notice(
                                             term, &mut app, &mut render,
                                             &format!(
@@ -1352,8 +1362,9 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         // the new size (reflowing would write the alternate
                         // screen).
                         if size_changed && app.view == View::Conversation {
-                            repaint_conversation(
-                                term, &mut app, &mut render, ReflowClear::Purge,
+                            repaint_active_view(
+                                term, &mut app, &mut render, &mut agent_render,
+                                ReflowClear::Purge,
                             )?;
                         } else if size_changed {
                             // Under an overlay the inline view can't reflow
@@ -2993,7 +3004,7 @@ fn on_stream_event(
             app.start_tool_batch(&items);
             Ok(false)
         }
-        StreamEvent::ToolStart { name, args } => {
+        StreamEvent::ToolStart { name, args, .. } => {
             // Finalise the current run of assistant text so the tool slots after
             // it in scrollback, then show the tool running (blue) in the live
             // region until its ToolEnd arrives. The flush always runs (it records
@@ -3586,6 +3597,24 @@ fn repaint_conversation(
 /// the emulator reflowed the main screen's rows under the overlay, and an
 /// in-place overwrite would leave its re-wrapped copies behind). Consumes the
 /// flag, so only the first return purges.
+/// Repaint whatever the inline screen is showing — the **agent session
+/// view** when one is open (always a purge rebuild of the agent's
+/// transcript), else the main conversation with the caller's clear mode.
+/// The shared overlay-return / resize repaint (`docs/agent-tool.md`).
+fn repaint_active_view(
+    term: &mut InlineViewport,
+    app: &mut App,
+    render: &mut ui::StreamRender,
+    agent_render: &mut ui::StreamRender,
+    clear: ReflowClear,
+) -> io::Result<()> {
+    if app.agent_view.is_some() {
+        repaint_agent_view(term, app, agent_render)
+    } else {
+        repaint_conversation(term, app, render, clear)
+    }
+}
+
 fn overlay_return_clear(overlay_resized: &mut bool) -> ReflowClear {
     if std::mem::take(overlay_resized) {
         ReflowClear::Purge
@@ -3652,6 +3681,14 @@ fn draw_tool_view(
     transcript: &mut ui::TranscriptCache,
 ) -> io::Result<()> {
     let screen = term.screen();
+    // An agent session view's Ctrl+O shows the *viewed agent's* transcript —
+    // a fresh, bounded build (docs/agent-tool.md); the main cache below is
+    // untouched, so the ordinary open stays warm.
+    if let Some(lines) = ui::agent_transcript_lines(app, screen.width) {
+        let max = ui::tool_view_max_scroll_for(lines.len(), screen.height);
+        app.settle_tool_scroll(max);
+        return term.draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, &lines));
+    }
     // A backtrack preview open/step requested a scroll to its highlighted
     // message (docs/backtrack.md): apply the pure decision once — consumed,
     // so it never fights the user's own scrolling — before the normal clamp.

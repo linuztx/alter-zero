@@ -155,6 +155,7 @@ pub fn run_agent(
                     let _ = tx.send(StreamEvent::ToolStart {
                         name: display_name(&call.name),
                         args: summarize_call(&call.name, &call.arguments),
+                        detail: super::tools::call_description(&call.name, &call.arguments),
                     });
                     // Forward the tool's live output to the UI as it is produced,
                     // so the running cell tails it (docs/tool-streaming.md). The
@@ -310,6 +311,7 @@ mod tests {
                 StreamEvent::ToolStart {
                     name: "Bash".to_string(),
                     args: "ls".to_string(),
+                    detail: None,
                 },
                 StreamEvent::ToolEnd {
                     output: "ran bash".to_string(),

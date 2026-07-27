@@ -5059,12 +5059,142 @@ fn agent_group_header(color: Color, text: String, hint: &str) -> Line<'static> {
     ])
 }
 
+/// A **single** agent's `● Agent({description})` cell header — the tool-cell
+/// look a lone launch keeps instead of the group tree (`docs/agent-tool.md`).
+fn agent_cell_header(color: Color, description: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(
+            TOOL_BULLET.to_string(),
+            Style::new().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "Agent".to_string(),
+            Style::new()
+                .fg(TOOL_NAME_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(format!("({description})"), Style::new().fg(TOOL_ARGS_COLOR)),
+    ])
+}
+
+/// The `Done ({n} tool uses · {tokens} tokens · {s}s)` settle clause shared by
+/// the Ctrl+O cell footer and the single-agent committed cell.
+fn agent_done_clause(tool_uses: usize, tokens: u64, secs: u64) -> String {
+    format!(
+        "Done ({tool_uses} tool use{} · {} tokens · {secs}s)",
+        if tool_uses == 1 { "" } else { "s" },
+        format_token_count(usize::try_from(tokens).unwrap_or(usize::MAX)),
+    )
+}
+
+/// A running tool's header **inside a `⎿` corner** — the single-agent live
+/// cell's `⎿  Bash(sleep 10 && curl -s "…` shape: the corner row leads,
+/// continuations char-wrap aligned under the opening `(`, capped at
+/// [`TOOL_HEADER_MAX_ROWS`] rows with a fitted `…)`.
+fn corner_tool_header_lines(name: &str, args: &str, width: u16) -> Vec<Line<'static>> {
+    let corner_cols = cols(TOOL_RESULT_PREFIX);
+    let indent = " ".repeat(corner_cols + cols(name) + 1); // under the `(`
+    let text = format!("{name}({args})");
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let white = Style::new().fg(TOOL_ARGS_COLOR);
+    let mut rows: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut budget = (width as usize).saturating_sub(corner_cols).max(1);
+    for ch in text.chars() {
+        let w = cols(&ch.to_string());
+        if cols(&current) + w > budget {
+            rows.push(std::mem::take(&mut current));
+            budget = (width as usize).saturating_sub(cols(&indent)).max(1);
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        rows.push(current);
+    }
+    if rows.len() > TOOL_HEADER_MAX_ROWS {
+        rows.truncate(TOOL_HEADER_MAX_ROWS);
+        if let Some(last) = rows.last_mut() {
+            *last = truncate_cols(
+                last,
+                (width as usize)
+                    .saturating_sub(cols(&indent) + cols(TOOL_HEADER_ELLIPSIS) + 1)
+                    .max(1),
+            );
+            last.push_str(TOOL_HEADER_ELLIPSIS);
+            last.push(')');
+        }
+    }
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, row)| {
+            if i == 0 {
+                Line::from(vec![
+                    Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
+                    Span::styled(row, white),
+                ])
+            } else {
+                Line::from(vec![Span::raw(indent.clone()), Span::styled(row, white)])
+            }
+        })
+        .collect()
+}
+
+/// The **live** cell of a lone agent — `● Agent({description})` over its
+/// current state instead of a one-row tree (`docs/agent-tool.md`): the
+/// running tool's wrapped header + a dim `Running…`, or the sticky
+/// `⎿ {activity}` line (`Initializing…` before any event, the last
+/// `{Name}: {detail}` between calls).
+fn single_live_agent_lines(
+    app: &App,
+    run: &crate::agents::AgentRun,
+    background: bool,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let mut lines = vec![agent_cell_header(TOOL_RUNNING_COLOR, &run.description)];
+    let running_tool = run
+        .tool_queue
+        .front()
+        .filter(|tool| tool.status == ToolStatus::Running);
+    if let Some(tool) = running_tool {
+        lines.extend(corner_tool_header_lines(&tool.name, &tool.args, width));
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(cols(TOOL_RESULT_PREFIX))),
+            Span::styled(TOOL_RUNNING.to_string(), dim),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
+            Span::styled(
+                truncate_cols(
+                    &run.activity(),
+                    (width as usize)
+                        .saturating_sub(cols(TOOL_RESULT_PREFIX))
+                        .max(1),
+                ),
+                dim,
+            ),
+        ]));
+    }
+    if !background
+        && app
+            .command_elapsed()
+            .is_some_and(|elapsed| elapsed >= TOOL_BACKGROUND_HINT_DELAY)
+    {
+        lines.push(result_row(1, TOOL_BACKGROUND_HINT.to_string()));
+    }
+    lines
+}
+
 /// A **committed** agent group's tree cell (`docs/agent-tool.md`):
 /// `● {n} background agents launched (↓ to manage)` over description-only
 /// rows for a background launch, else `● {n} agents finished (ctrl+o to
 /// expand)` over counter rows with a `⎿ Done` / `⎿ Interrupted` / `⎿ Failed`
 /// status row per agent — green bullet when every agent finished cleanly,
-/// red otherwise.
+/// red otherwise. A **lone** agent keeps the tool-cell look instead:
+/// `● Agent({description})` over `⎿ Done ({n} tool uses · {tokens} tokens ·
+/// {s}s)` and a dim `(ctrl+o to expand)` line — or
+/// `⎿ Running in the background (↓ to manage)` for a lone background launch.
 #[must_use]
 pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line<'static>> {
     let color = if group.ok() {
@@ -5072,6 +5202,33 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
     } else {
         TOOL_FAIL_COLOR
     };
+    if let [entry] = group.agents.as_slice() {
+        let dim = Style::new().fg(TOOL_DIM_COLOR);
+        let mut lines = vec![agent_cell_header(color, &entry.description)];
+        let (settle, settle_color) = if group.background {
+            (TOOL_BACKGROUNDED.to_string(), TOOL_DIM_COLOR)
+        } else {
+            match entry.status {
+                crate::agents::AgentStatus::Done => (
+                    agent_done_clause(entry.tool_uses, entry.tokens, entry.secs),
+                    TOOL_DIM_COLOR,
+                ),
+                status if status.is_final() => (status.label().to_string(), TOOL_FAIL_COLOR),
+                status => (status.label().to_string(), TOOL_DIM_COLOR),
+            }
+        };
+        lines.push(Line::from(vec![
+            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
+            Span::styled(settle, Style::new().fg(settle_color)),
+        ]));
+        if !group.background {
+            lines.push(Line::from(vec![
+                Span::raw(INDENT.to_string()),
+                Span::styled(EXPAND_HINT.trim_start().to_string(), dim),
+            ]));
+        }
+        return lines;
+    }
     let mut lines = if group.background {
         vec![agent_group_header(
             color,
@@ -5138,6 +5295,11 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         live.ids.iter().filter_map(|id| app.agent(id)).collect();
     if runs.is_empty() {
         return Vec::new();
+    }
+    // A lone agent keeps the tool-cell look — `● Agent({description})` over
+    // its live state — instead of a one-row tree (docs/agent-tool.md).
+    if let [run] = runs.as_slice() {
+        return single_live_agent_lines(app, run, live.background, width);
     }
     let mut lines = vec![agent_group_header(
         TOOL_RUNNING_COLOR,
@@ -5355,13 +5517,7 @@ fn agent_cell_lines(cell: &AgentCellView, width: u16) -> Vec<Line<'static>> {
     // The settle footer.
     let footer: Option<(String, Color)> = match cell.status {
         crate::agents::AgentStatus::Done => Some((
-            format!(
-                "Done ({} tool use{} · {} tokens · {}s)",
-                cell.tool_uses,
-                if cell.tool_uses == 1 { "" } else { "s" },
-                format_token_count(usize::try_from(cell.tokens).unwrap_or(usize::MAX)),
-                cell.secs,
-            ),
+            agent_done_clause(cell.tool_uses, cell.tokens, cell.secs),
             TOOL_DIM_COLOR,
         )),
         crate::agents::AgentStatus::Interrupted => {
@@ -5676,6 +5832,40 @@ fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>,
         lines.push(Line::default());
     }
     (lines, user_rows)
+}
+
+/// The Ctrl+O transcript of the **viewed agent's** session
+/// (`docs/agent-tool.md`), or `None` when no agent view is up (the caller
+/// falls back to the main [`TranscriptCache`]). The banner over the agent's
+/// items (tools expanded, exactly like the main walk) and its live tail —
+/// the in-progress reply and the live tool queue. Built fresh per draw: an
+/// agent transcript is bounded by one task's work, so the incremental cache
+/// isn't warranted.
+#[must_use]
+pub fn agent_transcript_lines(app: &App, width: u16) -> Option<Vec<Line<'static>>> {
+    let run = app.viewed_agent()?;
+    let mut lines = header_lines(app, width);
+    lines.push(Line::default());
+    let chrome_rows = lines.len();
+    for item in &run.history {
+        let (rows, _) = transcript_item_lines(item, width);
+        lines.extend(rows);
+    }
+    if let Some(text) = run.streaming.as_deref().filter(|text| !text.is_empty()) {
+        lines.extend(message_lines(Role::Assistant, text, width));
+        lines.push(Line::default());
+    }
+    for tool in &run.tool_queue {
+        lines.extend(tool_full_lines(tool, width));
+        lines.push(Line::default());
+    }
+    if lines.len() == chrome_rows {
+        lines.push(Line::from(Span::styled(
+            TOOL_VIEW_EMPTY.to_string(),
+            Style::new().fg(TOOL_DIM_COLOR),
+        )));
+    }
+    Some(lines)
 }
 
 /// The pager's scrolling-body height: the screen less the title + footer chrome.
@@ -6247,6 +6437,15 @@ fn context_entry_lines(
 /// when there is nothing yet. See `docs/context.md`.
 #[must_use]
 pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    // An agent session view debugs the *viewed agent's* context: its own
+    // transcript derived through the same mapping (the shared persona prompt
+    // stands in for the subagent's — it differs only by the subagent note),
+    // with no AGENTS.md fragment (subagents get none). See
+    // `docs/agent-tool.md`.
+    let (history, instructions) = match app.viewed_agent() {
+        Some(run) => (run.history.as_slice(), None),
+        None => (app.history.as_slice(), app.user_instructions.as_deref()),
+    };
     let mut lines: Vec<Line<'static>> = Vec::new();
     if let Some(prompt) = &app.system_prompt {
         context_entry_lines(
@@ -6259,9 +6458,7 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             width,
         );
     }
-    for message in
-        crate::context::context_messages_with(app.user_instructions.as_deref(), &app.history)
-    {
+    for message in crate::context::context_messages_with(instructions, history) {
         context_entry_lines(
             &mut lines,
             &format!("{}:", message.role.wire_name()),
@@ -17120,31 +17317,141 @@ mod tests {
         assert_eq!(texts.len(), 3, "description-only rows, no status");
     }
 
+    fn spec(id: &str, desc: &str, background: bool) -> crate::stream::AgentSpec {
+        crate::stream::AgentSpec {
+            id: id.into(),
+            description: desc.into(),
+            agent_type: "general-purpose".into(),
+            prompt: "task?".into(),
+            background,
+        }
+    }
+
     #[test]
-    fn the_live_group_previews_its_tree_and_the_rows_agree() {
+    fn a_lone_live_agent_renders_the_tool_cell_shape() {
         let mut app = App::new();
         app.begin_stream();
-        app.start_agent_group(
-            false,
-            &[crate::stream::AgentSpec {
-                id: "a1".into(),
-                description: "Fetch Warsaw".into(),
-                agent_type: "general-purpose".into(),
-                prompt: "warsaw?".into(),
-                background: false,
-            }],
-        );
-        let lines = live_agent_group_lines(&app, 80);
-        let texts: Vec<String> = lines.iter().map(plain).collect();
-        assert_eq!(texts[0], "● Running 1 agent… (ctrl+o to expand)");
-        assert_eq!(texts[1], "   └ Fetch Warsaw");
-        assert_eq!(texts[2], "     ⎿  Initializing…");
+        app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
+        // Announced, no event yet: the Agent cell over `⎿ Initializing…`.
+        let texts: Vec<String> = live_agent_group_lines(&app, 80).iter().map(plain).collect();
+        assert_eq!(texts[0], "● Agent(Fetch Warsaw)");
+        assert_eq!(texts[1], "  ⎿  Initializing…");
         // The strip sizes from the same walk (the box/cursor geometry contract).
         assert_eq!(usize::from(preview_rows(&app, 80)), texts.len());
+        // A running tool shows its wrapped header + a dim Running… row.
+        app.apply_agent_event(
+            "a1",
+            &crate::stream::StreamEvent::ToolStart {
+                name: "Bash".into(),
+                args: "sleep 10 && curl -s https://api.open-meteo.com/v1/forecast".into(),
+                detail: Some("Fetching Warsaw weather".into()),
+            },
+        );
+        let texts: Vec<String> = live_agent_group_lines(&app, 44).iter().map(plain).collect();
+        assert_eq!(texts[0], "● Agent(Fetch Warsaw)");
+        assert!(
+            texts[1].starts_with("  ⎿  Bash(sleep 10 && curl"),
+            "{}",
+            texts[1]
+        );
+        assert!(
+            texts[2].starts_with("         "),
+            "continuations align under the (: {}",
+            texts[2]
+        );
+        assert!(texts.iter().any(|t| t.trim() == "Running…"));
+        assert_eq!(usize::from(preview_rows(&app, 44)), texts.len());
+        // Between calls the sticky activity line holds — never `Working…`.
+        app.apply_agent_event(
+            "a1",
+            &crate::stream::StreamEvent::ToolEnd {
+                output: "+19°C".into(),
+                ok: true,
+                truncated: false,
+            },
+        );
+        let texts: Vec<String> = live_agent_group_lines(&app, 80).iter().map(plain).collect();
+        assert_eq!(texts[1], "  ⎿  Bash: Fetching Warsaw weather");
         // …and rendering the live region upholds the debug_assert.
         let area = Rect::new(0, 0, 80, 24);
         let mut buf = Buffer::empty(area);
         render_live(area, &mut buf, &app);
+    }
+
+    #[test]
+    fn a_lone_committed_agent_renders_done_with_the_expand_hint() {
+        use crate::agents::AgentStatus;
+        let group = crate::app::AgentGroup {
+            background: false,
+            agents: vec![agent_entry(
+                "a1",
+                "Fetch current weather in Warsaw",
+                AgentStatus::Done,
+            )],
+            timestamp: String::new(),
+        };
+        let texts: Vec<String> = agent_group_lines(&group, 80).iter().map(plain).collect();
+        assert_eq!(texts[0], "● Agent(Fetch current weather in Warsaw)");
+        assert_eq!(texts[1], "  ⎿  Done (2 tool uses · 16.1k tokens · 39s)");
+        assert_eq!(texts[2], "  (ctrl+o to expand)");
+        // Interrupted: the red footer, no counters.
+        let mut stopped = group.clone();
+        stopped.agents[0].status = AgentStatus::Interrupted;
+        let texts: Vec<String> = agent_group_lines(&stopped, 80).iter().map(plain).collect();
+        assert_eq!(texts[1], "  ⎿  Interrupted");
+        // A lone background launch keeps the manage row instead.
+        let mut launched = group;
+        launched.background = true;
+        launched.agents[0].status = AgentStatus::Running;
+        let texts: Vec<String> = agent_group_lines(&launched, 80).iter().map(plain).collect();
+        assert_eq!(texts[0], "● Agent(Fetch current weather in Warsaw)");
+        assert_eq!(texts[1], "  ⎿  Running in the background (↓ to manage)");
+        assert_eq!(texts.len(), 2, "no expand hint on the backgrounded cell");
+    }
+
+    #[test]
+    fn a_multi_agent_tree_keeps_the_sticky_tool_activity() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(
+            false,
+            &[
+                spec("a1", "Fetch Warsaw", false),
+                spec("a2", "Write a game", false),
+            ],
+        );
+        app.apply_agent_event(
+            "a1",
+            &crate::stream::StreamEvent::ToolStart {
+                name: "Bash".into(),
+                args: "curl wttr.in/Warsaw".into(),
+                detail: Some("Fetching Warsaw weather".into()),
+            },
+        );
+        for event in [
+            crate::stream::StreamEvent::ToolStart {
+                name: "Write".into(),
+                args: "game.py".into(),
+                detail: None,
+            },
+            // The call resolves — the activity line stays (sticky, no
+            // `Working…` between calls).
+            crate::stream::StreamEvent::ToolEnd {
+                output: "Created game.py (10 lines)".into(),
+                ok: true,
+                truncated: false,
+            },
+        ] {
+            app.apply_agent_event("a2", &event);
+        }
+        let texts: Vec<String> = live_agent_group_lines(&app, 90).iter().map(plain).collect();
+        assert_eq!(texts[0], "● Running 2 agents… (ctrl+o to expand)");
+        assert!(
+            texts[2].ends_with("⎿  Bash: Fetching Warsaw weather"),
+            "{}",
+            texts[2]
+        );
+        assert!(texts[4].ends_with("⎿  Write: game.py"), "{}", texts[4]);
     }
 
     #[test]
@@ -17273,6 +17580,50 @@ mod tests {
     }
 
     #[test]
+    fn the_agent_view_overlays_show_the_agents_transcript_and_context() {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
+        for event in [
+            crate::stream::StreamEvent::ToolStart {
+                name: "Bash".into(),
+                args: "curl wttr.in".into(),
+                detail: None,
+            },
+            crate::stream::StreamEvent::ToolEnd {
+                output: "+19°C".into(),
+                ok: true,
+                truncated: false,
+            },
+        ] {
+            app.apply_agent_event("a1", &event);
+        }
+        assert!(
+            agent_transcript_lines(&app, 80).is_none(),
+            "no agent view — the main cache path renders"
+        );
+        app.open_agent_view("a1");
+        let texts: Vec<String> = agent_transcript_lines(&app, 80)
+            .expect("the agent view has its own transcript")
+            .iter()
+            .map(plain)
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("task?")),
+            "the prompt shows"
+        );
+        assert!(texts.iter().any(|t| t.starts_with("● Bash(curl wttr.in)")));
+        assert!(texts.iter().any(|t| t.contains("+19°C")));
+        // Ctrl+D derives the *agent's* context: its prompt is the user entry.
+        let ctx: Vec<String> = context_lines(&app, 80).iter().map(plain).collect();
+        assert!(ctx.iter().any(|t| t.contains("task?")), "{ctx:?}");
+        assert!(
+            ctx.iter().any(|t| t.contains("→ bash(")),
+            "the agent's tool call replays: {ctx:?}"
+        );
+    }
+
+    #[test]
     fn the_agent_view_swaps_the_strip_to_the_agents_stream() {
         let mut app = App::new();
         app.set_session_info("dummy_model_name", "~/repo");
@@ -17292,6 +17643,7 @@ mod tests {
             &crate::stream::StreamEvent::ToolStart {
                 name: "Bash".into(),
                 args: "curl wttr.in".into(),
+                detail: None,
             },
         );
         app.open_agent_view("a1");

@@ -133,21 +133,44 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   transcript, mid-stream partial included). While the view is up the main
   turn's commits are suppressed exactly like the Ctrl+O overlay (invariant
   4); the viewed agent's events commit incrementally through a dedicated
-  `StreamRender`.
+  `StreamRender`. The composer keeps its **full functionality** inside the
+  view: the `/` palette (commands act on the main session, as everywhere),
+  the `?` shortcuts band, Ctrl+R history search, and the `@` file picker all
+  work with the roster still below them; **Ctrl+O shows the viewed agent's
+  own transcript** (a fresh bounded build — `ui::agent_transcript_lines` —
+  the main cache untouched) and **Ctrl+D its derived context**
+  (`ui::context_lines` branches on the viewed agent); only `!` shell mode
+  stays off — a leading bang is literal chat text. Overlay returns and
+  resizes repaint the agent view (`main.rs::repaint_active_view`).
 
 ## Rendering (`ui`)
 
-- **Live group cell** (`agent_group_lines`): blue `● Running {n} agents…
-  (ctrl+o to expand)` over the tree —
+- **Live group cell** (`live_agent_group_lines`): blue `● Running {n}
+  agents… (ctrl+o to expand)` over the tree —
   `   ├ {description} · {n} tool uses · {tokens} tokens` with a
-  `   │ ⎿  {activity}` status row per agent (`Initializing…` → the running
-  tool's `name(args)` → `Done`) — plus the delayed
-  `(ctrl+b to run in background)` hint (foreground only). The strip's
-  `preview_rows`/`preview_lines` size and draw it like the tool queue.
+  `   │ ⎿  {activity}` status row per agent — plus the delayed
+  `(ctrl+b to run in background)` hint (foreground only). The activity is
+  **sticky**: `Initializing…` until the first event, then the newest tool's
+  `{Name}: {detail}` — a `bash` call's model-supplied `description`
+  (`Bash: Fetching current weather…`), else its args summary
+  (`Write: game.py`) — held between calls (never dropping to `Working…`)
+  so the row keeps its context while the agent reasons over a result
+  (`StreamEvent::ToolStart` carries the `detail`;
+  `AgentRun::last_activity`). A **lone** agent renders the tool-cell shape
+  instead of a one-row tree: `● Agent({description})` over
+  `⎿ Initializing…`, or the running tool's char-wrapped header
+  (`⎿ Bash(sleep 10 && curl -s "…`, capped rows, continuations aligned
+  under the `(`) with a dim `Running…` row, or the sticky
+  `⎿ {Name}: {detail}` line. The strip's `preview_rows`/`preview_lines`
+  size and draw it like the tool queue.
 - **Committed cells**: `● {n} background agents launched (↓ to manage)` over
   description-only tree rows (green); `● {n} agents finished (ctrl+o to
   expand)` over the counted tree rows with `⎿ Done` / `⎿ Interrupted` /
-  `⎿ Failed` per agent (green when all done, red otherwise).
+  `⎿ Failed` per agent (green when all done, red otherwise). A **lone**
+  agent commits as `● Agent({description})` over
+  `⎿ Done ({n} tool uses · {tokens} tokens · {s}s)` (or the red
+  `⎿ Interrupted`/`⎿ Failed`) and a dim `(ctrl+o to expand)` line — a lone
+  background launch keeps `⎿ Running in the background (↓ to manage)`.
 - **Ctrl+O**: each `AgentGroup` entry expands as its own cell —
   `● Agent({description})` / `⎿ Prompt:` (indented block) / the nested tool
   headers the agent ran (`Bash(curl …)`) / `⎿ Response:` (the final text) /

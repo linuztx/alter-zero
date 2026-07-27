@@ -106,7 +106,18 @@ pub enum StreamEvent {
     /// matching [`StreamEvent::ToolEnd`] arrives. `args` is a short summary for
     /// the `name(args)` header. When a [`StreamEvent::ToolBatch`] announced this
     /// call, this flips its `⎿ Waiting…` cell to `⎿ Running…`.
-    ToolStart { name: String, args: String },
+    ///
+    /// `detail` is the call's **human-readable description** when the model
+    /// supplied one (a `bash` call's `description` argument) — `None`
+    /// otherwise. The main tool cells ignore it (their headers show the
+    /// command, Claude-Code style); the agent roster's tree rows prefer it
+    /// for their sticky `{Name}: {detail}` activity line
+    /// (`docs/agent-tool.md`).
+    ToolStart {
+        name: String,
+        args: String,
+        detail: Option<String>,
+    },
     /// The in-flight tool call finished with this `output` and outcome (`ok` →
     /// green, else red). Always follows a [`StreamEvent::ToolStart`].
     ///
@@ -564,6 +575,7 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
             events.push(StreamEvent::ToolStart {
                 name: "Bash".to_string(),
                 args: cmd.to_string(),
+                detail: None,
             });
             // Stream the output line-by-line so the live cell tails it, then the
             // authoritative ToolEnd commits the finished cell (docs/tool-streaming.md).
@@ -588,6 +600,7 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
         events.push(StreamEvent::ToolStart {
             name: "Read".to_string(),
             args: "src/main.rs".to_string(),
+            detail: None,
         });
         events.push(StreamEvent::ToolEnd {
             output: DUMMY_READ_OUTPUT.to_string(),
@@ -597,6 +610,7 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
         events.push(StreamEvent::ToolStart {
             name: "Bash".to_string(),
             args: DUMMY_BASH_CMD.to_string(),
+            detail: None,
         });
         // Stream the output line-by-line so the live cell tails it (the Read
         // above returns all at once, like the real executor). See
@@ -1108,7 +1122,7 @@ mod tests {
         let following_starts: Vec<ToolCallSummary> = events[batch_pos + 1..]
             .iter()
             .filter_map(|e| match e {
-                StreamEvent::ToolStart { name, args } => Some(ToolCallSummary {
+                StreamEvent::ToolStart { name, args, .. } => Some(ToolCallSummary {
                     name: name.clone(),
                     args: args.clone(),
                 }),

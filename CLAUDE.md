@@ -131,8 +131,13 @@ each running its own `run_agent` tool loop over a fresh context on its own
 thread, reporting on a dedicated `agents::AgentEvent` channel (a seventh
 `select!` source — agents outlive turns); a foreground group shows the live
 blue `● Running {n} agents…` tree (per-agent description · tool uses · tokens
-· activity, Ctrl+B moves the group to the background) committing as
-`● {n} agents finished (ctrl+o to expand)` with `⎿ Done`/`⎿ Interrupted` rows,
+· a **sticky** `{Name}: {detail}` activity — a bash call's own `description`,
+held between calls — Ctrl+B moves the group to the background; a **lone**
+agent renders `● Agent({description})` over its live tool header instead)
+committing as
+`● {n} agents finished (ctrl+o to expand)` with `⎿ Done`/`⎿ Interrupted` rows
+(a lone agent as `● Agent({description})` + `⎿ Done ({n} tool uses · {tokens}
+tokens · {s}s)`),
 a background launch resolves at once as `● {n} background agents launched
 (↓ to manage)` with each completion posting its model-facing note on the
 shared notice board (the in-flight turn hears it mid-round, an idle
@@ -147,8 +152,11 @@ view** — a purge-rebuild showing the agent's own transcript under the banner,
 the composer's top rule labelled with its description, typing **chats with
 the agent** (queued into its running loop at the next round boundary via the
 registry's pending-input seam, or a continuation run over its stored message
-list when idle), Esc returning to the purge-rebuilt main view (main commits
-are suppressed while the view is up, invariant-4 style); the Ctrl+O
+list when idle) while the composer keeps its full functionality — the `/`
+palette, `?` band, Ctrl+R, the `@` picker, **Ctrl+O showing the agent's own
+transcript** and **Ctrl+D its derived context** (`!` shell mode stays
+literal chat text) — Esc returning to the purge-rebuilt main view (main
+commits are suppressed while the view is up, invariant-4 style); the Ctrl+O
 transcript expands each agent as `● Agent({description})` with `⎿ Prompt:`,
 the nested tool headers, `⎿ Response:`, and `⎿ Done ({n} tool uses ·
 {tokens} tokens · {s}s)`; the parent's calls replay as native `agent`

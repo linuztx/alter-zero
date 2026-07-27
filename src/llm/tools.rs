@@ -480,6 +480,25 @@ pub fn display_name(name: &str) -> String {
     }
 }
 
+/// The call's model-supplied human description, when its arguments carry one
+/// — a `bash` call's optional `description` argument (an `agent` call's
+/// `description` already *is* its summary). `None` for everything else. The
+/// agent roster's tree rows prefer it for their `{Name}: {detail}` activity
+/// line (`docs/agent-tool.md`).
+#[must_use]
+pub fn call_description(name: &str, arguments: &str) -> Option<String> {
+    if name != "bash" {
+        return None;
+    }
+    let value: Value = serde_json::from_str(arguments.trim()).ok()?;
+    value
+        .get("description")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .map(str::to_string)
+}
+
 /// A short one-line summary of a tool call for the cell header's `(args)` —
 /// the command for `bash`, the path for the file tools. Falls back to a
 /// flattened slice of the raw arguments when they don't parse.
@@ -1571,6 +1590,23 @@ mod tests {
             parse_args::<AgentArgs>(r#"{"prompt":"p"}"#).is_err(),
             "description is required"
         );
+    }
+
+    #[test]
+    fn call_description_reads_a_bash_calls_description_only() {
+        assert_eq!(
+            call_description(
+                "bash",
+                r#"{"command":"curl x","description":"Fetching weather"}"#
+            ),
+            Some("Fetching weather".to_string())
+        );
+        assert_eq!(call_description("bash", r#"{"command":"curl x"}"#), None);
+        assert_eq!(
+            call_description("bash", r#"{"command":"x","description":"  "}"#),
+            None
+        );
+        assert_eq!(call_description("write", r#"{"path":"game.py"}"#), None);
     }
 
     #[test]
