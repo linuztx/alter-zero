@@ -157,3 +157,60 @@ impl App {
         Some(tool)
     }
 }
+
+/// The lifecycle of a tool call — selects its bullet colour when rendered:
+/// waiting is dim, running is blue, success green, failure red.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolStatus {
+    /// Queued in a parallel batch but not yet started — shown live as a dim
+    /// `⎿ Waiting…` cell alongside the running call, until its own `ToolStart`
+    /// flips it to [`Running`](ToolStatus::Running). Only a batched sibling is
+    /// ever `Waiting`; a lone tool (the `!` shell, the dummy's single calls)
+    /// starts `Running`. See `docs/parallel-tools.md`.
+    Waiting,
+    /// Executing — shown live (blue) in the bottom region while it runs.
+    Running,
+    /// Finished successfully (green).
+    Ok,
+    /// Finished with an error (red).
+    Failed,
+    /// Resolved by moving to the **background** (a `run_in_background` bash
+    /// call, or Ctrl+B on a running command): the process keeps running under
+    /// the [`App::background`] registry while the cell resolves with a green
+    /// bullet and the fixed `⎿ Running in the background (↓ to manage)` row —
+    /// the stored `output` is the model-facing text (task id + interim-output
+    /// path), never displayed. See `docs/background.md`.
+    Backgrounded,
+}
+
+/// One tool invocation: its `name`, a short `args` summary, its lifecycle
+/// `status`, and the (possibly multi-line) `output` it produced.
+///
+/// While running, `output` is empty/partial and `status` is
+/// [`ToolStatus::Running`]; once finished it is recorded in [`App::history`] so
+/// it repaints on resize and is listed in full in the Ctrl+O tool-output view.
+/// Inline it renders collapsed (a one-line peek); the full `output` is only shown
+/// in that separate view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolCall {
+    pub name: String,
+    pub args: String,
+    pub status: ToolStatus,
+    pub output: String,
+    /// Wall-clock stamp of when the call finished (set in [`App::end_tool`]).
+    /// Recorded but not currently displayed — only user-message stamps show.
+    /// Empty while running and when no clock is injected. See
+    /// `docs/timestamps.md`.
+    pub timestamp: String,
+    /// Whether this is a `!` shell command (set by [`App::begin_shell`]). A
+    /// shell call renders **headerless** — just its `⎿` output lines, flush
+    /// under the [`Role::Shell`] header message recorded with it — instead of
+    /// the `● name(args)` bullet header. See `docs/shell-command.md`.
+    pub shell: bool,
+    /// Set when a `!` shell command's output **exceeded the in-memory cap** and
+    /// was cut: `output` holds only the retained head, and the cell appends a
+    /// dim `…` marker at the end of the expanded output (`ui::tool_full_lines`)
+    /// to show more was dropped. `false` for output kept in full. See
+    /// `docs/shell-command.md`.
+    pub truncated: bool,
+}

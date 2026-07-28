@@ -135,24 +135,6 @@ impl App {
         }
     }
 
-    /// Count a just-submitted user message into the live tally as **uploaded
-    /// input** — the tokens grow and the arrow points `↑` (like a tool result
-    /// folded back in, the reverse of streaming output). Called right after
-    /// [`begin_stream`] with the turn's prompt, so the status shows
-    /// `↑ N tokens` while the model spins up before its first chunk (the first
-    /// [`push_chunk`] flips the arrow back to `↓`). The tally is **added to**,
-    /// never reset (see `docs/status-indicator.md`). No-op when no turn is in
-    /// flight.
-    ///
-    /// [`begin_stream`]: App::begin_stream
-    /// [`push_chunk`]: App::push_chunk
-    pub fn count_user_input(&mut self, text: &str) {
-        if let Some(status) = self.status.as_mut() {
-            status.tokens += count_tokens(text);
-            status.arrow = TokenArrow::Up;
-        }
-    }
-
     /// Append a streamed chunk to the in-progress reply (and grow the live token
     /// tally, arrow pointing down — output streaming). No-op if not streaming.
     /// A `/compact` turn diverts the chunk into the summary buffer instead —
@@ -171,138 +153,6 @@ impl App {
             // live retry indicator.
             status.retry = None;
         }
-    }
-
-    /// Count a streamed reasoning delta into the live token tally (arrow down —
-    /// it is model output, streaming) **without** touching the reply buffer:
-    /// the text itself is opaque and never rendered. This is what keeps the
-    /// count ticking while the status line shows `Thinking for Ns`. No-op when
-    /// no turn is in flight.
-    pub fn push_thinking(&mut self, chunk: &str) {
-        if let Some(status) = self.status.as_mut() {
-            status.tokens += count_tokens(chunk);
-            status.arrow = TokenArrow::Down;
-            // Reasoning is content too — the retrying request recovered.
-            status.retry = None;
-        }
-    }
-
-    /// Count a streamed tool-call generation delta (the model emitting a tool
-    /// call's `name`/`arguments` fragments) into the live token tally (arrow
-    /// down — it is model output, streaming) **without** touching the reply
-    /// buffer: the fragment is opaque JSON, never rendered. This keeps the
-    /// status count ticking while the model *generates* a tool call, exactly
-    /// like reasoning ticks it while the model thinks (see
-    /// `docs/status-indicator.md`). No-op when no turn is in flight.
-    pub fn push_tool_call_progress(&mut self, chunk: &str) {
-        if let Some(status) = self.status.as_mut() {
-            status.tokens += count_tokens(chunk);
-            status.arrow = TokenArrow::Down;
-            // Generating the call is content too — a retrying request recovered.
-            status.retry = None;
-        }
-    }
-
-    /// Fold one provider usage report (the round's final `usage` frame,
-    /// [`crate::stream::StreamEvent::Usage`]) into the turn: accumulate the
-    /// billed total and its cached share, and **snap the live tally to the
-    /// accumulated real number** — replacing the tiktoken estimate ticked so
-    /// far, which never saw the system prompt or the re-sent context. Later
-    /// estimates (the next round's stream) tick on top of the snapped base,
-    /// and that round's own usage frame snaps again — so the tally is always
-    /// "everything billed so far, plus the current round's live estimate".
-    /// No-op when no turn is in flight. See `docs/prompt-caching.md`.
-    pub fn apply_usage(&mut self, usage: &crate::stream::TokenUsage) {
-        if self.status.is_none() {
-            return;
-        }
-        self.turn_usage_tokens += usize::try_from(usage.total()).unwrap_or(usize::MAX);
-        self.turn_usage_cached += usize::try_from(usage.cached).unwrap_or(usize::MAX);
-        if let Some(status) = self.status.as_mut() {
-            status.tokens = self.turn_usage_tokens;
-        }
-        // The round's `input` is the whole re-sent context and its `output`
-        // joins the next round's — their sum is the live context gauge
-        // (docs/compact.md), authoritative until a history mutation stales it.
-        self.context_used = usage.input.saturating_add(usage.output);
-    }
-
-    /// Record that a failed request is being retried, so the status line shows
-    /// `retrying {attempt}/{max}` while the backend reconnects. The 1-based
-    /// `attempt` and the ceiling `max` come straight from the backend's
-    /// [`crate::stream::StreamEvent::Retrying`]. Cleared by the next
-    /// [`push_chunk`](App::push_chunk)/[`push_thinking`](App::push_thinking) once
-    /// content arrives. No-op when no turn is in flight. See `docs/llm.md`.
-    pub fn set_retry(&mut self, attempt: u32, max: u32) {
-        if let Some(status) = self.status.as_mut() {
-            status.retry = Some(RetryInfo { attempt, max });
-        }
-    }
-
-    /// The live turn status, if a turn is in flight.
-    #[must_use]
-    pub const fn status(&self) -> Option<&TurnStatus> {
-        self.status.as_ref()
-    }
-
-    /// Is a turn in flight (its status line should show)? True from
-    /// [`begin_stream`] until the turn ends — drives the loop's per-second tick.
-    ///
-    /// [`begin_stream`]: App::begin_stream
-    #[must_use]
-    pub const fn turn_active(&self) -> bool {
-        self.status.is_some()
-    }
-
-    /// Write the boundary-computed times onto the live status before a draw: how
-    /// long the turn has run (`elapsed` — it also drives the verb's shimmer
-    /// phase), and the current thinking-phase duration (`Some` while thinking,
-    /// `None` otherwise). No-op when no turn is in flight. Time is impure, so it
-    /// only ever reaches the status this way.
-    pub fn set_status_times(&mut self, elapsed: Duration, thinking: Option<Duration>) {
-        if let Some(status) = self.status.as_mut() {
-            status.elapsed = elapsed;
-            status.thinking = thinking;
-        }
-    }
-
-    /// Inject the current running command's elapsed each frame (the
-    /// [`set_status_times`](App::set_status_times) pattern — the clock lives at
-    /// the boundary). `None` when no command is running. Read by the preview to
-    /// delay the `(ctrl+b to run in background)` hint until a command has run a
-    /// few seconds, so a fast command never flashes it (`docs/background.md`).
-    pub fn set_command_elapsed(&mut self, elapsed: Option<Duration>) {
-        self.command_elapsed = elapsed;
-    }
-
-    /// How long the current running command has executed, or `None` when no
-    /// command is running (the boundary hasn't injected one). See
-    /// [`set_command_elapsed`](App::set_command_elapsed).
-    #[must_use]
-    pub fn command_elapsed(&self) -> Option<Duration> {
-        self.command_elapsed
-    }
-
-    /// Inject the streaming strip preview's row count before a draw (the
-    /// [`set_status_times`] pattern): only the boundary's `ui::StreamRender`
-    /// knows how many rows the preview renders — one for a normal reply, the
-    /// whole forming block while a table streams — and `ui::preview_rows` /
-    /// `ui::live_height` / `ui::cursor_position` must all reserve exactly what
-    /// the strip draws. See `docs/table-streaming.md`.
-    ///
-    /// [`set_status_times`]: App::set_status_times
-    pub fn set_stream_preview_rows(&mut self, rows: u16) {
-        self.stream_preview_rows = rows;
-    }
-
-    /// The boundary-injected streaming-preview row count (see
-    /// [`set_stream_preview_rows`]; 0 until a draw injects one — consumers
-    /// floor at 1, the single-row preview).
-    ///
-    /// [`set_stream_preview_rows`]: App::set_stream_preview_rows
-    #[must_use]
-    pub const fn stream_preview_rows(&self) -> u16 {
-        self.stream_preview_rows
     }
 
     /// The reply text accumulated so far, or `None` when idle.
@@ -609,4 +459,69 @@ impl App {
         }
         (texts.join("\n"), pairs)
     }
+}
+
+/// What a backend error leaves behind, handed to the event loop to flush to
+/// scrollback. The partial reply (if any), the tool that died mid-run (if one
+/// was), and the error are also recorded in [`App::history`] so a later resize
+/// repaints them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StreamError {
+    /// The reply text streamed before the error, if any non-empty text arrived.
+    pub partial: Option<String>,
+    /// The tool that was mid-run when the backend died, now resolved as
+    /// [`ToolStatus::Failed`] with [`ERROR_TOOL_OUTPUT`], if one was running —
+    /// the stream contract allows `Error` in place of `StreamDone` at any
+    /// point, `ToolEnd` still owed (the interrupt's [`InterruptedTurn::Kept`]
+    /// twin).
+    pub tool: Option<ToolCall>,
+    /// The live agent group the error resolved (its foreground agents marked
+    /// interrupted, the [`AgentGroup`] recorded in history) — the loop
+    /// commits its tree cell like the interrupt path. `None` when no group
+    /// was live. See `docs/agent-tool.md`.
+    pub agents: Option<AgentGroup>,
+    /// The error message to show the user.
+    pub error: String,
+}
+
+/// What interrupting a turn leaves behind ([`App::interrupt_turn`]), handed to
+/// the event loop to decide how to settle the screen.
+///
+/// Two outcomes, mirroring codex's "keep what streamed" versus this codebase's
+/// "nothing streamed yet, so undo it" divergence (see `docs/interrupt.md`):
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InterruptedTurn {
+    /// The turn had produced **no output** (no partial reply, no tool) and
+    /// nothing was queued behind it, so the whole submission is rolled back
+    /// rather than interrupted: [`App::interrupt_turn`] has already pulled the
+    /// turn's user message(s) back into the composer and dropped them from
+    /// [`App::history`], recording **no** `Conversation interrupted` notice
+    /// (there was nothing to keep). The loop repaints scrollback without the
+    /// undone message. The user's "there's no output yet, move it back to the
+    /// textarea" case.
+    Undone,
+    /// Some output had streamed — a partial reply and/or a running tool — so it
+    /// is **kept** in the transcript (codex never retracts what streamed). Both
+    /// are also recorded in [`App::history`] so a later resize repaints them.
+    Kept {
+        /// The reply text streamed before the interrupt, if any non-empty text
+        /// arrived since the last flush.
+        partial: Option<String>,
+        /// The tool that was mid-run, now resolved as failed with
+        /// [`INTERRUPT_TOOL_OUTPUT`], if one was running.
+        tool: Option<ToolCall>,
+        /// The red terminal notice to commit to scrollback — [`INTERRUPT_NOTICE`]
+        /// for a normal turn, or **`None`** for a `!` shell turn, whose
+        /// `⎿ Interrupted by user` cell already says it (so a second
+        /// `Conversation interrupted` line would be redundant). Whatever this
+        /// holds, [`App::interrupt_turn`] has already recorded it in
+        /// [`App::history`] to match.
+        notice: Option<&'static str>,
+        /// The live agent group the interrupt resolved (its foreground agents
+        /// marked interrupted, the [`AgentGroup`] recorded in history) — the
+        /// loop commits its tree cell before the notice, and kills the
+        /// group's subagents via the registry. `None` when no group was live.
+        /// See `docs/agent-tool.md`.
+        agents: Option<AgentGroup>,
+    },
 }

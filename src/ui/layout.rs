@@ -411,15 +411,6 @@ fn input_scroll(total: usize, cursor_row: usize, height: usize) -> usize {
     (cursor_row + 1).saturating_sub(height).min(max)
 }
 
-/// How many history rows fit above a `live_height`-row live region on a
-/// `term_height`-row screen — the number of lines to repaint after a resize.
-/// Saturates at 0 so a live region taller than the screen can never underflow.
-/// The pure counterpart of the terminal calls in `main.rs::repaint_after_resize`.
-#[must_use]
-pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
-    term_height.saturating_sub(live_height) as usize
-}
-
 /// Absolute `(x, y)` where the terminal's hardware cursor should sit for the
 /// current input. Shares `input_box` with [`render_live`] so the cursor lands
 /// exactly where the editor's cursor is — on its wrapped row, at its column —

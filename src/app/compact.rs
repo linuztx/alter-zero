@@ -170,3 +170,27 @@ impl App {
         !crate::context::context_messages(&self.history).is_empty()
     }
 }
+
+/// A `/compact` marker's payload: the model-written handoff summary the
+/// context derivation bridges into every later request, codex's local
+/// compaction (`docs/compact.md`). Renders as the `● Context compacted` cell
+/// (the summary body expands in the Ctrl+O transcript only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Compaction {
+    /// The compact turn's full streamed reply — the handoff summary (may be
+    /// empty when the model streamed nothing; the derivation substitutes
+    /// codex's "(no summary available)").
+    pub summary: String,
+    /// Wall-clock stamp (recorded like every item's; never displayed).
+    pub timestamp: String,
+    /// The context gauge when the compaction began (tokens) — the cell shows
+    /// `· {before} → {after} tokens`. 0 = unknown (an old rollout), hiding
+    /// the clause.
+    pub before: u64,
+    /// The re-estimated context size right after the compaction (tokens).
+    pub after: u64,
+    /// Whether this compaction was **auto-triggered** by the context gauge
+    /// crossing the threshold (the cell appends `· auto`), vs the manual
+    /// `/compact` command. See `docs/compact.md`.
+    pub auto: bool,
+}

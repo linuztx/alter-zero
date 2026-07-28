@@ -5,7 +5,8 @@
 //! See `docs/tool-view-performance.md`.
 
 use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
-use super::message::{compaction_full_lines, is_shell_header, user_stamp_lines};
+use super::conversation::is_shell_header;
+use super::message::{compaction_full_lines, user_stamp_lines};
 use super::theme::*;
 use super::tool::tool_full_lines;
 use super::wrap::cols;

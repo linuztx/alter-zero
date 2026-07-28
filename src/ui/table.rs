@@ -1,7 +1,8 @@
 //! GFM table rendering: column sizing, borders, and the narrow-terminal
 //! record fallback. See `docs/markdown.md` and `docs/table-streaming.md`.
 
-use super::assistant::{inline_spans, tokenize_words, wrap_inline};
+use super::inline::tokenize_words;
+use super::inline::{inline_spans, wrap_inline};
 use super::theme::*;
 use super::wrap::{cols, segments_cols};
 use super::*;
