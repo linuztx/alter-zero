@@ -1,8 +1,11 @@
-//! The conversation's value types: roles, messages, tool calls, the
-//! status/summary of a turn, and the history items they are recorded into.
+//! The conversation's shared vocabulary: roles, messages, and the history items
+//! they are recorded into.
 //!
 //! Pure data with no behaviour beyond derives — the state machine that drives
-//! them lives in [`App`](super::App) and its sibling modules.
+//! them lives in [`App`](super::App) and its sibling modules (`docs/design.md`).
+//! A type that belongs to one feature lives with it instead: `ToolCall` in
+//! [`tools`](super::tools), `Compaction` in [`compact`](super::compact),
+//! `TurnStatus` in [`status`](super::status).
 
 use super::*;
 

@@ -1,6 +1,11 @@
 //! The slash-command palette: the [`COMMANDS`] registry, the `/token` filter
 //! behind it, and the [`App`](super::App) side of opening, scrolling, and
 //! running the highlighted command.
+//!
+//! Each command's behaviour is documented where the feature lives —
+//! `docs/copy.md`, `docs/init.md`, `docs/compact.md`, `docs/resume.md` — and a
+//! mid-turn rejection surfaces as a toast rather than a scrollback bullet
+//! (`docs/toast.md`).
 
 use super::*;
 

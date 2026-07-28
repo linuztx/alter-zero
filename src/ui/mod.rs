@@ -5,6 +5,10 @@
 //! build ratatui [`Line`]s ([`message_lines`]), or render into a [`Buffer`]
 //! ([`render_live`]). That keeps them unit-testable with a plain `Buffer` or
 //! ratatui's `TestBackend`, with no real terminal involved.
+//!
+//! One module per area — see `docs/module-layout.md` for the map. Every styling
+//! and geometry constant lives in `theme`, and all width math goes through
+//! `cols` in `wrap`.
 
 use std::collections::VecDeque;
 use std::ops::Range;

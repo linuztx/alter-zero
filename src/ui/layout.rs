@@ -1,7 +1,10 @@
 //! The live region's geometry: how tall it is, where it re-pins on a resize,
 //! and where the cursor sits inside it.
 //!
-//! Pure policy — `term.rs` calls these and does the terminal I/O itself.
+//! Pure policy — `term.rs` calls these and does the terminal I/O itself
+//! (`docs/design.md`). The rows it sizes are the streaming strip
+//! (`docs/status-indicator.md`), the bands (`docs/shortcuts.md`,
+//! `docs/file-search.md`) and the footer (`docs/footer.md`).
 
 use super::agent::agent_view_preview_lines;
 use super::live::preview_tool_lines;

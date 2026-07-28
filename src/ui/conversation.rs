@@ -1,5 +1,9 @@
 //! Whole-conversation rendering: the inline scrollback walk over `history` and
 //! the tail a resize or an overlay return repaints from it.
+//!
+//! The repaint is content-anchored and reflows both directions (CLAUDE.md
+//! invariant 3); the tail restores the startup banner over a short conversation
+//! (`docs/header.md`).
 
 use super::*;
 

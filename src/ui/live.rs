@@ -1,5 +1,11 @@
 //! Painting the live region: the streaming strip above the input box, the box
 //! itself, and the band below it.
+//!
+//! Every commit clears and repaints this region inside one synchronized frame,
+//! so no flushed state ever lacks the box (`docs/flicker.md`). The strip's
+//! preview shows a running tool's whole cell — the parallel batch in
+//! `docs/parallel-tools.md`, a streaming command's tail in
+//! `docs/tool-streaming.md`.
 
 use super::agent::agent_view_preview_lines;
 use super::layout::{input_box, live_layout};

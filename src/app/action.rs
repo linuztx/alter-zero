@@ -1,7 +1,10 @@
 //! [`Action`] — what a key press asks the loop to do.
 //!
 //! [`App::on_key`](super::App::on_key) is pure: it mutates state and returns one
-//! of these for `main.rs` to carry out (spawn a turn, quit, copy, …).
+//! of these for `main.rs` to carry out (spawn a turn, quit, copy, …). The
+//! boundary each variant crosses is documented with the feature that owns it —
+//! `docs/interrupt.md`, `docs/queue.md`, `docs/copy.md`, `docs/resume.md`; the
+//! seam itself is `docs/design.md`.
 
 use super::*;
 

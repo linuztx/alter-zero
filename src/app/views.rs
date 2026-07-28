@@ -1,5 +1,9 @@
 //! The full-screen overlays' [`App`](super::App) state: the Ctrl+O transcript
 //! pager and the Ctrl+D context-debug view (open/close, scroll, key handling).
+//!
+//! What each shows is `docs/tool-view-performance.md` and `docs/context.md`; the
+//! rule that nothing commits to scrollback while an overlay is up is CLAUDE.md
+//! invariant 4.
 
 use super::*;
 

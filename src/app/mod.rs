@@ -3,6 +3,10 @@
 //! Everything here is free of I/O so it can be unit-tested directly: the event
 //! loop in `main.rs` feeds key presses in and reacts to the returned
 //! [`Action`]s, and pushes streamed chunks in via [`App::push_chunk`].
+//!
+//! One module per area — see `docs/module-layout.md` for the map and
+//! `docs/design.md` for how this sits in the loop. The [`App`] struct stays here
+//! so every submodule and the test tree keeps its private-field access.
 
 use std::collections::{HashSet, VecDeque};
 use std::ops::Range;

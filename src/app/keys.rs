@@ -1,6 +1,11 @@
 //! Key dispatch: [`App::on_key`](super::App::on_key) routes by
 //! [`View`](super::View), and the conversation view's handler owns the
 //! composer's key map.
+//!
+//! The keys themselves are documented with their features: editing and cursor
+//! motion in `docs/textarea.md`, the newline keys in `docs/shift-enter.md`, Esc
+//! in `docs/interrupt.md` and `docs/backtrack.md`, and the `?` band in
+//! `docs/shortcuts.md`.
 
 use super::*;
 

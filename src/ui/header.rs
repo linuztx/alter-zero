@@ -1,4 +1,5 @@
 //! The startup banner: the gradient logo, name, tagline, and hint row.
+//! See `docs/header.md`.
 
 use super::theme::*;
 use super::wrap::{clamp_spans, cols, lerp_rgb};

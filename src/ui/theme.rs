@@ -2,7 +2,10 @@
 //!
 //! Bullets, prompts, colours, the tool-cell and overlay chrome, the status
 //! indicator's spinner/shimmer, the band and footer metrics — retheme or
-//! re-size here, never inline at a call site.
+//! re-size here, never inline at a call site. That rule is a project convention
+//! (CLAUDE.md); the consts each feature owns are described in its own doc, e.g.
+//! `docs/status-indicator.md`, `docs/footer.md`, `docs/toast.md`,
+//! `docs/shortcuts.md`.
 
 use super::*;
 

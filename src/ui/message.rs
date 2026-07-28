@@ -1,5 +1,8 @@
-//! Committed conversation lines: user/assistant/system/error messages, the
-//! `/compact` marker cell, and the repaint helpers a resize drives.
+//! Rendering one committed message: the role-bulleted user/assistant/system/
+//! error lines, and the `/compact` marker cell (`docs/compact.md`).
+//!
+//! The walk over the whole history lives in
+//! [`conversation`](super::conversation).
 
 use super::assistant::assistant_lines;
 use super::theme::*;
