@@ -1,0 +1,270 @@
+//! The bands below the input box: the slash-command palette, the `@` file
+//! picker, and the `?` shortcuts overlay.
+//! See `docs/file-search.md` and `docs/shortcuts.md`.
+
+use super::theme::*;
+use super::wrap::{cols, truncate_cols};
+use super::*;
+
+/// How many rows the command palette occupies for `app`: 0 when closed, otherwise
+/// the match count capped at [`MENU_MAX_ROWS`] (or a single placeholder row when
+/// the query matches nothing). [`live_height`] adds this; [`render_live`] paints
+/// exactly this many rows — the two must agree.
+#[must_use]
+pub fn menu_rows(app: &App) -> u16 {
+    if app.command_menu.is_none() {
+        return 0;
+    }
+    match command_query(app.input.text()) {
+        None => 0,
+        Some(query) => {
+            let matches = matching_commands(query).len();
+            if matches == 0 {
+                1
+            } else {
+                (matches as u16).min(MENU_MAX_ROWS)
+            }
+        }
+    }
+}
+
+/// The scroll offset (first visible match index) so a window of `max` rows keeps
+/// `selected` visible: 0 while the selection fits the first window, then it
+/// follows the selection toward the end, clamped so the last window sits flush
+/// with the end.
+#[must_use]
+pub fn menu_window(len: usize, selected: usize, max: usize) -> usize {
+    if max == 0 || len <= max || selected < max {
+        0
+    } else {
+        (selected + 1 - max).min(len - max)
+    }
+}
+
+/// The scroll offset (first visible match index) that keeps `selected`
+/// **centered** in a window of `max` rows: the selection rides the middle row
+/// (`max/2`) while there is room on both sides, so the user always sees as much
+/// of the list *above and below* the highlight as fits — the "broad view" the
+/// `/model` and `/login` pickers want. Near the ends the window can't center
+/// (there aren't enough rows on one side), so it anchors: the top for the first
+/// `max/2` selections, the bottom (flush with the tail) for the last. Clamped to
+/// `[0, len - max]`.
+///
+/// Unlike [`menu_window`] — which only scrolls once the selection would leave
+/// the window, pinning it to whichever edge it exited — this recenters on every
+/// move, which is what stops the highlight getting stuck against the bottom row
+/// of a long model list.
+#[must_use]
+pub fn centered_window(len: usize, selected: usize, max: usize) -> usize {
+    if max == 0 || len <= max {
+        return 0;
+    }
+    // Put the selection on the middle row, then clamp so the window never runs
+    // off either end (`len - max` is safe: `len > max` here).
+    selected.saturating_sub(max / 2).min(len - max)
+}
+
+/// One palette row: `/name` padded out to [`MENU_DESC_COL`] columns, then its
+/// description. The selection is shown by **colour** — the selected row lights up
+/// whole in cyan (name *and* description the same colour, name bold), the others
+/// are dimmed grey. No caret, no background bar.
+fn menu_row(cmd: &SlashCommand, selected: bool, width: u16) -> Line<'static> {
+    let name = format!("/{}", cmd.name);
+    let cw = width as usize;
+    // Pad the name out to the description column so descriptions line up; truncate
+    // the description to whatever room is left.
+    let pad = " ".repeat(MENU_DESC_COL.saturating_sub(cols(&name)).max(1));
+    let desc = truncate_cols(cmd.description, cw.saturating_sub(MENU_DESC_COL));
+    // Name and description share one colour per row, for consistency.
+    let color = if selected {
+        MENU_SELECTED_COLOR
+    } else {
+        MENU_DIM_COLOR
+    };
+    let name_style = if selected {
+        Style::new().fg(color).add_modifier(Modifier::BOLD)
+    } else {
+        Style::new().fg(color)
+    };
+    Line::from(vec![
+        Span::styled(name, name_style),
+        Span::raw(pad),
+        Span::styled(desc, Style::new().fg(color)),
+    ])
+}
+
+/// The styled lines for the open command palette: the filtered commands, windowed
+/// to keep the selection visible and capped at [`MENU_MAX_ROWS`], with the
+/// highlighted row marked; or a single dim placeholder when nothing matches.
+/// Empty when the palette is closed.
+#[must_use]
+pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(menu) = &app.command_menu else {
+        return Vec::new();
+    };
+    let Some(query) = command_query(app.input.text()) else {
+        return Vec::new();
+    };
+    let matches = matching_commands(query);
+    if matches.is_empty() {
+        return vec![Line::from(Span::styled(
+            MENU_NO_MATCH.to_string(),
+            Style::new().fg(MENU_DIM_COLOR),
+        ))];
+    }
+    let max = MENU_MAX_ROWS as usize;
+    let offset = menu_window(matches.len(), menu.selected, max);
+    matches
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(max)
+        .map(|(i, cmd)| menu_row(cmd, i == menu.selected, width))
+        .collect()
+}
+
+/// How many rows the `@` file picker occupies for `app`: 0 when closed, one
+/// placeholder row while searching / when nothing matched, else the match count
+/// capped at [`FILE_MENU_MAX_ROWS`] (longer lists scroll, like the palette).
+/// [`live_height`] adds this to its band and [`render_live`] paints exactly this
+/// many rows — the two must agree. See `docs/file-search.md`.
+#[must_use]
+pub fn file_menu_rows(app: &App) -> u16 {
+    match &app.file_search {
+        None => 0,
+        Some(fs) if fs.matches.is_empty() => 1,
+        Some(fs) => (fs.matches.len() as u16).min(FILE_MENU_MAX_ROWS),
+    }
+}
+
+/// One file-picker row: the path with the query's matched characters bolded
+/// (the byte offsets in [`FileMatch::indices`]); the selected row lights up cyan
+/// like the palette, the rest dim. Truncated to `width` (the surviving prefix
+/// keeps the same byte offsets, so the highlight stays aligned).
+fn file_menu_row(m: &FileMatch, selected: bool, width: u16) -> Line<'static> {
+    let color = if selected {
+        MENU_SELECTED_COLOR
+    } else {
+        MENU_DIM_COLOR
+    };
+    let base = Style::new().fg(color);
+    let matched = base.add_modifier(Modifier::BOLD);
+    let shown = truncate_cols(&m.path, width as usize);
+    // Group consecutive matched / unmatched characters into spans.
+    let mut spans = Vec::new();
+    let mut run = String::new();
+    let mut run_matched = false;
+    for (off, ch) in shown.char_indices() {
+        let is_match = m.indices.binary_search(&off).is_ok();
+        if !run.is_empty() && is_match != run_matched {
+            let style = if run_matched { matched } else { base };
+            spans.push(Span::styled(std::mem::take(&mut run), style));
+        }
+        run_matched = is_match;
+        run.push(ch);
+    }
+    if !run.is_empty() {
+        let style = if run_matched { matched } else { base };
+        spans.push(Span::styled(run, style));
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(String::new(), base));
+    }
+    Line::from(spans)
+}
+
+/// The styled lines for the open file picker: a *Searching…* / *No matching
+/// files* placeholder while the band has no matches, else the file rows windowed
+/// (`menu_window`) to keep the selection visible and capped at
+/// [`FILE_MENU_MAX_ROWS`]. Empty when the picker is closed.
+#[must_use]
+pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(fs) = &app.file_search else {
+        return Vec::new();
+    };
+    if fs.matches.is_empty() {
+        let text = if fs.waiting {
+            FILE_MENU_SEARCHING
+        } else {
+            FILE_MENU_NO_MATCH
+        };
+        return vec![Line::from(Span::styled(
+            text.to_string(),
+            Style::new().fg(MENU_DIM_COLOR),
+        ))];
+    }
+    let max = FILE_MENU_MAX_ROWS as usize;
+    let offset = menu_window(fs.matches.len(), fs.selected, max);
+    fs.matches
+        .iter()
+        .enumerate()
+        .skip(offset)
+        .take(max)
+        .map(|(i, m)| file_menu_row(m, i == fs.selected, width))
+        .collect()
+}
+
+/// How many rows the `?` shortcuts band occupies for `app`: 0 when closed,
+/// otherwise the entry list two-per-row. [`live_height`] adds this (via its
+/// band parameter); [`render_live`] paints exactly this many rows — the two
+/// must agree, like [`menu_rows`].
+#[must_use]
+pub fn shortcuts_rows(app: &App) -> u16 {
+    if app.shortcuts_open {
+        SHORTCUTS.len().div_ceil(2) as u16
+    } else {
+        0
+    }
+}
+
+/// Total rows of the band below the input box: the slash-command palette, the
+/// `?` shortcuts overview, *or* the `@` file picker (mutually exclusive — the
+/// palette needs a `/token`, the shortcuts an empty composer, the picker an
+/// `@token`, so at most one term is non-zero). The **one** band-height sum
+/// shared by [`render_live`], [`cursor_position`], and the boundary's
+/// `live_region_height`, so the three can never drift.
+#[must_use]
+pub fn band_rows(app: &App) -> u16 {
+    menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app)
+}
+
+/// The styled lines for the open shortcuts band: the [`SHORTCUTS`] entries two
+/// per row — the second column starting at [`SHORTCUTS_COL`] — with keys cyan
+/// and labels dim. The `esc` entry is three-way context-sensitive (codex's
+/// quit entry): ` to interrupt` while a turn is in flight, the
+/// [`SHORTCUTS_BACKTRACK`] `esc esc` edit hint when idle with a previous user
+/// message to edit, and ` to quit` only with nothing to backtrack to
+/// (docs/backtrack.md).
+#[must_use]
+pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'static>> {
+    let entry = |key: &'static str, label: &'static str| {
+        let (key, label) = if key == "esc" && turn_active {
+            (key, " to interrupt")
+        } else if key == "esc" && can_backtrack {
+            SHORTCUTS_BACKTRACK
+        } else {
+            (key, label)
+        };
+        [
+            Span::styled(key, Style::new().fg(SHORTCUTS_KEY_COLOR)),
+            Span::styled(label, Style::new().fg(SHORTCUTS_TEXT_COLOR)),
+        ]
+    };
+    SHORTCUTS
+        .chunks(2)
+        .map(|pair| {
+            let [key, label] = entry(pair[0].0, pair[0].1);
+            let mut spans = vec![key, label];
+            if let Some(&(key2, label2)) = pair.get(1) {
+                // Pad from the *displayed* widths — a context swap can change
+                // the key text too (`esc` → `esc esc`).
+                let used = cols(spans[0].content.as_ref()) + cols(spans[1].content.as_ref());
+                spans.push(Span::raw(
+                    " ".repeat(SHORTCUTS_COL.saturating_sub(used).max(1)),
+                ));
+                spans.extend(entry(key2, label2));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}

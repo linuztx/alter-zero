@@ -1,0 +1,1050 @@
+//! All of the TUI's styling and live-region geometry, in one place.
+//!
+//! Bullets, prompts, colours, the tool-cell and overlay chrome, the status
+//! indicator's spinner/shimmer, the band and footer metrics — retheme or
+//! re-size here, never inline at a call site.
+
+use super::*;
+
+// --- Claude-Code-ish styling. Centralised so it's trivial to retheme. ---
+
+/// Prompt shown at the start of the input field.
+pub(super) const PROMPT: &str = "❯ ";
+
+/// Bullet prefixing a user message.
+pub(super) const USER_BULLET: &str = "❯ ";
+
+/// Bullet prefixing an assistant message.
+pub(super) const AI_BULLET: &str = "● ";
+
+/// Bullet prefixing a backend-error notice — same glyph as the assistant, but
+/// coloured red (see [`ERROR_COLOR`]) so a failure reads as a red bullet point.
+pub(super) const ERROR_BULLET: &str = "● ";
+
+/// Bullet prefixing a system notice (slash-command output) — same glyph, coloured
+/// cyan (see [`SYSTEM_COLOR`]) so it reads as meta rather than an AI reply.
+pub(super) const SYSTEM_BULLET: &str = "● ";
+
+/// Indent for wrapped continuation lines (matches a bullet's width).
+pub(super) const INDENT: &str = "  ";
+
+/// Columns a bullet/indent occupies, subtracted from the content width.
+pub(super) const BULLET_WIDTH: u16 = 2;
+
+// --- Assistant markdown rendering (fenced code blocks + ATX headings;
+// `docs/markdown.md`). Code sits under the bullet (no gutter, no language
+// label), rendered VERBATIM (indentation preserved, no word-wrap) — the fix
+// for code losing its indentation — and **syntax-highlighted** by the `highlight`
+// module (syntect + two_face grammars, Catppuccin Mocha theme — codex parity;
+// the theme owns the code palette now, so there are no `CODE_*_COLOR` consts).
+// Headings keep their `#` markers and style the line per level, matching codex
+// (`heading_style`). ---
+/// A tab inside a code block expands to this many spaces **for display**. A tab
+/// is zero display columns (unicode-width treats it as a control char), so code
+/// rendered verbatim would lose all its tab indentation (Go, Makefiles, …
+/// collapse flush-left). A fixed substitution — not tab-stop alignment — keeps
+/// it simple and prefix-stable, matching codex's `expand_tabs`. Copy is
+/// unaffected: `/copy` reads the raw message text, not the rendered rows.
+pub(super) const CODE_TAB_WIDTH: usize = 4;
+
+/// A markdown thematic break (`---` / `***` / `___`) renders as this em-dash rule,
+/// a direct port of codex's `Event::Rule` (`Line::from("———")` — three U+2014 EM
+/// DASH, unstyled/default foreground). See `docs/markdown.md`.
+pub(super) const THEMATIC_BREAK: &str = "———";
+
+// --- Markdown table styling (docs/markdown.md, docs/table-streaming.md). A GFM
+// pipe table renders as a box-drawing grid: dim borders, bold header cells.
+// Column widths are locked from the header + first data row (fit to the width),
+// so once the first row streams the block is prefix-stable and its rows commit
+// to scrollback one at a time; every cell **word-wraps** into its column (taller
+// rows) instead of truncating with `…` when the grid is narrow, matching codex.
+// See `AssistantRenderer`/`StreamRender`. ---
+/// Dim colour of a table's box-drawing borders (`│ ─ ┌┬┐ ├┼┤ └┴┘`).
+pub(super) const TABLE_BORDER_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The floor a table column shrinks to before its cells word-wrap (codex uses 3):
+/// a narrow column keeps at least this many display columns, and cells wrap into
+/// it across multiple rows rather than losing text to a `…`.
+pub(super) const TABLE_MIN_COL: usize = 3;
+
+/// Records fallback (`docs/table-streaming.md`, Claude Code's key/value transpose):
+/// a column at least this wide is considered scannable, so it never triggers the
+/// fallback even if its content wraps (it's a legitimately wide narrative column).
+pub(super) const TABLE_SCANNABLE_COL: usize = 12;
+
+/// A cell that wraps into at least this many rows *in a narrow column* means the
+/// grid is growing tall because columns are starved — flip to vertical records.
+pub(super) const TABLE_RECORDS_MIN_LINES: usize = 3;
+
+/// The narrowest value column the inline `label: value` record form keeps; below
+/// this the field stacks (label on its own line, value indented beneath).
+pub(super) const TABLE_RECORD_MIN_VALUE: usize = 12;
+
+/// A stacked record value's indent under its label line.
+pub(super) const TABLE_RECORD_STACK_INDENT: usize = 2;
+
+/// The `─` rule between records caps at this many columns instead of spanning the
+/// full content width — Claude Code's shorter separator reads cleaner for the
+/// short key/value fields (a wide records table's full-width rule looked heavy).
+pub(super) const TABLE_RECORD_SEPARATOR_WIDTH: usize = 40;
+
+// --- Inline markdown styling (docs/markdown.md). A prose line's `**bold**`,
+// `*italic*`, `~~strike~~`, `` `code` `` and `[text](url)` render with these;
+// emphasis is modifier-only (bold/italic/crossed-out), code and links carry a
+// colour. Parsing lives in `markdown::parse_inline`; `ui` owns the styling. ---
+/// Inline `` `code` `` — a distinct cyan so it reads as code within prose.
+pub(super) const INLINE_CODE_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
+
+/// A link's URL, shown as ` (url)` after its text — blue and underlined.
+pub(super) const LINK_URL_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+
+// --- List and blockquote styling (docs/markdown.md). Bullets keep `-`, ordered
+// items keep `N.` in an accent colour; a blockquote's `>` and text render dim.
+// Continuation rows hang under the item's text. ---
+/// The accent colour of an ordered list's `N.`/`N)` marker.
+pub(super) const LIST_MARKER_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+
+/// A blockquote's `>` marker and text — dim, so a quote reads as secondary.
+pub(super) const QUOTE_COLOR: Color = TOOL_DIM_COLOR;
+
+// Code syntax-highlight colours now come from the `highlight` module's theme
+// (syntect + two_face, Catppuccin Mocha — codex parity), baked into each
+// `highlight::Seg`'s `Style`. `ui` no longer owns a code palette or maps token
+// kinds to colours; it just renders the segments the grammar produced. See
+// `docs/markdown.md`.
+
+pub(super) const USER_COLOR: Color = Color::Rgb(0x6E, 0x6E, 0x6E);
+
+pub(super) const USER_BG_COLOR: Color = Color::Rgb(0x2D, 0x2D, 0x2D);
+
+pub(super) const AI_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
+
+pub(super) const ERROR_COLOR: Color = Color::Rgb(0xE0, 0x6C, 0x75);
+
+/// Cyan — a system notice's bullet (slash-command output).
+pub(super) const SYSTEM_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
+
+pub(super) const PROMPT_COLOR: Color = Color::Rgb(0xFF, 0xFF, 0xFF);
+
+pub(super) const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
+
+// --- Tool-call styling. A tool renders as a coloured bullet header
+// `● name(args)` plus a collapsed `⎿` peek of its output; the bullet colour is
+// the tool's lifecycle (blue running, green ok, red fail). The full output is
+// only shown in the Ctrl+O tool-output view, never inline. ---
+
+/// Bullet prefixing a tool call (same glyph as the assistant, recoloured by
+/// status — see [`tool_status_color`]).
+pub(super) const TOOL_BULLET: &str = "● ";
+
+/// Prefix for the first result line: indent + a turnstile glyph + two spaces
+/// (Claude-Code's two-space corner). Continuation lines are indented by its
+/// display width so a multi-line result aligns under the content (see
+/// [`result_row`]).
+pub(super) const TOOL_RESULT_PREFIX: &str = "  ⎿  ";
+
+/// Prefix for the "+N lines" hint line under a capped peek — the `…` aligns
+/// under the corner content (the [`TOOL_RESULT_PREFIX`] width of leading
+/// spaces).
+pub(super) const TOOL_MORE_PREFIX: &str = "     … ";
+
+/// Hint telling the user how to see the full output.
+pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
+
+/// How many output lines a `!` shell command shows inline before collapsing the
+/// rest behind a `… +N lines (ctrl+o to expand)` hint (Claude-Code's exec-cell
+/// preview). The full output is always in the Ctrl+O view.
+pub(super) const TOOL_PEEK_LINES: usize = 4;
+
+/// The finished peek's safety ceiling in wrapped display **rows**: the budget
+/// above is *source lines* (each shown fully wrapped — a long first line must
+/// not push its siblings out of the peek), so without a ceiling ONE
+/// pathological line (a minified bundle, a 64 KiB log line) would balloon a
+/// committed cell into hundreds of rows now that lines wrap instead of
+/// clipping. Three rows per budgeted line keeps the everyday case — a `sudo`
+/// error wrapping to 2–3 rows at a narrow width — fully visible.
+pub(super) const TOOL_PEEK_MAX_ROWS: usize = TOOL_PEEK_LINES * 3;
+
+/// How many wrapped rows a tool's `● name(args)` header shows **inline** (and in
+/// the live preview) before the rest is cut with [`TOOL_HEADER_ELLIPSIS`] — so a
+/// very long `bash` command doesn't flood the cell. The Ctrl+O transcript view
+/// (`tool_full_lines`) passes `None` and renders the whole command. Claude-Code's
+/// truncated command header.
+pub(super) const TOOL_HEADER_MAX_ROWS: usize = 3;
+
+/// The marker spliced in (before the closing `)`) when a header is truncated at
+/// [`TOOL_HEADER_MAX_ROWS`].
+pub(super) const TOOL_HEADER_ELLIPSIS: &str = "…";
+
+/// Dim marker appended at the end of a `!` shell command's **expanded** output
+/// (`tool_full_lines`) when it was cut at the in-memory cap (`tool.truncated`),
+/// to show that more output was dropped. See `docs/shell-command.md`.
+pub(super) const TOOL_TRUNCATED_MARKER: &str = "…";
+
+/// Placeholder body for a finished tool that produced no output.
+pub(super) const TOOL_NO_OUTPUT: &str = "(no output)";
+
+// ---------------------------------------------------------------------------
+// Background shells (docs/background.md): the backgrounded cell's fixed row,
+// the running-command Ctrl+B hint, the ↓ manager band, and the footer count.
+// ---------------------------------------------------------------------------
+
+/// The fixed `⎿` body of a call resolved as [`ToolStatus::Backgrounded`] —
+/// the stored output (the model-facing launch text) is never shown.
+pub(super) const TOOL_BACKGROUNDED: &str = "Running in the background (↓ to manage)";
+
+/// The dim live-only hint under a running command's preview cell: Ctrl+B
+/// moves it to the background. Never committed to scrollback.
+pub(super) const TOOL_BACKGROUND_HINT: &str = "(ctrl+b to run in background)";
+
+/// How long a command must have been running before its preview shows the
+/// `(ctrl+b to run in background)` hint — Claude-Code-style, so a command that
+/// finishes right away never flashes it (Ctrl+B itself still works the whole
+/// time; only the discoverability hint waits). Gated on the boundary-injected
+/// [`App::command_elapsed`]. See `docs/background.md`.
+pub(super) const TOOL_BACKGROUND_HINT_DELAY: Duration = Duration::from_secs(3);
+
+/// The ↓ manager's list title.
+pub(super) const BG_TITLE: &str = "Background";
+
+/// The details page's title.
+pub(super) const BG_DETAILS_TITLE: &str = "Shell details";
+
+/// The list's empty state — shown when every shell has finished.
+pub(super) const BG_EMPTY: &str = "No tasks currently running";
+
+/// The list page's key hints.
+pub(super) const BG_LIST_HINTS: &str = "↑/↓ to select · Enter to view · x to stop · Esc to close";
+
+/// The empty state's key hints (nothing to stop).
+pub(super) const BG_EMPTY_HINTS: &str = "↑/↓ to select · Enter to view · Esc to close";
+
+/// The details page's key hints.
+pub(super) const BG_DETAILS_HINTS: &str = "← to go back · Esc/Enter/Space to close · x to stop";
+
+/// The `(running)` suffix on a list row.
+pub(super) const BG_ROW_SUFFIX: &str = " (running)";
+
+/// The band's two-space inset (the picker/footer indent).
+pub(super) const BG_INDENT: &str = "  ";
+
+/// The selected list row's marker (the resume picker's `❯`).
+pub(super) const BG_MARKER: &str = "❯ ";
+
+/// At most this many list rows show at once (the window follows the
+/// selection, like the pickers).
+pub(super) const BG_MENU_MAX_ROWS: usize = 8;
+
+/// The details output box's interior height: the last rows of the live
+/// output tail, blank-padded (the mock's fixed box).
+pub(super) const BG_OUTPUT_ROWS: usize = 10;
+
+/// The details page's field labels, padded to one column.
+pub(super) const BG_FIELD_STATUS: &str = "Status:   ";
+
+pub(super) const BG_FIELD_RUNTIME: &str = "Runtime:  ";
+
+pub(super) const BG_FIELD_COMMAND: &str = "Command:  ";
+
+/// The details page's output-box heading.
+pub(super) const BG_OUTPUT_LABEL: &str = "Output:";
+
+/// The value of the status field while listed (an exited shell leaves the
+/// manager, so a listed one is always running).
+pub(super) const BG_STATUS_RUNNING: &str = "running";
+
+/// The manager's title/selection accent (the palette accent) and dim text.
+pub(super) const BG_SELECTED_COLOR: Color = MENU_SELECTED_COLOR;
+
+pub(super) const BG_DIM_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The notice bullet colours: green success, red failure/stop.
+pub(super) const BG_NOTICE_OK_COLOR: Color = TOOL_OK_COLOR;
+
+pub(super) const BG_NOTICE_FAIL_COLOR: Color = TOOL_FAIL_COLOR;
+
+/// Placeholder body for a still-executing tool — the `⎿ Running…` row, shown
+/// under a backend tool's `● name(args)` header (req 2: a running cell shows the
+/// header *and* this row, previewed live) and as the whole `!` shell cell.
+pub(super) const TOOL_RUNNING: &str = "Running…";
+
+/// Placeholder body for a tool queued in a **parallel batch** but not yet
+/// started — the dim `⎿ Waiting…` row shown under a not-yet-running sibling's
+/// `● name(args)` header while another call in the batch executes. See
+/// `docs/parallel-tools.md`.
+pub(super) const TOOL_WAITING: &str = "Waiting…";
+
+/// Blue — a tool that is still executing.
+pub(super) const TOOL_RUNNING_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+
+/// Dim grey — a tool queued in a batch but not yet started (its `● name(args)`
+/// bullet and `⎿ Waiting…` row read muted, distinct from the blue running head,
+/// since it hasn't begun). Shares the argument/peek dim grey.
+pub(super) const TOOL_WAITING_COLOR: Color = TOOL_DIM_COLOR;
+
+/// Green — a tool that finished successfully. A vivid, saturated green (rather
+/// than the old muted `#98C379`) so the `●` success bullet clearly stands out,
+/// Claude-Code style. Shared by the `+`-line diff colour, the active-model tick
+/// and the context view's assistant tag ([`TOOL_DIFF_ADD_COLOR`] etc.).
+pub(super) const TOOL_OK_COLOR: Color = Color::Rgb(0x3F, 0xB9, 0x50);
+
+/// Red — a tool that failed (shares the backend-error red).
+pub(super) const TOOL_FAIL_COLOR: Color = ERROR_COLOR;
+
+/// White — the tool's name.
+pub(super) const TOOL_NAME_COLOR: Color = AI_COLOR;
+
+/// White (the normal assistant reply colour) + bold — the whole `(...)` header
+/// body: the command/args text **and** its framing `(`/`)` (and a truncation
+/// `…`) alike, so a `bash` command and its brackets read as prominently as a
+/// normal reply rather than the old dim grey. Claude-Code's noticeable tool
+/// header; shared by every tool via [`tool_header_lines`].
+pub(super) const TOOL_ARGS_COLOR: Color = AI_COLOR;
+
+/// White (the normal reply colour) — a finished tool's **output** under the `⎿`
+/// gutter (command/shell output), so it's as legible as a normal message rather
+/// than dim grey. The `⎿` corner, the `Running…`/`Waiting…`/`(no output)`
+/// placeholders and the `… +N lines` hint all stay [`TOOL_DIM_COLOR`].
+pub(super) const TOOL_OUTPUT_COLOR: Color = AI_COLOR;
+
+/// Dim grey — a tool's `⎿` gutter corner, its `Running…`/`Waiting…`/`(no output)`
+/// placeholders and the `… +N lines` hint.
+pub(super) const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
+
+/// Green — an added (`+`) line in an `edit`/`write` diff cell (codex's diff
+/// look, adapted to the `⎿` gutter; see `docs/tools.md`).
+pub(super) const TOOL_DIFF_ADD_COLOR: Color = TOOL_OK_COLOR;
+
+/// Red — a removed (`-`) line in an `edit`/`write` diff cell.
+pub(super) const TOOL_DIFF_DEL_COLOR: Color = TOOL_FAIL_COLOR;
+
+/// Dark-green background tint of an added row in a numbered `edit`/`write`
+/// cell (codex's dark-theme add tint): the syntax-coloured text reads over it
+/// and the row pads to the full width, like the user-message block.
+pub(super) const TOOL_DIFF_ADD_BG: Color = Color::Rgb(0x21, 0x3A, 0x2B);
+
+/// Dark-red background tint of a removed row (codex's dark-theme delete
+/// tint); the removed text is additionally dimmed, codex-style.
+pub(super) const TOOL_DIFF_DEL_BG: Color = Color::Rgb(0x4A, 0x22, 0x1D);
+
+/// How many numbered body rows a `write`/`edit` cell shows inline before the
+/// `… +N lines (ctrl+o to expand)` hint (Claude-Code's ~10-row Write preview;
+/// other tools keep the tighter [`TOOL_PEEK_LINES`]).
+pub(super) const FILE_PEEK_LINES: usize = 10;
+
+/// The model tools whose output is a file change — rendered as the numbered,
+/// syntax-highlighted codex-style cell when the output is in the
+/// `llm::tools` gutter format ([`file_cell_lines`]), or with the legacy
+/// first-char `+`/`-` colouring when it isn't (old sessions, error bodies).
+/// A `!` shell command is never one (its output is command output).
+pub(super) const DIFF_TOOL_NAMES: [&str; 2] = ["Edit", "Write"];
+
+/// The model tools whose output is **command output** — a shell run, streamed
+/// and framed with an `Exit code: N` line. They render like the `!` shell cell
+/// (a multi-line `⎿` peek, the frame stripped for display) and **tail** their
+/// output live while running (`docs/tool-streaming.md`). Only `bash` today; a
+/// non-command generic tool keeps the single collapsed peek line.
+pub(super) const COMMAND_TOOL_NAMES: [&str; 1] = ["Bash"];
+
+// --- Tool-output view (the Ctrl+O full-screen overlay) — codex's Ctrl+T
+// transcript pager: a slash-tiled dim title row over a scrolling body (the
+// full conversation transcript — every message plus every tool call's
+// *complete* (expanded) output — with vi-style `~` filler rows past its end),
+// closed by a `─` separator carrying the scroll percentage and two dim
+// key-hint rows above a final blank row. ---
+
+/// The pager's spaced-caps title, overlaid on the slash tiling as
+/// `/ T R A N S C R I P T` (codex's transcript overlay header).
+pub(super) const TOOL_VIEW_TITLE: &str = "T R A N S C R I P T";
+
+/// Rows of chrome above the scrolling body (the slash-tiled title row).
+pub(super) const TOOL_VIEW_TITLE_ROWS: u16 = 1;
+
+/// Rows of chrome below the body: the `─` separator carrying the scroll
+/// percentage, two key-hint rows, and the final blank row (codex's pager).
+pub(super) const TOOL_VIEW_FOOTER_ROWS: u16 = 4;
+
+/// First key-hint row under the separator (codex's pager hints, all dim).
+pub(super) const TOOL_VIEW_HINT_KEYS: &str =
+    " ↑/↓ to scroll   pgup/pgdn to page   home/end to jump";
+
+/// Second key-hint row: every key that closes the overlay.
+pub(super) const TOOL_VIEW_HINT_QUIT: &str = " q/esc/ctrl+o to quit";
+
+/// Second key-hint row while a backtrack preview highlights a user message —
+/// codex's highlighted-pager footer (`docs/backtrack.md`); it replaces
+/// [`TOOL_VIEW_HINT_QUIT`], whose Esc meaning the preview takes over.
+pub(super) const TOOL_VIEW_HINT_BACKTRACK: &str =
+    " esc/← to edit prev   → to edit next   enter to edit message   q to cancel";
+
+/// The vi-style filler marking body rows below the transcript's end.
+pub(super) const TOOL_VIEW_FILL: &str = "~";
+
+/// The dim placeholder shown when the transcript has nothing to list yet.
+pub(super) const TOOL_VIEW_EMPTY: &str = "Nothing here yet.";
+
+// --- Ctrl+D context-debug view (the third alternate-screen overlay) — the
+// raw LLM context window (docs/context.md): the transcript pager's chrome
+// (slash-tiled title, `~` filler, percentage separator, dim key hints) over
+// a body listing exactly what the model is sent — the system prompt, then
+// every derived context message role-tagged, its text **verbatim** (image
+// placeholders and bracketed tool/shell/notice formats unrendered) with the
+// attachment paths dim beneath. ---
+
+/// The view's spaced-caps title, overlaid on the slash tiling.
+pub(super) const CONTEXT_VIEW_TITLE: &str = "C O N T E X T";
+
+/// Second key-hint row: every key that closes the view.
+pub(super) const CONTEXT_VIEW_HINT_QUIT: &str = " q/esc/ctrl+d to quit";
+
+/// The dim placeholder when the context window is empty (no system prompt —
+/// the dummy sends none — and nothing said yet).
+pub(super) const CONTEXT_VIEW_EMPTY: &str = "Context is empty — send a message to fill it.";
+
+/// The system prompt's role tag — set apart from a mid-conversation
+/// `system:` note (a derived `[system]`/`[error]` notice).
+pub(super) const CONTEXT_SYSTEM_PROMPT_TAG: &str = "system prompt:";
+
+/// The inset of an entry's raw text (and attachment rows) under its tag.
+pub(super) const CONTEXT_INDENT: &str = "  ";
+
+/// The label of an attachment row under a user entry's text.
+pub(super) const CONTEXT_IMAGE_LABEL: &str = "image: ";
+
+/// The prefix of a native tool-call row under an assistant entry —
+/// `→ name(arguments)`, the model's request in the raw wire form.
+pub(super) const CONTEXT_TOOL_CALL_PREFIX: &str = "→ ";
+
+/// Role-tag colours — the tool palette's hues (user blue, assistant green,
+/// system amber, tool-result purple) so the roles scan apart at a glance.
+pub(super) const CONTEXT_USER_COLOR: Color = TOOL_RUNNING_COLOR;
+
+pub(super) const CONTEXT_ASSISTANT_COLOR: Color = TOOL_OK_COLOR;
+
+pub(super) const CONTEXT_SYSTEM_COLOR: Color = Color::Rgb(0xE5, 0xC0, 0x7B);
+
+/// The `tool:` result-role tag and the `→ name(args)` tool-call lines under an
+/// assistant entry — a distinct purple so the native tool round-trip reads
+/// apart from plain assistant text.
+pub(super) const CONTEXT_TOOL_COLOR: Color = Color::Rgb(0xC6, 0x78, 0xDD);
+
+// --- /resume session picker (the other alternate-screen overlay) — codex's
+// resume picker, sized down (docs/resume.md): the same slash-tiled title
+// chrome as the transcript pager, a type-to-search line, dense one-line
+// session rows (`❯ {age:12}{preview}`, the palette's selection-by-colour),
+// and a bottom rule carrying `{selected+1}/{total}` over a dim key-hint row. ---
+
+/// The picker's spaced-caps title, overlaid on the slash tiling.
+pub(super) const RESUME_TITLE: &str = "R E S U M E";
+
+/// The dim search-line placeholder while the query is empty (codex's).
+pub(super) const RESUME_SEARCH_PLACEHOLDER: &str = "Type to search";
+
+/// The search line's prefix once a query is typed.
+pub(super) const RESUME_SEARCH_PROMPT: &str = "Search: ";
+
+/// The picker's key-hint row (dim, under the separator). The search line's
+/// own placeholder carries the type-to-search hint.
+pub(super) const RESUME_HINTS: &str =
+    " ↑/↓ select   enter resume   esc cancel   tab + ←/→ filter/sort";
+
+/// The dim list placeholder when nothing was ever saved (codex's).
+pub(super) const RESUME_NO_SESSIONS: &str = "No sessions yet";
+
+/// The dim list placeholder when the query matches nothing (codex's).
+pub(super) const RESUME_NO_MATCH: &str = "No results for your search";
+
+/// The age column's width in the dense rows — codex's 12-col relative date.
+pub(super) const RESUME_AGE_WIDTH: usize = 12;
+
+/// The two-space inset shared by the search line and the placeholder rows
+/// (the row marker is the same width, so everything lines up).
+pub(super) const RESUME_INDENT: &str = "  ";
+
+/// The selected row's marker; unselected rows get spaces (codex's `❯ `).
+pub(super) const RESUME_MARKER: &str = "❯ ";
+
+/// The selected row's full-width background tint — codex blends white over
+/// the terminal background; a grey lift noticeably lighter than the
+/// user-message block plays that role here.
+pub(super) const RESUME_SELECTED_BG: Color = Color::Rgb(0x3A, 0x40, 0x46);
+
+/// The Tab-focused toolbar control's active value — codex's magenta.
+pub(super) const RESUME_FOCUS_COLOR: Color = Color::Magenta;
+
+/// The gap between the toolbar's Filter and Sort tab pairs (codex's).
+pub(super) const RESUME_TOOLBAR_GAP: &str = "   ";
+
+/// The smallest gap kept between the search text and the toolbar before the
+/// toolbar compacts (and then drops).
+pub(super) const RESUME_TOOLBAR_MIN_GAP: usize = 2;
+
+// --- Inline `/model` picker (docs/llm.md). Unlike `/resume`, this one is
+// **inline** — it replaces the composer in the bottom live region with its own
+// `>` search prompt over a scrolling model list, framed by top/bottom rules
+// like the input box. A gold header, the palette's cyan selection accent, a
+// dim `[provider]` tag, a green ✓ on the active model, then a `(n/total)`
+// counter and a `Model Name:` line — the shape of the user's mock. ---
+
+/// The two-space inset shared by every picker row (search, list rows,
+/// counter, name) so the content sits off the frame's left edge.
+pub(super) const MODEL_INDENT: &str = "  ";
+
+/// The search line's prompt glyph (cyan), the `❯` the query types after.
+pub(super) const MODEL_PROMPT: &str = "❯ ";
+
+/// Cyan — the `❯` prompt and the selected row (the palette-selection accent).
+pub(super) const MODEL_SELECTED_COLOR: Color = MENU_SELECTED_COLOR;
+
+/// The selected row's marker; unselected rows get spaces the same width.
+pub(super) const MODEL_MARKER: &str = "→ ";
+
+/// Light grey — an unselected model id (readable but quieter than the selection).
+pub(super) const MODEL_ID_COLOR: Color = Color::Rgb(0xC8, 0xC8, 0xC8);
+
+/// Dim — the `[provider]` tag, the counter, and the `Model Name:` line.
+pub(super) const MODEL_META_COLOR: Color = TOOL_DIM_COLOR;
+
+/// Green — the ✓ marking the currently-active model (shares the tool-ok green).
+pub(super) const MODEL_ACTIVE_COLOR: Color = TOOL_OK_COLOR;
+
+/// The mark appended to the active model's row.
+pub(super) const MODEL_ACTIVE_MARK: &str = " ✓";
+
+/// The label opening the friendly-name line under the list.
+pub(super) const MODEL_NAME_LABEL: &str = "Model Name: ";
+
+/// The most model rows shown at once; longer lists scroll to keep the selection
+/// **centered** (`centered_window`) so the user sees the models above and below
+/// it, not just up to the edge it last crossed.
+pub(super) const MODEL_MENU_MAX_ROWS: u16 = 10;
+
+/// The list placeholder while the fetch is in flight.
+pub(super) const MODEL_LOADING: &str = "Loading models…";
+
+/// The list placeholder when the provider returned no models.
+pub(super) const MODEL_NONE: &str = "No models available";
+
+/// The list placeholder when the query matches nothing.
+pub(super) const MODEL_NO_MATCH: &str = "No matching models";
+
+/// The list placeholder when no provider has a key yet ([`ModelLoad::NeedsLogin`]) —
+/// shown cyan (an actionable hint, not a red error) pointing at `/login`.
+pub(super) const MODEL_LOGIN_HINT: &str = "No API key yet — run /login to add one";
+
+/// The separator between the `(n/total)` counter and its trailing load status.
+pub(super) const MODEL_STATUS_SEP: &str = "   ·   ";
+
+/// The counter's dim suffix while other providers are still being fetched (the
+/// list shows what's landed so far and keeps growing). See `docs/llm.md`.
+pub(super) const MODEL_LOADING_MORE: &str = "loading more…";
+
+// --- The `/login` API-key onboarding flow (docs/llm.md). A two-step inline
+// picker sharing the model picker's framed look and colours: step 1 lists the
+// providers to choose from (headerless, like `/model`), step 2 collects the key
+// masked under a periwinkle prompt. All styling reuses the `MODEL_*` consts
+// (indent, `❯` prompt, cyan selection, dim meta, green ✓, `→` marker) plus the
+// `LOGIN_*` strings/geometry below. ---
+
+/// Periwinkle (Claude Code's accent, `#96a0d5`) — the `Enter your … API key`
+/// prompt on the key-entry step.
+pub(super) const LOGIN_KEY_PROMPT_COLOR: Color = Color::Rgb(0x96, 0xA0, 0xD5);
+
+/// The dim hint under the provider list, prefixing the real `.env` path
+/// (`onboarding.env_path`) so it names where the key actually lands.
+pub(super) const LOGIN_PROVIDER_HINT_PREFIX: &str = "Keys are saved to ";
+
+/// The dim hint under the key-entry field.
+pub(super) const LOGIN_KEY_HINT: &str = "Enter to save · Esc to go back";
+
+/// The dim placeholder shown in the key field before anything is entered.
+pub(super) const LOGIN_KEY_PLACEHOLDER: &str = "paste your API key, then press Enter";
+
+/// The glyph each entered key character is masked to.
+pub(super) const LOGIN_MASK_CHAR: char = '•';
+
+/// The list placeholder when the provider filter matches nothing.
+pub(super) const LOGIN_NO_MATCH: &str = "No matching providers";
+
+/// The most provider rows shown at once (longer lists scroll to keep the
+/// selection **centered**, like the `/model` list — `centered_window`).
+pub(super) const LOGIN_MENU_MAX_ROWS: u16 = 8;
+
+/// Fixed rows framing the **provider** step (headerless): top rule, gap, search,
+/// gap, (list), counter, gap, hint, gap, bottom rule.
+pub(super) const LOGIN_PROVIDER_CHROME_ROWS: u16 = 9;
+
+/// The row the provider-step `❯` filter sits on — top(0) gap(1) search(2).
+/// Shared by [`render_key_onboarding`] and [`cursor_position`].
+pub(super) const LOGIN_SEARCH_ROW: u16 = 2;
+
+/// Total rows of the **key** step (no list): top rule, gap, prompt, gap, input,
+/// gap, hint, gap, bottom rule.
+pub(super) const LOGIN_KEY_ROWS: u16 = 9;
+
+/// The row the key-entry `❯` field sits on — top(0) gap(1) prompt(2) gap(3)
+/// input(4).
+pub(super) const LOGIN_KEY_INPUT_ROW: u16 = 4;
+
+// --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
+// its wall-clock stamp: dim, right-aligned on its own line below the message
+// (`hh:mm AM/PM`). AI replies, tools, and turn summaries record a stamp too but
+// never display it; the inline view never shows any. See docs/timestamps.md. ---
+
+/// Dim grey — the user message's right-aligned timestamp in the Ctrl+O transcript.
+pub(super) const TIMESTAMP_COLOR: Color = TOOL_DIM_COLOR;
+
+// --- Live status indicator (codex / Claude-Code style). While a turn is in
+// flight a status line sits in the strip above the box (with a blank gap row
+// between it and the box's top rule):
+// `(●•·   ) {verb}… ({elapsed} · {↓|↑} {n} tokens · Thinking for {m})`. The
+// line opens with a **comet spinner** (a Larson-scanner sweep: a white head
+// dragging a fading grey tail back and forth between dim walls, one frame per
+// `SPINNER_INTERVAL` — see [`spinner_spans`]); the working verb is picked
+// per-turn (in `App`) and its white text carries a codex-style **shimmer**: a
+// bright-white band sweeps across the white-grey text (see [`shimmer_spans`],
+// ported from openai/codex `tui/src/shimmer.rs`). The elapsed / thinking / done
+// times are humanized by [`format_elapsed`] (`45s`, `1m 30s`, `1h 1m`). On
+// finish a dim, bullet-less `{done verb} for {n}` summary commits to scrollback (a
+// `HistoryItem::Summary`). See docs/status-indicator.md. ---
+
+/// White — the comet's head (matches the codex/Claude-Code white status text).
+pub(super) const STATUS_COLOR: Color = AI_COLOR;
+
+/// The comet-spinner animation frames (a Larson-scanner sweep, ten frames):
+/// the bright head (`●`) drags a two-cell fading tail (`•` then `·`) out to
+/// the right wall and back across to the **left wall** (flush against `(` —
+/// no wasted leading cell), the tail whipping around behind it at each
+/// bounce (a tail cell the head overlaps is hidden under it). Every frame is
+/// the same width, so the verb after it never jitters.
+pub(super) const SPINNER_FRAMES: &[&str] = &[
+    "(●•·   )",
+    "(•●    )",
+    "(·•●   )",
+    "( ·•●  )",
+    "(  ·•● )",
+    "(   ·•●)",
+    "(    ●•)",
+    "(   ●•·)",
+    "(  ●•· )",
+    "( ●•·  )",
+];
+
+/// How long each spinner frame shows (the classic cli-spinners 80 ms cadence —
+/// well under the loop's ~30 fps animation re-arm, so no frame is skipped).
+pub(super) const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
+
+/// The comet's bright bold head in a [`SPINNER_FRAMES`] frame.
+pub(super) const SPINNER_HEAD: char = '●';
+
+/// The tail cell right behind the head; the `·` end (and everything else in
+/// the frame — walls, empty track) fades to [`STATUS_DETAIL_COLOR`].
+pub(super) const SPINNER_TAIL_MID: char = '•';
+
+/// Mid grey — the `•` tail cell, between the white head and the dim tail end.
+pub(super) const SPINNER_TAIL_COLOR: Color = Color::Rgb(0xC8, 0xC8, 0xC8);
+
+/// How many spans [`spinner_spans`] emits (one per frame cell: the left wall,
+/// six track cells, the right wall) — the verb's per-char spans start at this
+/// index in the status line.
+pub(super) const SPINNER_SPAN_COUNT: usize = 8;
+
+/// Dim grey — the parenthesised metrics (`elapsed · tokens · thinking`).
+pub(super) const STATUS_DETAIL_COLOR: Color = TOOL_DIM_COLOR;
+
+/// Amber — the `retrying {n}/{max}` clause. A warning hue (One-Dark yellow),
+/// distinct from the dim metrics and the error red: the request hasn't failed,
+/// it's recovering. See `docs/llm.md`.
+pub(super) const STATUS_RETRY_COLOR: Color = Color::Rgb(0xE5, 0xC0, 0x7B);
+
+/// Trailing ellipsis after the working verb (`Working…`).
+pub(super) const STATUS_ELLIPSIS: &str = "…";
+
+/// Arrow for output tokens while the reply streams.
+pub(super) const STATUS_ARROW_DOWN: &str = "↓";
+
+/// Arrow once a tool result is folded back in.
+pub(super) const STATUS_ARROW_UP: &str = "↑";
+
+/// The interrupt hint, the detail's final clause while a turn is in flight —
+/// codex's `Esc to interrupt` discoverability hint, lowercased to match this
+/// codebase's hint convention (`(ctrl+o to expand)`, `esc return`).
+pub(super) const STATUS_INTERRUPT_HINT: &str = "esc to interrupt";
+
+/// Dim grey — the committed `"{done verb} for {n}"` turn summary.
+pub(super) const STATUS_DONE_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The status line's row in the streaming strip.
+pub(super) const STATUS_ROWS: u16 = 1;
+
+/// A blank row between the status line and the box's top rule, so the status
+/// never butts up against the box (mirrors the gap above, under the preview).
+pub(super) const STATUS_GAP_ROWS: u16 = 1;
+
+// --- The verb's shimmer wave (ported from openai/codex `shimmer_spans`): each
+// char's colour blends from the white-grey base toward bright white by a
+// raised-cosine band that sweeps the text once per `SHIMMER_SWEEP`. The wave's
+// phase derives from the boundary-supplied `TurnStatus::elapsed`, keeping the
+// renderer pure (codex reads a process clock instead). ---
+
+/// The white-grey base of the shimmering verb text (codex's truecolor fallback
+/// foreground) — dim enough that the bright band reads clearly.
+pub(super) const SHIMMER_BASE: (u8, u8, u8) = (0x88, 0x88, 0x88);
+
+/// The bright white the band's crest blends toward.
+pub(super) const SHIMMER_HIGHLIGHT: (u8, u8, u8) = (0xFF, 0xFF, 0xFF);
+
+/// One full sweep of the band across the text (codex's `sweep_seconds`).
+pub(super) const SHIMMER_SWEEP: Duration = Duration::from_secs(2);
+
+/// Off-text run-in/out, in chars, so the band slides on and off the ends
+/// instead of wrapping abruptly (codex's `padding`).
+pub(super) const SHIMMER_PADDING: usize = 10;
+
+/// The band's half-width in chars (codex's `band_half_width`).
+pub(super) const SHIMMER_BAND_HALF_WIDTH: f32 = 5.0;
+
+/// The crest's blend toward the highlight (codex blends `t * 0.9`).
+pub(super) const SHIMMER_MAX_BLEND: f32 = 0.9;
+
+// --- Slash-command palette. A scrolling, single-line-per-command list pinned
+// **below the input box** (a third live-region band) whenever the input is a bare
+// command token. Each row is `/name` padded to a column, then its description. The
+// selection is shown **by colour**: the whole highlighted row lights up cyan — name
+// *and* description the same colour — while the others are dimmed grey (no
+// caret/arrow), Claude-Code style. Capped at `MENU_MAX_ROWS`; longer lists scroll
+// to keep the selection visible (`menu_window`). ---
+
+/// The most command rows shown at once; longer match lists scroll within this.
+/// Sized to hold the whole [`crate::app::COMMANDS`] registry so a bare `/`
+/// lists every command without scrolling (the
+/// `the_menu_cap_holds_the_whole_command_registry` test pins it to the
+/// registry's growth — `/compact` grew it to 8, `/init` to 9).
+pub(super) const MENU_MAX_ROWS: u16 = 9;
+
+/// The column descriptions start at — names are padded out to here so the
+/// descriptions line up in a tidy column regardless of command-name length.
+pub(super) const MENU_DESC_COL: usize = 25;
+
+/// Cyan — the **selected** row: its `/name` *and* description share this colour
+/// (for consistency); the name is additionally bold.
+pub(super) const MENU_SELECTED_COLOR: Color = Color::Rgb(0x56, 0xB6, 0xC2);
+
+/// Dim grey — an unselected row (name and description alike).
+pub(super) const MENU_DIM_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The palette's single placeholder row when the `/token` matches no command.
+pub(super) const MENU_NO_MATCH: &str = "No matching commands";
+
+// --- The `@` file picker. A file list pinned **below the input box** (the
+// palette's slot — the bands never show together), opened by an `@token` under
+// the cursor — a port of codex's file-search popup. It reuses the palette's
+// cyan-selected / dim-unselected colours, additionally **bolding the characters
+// the query matched** (from `FileMatch.indices`). See docs/file-search.md. ---
+
+/// The most file rows shown at once; longer match lists scroll to keep the
+/// selection visible (`menu_window`), like the command palette.
+pub(super) const FILE_MENU_MAX_ROWS: u16 = 8;
+
+/// The picker's single placeholder row while a search is in flight.
+pub(super) const FILE_MENU_SEARCHING: &str = "Searching…";
+
+/// The picker's single placeholder row when the query matched nothing.
+pub(super) const FILE_MENU_NO_MATCH: &str = "No matching files";
+
+// --- The `?` shortcuts band. A keyboard-shortcuts overview pinned **below the
+// input box** (the palette's slot — the two never show together), toggled by
+// `?` from an empty composer — a port of codex's footer shortcut overlay
+// (`footer.rs::shortcut_overlay_lines`): two aligned columns of
+// `{key} for {thing}` entries, keys cyan, labels dim. See docs/shortcuts.md. ---
+
+/// The bindings listed in the band, as `(key, label)` pairs laid out two per
+/// row in declaration order. The `esc` entry is context-sensitive —
+/// [`shortcuts_lines`] swaps it for ` to interrupt` while a turn runs (codex's
+/// quit entry does the same) and for the [`SHORTCUTS_BACKTRACK`] edit hint
+/// when idle with a previous user message to edit (docs/backtrack.md).
+pub(super) const SHORTCUTS: &[(&str, &str)] = &[
+    ("/", " for commands"),
+    ("!", " for shell command"),
+    ("↑", " for input history"),
+    ("ctrl+r", " to search history"),
+    ("shift+enter", " for newline"),
+    ("ctrl+o", " for tool output"),
+    ("esc", " to quit"),
+    ("ctrl+c", " to quit"),
+    ("alt+↑", " to edit queue"),
+    ("tab", " to queue next turn"),
+    ("ctrl+v", " for image paste"),
+    ("ctrl+d", " for llm context"),
+    ("shift+tab", " to cycle thinking"),
+];
+
+/// The display column where a row's second entry starts (the first entry is
+/// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea.
+pub(super) const SHORTCUTS_COL: usize = 25;
+
+/// Cyan — an entry's key (the palette-selection accent).
+pub(super) const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;
+
+/// Dim grey — an entry's label (codex dims the whole overlay).
+pub(super) const SHORTCUTS_TEXT_COLOR: Color = TOOL_DIM_COLOR;
+
+// --- Esc-Esc backtrack (docs/backtrack.md). A primed first Esc takes the
+// footer slot with a hint naming the second (codex's `esc_backtrack_hint`
+// footer); the transcript overlay then highlights the selected user message
+// by *reversing* its rows (codex's `user_message_style().reversed()`). ---
+
+/// The primed hint's key, bold-cyan like the search-line hint keys.
+pub(super) const BACKTRACK_HINT_KEY: &str = "esc";
+
+/// The primed hint's dim label — codex's "esc again to edit previous message"
+/// wording, minus the key it highlights separately.
+pub(super) const BACKTRACK_HINT_LABEL: &str = " again to edit previous message";
+
+/// The shortcuts-band `esc` entry while idle with a backtrack target: the
+/// gesture replaces quit as Esc's idle meaning (see [`shortcuts_lines`]).
+pub(super) const SHORTCUTS_BACKTRACK: (&str, &str) = ("esc esc", " to edit previous");
+
+// --- Queued messages. While a turn streams, messages submitted with Enter (or
+// Tab) join `App::queued` and are shown **above the box** (in the strip, just
+// under the status line's gap) styled exactly like a sent user message — the
+// `❯ ` bullet, the dark background, wrapped — so a queued follow-up reads like
+// it is already on its way. The queue is a sequence of turn-batches: Enter
+// appends to the current batch, **Tab opens a new one**, and the loop sends one
+// batch per turn-end (a blank row divides the batches). See docs/queue.md. ---
+
+/// Indent prefixed to every queued row, insetting the queue from the strip's
+/// left edge; the dark user-message block starts after it.
+pub(super) const QUEUED_INDENT: &str = "  ";
+
+// --- The session-context footer: the dim `{model} · {cwd}` row pinned under
+// the input box (codex's footer status line). See docs/footer.md. ---
+
+/// Indent prefixed to the footer row (codex's `FOOTER_INDENT_COLS`).
+pub(super) const FOOTER_INDENT: &str = "  ";
+
+/// Separator between the footer's segments (codex's dim ` · `).
+pub(super) const FOOTER_SEPARATOR: &str = " · ";
+
+/// The footer's text colour — every segment dim, codex's no-theme-colours
+/// status-line style.
+pub(super) const FOOTER_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The **focused** shell indicator's fill: ↓ lights the footer's `{n} shell(s)`
+/// segment on the palette-selection cyan and waits for the Enter that opens the
+/// ↓ manager band (Claude-Code-style — see `docs/background.md`). Only that one
+/// segment changes; the model / cwd / context-gauge segments stay dim.
+pub(super) const FOOTER_FOCUS_BG: Color = MENU_SELECTED_COLOR;
+
+/// The focused indicator's ink on that cyan fill — near-black, so the lit
+/// segment reads as a chip rather than a smudge.
+pub(super) const FOOTER_FOCUS_FG: Color = Color::Rgb(0x1E, 0x1E, 0x1E);
+
+// --- The transient toast: a one-line, self-clearing status message pinned just
+// above the box (`Copied last message to clipboard`, `/resume is disabled …`).
+// It occupies the bottom of the strip, directly above the box's top rule, and
+// fades after a few seconds (the expiry timed at the I/O boundary). See
+// docs/toast.md. ---
+
+/// Indent prefixed to the toast row — the two-space inset shared with the
+/// footer and the queued messages.
+pub(super) const TOAST_INDENT: &str = "  ";
+
+/// An info toast's colour (a confirmation / soft rejection) — dim, like the footer.
+pub(super) const TOAST_COLOR: Color = TOOL_DIM_COLOR;
+
+/// An error toast's colour (a failure — a `/copy` error, a bad model switch) —
+/// the error red.
+pub(super) const TOAST_ERROR_COLOR: Color = ERROR_COLOR;
+
+// --- The Ctrl+R reverse history search line (codex's reverse-i-search footer,
+// `chat_composer/history_search.rs::history_search_footer_line`). It takes the
+// session footer's slot while a search is open, and the previewed match in the
+// composer highlights the query occurrences. See docs/history-search.md. ---
+
+/// The dim prompt opening the search line.
+pub(super) const SEARCH_PROMPT: &str = "reverse-i-search: ";
+
+/// Cyan — the query text and the accept/cancel hint keys (codex's `.cyan()`;
+/// the palette-selection accent).
+pub(super) const SEARCH_QUERY_COLOR: Color = MENU_SELECTED_COLOR;
+
+/// The notice appended to the line when the query matches nothing — red, like
+/// codex's `"  no match"`.
+pub(super) const SEARCH_NO_MATCH: &str = "  no match";
+
+/// How a previewed match's query occurrences light up in the input box
+/// (codex's `REVERSED | BOLD` textarea highlight).
+pub(super) const SEARCH_HIGHLIGHT: Modifier = Modifier::REVERSED.union(Modifier::BOLD);
+
+// --- The `!` shell-mode footer hint. While the composer holds a `!command`
+// the footer slot reads `Shell mode` in red (codex's light-red
+// `shell_mode_footer_line`), displacing the `{model} · {cwd}` line. See
+// docs/shell-command.md. ---
+
+/// The shell-mode hint text.
+pub(super) const SHELL_MODE_LABEL: &str = "Shell mode";
+
+/// The hint's colour — red, like codex's `light_red()` (reuses our error red).
+/// Also colours the `! ` bullet/prompt everywhere shell mode shows.
+pub(super) const SHELL_MODE_COLOR: Color = ERROR_COLOR;
+
+/// The bullet opening a committed shell command's header (`! pwd` on the dark
+/// user-style line) — and the composer prompt while shell mode is on (the
+/// absorbed bang rendered back; same two columns as [`PROMPT`]).
+pub(super) const SHELL_BULLET: &str = "! ";
+
+// --- The startup header banner (docs/header.md): an ASCII wordmark + version +
+// cwd + hint, committed to scrollback at launch and re-emitted atop every full
+// repaint (resize, `/clear`) so it survives the scrollback purge. Pure chrome,
+// like the footer — never in `history`, so it never reaches the model, the
+// `/resume` rollout, or the Ctrl+O transcript. Borderless (no `─` rule row, no
+// bare prompt, no model name) so the smoke resize counters don't see it. ---
+
+/// The full ANSI-Shadow wordmark, shown when the terminal is wide enough
+/// ([`header_lines`] falls back to [`HEADER_LOGO_COMPACT`], then a text badge).
+/// One `&str` per row so the leading spaces survive verbatim — a `\`-continued
+/// string literal would strip them and shift the `A`'s crown a column left.
+pub(super) const HEADER_LOGO_FULL: &[&str] = &[
+    " █████╗ ██╗  ████████╗███████╗██████╗   ███████╗███████╗██████╗  ██████╗",
+    "██╔══██╗██║  ╚══██╔══╝██╔════╝██╔══██╗  ╚══███╔╝██╔════╝██╔══██╗██╔═══██╗",
+    "███████║██║     ██║   █████╗  ██████╔╝    ███╔╝ █████╗  ██████╔╝██║   ██║",
+    "██╔══██║██║     ██║   ██╔══╝  ██╔══██╗   ███╔╝  ██╔══╝  ██╔══██╗██║   ██║",
+    "██║  ██║███████╗██║   ███████╗██║  ██║  ███████╗███████╗██║  ██║╚██████╔╝",
+    "╚═╝  ╚═╝╚══════╝╚═╝   ╚══════╝╚═╝  ╚═╝  ╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ",
+];
+
+/// The compact half-block wordmark, shown on mid-width terminals (too narrow for
+/// [`HEADER_LOGO_FULL`], wide enough to still show art).
+pub(super) const HEADER_LOGO_COMPACT: &[&str] = &[
+    "▄▀█ █   ▀█▀ █▀▀ █▀▄  ▀▀█ █▀▀ █▀▄ █▀█",
+    "█▀█ █▄▄  █  ██▄ █▀▄  █▄▄ ██▄ █▀▄ █▄█",
+];
+
+/// The plain-text name for the one-line badge (a very narrow terminal, too small
+/// for either wordmark).
+pub(super) const HEADER_NAME: &str = "ALTER ZERO";
+
+/// The tagline under the logo — the persona, echoing `prompts/alter_zero.md`.
+pub(super) const HEADER_TAGLINE: &str = "autonomous ai agent · terminal ui";
+
+/// The command hint under the metadata — bare `/token`s (the slashes accented,
+/// separators dim). Deliberately prose-free so it can't collide with the smoke
+/// suite's `for commands` / footer markers.
+pub(super) const HEADER_HINT: &[&str] = &["/help", "/model", "/resume"];
+
+/// Indent shared with the footer and messages — the whole metadata block sits
+/// two columns in. The logo art is drawn flush-left.
+pub(super) const HEADER_INDENT: &str = "  ";
+
+/// The logo gradient's left endpoint — the inline-code cyan ([`INLINE_CODE_COLOR`]).
+pub(super) const HEADER_GRADIENT_START: (u8, u8, u8) = (0x56, 0xB6, 0xC2);
+
+/// The logo gradient's right endpoint — the link blue ([`LINK_URL_COLOR`]).
+pub(super) const HEADER_GRADIENT_END: (u8, u8, u8) = (0x61, 0xAF, 0xEF);
+
+/// The version badge + hint-token colour — the cyan accent, so they pop.
+pub(super) const HEADER_ACCENT_COLOR: Color = INLINE_CODE_COLOR;
+
+/// The tagline / cwd / separator colour — dim, like the footer.
+pub(super) const HEADER_META_COLOR: Color = FOOTER_COLOR;
+
+// --- Live-region geometry. The bottom region's height is dynamic: it grows with
+// the wrapped input (see `live_height`). `render_live` and `cursor_position` both
+// derive their layout from `input_box` so the drawn text and cursor never drift;
+// `main.rs`/`term.rs` size the viewport from `live_height`/`LIVE_MIN_HEIGHT`. ---
+
+/// A blank gap row between the streaming preview and the box, so the live reply
+/// never butts up against the box's top rule. Present only while streaming.
+pub(super) const GAP_ROWS: u16 = 1;
+
+/// The input box's non-text rows: a top rule and a bottom rule.
+pub(super) const INPUT_CHROME_ROWS: u16 = 2;
+
+/// The smallest the live region ever gets: a one-text-row box framed by two
+/// rules (idle has no preview strip). `main.rs` sizes the initial viewport from this.
+pub const LIVE_MIN_HEIGHT: u16 = INPUT_CHROME_ROWS + 1;
+
+/// Rows of live-region chrome that must stay visible under a tall forming-table
+/// preview: the preview's gap, the status line + its gap, the minimal box, and
+/// the session footer — plus one row of headroom.
+pub(super) const STREAM_PREVIEW_RESERVED_ROWS: u16 =
+    GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS + LIVE_MIN_HEIGHT + 2;
+
+/// The forming-table preview never shrinks below this many rows, however small
+/// the terminal — enough to see the newest row or two plus the border.
+pub(super) const STREAM_PREVIEW_MIN_ROWS: usize = 3;
+
+/// The fixed rows framing the inline `/model` picker's list when a real model
+/// is highlighted: the top rule, a gap, the search line, a gap (4 above), then
+/// below the list a counter, a gap, the model-name line, a gap, and the bottom
+/// rule (5 below — headerless, the "Showing models…" banner was dropped). The
+/// list rows sit between them (see [`model_list_rows`]).
+pub(super) const MODEL_CHROME_ROWS: u16 = 9;
+
+/// The framing rows when the picker shows a **placeholder** instead of a model
+/// (loading / error / needs-login / no match): the same 4 above the list, then
+/// a single gap and the bottom rule. The blank counter + name rows collapse to
+/// that one gap so the box hugs the placeholder. See [`model_chrome_rows`].
+pub(super) const MODEL_CHROME_ROWS_COLLAPSED: u16 = 6;
+
+/// The `/compact` marker cell's text — codex's "Context compacted" info cell,
+/// verbatim. See `docs/compact.md`.
+pub const COMPACTED_NOTICE: &str = "Context compacted";
+
+// --- The `Agent` tool (docs/agent-tool.md) ---
+
+/// The tree connectors of a group cell's per-agent rows: `   ├ {description}`
+/// for every agent but the last, `   └ {description}` for the last, with the
+/// status row's gutter continuing the rail (`   │ ⎿  Done` / `     ⎿  Done`).
+pub(super) const AGENT_TREE_INDENT: &str = "   ";
+
+pub(super) const AGENT_TREE_MID: &str = "├ ";
+
+pub(super) const AGENT_TREE_LAST: &str = "└ ";
+
+pub(super) const AGENT_TREE_PIPE: &str = "│ ";
+
+pub(super) const AGENT_TREE_BLANK: &str = "  ";
+
+/// The status row's corner inside the tree (`⎿  Done`).
+pub(super) const AGENT_TREE_CORNER: &str = "⎿  ";
+
+/// The committed background-launch header's manager hint.
+pub(super) const AGENT_MANAGE_HINT: &str = " (↓ to manage)";
+
+/// The Ctrl+O cell's `Prompt:` / `Response:` section labels (green bold,
+/// Claude Code's transcript look).
+pub(super) const AGENT_PROMPT_LABEL: &str = "Prompt:";
+
+pub(super) const AGENT_RESPONSE_LABEL: &str = "Response:";
+
+pub(super) const AGENT_SECTION_COLOR: Color = TOOL_OK_COLOR;
+
+/// Indent of a Ctrl+O agent cell's section bodies (under the `⎿  ` corner's
+/// label, one level further in) and of its nested tool-header lines.
+pub(super) const AGENT_BODY_INDENT: &str = "       ";
+
+pub(super) const AGENT_NESTED_INDENT: &str = "     ";
+
+/// The footer roster (the persistent agent list under the footer): the
+/// selection marker, the main row's bullet, and an agent row's circle.
+pub(super) const AGENT_LIST_MARKER: &str = "❯ ";
+
+pub(super) const AGENT_LIST_INDENT: &str = "  ";
+
+pub(super) const AGENT_MAIN_BULLET: &str = "● ";
+
+pub(super) const AGENT_ROW_BULLET: &str = "◯ ";
+
+pub(super) const AGENT_MAIN_LABEL: &str = "main";
+
+/// The roster selection's footer hints (they take the footer line's slot).
+pub(super) const AGENT_HINT_MAIN: &[(&str, &str)] = &[("↑/↓", " to select"), ("Enter", " to view")];
+
+pub(super) const AGENT_HINT_AGENT: &[(&str, &str)] = &[("Enter", " to view"), ("x", " to stop")];
+
+/// The row (within the picker's framed area) the `>` search line sits on — top
+/// rule (0), gap (1), search (2). Shared by [`render_model_picker`] and
+/// [`cursor_position`] so the cursor lands on the query.
+pub(super) const MODEL_SEARCH_ROW: u16 = 2;
