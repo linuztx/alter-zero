@@ -11,11 +11,19 @@ cargo test <name_substring>                 # run a single test by name fragment
 cargo test app::tests                       # run one module's tests
 cargo clippy --all-targets -- -D warnings   # lint (warnings are errors here)
 cargo fmt --check                           # formatting gate
+cargo doc --no-deps --lib                   # intra-doc links must resolve
 cargo build && bash scripts/smoke.sh        # drive the real binary in tmux
 ```
 
 The standard pre-commit gate used throughout this project is: `cargo fmt --check`
-+ `cargo clippy --all-targets -- -D warnings` + `cargo test` all clean.
++ `cargo clippy --all-targets -- -D warnings` + `cargo test` + `cargo doc
+--no-deps --lib` all clean. The doc build is part of the gate because the crate
+denies warnings, which promotes a broken intra-doc link to an error: a public
+item's docs may not link to a private one, so moving an item between modules (or
+narrowing its visibility) breaks the links that pointed at it. When that happens
+the fix is to qualify the path if the target is still public
+(`[`x`]` → `` [`x`](App::x) ``), else demote the link to a plain code span
+(`[`x`]` → `` `x` ``) so the prose still names it.
 
 Toolchain: Rust **edition 2024**, `ratatui = 0.30.1` (crossterm is re-exported as
 `ratatui::crossterm` — import it from there, not as a separate crate), plus

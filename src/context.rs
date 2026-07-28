@@ -341,7 +341,7 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
 /// rendered at the boundary) leads the derived context as its first **user**
 /// entry, in front of the normal derivation *and* the post-`/compact` shape
 /// alike (codex keeps its initial context through compaction the same way).
-/// It rides [`push_text`], so a first user message merges after it under the
+/// It rides `push_text`, so a first user message merges after it under the
 /// module's alternation convention. `None` or a blank changes nothing. See
 /// `docs/project-doc.md`.
 #[must_use]

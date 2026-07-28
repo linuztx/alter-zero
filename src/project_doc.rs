@@ -175,7 +175,7 @@ pub fn load_user_instructions(cwd: &Path) -> Option<String> {
 }
 
 /// [`load_user_instructions`] under an explicit budget. Boundary: composes
-/// [`find_project_root`], [`doc_chain`], one [`read_first_doc`] per chain
+/// [`find_project_root`], [`doc_chain`], one `read_first_doc` per chain
 /// directory, [`combine_docs`]. A missing or unreadable file is simply
 /// skipped (codex ignores NotFound); a zero budget skips even the discovery.
 #[must_use]

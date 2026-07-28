@@ -1,4 +1,5 @@
-//! Cross-session input-history file — the pure core (see `docs/history-persistence.md`).
+//! Cross-session input-history file — the pure core (see
+//! `docs/history-persistence.md`).
 //!
 //! The composer's ↑/↓ recall and Ctrl+R reverse search read
 //! [`InputHistory::entries`]; to make them span sessions we persist every
@@ -51,7 +52,7 @@ pub fn history_line(session_id: &str, ts: u64, text: &str) -> String {
 
 /// Parse a whole file's contents into the recorded texts, **oldest-first** (the
 /// order [`InputHistory::seed`] wants). Blank lines, lines that don't parse as a
-/// [`HistoryRecord`], and records whose `text` is empty are skipped — a torn
+/// `HistoryRecord`, and records whose `text` is empty are skipped — a torn
 /// last line, a future-version line, or a hand-edited empty entry never breaks
 /// the load or seeds a blank recall entry (codex's forward-compatible reader;
 /// `record` never writes an empty text, but a hand-edited/future file could).

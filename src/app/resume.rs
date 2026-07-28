@@ -128,14 +128,13 @@ impl App {
     }
 
     /// Install a loaded session as the conversation — the `/resume` swap.
-    /// The `/clear` reset shape ([`clear_conversation`]: wipe the streaming
+    /// The `/clear` reset shape (`clear_conversation`: wipe the streaming
     /// buffer/tool/status, drain the queue into discarded images) with
     /// `items` as the new history, and the picker closed. A turn can't be
     /// *active* here (`/resume` is rejected mid-task) — the wipes are
     /// belt-and-braces. The composer draft, its attachments, and the ↑-recall
     /// history survive, like `/clear`. See `docs/resume.md`.
     ///
-    /// [`clear_conversation`]: App::clear_conversation
     pub fn load_session(&mut self, items: Vec<HistoryItem>) {
         self.clear_conversation();
         self.history = items;

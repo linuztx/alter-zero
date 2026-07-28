@@ -695,7 +695,7 @@ pub fn is_image_path(path: &str) -> bool {
 }
 
 /// The model-facing (and cell-displayed) output of an image `read`: the
-/// [`READ_IMAGE_HEAD`] marker with the path, then the sniffed format, the
+/// `READ_IMAGE_HEAD` marker with the path, then the sniffed format, the
 /// pixel dimensions, and the humanized byte size — plus where the pixels are
 /// (the attachment note the agent loop appends; see `docs/tools.md`).
 #[must_use]
@@ -776,7 +776,7 @@ const DIFF_LCS_MAX_CELLS: usize = 1_000_000;
 /// match, so unchanged lines are shared context and only the real changes are
 /// marked `+`/`-`. Pure; drives the `(+A −D)` summaries and the diff cells.
 /// Memory-bounded: the shared prefix/suffix never enter the LCS table, and a
-/// changed middle past [`DIFF_LCS_MAX_CELLS`] falls back to remove-all/add-all.
+/// changed middle past `DIFF_LCS_MAX_CELLS` falls back to remove-all/add-all.
 #[must_use]
 pub fn diff_lines(old: &str, new: &str) -> Diff {
     let a: Vec<&str> = if old.is_empty() {

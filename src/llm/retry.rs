@@ -62,7 +62,7 @@ const BACKOFF_BASE: Duration = Duration::from_millis(500);
 const BACKOFF_CAP: Duration = Duration::from_secs(8);
 
 /// The backoff before the `retry_number`-th retry (1-based): exponential from
-/// [`BACKOFF_BASE`], doubling each retry, capped at [`BACKOFF_CAP`] — so the
+/// `BACKOFF_BASE`, doubling each retry, capped at `BACKOFF_CAP` — so the
 /// three retries wait 500 ms, 1 s, then 2 s.
 #[must_use]
 pub fn retry_backoff(retry_number: u32) -> Duration {

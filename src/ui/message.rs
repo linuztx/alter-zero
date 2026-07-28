@@ -69,7 +69,7 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 /// the gauge (0/0 — an old rollout — hides it) and a dim ` · auto` tag for an
 /// auto-triggered compaction. A single unwrapped line, the [`summary_lines`]
 /// precedent. The summary body never shows inline — it expands in the Ctrl+O
-/// transcript only ([`compaction_full_lines`]). See `docs/compact.md`.
+/// transcript only (`compaction_full_lines`). See `docs/compact.md`.
 #[must_use]
 pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<Line<'static>> {
     let _ = width; // one unwrapped line, like summary_lines
@@ -227,7 +227,7 @@ fn keep_last_rows(mut lines: Vec<Line<'static>>, max_rows: usize) -> Vec<Line<'s
 /// overwrite used to wipe it), only its bottom rows when it had partly
 /// scrolled, and not at all once it scrolled wholly into the terminal's kept
 /// scrollback (re-adding it there would duplicate it). Prepend-then-recap is
-/// exact because [`keep_last_rows`] keeps suffixes:
+/// exact because `keep_last_rows` keeps suffixes:
 /// `keep(banner + keep(x, n), n) == keep(banner + x, n)`.
 #[must_use]
 pub fn banner_tail(

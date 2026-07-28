@@ -226,7 +226,7 @@ pub fn os_release_name(contents: &str) -> Option<String> {
 /// then the whole conversation context in order — the multi-turn memory (see
 /// `docs/context.md`). A context message with image attachments becomes the
 /// multimodal parts form, each attachment encoded to a `data:` URL by
-/// `encode_image` (the injected I/O seam — [`image_data_url`] in production,
+/// `encode_image` (the injected I/O seam — `image_data_url` in production,
 /// a fake in tests, keeping this pure). An attachment that fails to encode
 /// (its temp file may have been cleaned away) is noted in the text instead of
 /// being dropped silently. Should the context ever be empty, the bare

@@ -7,7 +7,7 @@ use super::wrap::{cols, truncate_cols};
 use super::*;
 
 /// How many rows the command palette occupies for `app`: 0 when closed, otherwise
-/// the match count capped at [`MENU_MAX_ROWS`] (or a single placeholder row when
+/// the match count capped at `MENU_MAX_ROWS` (or a single placeholder row when
 /// the query matches nothing). [`live_height`] adds this; [`render_live`] paints
 /// exactly this many rows — the two must agree.
 #[must_use]
@@ -94,7 +94,7 @@ fn menu_row(cmd: &SlashCommand, selected: bool, width: u16) -> Line<'static> {
 }
 
 /// The styled lines for the open command palette: the filtered commands, windowed
-/// to keep the selection visible and capped at [`MENU_MAX_ROWS`], with the
+/// to keep the selection visible and capped at `MENU_MAX_ROWS`, with the
 /// highlighted row marked; or a single dim placeholder when nothing matches.
 /// Empty when the palette is closed.
 #[must_use]
@@ -125,7 +125,7 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 
 /// How many rows the `@` file picker occupies for `app`: 0 when closed, one
 /// placeholder row while searching / when nothing matched, else the match count
-/// capped at [`FILE_MENU_MAX_ROWS`] (longer lists scroll, like the palette).
+/// capped at `FILE_MENU_MAX_ROWS` (longer lists scroll, like the palette).
 /// [`live_height`] adds this to its band and [`render_live`] paints exactly this
 /// many rows — the two must agree. See `docs/file-search.md`.
 #[must_use]
@@ -176,7 +176,7 @@ fn file_menu_row(m: &FileMatch, selected: bool, width: u16) -> Line<'static> {
 /// The styled lines for the open file picker: a *Searching…* / *No matching
 /// files* placeholder while the band has no matches, else the file rows windowed
 /// (`menu_window`) to keep the selection visible and capped at
-/// [`FILE_MENU_MAX_ROWS`]. Empty when the picker is closed.
+/// `FILE_MENU_MAX_ROWS`. Empty when the picker is closed.
 #[must_use]
 pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(fs) = &app.file_search else {
@@ -228,11 +228,11 @@ pub fn band_rows(app: &App) -> u16 {
     menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app)
 }
 
-/// The styled lines for the open shortcuts band: the [`SHORTCUTS`] entries two
-/// per row — the second column starting at [`SHORTCUTS_COL`] — with keys cyan
+/// The styled lines for the open shortcuts band: the `SHORTCUTS` entries two
+/// per row — the second column starting at `SHORTCUTS_COL` — with keys cyan
 /// and labels dim. The `esc` entry is three-way context-sensitive (codex's
 /// quit entry): ` to interrupt` while a turn is in flight, the
-/// [`SHORTCUTS_BACKTRACK`] `esc esc` edit hint when idle with a previous user
+/// `SHORTCUTS_BACKTRACK` `esc esc` edit hint when idle with a previous user
 /// message to edit, and ` to quit` only with nothing to backtrack to
 /// (docs/backtrack.md).
 #[must_use]

@@ -42,11 +42,10 @@ impl InputHistory {
     /// persistent history file**. Blank texts are ignored and an entry
     /// identical to the newest is collapsed in memory, like codex's
     /// `record_local_submission`. The persist dedup is against
-    /// [`last_persisted`], **not** `entries` — so a never-persisted
+    /// `last_persisted`, **not** `entries` — so a never-persisted
     /// [`record_ephemeral`] draft can't mask a genuine submission's write (the
     /// file still collapses adjacent duplicates). See `docs/history-persistence.md`.
     ///
-    /// [`last_persisted`]: InputHistory::last_persisted
     /// [`record_ephemeral`]: InputHistory::record_ephemeral
     pub fn record(&mut self, text: &str) {
         self.record_inner(text);
@@ -60,10 +59,9 @@ impl InputHistory {
     /// Record an input that should recall this session but **never persist** —
     /// the Ctrl+C-cleared draft. codex keeps cleared drafts in its in-session
     /// `local_history` only, so an abandoned draft doesn't pollute the
-    /// cross-session history file, and it never advances [`last_persisted`]
+    /// cross-session history file, and it never advances `last_persisted`
     /// (`docs/history-persistence.md`).
     ///
-    /// [`last_persisted`]: InputHistory::last_persisted
     pub fn record_ephemeral(&mut self, text: &str) {
         self.record_inner(text);
     }
@@ -84,13 +82,12 @@ impl InputHistory {
     /// blank-skip + adjacent-duplicate collapse, so a messy or concurrently
     /// written file (adjacent dups) seeds the same clean buffer a fresh session
     /// would build. These are already on disk, so they are **not** queued for
-    /// persistence — but the newest seeded entry becomes the [`last_persisted`]
+    /// persistence — but the newest seeded entry becomes the `last_persisted`
     /// dedup target, so a first submission identical to it isn't re-written.
     /// Both ↑/↓ recall and Ctrl+R search read `entries`, so seeding makes both
     /// span sessions with no other change. See `docs/history-persistence.md`.
     ///
     /// [`record`]: InputHistory::record
-    /// [`last_persisted`]: InputHistory::last_persisted
     pub fn seed(&mut self, entries: Vec<String>) {
         for text in entries {
             self.record_inner(&text);
@@ -198,12 +195,11 @@ impl InputHistory {
 /// (`chat_composer/history_search.rs`). While it is `Some` on [`App`] the
 /// search owns every key: typed characters edit [`query`], Ctrl+R/↑ and
 /// Ctrl+S/↓ step between matches, Enter accepts the previewed match as an
-/// editable draft, and Esc/Ctrl+C restore the [`snapshot`]. The footer slot
+/// editable draft, and Esc/Ctrl+C restore the `snapshot`. The footer slot
 /// renders it as `reverse-i-search: {query}` (`ui::search_line`). See
 /// `docs/history-search.md`.
 ///
 /// [`query`]: HistorySearch::query
-/// [`snapshot`]: HistorySearch::snapshot
 #[derive(Debug)]
 pub struct HistorySearch {
     /// The draft (text **and** cursor) from before the search opened, restored

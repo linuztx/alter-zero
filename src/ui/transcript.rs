@@ -21,7 +21,7 @@ use super::*;
 /// Empty → the banner over a single placeholder line.
 ///
 /// Only the **user** message shows its wall-clock `timestamp`: dim,
-/// right-aligned on its own line below the message ([`user_stamp_lines`]) — the
+/// right-aligned on its own line below the message (`user_stamp_lines`) — the
 /// **only** stamp displayed anywhere (AI replies, tools, and turn summaries
 /// record one but never show it; the inline view never shows any; see
 /// `docs/timestamps.md`).
@@ -33,7 +33,7 @@ pub fn transcript_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// The line range the backtrack preview's highlighted user message occupies
 /// in [`transcript_lines`]'s output — the scroll-into-view target
 /// ([`backtrack_scroll`]); `None` when no preview is active. Computed by the
-/// same walk that styles the highlight ([`transcript_build`]), so the two can
+/// same walk that styles the highlight (`transcript_build`), so the two can
 /// never drift. See `docs/backtrack.md`.
 #[must_use]
 pub fn transcript_selection(app: &App, width: u16) -> Option<Range<usize>> {
@@ -166,11 +166,11 @@ pub fn tool_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize 
 /// interrupt-undo pop) bumps [`App::history_generation`]. That makes
 /// `(generation, width)` pin the **frozen prefix** exactly: `lines[..frozen_rows]`
 /// holds the banner chrome plus every committed item, rendered once
-/// ([`transcript_item_lines`]); each refresh truncates the volatile live tail
+/// (`transcript_item_lines`); each refresh truncates the volatile live tail
 /// (in-progress reply, live tool queue, queued backlog) off the end and
 /// re-renders just that. The Esc-Esc backtrack highlight — REVERSED rows
 /// *inside* the frozen prefix — is applied as an in-place style diff
-/// ([`Self::restyle_selection`]), never a re-render. A cheap [`TranscriptSig`]
+/// (`Self::restyle_selection`), never a re-render. A cheap `TranscriptSig`
 /// short-circuits the refresh entirely while nothing changed, so a scroll
 /// keypress is O(viewport).
 ///

@@ -582,7 +582,7 @@ pub(super) fn running_command_lines(
 ///
 /// A `!` shell command is **headerless** — its `Role::Shell` header (`! pwd`)
 /// sits flush above (docs/shell-command.md) — and shows up to
-/// [`TOOL_PEEK_LINES`] of its output as a `⎿` block (each line aligned under
+/// `TOOL_PEEK_LINES` of its output as a `⎿` block (each line aligned under
 /// the corner), then a `… +N lines (ctrl+o to expand)` hint when more is
 /// hidden (Claude-Code's exec cell). A backend tool keeps its coloured
 /// `● name(args)` header and a single collapsed peek line. The full output is

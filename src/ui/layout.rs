@@ -50,7 +50,7 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16) -> u16 {
 /// wrapped header + `⎿ Running…`) so a long command isn't clipped live and the
 /// running state shows; a running `!` shell command and a streaming reply preview
 /// a single row. Must match exactly what [`render_live_with_preview`] draws (it
-/// sizes the layout from the same [`preview_lines`]). Used by
+/// sizes the layout from the same `preview_lines`). Used by
 /// [`render_live`]/[`cursor_position`]/`main.rs` to feed `strip_rows`.
 #[must_use]
 pub fn preview_rows(app: &App, width: u16) -> u16 {
@@ -85,8 +85,8 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
 /// The cap the boundary passes to [`StreamRender::preview`]: how many strip
 /// rows a multi-row (forming-table) preview may take at this terminal height
 /// before it tail-follows its newest rows — the screen minus the live-region
-/// chrome ([`STREAM_PREVIEW_RESERVED_ROWS`]), floored at
-/// [`STREAM_PREVIEW_MIN_ROWS`] (docs/table-streaming.md).
+/// chrome (`STREAM_PREVIEW_RESERVED_ROWS`), floored at
+/// `STREAM_PREVIEW_MIN_ROWS` (docs/table-streaming.md).
 #[must_use]
 pub fn stream_preview_max_rows(term_height: u16) -> usize {
     usize::from(term_height.saturating_sub(STREAM_PREVIEW_RESERVED_ROWS))
@@ -118,7 +118,7 @@ fn field_width(width: u16) -> u16 {
 
 /// Height of the bottom live region for the current `input` at this terminal
 /// size: the streaming strip (the status and/or preview slots — see
-/// [`strip_rows`] for how `has_status`/`has_preview` size it) plus the
+/// `strip_rows` for how `has_status`/`has_preview` size it) plus the
 /// `queued_rows` queued-message lines stacked under it (the strip's
 /// [`queued_rows`]), the `toast_rows` transient toast row just above the box
 /// ([`toast_rows`], 0 or 1), two framing rules, one row per wrapped input line —
@@ -421,7 +421,7 @@ pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
 }
 
 /// Absolute `(x, y)` where the terminal's hardware cursor should sit for the
-/// current input. Shares [`input_box`] with [`render_live`] so the cursor lands
+/// current input. Shares `input_box` with [`render_live`] so the cursor lands
 /// exactly where the editor's cursor is — on its wrapped row, at its column —
 /// wherever the user has moved it, not just at the end.
 #[must_use]

@@ -683,7 +683,7 @@ impl InlineViewport {
     /// leave a blank gap when the box is anchored near the top), with the
     /// conversation left intact above. If the Ctrl+O overlay is somehow still
     /// up (an error exit that never reached [`exit_overlay`]), the alternate
-    /// screen is left first — see [`OVERLAY_ACTIVE`].
+    /// screen is left first — see `OVERLAY_ACTIVE`.
     ///
     /// [`exit_overlay`]: InlineViewport::exit_overlay
     pub fn restore(&mut self) -> io::Result<()> {

@@ -7,7 +7,8 @@
 //! the payload/endpoint builders in [`openai`] — are unit-tested; the network
 //! calls are verified by hand. See `docs/llm.md`.
 //!
-//! Streaming runs on a plain OS thread (the [`ReplySource::spawn`] contract), so
+//! Streaming runs on a plain OS thread (the
+//! [`ReplySource::spawn`](crate::stream::ReplySource::spawn) contract), so
 //! the HTTP client is **blocking** `reqwest`: a response is a `std::io::Read` we
 //! drain line-by-line for SSE frames while polling the
 //! [`CancelToken`](crate::stream::CancelToken) — the same cooperative-cancel

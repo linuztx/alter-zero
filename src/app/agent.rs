@@ -128,7 +128,7 @@ impl AgentNotice {
 /// previews it as the blue `● Running {n} agents…` tree cell (rendered from
 /// the roster entries these ids name). Cleared by
 /// [`App::finish_agent_group`]; an interrupt / backend error resolves it
-/// locally ([`App::resolve_live_agent_group`]) because the channel swap drops
+/// locally (`App::resolve_live_agent_group`) because the channel swap drops
 /// the backend's own `AgentGroupDone`. See `docs/agent-tool.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentGroupLive {

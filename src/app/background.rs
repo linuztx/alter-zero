@@ -93,7 +93,7 @@ pub struct BackgroundShell {
     /// follow-up turn; a user-launched (`!` + Ctrl+B) shell only commits the
     /// notice.
     pub from_model: bool,
-    /// The live output **tail** (capped at [`BG_TAIL_MAX_BYTES`], trimmed to
+    /// The live output **tail** (capped at `BG_TAIL_MAX_BYTES`, trimmed to
     /// line boundaries) — what the details view's output box tails and the
     /// completion notice snapshots. The full output is teed to the task's
     /// interim-output file at the boundary.
@@ -117,7 +117,7 @@ const BG_NOTICE_TAIL_MAX_BYTES: usize = 4 * 1024;
 const BG_NOTICE_TAIL_MAX_LINES: usize = 30;
 
 /// What a background shell left behind when it exited ([`App::bg_exited`]) —
-/// held in [`App::pending_bg`] and settled at the next **safe boundary**
+/// held in `App::pending_bg` and settled at the next **safe boundary**
 /// (a tool resolution / segment flush mid-turn, else the turn end; at once
 /// while idle): the loop records a [`BackgroundNotice`] for it, its
 /// [`context_text`](BgCompletion::context_text) having already been posted
@@ -256,7 +256,7 @@ impl App {
     }
 
     /// Append a chunk of a background shell's live output (the registry's
-    /// `BgEvent::Output`), keeping only the newest [`BG_TAIL_MAX_BYTES`] —
+    /// `BgEvent::Output`), keeping only the newest `BG_TAIL_MAX_BYTES` —
     /// trimmed from the front on line boundaries so the details view always
     /// tails whole lines. Unknown ids (a chunk racing its shell's removal)
     /// are dropped.

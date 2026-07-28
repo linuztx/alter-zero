@@ -36,7 +36,7 @@ use std::path::PathBuf;
 ///
 /// Mirrors codex: prefer an image *file* on the clipboard (e.g. one copied in
 /// a GUI file manager) — copied verbatim when it is already in an accepted
-/// format, transcoded to PNG otherwise ([`temp_image_from_files`]) — falling
+/// format, transcoded to PNG otherwise (`temp_image_from_files`) — falling
 /// back to the raw RGBA image bytes (e.g. a screenshot), which are always
 /// PNG-encoded.
 pub fn read_clipboard_image() -> Result<PathBuf, String> {

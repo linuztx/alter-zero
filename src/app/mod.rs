@@ -75,20 +75,18 @@ pub struct App {
     pub input_history: InputHistory,
     /// The open Ctrl+R reverse search over [`input_history`], if one is —
     /// `None` when closed. While `Some`, every key routes to it
-    /// ([`on_key_search`]) and the footer slot shows the query line. See
+    /// (`on_key_search`) and the footer slot shows the query line. See
     /// `docs/history-search.md`.
     ///
     /// [`input_history`]: App::input_history
-    /// [`on_key_search`]: App::on_key_search
     pub history_search: Option<HistorySearch>,
     /// Whether the composer is in `!` shell mode — codex's absorbed-prefix
     /// `is_bash_mode`: the leading `!` is held here, *not* in the textarea, so
     /// the box renders `! pwd` (the bang as the prompt) instead of `❯ !pwd`.
-    /// Entered by typing `!` first ([`sync_shell_mode`] absorbs it), exited by
+    /// Entered by typing `!` first (`sync_shell_mode` absorbs it), exited by
     /// Backspace/Esc on an empty composer or by submitting; the footer slot
     /// shows a red `Shell mode` hint while it's on. See `docs/shell-command.md`.
     ///
-    /// [`sync_shell_mode`]: App::sync_shell_mode
     pub shell_mode: bool,
     /// Messages submitted while a turn was in flight, awaiting their own turns
     /// (codex's `queued_user_messages`). The queue is a sequence of **turn
@@ -219,11 +217,11 @@ pub struct App {
     pub backtrack: Backtrack,
     /// The open slash-command palette (when the input is a bare command token);
     /// `None` when closed. Esc dismisses it (and it stays dismissed within the
-    /// same token); see [`App::refresh_command_menu`].
+    /// same token); see `App::refresh_command_menu`.
     pub command_menu: Option<CommandMenu>,
     /// The open `@` file picker (when the cursor is in an `@token`); `None` when
     /// closed. Esc dismisses it (sticky within the token); the boundary fetches
-    /// its matches asynchronously. See [`App::refresh_file_search`] and
+    /// its matches asynchronously. See `App::refresh_file_search` and
     /// `docs/file-search.md`.
     pub file_search: Option<FileSearch>,
     /// The open `/resume` session picker; `Some` exactly while
@@ -289,13 +287,12 @@ pub struct App {
     /// as `(placeholder, real_text)` pairs in insertion order (codex's
     /// `pending_pastes`). A paste over [`crate::paste::LARGE_PASTE_CHAR_THRESHOLD`]
     /// shows a compact `[Pasted Content N chars]` placeholder
-    /// ([`on_paste`]) while its text waits here; [`take_input`] splices it back in
+    /// ([`on_paste`]) while its text waits here; `take_input` splices it back in
     /// when the draft is sent. Cleared whenever the composer empties (every
     /// `take`), but **not** by `/clear` (the draft survives `/clear`, so its
     /// pastes do too). See `docs/paste.md`.
     ///
     /// [`on_paste`]: App::on_paste
-    /// [`take_input`]: App::take_input
     pub pasted: Vec<(String, String)>,
     /// Ctrl+V-pasted images currently in the composer, as `(placeholder, path)`
     /// pairs in insertion order — the image analogue of [`pasted`] (codex's
@@ -303,14 +300,12 @@ pub struct App {
     /// records the temp-PNG path here; unlike a text paste the placeholder is
     /// **not** expanded on send (it stays in the message text), and the path is
     /// surfaced separately via [`take_submission_images`]. Cleared by
-    /// [`take_input`] (any draft-take drops attachments), so the idle submit path
-    /// stages them into [`submission_images`] first. See `docs/image-paste.md`.
+    /// `take_input` (any draft-take drops attachments), so the idle submit path
+    /// stages them into `submission_images` first. See `docs/image-paste.md`.
     ///
     /// [`pasted`]: App::pasted
     /// [`attach_image`]: App::attach_image
-    /// [`take_input`]: App::take_input
     /// [`take_submission_images`]: App::take_submission_images
-    /// [`submission_images`]: App::submission_images
     pub images: Vec<(String, PathBuf)>,
     /// The just-submitted turn's image attachments — the whole
     /// `(placeholder, path)` pairs, staged by the idle submit path (moved out
@@ -600,13 +595,15 @@ impl App {
 
     /// Record a system notice (from a slash command) in the history, so it
     /// repaints on resize like any other message. The loop also commits it to
-    /// scrollback. Mirrors [`record_user_message`] for [`Action::Notice`].
+    /// scrollback. Mirrors [`record_user_message`](App::record_user_message) for
+    /// [`Action::Notice`].
     pub fn record_system_message(&mut self, text: &str) {
         self.record_message(Role::System, text);
     }
 
     /// Record a red error notice in the history (so a resize repaints it), like
-    /// [`record_system_message`] but [`Role::Error`]. Used for a Ctrl+V clipboard
+    /// [`record_system_message`](App::record_system_message) but [`Role::Error`]. Used
+    /// for a Ctrl+V clipboard
     /// failure — codex's `new_error_event`. See `docs/image-paste.md`.
     pub fn record_error_message(&mut self, text: &str) {
         self.record_message(Role::Error, text);

@@ -15,7 +15,7 @@ use super::*;
 /// O(reply) *per chunk*, so a long code reply was O(reply²) and starved the
 /// status animation — see `docs/markdown.md`).
 ///
-/// It drives one [`AssistantRenderer`], caching the rendered rows of every
+/// It drives one `AssistantRenderer`, caching the rendered rows of every
 /// **complete** source line (`frozen`) and advancing over only the newly-arrived
 /// lines on each call — so [`commit`](Self::commit)/[`preview`](Self::preview)
 /// cost O(new text), and streaming a whole reply is O(reply).

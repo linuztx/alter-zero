@@ -129,11 +129,12 @@ pub fn format_token_count(tokens: usize) -> String {
 
 /// The live status line shown in the strip above the box while a turn is in
 /// flight:
-/// `(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · Thinking for {m}] · esc to interrupt)`.
+/// `(●•·   ) {verb}… ({elapsed}[ · {arrow} {n} tokens][ · Thinking for {m}] · esc to
+/// interrupt)`.
 ///
-/// It opens with the comet spinner ([`spinner_spans`]) and the verb
+/// It opens with the comet spinner (`spinner_spans`) and the verb
 /// text **shimmers** — a bright-white band sweeping its white-grey chars
-/// ([`shimmer_spans`]) — both animations phase-driven by the boundary-supplied
+/// (`shimmer_spans`) — both animations phase-driven by the boundary-supplied
 /// `elapsed`; the parenthesised metrics are dim. The token clause is omitted
 /// while the tally is 0 (the "just submitted" state), and the thinking clause
 /// only while `thinking` is `Some`. Pure — it formats the (already

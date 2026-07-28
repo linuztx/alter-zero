@@ -52,7 +52,7 @@ pub struct Seg {
     /// The run's text.
     pub text: String,
     /// Its resolved style (foreground colour, plus bold where the theme sets it;
-    /// italic/underline are dropped — see [`convert_style`]).
+    /// italic/underline are dropped — see `convert_style`).
     pub style: Style,
 }
 

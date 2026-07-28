@@ -219,7 +219,7 @@ pub enum StreamEvent {
 /// any reply text appears. The status animates during this pause because the
 /// draw loop re-arms a frame every 32ms while a turn is active (see `main.rs`),
 /// and an Esc reaps the thread promptly (the wait is an interruptible
-/// [`nap`]). Configurable per backend via [`DummyAi::with_startup_delay`] (the
+/// `nap`). Configurable per backend via [`DummyAi::with_startup_delay`] (the
 /// app reads `ALTER_ZERO_STARTUP_DELAY_MS`; tests use a short delay).
 pub const STARTUP_DELAY: Duration = Duration::from_secs(3);
 
@@ -234,7 +234,7 @@ pub const TOOL_DELAY: Duration = Duration::from_millis(450);
 /// Delay after `ThinkingStart` and after each `ThinkingChunk`, so the
 /// reasoning trickles and the token tally visibly ticks while the model
 /// "thinks". The phase's total length is one step per event —
-/// `(1 + chunks) × THINK_CHUNK_DELAY` (≈1.2s for [`DUMMY_THINKING`]'s seven
+/// `(1 + chunks) × THINK_CHUNK_DELAY` (≈1.2s for `DUMMY_THINKING`'s seven
 /// words), long enough that `Thinking for Ns` ticks from 0s.
 pub const THINK_CHUNK_DELAY: Duration = Duration::from_millis(150);
 
@@ -388,7 +388,7 @@ const RESPONSES: &[&str] = &[
 ///
 /// Deterministic so it's testable; varied so the demo isn't monotonous. A
 /// prompt mentioning **"table"** plays the markdown-table demo
-/// ([`DUMMY_TABLE_REPLY`], opt-in like the "parallel" batch).
+/// (`DUMMY_TABLE_REPLY`, opt-in like the "parallel" batch).
 #[must_use]
 pub fn dummy_response(prompt: &str) -> String {
     if prompt.to_lowercase().contains("table") {
@@ -449,7 +449,7 @@ pub fn image_ack(count: usize) -> Option<String> {
 /// a [`StreamEvent::ToolBatch`] before its `ToolStart`s, and every `ToolStart` is
 /// still immediately followed by its `ToolEnd` — execution stays sequential (one
 /// running call at a time; see `docs/parallel-tools.md`). Between the thinking
-/// pair the dummy streams [`DUMMY_THINKING`] word-by-word as
+/// pair the dummy streams `DUMMY_THINKING` word-by-word as
 /// [`StreamEvent::ThinkingChunk`]s, so the token tally keeps ticking while the
 /// thinking timer runs.
 ///

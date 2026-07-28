@@ -54,13 +54,12 @@ impl App {
     /// Handle a bracketed-paste event. A paste over
     /// [`crate::paste::LARGE_PASTE_CHAR_THRESHOLD`] characters is shown in the
     /// composer as a compact `[Pasted Content N chars]` placeholder, with the
-    /// real text remembered in [`pasted`] for [`take_input`] to splice back in on
+    /// real text remembered in [`pasted`] for `take_input` to splice back in on
     /// send; a smaller paste is inserted verbatim, indistinguishable from typing
     /// it. The loop only calls this in the conversation view (the Ctrl+O overlay
     /// has no composer, like typing there). See `docs/paste.md`.
     ///
     /// [`pasted`]: App::pasted
-    /// [`take_input`]: App::take_input
     pub fn on_paste(&mut self, pasted: &str) {
         // An open Ctrl+R search owns *every* key ([`on_key`] routes them all to
         // on_key_search) — a bracketed paste is input too, so it extends the

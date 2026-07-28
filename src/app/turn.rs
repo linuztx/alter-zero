@@ -4,9 +4,10 @@
 
 use super::*;
 
-/// The whimsical working verbs, one chosen per turn (by [`App::turn_count`]) for
+/// The whimsical working verbs, one chosen per turn (by `App::turn_count`) for
 /// the live status line. Cycled deterministically so the demo varies yet stays
-/// testable — no RNG (mirrors how [`dummy_response`] picks a reply).
+/// testable — no RNG (mirrors how [`dummy_response`](crate::stream::dummy_response)
+/// picks a reply).
 pub const WORKING_VERBS: &[&str] = &[
     "Working",
     "Generating",
@@ -342,7 +343,8 @@ impl App {
     }
 
     /// Clear the live status and **build** (but do not record) the turn's
-    /// `"{done verb} for {n}s"` summary. Split out of [`end_turn`] so the
+    /// `"{done verb} for {n}s"` summary. Split out of [`end_turn`](App::end_turn) so
+    /// the
     /// boundary can settle a background completion that was still pending at
     /// turn end **between** clearing the status and recording the summary —
     /// landing that notice above the `Done for Ns` summary in both history
@@ -377,7 +379,8 @@ impl App {
         })
     }
 
-    /// Record a summary built by [`take_turn_summary`] into history (so it
+    /// Record a summary built by [`take_turn_summary`](App::take_turn_summary) into
+    /// history (so it
     /// survives a resize and lists in the transcript).
     pub fn record_turn_summary(&mut self, summary: TurnSummary) {
         self.history.push(HistoryItem::Summary(summary));
@@ -439,7 +442,7 @@ impl App {
     ///   running tool) and nothing is queued behind this turn: the submission is
     ///   **undone** rather than interrupted. The turn's just-submitted user
     ///   message(s) are pulled back into the composer
-    ///   ([`take_trailing_user_messages`] + [`recall_input`]) and dropped from
+    ///   (`take_trailing_user_messages` + `recall_input`) and dropped from
     ///   history, the status clears, and **no** `Conversation interrupted`
     ///   notice is recorded — there is nothing to keep, so we roll back to the
     ///   pre-submit state (the user's "move it back to the textarea" case). A
@@ -455,8 +458,6 @@ impl App {
     ///   (like [`App::fail_stream`], the notice — or the shell cell — is the
     ///   turn's terminal state).
     ///
-    /// [`take_trailing_user_messages`]: App::take_trailing_user_messages
-    /// [`recall_input`]: App::recall_input
     pub fn interrupt_turn(&mut self) -> Option<InterruptedTurn> {
         if !self.is_streaming() && !self.turn_active() {
             return None;

@@ -27,7 +27,7 @@ pub fn queued_rows(app: &App, width: u16) -> u16 {
 
 /// The styled lines for the queued follow-up messages: each rendered like a sent
 /// user message ([`message_lines`] — the `❯ ` bullet, dark background, wrapped to
-/// `width` minus the [`QUEUED_INDENT`] every row is inset by), concatenated —
+/// `width` minus the `QUEUED_INDENT` every row is inset by), concatenated —
 /// every queued message shows (no display cap). A **blank row divides each
 /// turn-batch** from the next, so Tab-opened follow-ups read as separate turns
 /// from the first queue (`docs/queue.md`). Empty when the queue is empty.
@@ -112,7 +112,7 @@ pub fn footer_rows(app: &App, band_rows: u16) -> u16 {
 }
 
 /// The primed-backtrack footer line (codex's `esc_backtrack_hint`): the
-/// [`FOOTER_INDENT`], the `esc` key bold-cyan like the search-line hint keys,
+/// `FOOTER_INDENT`, the `esc` key bold-cyan like the search-line hint keys,
 /// then the dim ` again to edit previous message` label. Takes the footer
 /// slot while [`crate::app::Backtrack::primed`]. See `docs/backtrack.md`.
 #[must_use]
@@ -129,7 +129,7 @@ pub fn backtrack_hint_line() -> Line<'static> {
     ])
 }
 
-/// The footer's single line: the [`FOOTER_INDENT`], then `{model} · {cwd}` —
+/// The footer's single line: the `FOOTER_INDENT`, then `{model} · {cwd}` —
 /// every segment dim (codex's no-theme-colours status line, the separator dim
 /// like its ` · `) — cut with a trailing `…` when it overflows `width`
 /// (codex's `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable
@@ -213,16 +213,16 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
 
 /// How many rows the transient toast reserves above the box: 0 when none is
 /// live, else 1 (a single row, truncated to the width). Added to the strip by
-/// [`live_height`]/[`live_layout`], between the queued messages and the box's
+/// [`live_height`]/`live_layout`, between the queued messages and the box's
 /// top rule. See `docs/toast.md`.
 #[must_use]
 pub fn toast_rows(app: &App) -> u16 {
     u16::from(app.toast().is_some())
 }
 
-/// The transient toast's single line: the [`TOAST_INDENT`] then the message,
-/// dim for an info toast ([`TOAST_COLOR`]) or red for a failure
-/// ([`TOAST_ERROR_COLOR`]), cut with a trailing `…` when it overflows `width`
+/// The transient toast's single line: the `TOAST_INDENT` then the message,
+/// dim for an info toast (`TOAST_COLOR`) or red for a failure
+/// (`TOAST_ERROR_COLOR`), cut with a trailing `…` when it overflows `width`
 /// (like the footer). Empty when no toast is live. See `docs/toast.md`.
 #[must_use]
 pub fn toast_line(app: &App, width: u16) -> Line<'static> {
@@ -245,8 +245,8 @@ pub fn toast_line(app: &App, width: u16) -> Line<'static> {
     Line::from(vec![Span::raw(TOAST_INDENT), Span::styled(text, style)])
 }
 
-/// The `!` shell-mode footer line: the [`FOOTER_INDENT`] then `Shell mode` in
-/// red ([`SHELL_MODE_COLOR`]) — codex's `shell_mode_footer_line`. Shown in the
+/// The `!` shell-mode footer line: the `FOOTER_INDENT` then `Shell mode` in
+/// red (`SHELL_MODE_COLOR`) — codex's `shell_mode_footer_line`. Shown in the
 /// footer slot whenever the composer holds a `!command` (see
 /// `docs/shell-command.md`).
 #[must_use]
@@ -259,7 +259,7 @@ pub fn shell_mode_line() -> Line<'static> {
 
 /// The Ctrl+R search's footer-slot line — codex's
 /// `history_search_footer_line`: the dim `reverse-i-search: ` prompt behind
-/// the [`FOOTER_INDENT`], the query cyan, then per state the accept/cancel
+/// the `FOOTER_INDENT`, the query cyan, then per state the accept/cancel
 /// hints (keys cyan **bold**, labels dim) or the red no-match notice. The
 /// hardware cursor sits at the end of the query ([`cursor_position`]).
 #[must_use]

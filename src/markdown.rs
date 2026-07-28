@@ -10,10 +10,10 @@
 //! **Prefix-stable by construction.** A line's block membership is a pure
 //! function of the lines *before* it (a left-to-right scan of fence state, no
 //! lookahead). Appending text never reclassifies an earlier line — which is what
-//! lets [`crate::ui::stable_commit`] keep flushing completed lines to scrollback
-//! as a reply streams (CLAUDE.md invariant 2). An **unterminated** fence still
-//! renders as code, identically to a closed one, so nothing changes when the
-//! closing fence finally arrives.
+//! lets [`crate::ui::StreamRender::commit`] keep flushing completed lines to
+//! scrollback as a reply streams (CLAUDE.md invariant 2). An **unterminated**
+//! fence still renders as code, identically to a closed one, so nothing changes
+//! when the closing fence finally arrives.
 
 /// One structural block of an assistant reply.
 #[derive(Debug, Clone, PartialEq, Eq)]
