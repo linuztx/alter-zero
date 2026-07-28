@@ -1,0 +1,494 @@
+//! Key dispatch: [`App::on_key`](super::App::on_key) routes by
+//! [`View`](super::View), and the conversation view's handler owns the
+//! composer's key map.
+
+use super::*;
+
+impl App {
+    pub fn on_key(&mut self, key: KeyEvent) -> Action {
+        // An open Ctrl+R search owns *every* key (codex consumes them all in
+        // handle_history_search_key) — including the global Ctrl+C/Ctrl+O
+        // below, which it redefines: Ctrl+C cancels the search instead of
+        // clearing the draft or quitting, and Ctrl+O cancels before the
+        // overlay opens so no search state leaks into it.
+        if self.view == View::Conversation && self.history_search.is_some() {
+            return self.on_key_search(key);
+        }
+        // The inline `/model` picker likewise owns every key while it's open —
+        // including the global Ctrl+C/Ctrl+O below, which it redefines (Ctrl+C
+        // closes the picker instead of clearing the draft or quitting). It only
+        // opens from the conversation view and blocks a turn from starting, so
+        // this is the whole of its key handling. See `docs/llm.md`.
+        if self.view == View::Conversation && self.model_picker.is_some() {
+            return self.on_key_model_picker(key);
+        }
+        // The inline `/login` onboarding flow owns every key while open too, the
+        // same way the `/model` picker does. See `docs/llm.md`.
+        if self.view == View::Conversation && self.key_onboarding.is_some() {
+            return self.on_key_key_onboarding(key);
+        }
+        // The ↓ background manager band owns every key while open, the same
+        // way the pickers do. See `docs/background.md`.
+        if self.view == View::Conversation && self.background_view.is_some() {
+            return self.on_key_background(key);
+        }
+        // A lit footer shell indicator (↓ pressed, the band not open yet)
+        // claims a handful of keys first — Enter opens the band, Esc/↑/Ctrl+C
+        // dismiss the highlight — and lets every other key through after
+        // clearing it. It sits above the Ctrl+C global so a lit indicator
+        // absorbs that press instead of quitting. See `docs/background.md`.
+        if self.view == View::Conversation
+            && self.background_focus
+            && let Some(action) = self.on_key_background_focus(key)
+        {
+            return action;
+        }
+        // The ↓ roster selection (the `❯` on the footer's agent list) claims
+        // its navigation keys the same way — ↑/↓/Enter/x/Esc — and lets every
+        // other key through after clearing itself. See `docs/agent-tool.md`.
+        if self.view == View::Conversation
+            && self.agent_selection.is_some()
+            && let Some(action) = self.on_key_agent_selection(key)
+        {
+            return action;
+        }
+        // Ctrl+C: in the conversation, a first press with text in the input
+        // clears the draft instead of quitting (codex's composer-clear step —
+        // see docs/design.md); otherwise it quits, from either screen. The
+        // overlay never shows the input box, so there is nothing to clear there.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
+            // The /resume picker closes on Ctrl+C — codex's from-a-session
+            // picker "exit" leaves the picker, never the app (only its
+            // startup picker quits). See docs/resume.md.
+            if self.view == View::ResumePicker {
+                self.close_resume_picker();
+                return Action::CloseResumePicker;
+            }
+            if self.view == View::Conversation && !self.input.is_empty() {
+                // Record the cleared draft so ↑ can bring it back (codex's
+                // clear_for_ctrl_c does the same). A shell-mode draft re-gains
+                // its `!` so the recall re-enters the mode. Recorded
+                // *ephemerally*: a cleared, abandoned draft recalls this session
+                // but is not persisted (codex keeps cleared drafts in
+                // local_history only — docs/history-persistence.md).
+                let mut text = self.take_input();
+                if self.shell_mode {
+                    self.shell_mode = false;
+                    text = format!("!{text}");
+                }
+                self.input_history.record_ephemeral(&text);
+                self.command_menu = None; // an emptied input can't be a /token
+                self.file_search = None; // …nor an @token, so close the picker too
+                return Action::None;
+            }
+            return Action::Quit;
+        }
+        // Ctrl+O toggles the full-screen tool-output view from either screen —
+        // even mid-stream, so the conversation keeps updating underneath it.
+        // (Not from the /resume picker or the Ctrl+D view: the full-screen
+        // views share the alternate screen, so they never stack.) In an agent
+        // session view it shows the *viewed agent's* transcript
+        // (docs/agent-tool.md).
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('o') {
+            if matches!(self.view, View::ResumePicker | View::ContextDebug) {
+                return Action::None;
+            }
+            self.toggle_tool_view();
+            return Action::ToggleToolView;
+        }
+        // Ctrl+D toggles the full-screen context-debug view — the raw LLM
+        // context window — with the same rules as Ctrl+O: works mid-stream,
+        // inert under the other full-screen views. In an agent session view
+        // it derives the *viewed agent's* context. See docs/context.md.
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('d') {
+            if matches!(self.view, View::ResumePicker | View::ToolOutput) {
+                return Action::None;
+            }
+            self.toggle_context_debug();
+            return Action::ToggleContextDebug;
+        }
+        match self.view {
+            View::Conversation => self.on_key_conversation(key),
+            View::ToolOutput => self.on_key_tool_view(key),
+            View::ResumePicker => self.on_key_resume_picker(key),
+            View::ContextDebug => self.on_key_context_debug(key),
+        }
+    }
+
+    /// Keys while the inline conversation is showing.
+    ///
+    /// When the slash-command palette is open it intercepts the navigation/select
+    /// keys (↑/↓ move, Tab/Enter run, Esc dismisses); typing still edits the input
+    /// (which filters the palette). With no palette open every key behaves as it
+    /// always has.
+    fn on_key_conversation(&mut self, key: KeyEvent) -> Action {
+        // Any non-Esc key disarms a primed backtrack — codex resets its
+        // priming on any other keypress, no timeout (docs/backtrack.md). The
+        // key still does its normal job below.
+        if self.backtrack.primed && key.code != KeyCode::Esc {
+            self.backtrack.primed = false;
+        }
+        // The `?` shortcuts band (docs/shortcuts.md): `?` from an *empty*
+        // composer toggles it (SHIFT allowed — terminals differ in reporting
+        // Shift+/; with a draft `?` falls through and types). Any other key
+        // closes an open band first and then acts normally (codex's
+        // reset-after-activity) — except Esc, which only dismisses, since our
+        // idle Esc would otherwise quit (the palette's Esc rule).
+        let shortcuts_toggle = key.code == KeyCode::Char('?')
+            && !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+            && self.input.is_empty()
+            // In shell mode `?` is a shell character (e.g. a glob), not the band.
+            && !self.shell_mode;
+        if shortcuts_toggle {
+            self.shortcuts_open = !self.shortcuts_open;
+            return Action::None;
+        }
+        if self.shortcuts_open {
+            self.shortcuts_open = false;
+            if key.code == KeyCode::Esc {
+                return Action::None;
+            }
+        }
+        let menu_open = self.command_menu.is_some();
+        // The `@` file picker (docs/file-search.md): when its band is open it
+        // intercepts the same navigation/select keys as the palette (they are
+        // mutually exclusive — a bare `/token` has no whitespace, so an `@` in
+        // it isn't at a token boundary).
+        let file_open = self.file_search.is_some();
+        match key.code {
+            // Esc dismisses the palette when it's open (codex's "popup wins"
+            // rule — even mid-turn); else it interrupts an in-flight turn
+            // (codex-style, see docs/interrupt.md); else it quits as before.
+            KeyCode::Esc if menu_open => {
+                self.command_menu = None;
+                Action::None
+            }
+            // Esc likewise dismisses the file picker (sticky within the token —
+            // see refresh_file_search), before the interrupt/quit fallbacks.
+            KeyCode::Esc if file_open => {
+                self.file_search = None;
+                Action::None
+            }
+            // Esc on an empty shell-mode composer exits the mode (codex's
+            // bash-mode escape) — before the interrupt/quit fallbacks, like the
+            // palette dismissal. With a draft, Esc keeps its normal meaning.
+            KeyCode::Esc if self.shell_mode && self.input.is_empty() => {
+                self.shell_mode = false;
+                Action::None
+            }
+            // Esc in an agent session view returns to the main conversation
+            // (with an empty composer — a typed draft keeps Esc a no-op, the
+            // codex composer rule). Before the interrupt arm: leaving the
+            // view never interrupts the main turn. See docs/agent-tool.md.
+            KeyCode::Esc if self.agent_view.is_some() && self.input.is_empty() => {
+                self.close_agent_view();
+                Action::LeaveAgentView
+            }
+            KeyCode::Esc if self.turn_active() && self.agent_view.is_none() => Action::Interrupt,
+            // Esc-Esc backtrack (docs/backtrack.md): a primed second Esc opens
+            // the transcript overlay previewing the newest user message; the
+            // first Esc primes when the composer is empty and a previous user
+            // message exists. Only with *nothing* to backtrack to does idle
+            // Esc keep its historical meaning — quit.
+            KeyCode::Esc if self.backtrack.primed && self.input.is_empty() => {
+                self.open_backtrack_preview();
+                Action::ToggleToolView
+            }
+            KeyCode::Esc if self.input.is_empty() && self.has_backtrack_target() => {
+                self.backtrack.primed = true;
+                Action::None
+            }
+            // Esc with a typed draft is a no-op, like codex (its composer
+            // only acts on Esc when empty): never a quit that throws typed
+            // work away — Ctrl+C is the composer-clear, Ctrl+C/`/quit` the
+            // exits. Quit below needs an *empty* composer with no target.
+            KeyCode::Esc if !self.input.is_empty() => Action::None,
+            KeyCode::Esc => Action::Quit,
+            // Palette navigation / selection (only while it's open).
+            KeyCode::Up if menu_open => {
+                self.move_command_selection(-1);
+                Action::None
+            }
+            KeyCode::Down if menu_open => {
+                self.move_command_selection(1);
+                Action::None
+            }
+            // File-picker navigation (only while it's open and has matches).
+            KeyCode::Up if file_open => {
+                self.move_file_selection(-1);
+                Action::None
+            }
+            KeyCode::Down if file_open => {
+                self.move_file_selection(1);
+                Action::None
+            }
+            // Shift+Tab cycles the thinking mode (docs/reasoning.md). Legacy
+            // terminals report it as BackTab (`ESC[Z`), the kitty protocol can
+            // report Tab+SHIFT — both bind (the Shift+Enter pattern), and the
+            // Tab+SHIFT arm sits before every plain-Tab arm so a shifted Tab
+            // never queues or completes. Like /model, cycling never touches a
+            // running turn — the mode rides the *next* request.
+            KeyCode::BackTab => self.cycle_thinking(),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.cycle_thinking(),
+            KeyCode::Tab if menu_open => self.run_selected_command(),
+            // Tab/Enter accept the highlighted file when the picker is open and
+            // a match is selected (codex's accept) — replacing the `@token` with
+            // the path. With no matches they fall through to the normal Tab/Enter
+            // (queue / submit), so an unmatched `@query` is still sendable text.
+            KeyCode::Tab if file_open && self.highlighted_file().is_some() => {
+                self.accept_file_selection()
+            }
+            // Tab while a turn streams queues the draft as a *new* follow-up
+            // batch — a separate turn that runs after the batches already queued,
+            // instead of merging into the current one like Enter (codex's
+            // Tab-to-queue). Empty/idle Tab falls through to a no-op.
+            KeyCode::Tab if self.is_streaming() && !self.input.text().trim().is_empty() => {
+                self.queue_draft(/*new_batch*/ true);
+                Action::None
+            }
+            KeyCode::Enter if menu_open => {
+                if self.highlighted_command().is_some() {
+                    self.run_selected_command()
+                } else {
+                    // A query that matches nothing isn't a message — swallow Enter
+                    // rather than submitting the literal "/typo".
+                    Action::None
+                }
+            }
+            KeyCode::Enter if file_open && self.highlighted_file().is_some() => {
+                self.accept_file_selection()
+            }
+            // Alt+Enter and Shift+Enter insert a newline at the cursor so the input
+            // box grows on demand; a plain Enter submits. Shift+Enter only reaches
+            // us when keyboard enhancement is on (pushed by `term::init`); Ctrl+J
+            // below is the universal fallback. See docs/shift-enter.md.
+            KeyCode::Enter
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+            {
+                self.input.insert_newline();
+                Action::None
+            }
+            KeyCode::Enter => {
+                if self.shell_mode && self.input.text().trim().is_empty() {
+                    // A bare `!` runs nothing — post the help notice and stay
+                    // in the mode (codex's empty-bang help).
+                    return Action::Notice(SHELL_EMPTY_NOTICE.to_string());
+                }
+                if self.input.text().trim().is_empty() {
+                    Action::None
+                } else if let Some(id) = self.agent_view.clone() {
+                    // Inside an agent session view the draft goes to *that
+                    // agent* — recorded into its transcript here, delivered
+                    // by the loop (queued into a running loop, or a chat
+                    // continuation when idle). See docs/agent-tool.md.
+                    let text = self.take_input();
+                    self.input_history.record(&text);
+                    self.agent_chat(&id, &text);
+                    Action::AgentChat { id, text }
+                } else if self.is_streaming() {
+                    // A turn is in flight — queue the draft for a later turn
+                    // instead of dropping it (codex's queued_user_messages).
+                    // Enter appends to the batch being accumulated, so
+                    // consecutive Enters batch into one next turn; Tab instead
+                    // opens a new follow-up batch (see the Tab arm above).
+                    self.queue_draft(/*new_batch*/ false);
+                    Action::None
+                } else if self.shell_mode {
+                    // Shell mode: run the draft locally (docs/shell-command.md).
+                    // Record the full `!command` for ↑ recall (codex records the
+                    // whole text — recall re-absorbs the bang).
+                    let raw = self.take_input();
+                    self.shell_mode = false;
+                    self.file_search = None;
+                    self.input_history.record(&format!("!{raw}"));
+                    Action::RunShell(raw.trim().to_string())
+                } else {
+                    // Stage any Ctrl+V-attached images for the boundary to
+                    // deliver alongside the text, *before* take_input clears the
+                    // composer (the placeholder text stays; the pairs travel
+                    // the side channel — docs/image-paste.md).
+                    self.submission_images = std::mem::take(&mut self.images);
+                    let text = self.take_input();
+                    self.file_search = None;
+                    self.input_history.record(&text);
+                    Action::Submit(text)
+                }
+            }
+            // Ctrl+J is the *universal* newline key: in raw mode every terminal
+            // delivers it as Char('j')+CONTROL (no keyboard enhancement needed), so
+            // it inserts a newline like Alt/Shift+Enter even where the terminal
+            // can't report a modified Enter (codex binds Ctrl+J the same way; see
+            // docs/shift-enter.md).
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.insert_newline();
+                Action::None
+            }
+            // Ctrl+V (and Ctrl+Alt+V — the WSL-friendly alias codex also binds)
+            // pastes an image from the system clipboard. The decision is pure; the
+            // loop performs the clipboard I/O (`crate::clipboard`) and calls
+            // `attach_image` on success. See docs/image-paste.md.
+            KeyCode::Char(c)
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+                    && c.eq_ignore_ascii_case(&'v') =>
+            {
+                Action::PasteImage
+            }
+            // Editing and cursor movement, dispatched to the textarea. Backspace /
+            // Delete / typing also re-derive the slash-command palette.
+            // Backspace on an empty shell-mode composer deletes the absorbed
+            // `!` — i.e. exits the mode (the natural inverse of typing it).
+            KeyCode::Backspace if self.shell_mode && self.input.is_empty() => {
+                self.shell_mode = false;
+                Action::None
+            }
+            KeyCode::Backspace => {
+                let had_query = command_query(self.input.text()).is_some();
+                let had_token = self.in_at_token();
+                // A Backspace on a large-paste placeholder removes the whole
+                // placeholder atomically (docs/paste.md); otherwise one grapheme.
+                if !self.delete_placeholder(/*backward*/ true) {
+                    self.input.delete_backward();
+                }
+                self.refresh_command_menu(had_query);
+                self.sync_shell_mode();
+                self.refresh_file_search(had_token);
+                Action::None
+            }
+            KeyCode::Delete => {
+                let had_query = command_query(self.input.text()).is_some();
+                let had_token = self.in_at_token();
+                if !self.delete_placeholder(/*backward*/ false) {
+                    self.input.delete_forward();
+                }
+                self.refresh_command_menu(had_query);
+                self.sync_shell_mode();
+                self.refresh_file_search(had_token);
+                Action::None
+            }
+            KeyCode::Left => {
+                self.input.move_left();
+                Action::None
+            }
+            KeyCode::Right => {
+                self.input.move_right();
+                Action::None
+            }
+            // Alt+Up pulls the *last* queued batch back into an *empty* composer
+            // as one newline-joined draft (its own messages oldest first) to
+            // edit, extend, or drop — codex's edit_queued_message pops the most
+            // recent entry, leaving the earlier batches queued. Guarded on an
+            // empty composer so it never clobbers a draft (the composer is empty
+            // in the normal flow — Enter/Tab emptied it on queue).
+            KeyCode::Up
+                if key.modifiers.contains(KeyModifiers::ALT)
+                    && self.input.is_empty()
+                    && !self.queued.is_empty() =>
+            {
+                match self.drain_last_batch() {
+                    // A text batch returns newline-joined (oldest first), its
+                    // image attachments re-attached so the placeholders in the
+                    // restored draft are backed again (docs/image-paste.md).
+                    Some(QueuedTurn::Messages { texts, images }) => {
+                        self.recall_input(&texts.join("\n"));
+                        self.images = images;
+                    }
+                    // A shell entry re-enters shell mode: recalling `!command`
+                    // re-absorbs the bang (sync_shell_mode), so the composer
+                    // shows the red `! command` prompt again, ready to edit/re-run.
+                    Some(QueuedTurn::Shell(cmd)) => self.recall_input(&format!("!{cmd}")),
+                    None => {}
+                }
+                Action::None
+            }
+            // ↑/↓ first try shell-style history recall — only from an empty
+            // composer or an unedited recall (docs/input-history.md) — then
+            // fall back to cursor movement. The menu-open arms above still
+            // take precedence (codex's "popups win").
+            KeyCode::Up => {
+                if self.should_browse_history()
+                    && let Some(text) = self.input_history.up()
+                {
+                    self.recall_input(&text);
+                    return Action::None;
+                }
+                self.input.move_up();
+                Action::None
+            }
+            KeyCode::Down => {
+                if self.should_browse_history()
+                    && let Some(text) = self.input_history.down()
+                {
+                    self.recall_input(&text);
+                    return Action::None;
+                }
+                // ↓ from an empty composer steps onto the footer's shell
+                // indicator while one is running (`docs/background.md`) — it
+                // lights up and Enter opens the manager. History recall was
+                // tried first, so a mid-recall ↓ still steps the history.
+                if self.background_focusable() {
+                    self.background_focus = true;
+                    return Action::None;
+                }
+                // With no shell to land on, ↓ opens the agent roster's
+                // selection directly when agents are listed — the `❯` lands
+                // on the `● main` row first (`docs/agent-tool.md`).
+                if self.agent_selectable() {
+                    self.agent_selection = Some(0);
+                    return Action::None;
+                }
+                self.input.move_down();
+                Action::None
+            }
+            // Ctrl+B moves the running command (a model `bash` call or a `!`
+            // shell turn) to the background — the loop raises the registry
+            // request the runner's poll loop consumes. A no-op when nothing
+            // backgroundable is running. See `docs/background.md`.
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.can_move_to_background() {
+                    Action::MoveToBackground
+                } else {
+                    Action::None
+                }
+            }
+            KeyCode::Home => {
+                self.input.move_home();
+                Action::None
+            }
+            KeyCode::End => {
+                self.input.move_end();
+                Action::None
+            }
+            // Ctrl+R opens the reverse history search (docs/history-search.md);
+            // once open, every key routes to on_key_search instead, where
+            // Ctrl+R steps to older matches.
+            KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.begin_history_search();
+                Action::None
+            }
+            // Plain (and Shift-modified) characters insert at the cursor; ALT/CONTROL
+            // combos are not text, so they are ignored here. An insert that
+            // leaves the text starting with `!` is absorbed into shell mode
+            // (sync_shell_mode — codex's bash-mode sync after every edit).
+            KeyCode::Char(c)
+                if !key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let had_query = command_query(self.input.text()).is_some();
+                let had_token = self.in_at_token();
+                self.input.insert_char(c);
+                self.refresh_command_menu(had_query);
+                self.sync_shell_mode();
+                self.refresh_file_search(had_token);
+                Action::None
+            }
+            _ => Action::None,
+        }
+    }
+}
