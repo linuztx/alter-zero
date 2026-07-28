@@ -78,7 +78,7 @@ pub fn parse_history(contents: &str) -> Vec<String>;
 Unknown extra fields parse fine (serde ignores them by default), so a file a
 future build wrote still loads.
 
-### Pure state (`InputHistory`, in `app.rs`)
+### Pure state (`InputHistory`, in `app/input_history.rs`)
 
 One new field and two new methods; **`record`, `up`, `down`, `search` keep their
 existing behaviour**:

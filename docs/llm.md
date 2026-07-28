@@ -261,7 +261,7 @@ the bottom rule — the shape of the user's mock):
 
 ### Styling
 
-All picker styling is centralized in `ui.rs`'s `MODEL_*` consts: the cyan `❯`
+All picker styling is centralized in `ui/theme.rs`'s `MODEL_*` consts: the cyan `❯`
 prompt and selection accent (reusing `MENU_SELECTED_COLOR`), the dim provider tag /
 counter / model-name, the `→` marker, the `✓` active mark, the cyan
 `MODEL_LOGIN_HINT`, and `MODEL_MENU_MAX_ROWS`. Retheme there.
@@ -333,7 +333,7 @@ in place; unlike it, it is a **two-step** flow.
 
 The `/login` flow reuses the `/model` picker's colours (indent, cyan `❯` prompt /
 selection, dim meta, green ✓, `→` marker) plus the `LOGIN_*` strings and geometry
-consts in `ui.rs` — including the periwinkle `LOGIN_KEY_PROMPT_COLOR` (`#96a0d5`)
+consts in `ui/theme.rs` — including the periwinkle `LOGIN_KEY_PROMPT_COLOR` (`#96a0d5`)
 that names the provider on the key step. Retheme there.
 
 ## Known limitations (v1)

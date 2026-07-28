@@ -106,7 +106,7 @@ smoke-covered, per this module's "no I/O unit tests" rule.
 (flush the current streaming segment first so the notice slots *after* it, then
 `record_system_message` + `insert_before`); the existing `Action::Notice` arm is
 refactored onto it. The two fixed strings live as `pub const COPY_OK_NOTICE` /
-`COPY_EMPTY_NOTICE` in `app.rs` (beside `INTERRUPT_NOTICE`), codex-verbatim.
+`COPY_EMPTY_NOTICE` in `app/commands.rs`, codex-verbatim.
 
 ## Known divergences from codex
 

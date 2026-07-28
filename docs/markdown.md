@@ -136,8 +136,8 @@ language renders plain (the theme's default foreground).
 Because `AssistantRenderer` is the one core, scrollback, the streaming preview, the
 resize repaint, and the Ctrl+O transcript all agree automatically (invariants 2–4).
 
-Styling is centralized as `CODE_*` / `HEADING_COLOR` consts at the top of
-`ui.rs`. Code hard-breaks at `content_width` rather than letting the terminal
+Styling is centralized as `CODE_*` / `HEADING_COLOR` consts in
+`ui/theme.rs`. Code hard-breaks at `content_width` rather than letting the terminal
 wrap it — a code line longer than the terminal would otherwise be wrapped by the
 emulator at the wrong column and lose its alignment under the bullet.
 

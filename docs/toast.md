@@ -67,7 +67,7 @@ Because a mid-turn model switch or key save must not split the streaming reply
 in scrollback, their confirmations are **toasts**, not committed notices — the
 same reason `/copy` is.
 
-## The pure state (`app.rs`)
+## The pure state (`app/mod.rs`)
 
 Time is impure and stays out of the library, so `App` holds only *what* the
 toast says, never *when* it dies:
@@ -122,7 +122,7 @@ This mirrors the `if app.turn_active() { schedule_frame_in(STATUS_FRAME_INTERVAL
 re-arm right beside it. No turn need be active for a toast to expire — the
 scheduled frame fires on its own.
 
-## The layout (`ui.rs`)
+## The layout (`ui/footer.rs`)
 
 The toast is a single row (truncated with `…` at the width, like the footer)
 pinned **at the bottom of the strip, directly above the box's top rule** — below
@@ -134,6 +134,6 @@ through `live_height` / `live_layout` / `input_box` /
 box, showing/clearing it grows/shrinks the region from the top exactly as the
 streaming strip and the queue already do (`ui::repin` re-anchors, no box jump).
 
-Styling is centralized in `ui.rs`: `TOAST_INDENT` (the two-space inset shared
+Styling is centralized in `ui/theme.rs`: `TOAST_INDENT` (the two-space inset shared
 with the footer/queue), `TOAST_COLOR` (dim, `TOOL_DIM_COLOR`) for info, and
 `TOAST_ERROR_COLOR` (`ERROR_COLOR`) for failures.

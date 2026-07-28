@@ -79,9 +79,9 @@ without a real terminal.
 
 | File         | Responsibility                                                                 | Tested |
 |--------------|--------------------------------------------------------------------------------|--------|
-| `src/app.rs` | Conversation state + pure update logic: `on_key` → `Action`, streaming, tool calls, the slash palette, input history + Ctrl+R search, the mid-turn queue, `!` shell mode, message `history`. | ✅ |
+| `src/app/`  | Conversation state + pure update logic, one module per area (`docs/module-layout.md`): `on_key` → `Action`, streaming, tool calls, the slash palette, input history + Ctrl+R search, the mid-turn queue, `!` shell mode, message `history`. | ✅ |
 | `src/textarea.rs` | The editable multi-line input: a movable grapheme-aware cursor, wrapped ↑/↓, insert/delete anywhere. | ✅ |
-| `src/ui.rs`  | Pure rendering: display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. | ✅ |
+| `src/ui/`    | Pure rendering, one module per area (`docs/module-layout.md`): display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. All styling lives in `ui/theme.rs`. | ✅ |
 | `src/stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi`, a `CancelToken`, and the `StreamEvent` protocol. | ✅ (pure parts, token & dummy) |
 | `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), the `config.json` model store (`/model`), and the `ReplySource` bridge. | ✅ (pure cores) |
 | `src/file_search.rs` | The pure core of the `@` file picker: token detection, fuzzy matching, ranking. | ✅ |
@@ -128,7 +128,7 @@ captured panes.
 
 ## Theming
 
-All styling lives as constants at the top of `src/ui.rs` — bullets, prompt,
+All styling lives as constants in `src/ui/theme.rs` — bullets, prompt,
 colours, border, and the tool / status-line / palette / footer chrome — change
 them in one place to retheme.
 

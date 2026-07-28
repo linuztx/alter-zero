@@ -426,7 +426,7 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
   transcript shows everything.
 
 All the styling is centralized `TOOL_DIFF_*`/`FILE_PEEK_LINES` consts in
-`ui.rs`. Output that **doesn't** parse as the numbered format — a rollout
+`ui/theme.rs`. Output that **doesn't** parse as the numbered format — a rollout
 recorded before this format existed, an error body, or a `read` placeholder
 like `(file is empty)` / offset-past-end — falls back to the legacy rendering
 (the `write`/`edit` first-char `+`/`-` colouring, or a `read`'s plain dim

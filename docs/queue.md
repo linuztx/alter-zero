@@ -76,7 +76,7 @@ joined with newlines as a single prompt (`start_turn`, a Submit being a batch of
 one); a `Shell` entry runs through `run_shell` exactly like an idle `!command`
 (`begin_shell` + `spawn_shell_command`), committing a codex-style exec cell.
 
-### State (`app.rs`)
+### State (`app/queue.rs`)
 
 - `App.queued: VecDeque<QueuedTurn>` — the typed entries awaiting their turns
   (`Messages { texts, images }` text batches and `Shell(String)` commands). We
@@ -145,7 +145,7 @@ always starts a fresh turn the instant the current one ends — in whichever vie
 the invariant holds: **the queue is non-empty only while a turn is active** (no
 draw ever shows a queued band at idle).
 
-### Display (`ui.rs`)
+### Display (`ui/footer.rs`)
 
 Queued entries render **above the box, in the streaming strip** — stacked just
 under the status line's gap, between it and the box's top rule — each **inset two

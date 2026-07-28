@@ -6,7 +6,8 @@
 //! - [`agents`]      — the model's `Agent` tool: the subagent roster state and
 //!   the registry behind launching, stopping, and chatting with subagents
 //!   (pure state + boundary registry; see `docs/agent-tool.md`).
-//! - [`app`]         — conversation state and the pure key/stream update logic.
+//! - [`app`]         — conversation state and the pure key/stream update logic,
+//!   split one module per area (see `docs/module-layout.md`).
 //! - [`background`]  — background shell processes: the registry behind
 //!   `run_in_background`, Ctrl+B, and the ↓ manager (boundary; see
 //!   `docs/background.md`).
@@ -47,7 +48,8 @@
 //! - [`tokenizer`]   — accurate token counting for the status tally (tiktoken
 //!   `o200k_base`, ranks embedded; the count seam behind `app::count_tokens`).
 //! - [`ui`]          — pure rendering helpers (word-wrap, message lines, live
-//!   region).
+//!   region), split one module per area with every styling constant in
+//!   `ui::theme` (see `docs/module-layout.md`).
 
 pub mod agents;
 pub mod app;

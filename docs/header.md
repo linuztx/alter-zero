@@ -120,7 +120,7 @@ counters — it only ever adds logo/metadata rows. The header text is likewise
 kept clear of the strings other phases key on (`for commands`,
 `dummy_model_name ·`, `Happy`, `⎿`, `Done for`, `esc to interrupt`).
 
-## API (all pure, in `ui.rs`)
+## API (all pure, in `ui/header.rs`)
 
 - `header_lines(app: &App, width: u16) -> Vec<Line<'static>>` — the whole banner
   as scrollback rows (logo + blank + metadata), sized to `width`. No trailing
@@ -139,15 +139,15 @@ kept clear of the strings other phases key on (`for commands`,
 
 ## Tests
 
-- `ui.rs` unit tests (`header_*`): the full form shows the block logo + version +
+- `ui/tests/header.rs` unit tests (`header_*`): the full form shows the block logo + version +
   cwd + tagline + hint; the narrow forms fall back to the compact wordmark then
   the text badge and never exceed the width; the logo carries the cyan → blue
   gradient; a session-less `App` still renders logo + version (no cwd row); the
   banner contains none of the smoke-reserved strings.
-- `ui.rs` unit tests (`banner_tail_*`): the banner + spacer restore over a short
+- `ui/tests/header.rs` unit tests (`banner_tail_*`): the banner + spacer restore over a short
   tail; the recap drops the banner once the window is full and keeps only its
   bottom rows when it half-fits; `usize::MAX` never clips.
-- `ui.rs` unit tests (`transcript_*`): the transcript opens with the banner + a
+- `ui/tests/header.rs` unit tests (`transcript_*`): the transcript opens with the banner + a
   spacer before the history walk; an empty transcript still shows the
   placeholder under it; `render_tool_view` paints the version badge in the
   overlay body.

@@ -107,7 +107,7 @@ behaviour, kept for fidelity.
   (returns the text and resets the editor). The slash-command palette still keys
   off `command_query(self.input.text())` exactly as before — when the palette is
   open it intercepts ↑/↓/Tab/Enter/Esc, otherwise those drive the cursor.
-- **`ui.rs`** renders from the textarea: `render_live`/`cursor_position` ask it
+- **`ui/live.rs` + `ui/layout.rs`** render from the textarea: `render_live`/`cursor_position` ask it
   for `display_rows(width)` and `cursor_row_col(width)`, and the box now scrolls
   to keep the **cursor** visible (codex's `effective_scroll`), not just the tail.
   `live_height` sizes the box from `input.row_count(width)`.

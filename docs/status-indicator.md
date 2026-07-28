@@ -223,7 +223,7 @@ The verb (`Working…`) renders one **bold span per char**, colours from
   1 s ticker — the seconds now also advance from these frames).
 
 The `SHIMMER_*` constants (base/highlight colours, sweep, padding, band width,
-max blend) live with the other styling consts at the top of `ui.rs`.
+max blend) live with the other styling consts in `ui/theme.rs`.
 
 ## The comet spinner
 

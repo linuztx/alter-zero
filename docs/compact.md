@@ -179,12 +179,12 @@ fully streamed.
 - `src/context.rs` — the prompt consts, `approx_token_count`, the budget walk
   (`compacted_user_texts`), the bridge, and the marker-aware
   `context_messages`; all pure and unit-tested.
-- `src/app.rs` — `HistoryItem::Compaction(Compaction)`, `begin_compact` /
+- `src/app/` — `HistoryItem::Compaction(Compaction)` (`types.rs`), `begin_compact` /
   `finish_compact` / the `push_chunk` diversion, the `/compact` command +
   busy/empty guards, `Action::Compact`.
 - `src/session.rs` — the `compaction` rollout record (round-trips; old builds
   skip the unknown line, the established forward-compat contract).
-- `src/ui.rs` — `compaction_lines` (inline cell) and the transcript arm
+- `src/ui/message.rs` — `compaction_lines` (inline cell) and the transcript arm
   (cell + dim summary body); a `conversation_lines` arm so resizes repaint it.
 - `src/main.rs` — the `Action::Compact` arm (boundary), the compact branches
   in the `Chunk`/`StreamDone` handling, `build_compact_backend` /

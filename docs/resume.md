@@ -110,7 +110,7 @@ overlay machinery.
   recorded — codex's persistence policy.
 - Serialization is `serde`/`serde_json` on **module-local record types**
   (`SessionMeta`, a tagged line enum) mapped to/from the app types, so the
-  on-disk format is decoupled from `app.rs` and the app types stay
+  on-disk format is decoupled from `app/` and the app types stay
   serde-free. Parsing skips malformed/unknown lines (forward compatibility);
   `parse_session` yields the meta + items and `None` for a file with no valid
   meta line.
@@ -152,7 +152,7 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   exclude the recorder's active file, and hand `Vec<SessionSummary>` (ages
   computed here, frozen at open) to the pure core.
 
-### State + keys (app.rs)
+### State + keys (app/resume.rs)
 
 - `View::ResumePicker` — a third view. `ResumePicker { sessions, selected,
   query, cwd, filter, sort, focus }` state on `App` (`Some` while open); the
@@ -220,7 +220,7 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   can write the alt screen while the picker is up (invariant 4 holds — and no
   turn is running anyway).
 
-### Rendering (ui.rs)
+### Rendering (ui/resume_view.rs)
 
 `render_resume_picker` on the alternate screen, chrome matching the Ctrl+O
 transcript pager, styling in `RESUME_*` consts:

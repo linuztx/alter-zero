@@ -103,7 +103,7 @@ snapshots the draft, and opens the session (an open `?` shortcuts band already
 closes first — the existing any-key rule). With the search open, Ctrl+R steps
 older instead.
 
-### Rendering (`ui.rs`)
+### Rendering (`ui/footer.rs`)
 
 The search line takes the **session footer's slot** — codex renders it in its
 footer hint line: `footer_rows` returns 1 whenever a search is active (even

@@ -142,7 +142,7 @@ re-attach.
   `esc to interrupt` while a turn runs (as before), `esc esc to edit
   previous` when idle with a target, `esc to quit` when idle without one.
 
-All the new styling lives in the `ui.rs` consts block (`BACKTRACK_*`,
+All the new styling lives in the `ui/theme.rs` consts block (`BACKTRACK_*`,
 `TOOL_VIEW_HINT_BACKTRACK`), per the conventions.
 
 ## Edge cases

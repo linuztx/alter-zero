@@ -243,4 +243,4 @@ and backtrack behave exactly as they did before this feature — transcript only
   cwd == `$HOME` (even under an explicit `ALTER_ZERO_CHECKPOINTS=1`) the store
   is never created, while a project dir under that same home still snapshots.
 
-[`HistoryItem`]: ../src/app.rs
+[`HistoryItem`]: ../src/app/types.rs

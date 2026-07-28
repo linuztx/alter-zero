@@ -32,7 +32,17 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
 `session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
-codex-style **async (tokio) `select!`** loop. The pure, unit-tested logic lives in
+codex-style **async (tokio) `select!`** loop. The two big ones are **directories
+of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
+`composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `background`,
+`agent`, with the `App` struct itself in `mod.rs` so every submodule and the test
+tree keeps its private-field access) and `src/ui/` (`theme`, `wrap`, `layout`,
+`assistant`, `table`, `message`, `tool`, `status`, `agent`, `menu`, `footer`,
+`header`, `live`, `transcript`, `context_view`, `resume_view`, `model_view`,
+`login_view`, `background_view`, `stream_render`). Each `mod.rs` glob re-exports
+its submodules, so every `crate::app::X` / `ui::y(…)` path is what it always was;
+see `docs/module-layout.md` for the map. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
 **and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read, the
@@ -581,7 +591,7 @@ runs **under the Ctrl+O overlay too** (codex's queue dispatches at turn end
 regardless of its Ctrl+T view, the transcript following the new turn live) —
 dispatching only records history and *queues* the user bubbles, which the
 return's reflow drops + regenerates, so invariant 4 holds.
-`App` (`app.rs`) is pure state +
+`App` (`src/app/`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,
 `TurnSummary`, `HistoryItem`, `QueuedTurn`, `Toast`, `ToastKind`, `FileSearch`, `ResumePicker`, `View` live there too
@@ -700,7 +710,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 
 ## Conventions
 
-- **All styling is centralized** as `const`s at the top of `ui.rs` — bullets,
+- **All styling is centralized** as `const`s in `ui/theme.rs` — bullets,
   prompt, colours (including the red error bullet and the cyan system bullet),
   border, the tool-call styling (`TOOL_*` — dim-waiting/blue/green/red status
   colours (`TOOL_WAITING_COLOR` for a batch's not-yet-run `⎿ Waiting…` calls,
@@ -717,7 +727,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   the verb's white shimmer wave is the `SHIMMER_*` consts — base/highlight
   colours, sweep period, padding, band half-width, max blend — a port of codex's
   `shimmer_spans`; the verbs themselves are `WORKING_VERBS`/`DONE_VERBS` in
-  `app.rs`, picked per-turn), the
+  `app/turn.rs`, picked per-turn), the
   slash-command palette (`MENU_*` — the `MENU_DESC_COL`
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), the `@` file
@@ -860,7 +870,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   the executor's file/process I/O is boundary code. Tools are on by default,
   off via `ALTER_ZERO_TOOLS`. A `read`/`edit`/`write` cell renders its output as
   a **numbered file change** (codex's `diff_render` look in the `⎿` gutter —
-  `ui.rs`'s `file_cell_lines`): the executor emits `Created {path} ({N} lines)`
+  `ui/tool.rs`'s `file_cell_lines`): the executor emits `Created {path} ({N} lines)`
   over the numbered contents, `Updated {path} (+A -D)` over numbered diff
   **hunks** (3 context lines, `⋮` between distant hunks — the pure
   `tools::render_numbered_content`/`render_numbered_diff`), or — for `read` —

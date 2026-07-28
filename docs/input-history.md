@@ -52,7 +52,7 @@ job of moving the cursor inside a multi-line draft.
 
 ### Pure state (`app::InputHistory`, a field on `App`)
 
-A direct port of the synchronous core, in `app.rs` next to the other state
+A direct port of the synchronous core, in `app/input_history.rs` beside the other state
 types:
 
 ```rust
@@ -104,7 +104,7 @@ codex's slash popup).
   `clear_for_ctrl_c`), so ↑ undoes the clear. This closes the gap noted in
   `docs/design.md` when the clear step was first ported.
 
-Nothing changes in `main.rs`, `ui.rs`, or the protocol: recall is pure `App`
+Nothing changes in `main.rs`, `ui/`, or the protocol: recall is pure `App`
 state and the box already renders whatever the textarea holds.
 
 ## Testing

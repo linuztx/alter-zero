@@ -136,7 +136,7 @@ above.
   disambiguation), `expand_pastes` (substitution, multiple pastes, a deleted
   placeholder, no-op when empty), and `placeholder_to_delete` (the Backspace vs
   Delete cursor rules, including a base/`#2` prefix pair).
-- `app.rs` unit tests cover `on_paste` (large → placeholder + recorded pair,
+- `app/tests/composer.rs` unit tests cover `on_paste` (large → placeholder + recorded pair,
   small → inline, `\r\n` normalisation, insertion at the cursor), the round-trip
   (a large paste then Enter yields `Action::Submit(full_text)`), and atomic
   deletion (one Backspace/Delete clears the whole placeholder and drops its

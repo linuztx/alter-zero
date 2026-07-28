@@ -72,7 +72,7 @@ The final `ToolOutcome.output` is unchanged — codex's `Exit code: N` frame ove
 the (capped) body — so the model still gets the framed result and `end_tool`
 overwrites the display `output` with it.
 
-## Rendering (`ui.rs`)
+## Rendering (`ui/tool.rs`)
 
 A **command-style** tool (a non-shell backend tool that is not a `read`/`write`/
 `edit` file cell — in practice `bash`) now renders its output as a multi-line

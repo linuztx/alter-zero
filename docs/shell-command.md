@@ -214,7 +214,7 @@ Reading goes through `String::from_utf8_lossy`, so non-UTF-8 output no longer
 errors (`read_to_string` did), and a cap that splits a multi-byte char yields a
 single `U+FFFD`.
 
-### Footer — the `Shell mode` line (`ui.rs`)
+### Footer — the `Shell mode` line (`ui/footer.rs`)
 
 Like the Ctrl+R search line, the shell-mode hint takes the **footer slot**:
 `footer_rows` returns 1 whenever `app.shell_mode` is on (even with no session

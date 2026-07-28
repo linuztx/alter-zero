@@ -102,7 +102,7 @@ final SSE frame: {"usage": {prompt_tokens, completion_tokens,
         ↓                                                     spellings normalized)
 stream_round → StreamEvent::Usage(TokenUsage)                (backend.rs — one per round)
         ↓
-App::apply_usage: accumulate + SNAP status.tokens            (app.rs, pure)
+App::apply_usage: accumulate + SNAP status.tokens            (app/turn.rs, pure)
         ↓
 TurnSummary { tokens, cached } → "Done for 12s · 8.2k tokens (8k cached)"
                                                              (ui::summary_lines; persisted

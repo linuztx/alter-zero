@@ -77,7 +77,7 @@ ctrl+v for image paste    ctrl+d for llm context
 shift+tab to cycle thinking
 ```
 
-(The `SHORTCUTS` const in `ui.rs` is the single source of truth — entries laid
+(The `SHORTCUTS` const in `ui/theme.rs` is the single source of truth — entries laid
 out two per row in declaration order, so the band is
 `SHORTCUTS.len().div_ceil(2)` rows tall; currently 13 entries → 7 rows.)
 

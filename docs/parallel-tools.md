@@ -67,7 +67,7 @@ The existing `ToolStart{name,args}` / `ToolEnd{output,ok,truncated}` pair is
 unchanged. A backend that never batches (the `!` shell) simply never sends
 `ToolBatch` — a lone `ToolStart` still works.
 
-### App state (`app.rs`)
+### App state (`app/tools.rs`)
 
 `current_tool: Option<ToolCall>` becomes a **queue**: `tool_queue:
 VecDeque<ToolCall>`. The front is the running (or about-to-run) call; the rest
@@ -96,7 +96,7 @@ It now emits one `ToolBatch` (built from `calls`) **before** the existing
 `for call in calls { ToolStart; execute; ToolEnd }` loop. Nothing else in the loop
 changes; execution stays sequential and cancellation still checks between calls.
 
-### Rendering (`ui.rs`)
+### Rendering (`ui/tool.rs`, `ui/live.rs`)
 
 The streaming strip's **preview** slot renders the *whole* live queue (each call's
 collapsed cell, blank-line-separated), not just one call. `preview_rows` /

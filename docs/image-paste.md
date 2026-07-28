@@ -201,7 +201,7 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
 - `paste.rs`: `next_image_placeholder` (base `#1`, `#k+1` disambiguation, gaps
   after deletion) and the generalised `placeholder_to_delete` over a
   `(String, PathBuf)` list.
-- `app.rs`: `attach_image` (inserts `[Image #N]`, records the pair, at the
+- `app/composer.rs`: `attach_image` (inserts `[Image #N]`, records the pair, at the
   cursor), the round-trip (attach then Enter → `Action::Submit("[Image #1] …")`
   *and* `take_submission_images()` yields the path), atomic deletion (one
   Backspace clears the whole `[Image #N]` and drops the path), and Ctrl+V →

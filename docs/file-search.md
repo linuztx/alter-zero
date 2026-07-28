@@ -92,7 +92,7 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stal
     (score 0).
   - `rank_files(query, &[String], limit) -> Vec<FileMatch>` — filter+sort
     (score desc, then shorter path, then lexicographic), capped at `limit`.
-- `app.rs`:
+- `app/file_picker.rs`:
   - `FileSearch { selected, query, matches: Vec<FileMatch>, waiting }` on
     `App::file_search: Option<…>` (`None` = closed), parallel to `command_menu`.
   - `refresh_file_search(had_token)` — open on the None→Some token transition,
@@ -117,7 +117,7 @@ Typing / Backspace / Delete edit the draft and then call `refresh_file_search`
 are mutually exclusive by construction (a bare `/token` has no whitespace, so any
 `@` in it isn't at a boundary).
 
-### Rendering (`ui.rs`)
+### Rendering (`ui/menu.rs`)
 
 A third band sharing the palette's slot below the box:
 `band = menu_rows + shortcuts_rows + file_menu_rows` (at most one is non-zero).

@@ -50,7 +50,7 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
 (`docs/history-search.md`) and the `!` shell mode's red `Shell mode` hint
 (`docs/shell-command.md`).
 
-### State (`app.rs`, `stream.rs`)
+### State (`app/`, `stream.rs`)
 
 - `SessionInfo { model: String, cwd: String }` and `App.session:
   Option<SessionInfo>` — display-ready strings, injected **once at the I/O
@@ -63,7 +63,7 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   real backend returns its real model id). `DummyAi` reports
   `"dummy_model_name"`.
 
-### Geometry & display (`ui.rs`)
+### Geometry & display (`ui/footer.rs`, `ui/layout.rs`)
 
 - `footer_rows(app, band_rows) -> u16` — `1` whenever a Ctrl+R search is open
   or `!` shell mode is on (the search line / `Shell mode` hint own the slot,
