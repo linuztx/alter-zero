@@ -583,7 +583,7 @@ impl App {
     /// [`history`]: App::history
     /// [`interrupt_turn`]: App::interrupt_turn
     /// [`recall_input`]: App::recall_input
-    pub(super) fn take_trailing_user_messages(&mut self) -> (String, Vec<(String, PathBuf)>) {
+    fn take_trailing_user_messages(&mut self) -> (String, Vec<(String, PathBuf)>) {
         let mut messages = Vec::new();
         while self.history.len() > self.undo_floor
             && matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User)

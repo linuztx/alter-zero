@@ -44,7 +44,7 @@ fn resume_row(
 }
 
 /// The toolbar's tab label for a filter mode.
-pub(super) const fn resume_filter_label(filter: ResumeFilter) -> &'static str {
+const fn resume_filter_label(filter: ResumeFilter) -> &'static str {
     match filter {
         ResumeFilter::Cwd => "Cwd",
         ResumeFilter::All => "All",
@@ -52,7 +52,7 @@ pub(super) const fn resume_filter_label(filter: ResumeFilter) -> &'static str {
 }
 
 /// The toolbar's tab label for a sort key.
-pub(super) const fn resume_sort_label(sort: ResumeSort) -> &'static str {
+const fn resume_sort_label(sort: ResumeSort) -> &'static str {
     match sort {
         ResumeSort::Updated => "Updated",
         ResumeSort::Created => "Created",

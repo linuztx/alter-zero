@@ -130,7 +130,7 @@ impl App {
     /// usage frames — and the only measure right after a history mutation
     /// (compaction, `/clear`, backtrack, `/resume`) made the last frame stale.
     #[must_use]
-    pub(super) fn estimate_context_tokens(&self) -> u64 {
+    fn estimate_context_tokens(&self) -> u64 {
         let mut total = self.system_prompt.as_deref().map_or(0, count_tokens);
         for message in
             crate::context::context_messages_with(self.user_instructions.as_deref(), &self.history)

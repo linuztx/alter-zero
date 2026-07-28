@@ -216,7 +216,7 @@ pub(super) struct FrozenKey {
 }
 
 /// One rendered history item's shape inside the frozen prefix.
-pub(super) struct RenderedItem {
+struct RenderedItem {
     /// Rows this item occupies (message + stamp + spacer / expanded tool cell).
     pub(super) rows: usize,
     /// `Some(message-row count)` for a user message — the span the backtrack
@@ -229,7 +229,7 @@ pub(super) struct RenderedItem {
 /// generation catching every non-append mutation; a same-length replace after
 /// an interrupt-undo pop would fool lengths alone).
 #[derive(PartialEq, Eq)]
-pub(super) struct TranscriptSig {
+struct TranscriptSig {
     generation: u64,
     pub(super) width: u16,
     history_len: usize,

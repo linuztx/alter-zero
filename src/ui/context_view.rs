@@ -8,7 +8,7 @@ use super::wrap::{cols, wrap_verbatim};
 use super::*;
 
 /// The role-tag colour of one context entry (see the `CONTEXT_*` consts).
-pub(super) const fn context_role_color(role: crate::context::ContextRole) -> Color {
+const fn context_role_color(role: crate::context::ContextRole) -> Color {
     match role {
         crate::context::ContextRole::User => CONTEXT_USER_COLOR,
         crate::context::ContextRole::Assistant => CONTEXT_ASSISTANT_COLOR,

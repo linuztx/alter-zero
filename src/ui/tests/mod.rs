@@ -275,7 +275,7 @@ pub(super) fn header_text(app: &App, width: u16) -> String {
 
 /// Mixed-width stress text: prose, wide CJK, emoji, and an unbreakable
 /// over-long token, so the sweep hits every wrap branch.
-pub(super) const SWEEP_TEXT: &str = "The quick brown fox 世界你好 mixes wide CJK with \
+const SWEEP_TEXT: &str = "The quick brown fox 世界你好 mixes wide CJK with \
     emoji 🎉🎊 and averyveryverylongunbreakabletokenthatmusthardbreak too.";
 
 /// One busy `App` per live-region feature, so the sweep exercises every
@@ -510,7 +510,7 @@ pub(super) fn three_models() -> Vec<ModelEntry> {
 
 // --- The inline `/login` onboarding flow (docs/llm.md). ---
 
-pub(super) fn login_choices() -> Vec<ProviderChoice> {
+fn login_choices() -> Vec<ProviderChoice> {
     vec![
         ProviderChoice {
             id: "openrouter".into(),

@@ -10,7 +10,7 @@ use super::*;
 /// The bullet colour for a tool's lifecycle: dim waiting, blue running, green
 /// ok, red fail — and green for a call that resolved by moving to the
 /// background (the launch succeeded; see `docs/background.md`).
-pub(super) const fn tool_status_color(status: ToolStatus) -> Color {
+const fn tool_status_color(status: ToolStatus) -> Color {
     match status {
         ToolStatus::Waiting => TOOL_WAITING_COLOR,
         ToolStatus::Running => TOOL_RUNNING_COLOR,
@@ -147,7 +147,7 @@ fn diff_line_color(line: &str) -> Option<Color> {
 /// One parsed row of a numbered `Created …`/`Updated …` body — the
 /// `llm::tools` gutter format (`{n:>W} {text}` / `{n:>W} {sign}{text}`) a
 /// `write`/`edit` cell restyles ([`file_cell_lines`]).
-pub(super) enum FileRow {
+enum FileRow {
     /// A numbered content line: the raw right-aligned number `gutter`, the
     /// diff `sign` (`None` in a `Created` body, which has no sign column),
     /// and the content `text`.
