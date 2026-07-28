@@ -2,6 +2,7 @@
 //! [`Compaction`](super::Compaction) marker it appends, and the context gauge
 //! that decides when to run it. See `docs/compact.md`.
 
+use super::types::IMAGE_INPUT_TOKENS;
 use super::*;
 
 /// The fixed live-status verb for a `/compact` turn (the [`SHELL_VERB`]

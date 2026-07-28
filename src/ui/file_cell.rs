@@ -3,7 +3,9 @@
 //! added/removed rows on background tints. See `docs/tools.md`.
 
 use super::assistant::code_content_rows;
+use super::theme::*;
 use super::tool::{more_hint_line, tool_output_lines};
+use super::wrap::{cols, truncate_cols};
 use super::*;
 
 /// A `⎿` gutter row with an explicit content colour (`None` → dim): the

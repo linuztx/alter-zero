@@ -2,6 +2,7 @@
 //! bracketed-paste placeholders, Ctrl+V image attachments, and the `!` shell
 //! mode. See `docs/paste.md`, `docs/image-paste.md`, `docs/shell-command.md`.
 
+use super::types::IMAGE_INPUT_TOKENS;
 use super::*;
 
 /// The notice shown when Enter is pressed on a bare `!` (no command) — codex's

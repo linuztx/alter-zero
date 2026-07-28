@@ -3,6 +3,7 @@
 
 use super::*;
 use crate::ui::layout::live_layout;
+use crate::ui::layout::strip_rows;
 use crate::ui::theme::{
     ERROR_COLOR, FOOTER_COLOR, FOOTER_FOCUS_BG, FOOTER_FOCUS_FG, FOOTER_INDENT, SEARCH_PROMPT,
     SEARCH_QUERY_COLOR, SHELL_MODE_COLOR, TOAST_COLOR, TOAST_ERROR_COLOR,

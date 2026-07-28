@@ -38,23 +38,32 @@ mod turn;
 mod types;
 mod views;
 
-pub use self::action::*;
-pub use self::agent::*;
-pub use self::background::*;
-pub use self::backtrack::*;
-pub use self::commands::*;
-pub use self::compact::*;
-pub use self::composer::*;
-pub use self::file_picker::*;
-pub use self::input_history::*;
-pub use self::login::*;
-pub use self::model_picker::*;
-pub use self::queue::*;
-pub use self::resume::*;
-pub use self::status::*;
-pub use self::tools::*;
-pub use self::turn::*;
-pub use self::types::*;
+pub use self::action::Action;
+pub use self::agent::{
+    AGENT_STOPPED_OUTPUT, AgentGroup, AgentGroupEntry, AgentGroupLive, AgentNotice,
+};
+pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, BgCompletion};
+pub use self::backtrack::{Backtrack, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE};
+pub use self::commands::{
+    COMMANDS, COMPACT_BUSY_NOTICE, COMPACT_EMPTY_NOTICE, COPY_EMPTY_NOTICE, COPY_OK_NOTICE,
+    CommandEffect, CommandMenu, HELP_BUSY_NOTICE, INIT_BUSY_NOTICE, INIT_PROMPT,
+    RESUME_BUSY_NOTICE, SlashCommand, command_query, matching_commands,
+};
+pub use self::compact::{COMPACT_VERB, Compaction};
+pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
+pub use self::file_picker::FileSearch;
+pub use self::input_history::{HistorySearch, InputHistory, SearchState};
+pub use self::login::{KeyOnboarding, KeyStep, ProviderChoice};
+pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
+pub use self::queue::QueuedTurn;
+pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
+pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
+pub use self::tools::{ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, ToolCall, ToolStatus};
+pub use self::turn::{
+    DONE_VERBS, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, StreamError, WORKING_VERBS,
+};
+pub(crate) use self::types::count_tokens;
+pub use self::types::{HistoryItem, Message, Role, SessionInfo, Toast, ToastKind, View};
 
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished

@@ -55,25 +55,46 @@ mod tool;
 mod transcript;
 mod wrap;
 
-pub use self::agent::*;
-pub use self::background_view::*;
-pub use self::context_view::*;
-pub use self::conversation::*;
-pub use self::footer::*;
-pub use self::header::*;
-pub use self::layout::*;
-pub use self::live::*;
-pub use self::login_view::*;
-pub use self::menu::*;
-pub use self::message::*;
-pub use self::model_view::*;
-pub use self::resume_view::*;
-pub use self::status::*;
-pub use self::stream_render::*;
-pub use self::theme::*;
-pub use self::tool::*;
-pub use self::transcript::*;
-pub use self::wrap::*;
+pub use self::agent::{
+    agent_group_lines, agent_hint_line, agent_list_lines, agent_list_rows, agent_notice_lines,
+    agent_view_status, live_agent_group_lines,
+};
+pub use self::background_view::{background_view_lines, render_background_view};
+pub use self::context_view::{context_lines, context_view_max_scroll, render_context_view};
+pub use self::conversation::{
+    banner_tail, conversation_lines, repaint_budget, repaint_lines, repaint_tail,
+};
+pub use self::footer::{
+    backtrack_hint_line, display_cwd, footer_line, footer_rows, queued_lines, queued_rows,
+    search_line, shell_mode_line, toast_line, toast_rows,
+};
+pub use self::header::header_lines;
+pub use self::layout::{
+    Repin, background_view_height, cursor_position, key_onboarding_height, live_height,
+    model_picker_height, preview_rows, repin, restore_cursor_row, stream_preview_max_rows,
+    strip_has_status,
+};
+pub use self::live::{render_live, render_live_with_preview};
+pub use self::login_view::render_key_onboarding;
+pub use self::menu::{
+    band_rows, centered_window, command_menu_lines, file_menu_lines, file_menu_rows, menu_rows,
+    menu_window, shortcuts_lines, shortcuts_rows,
+};
+pub use self::message::{compaction_lines, message_lines};
+pub use self::model_view::render_model_picker;
+pub use self::resume_view::render_resume_picker;
+pub use self::status::{
+    background_notice_lines, format_elapsed, format_token_count, status_line, summary_lines,
+};
+pub use self::stream_render::StreamRender;
+pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
+pub use self::tool::tool_lines;
+pub use self::transcript::{
+    TranscriptCache, agent_transcript_lines, backtrack_scroll, backtrack_scroll_for,
+    render_tool_view, tool_view_body_rows, tool_view_max_scroll, tool_view_max_scroll_for,
+    transcript_lines, transcript_selection,
+};
+pub use self::wrap::wrap_text;
 
 #[cfg(test)]
 mod tests;

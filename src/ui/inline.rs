@@ -2,6 +2,8 @@
 //! and emphasis turned into styled [`Span`]s, and the word-wrap that keeps those
 //! spans intact across a row boundary. See `docs/markdown.md`.
 
+use super::theme::*;
+use super::wrap::cols;
 use super::*;
 
 /// Flatten a parsed inline tree ([`markdown::parse_inline`]) into styled text

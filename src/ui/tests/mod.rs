@@ -6,7 +6,9 @@
 
 // Re-exported (not just imported) so the area modules below reach the whole
 // of `crate::ui` — private items included — through their own `use super::*`.
-pub(super) use super::*;
+use super::*;
+pub(super) use crate::ui::theme::SPINNER_SPAN_COUNT;
+use crate::ui::wrap::cols;
 
 use crate::app::{FileSearch, Message, ModelFetchError, RetryInfo};
 
