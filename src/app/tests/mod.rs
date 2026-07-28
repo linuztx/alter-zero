@@ -12,7 +12,6 @@ pub(super) use super::*;
 
 use crate::llm::ReasoningEffort;
 
-mod action;
 mod agent;
 mod background;
 mod backtrack;
