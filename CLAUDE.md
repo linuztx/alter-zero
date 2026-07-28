@@ -44,12 +44,14 @@ codex-style **async (tokio) `select!`** loop. The two big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
 `compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `background`,
-`agent`, with the `App` struct itself in `mod.rs` so every submodule and the test
-tree keeps its private-field access) and `src/ui/` (`theme`, `wrap`, `layout`,
-`assistant`, `table`, `message`, `tool`, `status`, `agent`, `menu`, `footer`,
-`header`, `live`, `transcript`, `context_view`, `resume_view`, `model_view`,
-`login_view`, `background_view`, `stream_render`). Each `mod.rs` glob re-exports
-its submodules, so every `crate::app::X` / `ui::y(…)` path is what it always was;
+`agent`, `status`, with the `App` struct itself in `mod.rs` so every submodule and
+the test tree keeps its private-field access) and `src/ui/` (`theme`, `wrap`,
+`layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
+`file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `live`, `transcript`,
+`context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
+`stream_render`). Each `mod.rs` re-exports its areas **by name** — never a glob,
+so the public surface is auditable and `tests/api_surface.rs` can lock it — and
+every `crate::app::X` / `ui::y(…)` path is what it always was;
 see `docs/module-layout.md` for the map. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
 is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
@@ -878,7 +880,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   the executor's file/process I/O is boundary code. Tools are on by default,
   off via `ALTER_ZERO_TOOLS`. A `read`/`edit`/`write` cell renders its output as
   a **numbered file change** (codex's `diff_render` look in the `⎿` gutter —
-  `ui/tool.rs`'s `file_cell_lines`): the executor emits `Created {path} ({N} lines)`
+  `ui/file_cell.rs`'s `file_cell_lines`): the executor emits `Created {path} ({N} lines)`
   over the numbered contents, `Updated {path} (+A -D)` over numbered diff
   **hunks** (3 context lines, `⋮` between distant hunks — the pure
   `tools::render_numbered_content`/`render_numbered_diff`), or — for `read` —
