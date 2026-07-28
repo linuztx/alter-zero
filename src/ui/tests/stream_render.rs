@@ -582,3 +582,16 @@ fn repaint_tail_repaints_committed_rows_of_a_still_open_line() {
         .collect();
     assert_eq!(tail, committed);
 }
+
+/// Whether `prefix` ends inside an OPEN GFM table — its last non-blank source
+/// line is still a table row/delimiter/header, so no non-table line has
+/// closed the block. Used by the differential test to skip the preview
+/// equality check exactly where the streaming preview intentionally shows the
+/// last content row rather than the batch's flushed bottom border.
+fn ends_in_open_table(prefix: &str) -> bool {
+    prefix
+        .split('\n')
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .is_some_and(markdown::is_table_row)
+}

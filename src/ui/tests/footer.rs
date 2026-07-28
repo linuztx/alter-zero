@@ -692,3 +692,14 @@ fn the_roster_selection_marks_rows_and_swaps_the_footer_hint() {
     assert!(texts[2].starts_with("❯ ◯ "), "{}", texts[2]);
     assert_eq!(plain(&agent_hint_line(&app)), "  Enter to view · x to stop");
 }
+
+// --- the `!` shell mode + its exec cell (docs/shell-command.md) ---
+
+/// An app in shell mode with `command` typed (the bang absorbed into the
+/// mode flag, codex-style — the textarea holds just the command).
+fn shelling(command: &str) -> App {
+    let mut app = App::new();
+    app.shell_mode = true;
+    app.input = TextArea::from_text(command);
+    app
+}

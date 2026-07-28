@@ -580,3 +580,14 @@ fn shortcuts_esc_entry_is_three_way_context_sensitive() {
     assert!(target.contains("esc esc to edit previous"), "{target:?}");
     assert!(!target.contains("esc to quit"), "{target:?}");
 }
+
+// --- the `@` file picker (docs/file-search.md) ---
+
+/// A bare file match for the picker render tests.
+fn fmatch(path: &str) -> FileMatch {
+    FileMatch {
+        path: path.to_string(),
+        score: 0,
+        indices: Vec::new(),
+    }
+}

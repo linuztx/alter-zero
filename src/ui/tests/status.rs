@@ -578,3 +578,22 @@ fn summary_lines_append_the_still_running_shell_count() {
     summary.shells = 0;
     assert_eq!(plain(&summary_lines(&summary, 80)[0]), "Done for 22s");
 }
+
+/// The RGB triple of a span's foreground (panics on a non-RGB colour).
+fn span_rgb(span: &Span) -> (u8, u8, u8) {
+    match span.style.fg {
+        Some(Color::Rgb(r, g, b)) => (r, g, b),
+        other => panic!("expected an RGB fg, got {other:?}"),
+    }
+}
+
+/// The spinner contributes the first [`SPINNER_SPAN_COUNT`] spans of the
+/// status line; the shimmering verb's per-char spans start right after.
+const VERB_START: usize = SPINNER_SPAN_COUNT;
+
+/// A live status carrying a retry indicator (verb fixed to "Working").
+fn status_retrying(attempt: u32, max: u32, tokens: usize) -> TurnStatus {
+    let mut s = status(tokens, TokenArrow::Up, 5, None);
+    s.retry = Some(RetryInfo { attempt, max });
+    s
+}

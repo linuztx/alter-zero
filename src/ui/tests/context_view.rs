@@ -176,3 +176,14 @@ fn render_context_view_windows_by_the_debug_scroll() {
         row(&buf, 1, 50)
     );
 }
+
+// ===== Ctrl+D context-debug view (docs/context.md) =====
+
+/// A conversation with a system prompt, a user turn, a raw tool record,
+/// and a summary — everything the context window derives from.
+fn context_fixture() -> App {
+    let mut app = transcript_fixture();
+    app.set_system_prompt(Some("be nice".to_string()));
+    app.end_turn(2);
+    app
+}

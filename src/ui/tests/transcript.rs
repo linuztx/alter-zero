@@ -763,3 +763,15 @@ fn the_agent_view_overlays_show_the_agents_transcript_and_context() {
         "the agent's tool call replays: {ctx:?}"
     );
 }
+
+/// The transcript rows *after* the banner chrome (banner + spacer),
+/// trimmed — for tests asserting on the conversation walk itself (the
+/// banner atop it has its own tests).
+fn transcript_body(app: &App, width: u16) -> Vec<String> {
+    let chrome = header_lines(app, width).len() + 1;
+    transcript_lines(app, width)
+        .iter()
+        .skip(chrome)
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}

@@ -203,3 +203,12 @@ fn model_picker_shows_a_login_hint_when_no_provider_is_configured() {
     assert!(row(&buf, 7, 60).trim().is_empty(), "no counter");
     assert!(row(&buf, 9, 60).trim().is_empty(), "no model name");
 }
+
+fn login_app_key() -> App {
+    let mut app = login_app_provider();
+    // Advance to the masked key step for the highlighted provider (index 0).
+    let onboarding = app.key_onboarding.as_mut().unwrap();
+    onboarding.step = KeyStep::Key;
+    onboarding.chosen = Some(0);
+    app
+}

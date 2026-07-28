@@ -308,3 +308,25 @@ fn the_agent_view_swaps_the_strip_to_the_agents_stream() {
         "the roster marks the viewed agent: {all}"
     );
 }
+
+// ===== The Agent tool's cells + roster (docs/agent-tool.md) =====
+
+fn agent_entry(
+    id: &str,
+    desc: &str,
+    status: crate::agents::AgentStatus,
+) -> crate::app::AgentGroupEntry {
+    crate::app::AgentGroupEntry {
+        id: id.to_string(),
+        description: desc.to_string(),
+        agent_type: "general-purpose".to_string(),
+        prompt: format!("What is the weather in {desc}?"),
+        status,
+        tool_uses: 2,
+        tokens: 16_100,
+        secs: 39,
+        result: "It is 19°C.".to_string(),
+        tool_headers: vec!["Bash(curl wttr.in)".to_string()],
+        output: "It is 19°C.".to_string(),
+    }
+}

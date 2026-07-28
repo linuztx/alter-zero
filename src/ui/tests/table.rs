@@ -937,3 +937,30 @@ fn a_backgrounded_shell_cell_is_the_headerless_fixed_row() {
         "⎿  Running in the background (↓ to manage)"
     );
 }
+
+// --- markdown tables (docs/markdown.md) ---
+
+/// The plain text of each content row (span contents concatenated).
+fn rows_text(rows: &[Vec<Span<'static>>]) -> Vec<String> {
+    rows.iter()
+        .map(|r| r.iter().map(|s| s.content.as_ref()).collect::<String>())
+        .collect()
+}
+
+/// The rendered cell widths of a table's grid, read off its `┌──┬──┐` top
+/// border — the widths the columns were actually allocated, minus the two
+/// pad spaces each side of a cell.
+fn grid_column_widths(rows: &[String]) -> Vec<usize> {
+    // The border may carry the message bullet (`● ┌──…`) when the table is
+    // the reply's first block, so slice from the corner itself.
+    let top = rows
+        .iter()
+        .find_map(|r| r.find('┌').map(|i| &r[i..]))
+        .expect("a grid top border");
+    top.trim()
+        .trim_start_matches('┌')
+        .trim_end_matches('┐')
+        .split('┬')
+        .map(|seg| cols(seg).saturating_sub(2))
+        .collect()
+}

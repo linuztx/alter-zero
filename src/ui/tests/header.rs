@@ -190,3 +190,14 @@ fn banner_tail_uncapped_never_clips() {
     assert_eq!(out.len(), 102, "banner + spacer + every tail row");
     assert_eq!(plain(&out[0]), "LOGO");
 }
+
+// --- the startup header banner (docs/header.md) ---
+
+/// The whole banner as one plain string (rows joined by newlines).
+fn header_text(app: &App, width: u16) -> String {
+    header_lines(app, width)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n")
+}

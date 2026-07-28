@@ -199,3 +199,27 @@ fn resume_picker_scrolls_to_keep_the_selection_visible() {
         "the window follows the selection: {body:?}"
     );
 }
+
+// ===== /resume session picker (docs/resume.md) =====
+
+/// An app with the picker open over one session per preview, all aged
+/// `5m ago` (updated) / `2h ago` (created), recorded in the picker's own
+/// cwd, at paths `s0`, `s1`, ….
+fn resume_app(previews: &[&str]) -> App {
+    let mut app = App::new();
+    app.open_resume_picker(
+        previews
+            .iter()
+            .enumerate()
+            .map(|(i, preview)| crate::session::SessionSummary {
+                path: std::path::PathBuf::from(format!("s{i}")),
+                updated_secs: 300,
+                created_secs: 7_200,
+                cwd: "/repo".into(),
+                preview: (*preview).into(),
+            })
+            .collect(),
+        "/repo".into(),
+    );
+    app
+}

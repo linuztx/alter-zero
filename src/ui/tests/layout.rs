@@ -479,3 +479,104 @@ fn the_manager_details_page_shows_fields_and_the_output_box() {
     );
     assert_eq!(background_view_height(&app, 40), Some(texts.len() as u16));
 }
+
+// --- terminal-size sweep ---
+
+/// Mixed-width stress text: prose, wide CJK, emoji, and an unbreakable
+/// over-long token, so the sweep hits every wrap branch.
+const SWEEP_TEXT: &str = "The quick brown fox 世界你好 mixes wide CJK with \
+    emoji 🎉🎊 and averyveryverylongunbreakabletokenthatmusthardbreak too.";
+
+/// One busy `App` per live-region feature, so the sweep exercises every
+/// width-dependent render path on top of a shared finished history
+/// (messages, a tool call, a summary, the session footer).
+fn size_sweep_apps() -> Vec<(&'static str, App)> {
+    let base = || {
+        let mut app = App::new();
+        app.set_session_info("dummy_model_name", "~/repo/some/longish/path");
+        app.record_user_message("first message with CJK 世界 and emoji 🎉");
+        app.record_system_message("help text\nwith a second line");
+        app.begin_stream();
+        app.push_chunk("text before the tool call. ");
+        app.start_tool("read_file", "src/app.rs with a long argument string");
+        app.end_tool(SWEEP_TEXT, true);
+        app.push_chunk(SWEEP_TEXT);
+        app.finish_stream();
+        app.end_turn(3);
+        app
+    };
+    let streaming = || {
+        let mut app = base();
+        app.begin_stream();
+        app.push_chunk(SWEEP_TEXT);
+        app.set_status_times(Duration::from_secs(7), None);
+        app
+    };
+    let tool = {
+        let mut app = base();
+        app.begin_stream();
+        app.push_chunk("before tool ");
+        app.start_tool("write_file", SWEEP_TEXT);
+        app.set_status_times(Duration::from_secs(7), Some(Duration::from_secs(2)));
+        app
+    };
+    let queued = {
+        let mut app = streaming();
+        app.queued.push_back(batch(&["queued one with CJK 世界"]));
+        app
+    };
+    let menu = {
+        let mut app = base();
+        app.input = TextArea::from_text("/");
+        app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
+        app
+    };
+    let shortcuts = {
+        let mut app = base();
+        app.shortcuts_open = true;
+        app
+    };
+    let draft = {
+        let mut app = base();
+        app.input = TextArea::from_text(&format!("{SWEEP_TEXT}\n{SWEEP_TEXT}"));
+        app
+    };
+    let file_picker = {
+        // An open `@` picker with match indices deep enough in a long
+        // mixed-width path that tiny widths truncate past them, so
+        // `file_menu_row`'s truncate + match-span grouping is swept too.
+        let long = "src/some/deeply/nested/世界 with spaces/🎉emoji/averylongfilename.rs";
+        let mut app = base();
+        app.input = TextArea::from_text("@src");
+        app.file_search = Some(FileSearch {
+            selected: 0,
+            query: "src".into(),
+            matches: vec![
+                FileMatch {
+                    path: "src/app.rs".into(),
+                    score: 10,
+                    indices: vec![0, 1, 2],
+                },
+                FileMatch {
+                    path: long.into(),
+                    // Byte offsets of `s`, `r`, `c`, `世`, `界`, `🎉`, `a`,
+                    // and `l` — the last five land past a narrow truncation.
+                    score: 5,
+                    indices: vec![0, 1, 2, 23, 26, 42, 52, 57],
+                },
+            ],
+            waiting: false,
+        });
+        app
+    };
+    vec![
+        ("idle", base()),
+        ("streaming", streaming()),
+        ("tool", tool),
+        ("queued", queued),
+        ("menu", menu),
+        ("shortcuts", shortcuts),
+        ("draft", draft),
+        ("file_picker", file_picker),
+    ]
+}
