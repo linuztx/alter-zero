@@ -229,8 +229,16 @@ impl App {
     /// How long the current running command has executed, or `None` when no
     /// command is running (the boundary hasn't injected one). See
     /// [`set_command_elapsed`](App::set_command_elapsed).
+    ///
+    /// Also `None` while a tool-permission prompt is open: the prompt owns
+    /// every key, so Ctrl+B does nothing there — and the hint this gates would
+    /// be advertising it (`docs/permissions.md`). Nothing is really *running*
+    /// while a call waits on the user, either.
     #[must_use]
     pub fn command_elapsed(&self) -> Option<Duration> {
+        if self.permission.is_some() {
+            return None;
+        }
         self.command_elapsed
     }
     /// Inject the streaming strip preview's row count before a draw (the

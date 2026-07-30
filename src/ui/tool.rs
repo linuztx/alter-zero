@@ -37,7 +37,11 @@ const fn tool_status_color(status: ToolStatus) -> Color {
 /// huge command doesn't flood the cell; `None` (the Ctrl+O transcript) renders
 /// the whole thing. A `!` shell command is a tool with no args (name = the
 /// command), so it stays a bare single `● {command}` line.
-fn tool_header_lines(tool: &ToolCall, width: u16, max_rows: Option<usize>) -> Vec<Line<'static>> {
+pub(super) fn tool_header_lines(
+    tool: &ToolCall,
+    width: u16,
+    max_rows: Option<usize>,
+) -> Vec<Line<'static>> {
     let bullet_style = Style::new()
         .fg(tool_status_color(tool.status))
         .add_modifier(Modifier::BOLD);

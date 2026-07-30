@@ -161,8 +161,9 @@ choice persists to `~/.alter-zero/config.json` so it's the default next run.
 
 Anything the model would **change** asks first (`docs/permissions.md`): a
 `write`, an `edit`, or a `bash` command stops the turn and puts an inline
-approval prompt where the composer was — the action, the file (or the command
-and the model's own description of it), the whole numbered content or diff, and
+approval prompt where the composer was — under the cell that raised it, which
+stays on screen — showing the action, the file (or the command and the model's
+own description of it), the whole numbered content or diff, and
 `1. Yes` / `2. Yes, allow all edits during this session` (for a command,
 `2. Yes, and don't ask again for: {prefix}`) / `3. No`. **Tab** amends — reject
 with instructions typed into the same composer; **Esc** cancels the turn;

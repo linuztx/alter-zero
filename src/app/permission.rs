@@ -108,6 +108,42 @@ impl App {
         }
     }
 
+    /// Release every open/queued request a **standing approval now covers**,
+    /// returning their ids for the loop to approve on the gate.
+    ///
+    /// Parallel agents raise their requests before any of them is answered —
+    /// each thread checked the rules before the first prompt was even shown —
+    /// so option 2 has to reach the ones already waiting. Without this, three
+    /// agents running the same command still ask three times *after* you said
+    /// not to ask again. `covered` is the gate's own
+    /// [`PermissionRules::allows`](crate::permission::PermissionRules::allows),
+    /// passed in because the rules live at the boundary.
+    ///
+    /// The queue is swept first, so closing the open prompt lands on a request
+    /// that genuinely still asks; the composer draft rides through untouched.
+    pub fn drain_covered_permissions(
+        &mut self,
+        covered: &dyn Fn(&PermissionRequest) -> bool,
+    ) -> Vec<String> {
+        let mut ids = Vec::new();
+        let queued = std::mem::take(&mut self.pending_permissions);
+        for request in queued {
+            if covered(&request) {
+                ids.push(request.id);
+            } else {
+                self.pending_permissions.push_back(request);
+            }
+        }
+        while let Some(prompt) = self.permission.as_ref() {
+            if !covered(&prompt.request) {
+                break;
+            }
+            ids.push(prompt.request.id.clone());
+            self.close_permission(); // …which opens the next queued one, if any
+        }
+        ids
+    }
+
     /// Drain the ids of requests dropped without an answer, for the loop to
     /// release on the [`crate::permission::PermissionGate`]. Empty on every
     /// iteration that abandoned nothing.
@@ -116,14 +152,14 @@ impl App {
     }
 
     /// Resolve the open prompt with `decision`: close it (restoring the draft)
-    /// and hand the loop the id to post on the gate.
+    /// and hand the loop the request to post on the gate.
     fn resolve_permission(&mut self, decision: PermissionDecision) -> Action {
         let Some(prompt) = self.permission.as_ref() else {
             return Action::None;
         };
-        let id = prompt.request.id.clone();
+        let request = prompt.request.clone();
         self.close_permission();
-        Action::ResolvePermission { id, decision }
+        Action::ResolvePermission { request, decision }
     }
 
     /// The decision the currently highlighted option row stands for.

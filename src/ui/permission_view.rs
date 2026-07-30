@@ -10,8 +10,10 @@ use crate::permission::{
     PermissionKind, PermissionRequest, command_scope, hints, options, question, title,
 };
 
+use super::agent::live_agent_group_lines;
 use super::file_cell::numbered_body_lines;
 use super::theme::*;
+use super::tool::tool_header_lines;
 use super::wrap::{cols, truncate_cols, wrap_output};
 use super::*;
 
@@ -185,6 +187,35 @@ fn command_rows(
     (lines, hidden)
 }
 
+/// The live cells that sit **above** the prompt: the call being asked about
+/// (and any batch siblings behind it), led by the round's live agent group
+/// when there is one.
+///
+/// A permission prompt must never be a box out of nowhere — it is a question
+/// *about something on screen*, so the strip's context survives the modal even
+/// though the rest of the live region (the status line, the composer, the
+/// bands, the footer) gives way to it. The call under the prompt renders as its
+/// **header alone**: it is not waiting on a queue, it is waiting on you, and the
+/// prompt right below already says so. Siblings queued behind it keep their
+/// ordinary `⎿ Waiting…` row.
+///
+/// Empty when nothing raised the prompt on screen (a resumed session, the
+/// dummy's scripted turn), so the prompt simply opens with its own rule.
+fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let mut lines = live_agent_group_lines(app, width);
+    for (i, tool) in app.tool_queue().iter().enumerate() {
+        if i > 0 || !lines.is_empty() {
+            lines.push(Line::default()); // blank row between cells
+        }
+        if i == 0 {
+            lines.extend(tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS)));
+        } else {
+            lines.extend(tool_lines(tool, width));
+        }
+    }
+    lines
+}
+
 /// The dim `… +N lines` tail appended when the body did not fit the terminal.
 fn more_row(hidden: usize, width: u16) -> Line<'static> {
     text_row(
@@ -222,10 +253,15 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     let request = &prompt.request;
     let file_change = request.kind != PermissionKind::Bash;
 
-    // Everything above the body: the frame, the title, and (for a file change)
-    // the path it targets — a `bash` prompt gaps instead, its command being the
-    // body.
-    let mut out = vec![rule(width), Line::default(), title_row(request, width)];
+    // The live cells that raised this — kept visible above the modal so the
+    // question reads as being *about* something on screen — then the frame, the
+    // title, and (for a file change) the path it targets; a `bash` prompt gaps
+    // instead, its command being the body.
+    let mut out = context_lines(app, width);
+    if !out.is_empty() {
+        out.push(Line::default());
+    }
+    out.extend([rule(width), Line::default(), title_row(request, width)]);
     if file_change {
         out.push(text_row(&request.target, PERMISSION_TARGET_COLOR, width));
     } else {

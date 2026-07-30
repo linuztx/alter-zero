@@ -8,6 +8,8 @@ vocabulary in [`crate::permission`], the modal prompt state in
 cross-thread handshake in [`crate::permission::PermissionGate`].
 
 ```
+● Write(hello.py)
+
 ────────────────────────────────────────────────────────────────────────
 
  Create file
@@ -52,6 +54,23 @@ and the hint row are always visible.
 A request raised by a **subagent** (`docs/agent-tool.md`) says so in the title:
 `Create file · from the general-purpose agent`.
 
+## What stays on screen
+
+A prompt is a question *about something*, so the modal never hides what raised
+it. The live cells above it survive: the call being asked about, any batch
+siblings queued behind it, and — for a subagent's request — the round's whole
+live agent tree (`● Running 3 agents…` and its rows). Everything else in the
+live region gives way: the status line (nothing is running; the turn is blocked
+on you), the composer, the bands, and the footer.
+
+The call under the prompt renders as its **header alone** — `● Write(hello.py)`,
+no `⎿ Waiting…`. It is not waiting on a queue, it is waiting on you, and the
+prompt directly below already says so; the siblings behind it keep their
+ordinary `⎿ Waiting…` rows. For the same reason `App::command_elapsed` reads as
+`None` while a prompt is open, which drops the delayed
+`(ctrl+b to run in background)` hint: the prompt owns every key, so that one
+would be advertising a binding it swallows.
+
 ## The options
 
 Every prompt offers three, selected with ↑/↓ + Enter or by typing `1`/`2`/`3`:
@@ -93,6 +112,14 @@ stores:
   matters — so the scope degrades to `Exact`: the label and the stored key are
   the **whole command**, and only a byte-identical command is ever
   auto-approved.
+
+Approving with option 2 also **sweeps the requests already waiting**. Parallel
+agents raise theirs before any of them is answered — each thread consulted the
+rules before the first prompt was even drawn — so without the sweep three agents
+running the same command would ask three times *after* you said not to. The loop
+remembers the scope, then releases every open/queued request the new rule now
+covers (`App::drain_covered_permissions`, given the gate's own `allows`); one
+that isn't covered still asks.
 
 There is no built-in safe-command list. Every `bash`, `write`, and `edit` asks
 until the session allowlist says otherwise — Claude Code's default posture, and
@@ -166,7 +193,9 @@ integration tests) that builds a backend directly is unaffected.
 - `app/tests` — opening stashes and closing restores the draft, the key map
   (↑/↓/1/2/3/a/Tab/Esc/ctrl+e), the amend field, the queue.
 - `ui/tests` — the rendered prompt: rules, coloured title, the agent suffix, the
-  numbered/diff body, the cyan `❯` on the selection, the hint row, and that
-  `permission_height` equals the painted rows.
+  numbered/diff body, the cyan `❯` on the selection, the hint row, the live
+  cells kept above it (header-only for the pending call, `⎿ Waiting…` for its
+  siblings, the whole tree for a subagent's), and that `permission_height`
+  equals the painted rows — at every height, the context rows included.
 - `smoke.sh` Phase 55 — the whole round trip against the dummy backend in a real
   terminal: draft typed, prompt shown, `2` approving, draft restored.

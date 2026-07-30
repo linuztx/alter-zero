@@ -199,7 +199,13 @@ again for: {prefix} (a)` — / `3. No` over `Esc to cancel · Tab to amend`
 shared `permission::PermissionGate` (the `Arc<Mutex<…>> + Condvar` sibling of
 the background/agent registries, its `wait` polling the turn's `CancelToken` so
 an Esc reaps it); the prompt is modal (routed first in `on_key`, replacing the
-*whole* live region, streaming strip included), **stashes the composer draft**
+composer, the status line, the bands and the footer — but **never the cells that
+raised it**: the call being asked about stays above the frame as its bare
+`● Write(tt.py)` header (it waits on *you*, not on a queue — its batch siblings
+keep their `⎿ Waiting…`), and a subagent's request keeps the whole live
+`● Running 3 agents…` tree, with `App::command_elapsed` reading `None`
+meanwhile so the delayed Ctrl+B hint never advertises a key the modal
+swallows), **stashes the composer draft**
 and hands it straight back on close so a request landing mid-sentence costs
 nothing, Tab swaps the options for that same textarea as an amend field whose
 Enter rejects *with* the typed feedback, Esc cancels (reject + the ordinary
@@ -208,8 +214,11 @@ thread never parks), a rejection still commits the red `⎿ User rejected write
 to hello.py` cell while the *model* reads the longer stop-and-wait text
 (`Approval::Reject`'s two fields), and option 2's session allowlist remembers
 every segment prefix of the command — degrading to the exact command when a
-redirect/substitution means a prefix would hide what matters; gated by
-`ALTER_ZERO_PERMISSIONS`) in `docs/permissions.md`; and the **Ctrl+O
+redirect/substitution means a prefix would hide what matters, and **sweeping the
+requests already queued** that the new rule covers
+(`App::drain_covered_permissions` — parallel agents all ask before any is
+answered, so one `a` answers them all); gated by `ALTER_ZERO_PERMISSIONS`) in
+`docs/permissions.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in

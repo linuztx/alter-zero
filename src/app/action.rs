@@ -176,13 +176,18 @@ pub enum Action {
     /// [`ToolStatus::Backgrounded`]. See `docs/background.md`.
     MoveToBackground,
     /// The user answered the inline tool-permission prompt. The prompt is
-    /// already closed (and the composer draft restored); the loop posts
-    /// `decision` on the [`crate::permission::PermissionGate`] under `id`,
-    /// waking the tool thread blocked on it. Esc is *not* one of these — it
-    /// abandons the request and returns [`Action::Interrupt`] instead. See
+    /// already closed (and the composer draft restored); the loop applies
+    /// `decision` on the [`crate::permission::PermissionGate`] — remembering
+    /// the scope first for an
+    /// [`ApproveAlways`](PermissionDecision::ApproveAlways), so the standing
+    /// rule can then sweep the requests already queued behind this one — and
+    /// posts it under the request's id, waking the tool thread blocked on it.
+    /// The whole `request` rides along because the rules live at the boundary
+    /// and need it, not just the id. Esc is *not* one of these — it abandons
+    /// the request and returns [`Action::Interrupt`] instead. See
     /// `docs/permissions.md`.
     ResolvePermission {
-        id: String,
+        request: PermissionRequest,
         decision: PermissionDecision,
     },
     /// The user asked to quit.

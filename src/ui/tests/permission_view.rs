@@ -7,6 +7,7 @@ use super::super::theme::{
 };
 use super::*;
 use crate::permission::{PermissionKind, PermissionRequest};
+use crate::stream::{AgentSpec, ToolCallSummary};
 
 fn request(kind: PermissionKind, target: &str, body: &str) -> PermissionRequest {
     PermissionRequest {
@@ -326,4 +327,145 @@ fn the_cursor_sits_at_the_end_of_the_amend_field() {
     assert_eq!(y, field, "on the amend row");
     // Display columns, not bytes: one inset + the two-column `❯ ` + the text.
     assert_eq!(x, 3 + "why".len() as u16);
+}
+
+// --- the context above the prompt (docs/permissions.md) ---
+//
+// A request must not hide what raised it: the call being asked about (and any
+// live agent group) stays visible above the modal, so the prompt reads as a
+// question about something on screen rather than a box out of nowhere.
+
+/// An app with one queued `Write` call and a prompt open for it.
+fn pending_write() -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool_batch(&[ToolCallSummary {
+        name: "Write".to_string(),
+        args: "tt.py".to_string(),
+    }]);
+    app.open_permission(request(PermissionKind::Write, "tt.py", WRITE_BODY));
+    app
+}
+
+#[test]
+fn the_call_being_asked_about_stays_visible_above_the_prompt() {
+    let app = pending_write();
+    let lines = rows(&app, 70, 40);
+    assert_eq!(lines[0], "● Write(tt.py)", "the cell leads the region");
+    assert_eq!(lines[1], "", "…then a blank before the frame");
+    assert_eq!(lines[2], "─".repeat(70), "…then the prompt's top rule");
+}
+
+#[test]
+fn the_pending_call_shows_its_header_alone_not_a_waiting_row() {
+    // It is not waiting on a queue — it is waiting on *you*, and the prompt
+    // right below says so.
+    let app = pending_write();
+    let lines = rows(&app, 70, 40);
+    assert!(
+        !lines.iter().any(|l| l.contains("Waiting")),
+        "no ⎿ Waiting… row for the call under the prompt: {lines:?}"
+    );
+}
+
+#[test]
+fn a_batch_sibling_still_shows_its_waiting_row() {
+    // Only the call being asked about is header-only; the ones queued behind
+    // it keep their ⎿ Waiting… exactly as in the ordinary strip.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool_batch(&[
+        ToolCallSummary {
+            name: "Write".to_string(),
+            args: "tt.py".to_string(),
+        },
+        ToolCallSummary {
+            name: "Bash".to_string(),
+            args: "ls".to_string(),
+        },
+    ]);
+    app.open_permission(request(PermissionKind::Write, "tt.py", WRITE_BODY));
+    let lines = rows(&app, 70, 40);
+    assert_eq!(lines[0], "● Write(tt.py)");
+    assert_eq!(lines[1], "");
+    assert_eq!(lines[2], "● Bash(ls)");
+    assert!(
+        lines[3].contains("Waiting"),
+        "the sibling still waits: {lines:?}"
+    );
+}
+
+#[test]
+fn a_subagents_request_keeps_the_live_agent_tree_above_it() {
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(
+        false,
+        &[
+            AgentSpec {
+                id: "a1".to_string(),
+                description: "Agent 1 to run ls -la in /tmp".to_string(),
+                agent_type: "general-purpose".to_string(),
+                prompt: "p".to_string(),
+                background: false,
+            },
+            AgentSpec {
+                id: "a2".to_string(),
+                description: "Agent 2 to run ls -la in /tmp".to_string(),
+                agent_type: "general-purpose".to_string(),
+                prompt: "p".to_string(),
+                background: false,
+            },
+        ],
+    );
+    let mut req = request(PermissionKind::Bash, "ls -la /tmp", "");
+    req.agent = Some("general-purpose".to_string());
+    app.open_permission(req);
+    let lines = rows(&app, 80, 44);
+    assert!(lines[0].contains("Running 2 agents…"), "{lines:?}");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("Agent 1 to run ls -la in /tmp")),
+        "the tree rows show: {lines:?}"
+    );
+    let rule = lines
+        .iter()
+        .position(|l| l.starts_with('─'))
+        .expect("the prompt's top rule");
+    assert!(
+        lines[..rule].iter().any(|l| l.contains("Agent 2")),
+        "the whole tree sits above the prompt: {lines:?}"
+    );
+    assert!(
+        lines[rule..]
+            .iter()
+            .any(|l| l.contains("Bash command · from the general-purpose agent")),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn an_idle_prompt_has_no_context_rows() {
+    // Nothing raised it on screen (the dummy's scripted turn, a resumed
+    // session): the prompt still opens with its own rule.
+    let app = app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY));
+    assert_eq!(rows(&app, 70, 40)[0], "─".repeat(70));
+}
+
+#[test]
+fn the_context_rows_count_against_the_body_budget() {
+    // The reserved height must still equal the painted rows once the cell
+    // above the prompt takes its share of the terminal.
+    let app = pending_write();
+    for height in [40u16, 24, 18] {
+        let painted = permission_lines(&app, 70, height).len();
+        assert_eq!(permission_height(&app, 70, height), Some(painted as u16));
+        assert_eq!(
+            permission_lines(&app, 70, painted as u16).len(),
+            painted,
+            "stable at height {height}"
+        );
+        assert!(painted <= usize::from(height), "fits at height {height}");
+    }
 }

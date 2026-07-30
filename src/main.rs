@@ -856,7 +856,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                     term, &mut app, &mut render, ReflowClear::Purge,
                                 )?;
                             }
-                            Action::ResolvePermission { id, decision } => {
+                            Action::ResolvePermission { request, decision } => {
                                 // The user answered the inline prompt: post the
                                 // decision on the gate, waking the tool thread
                                 // parked on it. The prompt is already closed and
@@ -864,8 +864,26 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 // that); a queued second request has already
                                 // opened. See docs/permissions.md.
                                 if let Some(gate) = permissions.as_ref() {
-                                    gate.resolve(&id, decision);
+                                    // Remember the scope BEFORE posting, so the
+                                    // standing rule is in force when the sweep
+                                    // below asks what it now covers (the tool
+                                    // thread would only remember once it woke).
+                                    if decision == PermissionDecision::ApproveAlways {
+                                        gate.remember(&request);
+                                    }
+                                    gate.resolve(&request.id, decision);
+                                    // Parallel agents ask before any of them is
+                                    // answered, so "don't ask again" has to reach
+                                    // the requests already queued behind this one
+                                    // — else three agents running the same command
+                                    // ask three times after you said not to.
+                                    for id in
+                                        app.drain_covered_permissions(&|r| gate.allows(r))
+                                    {
+                                        gate.resolve(&id, PermissionDecision::Approve);
+                                    }
                                 }
+                                frame.schedule_frame();
                             }
                             Action::Interrupt => {
                                 // Esc mid-generation (codex-style): stop the backend

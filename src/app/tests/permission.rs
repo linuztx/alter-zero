@@ -100,7 +100,7 @@ fn enter_resolves_the_highlighted_option() {
     assert_eq!(
         action,
         Action::ResolvePermission {
-            id: "p1".to_string(),
+            request: write_request("p1"),
             decision: PermissionDecision::ApproveAlways,
         }
     );
@@ -120,7 +120,7 @@ fn the_number_keys_pick_an_option_directly() {
         assert_eq!(
             action,
             Action::ResolvePermission {
-                id: "p1".to_string(),
+                request: write_request("p1"),
                 decision: expected,
             },
             "key {ch}"
@@ -136,7 +136,7 @@ fn a_picks_the_remember_option_since_shift_tab_is_taken() {
     assert_eq!(
         action,
         Action::ResolvePermission {
-            id: "p1".to_string(),
+            request: bash_request("p1"),
             decision: PermissionDecision::ApproveAlways,
         }
     );
@@ -175,7 +175,7 @@ fn ctrl_e_asks_for_an_explanation_but_only_for_a_command() {
     assert_eq!(
         action,
         Action::ResolvePermission {
-            id: "p1".to_string(),
+            request: bash_request("p1"),
             decision: PermissionDecision::Explain,
         }
     );
@@ -201,7 +201,7 @@ fn tab_opens_an_empty_amend_field_that_rejects_with_the_typed_feedback() {
     assert_eq!(
         action,
         Action::ResolvePermission {
-            id: "p1".to_string(),
+            request: write_request("p1"),
             decision: PermissionDecision::Deny(Some("use pathlib instead".to_string())),
         }
     );
@@ -230,7 +230,7 @@ fn an_empty_amend_field_rejects_with_no_feedback() {
     assert_eq!(
         action,
         Action::ResolvePermission {
-            id: "p1".to_string(),
+            request: write_request("p1"),
             decision: PermissionDecision::Deny(None),
         }
     );
@@ -284,4 +284,69 @@ fn opening_a_prompt_dismisses_the_bands_it_covers() {
     assert!(app.command_menu.is_none());
     assert!(!app.shortcuts_open);
     assert!(app.file_search.is_none());
+}
+
+#[test]
+fn the_ctrl_b_hint_is_not_advertised_while_a_prompt_is_open() {
+    // The prompt owns every key, so Ctrl+B does nothing there — the delayed
+    // `(ctrl+b to run in background)` hint hangs off `command_elapsed`, which
+    // must therefore read as "nothing running" while a call waits on the user.
+    let mut app = App::new();
+    app.set_command_elapsed(Some(Duration::from_secs(30)));
+    assert!(app.command_elapsed().is_some());
+    app.open_permission(bash_request("p1"));
+    assert_eq!(app.command_elapsed(), None);
+    app.on_key(key(KeyCode::Char('1')));
+    assert!(
+        app.command_elapsed().is_some(),
+        "the clock comes back with the answer"
+    );
+}
+
+#[test]
+fn a_standing_approval_sweeps_the_requests_it_now_covers() {
+    // Parallel agents ask before any of them is answered, so "don't ask again"
+    // must reach the ones already queued — otherwise three agents running the
+    // same command ask three times *after* you said not to.
+    let mut app = App::new();
+    type_text(&mut app, "draft");
+    app.open_permission(bash_request("p1"));
+    app.open_permission(bash_request("p2"));
+    app.open_permission(request("p3", PermissionKind::Bash, "rm -rf /"));
+    // The loop answers p1 with "always", then sweeps whatever the new rule
+    // covers — here p2 (the identical command), never p3.
+    app.on_key(key(KeyCode::Char('a')));
+    let swept = app.drain_covered_permissions(&|r| r.target == "python3 script.py");
+    assert_eq!(swept, vec!["p2".to_string()]);
+    assert_eq!(
+        app.permission().expect("p3 still asks").request.id,
+        "p3",
+        "an uncovered request is untouched"
+    );
+    app.on_key(key(KeyCode::Char('3')));
+    assert_eq!(app.input.text(), "draft", "the draft survives the sweep");
+}
+
+#[test]
+fn the_sweep_walks_past_covered_requests_to_the_first_that_still_asks() {
+    let mut app = App::new();
+    app.open_permission(bash_request("p1"));
+    app.open_permission(bash_request("p2"));
+    app.open_permission(request("p3", PermissionKind::Bash, "rm -rf /"));
+    // Everything matching is released, the open prompt included.
+    let mut swept = app.drain_covered_permissions(&|r| r.target == "python3 script.py");
+    swept.sort();
+    assert_eq!(swept, vec!["p1".to_string(), "p2".to_string()]);
+    assert_eq!(app.permission().expect("p3 opened").request.id, "p3");
+}
+
+#[test]
+fn a_sweep_that_covers_everything_closes_the_prompt() {
+    let mut app = App::new();
+    app.open_permission(bash_request("p1"));
+    app.open_permission(bash_request("p2"));
+    let swept = app.drain_covered_permissions(&|_| true);
+    assert_eq!(swept.len(), 2);
+    assert!(app.permission().is_none());
+    assert!(app.pending_permissions().is_empty());
 }
