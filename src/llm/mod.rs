@@ -15,6 +15,7 @@
 //! shape as `DummyAi`, with no nested tokio runtime.
 
 pub mod agent;
+pub mod approval;
 pub mod backend;
 pub mod cache;
 pub mod config;

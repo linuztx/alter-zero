@@ -18,6 +18,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::agents::{AgentRun, AgentStatus};
 use crate::file_search::{FileMatch, at_token};
 use crate::llm::{ModelEntry, ReasoningSupport, ThinkingMode};
+use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
 use crate::session::SessionSummary;
 use crate::stream::{AgentCallDone, AgentSpec, StreamEvent, ToolCallSummary};
 use crate::textarea::TextArea;
@@ -34,6 +35,7 @@ mod input_history;
 mod keys;
 mod login;
 mod model_picker;
+mod permission;
 mod queue;
 mod resume;
 mod status;
@@ -59,6 +61,7 @@ pub use self::file_picker::FileSearch;
 pub use self::input_history::{HistorySearch, InputHistory, SearchState};
 pub use self::login::{KeyOnboarding, KeyStep, ProviderChoice};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
+pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
@@ -423,6 +426,19 @@ pub struct App {
     /// Background-agent completions awaiting a safe boundary — settled
     /// beside [`pending_bg`](Self::pending_bg) (same sites, same rules).
     pending_agents: VecDeque<AgentNotice>,
+    /// The open tool-permission prompt (`docs/permissions.md`): a `write`,
+    /// `edit`, or `bash` call whose thread is blocked on the user's answer.
+    /// Inline like [`model_picker`](Self::model_picker) — it replaces the
+    /// whole live region and owns every key while open. Read through
+    /// [`permission`](Self::permission).
+    permission: Option<PermissionPrompt>,
+    /// Requests that arrived while one was already open (two agents asking at
+    /// once), oldest first — each opens as the one before it resolves.
+    pending_permissions: VecDeque<PermissionRequest>,
+    /// Ids of requests dropped without an answer (Esc, `/clear`), drained by
+    /// the boundary and released on the gate so no tool thread parks forever —
+    /// see [`take_abandoned_permissions`](Self::take_abandoned_permissions).
+    abandoned_permissions: Vec<String>,
 }
 
 impl App {
@@ -676,6 +692,11 @@ impl App {
         self.agent_selection = None;
         self.agent_view = None;
         self.pending_agents.clear();
+        // The blocked tool threads are reaped by the loop's Clear arm (their
+        // cancel token trips); the prompt they were waiting on goes with them
+        // (docs/permissions.md). The composer keeps its draft, as `/clear`
+        // always has — `discard_permissions` restores it first.
+        self.discard_permissions();
     }
 }
 

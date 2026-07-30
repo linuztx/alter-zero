@@ -42,6 +42,7 @@ widened for the split.
 | `resume.rs` | The `/resume` picker. |
 | `model_picker.rs` | The inline `/model` picker. |
 | `login.rs` | The inline `/login` onboarding. |
+| `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `background.rs` | Background shells and the ↓ manager band. |
 | `agent.rs` | The `Agent` tool's roster, groups, and notices. |
 
@@ -69,6 +70,7 @@ widened for the split.
 | `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`. |
 | `context_view.rs` | The Ctrl+D context-debug overlay. |
 | `resume_view.rs`, `model_view.rs`, `login_view.rs`, `background_view.rs` | The pickers and the manager band. |
+| `permission_view.rs` | The tool-permission modal (`docs/permissions.md`). |
 | `stream_render.rs` | `StreamRender`, the incremental commit-to-scrollback renderer. |
 
 ## The conventions the split had to preserve

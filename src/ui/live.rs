@@ -174,6 +174,14 @@ pub fn render_live_with_preview(
     app: &App,
     stream_preview: Option<&[Line<'static>]>,
 ) {
+    // A pending tool-permission request replaces the whole live region — the
+    // streaming strip included, since the turn is blocked on the answer. It
+    // wins over every other inline view (it is modal). See
+    // `docs/permissions.md`.
+    if app.permission().is_some() {
+        render_permission(area, buf, app);
+        return;
+    }
     // The inline `/model` picker replaces the whole live region — the composer,
     // strip, band, and footer all give way to its own framed body. See
     // `docs/llm.md`.

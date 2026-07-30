@@ -96,6 +96,14 @@ fn main() {
             StreamEvent::ToolBackgrounded { id, output } => {
                 println!("\n\x1b[90m[backgrounded as {id}]\x1b[0m\n{output}");
             }
+            // This harness builds its backend with no permission gate, so a
+            // request can never arrive (docs/permissions.md).
+            StreamEvent::Permission(request) => {
+                println!(
+                    "\n\x1b[90m[permission requested: {}]\x1b[0m",
+                    request.target
+                );
+            }
             StreamEvent::ToolBatch(items) => {
                 // The model requested a batch of calls at once; the TUI shows the
                 // not-yet-run ones as `⎿ Waiting…` (docs/parallel-tools.md).

@@ -15,6 +15,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::context::ContextMessage;
+use crate::permission::PermissionRequest;
 
 /// One call in a [`StreamEvent::ToolBatch`] announcement: the `name` + short
 /// `args` summary the `● name(args)` header shows — the *same* two strings the
@@ -207,6 +208,14 @@ pub enum StreamEvent {
     /// the app-side estimate into the provider's own accounting, prompt-cache
     /// detail included. The dummy never sends it. See `docs/prompt-caching.md`.
     Usage(TokenUsage),
+    /// A `write`/`edit`/`bash` call is **waiting on the user's approval**
+    /// (`docs/permissions.md`). Sent by the backend thread just before it
+    /// blocks on the [`crate::permission::PermissionGate`]; the loop raises
+    /// the inline prompt ([`crate::app::App::open_permission`]) and posts the
+    /// answer back on the gate under this request's `id`. Nothing is running
+    /// while it is up — the call's `ToolStart` follows only if the user says
+    /// yes. A backend with no gate attached never sends it.
+    Permission(PermissionRequest),
     /// The backend failed; carries a human-readable message to show the user.
     Error(String),
     /// The reply is complete.
@@ -707,18 +716,23 @@ pub trait ReplySource {
 }
 
 /// The built-in canned-reply backend used by the demo.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct DummyAi {
     /// Pause before the first streamed event so the status indicator shows
     /// first ([`STARTUP_DELAY`] by default; the app overrides it from
     /// `ALTER_ZERO_STARTUP_DELAY_MS`, tests use a short value).
     startup_delay: Duration,
+    /// The shared tool-permission gate, when the app attached one — lets the
+    /// **offline** dummy drive the whole approval round trip for a prompt
+    /// mentioning "permission" (`docs/permissions.md`, `smoke.sh` Phase 55).
+    permissions: Option<crate::permission::PermissionGate>,
 }
 
 impl Default for DummyAi {
     fn default() -> Self {
         Self {
             startup_delay: STARTUP_DELAY,
+            permissions: None,
         }
     }
 }
@@ -734,7 +748,19 @@ impl DummyAi {
     /// `ALTER_ZERO_STARTUP_DELAY_MS` through here, and tests pass a short delay.
     #[must_use]
     pub fn with_startup_delay(startup_delay: Duration) -> Self {
-        Self { startup_delay }
+        Self {
+            startup_delay,
+            permissions: None,
+        }
+    }
+
+    /// Attach the session's permission gate, so a prompt mentioning
+    /// "permission" plays the scripted `Write` approval — the offline mirror of
+    /// what a real backend's `write` call does (`docs/permissions.md`).
+    #[must_use]
+    pub fn with_permissions(mut self, gate: crate::permission::PermissionGate) -> Self {
+        self.permissions = Some(gate);
+        self
     }
 }
 
@@ -760,11 +786,19 @@ impl ReplySource for DummyAi {
         let startup_delay = self.startup_delay;
         // The dummy can't read the files, only acknowledge how many arrived.
         let image_count = images.len();
+        let permissions = self.permissions.clone();
         thread::spawn(move || {
             // Pause before streaming so the status indicator is visible first
             // (interruptibly — an Esc during the wait reaps the thread at once).
             nap(startup_delay, &cancel);
             if cancel.is_cancelled() {
+                return;
+            }
+            // The scripted approval demo: ask, block on the gate exactly as a
+            // real backend's `write` does, then resolve accordingly.
+            if let Some(gate) = permissions.filter(|_| prompt.to_lowercase().contains("permission"))
+            {
+                dummy_permission_turn(&gate, &tx, &cancel);
                 return;
             }
             for event in turn_events(&prompt, image_count) {
@@ -804,6 +838,90 @@ impl ReplySource for DummyAi {
     fn model_name(&self) -> String {
         "dummy_model_name".to_string()
     }
+}
+
+/// The dummy's scripted `write` for the permission demo (`docs/permissions.md`).
+const DUMMY_PERMISSION_PATH: &str = "hello.py";
+const DUMMY_PERMISSION_CONTENT: &str = "#!/usr/bin/env python3\n\n\
+    def main():\n    \
+        name = input(\"What's your name? \")\n    \
+        print(f\"Hello, {name}! Welcome to Python.\")\n\n\
+    if __name__ == \"__main__\":\n    \
+        main()";
+
+/// Play the offline approval round trip: announce the `Write` call, raise the
+/// request, **block on the gate** exactly as a real backend's tool thread does,
+/// then resolve the cell green (approved) or red (rejected). Lets `smoke.sh`
+/// drive the whole prompt — draft stash, options, restore — with no provider.
+fn dummy_permission_turn(
+    gate: &crate::permission::PermissionGate,
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+) {
+    use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
+    let _ = tx.send(StreamEvent::ToolBatch(vec![ToolCallSummary {
+        name: "Write".to_string(),
+        args: DUMMY_PERMISSION_PATH.to_string(),
+    }]));
+    let mut request = PermissionRequest {
+        id: gate.next_id(),
+        kind: PermissionKind::Write,
+        target: DUMMY_PERMISSION_PATH.to_string(),
+        body: crate::llm::tools::render_numbered_content(DUMMY_PERMISSION_CONTENT),
+        detail: None,
+        agent: None,
+    };
+    let decision = if gate.allows(&request) {
+        Some(PermissionDecision::Approve)
+    } else {
+        let _ = tx.send(StreamEvent::Permission(request.clone()));
+        gate.wait(&request.id, &|| cancel.is_cancelled())
+    };
+    let (output, ok) = match decision {
+        Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
+            if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
+                request.id.clear();
+                gate.remember(&request);
+            }
+            (
+                format!(
+                    "Created {DUMMY_PERMISSION_PATH} ({} lines)\n{}",
+                    DUMMY_PERMISSION_CONTENT.lines().count(),
+                    crate::llm::tools::render_numbered_content(DUMMY_PERMISSION_CONTENT),
+                ),
+                true,
+            )
+        }
+        Some(PermissionDecision::Deny(_) | PermissionDecision::Explain) => {
+            (crate::permission::denied_display(&request), false)
+        }
+        // Cancelled out from under us — the channel is already abandoned.
+        None => return,
+    };
+    let _ = tx.send(StreamEvent::ToolStart {
+        name: "Write".to_string(),
+        args: DUMMY_PERMISSION_PATH.to_string(),
+        detail: None,
+    });
+    let _ = tx.send(StreamEvent::ToolEnd {
+        output,
+        ok,
+        truncated: false,
+    });
+    for chunk in chunks(if ok {
+        "Done — the file is written."
+    } else {
+        "Understood, I have left the file alone."
+    }) {
+        if cancel.is_cancelled() {
+            return;
+        }
+        if tx.send(StreamEvent::Chunk(chunk)).is_err() {
+            return;
+        }
+        nap(CHUNK_DELAY, cancel);
+    }
+    let _ = tx.send(StreamEvent::StreamDone);
 }
 
 /// A test-only backend that models a real network backend **parked in a
@@ -1451,6 +1569,9 @@ mod tests {
                 }
                 StreamEvent::Retrying { .. } => panic!("the dummy never retries"),
                 StreamEvent::Usage(_) => panic!("the dummy never reports usage"),
+                StreamEvent::Permission(_) => {
+                    panic!("no gate attached — the dummy never asks")
+                }
                 StreamEvent::ToolBackgrounded { .. } => {
                     panic!("the dummy never backgrounds a tool")
                 }

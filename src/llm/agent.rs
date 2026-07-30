@@ -16,6 +16,7 @@ use super::tools::{
     ToolCallRequest, ToolOutcome, display_name, image_attachment_note, summarize_call,
 };
 use super::{ChatMessage, ContentPart, LlmError};
+use crate::permission::Approval;
 use crate::stream::{CancelToken, StreamEvent, ToolCallSummary};
 
 /// The most rounds of tool calls one turn will run before giving up — a
@@ -61,6 +62,14 @@ pub enum RoundOutcome {
 /// The take sits after the cancel check so an abandoned turn can't steal
 /// notes owed to the boundary's automatic follow-up turn. See
 /// `docs/background.md`.
+///
+/// `approve` is the permission gate (`docs/permissions.md`), consulted for
+/// every ordinary call **before** its `ToolStart` — so nothing has run, and
+/// nothing shows as running, while the user decides. An
+/// [`Approval::Reject`] resolves the call without executing it: the
+/// Start/End pair still goes out (with the short `display` output, red) so
+/// the cell lands in history and the transcript, while the longer `result`
+/// becomes the tool result the model reads.
 #[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
 pub fn run_agent(
     tx: &UnboundedSender<StreamEvent>,
@@ -71,6 +80,7 @@ pub fn run_agent(
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(&str)) -> ToolOutcome,
     mut pending_notices: impl FnMut() -> Vec<String>,
     mut run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
+    mut approve: impl FnMut(&ToolCallRequest) -> Approval,
 ) {
     let mut iterations = 0usize;
     loop {
@@ -151,6 +161,26 @@ pub fn run_agent(
                     if cancel.is_cancelled() {
                         cancelled_mid_tools = true;
                         break;
+                    }
+                    // The permission gate (docs/permissions.md), asked BEFORE
+                    // the ToolStart so nothing has run — and nothing has been
+                    // announced as running — while the user decides. A
+                    // rejection still emits the Start/End pair, so the call
+                    // lands in history and the transcript as a red cell, while
+                    // the *model* reads the longer instruction.
+                    if let Approval::Reject { display, result } = approve(call) {
+                        let _ = tx.send(StreamEvent::ToolStart {
+                            name: display_name(&call.name),
+                            args: summarize_call(&call.name, &call.arguments),
+                            detail: super::tools::call_description(&call.name, &call.arguments),
+                        });
+                        let _ = tx.send(StreamEvent::ToolEnd {
+                            output: display,
+                            ok: false,
+                            truncated: false,
+                        });
+                        results.push((call.id.clone(), result));
+                        continue;
                     }
                     let _ = tx.send(StreamEvent::ToolStart {
                         name: display_name(&call.name),
@@ -265,6 +295,7 @@ mod tests {
             |_call, _sink| panic!("no tools should run"),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         assert_eq!(drain(&mut rx), vec![StreamEvent::StreamDone]);
     }
@@ -295,6 +326,7 @@ mod tests {
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.name)),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -361,6 +393,7 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         let events = drain(&mut rx);
         let start = events
@@ -426,6 +459,7 @@ mod tests {
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         let events = drain(&mut rx);
         // The very first event announces the batch, carrying all three calls in
@@ -505,6 +539,7 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("file contents"),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         drain(&mut rx);
         // Round 1 saw [user]; round 2 saw [user, assistant(tool_calls), tool].
@@ -524,6 +559,7 @@ mod tests {
             |_c, _sink| panic!("no tools"),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
@@ -543,6 +579,7 @@ mod tests {
             |_c, _sink| panic!("no tools"),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
     }
@@ -561,6 +598,7 @@ mod tests {
             |_c, _sink| panic!("no tools"),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -591,6 +629,7 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         assert_eq!(
             *ran.borrow(),
@@ -625,6 +664,7 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("again"),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         let events = drain(&mut rx);
         let errors: Vec<_> = events
@@ -671,6 +711,7 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("done"),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         let events = drain(&mut rx);
         assert!(
@@ -737,6 +778,7 @@ mod tests {
                 }
             },
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -776,6 +818,7 @@ mod tests {
             |_c, _sink| panic!("no tools requested"),
             || pending.borrow_mut().take().into_iter().collect(),
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         drain(&mut rx);
         assert_eq!(
@@ -804,6 +847,7 @@ mod tests {
             |_c, _sink| panic!("no tools"),
             || panic!("no notice take once cancelled"),
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -857,6 +901,7 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -918,6 +963,7 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("1 alpha"),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         drain(&mut rx);
         let roles: Vec<String> = seen_round2
@@ -964,6 +1010,7 @@ mod tests {
             |_c, _sink| ToolOutcome::backgrounded("bash_1", "Command running with ID: bash_1"),
             Vec::new,
             |_calls| Vec::new(),
+            |_call| Approval::Allow,
         );
         let events = drain(&mut rx);
         assert!(
@@ -983,6 +1030,110 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, StreamEvent::StreamDone)));
         // Round 2 saw [user, assistant(tool_calls), tool result] — the loop kept going.
         assert_eq!(*seen_lens.borrow(), vec![1, 3]);
+    }
+
+    #[test]
+    fn a_rejected_call_never_runs_but_still_resolves_red_for_the_user() {
+        // The permission gate (docs/permissions.md): the executor is never
+        // reached, the cell still commits (Start + a red End carrying the
+        // short display text), and the model reads the longer instruction.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "write", r#"{"path":"hello.py","content":"x"}"#)];
+        let mut messages = vec![ChatMessage::user("write hello.py")];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |_c, _sink| panic!("a rejected call must never execute"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call| Approval::Reject {
+                display: "User rejected write to hello.py".to_string(),
+                result: "The user doesn't want to proceed…".to_string(),
+            },
+        );
+        let events = drain(&mut rx);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolStart { .. })),
+            "the cell is still announced: {events:?}"
+        );
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                StreamEvent::ToolEnd { output, ok, .. }
+                    if !ok && output == "User rejected write to hello.py"
+            )),
+            "…and resolves red with the short display text: {events:?}"
+        );
+        // The model's tool result is the longer instruction, not the cell text.
+        let result = messages
+            .iter()
+            .find(|m| m.role == "tool")
+            .expect("the call was answered");
+        assert!(
+            matches!(&result.content, crate::llm::MessageContent::Text(t)
+                if t.starts_with("The user doesn't want to proceed")),
+            "got {result:?}"
+        );
+        assert!(events.iter().any(|e| matches!(e, StreamEvent::StreamDone)));
+    }
+
+    #[test]
+    fn approval_is_asked_before_the_tool_starts() {
+        // Ordering matters: the prompt must appear with nothing running, so
+        // the gate is consulted ahead of the ToolStart event.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let log: RefCell<Vec<&'static str>> = RefCell::new(Vec::new());
+        let calls = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("ls")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |_c, _sink| {
+                log.borrow_mut().push("execute");
+                ToolOutcome::ok("files")
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call| {
+                log.borrow_mut().push("approve");
+                Approval::Allow
+            },
+        );
+        drain(&mut rx);
+        assert_eq!(*log.borrow(), vec!["approve", "execute"]);
     }
 
     #[test]
@@ -1022,6 +1173,7 @@ mod tests {
                 assert_eq!(agent_calls[0].id, "c1");
                 vec![("c1".to_string(), "agent result".to_string())]
             },
+            |_call| Approval::Allow,
         );
         let events = drain(&mut rx);
         // The ordinary batch announces only the bash call.

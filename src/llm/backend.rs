@@ -11,6 +11,7 @@ use std::thread::{self, JoinHandle};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::agent::{self, RoundOutcome};
+use super::approval;
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::openai::{Delta, OpenAiClient};
@@ -19,6 +20,7 @@ use super::tools::{self, AgentArgs, ToolCallRequest};
 use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
 use crate::agents::{AgentEvent, AgentRegistry};
 use crate::context::ContextMessage;
+use crate::permission::PermissionGate;
 use crate::stream::{AgentCallDone, AgentSpec, CancelToken, ReplySource, StreamEvent};
 
 /// The default system prompt for the real backend — the "Alter Zero" agent
@@ -54,6 +56,11 @@ pub struct LlmBackend {
     /// the `agent` tool (`docs/agent-tool.md`). Attaching it swaps the
     /// client's tool set to include `agent`.
     agents: Option<AgentRegistry>,
+    /// The shared tool-permission gate, when the boundary attached one — makes
+    /// every `write`/`edit`/`bash` call ask before it runs
+    /// (`docs/permissions.md`). Without it (an embedder, the live tests,
+    /// `ALTER_ZERO_PERMISSIONS` off) tools run unasked, as they always did.
+    permissions: Option<PermissionGate>,
 }
 
 impl LlmBackend {
@@ -103,6 +110,7 @@ impl LlmBackend {
             background: None,
             vision,
             agents: None,
+            permissions: None,
         }
     }
 
@@ -129,6 +137,16 @@ impl LlmBackend {
                 .with_tools(tools::tool_specs_with_agents());
             self.agents = Some(registry);
         }
+        self
+    }
+
+    /// Attach the shared tool-permission gate, so every `write`/`edit`/`bash`
+    /// call — this backend's and its subagents' — asks the user first
+    /// (`docs/permissions.md`). The boundary calls this on the backends it
+    /// builds unless `ALTER_ZERO_PERMISSIONS` is falsy.
+    #[must_use]
+    pub fn with_permissions(mut self, gate: PermissionGate) -> Self {
+        self.permissions = Some(gate);
         self
     }
 
@@ -376,6 +394,7 @@ impl ReplySource for LlmBackend {
         let vision = self.vision;
         let agents = self.agents.clone();
         let subagent = self.subagent_config();
+        let permissions = self.permissions.clone();
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
@@ -442,6 +461,10 @@ impl ReplySource for LlmBackend {
                         })
                         .collect(),
                 },
+                // The permission gate: a `write`/`edit`/`bash` call raises the
+                // inline prompt and blocks this thread on the answer, unless a
+                // standing approval already covers it (docs/permissions.md).
+                |call| approval::approve_call(permissions.as_ref(), &tx, &cancel, None, call),
             );
         })
     }
@@ -491,6 +514,10 @@ struct SubagentConfig {
     system_prompt: Option<String>,
     vision: Option<bool>,
     detach_helper: Option<std::path::PathBuf>,
+    /// The shared permission gate, so a subagent's `write`/`edit`/`bash` calls
+    /// ask too — the prompt names the agent that asked
+    /// (`docs/permissions.md`).
+    permissions: Option<PermissionGate>,
 }
 
 impl LlmBackend {
@@ -509,6 +536,7 @@ impl LlmBackend {
                 .background
                 .as_ref()
                 .and_then(crate::background::BackgroundRegistry::detach_helper),
+            permissions: self.permissions.clone(),
         }
     }
 }
@@ -733,6 +761,7 @@ fn spawn_subagent_run(
         .with_tools(tools::subagent_tool_specs(&agent_type));
     let vision = config.vision;
     let detach = config.detach_helper.clone();
+    let permissions = config.permissions.clone();
     thread::spawn(move || {
         // The forwarder tags every event with the agent id and tracks the
         // final reply text + terminal outcome (the last uninterrupted text
@@ -787,6 +816,12 @@ fn spawn_subagent_run(
                         )
                     })
                     .collect()
+            },
+            // A subagent's tool calls ask too — the prompt says which agent
+            // is asking (docs/permissions.md). The event rides tx2, so the
+            // forwarder tags it with this agent's id like every other.
+            |call| {
+                approval::approve_call(permissions.as_ref(), &tx2, &cancel, Some(&agent_type), call)
             },
         );
         drop(tx2);

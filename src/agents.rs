@@ -275,7 +275,12 @@ impl AgentRun {
                 self.status = AgentStatus::Failed;
                 return true;
             }
-            StreamEvent::ThinkingStart
+            // A permission request is the *user's* business, not the roster's:
+            // the boundary lifts it out of the agent channel and raises the
+            // shared inline prompt (docs/permissions.md). Nothing about this
+            // agent's own state changes while it waits.
+            StreamEvent::Permission(_)
+            | StreamEvent::ThinkingStart
             | StreamEvent::ThinkingEnd
             | StreamEvent::Retrying { .. }
             | StreamEvent::AgentBatch { .. }

@@ -216,6 +216,19 @@ pub fn model_picker_height(app: &App, term_height: u16) -> Option<u16> {
     Some((model_chrome_rows(picker) + model_list_rows(picker)).min(term_height.max(1)))
 }
 
+/// The inline live-region height when a tool-permission prompt is open, or
+/// `None` when none is (the caller falls back to [`live_height`]). Like the
+/// `/model` picker it **replaces** the composer — and the streaming strip with
+/// it, since the turn is blocked on the answer. Exactly the rows
+/// [`permission_lines`] builds, clamped to the terminal. See
+/// `docs/permissions.md`.
+#[must_use]
+pub fn permission_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
+    app.permission()?;
+    let rows = permission_lines(app, width, term_height).len() as u16;
+    Some(rows.min(term_height.max(1)))
+}
+
 /// The inline live-region height when the ↓ background manager band is open,
 /// or `None` when it isn't (the caller falls back to [`live_height`]). Like
 /// the `/model` picker it **replaces** the composer. The band's rows never
@@ -420,6 +433,29 @@ fn input_scroll(total: usize, cursor_row: usize, height: usize) -> usize {
 /// wherever the user has moved it, not just at the end.
 #[must_use]
 pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
+    // A permission prompt has a text field only while Tab's amend composer is
+    // up; its rows sit a fixed [`PERMISSION_TAIL_ROWS`] above the region's
+    // bottom (gap, hint, gap, rule), so the cursor is found from that edge
+    // without re-deriving the body. Without the field, park it in the corner
+    // where it reads as chrome (the background band's rule).
+    if let Some(prompt) = app.permission() {
+        if !prompt.amend {
+            let x = area.x + area.width.saturating_sub(1);
+            let y = area.y + area.height.saturating_sub(1);
+            return (x, y);
+        }
+        let field = super::permission_view::amend_field_width(area.width);
+        let rows = app.input.row_count(field) as u16;
+        let (crow, ccol) = app.input.cursor_row_col(field);
+        let first = area
+            .height
+            .saturating_sub(PERMISSION_TAIL_ROWS.saturating_add(rows));
+        let y = area.y + (first + crow as u16).min(area.height.saturating_sub(1));
+        let x = area.x
+            + ((cols(PERMISSION_INDENT) + cols(PERMISSION_MARKER) + ccol)
+                .min(usize::from(area.width.saturating_sub(1))) as u16);
+        return (x, y);
+    }
     // The inline `/model` picker parks the cursor at the end of its `>` search
     // line (see `render_model_picker`'s layout: top rule, header, gap, search).
     if let Some(picker) = &app.model_picker {

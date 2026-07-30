@@ -66,6 +66,7 @@ use alter_zero::llm::{
     Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
 use alter_zero::paste::{self, PasteBurst};
+use alter_zero::permission::{PermissionDecision, PermissionGate};
 use alter_zero::project_doc;
 use alter_zero::session::{self, SessionMeta, SessionSummary};
 use alter_zero::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
@@ -186,6 +187,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     let agent_registry = AgentRegistry::new(agent_tx);
     let mut agent_clocks: HashMap<String, Instant> = HashMap::new();
     let mut agent_expiry: HashMap<String, Instant> = HashMap::new();
+    // The tool-permission gate (docs/permissions.md): every `write`/`edit`/
+    // `bash` call — the main turn's and its subagents' — raises the inline
+    // prompt and blocks its own thread on the answer. One gate for the whole
+    // session, so "allow all edits" / "don't ask again for X" stick across
+    // turns and across a `/model` rebuild. `ALTER_ZERO_PERMISSIONS=0` starts
+    // without one and every tool runs unasked, as before the feature.
+    let permissions: Option<PermissionGate> = permissions_enabled().then(PermissionGate::new);
     // The reply backend. The dummy is the default (and the fallback) so the app
     // always runs offline; a real OpenAI-compatible model activates only when a
     // provider, a model, and an API key all resolve and `ALTER_ZERO_DUMMY` isn't
@@ -299,6 +307,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             startup_delay,
             &registry,
             &agent_registry,
+            permissions.as_ref(),
         )
     };
     let mut active_model = backend.model_name();
@@ -819,6 +828,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 agent_registry.kill_all();
                                 agent_clocks.clear();
                                 agent_expiry.clear();
+                                // …and the permission gate: `clear_conversation`
+                                // dropped the prompt, the cancelled threads reap
+                                // themselves, so no unclaimed decision may linger
+                                // for the next turn (docs/permissions.md).
+                                if let Some(gate) = permissions.as_ref() {
+                                    gate.clear();
+                                }
                                 // A cleared conversation starts a fresh session
                                 // file (codex's /new); the old one keeps what it
                                 // had (docs/resume.md). Re-seed the checkpoint
@@ -839,6 +855,17 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                                 repaint_conversation(
                                     term, &mut app, &mut render, ReflowClear::Purge,
                                 )?;
+                            }
+                            Action::ResolvePermission { id, decision } => {
+                                // The user answered the inline prompt: post the
+                                // decision on the gate, waking the tool thread
+                                // parked on it. The prompt is already closed and
+                                // the composer draft restored (the pure core did
+                                // that); a queued second request has already
+                                // opened. See docs/permissions.md.
+                                if let Some(gate) = permissions.as_ref() {
+                                    gate.resolve(&id, decision);
+                                }
                             }
                             Action::Interrupt => {
                                 // Esc mid-generation (codex-style): stop the backend
@@ -1788,6 +1815,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
             ));
             frame.schedule_frame();
         }
+        // Release any permission request dropped without an answer (Esc,
+        // `/clear`): the tool thread parked on it would otherwise wait for a
+        // decision that is never coming — a cancelled turn's reaps itself, but
+        // a background agent's has nothing to cancel it (docs/permissions.md).
+        if let Some(gate) = permissions.as_ref() {
+            for id in app.take_abandoned_permissions() {
+                gate.resolve(&id, PermissionDecision::Deny(None));
+            }
+        }
         // Mirror the finished history to the session file (docs/resume.md):
         // append what this iteration added, rewrite on a backtrack truncation,
         // nothing when unchanged — so streaming chunks (which never touch
@@ -2197,6 +2233,23 @@ fn start_compact_turn(
 /// resolve (and `ALTER_ZERO_DUMMY` isn't forcing the dummy). The dummy is the
 /// safe fallback so the app always runs offline. See `docs/llm.md`.
 #[allow(clippy::too_many_arguments)] // a flat list of independent config knobs
+/// Does this session ask before a `write`/`edit`/`bash` runs? On by default;
+/// disabled by a falsy `ALTER_ZERO_PERMISSIONS` (`0`/`false`/`no`/`off`), which
+/// starts the session with no gate so every tool runs unasked — the pre-feature
+/// behaviour. See `docs/permissions.md`.
+fn permissions_enabled() -> bool {
+    match std::env::var("ALTER_ZERO_PERMISSIONS") {
+        Ok(v) => !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        ),
+        Err(_) => true,
+    }
+}
+
+// The full set of knobs a backend needs; splitting them into a struct would
+// only add a shape the call sites have to build (the `live_height` precedent).
+#[allow(clippy::too_many_arguments)]
 fn build_backend(
     providers: &ProvidersFile,
     env_file: &EnvFile,
@@ -2209,6 +2262,7 @@ fn build_backend(
     startup_delay: Duration,
     registry: &BackgroundRegistry,
     agents: &AgentRegistry,
+    permissions: Option<&PermissionGate>,
 ) -> Box<dyn ReplySource> {
     if !dummy_forced()
         && let (Some(provider), Some(model)) = (provider, model)
@@ -2223,13 +2277,21 @@ fn build_backend(
         )
         && cfg.is_usable()
     {
-        return Box::new(
-            LlmBackend::with_system_prompt(cfg, system_prompt)
-                .with_background(registry.clone())
-                .with_agents(agents.clone()),
-        );
+        let mut backend = LlmBackend::with_system_prompt(cfg, system_prompt)
+            .with_background(registry.clone())
+            .with_agents(agents.clone());
+        // The tool-permission gate (docs/permissions.md) — absent when
+        // `ALTER_ZERO_PERMISSIONS` is falsy, and every tool then runs unasked.
+        if let Some(gate) = permissions {
+            backend = backend.with_permissions(gate.clone());
+        }
+        return Box::new(backend);
     }
-    Box::new(DummyAi::with_startup_delay(startup_delay))
+    let dummy = DummyAi::with_startup_delay(startup_delay);
+    Box::new(match permissions {
+        Some(gate) => dummy.with_permissions(gate.clone()),
+        None => dummy,
+    })
 }
 
 /// Fetch one provider's `/models` list on a background thread (the image-paste
@@ -3094,6 +3156,15 @@ fn on_stream_event(
             app.push_tool_output(&chunk);
             Ok(false)
         }
+        StreamEvent::Permission(request) => {
+            // A tool is waiting on the user: raise the inline prompt (which
+            // stashes the composer draft) — the backend thread is parked on the
+            // gate until an `Action::ResolvePermission` answers it. Nothing is
+            // committed: the prompt is live-only, and no call has started.
+            // See docs/permissions.md.
+            app.open_permission(request);
+            Ok(false)
+        }
         StreamEvent::ThinkingStart => {
             // Phase boundary: start the thinking clock so the status line
             // shows `Thinking for Ns`. No scrollback commit (thinking is live-only).
@@ -3251,6 +3322,14 @@ fn on_agent_event(
     event: StreamEvent,
 ) -> io::Result<()> {
     let width = term.screen().width;
+    // A subagent's permission request is the *user's* business, not the
+    // roster's: raise the same shared prompt the main turn does, and stop —
+    // the agent's own state is untouched while it waits
+    // (docs/permissions.md).
+    if let StreamEvent::Permission(request) = event {
+        app.open_permission(request);
+        return Ok(());
+    }
     let viewing = app.view == View::Conversation && app.agent_view.as_deref() == Some(id);
     // Freeze the entry's runtime at its live value before a settling event
     // (the per-frame injection stops once the status is final).
@@ -3467,6 +3546,12 @@ fn os_context() -> String {
 /// the next [`draw`] will use. Shared so a post-stream commit can reserve that same
 /// idle height before flushing the final lines (see [`InlineViewport::set_view_height`]).
 fn live_region_height(app: &App, screen: Rect) -> u16 {
+    // A pending tool-permission request replaces the whole region — the
+    // streaming strip included, since the turn is blocked on the answer. It is
+    // modal, so it is checked first (docs/permissions.md).
+    if let Some(height) = ui::permission_height(app, screen.width, screen.height) {
+        return height;
+    }
     // The inline `/model` picker, `/login` flow, and ↓ background manager each
     // replace the whole region with their own framed body (see docs/llm.md /
     // docs/background.md); the open one's height stands in for the composer's.

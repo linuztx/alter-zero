@@ -32,6 +32,9 @@
 //!   from fenced code blocks and detect ATX headings (see `docs/markdown.md`).
 //! - [`paste`]       — paste-burst detection and the large-paste/image
 //!   placeholder helpers.
+//! - [`permission`]  — tool permission requests: the pure prompt vocabulary
+//!   (titles, options, command scopes, session rules) and the gate the backend
+//!   thread blocks on while the user decides (see `docs/permissions.md`).
 //! - [`project_doc`] — AGENTS.md discovery: codex's project doc collected
 //!   root→cwd under a 32 KiB cap and rendered as the user-instructions
 //!   context fragment (see `docs/project-doc.md`).
@@ -64,6 +67,7 @@ pub mod history;
 pub mod llm;
 pub mod markdown;
 pub mod paste;
+pub mod permission;
 pub mod project_doc;
 pub mod session;
 pub mod stream;

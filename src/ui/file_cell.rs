@@ -215,10 +215,10 @@ fn numbered_row_lines(
     gutter: &str,
     sign: Option<char>,
     segs: &[highlight::Seg],
+    indent_cols: usize,
     width: u16,
 ) -> Vec<Line<'static>> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let indent_cols = file_body_indent();
     let indent = " ".repeat(indent_cols);
     let (bg, dim_content) = match sign {
         Some('+') => (Some(TOOL_DIFF_ADD_BG), false),
@@ -273,6 +273,64 @@ fn numbered_row_lines(
         .collect()
 }
 
+/// Render a raw numbered body — the `{n:>W} {text}` /
+/// `{n:>W} {sign}{text}` gutter format
+/// ([`crate::llm::tools::render_numbered_content`] /
+/// [`crate::llm::tools::render_numbered_diff`]) — as styled rows at
+/// `indent_cols`, capped at `budget` **display** rows (whole source rows only).
+/// Returns the rows plus how many source rows were left out, so the caller can
+/// append whichever "more" tail it uses.
+///
+/// The shared core of the finished `write`/`edit` cell ([`file_cell_lines`],
+/// which caps at a peek and hints Ctrl+O) and the tool-permission prompt's
+/// preview (`ui::permission_view`, which shows the whole change and caps only
+/// to fit the terminal — `docs/permissions.md`). `signed` follows the body's
+/// shape: a diff carries a `+`/`-`/space sign column, brand-new content does
+/// not. A row that isn't in the format renders dim and verbatim, so an odd
+/// line never swallows the rest.
+pub(super) fn numbered_body_lines(
+    body: &str,
+    lang: Option<&str>,
+    signed: bool,
+    indent_cols: usize,
+    width: u16,
+    budget: usize,
+) -> (Vec<Line<'static>>, usize) {
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let indent = " ".repeat(indent_cols);
+    let note_width = (width as usize).saturating_sub(indent_cols).max(1);
+    let source: Vec<&str> = body.lines().collect();
+    let mut hl = highlight::Highlighter::new(lang);
+    let mut out = Vec::new();
+    let mut used = 0usize;
+    for (i, raw) in source.iter().enumerate() {
+        let display = match parse_file_row(raw, signed) {
+            Some(FileRow::Numbered { gutter, sign, text }) => {
+                let segs = hl.line(&text);
+                numbered_row_lines(&gutter, sign, &segs, indent_cols, width)
+            }
+            Some(FileRow::Gap(raw) | FileRow::Note(raw)) => {
+                // Hunks re-synchronize at the gap; the lexer state resets too.
+                hl = highlight::Highlighter::new(lang);
+                vec![Line::from(vec![
+                    Span::raw(indent.clone()),
+                    Span::styled(truncate_cols(&raw, note_width), dim),
+                ])]
+            }
+            None => vec![Line::from(vec![
+                Span::raw(indent.clone()),
+                Span::styled(truncate_cols(raw, note_width), dim),
+            ])],
+        };
+        if used + display.len() > budget && used > 0 {
+            return (out, source.len() - i);
+        }
+        used += display.len();
+        out.extend(display);
+    }
+    (out, 0)
+}
+
 /// Build the styled `⎿` block for a `read`/`write`/`edit` cell whose output is
 /// the numbered `llm::tools` format — codex's file look in the existing gutter:
 /// the white summary head (its `(+A -D)` counts coloured) on the corner row,
@@ -316,7 +374,7 @@ pub(super) fn file_cell_lines(
             ])],
             FileRow::Numbered { gutter, sign, text } => {
                 let segs = hl.line(text);
-                numbered_row_lines(gutter, *sign, &segs, width)
+                numbered_row_lines(gutter, *sign, &segs, file_body_indent(), width)
             }
         };
         if used + display.len() > budget && used > 0 {

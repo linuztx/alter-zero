@@ -159,6 +159,17 @@ the **`/model`** picker: an inline search-and-select list of the provider's
 `/v1/models` (it asks you to `/login` first if no key is configured), and your
 choice persists to `~/.alter-zero/config.json` so it's the default next run.
 
+Anything the model would **change** asks first (`docs/permissions.md`): a
+`write`, an `edit`, or a `bash` command stops the turn and puts an inline
+approval prompt where the composer was — the action, the file (or the command
+and the model's own description of it), the whole numbered content or diff, and
+`1. Yes` / `2. Yes, allow all edits during this session` (for a command,
+`2. Yes, and don't ask again for: {prefix}`) / `3. No`. **Tab** amends — reject
+with instructions typed into the same composer; **Esc** cancels the turn;
+**ctrl+e** asks the model to explain a command instead of running it. Whatever
+you had typed when the prompt appeared is stashed and handed straight back.
+`ALTER_ZERO_PERMISSIONS=0` turns the gate off.
+
 Providers live in `providers.toml` (repo root; an Agent-Zero/Venice proxy and
 OpenRouter ship by default). To plug in a *non*-OpenAI-shaped
 backend instead, implement `ReplySource` (with `DummyAi`/`LlmBackend` as

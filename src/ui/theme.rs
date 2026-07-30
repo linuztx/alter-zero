@@ -1051,3 +1051,69 @@ pub(super) const AGENT_HINT_AGENT: &[(&str, &str)] = &[("Enter", " to view"), ("
 /// rule (0), gap (1), search (2). Shared by [`render_model_picker`] and
 /// [`cursor_position`] so the cursor lands on the query.
 pub(super) const MODEL_SEARCH_ROW: u16 = 2;
+
+// --- the inline tool-permission prompt (docs/permissions.md) ---
+
+/// The prompt's outer frame: a full-width rule above and below, in the input
+/// box's border colour so the modal reads as the same surface.
+pub(super) const PERMISSION_RULE: &str = "─";
+
+/// The dashed rules framing a file change's numbered body, dim so the outer
+/// frame stays the stronger line.
+pub(super) const PERMISSION_BODY_RULE: &str = "╌";
+
+pub(super) const PERMISSION_BODY_RULE_COLOR: Color = TOOL_DIM_COLOR;
+
+/// One-space inset on every text row (the body's numbers land here too).
+pub(super) const PERMISSION_INDENT: &str = " ";
+
+/// The extra inset on a `bash` prompt's command and description rows.
+pub(super) const PERMISSION_COMMAND_INDENT: &str = "   ";
+
+/// The action title (`Create file` / `Edit file` / `Bash command`) — the
+/// palette accent, bold.
+pub(super) const PERMISSION_TITLE_COLOR: Color = MENU_SELECTED_COLOR;
+
+/// ` · from the {type} agent`, appended to the title when a subagent asked.
+pub(super) const PERMISSION_AGENT_SEPARATOR: &str = " · from the ";
+
+pub(super) const PERMISSION_AGENT_SUFFIX: &str = " agent";
+
+pub(super) const PERMISSION_AGENT_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The file path under the title, and the command on a `bash` prompt.
+pub(super) const PERMISSION_TARGET_COLOR: Color = TOOL_OUTPUT_COLOR;
+
+/// The model's own description of a `bash` call, under the command.
+pub(super) const PERMISSION_DETAIL_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The standing notice above a `bash` prompt's question.
+pub(super) const PERMISSION_NOTICE: &str = "This command requires approval";
+
+pub(super) const PERMISSION_NOTICE_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The `❯ ` on the highlighted option row (the unselected rows indent by its
+/// width so the list stays aligned).
+pub(super) const PERMISSION_MARKER: &str = "❯ ";
+
+/// The highlighted option row lights up whole — marker, number, and label —
+/// like the slash-command palette's selection.
+pub(super) const PERMISSION_SELECTED_COLOR: Color = MENU_SELECTED_COLOR;
+
+/// The hint row under the options, `{key}{label}` pairs joined by ` · `.
+pub(super) const PERMISSION_HINT_SEPARATOR: &str = " · ";
+
+pub(super) const PERMISSION_HINT_KEY_COLOR: Color = MENU_SELECTED_COLOR;
+
+pub(super) const PERMISSION_HINT_TEXT_COLOR: Color = TOOL_DIM_COLOR;
+
+/// Tab's amend field: the hints that replace the option row's set.
+pub(super) const PERMISSION_AMEND_HINTS: &[(&str, &str)] = &[
+    ("Enter", " to reject with this feedback"),
+    ("Esc", " to go back"),
+];
+
+/// Rows between the last option/amend row and the bottom of the prompt (gap,
+/// hint, gap, rule) — how [`cursor_position`] finds the amend field from the
+/// region's bottom edge without re-deriving the body.
+pub(super) const PERMISSION_TAIL_ROWS: u16 = 4;

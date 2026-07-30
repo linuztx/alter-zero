@@ -38,18 +38,18 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`, `permission`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The two big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
 `compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `background`,
-`agent`, `status`, with the `App` struct itself in `mod.rs` so every submodule and
+`agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access) and `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`stream_render`). Each `mod.rs` re-exports its areas **by name** — never a glob,
+`permission_view`, `stream_render`). Each `mod.rs` re-exports its areas **by name** — never a glob,
 so the public surface is auditable and `tests/api_surface.rs` can lock it — and
 every `crate::app::X` / `ui::y(…)` path is what it always was;
 see `docs/module-layout.md` for the map. The pure, unit-tested logic lives in
@@ -186,7 +186,30 @@ model `bash`, `!`, background — spawned into a fresh session with no
 controlling terminal via `subprocess::spawn_detached_shell`'s
 setsid-binary → helper-re-exec → attached tier chain, so a `/dev/tty`
 password prompt like `sudo`'s fails fast in a captured error instead of
-hijacking the TUI and hanging) in `docs/tty-detach.md`; and the **Ctrl+O
+hijacking the TUI and hanging) in `docs/tty-detach.md`; and the **tool
+permission requests** (Claude-Code's ask-before-you-change: the `approve` seam
+`llm::agent::run_agent` consults before every `write`/`edit`/`bash` call's
+`ToolStart` raises an inline modal — a coloured `Create file`/`Edit file`/`Bash
+command` title (`· from the {type} agent` when a subagent asked), the target,
+the **whole** numbered content/diff framed by `╌` rules (capped only to fit the
+terminal, with a `… +N lines` tail), the question, and `❯ 1. Yes` / `2. Yes,
+allow all edits during this session (a)` — for `bash`, `2. Yes, and don't ask
+again for: {prefix} (a)` — / `3. No` over `Esc to cancel · Tab to amend`
+(`· ctrl+e to explain` on a command) — while the tool thread **blocks** on the
+shared `permission::PermissionGate` (the `Arc<Mutex<…>> + Condvar` sibling of
+the background/agent registries, its `wait` polling the turn's `CancelToken` so
+an Esc reaps it); the prompt is modal (routed first in `on_key`, replacing the
+*whole* live region, streaming strip included), **stashes the composer draft**
+and hands it straight back on close so a request landing mid-sentence costs
+nothing, Tab swaps the options for that same textarea as an amend field whose
+Enter rejects *with* the typed feedback, Esc cancels (reject + the ordinary
+turn interrupt, the abandoned id released on the gate so a background agent's
+thread never parks), a rejection still commits the red `⎿ User rejected write
+to hello.py` cell while the *model* reads the longer stop-and-wait text
+(`Approval::Reject`'s two fields), and option 2's session allowlist remembers
+every segment prefix of the command — degrading to the exact command when a
+redirect/substitution means a prefix would hide what matters; gated by
+`ALTER_ZERO_PERMISSIONS`) in `docs/permissions.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in

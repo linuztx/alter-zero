@@ -175,6 +175,16 @@ pub enum Action {
     /// child off, and resolves the cell as
     /// [`ToolStatus::Backgrounded`]. See `docs/background.md`.
     MoveToBackground,
+    /// The user answered the inline tool-permission prompt. The prompt is
+    /// already closed (and the composer draft restored); the loop posts
+    /// `decision` on the [`crate::permission::PermissionGate`] under `id`,
+    /// waking the tool thread blocked on it. Esc is *not* one of these — it
+    /// abandons the request and returns [`Action::Interrupt`] instead. See
+    /// `docs/permissions.md`.
+    ResolvePermission {
+        id: String,
+        decision: PermissionDecision,
+    },
     /// The user asked to quit.
     Quit,
 }

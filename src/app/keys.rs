@@ -11,6 +11,12 @@ use super::*;
 
 impl App {
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
+        // A pending tool-permission request is **modal**: it owns every key,
+        // ahead of even the Ctrl+R search and the inline pickers, because a
+        // tool thread is blocked on the answer. See `docs/permissions.md`.
+        if self.view == View::Conversation && self.permission.is_some() {
+            return self.on_key_permission(key);
+        }
         // An open Ctrl+R search owns *every* key (codex consumes them all in
         // handle_history_search_key) — including the global Ctrl+C/Ctrl+O
         // below, which it redefines: Ctrl+C cancels the search instead of
