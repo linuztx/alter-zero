@@ -16,7 +16,7 @@
 //!
 //! [`App::history`]: crate::app::App::history
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -637,6 +637,45 @@ pub fn relative_age(secs: u64) -> String {
     format!("{}d ago", hours / 24)
 }
 
+/// The `{id}` segment of a rollout file name — the inverse of
+/// [`rollout_rel_path`]'s `rollout-YYYY-MM-DDThh-mm-ss-{id}.jsonl` shape,
+/// which makes the recorder's session ids *addressable*: `--resume {id}`
+/// finds its file by matching this against the arg (`docs/cli.md`). `None`
+/// for a name that isn't a rollout file or whose stamp doesn't have the
+/// recorded shape (checked position-by-position, so a stray
+/// `rollout-notes.jsonl` can't yield a garbage id); ids may themselves
+/// contain `-` (nanos-pid hex), which is why the parse is fixed-width from
+/// the left, never a split from the right.
+#[must_use]
+pub fn rollout_file_id(file_name: &str) -> Option<&str> {
+    let rest = file_name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
+    // `YYYY-MM-DDThh-mm-ss` is exactly 19 bytes; the joining `-` is byte 19.
+    // `str::get` also rejects a non-boundary slice, so multibyte junk in the
+    // stamp position falls out as `None` rather than panicking.
+    let stamp = rest.get(..19)?;
+    let id = rest.get(20..)?;
+    let stamp_ok = stamp.bytes().enumerate().all(|(i, b)| match i {
+        4 | 7 | 13 | 16 => b == b'-',
+        10 => b == b'T',
+        _ => b.is_ascii_digit(),
+    });
+    (stamp_ok && rest.as_bytes()[19] == b'-' && !id.is_empty()).then_some(id)
+}
+
+/// The newest-updated session recorded in `cwd` — the `--continue` pick
+/// (`docs/cli.md`): smallest `updated_secs` (ages are seconds-*ago*, frozen
+/// at scan time) among the rows whose recorded cwd matches verbatim — the
+/// picker's `Cwd`-filter rule, both sides the recorder's `Path::display`
+/// formatting. `None` when no session was recorded here.
+#[must_use]
+pub fn latest_for_cwd<'a>(sessions: &'a [SessionSummary], cwd: &str) -> Option<&'a Path> {
+    sessions
+        .iter()
+        .filter(|session| session.cwd == cwd)
+        .min_by_key(|session| session.updated_secs)
+        .map(|session| session.path.as_path())
+}
+
 /// The rollout file's path relative to the sessions root:
 /// `YYYY/MM/DD/rollout-YYYY-MM-DDThh-mm-ss-{id}.jsonl` — codex's layout, with
 /// `-` for `:` in the time so the name stays filesystem-safe. `date`/`time`
@@ -1099,6 +1138,80 @@ mod tests {
             rollout_rel_path((2026, 7, 6), (3, 4, 5), "1a2b-3c"),
             PathBuf::from("2026/07/06/rollout-2026-07-06T03-04-05-1a2b-3c.jsonl"),
         );
+    }
+
+    // ===== the CLI id lookup (docs/cli.md) =====
+
+    #[test]
+    fn rollout_file_id_inverts_rollout_rel_path() {
+        // The id the recorder embeds — including its own `-` — comes back
+        // out whole, so `--resume {id}` can match the file by name alone.
+        let rel = rollout_rel_path((2026, 7, 31), (9, 5, 3), "18a9f2c33d41e5b6-1a2b");
+        let name = rel.file_name().and_then(|n| n.to_str()).expect("a name");
+        assert_eq!(rollout_file_id(name), Some("18a9f2c33d41e5b6-1a2b"));
+    }
+
+    #[test]
+    fn rollout_file_id_rejects_foreign_names() {
+        // No prefix/suffix, a malformed or missing stamp, or an empty id —
+        // none of these may yield an id (a garbage match would resume the
+        // wrong file).
+        assert_eq!(rollout_file_id("session.jsonl"), None);
+        assert_eq!(rollout_file_id("rollout-notes.jsonl"), None);
+        assert_eq!(rollout_file_id("rollout-2026-07-31T09-05-03-abc.txt"), None);
+        assert_eq!(rollout_file_id("rollout-2026-07-31T09-05-03-.jsonl"), None);
+        assert_eq!(
+            rollout_file_id("rollout-2026-07-31X09-05-03-abc.jsonl"),
+            None
+        );
+        assert_eq!(
+            rollout_file_id("rollout-2026-07-31T09:05:03-abc.jsonl"),
+            None
+        );
+        assert_eq!(
+            rollout_file_id("rollout-2026-07-3aT09-05-03-abc.jsonl"),
+            None
+        );
+        assert_eq!(
+            rollout_file_id("rollout-2026-07-31T09-05-03_abc.jsonl"),
+            None
+        );
+        assert_eq!(rollout_file_id("rollout-2026-07-31T09-05-0-a.jsonl"), None);
+    }
+
+    // ===== the --continue pick (docs/cli.md) =====
+
+    fn summary(path: &str, updated: u64, cwd: &str) -> SessionSummary {
+        SessionSummary {
+            path: PathBuf::from(path),
+            updated_secs: updated,
+            created_secs: updated,
+            cwd: cwd.into(),
+            preview: "hi".into(),
+        }
+    }
+
+    #[test]
+    fn latest_for_cwd_picks_the_newest_updated_matching_row() {
+        // Ages are seconds-AGO: the newest session is the SMALLEST value.
+        let sessions = vec![
+            summary("/s/old.jsonl", 500, "/home/user/repo"),
+            summary("/s/other.jsonl", 10, "/elsewhere"),
+            summary("/s/new.jsonl", 60, "/home/user/repo"),
+        ];
+        assert_eq!(
+            latest_for_cwd(&sessions, "/home/user/repo"),
+            Some(Path::new("/s/new.jsonl")),
+        );
+    }
+
+    #[test]
+    fn latest_for_cwd_is_none_without_a_matching_cwd() {
+        // Another directory's sessions never continue here (and an empty
+        // scan continues nothing) — the caller errors out instead.
+        let sessions = vec![summary("/s/a.jsonl", 5, "/elsewhere")];
+        assert_eq!(latest_for_cwd(&sessions, "/home/user/repo"), None);
+        assert_eq!(latest_for_cwd(&[], "/home/user/repo"), None);
     }
 
     // ===== background shells (docs/background.md) =====

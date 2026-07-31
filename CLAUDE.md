@@ -38,7 +38,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`, `permission`) holds the logic; **`src/main.rs`** is a thin terminal
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`, `permission`, `cli`) holds the logic; **`src/main.rs`** is a thin terminal
 shell driving a
 codex-style **async (tokio) `select!`** loop. The two big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
@@ -108,7 +108,16 @@ the backend) in `docs/image-paste.md`; the **Esc-Esc backtrack** (edit a
 previous user message: prime → transcript preview → rewind + prefill) in
 `docs/backtrack.md`; the **`/resume` session picker** (every conversation
 recorded to a rollout JSONL file, listed in a full-screen picker whose Enter
-loads it back and appends the turns that follow to the same file) in
+loads it back and appends the turns that follow to the same file — and its
+**CLI twins**: `--continue` reopens the newest session recorded in this cwd,
+`--resume {id}` one by id (bare `--resume` boots into the picker), the flags
+resolved to a rollout path in `main()` *after* the detached-exec hook and
+*before* the terminal boots (fail-fast on stderr, the pure parse in `cli`,
+the id lookup via `session::rollout_file_id`/`latest_for_cwd`), the loaded
+transcript committed under the banner through `insert_before` — never a
+startup Purge, the user's terminal scrollback survives — and a quit that
+recorded anything printing `Resume this session with: {bin} --resume {id}`
+after `term.restore()`, `docs/cli.md`) in
 `docs/resume.md`; the **filesystem checkpoints** (every turn snapshots the whole
 cwd into an *isolated* git store — never the user's real `.git` — keyed to the
 conversation length, so the Esc-Esc backtrack **and** `/resume` **reset the

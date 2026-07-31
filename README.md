@@ -28,7 +28,20 @@ cargo run
 
 Type a message and press **Enter**. Press **Ctrl+C** (or **Esc** on an empty
 composer before you've sent anything) to quit — `?` in an empty composer lists the keyboard
-shortcuts, `/` the slash commands. Once you've chatted, **Esc Esc** steps back
+shortcuts, `/` the slash commands.
+
+Quitting a session that recorded a conversation prints how to get back into it
+(`docs/cli.md`):
+
+```
+Resume this session with:
+alter0 --resume 18a9f2c33d41e5b6-1a2b
+```
+
+`alter0 --continue` (`-c`) reopens the newest conversation recorded in the
+current directory without asking, `alter0 --resume {id}` (`-r`) a specific one
+by that id (a unique prefix works too), and a bare `alter0 --resume` boots
+straight into the `/resume` session picker. Once you've chatted, **Esc Esc** steps back
 to edit a previous message, codex-style (see `docs/backtrack.md`): the first
 Esc arms it, the second previews the conversation with the last user message
 highlighted, Esc/←/→ pick an older/newer one, and Enter rewinds the

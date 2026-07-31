@@ -56,6 +56,7 @@ use alter_zero::app::{
 };
 use alter_zero::background::{BackgroundRegistry, BgEvent, PendingNotice};
 use alter_zero::checkpoint;
+use alter_zero::cli::{self, Cli};
 use alter_zero::clipboard;
 use alter_zero::context;
 use alter_zero::file_search::{FileMatch, rank_files};
@@ -87,24 +88,133 @@ fn main() -> io::Result<()> {
     // like `sudo`'s fails fast instead of hijacking the screen) and becomes
     // `sh -c {cmd}` in place, never returning. It must precede anything that
     // touches the terminal or spawns threads — the tokio runtime and
-    // invariant 1's DSR cursor query included.
+    // invariant 1's DSR cursor query included. The CLI parse below therefore
+    // runs strictly after it: a helper re-exec never parses TUI flags.
     alter_zero::subprocess::run_detached_exec_if_requested();
-    tui_main()
+    // --continue/--resume resolve to a rollout *path* here, before the tokio
+    // runtime and the terminal boot (docs/cli.md): --help/--version and every
+    // resolution failure print to normal cooked-mode stdio and exit — no TUI
+    // flash, no raw mode to restore.
+    let startup = match resolve_cli() {
+        Ok(startup) => startup,
+        Err(code) => std::process::exit(code),
+    };
+    tui_main(startup)
+}
+
+/// The `--continue`/`--resume` directive [`resolve_cli`] hands `run` — the
+/// session to install before the first frame, or the `/resume` picker as the
+/// first screen (`docs/cli.md`).
+enum Startup {
+    /// `--continue` / `--resume {id}`: the chosen rollout, read + parsed in
+    /// `main` (fail-fast), so the in-TUI path cannot fail. Boxed — the
+    /// payload dwarfs `Picker` (clippy's large-enum-variant).
+    Load(Box<LoadedSession>),
+    /// Bare `--resume`: boot into the `/resume` session picker.
+    Picker,
+}
+
+/// A rollout file read + parsed ahead of the TUI. `text` rides along for the
+/// pieces the picker's `ResumeSession` arm also derives from it (the recorded
+/// checkpoints, the torn-tail repair).
+struct LoadedSession {
+    path: PathBuf,
+    text: String,
+    meta: SessionMeta,
+    items: Vec<HistoryItem>,
+}
+
+/// Parse the process arguments and resolve them to a [`Startup`] directive
+/// (`docs/cli.md`). `Err(code)` means "exit now with this status": usage
+/// errors are 2 (message + usage on stderr), resolution failures — nothing to
+/// continue, an unknown id, an unreadable file — are 1, and `--help` /
+/// `--version` exit 0 after printing. All printing happens here; the TUI
+/// never starts on an error path.
+fn resolve_cli() -> Result<Option<Startup>, i32> {
+    let parsed = cli::parse(std::env::args().skip(1)).map_err(|message| {
+        eprintln!("{message}\n\n{}", cli::USAGE);
+        2
+    })?;
+    match parsed {
+        Cli::Run => Ok(None),
+        Cli::Help => {
+            println!("{}", cli::USAGE);
+            Err(0)
+        }
+        Cli::Version => {
+            println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+            Err(0)
+        }
+        Cli::Resume(None) => Ok(Some(Startup::Picker)),
+        Cli::Resume(Some(id)) => {
+            let path = find_session_by_id(sessions_root().as_deref(), &id)?;
+            Ok(Some(Startup::Load(Box::new(load_rollout(path)?))))
+        }
+        Cli::Continue => {
+            // The newest session recorded in THIS directory — the picker's
+            // Cwd-filter rule: the meta line's verbatim `Path::display`
+            // string. The listing's eligibility applies too, so a session
+            // never typed into doesn't continue.
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let root = sessions_root();
+            let sessions = list_sessions(root.as_deref(), None);
+            match session::latest_for_cwd(&sessions, &cwd.display().to_string()) {
+                Some(path) => Ok(Some(Startup::Load(Box::new(load_rollout(
+                    path.to_path_buf(),
+                )?)))),
+                None => {
+                    eprintln!("No conversation found to continue in {}", cwd.display());
+                    Err(1)
+                }
+            }
+        }
+    }
+}
+
+/// Read + parse one rollout file for [`Startup::Load`], failing fast on
+/// stderr (exit 1) — the CLI twin of the picker arm's read, run before the
+/// terminal boots so an error never flashes a TUI.
+fn load_rollout(path: PathBuf) -> Result<LoadedSession, i32> {
+    let text = std::fs::read_to_string(&path).map_err(|err| {
+        eprintln!("Failed to read session file {}: {err}", path.display());
+        1
+    })?;
+    let Some((meta, items)) = session::parse_session(&text) else {
+        eprintln!("Not a session file: {}", path.display());
+        return Err(1);
+    };
+    Ok(LoadedSession {
+        path,
+        text,
+        meta,
+        items,
+    })
 }
 
 #[tokio::main(flavor = "current_thread")]
-async fn tui_main() -> io::Result<()> {
+async fn tui_main(startup: Option<Startup>) -> io::Result<()> {
     // Build the tiktoken tokenizer (~125 ms of one-time rank parsing) off the
     // interactive path, concurrently with terminal init, so the first turn's
     // `count_tokens` doesn't freeze the loop. Detached; it never touches stdin
     // or the terminal (invariant 1 safe), and `tokenizer::warm` is idempotent.
     std::thread::spawn(alter_zero::tokenizer::warm);
     let mut term = InlineViewport::init(ui::LIVE_MIN_HEIGHT)?;
-    let result = run(&mut term).await;
+    let result = run(&mut term, startup).await;
     // Always restore the terminal (raw mode off, cursor below the box), even if
     // the loop bailed out with an I/O error — then surface the first error.
     let restored = term.restore();
-    result.and(restored)
+    // The exit hint (docs/cli.md): printed AFTER restore so its two lines land
+    // below the box in normal terminal flow — only when the session recorded a
+    // conversation (`run` returns the active rollout's id then), echoing the
+    // bin name the user actually invoked (`alter-zero` or the `alter0` alias).
+    if let Ok(Some(session_id)) = &result {
+        let arg0 = std::env::args().next();
+        println!(
+            "\n{}",
+            cli::resume_hint(&cli::bin_name(arg0.as_deref()), session_id)
+        );
+    }
+    result.map(|_| ()).and(restored)
 }
 
 /// The async event loop. A `select!` fans five sources onto one thread:
@@ -112,7 +222,12 @@ async fn tui_main() -> io::Result<()> {
 /// results, and finished Ctrl+V clipboard reads. `select!` polls its branches
 /// in randomized order, so input and draws can't starve each other — the
 /// round-robin fairness codex builds explicitly.
-async fn run(term: &mut InlineViewport) -> io::Result<()> {
+///
+/// `startup` is the CLI's `--continue`/`--resume` directive, applied before
+/// the first frame (`docs/cli.md`). Returns the active session's id when the
+/// run recorded a conversation — the exit hint `tui_main` prints after the
+/// terminal is restored — else `None`.
+async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<Option<String>> {
     // Backend → loop (the streamed reply). A tokio channel so the loop can
     // `select!` on it; the backend thread sends without touching the runtime.
     // `mut` because an interrupt / `/clear` swaps in a fresh channel to isolate
@@ -516,6 +631,42 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // `commits_allowed`) while the prompt was up. See `modal_close_window`.
     let mut modal_frontier: Option<(usize, usize)> = None;
 
+    // The CLI's --continue/--resume startup directive (docs/cli.md), applied
+    // before the first frame. A `Load` is the picker's `ResumeSession` arm run
+    // at startup — `main` already read + parsed the file (fail-fast), so this
+    // path cannot fail: restore the code state to the session's final
+    // checkpoint (backup snapshot first; an unknown commit or no recorded
+    // checkpoints leave the tree untouched — docs/checkpoint.md), install the
+    // transcript, and adopt the file so further turns append to it (the
+    // torn-tail repair and the file's own checkpoint chain included).
+    let mut startup_picker = false;
+    let mut startup_restored = false;
+    match startup {
+        Some(Startup::Load(loaded)) => {
+            let LoadedSession {
+                path,
+                text,
+                meta,
+                items,
+            } = *loaded;
+            let session_checkpoints = session::parse_checkpoints(&text);
+            startup_restored = match checkpoint::restore_target(&session_checkpoints, usize::MAX) {
+                Some(commit) => {
+                    let commit = commit.to_string();
+                    let _ = checkpoints.snapshot("before resume restore");
+                    checkpoints.restore(&commit).unwrap_or(false)
+                }
+                None => false,
+            };
+            let count = items.len();
+            app.load_session(items);
+            let torn = !text.is_empty() && !text.ends_with('\n');
+            recorder.adopt(path, meta, count, torn, session_checkpoints);
+        }
+        Some(Startup::Picker) => startup_picker = true,
+        None => {}
+    }
+
     // Init already queried the cursor over stdin; the EventStream is now the sole
     // stdin reader (see the module-level invariant note).
     let mut events = EventStream::new();
@@ -528,8 +679,41 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // draw writes it above the box in one synchronized frame).
     term.insert_before(ui::header_lines(&app, term.screen().width));
     term.insert_before(vec![Line::default()]);
+    // A --continue/--resume load commits the loaded conversation under the
+    // banner through the same pipeline (docs/cli.md) — insert_before, never a
+    // Purge: a fresh launch must not wipe the user's terminal scrollback (the
+    // picker's mid-session purge exists to drop the *previous* conversation's
+    // rows; at startup there are none). Capped like every full rebuild.
+    if !app.history.is_empty() {
+        term.insert_before(ui::repaint_lines(
+            &app.history,
+            term.screen().width,
+            RESIZE_REFLOW_MAX_ROWS,
+        ));
+    }
+    if startup_restored {
+        present_toast(
+            &mut app,
+            &mut toast_deadline,
+            &frame,
+            CHECKPOINT_RESTORED_NOTICE,
+            ToastKind::Info,
+        );
+    }
 
     frame.schedule_frame(); // first paint
+
+    // Bare --resume boots into the /resume picker (docs/cli.md): the
+    // `OpenResumePicker` arm run before the first event. The header lines
+    // queued above stay pending under the overlay and are dropped by the
+    // return's reflow, which re-emits the banner itself (`ui::banner_tail`) —
+    // whether the picker resumes a session, is dismissed, or quits outright.
+    if startup_picker {
+        let sessions = list_sessions(recorder.root(), recorder.active_path());
+        app.open_resume_picker(sessions, cwd.display().to_string());
+        term.enter_overlay()?;
+        draw_resume_picker(term, &app)?;
+    }
 
     loop {
         tokio::select! {
@@ -1989,7 +2173,14 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // in-flight requests promptly — docs/agent-tool.md).
     registry.kill_all();
     agent_registry.kill_all();
-    Ok(())
+    // The exit hint's handle (docs/cli.md): the active rollout's id, only when
+    // this session holds a conversation — an empty session has no file and no
+    // id (deferred create), and a `/clear`ed-then-idle one no history, so
+    // neither prints a hint. Read after the final sync above, which is what
+    // materializes the file for a quit that raced the loop-bottom sync.
+    Ok((!app.history.is_empty())
+        .then(|| recorder.session_id().map(str::to_string))
+        .flatten())
 }
 
 /// Is the built-in dummy backend forced on? (`ALTER_ZERO_DUMMY` set to a truthy
@@ -4206,14 +4397,8 @@ struct SessionRecorder {
 
 impl SessionRecorder {
     fn new(model: &str, cwd: &Path) -> Self {
-        let root = std::env::var_os("ALTER_ZERO_SESSIONS_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(|home| PathBuf::from(home).join(".alter-zero").join("sessions"))
-            });
         Self {
-            root,
+            root: sessions_root(),
             active: None,
             recorded: 0,
             repair_newline: false,
@@ -4248,6 +4433,13 @@ impl SessionRecorder {
     /// (the session you're in is not something to "return" to).
     fn active_path(&self) -> Option<&Path> {
         self.active.as_ref().map(|(path, _)| path.as_path())
+    }
+
+    /// The active session's id — the `--resume` handle the exit hint prints
+    /// (`docs/cli.md`). `None` until anything was recorded (deferred create),
+    /// so an empty session advertises nothing.
+    fn session_id(&self) -> Option<&str> {
+        self.active.as_ref().map(|(_, meta)| meta.id.as_str())
     }
 
     /// Mirror the file to `history`: append newly finished items (creating
@@ -4621,36 +4813,7 @@ fn list_sessions(root: Option<&Path>, exclude: Option<&Path>) -> Vec<SessionSumm
     let Some(root) = root else {
         return Vec::new();
     };
-    // Collect candidate paths newest-first by the date layout (year desc /
-    // month desc / day desc / filename desc — the name embeds the stamp), so
-    // the runaway walk bound keeps the newest files if it ever bites.
-    let mut files = Vec::new();
-    'walk: for year in numeric_dirs_desc(root) {
-        for month in numeric_dirs_desc(&year) {
-            for day in numeric_dirs_desc(&month) {
-                let mut names: Vec<PathBuf> = std::fs::read_dir(&day)
-                    .map(|entries| {
-                        entries
-                            .flatten()
-                            .map(|entry| entry.path())
-                            .filter(|path| {
-                                path.file_name().and_then(|name| name.to_str()).is_some_and(
-                                    |name| name.starts_with("rollout-") && name.ends_with(".jsonl"),
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                names.sort();
-                names.reverse();
-                files.extend(names);
-                if files.len() >= RESUME_WALK_CAP {
-                    files.truncate(RESUME_WALK_CAP);
-                    break 'walk;
-                }
-            }
-        }
-    }
+    let files = rollout_candidates(root);
 
     // Order by mtime (newest-modified first — a resumed old session floats
     // back to the top, codex's Updated sort) BEFORE capping the expensive
@@ -4701,6 +4864,108 @@ fn list_sessions(root: Option<&Path>, exclude: Option<&Path>) -> Vec<SessionSumm
         });
     }
     sessions
+}
+
+/// Candidate rollout paths under `root`, newest-first by the date layout
+/// (year desc / month desc / day desc / filename desc — the name embeds the
+/// stamp), so the [`RESUME_WALK_CAP`] runaway bound keeps the newest files if
+/// it ever bites. Readdir only — no file contents are touched. Shared by the
+/// `/resume` listing and the CLI id finder (`docs/cli.md`).
+fn rollout_candidates(root: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    'walk: for year in numeric_dirs_desc(root) {
+        for month in numeric_dirs_desc(&year) {
+            for day in numeric_dirs_desc(&month) {
+                let mut names: Vec<PathBuf> = std::fs::read_dir(&day)
+                    .map(|entries| {
+                        entries
+                            .flatten()
+                            .map(|entry| entry.path())
+                            .filter(|path| {
+                                path.file_name().and_then(|name| name.to_str()).is_some_and(
+                                    |name| name.starts_with("rollout-") && name.ends_with(".jsonl"),
+                                )
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                names.sort();
+                names.reverse();
+                files.extend(names);
+                if files.len() >= RESUME_WALK_CAP {
+                    files.truncate(RESUME_WALK_CAP);
+                    break 'walk;
+                }
+            }
+        }
+    }
+    files
+}
+
+/// Resolve `--resume {id}` to a rollout path (`docs/cli.md`), printing its
+/// own failure to stderr (exit 1 — [`resolve_cli`]'s contract). Accepts, in
+/// order: an existing **path** (the sessions dir is plain files), an exact
+/// rollout **filename**, an exact **id** (the filename segment
+/// [`session::rollout_file_id`] extracts — the exit hint prints it), then a
+/// **unique id prefix**; several prefix matches are ambiguous, an error
+/// rather than a guess.
+fn find_session_by_id(root: Option<&Path>, id: &str) -> Result<PathBuf, i32> {
+    let as_path = Path::new(id);
+    if as_path.is_file() {
+        return Ok(as_path.to_path_buf());
+    }
+    let Some(root) = root else {
+        eprintln!("No sessions directory (set HOME or ALTER_ZERO_SESSIONS_DIR)");
+        return Err(1);
+    };
+    let mut exact = Vec::new();
+    let mut prefixed = Vec::new();
+    for path in rollout_candidates(root) {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name == id {
+            exact.push(path);
+            continue;
+        }
+        let Some(file_id) = session::rollout_file_id(name) else {
+            continue;
+        };
+        if file_id == id {
+            exact.push(path);
+        } else if file_id.starts_with(id) {
+            prefixed.push(path);
+        }
+    }
+    let mut matches = if exact.is_empty() { prefixed } else { exact };
+    match matches.len() {
+        1 => Ok(matches.remove(0)),
+        0 => {
+            eprintln!("No session found for id: {id}");
+            eprintln!(
+                "Pick one interactively with: {} --resume",
+                cli::bin_name(std::env::args().next().as_deref()),
+            );
+            Err(1)
+        }
+        n => {
+            eprintln!("Ambiguous session id: {id} matches {n} sessions");
+            Err(1)
+        }
+    }
+}
+
+/// The sessions root (`~/.alter-zero/sessions`, or `ALTER_ZERO_SESSIONS_DIR`
+/// — the smoke test points it at a temp dir); `None` disables recording (no
+/// HOME and no override). Shared by the [`SessionRecorder`] and the CLI
+/// resolution in `main` (`docs/cli.md`).
+fn sessions_root() -> Option<PathBuf> {
+    std::env::var_os("ALTER_ZERO_SESSIONS_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|home| PathBuf::from(home).join(".alter-zero").join("sessions"))
+        })
 }
 
 /// The numerically-named subdirectories of `dir`, sorted descending — the

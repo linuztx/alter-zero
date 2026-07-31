@@ -279,9 +279,13 @@ and the list height; no stored scroll offset).
   the recorder's `Path::display` formatting) — codex normalizes paths before
   comparing; a session recorded through a symlinked path won't match its
   canonical twin here.
-- **`/resume <id>` inline args and `codex resume --last`/CLI subcommands are
-  out of scope** — the binary takes no args today; the picker is the whole
-  surface.
+- **`/resume <id>` inline args are out of scope** — but the CLI twins now
+  exist (`docs/cli.md`, 2026-07-31; the binary took no args before then):
+  `--continue` reopens the newest session recorded in this cwd,
+  `--resume {id}` one by id (the filename's `{id}` segment, now addressable
+  via `session::rollout_file_id`), bare `--resume` boots into this picker,
+  and quitting a session that recorded anything prints the
+  `--resume {id}` hint.
 - **No cwd prompt**: codex offers to chdir to the session's recorded cwd.
   Ours records `cwd` in the meta (forward-compatible) but resumes in place —
   the dummy backend has no cwd-dependent behaviour to protect.

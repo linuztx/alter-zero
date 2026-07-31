@@ -14,6 +14,9 @@
 //! - [`checkpoint`]  — per-turn working-directory snapshots in an isolated git
 //!   store so `/resume` and the Esc-Esc backtrack can reset the code, not just
 //!   the transcript (pure mapping + boundary store; see `docs/checkpoint.md`).
+//! - [`cli`]         — the `--continue`/`--resume` argument parse, usage text,
+//!   and the exit-hint shape (pure; resolution/printing stay in `main.rs` —
+//!   see `docs/cli.md`).
 //! - [`clipboard`]   — Ctrl+V image reads and the `/copy` write (arboard +
 //!   OSC 52); the base64 framing is the tested pure core, the rest is I/O.
 //! - [`context`]     — the per-session LLM conversation context: derive the
@@ -58,6 +61,7 @@ pub mod agents;
 pub mod app;
 pub mod background;
 pub mod checkpoint;
+pub mod cli;
 pub mod clipboard;
 pub mod context;
 pub mod file_search;

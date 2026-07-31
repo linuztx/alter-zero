@@ -427,7 +427,13 @@ unit-tested must be unit-tested.
   **appends the turns that follow to the same file**; Esc clears the query
   first and cancels second, Ctrl+C cancels too (codex's from-a-session
   picker). The pure format/parse/preview logic is `session.rs`; the recorder
-  and dir scan live at the boundary (`main.rs::SessionRecorder`).
+  and dir scan live at the boundary (`main.rs::SessionRecorder`). The
+  **CLI twins** (`docs/cli.md`, Claude-Code-style) resolve before the
+  terminal boots: `--continue` reopens the newest session recorded in this
+  cwd, `--resume {id}` one by id (the filename segment
+  `session::rollout_file_id` extracts; unique prefixes and plain paths work
+  too), and bare `--resume` boots into this picker — the loaded transcript
+  committed under the banner via `insert_before`, never a startup purge.
 - **Quit:** Ctrl+C, the `/quit` command, or Esc in the conversation while
   **idle, with an empty composer and no previous user message to edit** —
   mid-turn Esc interrupts, once a user message exists idle Esc arms the
@@ -442,7 +448,10 @@ unit-tested must be unit-tested.
   quits from anywhere, even mid-stream. In the tool-output view Esc (or `q`,
   codex's pager close key) returns to the chat instead of quitting — unless
   idle with a backtrack target, when Esc begins the preview in place. Sending
-  is disabled while a reply is streaming.
+  is disabled while a reply is streaming. A quit that recorded a conversation
+  prints the copy-paste way back after the terminal restores —
+  `Resume this session with: {bin} --resume {id}` — an empty session prints
+  nothing (`docs/cli.md`).
 - **Subagents** (`docs/agent-tool.md`): the model's `agent` tool launches
   autonomous side-agents — a live tree cell while a foreground group runs, a
   persistent `● main` + `◯ …` roster under the footer (↓ selects, Enter opens
