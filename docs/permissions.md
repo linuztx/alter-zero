@@ -269,6 +269,24 @@ backend thread simply stays blocked meanwhile.
 `/clear`, an interrupt, and a quit all drop the prompt and the queue; the
 blocked threads notice their cancel token and return.
 
+### Where the cursor sits
+
+The hardware cursor rides the **highlighted option**, one column past the `❯`
+marker, and moves with ↑/↓. It used to park in the region's bottom-right corner
+— chrome, out of the way — which is fine until you remember that the terminal
+cursor is the one thing on screen that moves *by itself*: a terminal with a
+cursor-trail animation (kitty) draws every jump it makes, so each prompt opened
+with a lurch from the composer to a corner where nothing was happening, and the
+option you were choosing never got the cursor at all.
+
+Both seats — the option row and Tab's amend field — are found from the region's
+bottom edge, `PERMISSION_TAIL_ROWS` up (gap, hint, gap, rule), so
+`ui::cursor_position` never has to re-derive the body. That is why a capped
+prompt's padding goes **above** the question rather than below the hint: it
+keeps the question/options/hint block flush against the closing rule at every
+body size. The column is the same for the options and the amend field, so ↑/↓
+walk the cursor straight down and Tab never slides it sideways.
+
 ## Turning it off
 
 `ALTER_ZERO_PERMISSIONS=0` (or `false`/`no`/`off`) starts the session with no
@@ -297,8 +315,13 @@ integration tests) that builds a backend directly is unaffected.
   nothing else, and `repin_modal` takes the free rows below before covering
   anything, never scrolls even at full screen height, and shrinks like any
   other region (top put, vacated rows below blanked).
+- `ui/tests/permission_view.rs` — the cursor seat, pinned to the rendered rows:
+  it lands on whichever row carries the `❯` marker and steps down with each ↓,
+  on a capped prompt as well as one that fits.
 - `smoke.sh` Phase 55 — the whole round trip against the dummy backend in a real
-  terminal: draft typed, prompt shown, `2` approving, draft restored.
+  terminal: draft typed, prompt shown, `2` approving, draft restored — plus the
+  hardware cursor, read back from the terminal: on the `❯ 1. Yes` row at the
+  option text's column, and one row lower after ↓.
 - `smoke.sh` Phase 56 — Tab's amend end to end: the instructions land on the red
   cell and the model-facing denial (feedback included) shows in the Ctrl+D
   context view, with neither text leaking into the other's place.

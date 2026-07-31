@@ -309,6 +309,69 @@ fn the_prompt_replaces_the_whole_live_region() {
     );
 }
 
+/// The row `permission_lines` puts the `❯` selection marker on, and the
+/// hardware cursor's seat — the two must be the same row for every option.
+fn marker_row_and_cursor(app: &App, width: u16, term_height: u16) -> (u16, (u16, u16)) {
+    let lines = permission_lines(app, width, term_height);
+    let marker = lines
+        .iter()
+        .position(|l| plain(l).starts_with(" ❯ "))
+        .expect("the selected option row") as u16;
+    let area = Rect::new(
+        0,
+        0,
+        width,
+        permission_height(app, width, term_height).unwrap(),
+    );
+    (marker, cursor_position(area, app))
+}
+
+#[test]
+fn the_cursor_follows_the_highlighted_option() {
+    // The terminal cursor is the one thing on screen that moves by itself (a
+    // kitty cursor-trail animation draws the jump), so parking it in the
+    // region's bottom corner made every prompt open with a lurch to nowhere.
+    // It belongs on the option you are choosing, and it must travel with ↑/↓ —
+    // straight up and down, since the column is fixed at the option text.
+    let mut app = app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY));
+    let mut seats = Vec::new();
+    for step in 0..3 {
+        if step > 0 {
+            app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let (marker, (x, y)) = marker_row_and_cursor(&app, 70, 40);
+        assert_eq!(y, marker, "the cursor sits on the highlighted option row");
+        // One inset column + the two-column `❯ ` — where the amend field's
+        // text starts too, so Tab never slides the cursor sideways.
+        assert_eq!(x, 3, "the column is the option text's first");
+        seats.push(y);
+    }
+    assert_eq!(
+        seats,
+        vec![seats[0], seats[0] + 1, seats[0] + 2],
+        "↓ walks the cursor down one row per option"
+    );
+}
+
+#[test]
+fn the_cursor_follows_the_option_on_a_capped_prompt() {
+    // A body too tall for the terminal is capped and the prompt padded to fill
+    // it exactly. The padding sits *above* the question — never between the
+    // options and the closing rule — so the option block keeps its fixed seat
+    // at the bottom and the cursor can be found from that edge.
+    let body: String = (1..=200).map(|n| format!("{n} line {n}\n")).collect();
+    let mut app = app_with(request(PermissionKind::Write, "big.py", &body));
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let (marker, (x, y)) = marker_row_and_cursor(&app, 70, 30);
+    assert_eq!(
+        permission_lines(&app, 70, 30).len(),
+        30,
+        "it fills the screen"
+    );
+    assert_eq!(y, marker, "still on the highlighted option row");
+    assert_eq!(x, 3);
+}
+
 #[test]
 fn the_cursor_sits_at_the_end_of_the_amend_field() {
     let mut app = app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY));

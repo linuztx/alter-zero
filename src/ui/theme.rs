@@ -1153,6 +1153,8 @@ pub(super) const PERMISSION_AMEND_HINTS: &[(&str, &str)] = &[
 ];
 
 /// Rows between the last option/amend row and the bottom of the prompt (gap,
-/// hint, gap, rule) — how [`cursor_position`] finds the amend field from the
-/// region's bottom edge without re-deriving the body.
+/// hint, gap, rule) — how [`cursor_position`] seats the cursor on the
+/// highlighted option (or in the amend field) from the region's bottom edge
+/// without re-deriving the body. `permission_lines` pads a capped prompt
+/// *above* the question to keep that block flush against this tail.
 pub(super) const PERMISSION_TAIL_ROWS: u16 = 4;

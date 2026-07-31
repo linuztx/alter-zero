@@ -6,6 +6,8 @@
 //! (`docs/status-indicator.md`), the bands (`docs/shortcuts.md`,
 //! `docs/file-search.md`) and the footer (`docs/footer.md`).
 
+use crate::permission::OPTION_COUNT;
+
 use super::agent::agent_view_preview_lines;
 use super::live::preview_tool_lines;
 use super::theme::*;
@@ -484,24 +486,37 @@ fn input_scroll(total: usize, cursor_row: usize, height: usize) -> usize {
 /// wherever the user has moved it, not just at the end.
 #[must_use]
 pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
-    // A permission prompt has a text field only while Tab's amend composer is
-    // up; its rows sit a fixed [`PERMISSION_TAIL_ROWS`] above the region's
-    // bottom (gap, hint, gap, rule), so the cursor is found from that edge
-    // without re-deriving the body. Without the field, park it in the corner
-    // where it reads as chrome (the background band's rule).
+    // A permission prompt seats the cursor on the row it is asking about: the
+    // **highlighted option**, or Tab's amend field when that has replaced the
+    // options. Both blocks sit a fixed [`PERMISSION_TAIL_ROWS`] above the
+    // region's bottom (gap, hint, gap, rule) — `permission_lines` pads a capped
+    // prompt above the question to keep them there — so the cursor is found
+    // from that edge without re-deriving the body. The column is the same for
+    // both (past the inset and the `❯ ` marker), so ↑/↓ walk the cursor
+    // **straight** down the options and Tab never slides it sideways: the
+    // terminal cursor is the one thing on screen that moves by itself, and a
+    // kitty cursor-trail animation draws every jump it makes.
     if let Some(prompt) = app.permission() {
-        if !prompt.amend {
-            let x = area.x + area.width.saturating_sub(1);
-            let y = area.y + area.height.saturating_sub(1);
-            return (x, y);
-        }
-        let field = super::permission_view::amend_field_width(area.width);
-        let rows = app.input.row_count(field) as u16;
-        let (crow, ccol) = app.input.cursor_row_col(field);
-        let first = area
-            .height
-            .saturating_sub(PERMISSION_TAIL_ROWS.saturating_add(rows));
-        let y = area.y + (first + crow as u16).min(area.height.saturating_sub(1));
+        let (row, ccol) = if prompt.amend {
+            let field = super::permission_view::amend_field_width(area.width);
+            let (crow, ccol) = app.input.cursor_row_col(field);
+            let rows = app.input.row_count(field) as u16;
+            (
+                area.height
+                    .saturating_sub(PERMISSION_TAIL_ROWS.saturating_add(rows))
+                    + crow as u16,
+                ccol,
+            )
+        } else {
+            let options = OPTION_COUNT as u16;
+            (
+                area.height
+                    .saturating_sub(PERMISSION_TAIL_ROWS.saturating_add(options))
+                    + prompt.selected.min(OPTION_COUNT - 1) as u16,
+                0,
+            )
+        };
+        let y = area.y + row.min(area.height.saturating_sub(1));
         let x = area.x
             + ((cols(PERMISSION_INDENT) + cols(PERMISSION_MARKER) + ccol)
                 .min(usize::from(area.width.saturating_sub(1))) as u16);

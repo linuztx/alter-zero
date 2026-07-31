@@ -112,9 +112,15 @@ pub fn question(request: &PermissionRequest) -> String {
     }
 }
 
+/// How many options every prompt offers (Yes / remember / No) — the length of
+/// [`options`]. Shared so the key map's clamp and the cursor's seat on the
+/// highlighted row (`ui::cursor_position`) count the same rows the renderer
+/// draws.
+pub const OPTION_COUNT: usize = 3;
+
 /// The three option labels, in order — the numbered rows under the question.
 #[must_use]
-pub fn options(request: &PermissionRequest) -> [String; 3] {
+pub fn options(request: &PermissionRequest) -> [String; OPTION_COUNT] {
     let remember = match request.kind {
         PermissionKind::Bash => format!(
             "Yes, and don't ask again for: {} (a)",

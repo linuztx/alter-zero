@@ -4,8 +4,7 @@
 
 use super::*;
 
-/// How many options every prompt offers (Yes / remember / No).
-const OPTION_COUNT: usize = 3;
+use crate::permission::OPTION_COUNT;
 
 /// A tool call waiting on the user, shown where the composer was.
 ///

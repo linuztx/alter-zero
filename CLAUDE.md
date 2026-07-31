@@ -204,7 +204,11 @@ the **whole** numbered content/diff framed by `╌` rules (capped only to fit th
 terminal, with a `… +N lines` tail), the question, and `❯ 1. Yes` / `2. Yes,
 allow all edits during this session (a)` — for `bash`, `2. Yes, and don't ask
 again for: {prefix} (a)` — / `3. No` over `Esc to cancel · Tab to amend`
-(`· ctrl+e to explain` on a command) — while the tool thread **blocks** on the
+(`· ctrl+e to explain` on a command; the hardware cursor rides the
+**highlighted option**, stepping with ↑/↓ — found `PERMISSION_TAIL_ROWS` up
+from the region's bottom, which is why a capped prompt pads *above* the
+question — instead of parking in the corner, where a kitty cursor trail drew a
+lurch to nowhere on every open) — while the tool thread **blocks** on the
 shared `permission::PermissionGate` (the `Arc<Mutex<…>> + Condvar` sibling of
 the background/agent registries, its `wait` polling the turn's `CancelToken` so
 an Esc reaps it); the prompt is modal (routed first in `on_key`, replacing the

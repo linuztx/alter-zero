@@ -4068,6 +4068,20 @@ for _ in $(seq 1 250); do
 done
 echo "==== Phase 55: captured pane (the permission prompt over the stashed draft) ===="
 printf '%s\n' "$perm_prompt"
+# The hardware cursor rides the **highlighted option**. It is the one thing on
+# screen that moves by itself — a kitty cursor-trail animation draws every jump
+# it makes — so parking it in the region's bottom corner opened each prompt with
+# a lurch to nowhere. It must sit on the `❯` row and step with ↓/↑, straight
+# down: same column, one row per option (docs/permissions.md).
+perm_cursor_1="$(tmux display-message -p -t "$S55" '#{cursor_x} #{cursor_y}')"
+perm_marker_row=$(printf '%s\n' "$perm_prompt" | grep -n '❯ 1\.' | head -1 | cut -d: -f1)
+tmux send-keys -t "$S55" Down
+sleep 0.4
+perm_cursor_2="$(tmux display-message -p -t "$S55" '#{cursor_x} #{cursor_y}')"
+perm_marker_row_2=$(tmux capture-pane -t "$S55" -p | grep -n '❯ 2\.' | head -1 | cut -d: -f1)
+tmux send-keys -t "$S55" Up
+sleep 0.4
+echo "==== Phase 55: cursor on option 1 = ($perm_cursor_1) row ${perm_marker_row:-none} · on option 2 = ($perm_cursor_2) row ${perm_marker_row_2:-none} ===="
 tmux send-keys -t "$S55" Tab
 sleep 0.3
 tmux send-keys -t "$S55" -l "use pathlib"
@@ -4148,6 +4162,18 @@ if ! printf '%s' "$perm_prompt" | grep -qF "Esc to cancel · Tab to amend"; then
 fi
 if printf '%s' "$perm_prompt" | grep -qF "a draft I was typing"; then
 	echo "FAIL: Phase 55 — the stashed draft is still on screen under the prompt" >&2
+	status=1
+fi
+# The cursor seat: `#{cursor_y}` is 0-based, grep -n 1-based, so the row it
+# sits on is the marker row minus one. The column is the one-space inset plus
+# the two-column `❯ ` — the amend field's first column too, so Tab never
+# slides it sideways.
+if [ "$perm_cursor_1" != "3 $((${perm_marker_row:-0} - 1))" ]; then
+	echo "FAIL: Phase 55 — the cursor sits at ($perm_cursor_1), not on the '❯ 1. Yes' row (${perm_marker_row:-none}) at column 3: a prompt opening yanks it to the region's corner" >&2
+	status=1
+fi
+if [ "$perm_cursor_2" != "3 $((${perm_marker_row_2:-0} - 1))" ]; then
+	echo "FAIL: Phase 55 — ↓ moved the selection to row ${perm_marker_row_2:-none} but left the cursor at ($perm_cursor_2): it must travel with the highlight" >&2
 	status=1
 fi
 if [ -z "$perm_amend" ] || ! printf '%s' "$perm_amend" | grep -qF "❯ use pathlib"; then

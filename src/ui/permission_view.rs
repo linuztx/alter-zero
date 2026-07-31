@@ -250,7 +250,12 @@ fn more_row(hidden: usize, width: u16) -> Line<'static> {
 /// [`permission_height`](super::layout::permission_height) — which sizes the
 /// region from the *terminal* — and [`render_permission`] — which only ever
 /// sees the sized *region* — in agreement: at both heights the builder is a
-/// fixpoint, so the rows reserved are the rows painted.
+/// fixpoint, so the rows reserved are the rows painted. The padding goes
+/// **above** the question, so the question/options/hint block keeps a fixed
+/// seat against the bottom rule however tall the body is — which is what lets
+/// [`cursor_position`](super::layout::cursor_position) find the highlighted
+/// option (and the amend field) from that edge, `PERMISSION_TAIL_ROWS` up,
+/// without re-deriving the body.
 ///
 /// Returns an empty vec when no prompt is open, so the callers can treat "no
 /// prompt" and "no rows" alike.
@@ -341,16 +346,18 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         }
     }
 
-    out.extend(below);
     // A capped body means the prompt is meant to fill the terminal: pad the
     // shortfall (whole source rows can leave a row or two unused) so the count
-    // is exactly `term_height` and the builder is a fixpoint — see above.
+    // is exactly `term_height` and the builder is a fixpoint — see above. The
+    // padding goes here, above the question, so `below` stays flush against the
+    // closing rule and the cursor can be seated from that edge.
     if capped {
-        let target = usize::from(term_height).saturating_sub(2); // the blank + rule below
+        let target = usize::from(term_height).saturating_sub(below.len() + 2); // + blank + rule
         while out.len() < target {
             out.push(Line::default());
         }
     }
+    out.extend(below);
     out.push(Line::default());
     out.push(rule(width));
     out
