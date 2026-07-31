@@ -45,7 +45,7 @@ session back restores its history, and therefore its context, in one move.
 | --- | --- |
 | `Message(User)` | `user`, text verbatim (placeholders included) + its image paths |
 | `Message(Assistant)` | `assistant`, text verbatim |
-| `Tool` (backend) | an assistant `tool_calls` entry (native `{id, name, arguments}`) folded onto the preceding assistant segment, then a `tool`-role result carrying `{output}` |
+| `Tool` (backend) | an assistant `tool_calls` entry (native `{id, name, arguments}`) folded onto the preceding assistant segment, then a `tool`-role result carrying `ToolCall::context_text()` — the **model-facing** text |
 | `Tool` (`!` shell) | `user`, a `$ {command}\n{output}` transcript (the user ran it locally) |
 | `Message(Shell)` | skipped — its tool cell above carries the command and output |
 | `Message(Error)` | `user`, `[error] {text}` (interrupts and backend failures) |
@@ -68,6 +68,27 @@ An **image `read`** (detected from the stored record: `name == "Read"` + the
 live loop attached — `llm::tools::image_attachment_note` over the path as an
 `images` attachment — so later turns keep *seeing* the image, re-encoded per
 request like a Ctrl+V paste (`docs/tools.md`).
+
+### The result the model read, not the cell it saw
+
+A tool's result is `ToolCall::context_text()`: `context_output` when the call
+recorded one, else its displayed `output`. The two are the same for every
+ordinary call — but a **permission rejection** (`docs/permissions.md`) resolves
+with two texts on purpose. The red cell reads
+
+```
+⎿ User rejected write to hello.py
+  Instructions: use pathlib instead
+```
+
+while the model was handed the full stop-and-wait instruction with the same
+feedback appended. Replaying the cell text would hand a later turn a *different*
+tool result than the one the live round sent — dropping the user's instructions
+from the conversation entirely, one turn after they were given. Storing both
+keeps the replay honest: what Ctrl+D shows, and what the next request carries,
+is exactly what the model was told. (The `Backgrounded` split runs the other
+way: `output` holds the model-facing launch text and the *cell* row is
+synthesized from the status, so `context_output` stays `None` there.)
 
 Adjacent same-role **plain-text** entries still **merge** (texts joined with a
 blank line, attachments concatenated) so message batches and notice runs

@@ -151,6 +151,13 @@ fn main() {
                 let head: String = output.lines().take(8).collect::<Vec<_>>().join("\n");
                 println!("{color}  ⎿ ok={ok} truncated={truncated}\x1b[0m\n{head}\n  ---");
             }
+            StreamEvent::ToolRejected { display, result } => {
+                // Refused at the permission prompt: the cell text, then the
+                // longer instruction the model reads (docs/permissions.md).
+                println!(
+                    "\x1b[31m  ⎿ rejected\x1b[0m\n{display}\n  \x1b[90m→ {result}\x1b[0m\n  ---"
+                );
+            }
             StreamEvent::Usage(usage) => {
                 println!(
                     "\n\x1b[90m[usage: {} in ({} cached, {} cache-written) + {} out]\x1b[0m",

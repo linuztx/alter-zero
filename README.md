@@ -169,6 +169,10 @@ own description of it), the whole numbered content or diff, and
 with instructions typed into the same composer; **Esc** cancels the turn;
 **ctrl+e** asks the model to explain a command instead of running it. Whatever
 you had typed when the prompt appeared is stashed and handed straight back.
+An amended rejection is kept, not just delivered: the instructions show on the
+red cell and the model-facing denial rides the conversation, so Ctrl+D shows
+what the model was told and every later turn — and a `/resume` — still carries
+it.
 `ALTER_ZERO_PERMISSIONS=0` turns the gate off.
 
 Providers live in `providers.toml` (repo root; an Agent-Zero/Venice proxy and

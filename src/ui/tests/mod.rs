@@ -87,6 +87,7 @@ pub(super) fn stamped_history() -> Vec<HistoryItem> {
             timestamp: STAMP.to_string(),
             shell: false,
             truncated: false,
+            context_output: None,
         }),
         HistoryItem::Message(Message {
             role: Role::Assistant,
@@ -144,6 +145,7 @@ pub(super) fn tool(name: &str, args: &str, status: ToolStatus, output: &str) -> 
         timestamp: String::new(),
         shell: false,
         truncated: false,
+        context_output: None,
     }
 }
 

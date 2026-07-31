@@ -350,3 +350,99 @@ fn a_sweep_that_covers_everything_closes_the_prompt() {
     assert!(app.permission().is_none());
     assert!(app.pending_permissions().is_empty());
 }
+
+// ===== what the model is told, and keeps being told (docs/permissions.md) =====
+
+/// Drive the whole rejection round trip the way the loop does — the user's
+/// Tab-amended answer through the real key path, resolved on a real gate, the
+/// backend's `approve` seam consulted, and the resulting events folded into
+/// `App` — then hand back the model's tool result and the recorded call.
+///
+/// This is the seam the bug lived in: everything below the gate was already
+/// right, and everything above it kept only the cell text.
+fn amended_rejection(feedback: &str) -> (String, ToolCall) {
+    use crate::llm::approval::approve_call;
+    use crate::llm::tools::ToolCallRequest;
+    use crate::permission::PermissionGate;
+    use crate::stream::{CancelToken, StreamEvent};
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let gate = PermissionGate::new();
+    let cancel = CancelToken::new();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("hello.py");
+    let call = ToolCallRequest {
+        id: "c1".to_string(),
+        name: "write".to_string(),
+        arguments: serde_json::json!({ "path": path.to_str().unwrap(), "content": "x\n" })
+            .to_string(),
+    };
+    // The backend thread blocks on the gate, exactly as `run_agent` does.
+    let waiter = {
+        let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+        std::thread::spawn(move || approve_call(Some(&gate), &tx, &cancel, None, &call))
+    };
+    let request = loop {
+        if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+            break request;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    };
+
+    // The user answers: Tab, type, Enter — the real key path.
+    let mut app = App::new();
+    app.begin_stream();
+    app.open_permission(request);
+    app.on_key(key(KeyCode::Tab));
+    type_text(&mut app, feedback);
+    let Action::ResolvePermission { request, decision } = app.on_key(key(KeyCode::Enter)) else {
+        panic!("Enter in the amend field resolves the prompt");
+    };
+    gate.resolve(&request.id, decision);
+
+    let crate::permission::Approval::Reject { display, result } = waiter.join().unwrap() else {
+        panic!("an amended answer is a rejection");
+    };
+    // …and the loop folds the backend's events into the app.
+    app.start_tool("Write", "hello.py");
+    let tool = app
+        .reject_tool(&display, &result)
+        .expect("the refused call resolves");
+    (result, tool)
+}
+
+#[test]
+fn an_amended_rejection_records_exactly_what_the_model_was_told() {
+    let (result, tool) = amended_rejection("use pathlib instead");
+    // What the backend handed the model this round…
+    assert!(
+        result.contains("use pathlib instead"),
+        "the live tool result carries the feedback: {result}"
+    );
+    // …is what the recorded call replays, verbatim.
+    assert_eq!(tool.context_text(), result);
+    assert_eq!(tool.status, ToolStatus::Failed);
+}
+
+#[test]
+fn the_derived_context_replays_the_amended_instructions_on_later_turns() {
+    // The bug: the amend feedback reached the model for one round and then
+    // vanished — the next turn rebuilds the context from history, which kept
+    // only `User rejected write to hello.py`. Ctrl+D showed the same gap.
+    let (result, tool) = amended_rejection("use pathlib instead");
+    let history = vec![HistoryItem::Tool(tool)];
+    let ctx = crate::context::context_messages(&history);
+    let replayed = ctx
+        .iter()
+        .find(|m| m.role == crate::context::ContextRole::Tool)
+        .expect("the call is answered in the derived context");
+    assert_eq!(
+        replayed.text, result,
+        "a later turn sees exactly what the live round sent"
+    );
+    assert!(
+        replayed.text.contains("use pathlib instead"),
+        "the user's instructions survive the turn: {}",
+        replayed.text
+    );
+}

@@ -195,6 +195,7 @@ impl AgentRun {
                         timestamp: String::new(),
                         shell: false,
                         truncated: false,
+                        context_output: None,
                     });
                 }
             }
@@ -222,6 +223,7 @@ impl AgentRun {
                         timestamp: String::new(),
                         shell: false,
                         truncated: false,
+                        context_output: None,
                     }),
                 }
             }
@@ -246,6 +248,20 @@ impl AgentRun {
                     };
                     front.output = output.clone();
                     front.truncated = *truncated;
+                    self.history.push(HistoryItem::Tool(front));
+                }
+            }
+            // The user refused this agent's call at the shared permission
+            // prompt: red like any failure, with the model-facing `result`
+            // kept beside the cell text so the agent's own derived context
+            // (its Ctrl+D view, and a continuation run over its stored
+            // messages) replays what it actually read (docs/permissions.md).
+            StreamEvent::ToolRejected { display, result } => {
+                self.tokens += crate::app::count_tokens(result) as u64;
+                if let Some(mut front) = self.tool_queue.pop_front() {
+                    front.status = ToolStatus::Failed;
+                    front.output = display.clone();
+                    front.context_output = Some(result.clone());
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
@@ -738,6 +754,37 @@ mod tests {
         // Late events after settling are dropped.
         assert!(!run.apply(&chunk("late")));
         assert_eq!(run.result.as_deref(), Some("It is 19°C."));
+    }
+
+    #[test]
+    fn a_rejected_call_keeps_the_model_facing_result_on_the_agents_transcript() {
+        // A subagent's request goes to the same shared prompt, so its
+        // transcript needs the same two texts: the cell line, and what the
+        // agent itself read — its Ctrl+D view and any continuation run derive
+        // from this history (docs/permissions.md).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolStart {
+            name: "Write".into(),
+            args: "hello.py".into(),
+            detail: None,
+        });
+        assert!(!run.apply(&StreamEvent::ToolRejected {
+            display: "User rejected write to hello.py\nInstructions: use pathlib".into(),
+            result: "The user doesn't want to proceed… instructions instead: use pathlib".into(),
+        }));
+        let Some(HistoryItem::Tool(tool)) = run.history.last() else {
+            panic!("the refused call still lands on the transcript");
+        };
+        assert_eq!(tool.status, ToolStatus::Failed);
+        assert_eq!(
+            tool.output,
+            "User rejected write to hello.py\nInstructions: use pathlib"
+        );
+        assert_eq!(
+            tool.context_text(),
+            "The user doesn't want to proceed… instructions instead: use pathlib"
+        );
+        assert!(run.tokens > 0, "the uploaded instruction ticks the tally");
     }
 
     #[test]

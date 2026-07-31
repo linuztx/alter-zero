@@ -110,8 +110,61 @@ fn end_tool_records_a_successful_tool_call_and_clears_the_slot() {
             timestamp: String::new(),
             shell: false,
             truncated: false,
+            context_output: None,
         }))
     );
+}
+
+#[test]
+fn reject_tool_keeps_the_model_facing_result_beside_the_cell_text() {
+    // A permission rejection resolves red like any failure, but with TWO
+    // texts: the short cell line the user reads and the longer instruction
+    // the model read. Only keeping both lets the derived context replay what
+    // was really sent — Tab's amend feedback included (docs/permissions.md).
+    let mut app = App::new();
+    app.start_tool("Write", "hello.py");
+    let finished = app
+        .reject_tool(
+            "User rejected write to hello.py\nInstructions: just print it",
+            "The user doesn't want to proceed with this tool use. …",
+        )
+        .expect("a tool was running");
+    assert_eq!(finished.status, ToolStatus::Failed);
+    assert_eq!(
+        finished.output,
+        "User rejected write to hello.py\nInstructions: just print it"
+    );
+    assert_eq!(
+        finished.context_text(),
+        "The user doesn't want to proceed with this tool use. …"
+    );
+    assert!(app.current_tool().is_none(), "running slot cleared");
+    assert_eq!(app.history.last(), Some(&HistoryItem::Tool(finished)));
+}
+
+#[test]
+fn an_ordinary_call_reads_its_own_output_as_the_model_facing_text() {
+    // The split exists only for a rejection: every other call's cell text *is*
+    // what the model read, so `context_text` falls through to `output`.
+    let mut app = App::new();
+    app.start_tool("Read", "a.txt");
+    let finished = app.end_tool("L1", true).expect("a tool was running");
+    assert_eq!(finished.context_output, None);
+    assert_eq!(finished.context_text(), "L1");
+}
+
+#[test]
+fn a_rejections_token_tally_charges_the_text_the_model_reads() {
+    // The tally counts what the next request uploads. For a rejection that is
+    // the long instruction, not the one-line cell (docs/status-indicator.md).
+    let long = "The user doesn't want to proceed with this tool use. The tool use was rejected. \
+                STOP what you are doing and wait for the user to tell you how to proceed.";
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Write", "hello.py");
+    app.reject_tool("User rejected write to hello.py", long);
+    let charged = app.status().expect("a turn is active").tokens;
+    assert_eq!(charged, crate::app::count_tokens(long));
 }
 
 #[test]

@@ -466,7 +466,12 @@ fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
                     }
                     _ => out.push(ContextMessage::assistant_tool_calls("", vec![call])),
                 }
-                out.push(ContextMessage::tool_result(id, tool.output.clone()));
+                // The **model-facing** result, not the cell text: a permission
+                // rejection's display is a one-liner while the model read the
+                // full stop-and-wait instruction — with Tab's amend feedback
+                // appended. Replaying the display would drop what the user
+                // asked for from every later turn (`docs/permissions.md`).
+                out.push(ContextMessage::tool_result(id, tool.context_text()));
                 // An image `read` (docs/tools.md): the live agent loop
                 // attached the pixels as a follow-up user message; replay the
                 // same shape so later turns keep seeing them. The stored args
@@ -567,6 +572,22 @@ mod tests {
             timestamp: String::new(),
             shell,
             truncated: false,
+            context_output: None,
+        })
+    }
+
+    /// A permission-rejected call: the short red cell text plus the longer
+    /// model-facing result the live loop actually sent (`docs/permissions.md`).
+    fn rejected_tool(name: &str, args: &str, display: &str, result: &str) -> HistoryItem {
+        HistoryItem::Tool(ToolCall {
+            name: name.to_string(),
+            args: args.to_string(),
+            status: ToolStatus::Failed,
+            output: display.to_string(),
+            timestamp: String::new(),
+            shell: false,
+            truncated: false,
+            context_output: Some(result.to_string()),
         })
     }
 
@@ -673,6 +694,38 @@ mod tests {
         let ctx = context_messages(&history);
         assert_eq!(ctx[1].role, ContextRole::Tool);
         assert_eq!(ctx[1].text, "Exit code: 1\nno matches");
+    }
+
+    #[test]
+    fn a_rejected_tool_replays_the_model_facing_result_not_the_cell_text() {
+        // A permission rejection resolves with TWO texts (`docs/permissions.md`):
+        // the short red cell output the user reads, and the longer stop-and-wait
+        // instruction the *model* read as the tool result — with Tab's amend
+        // feedback appended. The replay must be the latter, or the next turn
+        // silently drops what the user asked for.
+        let history = vec![rejected_tool(
+            "Write",
+            "hello.py",
+            "User rejected write to hello.py",
+            "The user doesn't want to proceed with this tool use.\nThe user provided the \
+             following instructions instead: just print it instead",
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[1].role, ContextRole::Tool);
+        assert_eq!(
+            ctx[1].text,
+            "The user doesn't want to proceed with this tool use.\nThe user provided the \
+             following instructions instead: just print it instead"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_tool_replays_its_own_output() {
+        // The split only exists for a rejection: every other call's display
+        // text *is* what the model read, so `context_output` stays None.
+        let history = vec![tool("Read", "a.txt", "L1", ToolStatus::Ok, false)];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[1], ContextMessage::tool_result("call_0", "L1"));
     }
 
     #[test]

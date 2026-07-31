@@ -131,6 +131,20 @@ pub enum StreamEvent {
         ok: bool,
         truncated: bool,
     },
+    /// The in-flight tool call was **refused at the permission prompt** (option
+    /// 3, a Tab-amended rejection, or Ctrl+E's explain-instead) — sent **in
+    /// place of** [`StreamEvent::ToolEnd`], since the tool never ran.
+    ///
+    /// The two texts are deliberately different (`docs/permissions.md`):
+    /// `display` is the short red cell output the user reads
+    /// (`User rejected write to hello.py`, plus the amended instructions when
+    /// Tab supplied them), while `result` is the longer stop-and-wait text the
+    /// *model* receives as the tool result. The loop keeps both on the
+    /// recorded call ([`crate::app::App::reject_tool`]) so
+    /// [`crate::context::context_messages`] replays what was really sent — a
+    /// later turn would otherwise see only the one-liner and lose the user's
+    /// instructions entirely.
+    ToolRejected { display: String, result: String },
     /// The in-flight tool call resolved by **moving to the background**
     /// (a `run_in_background` bash call, or Ctrl+B on a running command) —
     /// sent **in place of** [`StreamEvent::ToolEnd`]. `id` is the registry
@@ -877,37 +891,50 @@ fn dummy_permission_turn(
         let _ = tx.send(StreamEvent::Permission(request.clone()));
         gate.wait(&request.id, &|| cancel.is_cancelled())
     };
-    let (output, ok) = match decision {
+    // `Ok(output)` ran; `Err((display, result))` was refused at the prompt —
+    // the real backend's two-text shape, so the offline demo exercises Tab's
+    // amend feedback all the way into the derived context (docs/permissions.md).
+    let resolved = match &decision {
         Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
             if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
                 request.id.clear();
                 gate.remember(&request);
             }
-            (
-                format!(
-                    "Created {DUMMY_PERMISSION_PATH} ({} lines)\n{}",
-                    DUMMY_PERMISSION_CONTENT.lines().count(),
-                    crate::llm::tools::render_numbered_content(DUMMY_PERMISSION_CONTENT),
-                ),
-                true,
-            )
+            Ok(format!(
+                "Created {DUMMY_PERMISSION_PATH} ({} lines)\n{}",
+                DUMMY_PERMISSION_CONTENT.lines().count(),
+                crate::llm::tools::render_numbered_content(DUMMY_PERMISSION_CONTENT),
+            ))
         }
-        Some(PermissionDecision::Deny(_) | PermissionDecision::Explain) => {
-            (crate::permission::denied_display(&request), false)
-        }
+        Some(PermissionDecision::Deny(feedback)) => Err((
+            crate::permission::denied_display(&request, feedback.as_deref()),
+            crate::permission::denial_result(feedback.as_deref()),
+        )),
+        Some(PermissionDecision::Explain) => Err((
+            crate::permission::explain_display(),
+            crate::permission::explain_result(&request),
+        )),
         // Cancelled out from under us — the channel is already abandoned.
         None => return,
     };
+    let ok = resolved.is_ok();
     let _ = tx.send(StreamEvent::ToolStart {
         name: "Write".to_string(),
         args: DUMMY_PERMISSION_PATH.to_string(),
         detail: None,
     });
-    let _ = tx.send(StreamEvent::ToolEnd {
-        output,
-        ok,
-        truncated: false,
-    });
+    match resolved {
+        Ok(output) => {
+            let _ = tx.send(StreamEvent::ToolEnd {
+                output,
+                ok: true,
+                truncated: false,
+            });
+        }
+        Err((display, result)) => {
+            let _ = tx.send(StreamEvent::ToolRejected { display, result });
+        }
+    }
     for chunk in chunks(if ok {
         "Done — the file is written."
     } else {
@@ -1574,6 +1601,9 @@ mod tests {
                 }
                 StreamEvent::ToolBackgrounded { .. } => {
                     panic!("the dummy never backgrounds a tool")
+                }
+                StreamEvent::ToolRejected { .. } => {
+                    panic!("no gate attached — nothing is ever rejected")
                 }
                 StreamEvent::Error(e) => panic!("dummy never errors, got {e:?}"),
             }

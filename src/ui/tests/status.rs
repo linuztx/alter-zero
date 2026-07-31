@@ -46,6 +46,7 @@ fn transcript_shows_no_stamp_on_assistant_tool_or_summary_items() {
             timestamp: STAMP.to_string(),
             shell: false,
             truncated: false,
+            context_output: None,
         }),
         HistoryItem::Summary(TurnSummary {
             verb: "Done",

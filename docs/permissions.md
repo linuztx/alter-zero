@@ -87,7 +87,8 @@ Plus, on the hint row:
   path, `docs/interrupt.md`).
 - **Tab** — amend: the option list is replaced by the composer, so you can type
   what the model should do instead. Enter rejects **with that feedback**
-  attached to the tool result; Esc goes back to the options.
+  attached to the tool result *and* recorded on the cell; Esc goes back to the
+  options. See [What the amend feedback is worth](#what-the-amend-feedback-is-worth).
 - **ctrl+e** (`bash` only) — explain: reject with an instruction to explain what
   the command does and ask again, instead of running it.
 
@@ -141,7 +142,7 @@ run_agent (backend thread)          event loop                     user
                                                     ◄── Action::ResolvePermission ── 1/2/3
                     ◄─────────────── gate.resolve(id, decision)
    Allow  → ToolStart … ToolEnd
-   Reject → ToolStart + red ToolEnd(display), the model gets `result`
+   Reject → ToolStart + red ToolRejected{display, result}
 ```
 
 `wait` polls its condvar on a short timeout and gives up the moment the turn's
@@ -151,15 +152,49 @@ promptly instead of wedging it.
 `run_agent` gained one seam for this — `approve: FnMut(&ToolCallRequest) ->
 Approval` — called immediately **before** each ordinary call's `ToolStart`, so
 nothing has run and nothing has been announced as running when the prompt
-appears. A rejection still emits the `ToolStart`/`ToolEnd` pair, so the call
-lands in history and the transcript as a red cell (`⎿ User rejected write to
-hello.py`) while the *model* reads the longer "stop and wait" text: the display
-string and the tool result are separate fields of `Approval::Reject` precisely
-so the cell can be short and the instruction complete.
+appears. A rejection still emits a Start/End pair — `ToolStart` then
+`StreamEvent::ToolRejected` in place of `ToolEnd` — so the call lands in history
+and the transcript as a red cell while the *model* reads the longer "stop and
+wait" text. The display string and the tool result are separate fields of
+`Approval::Reject` precisely so the cell can be short and the instruction
+complete, and `ToolRejected` carries **both** so the recorded call keeps them
+both too (below).
 
 Subagent calls take the same seam — `spawn_subagent_run` passes the agent's type
 as the request's `agent`, and the event rides the agent channel's forwarder, so
 `on_agent_event` opens the same prompt.
+
+## What the amend feedback is worth
+
+Tab's whole point is saying *what to do instead*, so that sentence has to
+outlive the round it was typed in. Two places record it:
+
+- **The cell** — `permission::denied_display` puts it on a second line, so the
+  transcript shows what was asked for rather than a bare refusal:
+
+  ```
+  ● Write(hello.py)
+    ⎿  User rejected write to hello.py
+       Instructions: use pathlib instead
+  ```
+
+- **The derived context** — the model-facing `result` rides the recorded call as
+  `ToolCall::context_output`, and `context::context_messages` replays *that* as
+  the `tool` result (`ToolCall::context_text()`), not the cell text. So Ctrl+D
+  shows what the model was actually told, every later turn keeps carrying it,
+  and a `/resume` of the session restores it (`session::ToolRecord`'s
+  `context_output`, omitted when absent so older rollouts still parse).
+
+Without the second one the instruction reached the model for exactly one round —
+the live `run_agent` message list had it, but the next turn rebuilds the context
+from history, which kept only `User rejected write to hello.py`. The same split
+covers option 3 (plain `No`) and Ctrl+E's explain-instead, whose model-facing
+texts were being dropped the same way. A subagent's rejected call keeps both
+texts on its own transcript, so its Ctrl+D view and any continuation run see
+what it read.
+
+The token tally charges `context_text()` too: what the next request uploads is
+the long instruction, not the one-line cell.
 
 ## The prompt is modal, and the draft survives
 
@@ -191,7 +226,12 @@ integration tests) that builds a backend directly is unaffected.
   `command_scope`'s segmentation/prefixing/degradation, the rules' allow +
   remember, and the gate's blocking round trip (real threads).
 - `app/tests` — opening stashes and closing restores the draft, the key map
-  (↑/↓/1/2/3/a/Tab/Esc/ctrl+e), the amend field, the queue.
+  (↑/↓/1/2/3/a/Tab/Esc/ctrl+e), the amend field, the queue — plus the whole
+  amend round trip (real gate, real keys) asserting the recorded call and the
+  derived context carry exactly what the model was told.
+- `app/tests/tools.rs` — `reject_tool` keeps both texts and charges the tally
+  on the model-facing one; `session.rs` — the rejection round-trips through a
+  rollout file while an ordinary call's line keeps its old shape.
 - `ui/tests` — the rendered prompt: rules, coloured title, the agent suffix, the
   numbered/diff body, the cyan `❯` on the selection, the hint row, the live
   cells kept above it (header-only for the pending call, `⎿ Waiting…` for its
@@ -199,3 +239,9 @@ integration tests) that builds a backend directly is unaffected.
   equals the painted rows — at every height, the context rows included.
 - `smoke.sh` Phase 55 — the whole round trip against the dummy backend in a real
   terminal: draft typed, prompt shown, `2` approving, draft restored.
+- `smoke.sh` Phase 56 — Tab's amend end to end: the instructions land on the red
+  cell and the model-facing denial (feedback included) shows in the Ctrl+D
+  context view, with neither text leaking into the other's place.
+- `tests/live_openrouter.rs` — against a real provider: the replayed rejection
+  is a legible context shape and the model still follows the instructions a
+  turn later.

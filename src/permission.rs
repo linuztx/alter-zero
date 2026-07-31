@@ -135,13 +135,25 @@ pub fn hints(request: &PermissionRequest) -> Vec<(&'static str, &'static str)> {
     out
 }
 
-/// The short output recorded on the rejected call's red cell.
+/// The label introducing Tab's amended instructions on the rejected cell's
+/// second line — the user-facing short form of the sentence
+/// [`denial_result`] hands the model.
+const AMEND_DISPLAY_LABEL: &str = "Instructions: ";
+
+/// The short output recorded on the rejected call's red cell, with Tab's
+/// amended instructions on a second line when the user typed some — the only
+/// place the transcript records what they asked for instead (the model reads
+/// the fuller [`denial_result`]). Whitespace-only feedback is no feedback.
 #[must_use]
-pub fn denied_display(request: &PermissionRequest) -> String {
-    match request.kind {
+pub fn denied_display(request: &PermissionRequest, feedback: Option<&str>) -> String {
+    let headline = match request.kind {
         PermissionKind::Write => format!("User rejected write to {}", file_name(&request.target)),
         PermissionKind::Edit => format!("User rejected edit to {}", file_name(&request.target)),
         PermissionKind::Bash => "User rejected command".to_string(),
+    };
+    match feedback.map(str::trim).filter(|f| !f.is_empty()) {
+        Some(text) => format!("{headline}\n{AMEND_DISPLAY_LABEL}{text}"),
+        None => headline,
     }
 }
 
@@ -489,11 +501,11 @@ mod tests {
     #[test]
     fn a_rejection_shows_a_short_cell_and_tells_the_model_to_stop() {
         assert_eq!(
-            denied_display(&request(PermissionKind::Write, "src/hello.py")),
+            denied_display(&request(PermissionKind::Write, "src/hello.py"), None),
             "User rejected write to hello.py"
         );
         assert_eq!(
-            denied_display(&request(PermissionKind::Bash, "rm -rf /")),
+            denied_display(&request(PermissionKind::Bash, "rm -rf /"), None),
             "User rejected command"
         );
         let plain = denial_result(None);
@@ -506,6 +518,26 @@ mod tests {
         );
         // Whitespace-only feedback is no feedback.
         assert_eq!(denial_result(Some("   ")), plain);
+    }
+
+    #[test]
+    fn an_amended_rejection_records_the_typed_instructions_on_the_cell_too() {
+        // Tab's feedback is the only trace of what the user typed — without it
+        // on the cell, the transcript says the call was rejected and nothing
+        // about why. It rides a second line, under the rejection headline.
+        let display = denied_display(
+            &request(PermissionKind::Write, "src/hello.py"),
+            Some("just print it instead"),
+        );
+        assert_eq!(
+            display,
+            "User rejected write to hello.py\nInstructions: just print it instead"
+        );
+        // Whitespace-only feedback is no feedback — the plain one-liner stands.
+        assert_eq!(
+            denied_display(&request(PermissionKind::Bash, "rm -rf /"), Some("  ")),
+            "User rejected command"
+        );
     }
 
     #[test]

@@ -174,10 +174,13 @@ pub fn run_agent(
                             args: summarize_call(&call.name, &call.arguments),
                             detail: super::tools::call_description(&call.name, &call.arguments),
                         });
-                        let _ = tx.send(StreamEvent::ToolEnd {
-                            output: display,
-                            ok: false,
-                            truncated: false,
+                        // ToolRejected, not ToolEnd: it carries BOTH texts, so
+                        // the recorded call keeps the model-facing `result`
+                        // beside the short cell line and later turns replay
+                        // what this round actually sent (docs/permissions.md).
+                        let _ = tx.send(StreamEvent::ToolRejected {
+                            display,
+                            result: result.clone(),
                         });
                         results.push((call.id.clone(), result));
                         continue;
@@ -1074,13 +1077,23 @@ mod tests {
                 .any(|e| matches!(e, StreamEvent::ToolStart { .. })),
             "the cell is still announced: {events:?}"
         );
+        // ToolRejected, not ToolEnd: it carries BOTH the cell text and the
+        // model-facing result, so the recorded call keeps what the model read
+        // and later turns replay it (docs/permissions.md).
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                StreamEvent::ToolEnd { output, ok, .. }
-                    if !ok && output == "User rejected write to hello.py"
+                StreamEvent::ToolRejected { display, result }
+                    if display == "User rejected write to hello.py"
+                        && result == "The user doesn't want to proceed…"
             )),
-            "…and resolves red with the short display text: {events:?}"
+            "…and resolves as a rejection carrying both texts: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+            "a refused call never ends like an executed one: {events:?}"
         );
         // The model's tool result is the longer instruction, not the cell text.
         let result = messages

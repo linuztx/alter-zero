@@ -18,8 +18,10 @@
 
 use std::path::PathBuf;
 
-use alter_zero::context::{ContextMessage, ContextRole, ContextToolCall};
+use alter_zero::app::{HistoryItem, ToolCall, ToolStatus};
+use alter_zero::context::{ContextMessage, ContextRole, ContextToolCall, context_messages};
 use alter_zero::llm::{LlmBackend, ModelConfig, ThinkingMode};
+use alter_zero::permission::{PermissionKind, PermissionRequest, denial_result, denied_display};
 use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
 
 /// A backend configured for OpenRouter from the environment, for `model` with
@@ -353,6 +355,60 @@ fn live_raw_tool_records_are_usable_context() {
     assert!(
         reply.contains("4821"),
         "the model should read the port out of the native tool result, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_amended_rejection_still_steers_the_model_a_turn_later() {
+    // The Tab-amend fix (docs/permissions.md), against a real provider: a
+    // rejected call replays with the **model-facing** denial — the user's
+    // typed instructions included — so a LATER turn still follows them. Before
+    // the fix history kept only `User rejected write to config.py`, and a real
+    // model asked to proceed would happily re-propose the rejected approach.
+    //
+    // The derivation under test is `context::context_messages`, run over a
+    // history item shaped exactly as `App::reject_tool` records one — both
+    // texts built by the same pure functions the gate uses, so this fixture
+    // cannot drift from production. (The *discriminating* check that the
+    // derivation picks `context_output` over `output` is the offline unit test
+    // `app::tests::permission::the_derived_context_replays_the_amended_…`;
+    // what a live provider adds is that a real model reads this shape and acts
+    // on the instruction a turn later.)
+    let feedback = "use the sentinel port 4821";
+    let request = PermissionRequest {
+        id: String::new(),
+        kind: PermissionKind::Write,
+        target: "config.py".to_string(),
+        body: String::new(),
+        detail: None,
+        agent: None,
+    };
+    let history = vec![HistoryItem::Tool(ToolCall {
+        name: "Write".to_string(),
+        args: "config.py".to_string(),
+        status: ToolStatus::Failed,
+        // What the cell shows…
+        output: denied_display(&request, Some(feedback)),
+        timestamp: String::new(),
+        shell: false,
+        truncated: false,
+        // …and what the model was actually told.
+        context_output: Some(denial_result(Some(feedback))),
+    })];
+    let mut context = vec![ContextMessage::new(
+        ContextRole::User,
+        "Write config.py with the server port in it.",
+    )];
+    context.extend(context_messages(&history));
+    let question = "What port did I tell you to use? Reply with just the number.";
+    context.push(ContextMessage::new(ContextRole::User, question));
+
+    let reply = complete(question, vec![], context);
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.contains("4821"),
+        "the amended instructions must survive into a later turn's context, got: {reply:?}"
     );
 }
 
@@ -841,6 +897,7 @@ fn live_replayed_image_read_is_visible_on_the_next_turn() {
             timestamp: String::new(),
             shell: false,
             truncated: false,
+            context_output: None,
         }),
         HistoryItem::Message(Message {
             role: Role::Assistant,

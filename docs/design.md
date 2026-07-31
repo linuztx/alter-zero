@@ -614,11 +614,17 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
   displayed only for **user** messages, in the Ctrl+O transcript).
 - `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (blue/green/red).
-- `ToolCall { name, args, status, output, timestamp, shell, truncated }` — one
+- `ToolCall { name, args, status, output, timestamp, shell, truncated,
+  context_output }` — one
   tool invocation; `current_tool` while running, then recorded in history
   (stamped when it finishes). `shell` marks a `!` command's headerless exec
   cell, `truncated` a `!` output cut at the in-memory cap (a dim `…` appended
-  in the expanded view) — `docs/shell-command.md`.
+  in the expanded view) — `docs/shell-command.md`. `context_output` is the
+  **model-facing** result when it differs from the displayed `output` — set
+  only by a permission rejection, whose cell is short while the model reads the
+  full stop-and-wait instruction with Tab's amend feedback appended; the
+  derived context replays it via `ToolCall::context_text()` so a later turn
+  carries what was really sent (`docs/permissions.md`).
 - `TokenArrow { Down, Up }` + `TurnStatus { verb, done_verb, tokens, arrow,
   elapsed, thinking }` — the live status of the turn in flight (`App::status`);
   the `Duration`s are written by the boundary each frame (one value drives the

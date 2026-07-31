@@ -490,6 +490,11 @@ pub struct StreamError {
 /// Two outcomes, mirroring codex's "keep what streamed" versus this codebase's
 /// "nothing streamed yet, so undo it" divergence (see `docs/interrupt.md`):
 #[derive(Debug, Clone, PartialEq, Eq)]
+// `Kept` is far larger than the empty `Undone`, by design: it carries the
+// whole settled turn. One of these is built per Esc press and consumed
+// immediately — never stored, never collected — so the size difference the
+// lint guards against costs nothing here.
+#[allow(clippy::large_enum_variant)]
 pub enum InterruptedTurn {
     /// The turn had produced **no output** (no partial reply, no tool) and
     /// nothing was queued behind it, so the whole submission is rolled back

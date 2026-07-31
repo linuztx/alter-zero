@@ -7,7 +7,8 @@ use crate::ui::table::{
     table_should_use_records,
 };
 use crate::ui::theme::{
-    INLINE_CODE_COLOR, TABLE_MIN_COL, TABLE_RECORD_SEPARATOR_WIDTH, TOOL_DIM_COLOR, TOOL_OK_COLOR,
+    INLINE_CODE_COLOR, TABLE_MIN_COL, TABLE_RECORD_SEPARATOR_WIDTH, TOOL_DIM_COLOR,
+    TOOL_FAIL_COLOR, TOOL_OK_COLOR,
 };
 use crate::ui::tool::tool_full_lines;
 use crate::ui::wrap::cols;
@@ -886,6 +887,49 @@ fn preview_rows_counts_the_running_backend_tool_cell() {
 }
 
 #[test]
+fn a_rejected_cell_shows_the_amended_instructions_and_never_the_model_text() {
+    // The mirror image of the backgrounded cell: here the *display* is the
+    // richer text (Tab's instructions under the rejection headline) and the
+    // model-facing result is the one that never renders — it rides
+    // `context_output` for the derived context (docs/permissions.md).
+    let tool = ToolCall {
+        name: "Write".to_string(),
+        args: "hello.py".to_string(),
+        status: ToolStatus::Failed,
+        output: "User rejected write to hello.py\nInstructions: just print it instead".to_string(),
+        timestamp: String::new(),
+        shell: false,
+        truncated: false,
+        context_output: Some(
+            "The user doesn't want to proceed with this tool use. STOP what you are doing."
+                .to_string(),
+        ),
+    };
+    for lines in [tool_lines(&tool, 80), tool_full_lines(&tool, 80)] {
+        let texts: Vec<String> = lines.iter().map(plain).collect();
+        let joined = texts.join("\n");
+        assert!(texts[0].contains("Write(hello.py)"), "{texts:?}");
+        assert!(
+            joined.contains("User rejected write to hello.py"),
+            "the headline is the cell's first output row: {texts:?}"
+        );
+        assert!(
+            joined.contains("Instructions: just print it instead"),
+            "the typed instructions are recorded on the cell: {texts:?}"
+        );
+        assert!(
+            !joined.contains("STOP what you are doing"),
+            "the model-facing result never renders: {texts:?}"
+        );
+    }
+    assert_eq!(
+        tool_lines(&tool, 80)[0].spans[0].style.fg,
+        Some(TOOL_FAIL_COLOR),
+        "a refused call keeps the red bullet"
+    );
+}
+
+#[test]
 fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
     // The stored output is the model-facing launch text — the cell (inline
     // and expanded alike) shows the fixed backgrounded row instead, under
@@ -898,6 +942,7 @@ fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
         timestamp: String::new(),
         shell: false,
         truncated: false,
+        context_output: None,
     };
     for lines in [tool_lines(&tool, 60), tool_full_lines(&tool, 60)] {
         let texts: Vec<String> = lines.iter().map(plain).collect();
@@ -929,6 +974,7 @@ fn a_backgrounded_shell_cell_is_the_headerless_fixed_row() {
         timestamp: String::new(),
         shell: true,
         truncated: false,
+        context_output: None,
     };
     let texts: Vec<String> = tool_lines(&tool, 60).iter().map(plain).collect();
     assert_eq!(texts.len(), 1);

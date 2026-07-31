@@ -125,8 +125,11 @@ pub fn approve_call(
             gate.remember(&request);
             Approval::Allow
         }
+        // Tab's amended rejection: the typed instructions ride BOTH texts —
+        // the cell's second line (the transcript's only record of them) and
+        // the model's tool result (docs/permissions.md).
         Some(PermissionDecision::Deny(feedback)) => Approval::Reject {
-            display: denied_display(&request),
+            display: denied_display(&request, feedback.as_deref()),
             result: denial_result(feedback.as_deref()),
         },
         Some(PermissionDecision::Explain) => Approval::Reject {
@@ -347,7 +350,12 @@ mod tests {
         let Approval::Reject { display, result } = waiter.join().unwrap() else {
             panic!("expected a rejection");
         };
-        assert_eq!(display, "User rejected write to hello.py");
+        // Tab's typed instructions ride both texts: the cell's second line
+        // (the transcript's only record of them) and the model's tool result.
+        assert_eq!(
+            display,
+            "User rejected write to hello.py\nInstructions: use pathlib"
+        );
         assert!(result.contains("use pathlib"), "got {result}");
     }
 

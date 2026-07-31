@@ -3146,6 +3146,25 @@ fn on_stream_event(
             clocks.command_start = None;
             Ok(false)
         }
+        StreamEvent::ToolRejected { display, result } => {
+            // The user refused the call at the permission prompt: commit the
+            // red cell with the short `display` (Tab's instructions on its
+            // second line) while `result` — the longer text the model read —
+            // rides the recorded call so the derived context replays it on
+            // every later turn (docs/permissions.md). Mirrors the ToolEnd
+            // commit dance; nothing ran, so there is no truncation to mark.
+            if let Some(tool) = app.reject_tool(&display, &result)
+                && committing
+            {
+                term.set_view_height(live_region_height(app, term.screen()));
+                term.insert_before(ui::tool_lines(&tool, width));
+                term.insert_before(vec![Line::default()]);
+            }
+            // A resolution boundary like ToolEnd (docs/background.md).
+            settle_bg_completions(term, app);
+            clocks.command_start = None;
+            Ok(false)
+        }
         StreamEvent::ToolBackgrounded { id: _, output } => {
             // The call resolved by moving to the background: commit its cell
             // with the fixed `⎿ Running in the background (↓ to manage)` row
@@ -3383,7 +3402,9 @@ fn on_agent_event(
                     term.insert_before(lines);
                 }
             }
-            StreamEvent::ToolEnd { .. } | StreamEvent::ToolBackgrounded { .. } => {
+            StreamEvent::ToolEnd { .. }
+            | StreamEvent::ToolRejected { .. }
+            | StreamEvent::ToolBackgrounded { .. } => {
                 // The resolved call was pushed onto the agent's transcript —
                 // commit its collapsed cell (the main ToolEnd dance).
                 let tool = app.viewed_agent().and_then(|run| match run.history.last() {

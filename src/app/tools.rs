@@ -36,6 +36,7 @@ impl App {
                 timestamp: String::new(), // stamped when it finishes (see end_tool)
                 shell: false,
                 truncated: false,
+                context_output: None,
             })
             .collect();
     }
@@ -64,6 +65,7 @@ impl App {
             timestamp: String::new(), // stamped when it finishes (see end_tool)
             shell: false,
             truncated: false,
+            context_output: None,
         });
     }
 
@@ -123,7 +125,17 @@ impl App {
         } else {
             ToolStatus::Failed
         };
-        self.resolve_front_tool(output, status)
+        self.resolve_front_tool(output, None, status)
+    }
+
+    /// Resolve the in-flight call as **refused at the permission prompt**: red
+    /// like any failure, with `display` on the cell and `result` — the longer
+    /// stop-and-wait instruction the *model* reads, carrying Tab's amend
+    /// feedback — kept beside it as [`ToolCall::context_output`] so the derived
+    /// context replays what was really sent. The boundary's handler for
+    /// [`crate::stream::StreamEvent::ToolRejected`]. See `docs/permissions.md`.
+    pub fn reject_tool(&mut self, display: &str, result: &str) -> Option<ToolCall> {
+        self.resolve_front_tool(display, Some(result.to_string()), ToolStatus::Failed)
     }
 
     /// Resolve the in-flight tool call as **moved to the background** (a
@@ -134,23 +146,33 @@ impl App {
     /// The boundary's handler for `StreamEvent::ToolBackgrounded`. See
     /// `docs/background.md`.
     pub fn background_tool(&mut self, output: &str) -> Option<ToolCall> {
-        self.resolve_front_tool(output, ToolStatus::Backgrounded)
+        self.resolve_front_tool(output, None, ToolStatus::Backgrounded)
     }
 
-    /// The shared tail of [`end_tool`]/[`background_tool`]: pop the front
-    /// call, stamp + record it with `status`, and fold its output into the
-    /// token tally (arrow up — uploaded back; the count is *added to*, never
-    /// reset — see `docs/status-indicator.md`).
+    /// The shared tail of [`end_tool`]/[`reject_tool`]/[`background_tool`]: pop
+    /// the front call, stamp + record it with `status`, and fold its output into
+    /// the token tally (arrow up — uploaded back; the count is *added to*, never
+    /// reset — see `docs/status-indicator.md`). The tally charges the
+    /// **model-facing** text ([`ToolCall::context_text`]), which is what the
+    /// next request actually uploads — for a rejection that is the longer
+    /// `context_output`, not the short cell line.
     ///
     /// [`end_tool`]: App::end_tool
+    /// [`reject_tool`]: App::reject_tool
     /// [`background_tool`]: App::background_tool
-    fn resolve_front_tool(&mut self, output: &str, status: ToolStatus) -> Option<ToolCall> {
+    fn resolve_front_tool(
+        &mut self,
+        output: &str,
+        context_output: Option<String>,
+        status: ToolStatus,
+    ) -> Option<ToolCall> {
         let mut tool = self.tool_queue.pop_front()?;
         tool.output = output.to_string();
+        tool.context_output = context_output;
         tool.status = status;
         tool.timestamp = self.now_stamp();
         if let Some(turn) = self.status.as_mut() {
-            turn.tokens += count_tokens(output);
+            turn.tokens += count_tokens(tool.context_text());
             turn.arrow = TokenArrow::Up;
         }
         self.history.push(HistoryItem::Tool(tool.clone()));
@@ -213,4 +235,31 @@ pub struct ToolCall {
     /// to show more was dropped. `false` for output kept in full. See
     /// `docs/shell-command.md`.
     pub truncated: bool,
+    /// The **model-facing** tool result, when it differs from the displayed
+    /// `output`. Set only by a permission rejection (`docs/permissions.md`):
+    /// the cell shows the short `User rejected write to hello.py` (plus the
+    /// amended instructions) while the model reads the full stop-and-wait
+    /// text. [`crate::context::context_messages`] replays *this* — via
+    /// [`context_text`](ToolCall::context_text) — so a later turn's context
+    /// carries exactly what the live loop sent, Tab's amend feedback
+    /// included.
+    ///
+    /// `None` for every ordinary call, whose display *is* what the model read.
+    /// (A [`ToolStatus::Backgrounded`] call splits the same way from the other
+    /// side: its `output` holds the model-facing launch text and the cell's
+    /// row is synthesized from the status.)
+    pub context_output: Option<String>,
+}
+
+impl ToolCall {
+    /// What the **model** read as this call's result — [`context_output`]
+    /// when the display diverged from it, else the displayed `output`. The
+    /// one seam [`crate::context::context_messages`] and the token tally read,
+    /// so a rejection's replay can never drift from what was actually sent.
+    ///
+    /// [`context_output`]: ToolCall::context_output
+    #[must_use]
+    pub fn context_text(&self) -> &str {
+        self.context_output.as_deref().unwrap_or(&self.output)
+    }
 }

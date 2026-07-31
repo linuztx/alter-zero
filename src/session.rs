@@ -242,6 +242,12 @@ struct ToolRecord {
     truncated: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     backgrounded: bool,
+    /// The model-facing result of a permission-rejected call, when it differs
+    /// from the displayed `output` (`docs/permissions.md`) — carrying Tab's
+    /// amended instructions. Omitted when absent, so files written before the
+    /// field keep their shape and still parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_output: Option<String>,
 }
 
 /// A [`BackgroundNotice`] on disk — a background shell's completion notice
@@ -364,6 +370,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             shell: tool.shell,
             truncated: tool.truncated,
             backgrounded: matches!(tool.status, ToolStatus::Backgrounded),
+            context_output: tool.context_output.clone(),
         }),
         HistoryItem::Summary(summary) => ItemRecord::Summary(SummaryRecord {
             verb: summary.verb.to_string(),
@@ -505,6 +512,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 timestamp: tool.timestamp,
                 shell: tool.shell,
                 truncated: tool.truncated,
+                context_output: tool.context_output,
             })),
             ItemRecord::Summary(summary) => items.push(HistoryItem::Summary(TurnSummary {
                 verb: done_verb(&summary.verb),
@@ -906,6 +914,7 @@ mod tests {
             timestamp: "03:21 PM".into(),
             shell: false,
             truncated: false,
+            context_output: None,
         });
         let failed_shell = HistoryItem::Tool(ToolCall {
             name: "tree ~/".into(),
@@ -915,10 +924,53 @@ mod tests {
             timestamp: String::new(),
             shell: true,
             truncated: true,
+            context_output: None,
         });
         let (_, parsed) =
             parse_session(&file_of(&[ok_tool.clone(), failed_shell.clone()])).expect("parses");
         assert_eq!(parsed, vec![ok_tool, failed_shell]);
+    }
+
+    #[test]
+    fn a_rejected_tool_round_trips_its_model_facing_result() {
+        // Without this the amend feedback survives the session but not a
+        // `/resume` of it: the reloaded context would replay the one-line cell
+        // and the model would lose the instructions (docs/permissions.md).
+        let rejected = HistoryItem::Tool(ToolCall {
+            name: "Write".into(),
+            args: "hello.py".into(),
+            status: ToolStatus::Failed,
+            output: "User rejected write to hello.py\nInstructions: use pathlib".into(),
+            timestamp: "03:21 PM".into(),
+            shell: false,
+            truncated: false,
+            context_output: Some(
+                "The user doesn't want to proceed with this tool use. …\nThe user provided the \
+                 following instructions instead: use pathlib"
+                    .into(),
+            ),
+        });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&rejected))).expect("parses");
+        assert_eq!(parsed, vec![rejected]);
+    }
+
+    #[test]
+    fn an_ordinary_tool_line_omits_the_context_output_field() {
+        // Forward compatibility (the `backgrounded` rule): the field only
+        // appears when it carries something, so ordinary rollout lines keep
+        // the exact shape older builds already parse.
+        let tool = HistoryItem::Tool(ToolCall {
+            name: "Bash".into(),
+            args: "ls".into(),
+            status: ToolStatus::Ok,
+            output: "Exit code: 0".into(),
+            timestamp: String::new(),
+            shell: false,
+            truncated: false,
+            context_output: None,
+        });
+        let line = item_line(&tool, "t");
+        assert!(!line.contains("context_output"), "not recorded: {line}");
     }
 
     #[test]
@@ -1061,6 +1113,7 @@ mod tests {
             timestamp: "03:20 PM".into(),
             shell: false,
             truncated: false,
+            context_output: None,
         });
         let line = item_line(&tool, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -1081,6 +1134,7 @@ mod tests {
             timestamp: String::new(),
             shell: false,
             truncated: false,
+            context_output: None,
         });
         let line = item_line(&tool, "t");
         assert!(

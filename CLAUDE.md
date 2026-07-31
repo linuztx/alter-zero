@@ -211,8 +211,19 @@ nothing, Tab swaps the options for that same textarea as an amend field whose
 Enter rejects *with* the typed feedback, Esc cancels (reject + the ordinary
 turn interrupt, the abandoned id released on the gate so a background agent's
 thread never parks), a rejection still commits the red `⎿ User rejected write
-to hello.py` cell while the *model* reads the longer stop-and-wait text
-(`Approval::Reject`'s two fields), and option 2's session allowlist remembers
+to hello.py` cell — Tab's typed feedback on a second `Instructions: …` line,
+the transcript's only record of it — while the *model* reads the longer
+stop-and-wait text (`Approval::Reject`'s two fields, streamed together as
+`StreamEvent::ToolRejected` in place of the `ToolEnd`), and **that
+model-facing text is what the conversation keeps**: it rides the recorded call
+as `ToolCall::context_output` and `context::context_messages` replays it —
+`ToolCall::context_text()` — as the `tool` result, so Ctrl+D shows what the
+model was actually told, every later turn still carries the user's
+instructions (they used to survive exactly one round, history having kept only
+the one-line cell), a `/resume` restores them (`session::ToolRecord`, the
+field omitted when absent so old rollouts still parse), a subagent's refused
+call keeps both texts on its own transcript, and the token tally charges the
+uploaded text rather than the cell line; and option 2's session allowlist remembers
 every segment prefix of the command — degrading to the exact command when a
 redirect/substitution means a prefix would hide what matters, and **sweeping the
 requests already queued** that the new rule covers
