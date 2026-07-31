@@ -327,12 +327,34 @@ fn marker_row_and_cursor(app: &App, width: u16, term_height: u16) -> (u16, (u16,
 }
 
 #[test]
-fn the_cursor_follows_the_highlighted_option() {
-    // The terminal cursor is the one thing on screen that moves by itself (a
-    // kitty cursor-trail animation draws the jump), so parking it in the
-    // region's bottom corner made every prompt open with a lurch to nowhere.
-    // It belongs on the option you are choosing, and it must travel with ↑/↓ —
-    // straight up and down, since the column is fixed at the option text.
+fn the_options_show_no_cursor_at_all() {
+    // The terminal cursor is the one thing on screen that moves by itself — a
+    // kitty cursor-trail animation draws every jump it makes — and an options
+    // list is not a text field: there is nothing to point at. So the frame
+    // simply doesn't show one, and the trail has nothing to draw.
+    let mut app = app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY));
+    assert!(!cursor_visible(&app), "the option rows show no cursor");
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert!(!cursor_visible(&app), "…however the highlight moves");
+    // Tab's amend field is a text field, so the caret comes back with it.
+    app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+    assert!(cursor_visible(&app), "the amend field is typed into");
+    app.on_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert!(!cursor_visible(&app), "…and goes again with the options");
+}
+
+#[test]
+fn the_composer_shows_its_cursor() {
+    // The default, so the prompt's hiding can't quietly become the rule.
+    assert!(cursor_visible(&App::new()));
+}
+
+#[test]
+fn the_cursor_seat_follows_the_highlighted_option() {
+    // Hidden, but not homeless: the seat still tracks the option you are
+    // choosing, so a terminal that ignores the hide (and the cursor's return
+    // when the prompt closes) starts from somewhere meaningful rather than a
+    // corner. Straight up and down — the column is fixed at the option text.
     let mut app = app_with(request(PermissionKind::Write, "hello.py", WRITE_BODY));
     let mut seats = Vec::new();
     for step in 0..3 {
@@ -354,7 +376,7 @@ fn the_cursor_follows_the_highlighted_option() {
 }
 
 #[test]
-fn the_cursor_follows_the_option_on_a_capped_prompt() {
+fn the_cursor_seat_follows_the_option_on_a_capped_prompt() {
     // A body too tall for the terminal is capped and the prompt padded to fill
     // it exactly. The padding sits *above* the question — never between the
     // options and the closing rule — so the option block keeps its fixed seat

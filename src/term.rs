@@ -39,6 +39,10 @@
 //! blits it around. That keeps a terminal cursor-trail animation (kitty) from
 //! streaking across the screen when a reflow homes the cursor to the top on a
 //! resize / `/clear`, or a scrollback commit yanks it up and back mid-stream.
+//! A frame that shows **no** cursor ([`ui::cursor_visible`] — a permission
+//! prompt's option list, which is a menu, not a text field) simply skips that
+//! `Show`, so the frame-start `Hide` stands and the cursor stays away for as
+//! long as the options do (`docs/permissions.md`).
 //!
 //! [`draw`]: InlineViewport::draw
 //! [`reflow`]: InlineViewport::reflow
@@ -415,7 +419,15 @@ impl InlineViewport {
         // have dragged it around is done — so it appears only here, never
         // mid-flight. Queue the Show (ratatui's `show_cursor` would `execute!` —
         // an extra flush mid-synchronized-update); the frame goes out in one write.
-        queue!(self.backend, Show)?;
+        //
+        // Unless the frame shows none at all ([`ui::cursor_visible`] — a
+        // permission prompt's option list is a menu, not a text field): then
+        // the frame-start Hide simply stands, and the cursor stays away for as
+        // long as the options do. It is still *seated* above, so its return
+        // when the prompt closes starts from a sensible row.
+        if ui::cursor_visible(app) {
+            queue!(self.backend, Show)?;
+        }
         Ok(())
     }
 

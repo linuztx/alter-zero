@@ -75,9 +75,9 @@ pub use self::footer::{
 };
 pub use self::header::header_lines;
 pub use self::layout::{
-    Repin, background_view_height, cursor_position, key_onboarding_height, live_height,
-    model_picker_height, permission_height, preview_rows, region_is_modal, repin, repin_modal,
-    restore_cursor_row, stream_preview_max_rows, strip_has_status,
+    Repin, background_view_height, cursor_position, cursor_visible, key_onboarding_height,
+    live_height, model_picker_height, permission_height, preview_rows, region_is_modal, repin,
+    repin_modal, restore_cursor_row, stream_preview_max_rows, strip_has_status,
 };
 pub use self::live::{render_live, render_live_with_preview};
 pub use self::login_view::render_key_onboarding;

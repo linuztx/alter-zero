@@ -480,8 +480,30 @@ fn input_scroll(total: usize, cursor_row: usize, height: usize) -> usize {
     (cursor_row + 1).saturating_sub(height).min(max)
 }
 
+/// Whether this frame shows a hardware cursor at all.
+///
+/// Almost always yes — the composer, the pickers and the bands all take typing,
+/// and codex keeps the cursor on the prompt row even mid-turn. The exception is
+/// a permission prompt's **option list**: it is a menu, not a text field, so
+/// there is nothing for a cursor to point at, and the terminal cursor is the
+/// one thing on screen that moves by itself — a terminal with a cursor-trail
+/// animation (kitty) draws every jump it makes, which turned opening a prompt
+/// and stepping through its options into so much flying punctuation. Tab's
+/// amend field *is* typed into, so the caret comes back with it.
+///
+/// The `term.rs` sibling of [`strip_has_status`]: pure policy the boundary
+/// acts on, by skipping the frame-closing `Show` (the frame already opened with
+/// a `Hide`, so the cursor simply never reappears). [`cursor_position`] still
+/// seats it either way, so a terminal that ignores the hide — and the cursor's
+/// return when the prompt closes — starts from somewhere meaningful.
+#[must_use]
+pub fn cursor_visible(app: &App) -> bool {
+    app.permission().is_none_or(|prompt| prompt.amend)
+}
+
 /// Absolute `(x, y)` where the terminal's hardware cursor should sit for the
-/// current input. Shares `input_box` with [`render_live`] so the cursor lands
+/// current input — its resting seat, which [`cursor_visible`] decides whether
+/// to actually show. Shares `input_box` with [`render_live`] so the cursor lands
 /// exactly where the editor's cursor is — on its wrapped row, at its column —
 /// wherever the user has moved it, not just at the end.
 #[must_use]

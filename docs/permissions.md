@@ -269,23 +269,30 @@ backend thread simply stays blocked meanwhile.
 `/clear`, an interrupt, and a quit all drop the prompt and the queue; the
 blocked threads notice their cancel token and return.
 
-### Where the cursor sits
+### The cursor goes away
 
-The hardware cursor rides the **highlighted option**, one column past the `❯`
-marker, and moves with ↑/↓. It used to park in the region's bottom-right corner
-— chrome, out of the way — which is fine until you remember that the terminal
-cursor is the one thing on screen that moves *by itself*: a terminal with a
-cursor-trail animation (kitty) draws every jump it makes, so each prompt opened
-with a lurch from the composer to a corner where nothing was happening, and the
-option you were choosing never got the cursor at all.
+While the options are up the frame shows **no hardware cursor at all**
+(`ui::cursor_visible`). An option list is a menu, not a text field: there is
+nothing for a cursor to point at, and the terminal cursor is the one thing on
+screen that moves *by itself* — a terminal with a cursor-trail animation
+(kitty) draws every jump it makes, so a prompt opening threw a streak across
+the screen and every ↑/↓ threw another. Nothing to show, so nothing is shown.
 
-Both seats — the option row and Tab's amend field — are found from the region's
-bottom edge, `PERMISSION_TAIL_ROWS` up (gap, hint, gap, rule), so
-`ui::cursor_position` never has to re-derive the body. That is why a capped
-prompt's padding goes **above** the question rather than below the hint: it
-keeps the question/options/hint block flush against the closing rule at every
-body size. The column is the same for the options and the amend field, so ↑/↓
-walk the cursor straight down and Tab never slides it sideways.
+It costs the boundary nothing: every frame already opens with a `Hide` (so no
+redraw is ever caught dragging the cursor around), and `term.rs` simply skips
+the closing `Show` — the cursor stays away for exactly as long as the options
+do. Tab's amend field **is** typed into, so the caret comes back with it, and
+so does the composer's when the prompt closes.
+
+`ui::cursor_position` still seats it either way — on the highlighted option,
+one column past the `❯` marker, tracking ↑/↓ — so its return starts from a
+meaningful row rather than wherever the last scroll left it (and a terminal
+that ignores the hide still looks right). Both seats, the option row and the
+amend field, are found from the region's bottom edge, `PERMISSION_TAIL_ROWS` up
+(gap, hint, gap, rule), so the cursor never has to re-derive the body. That is
+why a capped prompt's padding goes **above** the question rather than below the
+hint: it keeps the question/options/hint block flush against the closing rule
+at every body size.
 
 ## Turning it off
 
@@ -315,13 +322,15 @@ integration tests) that builds a backend directly is unaffected.
   nothing else, and `repin_modal` takes the free rows below before covering
   anything, never scrolls even at full screen height, and shrinks like any
   other region (top put, vacated rows below blanked).
-- `ui/tests/permission_view.rs` — the cursor seat, pinned to the rendered rows:
-  it lands on whichever row carries the `❯` marker and steps down with each ↓,
-  on a capped prompt as well as one that fits.
+- `ui/tests/permission_view.rs` — the options show no cursor while the amend
+  field and the composer do; and the seat, pinned to the rendered rows: it
+  lands on whichever row carries the `❯` marker and steps down with each ↓, on
+  a capped prompt as well as one that fits.
 - `smoke.sh` Phase 55 — the whole round trip against the dummy backend in a real
   terminal: draft typed, prompt shown, `2` approving, draft restored — plus the
-  hardware cursor, read back from the terminal: on the `❯ 1. Yes` row at the
-  option text's column, and one row lower after ↓.
+  hardware cursor read back from the terminal (`#{cursor_flag}`): hidden over
+  the options, shown again in Tab's amend field and in the composer after, and
+  resting on the `❯ 1. Yes` row, one lower after ↓.
 - `smoke.sh` Phase 56 — Tab's amend end to end: the instructions land on the red
   cell and the model-facing denial (feedback included) shows in the Ctrl+D
   context view, with neither text leaking into the other's place.
