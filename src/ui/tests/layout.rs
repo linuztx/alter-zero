@@ -273,6 +273,32 @@ fn repin_modal_shrinks_like_any_other_region() {
 }
 
 #[test]
+fn a_modal_that_fits_below_the_conversation_keeps_its_own_height() {
+    // Early session: the prompt fits between the committed rows above the
+    // region (view_top of them) and the screen bottom — it covers nothing, so
+    // there is nothing to replay and the region is exactly the prompt.
+    assert_eq!(modal_region_height(20, 5, 40), 20);
+    // Exactly flush against the bottom still fits without covering.
+    assert_eq!(modal_region_height(35, 5, 40), 35);
+}
+
+#[test]
+fn a_modal_that_would_cover_conversation_takes_the_whole_screen() {
+    // The moment the prompt needs even one conversation row, the region spans
+    // the terminal and the render replays the tail above the prompt — so the
+    // newest messages stay visible instead of vanishing under the modal
+    // (docs/permissions.md).
+    assert_eq!(modal_region_height(36, 5, 40), 40);
+    assert_eq!(modal_region_height(20, 30, 40), 40);
+}
+
+#[test]
+fn a_modal_taller_than_the_screen_clamps_to_it() {
+    assert_eq!(modal_region_height(60, 0, 40), 40);
+    assert_eq!(modal_region_height(60, 30, 40), 40);
+}
+
+#[test]
 fn restore_cursor_row_follows_the_box_down_the_screen() {
     // Box one row above the bottom → prompt on the last row, still no gap.
     assert_eq!(restore_cursor_row(20, 3, 24), Some(23));

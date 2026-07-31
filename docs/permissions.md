@@ -9,6 +9,7 @@ cross-thread handshake in [`crate::permission::PermissionGate`].
 
 ```
 ● Write(hello.py)
+  ⎿  Waiting…
 
 ────────────────────────────────────────────────────────────────────────
 
@@ -63,11 +64,15 @@ live agent tree (`● Running 3 agents…` and its rows). Everything else in the
 live region gives way: the status line (nothing is running; the turn is blocked
 on you), the composer, the bands, and the footer.
 
-The call under the prompt renders as its **header alone** — `● Write(hello.py)`,
-no `⎿ Waiting…`. It is not waiting on a queue, it is waiting on you, and the
-prompt directly below already says so; the siblings behind it keep their
-ordinary `⎿ Waiting…` rows. For the same reason `App::command_elapsed` reads as
-`None` while a prompt is open, which drops the delayed
+Every queued call renders its ordinary collapsed cell — Claude Code's look.
+The one under the prompt shows the same dim `⎿ Waiting…` its batch siblings
+do: it genuinely *is* waiting — the approve seam runs **before** its
+`ToolStart`, so nothing has started — and rendering it bare (the old
+header-only special case) just made a two-call batch read as one waiting call
+and one mystery. A call that is truly executing (the main turn's own tool,
+under a *subagent's* request) keeps its running row instead, drawn at rest —
+the prompt is a still frame (`docs/tool-pulse.md`). `App::command_elapsed`
+reads as `None` while a prompt is open, which drops the delayed
 `(ctrl+b to run in background)` hint: the prompt owns every key, so that one
 would be advertising a binding it swallows.
 
@@ -90,6 +95,37 @@ content-anchored growth, invariant 3 — and then grows **upward, covering** the
 conversation. It never scrolls. Covering is reversible in a way scrolling is
 not: every row it hides is still in `App`'s history, so the close can put it
 back.
+
+### …and the conversation it replays above itself
+
+Covering alone had a cost the user saw every time the screen was full: the
+rows a prompt covers are exactly the **newest** ones — the message just sent,
+the cell that just finished — so opening a prompt hid the very context the
+question is about, until it closed. Claude Code shows the opposite: the
+conversation slides up and the prompt sits under the latest messages.
+
+The modal now produces that picture without giving up the covering. Sizing is
+the pure `ui::modal_region_height(prompt_rows, above, screen)`: while the
+prompt fits below the `above` committed rows it keeps its own height (the
+early-session compact look — nothing covered, nothing to replay); the moment
+it would need even one conversation row it takes the **whole screen**, and
+`main.rs::draw`'s modal branch hands the render the conversation tail —
+rebuilt from history + the partial's committed rows by the close repaint's own
+recipe (`ui::repaint_tail` + `ui::banner_tail`), cached across the prompt's
+frames (`ModalReplay`, re-keyed by history growth/width) — which
+`ui::render_permission_with_context` paints above the live cells + prompt,
+newest rows hugging the question. A partial cover can't do this: the replay
+and the rows still painted above it would have to meet mid-screen, and any
+shift between them tears the conversation — so it is all or nothing. The
+`above` measure is `view_top() + modal_cover()`: what is still painted above
+the region **plus what an earlier prompt of the same batch already covered**,
+so a follow-up prompt (opened with `view_top` at 0 under the previous one's
+covering) still spans the screen instead of shrinking against the top. The
+underlying accounting is untouched — `repin_modal` seats the full-screen
+region at row 0, `modal_cover` counts every conversation row, and the close
+repaints them all. In an **agent session view** the replay is skipped (the
+screen under the modal is the agent's transcript, which the close rebuilds
+wholesale) and the prompt keeps its own height.
 
 Putting it back has to be exact. At the close, the terminal holds
 
@@ -118,7 +154,20 @@ Two consequences worth knowing:
   commit under the modal would scroll its rows into scrollback, the one-way move
   the covering exists to avoid. `App` records the item either way and the close
   repaint carries it, which is what the "rows recorded while it was up" term
-  above counts.
+  above counts. One gap slips past that gate: a **batch's back-to-back
+  prompts**. Approving call 1 closes the prompt, the call runs, its cell
+  commits (allowed — nothing is open), and call 2's request lands **before the
+  draw tick** that would have repaired call 1's covering — so the next draw
+  finds a modal *and* pending lines *and* an outstanding cover, and flushing
+  those lines against the stale full-height viewport would scroll real rows
+  away for good and paint the cell over the covered stretch (the
+  lost-conversation bug this feature fixes). `term::paint_live` therefore
+  **holds the pending queue while a modal with outstanding cover is up**: the
+  cell is already in history, the close window's `held` term counts it, and
+  the close's reflow — which drops the queue and regenerates from history —
+  writes it exactly once. (A prompt that has covered nothing keeps the
+  ordinary open-frame flush: lines committed in the frame the prompt opens
+  still land above the composer's old seat at the pre-modal height.)
 - **A repaint while the prompt is open would undo the trick**, since the rebuild
   writes the conversation to the screen and scrolls the overflow away for real.
   So the geometry deliberately does *not* refresh mid-prompt: Tab's amend field
@@ -315,13 +364,21 @@ integration tests) that builds a backend directly is unaffected.
   rollout file while an ordinary call's line keeps its old shape.
 - `ui/tests` — the rendered prompt: rules, coloured title, the agent suffix, the
   numbered/diff body, the cyan `❯` on the selection, the hint row, the live
-  cells kept above it (header-only for the pending call, `⎿ Waiting…` for its
-  siblings, the whole tree for a subagent's), and that `permission_height`
-  equals the painted rows — at every height, the context rows included.
+  cells kept above it (`⎿ Waiting…` under the pending call and its siblings
+  alike, a genuinely running call's `⎿ Running…`, the whole tree for a
+  subagent's), the conversation-tail replay (`render_permission_with_context`:
+  the newest tail rows above the prompt, blank-padded when short, none at all
+  in a prompt-sized region), and that `permission_height` equals the painted
+  rows — at every height, the context rows included.
 - `ui/tests/layout.rs` — the modal geometry: `region_is_modal` is a prompt and
-  nothing else, and `repin_modal` takes the free rows below before covering
+  nothing else, `repin_modal` takes the free rows below before covering
   anything, never scrolls even at full screen height, and shrinks like any
-  other region (top put, vacated rows below blanked).
+  other region (top put, vacated rows below blanked) — and
+  `modal_region_height` keeps a prompt that fits its own height while one that
+  would cover takes the whole screen.
+- `stream.rs` — the dummy's "parallel permission" turn: two gated `Bash` calls
+  announced up front, each asking before it starts, the next request following
+  the previous cell's resolution with no scripted pause.
 - `ui/tests/permission_view.rs` — the options show no cursor while the amend
   field and the composer do; and the seat, pinned to the rendered rows: it
   lands on whichever row carries the `❯` marker and steps down with each ↓, on
@@ -338,6 +395,13 @@ integration tests) that builds a backend directly is unaffected.
   bottom-seated composer the prompt pushes nothing into scrollback, and
   answering it puts the box back flush at the bottom with the conversation
   whole and each message committed exactly once.
+- `smoke.sh` Phase 59 — the replay + the back-to-back gap in a real terminal:
+  on a full screen the "parallel permission" batch's first prompt still shows
+  the just-sent message, the previous turn, and both `⎿ Waiting…` cells above
+  it; the second prompt (landing in the same frame gap as the first cell's
+  commit) still shows that finished cell and the message; and the final screen
+  is whole — box flush at the bottom, the message exactly once in
+  scrollback+screen.
 - `tests/live_openrouter.rs` — against a real provider: the replayed rejection
   is a legible context shape and the model still follows the instructions a
   turn later.

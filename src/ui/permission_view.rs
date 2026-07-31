@@ -13,7 +13,6 @@ use crate::permission::{
 use super::agent::live_agent_group_lines;
 use super::file_cell::numbered_body_lines;
 use super::theme::*;
-use super::tool::tool_header_lines;
 use super::wrap::{cols, truncate_cols, wrap_output};
 use super::*;
 
@@ -194,10 +193,13 @@ fn command_rows(
 /// A permission prompt must never be a box out of nowhere — it is a question
 /// *about something on screen*, so the strip's context survives the modal even
 /// though the rest of the live region (the status line, the composer, the
-/// bands, the footer) gives way to it. The call under the prompt renders as its
-/// **header alone**: it is not waiting on a queue, it is waiting on you, and the
-/// prompt right below already says so. Siblings queued behind it keep their
-/// ordinary `⎿ Waiting…` row.
+/// bands, the footer) gives way to it. Every queued call renders its ordinary
+/// collapsed cell — Claude Code's look: the one under the prompt shows the
+/// same dim `⎿ Waiting…` its batch siblings do (it genuinely *is* waiting —
+/// the approve seam runs before its `ToolStart`, so nothing has started), and
+/// a call that is truly executing (the main turn's, under a subagent's
+/// request) keeps its running row. No pulse: the prompt is a still frame
+/// ([`tool_lines`] renders a running bullet at rest, `docs/tool-pulse.md`).
 ///
 /// Empty when nothing raised the prompt on screen (a resumed session, the
 /// dummy's scripted turn), so the prompt simply opens with its own rule.
@@ -207,20 +209,7 @@ fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         if i > 0 || !lines.is_empty() {
             lines.push(Line::default()); // blank row between cells
         }
-        if i == 0 {
-            // No pulse: the prompt is a still frame. Nothing is running —
-            // the call is waiting on *you* — so its bullet sits at rest
-            // (`docs/tool-pulse.md`), which is also the grey this whole
-            // muted-while-in-flight palette is named after.
-            lines.extend(tool_header_lines(
-                tool,
-                width,
-                Some(TOOL_HEADER_MAX_ROWS),
-                None,
-            ));
-        } else {
-            lines.extend(tool_lines(tool, width));
-        }
+        lines.extend(tool_lines(tool, width));
     }
     lines
 }
@@ -307,32 +296,41 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
 
     // The body's row budget: whatever the terminal has left once those rows
     // (and, for a file change, its two dashed rules, plus the trailing gap and
-    // rule) are accounted for. Zero means the terminal is too short for a
-    // preview at all — the body and its rules drop out entirely rather than
-    // pushing the options off screen.
+    // rule) are accounted for. Too small for even one numbered row beside the
+    // `… +N lines` tail means the terminal is too short for a preview at all —
+    // the body and its rules drop out entirely rather than pushing the options
+    // off screen (the numbered builder always emits its first row, so handing
+    // it a zero budget would overflow the terminal by the tail's row).
     let framing = if file_change { 2 } else { 0 };
     let budget = usize::from(term_height).saturating_sub(
         out.len() + below.len() + framing + 2, /* the gap + rule */
     );
 
     let mut capped = false;
-    if budget > 0 {
-        let (body, hidden) = if file_change {
-            numbered_body_lines(
+    let body_rows = if budget == 0 {
+        None
+    } else if file_change {
+        let fits = body_fits(&request.body, budget);
+        if !fits && budget < 2 {
+            None
+        } else {
+            Some(numbered_body_lines(
                 &request.body,
                 file_lang(&request.target),
                 request.kind == PermissionKind::Edit,
                 cols(PERMISSION_INDENT),
                 width,
-                if body_fits(&request.body, budget) {
+                if fits {
                     budget
                 } else {
-                    budget.saturating_sub(1) // room for the `… +N lines` tail
+                    budget - 1 // room for the `… +N lines` tail
                 },
-            )
-        } else {
-            command_rows(request, width, budget)
-        };
+            ))
+        }
+    } else {
+        Some(command_rows(request, width, budget))
+    };
+    if let Some((body, hidden)) = body_rows {
         capped = hidden > 0;
         if file_change {
             out.push(body_rule(width));
@@ -381,7 +379,32 @@ fn file_lang(path: &str) -> Option<&str> {
 /// Paint the open permission prompt over the whole live region. Pure —
 /// [`render_live`] calls this in place of the composer.
 pub fn render_permission(area: Rect, buf: &mut Buffer, app: &App) {
-    Paragraph::new(permission_lines(app, area.width, area.height)).render(area, buf);
+    render_permission_with_context(area, buf, app, &[]);
+}
+
+/// [`render_permission`] with the conversation `tail` the boundary rebuilt
+/// from history: when the region is taller than the prompt (a covering modal
+/// spans the whole screen — [`modal_region_height`]), the spare
+/// rows above the prompt replay the tail's newest rows, so opening a prompt
+/// on a full screen never hides the messages the user just read. The prompt
+/// block stays flush against the region's bottom (blank-padded above when the
+/// tail runs short), which is what keeps the cursor seat's
+/// bottom-edge arithmetic — and the close's covering accounting — unchanged.
+/// A region sized exactly to the prompt paints no tail at all.
+pub fn render_permission_with_context(
+    area: Rect,
+    buf: &mut Buffer,
+    app: &App,
+    tail: &[Line<'static>],
+) {
+    let prompt = permission_lines(app, area.width, area.height);
+    let budget = usize::from(area.height).saturating_sub(prompt.len());
+    let take = budget.min(tail.len());
+    let mut out: Vec<Line<'static>> = Vec::with_capacity(budget + prompt.len());
+    out.extend(std::iter::repeat_with(Line::default).take(budget - take));
+    out.extend(tail[tail.len() - take..].iter().cloned());
+    out.extend(prompt);
+    Paragraph::new(out).render(area, buf);
 }
 
 /// The `bash` "don't ask again" label, re-exported for the boundary's toast

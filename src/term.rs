@@ -268,6 +268,20 @@ impl InlineViewport {
         std::mem::replace(&mut self.modal_cover, 0)
     }
 
+    /// The rows an inline modal is covering right now, **without** clearing
+    /// the count ([`take_modal_cover`] is the close's consuming read). With
+    /// [`view_top`] it reconstructs how many conversation rows the screen held
+    /// before any covering — the measure `main.rs::draw` sizes a modal by, so
+    /// a follow-up prompt in the same batch (opened before the previous one's
+    /// close was repaired, `view_top` already 0) still spans the screen and
+    /// replays the tail instead of shrinking against the top.
+    ///
+    /// [`take_modal_cover`]: InlineViewport::take_modal_cover
+    /// [`view_top`]: InlineViewport::view_top
+    pub const fn modal_cover(&self) -> u16 {
+        self.modal_cover
+    }
+
     /// Repaint the live region at the new `height`, keeping it **content-anchored**
     /// (its top fixed — it grows downward, not up from the bottom), and place the
     /// hardware cursor on the input's prompt row (derived via
@@ -362,7 +376,24 @@ impl InlineViewport {
         if !self.pending.is_empty() && !modal {
             self.view.height = height;
         }
-        self.flush_pending()?;
+        // …but a modal that has **already covered** conversation rows holds the
+        // queue instead of flushing it. This is the back-to-back-prompt gap
+        // (`docs/permissions.md`): a batch call resolves, its cell commits, and
+        // the *next* call's prompt opens before any draw repaired the first
+        // one's covering — so the tracked viewport is still the stale
+        // full-height modal rect, and `write_above`'s reserve-below scroll plan
+        // would push real rows into scrollback (the one-way move covering
+        // exists to avoid) and paint the cell over the covered stretch. Held,
+        // the lines cost nothing: they are recorded in history, the close
+        // window's `held` term counts them, and the close repaint (a [`reflow`],
+        // which drops the queue and regenerates from history) writes them
+        // exactly once. A prompt that has covered nothing keeps the ordinary
+        // open-frame flush above.
+        //
+        // [`reflow`]: InlineViewport::reflow
+        if !(modal && self.modal_cover > 0) {
+            self.flush_pending()?;
+        }
         let repin = if modal {
             let repin = ui::repin_modal(self.view.y, self.view.height, height, self.screen.height);
             // Every row it took by growing upward is a conversation row now

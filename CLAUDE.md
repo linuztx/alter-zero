@@ -215,16 +215,30 @@ shared `permission::PermissionGate` (the `Arc<Mutex<…>> + Condvar` sibling of
 the background/agent registries, its `wait` polling the turn's `CancelToken` so
 an Esc reaps it); the prompt is modal (routed first in `on_key`, replacing the
 composer, the status line, the bands and the footer — but **never the cells that
-raised it**: the call being asked about stays above the frame as its bare
-`● Write(tt.py)` header (it waits on *you*, not on a queue — its batch siblings
-keep their `⎿ Waiting…`), and a subagent's request keeps the whole live
+raised it**: the call being asked about keeps its `● Write(tt.py)` header over
+the same dim `⎿ Waiting…` its batch siblings show (the approve seam runs before
+`ToolStart`, so it genuinely is waiting — Claude Code's look; a truly running
+call, the main turn's own under a subagent's request, keeps its `⎿ Running…`
+at rest), and a subagent's request keeps the whole live
 `● Running 3 agents…` tree, with `App::command_elapsed` reading `None`
 meanwhile so the delayed Ctrl+B hint never advertises a key the modal
 swallows); being the one live view that can fill the terminal it also re-pins
 differently — `ui::repin_modal` **covers** the conversation (growing upward,
-never scrolling, commits held back meanwhile) and the close repaints exactly
+never scrolling, commits held back meanwhile) and a **covering prompt replays
+the conversation above itself**: the moment it would need a conversation row,
+`ui::modal_region_height` spans the region to the whole screen (its
+rows-above measure `view_top + modal_cover`, so a batch's follow-up prompt —
+opened before the previous one's covering was repaired — stays spanned) and
+`main.rs::draw` hands `ui::render_permission_with_context` the
+`repaint_tail`-rebuilt, cached (`ModalReplay`) tail to paint above the cells +
+prompt, so a full screen's newest messages stay visible instead of vanishing
+under the modal; a batch's **back-to-back prompts** (the next request landing
+in the same frame gap as the previous cell's commit) hold that pending commit
+at the boundary — `term::paint_live` skips the flush under an
+already-covering modal, the close's reflow regenerating it from history — so
+nothing scrolls away mid-cover; and the close repaints exactly
 what it covered, so the box comes back flush at the bottom instead of floating
-over a blank band (invariant 3); it **stashes the composer draft**
+over a blank band (invariant 3, `smoke.sh` Phase 59); it **stashes the composer draft**
 and hands it straight back on close so a request landing mid-sentence costs
 nothing, Tab swaps the options for that same textarea as an amend field whose
 Enter rejects *with* the typed feedback, Esc cancels (reject + the ordinary

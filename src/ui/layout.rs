@@ -322,6 +322,34 @@ pub fn region_is_modal(app: &App) -> bool {
     app.permission().is_some()
 }
 
+/// The screen height an open inline modal's region takes, given the rows the
+/// prompt itself needs (`prompt_rows`, the [`permission_height`] reading) and
+/// how many committed conversation rows sit painted above the region
+/// (`view_top`, the boundary's `InlineViewport::view_top`).
+///
+/// While the prompt fits between those rows and the screen bottom it keeps its
+/// own height — it covers nothing, and the conversation above stays exactly
+/// where it is. The moment it would need even one conversation row, the region
+/// takes the **whole screen**: the render then replays the conversation tail
+/// above the prompt ([`render_permission_with_context`]), so the newest
+/// messages stay in view — visually the conversation "scrolls up" to make
+/// room, Claude-Code style — while underneath it is still the reversible
+/// covering ([`repin_modal`] seats the region at row 0 and counts every row,
+/// and the close hands them all back). A partial cover can't do this: the
+/// replay and the rows still painted above it would have to meet mid-screen,
+/// and any shift between them tears the conversation. See
+/// `docs/permissions.md`.
+#[must_use]
+pub fn modal_region_height(prompt_rows: u16, view_top: u16, screen_height: u16) -> u16 {
+    let screen = screen_height.max(1);
+    let prompt = prompt_rows.min(screen);
+    if u32::from(view_top) + u32::from(prompt) > u32::from(screen) {
+        screen
+    } else {
+        prompt
+    }
+}
+
 /// How an **inline modal** ([`region_is_modal`]) re-pins: it takes the free
 /// rows below the region first and then grows *upward*, covering the
 /// conversation — and it **never scrolls**.

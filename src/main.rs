@@ -492,6 +492,11 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // old rows survives behind the repaint (the duplication `ReflowClear::Purge`
     // exists to clear). Consumed by the first overlay-exit repaint.
     let mut overlay_resized = false;
+    // The conversation tail a **covering** permission prompt replays above
+    // itself, cached across the prompt's frames ([`draw`]'s modal branch —
+    // O(history) to build, a slice to serve). Cleared the moment no covering
+    // prompt is up.
+    let mut modal_replay: Option<ModalReplay> = None;
     // Set while an inline **modal** — a tool permission prompt
     // (`docs/permissions.md`) — is up, to the history length when it opened.
     // A modal covers the conversation instead of scrolling it away
@@ -1630,7 +1635,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             None => {
                                 let preview =
                                     stream_preview_lines(&mut app, &mut render, term.screen());
-                                draw(term, &app, preview.as_deref())?;
+                                draw(
+                                    term,
+                                    &app,
+                                    &mut render,
+                                    &mut modal_replay,
+                                    preview.as_deref(),
+                                )?;
                             }
                         }
                     }
@@ -3945,15 +3956,98 @@ fn stream_preview_lines(
 /// hides it (`enter_overlay`). `preview` is the streaming strip's precomputed
 /// line(s) (see [`stream_preview_lines`], which also injected their count so
 /// `live_region_height` here reserves what the strip draws).
-fn draw(term: &mut InlineViewport, app: &App, preview: Option<&[Line<'static>]>) -> io::Result<()> {
-    let height = live_region_height(app, term.screen());
-    // `term` places the cursor from the final (content-anchored) viewport via
-    // `ui::cursor_position`, which mirrors render_live's layout exactly.
+///
+/// A permission prompt that would **cover** conversation rows takes the whole
+/// screen instead ([`ui::modal_region_height`] over `term.view_top()`, the one
+/// geometry input only the boundary has) and replays the conversation tail
+/// above itself ([`ui::render_permission_with_context`]) — so opening a prompt
+/// on a full screen never hides the messages the user just read: the
+/// conversation visually slides up to make room, Claude-Code style, while
+/// underneath it is still the reversible covering the close hands back
+/// (`docs/permissions.md`). `replay` caches that tail across the prompt's
+/// frames — it is O(history) to build and the covered rows can't change while
+/// commits are held, so an ↑/↓ redraw costs a slice, not a rebuild; recorded
+/// items (a background notice landing mid-prompt) re-key it. An agent session
+/// view keeps the plain prompt: the screen under the modal is the *agent's*
+/// transcript, which the close rebuilds wholesale, so the main conversation's
+/// tail would be the wrong picture to paint.
+fn draw(
+    term: &mut InlineViewport,
+    app: &App,
+    render: &mut ui::StreamRender,
+    replay: &mut Option<ModalReplay>,
+    preview: Option<&[Line<'static>]>,
+) -> io::Result<()> {
+    let screen = term.screen();
+    // The conversation rows the screen held before any covering: what is
+    // still painted above the region plus what an earlier prompt of this same
+    // batch already covered (`term.modal_cover()` — a follow-up prompt opens
+    // with `view_top` at 0, and sizing by that alone would shrink it against
+    // the screen top over a blank band).
+    let above = term.view_top().saturating_add(term.modal_cover());
+    let covering = (app.agent_view.is_none())
+        .then(|| ui::permission_height(app, screen.width, screen.height))
+        .flatten()
+        .and_then(|prompt| {
+            let height = ui::modal_region_height(prompt, above, screen.height);
+            (height > prompt).then_some(height)
+        });
+    let Some(height) = covering else {
+        *replay = None;
+        let height = live_region_height(app, screen);
+        // `term` places the cursor from the final (content-anchored) viewport
+        // via `ui::cursor_position`, which mirrors render_live's layout exactly.
+        return term.draw(
+            height,
+            |area, buf| ui::render_live_with_preview(area, buf, app, preview),
+            app,
+        );
+    };
+    let tail = modal_replay_lines(app, render, replay, screen);
     term.draw(
         height,
-        |area, buf| ui::render_live_with_preview(area, buf, app, preview),
+        |area, buf| ui::render_permission_with_context(area, buf, app, tail),
         app,
     )
+}
+
+/// The cached conversation tail a covering permission prompt replays above
+/// itself ([`draw`]'s modal branch), keyed by what could change its rows.
+struct ModalReplay {
+    generation: u64,
+    items: usize,
+    width: u16,
+    lines: Vec<Line<'static>>,
+}
+
+/// The replay rows for the current prompt frame — rebuilt only when history
+/// moved under it (`generation`/`items`: a held mid-prompt record) or the
+/// width changed, else served from `cache`. The build is the close repaint's
+/// own recipe ([`ui::repaint_tail`] + [`ui::banner_tail`], the partial reply's
+/// committed rows included via `render` — a same-width cache hit), so what the
+/// prompt shows above itself and what the close repaints are the same rows.
+fn modal_replay_lines<'a>(
+    app: &App,
+    render: &mut ui::StreamRender,
+    cache: &'a mut Option<ModalReplay>,
+    screen: Rect,
+) -> &'a [Line<'static>] {
+    let (generation, items, width) = (app.history_generation(), app.history.len(), screen.width);
+    let stale = cache
+        .as_ref()
+        .is_none_or(|c| (c.generation, c.items, c.width) != (generation, items, width));
+    if stale {
+        let budget = usize::from(screen.height);
+        let tail = ui::repaint_tail(&app.history, app.streaming_text(), render, width, budget);
+        let lines = ui::banner_tail(ui::header_lines(app, width), tail, budget);
+        *cache = Some(ModalReplay {
+            generation,
+            items,
+            width,
+            lines,
+        });
+    }
+    &cache.as_ref().expect("just filled").lines
 }
 
 /// Render the full-screen tool-output overlay. Clamps the scroll to the current

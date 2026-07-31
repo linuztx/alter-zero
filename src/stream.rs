@@ -808,11 +808,19 @@ impl ReplySource for DummyAi {
             if cancel.is_cancelled() {
                 return;
             }
-            // The scripted approval demo: ask, block on the gate exactly as a
-            // real backend's `write` does, then resolve accordingly.
+            // The scripted approval demos: ask, block on the gate exactly as a
+            // real backend's tool thread does, then resolve accordingly. A
+            // prompt naming both "parallel" and "permission" plays the
+            // two-command `bash` batch (back-to-back prompts, no pauses —
+            // the covering machinery's hardest timing); "permission" alone
+            // keeps the single `Write` approval.
             if let Some(gate) = permissions.filter(|_| prompt.to_lowercase().contains("permission"))
             {
-                dummy_permission_turn(&gate, &tx, &cancel);
+                if prompt.to_lowercase().contains("parallel") {
+                    dummy_parallel_permission_turn(&gate, &tx, &cancel);
+                } else {
+                    dummy_permission_turn(&gate, &tx, &cancel);
+                }
                 return;
             }
             for event in turn_events(&prompt, image_count) {
@@ -940,6 +948,120 @@ fn dummy_permission_turn(
     } else {
         "Understood, I have left the file alone."
     }) {
+        if cancel.is_cancelled() {
+            return;
+        }
+        if tx.send(StreamEvent::Chunk(chunk)).is_err() {
+            return;
+        }
+        nap(CHUNK_DELAY, cancel);
+    }
+    let _ = tx.send(StreamEvent::StreamDone);
+}
+
+/// The scripted **parallel** permission demo: two gated `bash` commands in one
+/// batch — `(command, description, output, ok)` each. The first fails the way
+/// `sudo` does in a captured shell, the second succeeds; both ask.
+const DUMMY_PARALLEL_COMMANDS: [(&str, &str, &str, bool); 2] = [
+    (
+        "sudo whoami",
+        "Check root/sudo privileges",
+        "Exit code: 1\nsudo: a terminal is required to read the password; either use the -S \
+         option to read from standard input or configure an askpass helper\nsudo: a password \
+         is required",
+        false,
+    ),
+    (
+        "ping -c 4 google.com",
+        "Ping google.com 4 times to test connectivity",
+        "Exit code: 0\nPING google.com (142.250.72.14) 56(84) bytes of data.\n64 bytes from \
+         142.250.72.14: icmp_seq=1 ttl=115 time=12.3 ms\n\n--- google.com ping statistics \
+         ---\n4 packets transmitted, 4 received, 0% packet loss",
+        true,
+    ),
+];
+
+/// Play the offline **batch** approval round trip ([`DUMMY_PARALLEL_COMMANDS`]):
+/// announce both `Bash` calls up front, then — per call, exactly like
+/// `llm::agent::run_agent`'s loop — ask, block on the gate, and resolve the
+/// cell before moving to the next. Deliberately **no scripted pause
+/// anywhere**: on an approval the cell's `ToolStart`/`ToolEnd` and the *next*
+/// call's `Permission` land in the same instant, so the loop sees a resolved
+/// commit and a reopening modal inside one frame gap — the covering
+/// machinery's hardest timing (`docs/permissions.md`, the smoke suite's
+/// back-to-back-prompt phase). A rejection resolves that cell red and still
+/// asks for the next call, as the real loop does.
+fn dummy_parallel_permission_turn(
+    gate: &crate::permission::PermissionGate,
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+) {
+    use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
+    let _ = tx.send(StreamEvent::ToolBatch(
+        DUMMY_PARALLEL_COMMANDS
+            .iter()
+            .map(|(cmd, ..)| ToolCallSummary {
+                name: "Bash".to_string(),
+                args: (*cmd).to_string(),
+            })
+            .collect(),
+    ));
+    for (cmd, detail, output, ok) in DUMMY_PARALLEL_COMMANDS {
+        let mut request = PermissionRequest {
+            id: gate.next_id(),
+            kind: PermissionKind::Bash,
+            target: cmd.to_string(),
+            body: String::new(),
+            detail: Some(detail.to_string()),
+            agent: None,
+        };
+        let decision = if gate.allows(&request) {
+            Some(PermissionDecision::Approve)
+        } else {
+            let _ = tx.send(StreamEvent::Permission(request.clone()));
+            gate.wait(&request.id, &|| cancel.is_cancelled())
+        };
+        let resolved = match &decision {
+            Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
+                if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
+                    request.id.clear();
+                    gate.remember(&request);
+                }
+                Ok(output.to_string())
+            }
+            Some(PermissionDecision::Deny(feedback)) => Err((
+                crate::permission::denied_display(&request, feedback.as_deref()),
+                crate::permission::denial_result(feedback.as_deref()),
+            )),
+            Some(PermissionDecision::Explain) => Err((
+                crate::permission::explain_display(),
+                crate::permission::explain_result(&request),
+            )),
+            // Cancelled out from under us — the channel is already abandoned.
+            None => return,
+        };
+        let _ = tx.send(StreamEvent::ToolStart {
+            name: "Bash".to_string(),
+            args: cmd.to_string(),
+            detail: None,
+        });
+        match resolved {
+            Ok(output) => {
+                let _ = tx.send(StreamEvent::ToolEnd {
+                    output,
+                    ok,
+                    truncated: false,
+                });
+            }
+            Err((display, result)) => {
+                let _ = tx.send(StreamEvent::ToolRejected { display, result });
+            }
+        }
+    }
+    for chunk in chunks(
+        "Both commands are done — sudo whoami failed (no terminal here) and the ping to \
+         google.com came back clean.",
+    ) {
         if cancel.is_cancelled() {
             return;
         }
@@ -1663,6 +1785,63 @@ mod tests {
         assert!(
             streamed.starts_with("Looking at your 2 images. "),
             "the dummy acknowledges the two images up front, got {streamed:?}"
+        );
+    }
+
+    #[test]
+    fn a_parallel_permission_prompt_asks_for_each_command_in_turn() {
+        // The offline mirror of a real batch of gated `bash` calls
+        // (docs/permissions.md): both commands are announced up front, each
+        // asks before it starts, and the next request follows the previous
+        // cell's resolution with **no scripted pause** — the back-to-back
+        // prompt timing the covering machinery has to survive.
+        let gate = crate::permission::PermissionGate::new();
+        let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
+        let (tx, mut rx) = unbounded_channel();
+        let handle = dummy.spawn(
+            "parallel permission demo".to_string(),
+            vec![],
+            vec![],
+            tx,
+            CancelToken::new(),
+        );
+        let mut order = Vec::new();
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                StreamEvent::ToolBatch(items) => order.push(format!("batch:{}", items.len())),
+                StreamEvent::Permission(req) => {
+                    assert_eq!(req.kind, crate::permission::PermissionKind::Bash);
+                    assert!(
+                        req.detail.as_deref().is_some_and(|d| !d.is_empty()),
+                        "each command carries its own description"
+                    );
+                    order.push(format!("ask:{}", req.target));
+                    gate.resolve(&req.id, crate::permission::PermissionDecision::Approve);
+                }
+                StreamEvent::ToolStart { args, .. } => order.push(format!("start:{args}")),
+                StreamEvent::ToolEnd { ok, .. } => order.push(format!("end:{ok}")),
+                StreamEvent::Chunk(_) => {}
+                StreamEvent::StreamDone => {
+                    order.push("done".to_string());
+                    break;
+                }
+                other => panic!("unexpected event in the demo: {other:?}"),
+            }
+        }
+        handle.join().unwrap();
+        assert_eq!(
+            order,
+            vec![
+                "batch:2",
+                "ask:sudo whoami",
+                "start:sudo whoami",
+                "end:false",
+                "ask:ping -c 4 google.com",
+                "start:ping -c 4 google.com",
+                "end:true",
+                "done",
+            ],
+            "two gated calls, asked and resolved in order"
         );
     }
 
