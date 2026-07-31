@@ -11,7 +11,8 @@ use super::agent::agent_view_preview_lines;
 use super::layout::{input_box, live_layout};
 use super::theme::*;
 use super::tool::{
-    command_display_lines, is_command_tool, result_row, running_command_lines, shell_running_line,
+    command_display_lines, is_command_tool, live_tool_lines, result_row, running_command_lines,
+    shell_running_line,
 };
 use super::*;
 
@@ -86,7 +87,7 @@ fn preview_lines(
     stream_preview: Option<&[Line<'static>]>,
 ) -> Vec<Line<'static>> {
     if let Some(run) = app.viewed_agent() {
-        agent_view_preview_lines(run, width)
+        agent_view_preview_lines(run, app.pulse(), width)
     } else if app.agent_group().is_some() || !app.tool_queue().is_empty() {
         preview_tool_lines(app, width)
     } else if let Some(lines) = stream_preview {
@@ -118,6 +119,10 @@ fn preview_lines(
 /// agree by construction (the strip's `debug_assert`).
 pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let elapsed = app.status().map_or(Duration::ZERO, |s| s.elapsed);
+    // The shared animation phase every running bullet in this strip breathes
+    // against (`docs/tool-pulse.md`) — distinct from `elapsed`, which is the
+    // *turn's* runtime and is displayed.
+    let pulse = app.pulse();
     let mut lines = Vec::new();
     // The round's live agent group leads the strip — its blue tree cell over
     // any ordinary tool cells of a mixed round (docs/agent-tool.md).
@@ -134,9 +139,11 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         {
             // A running backend command tool (bash) with streamed output tails it
             // live; other running tools fall to their plain `⎿ Running…` peek.
-            lines.extend(running_command_lines(tool, elapsed, width));
+            lines.extend(running_command_lines(tool, elapsed, pulse, width));
         } else {
-            lines.extend(tool_lines(tool, width));
+            // The live cell: a running bullet pulses here and only here
+            // (`docs/tool-pulse.md`).
+            lines.extend(live_tool_lines(tool, width, pulse));
         }
         // A running command (a model `bash` call or the `!` shell) can be
         // moved to the background with Ctrl+B — hint it under the live cell,

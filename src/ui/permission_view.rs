@@ -208,7 +208,16 @@ fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             lines.push(Line::default()); // blank row between cells
         }
         if i == 0 {
-            lines.extend(tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS)));
+            // No pulse: the prompt is a still frame. Nothing is running —
+            // the call is waiting on *you* — so its bullet sits at rest
+            // (`docs/tool-pulse.md`), which is also the grey this whole
+            // muted-while-in-flight palette is named after.
+            lines.extend(tool_header_lines(
+                tool,
+                width,
+                Some(TOOL_HEADER_MAX_ROWS),
+                None,
+            ));
         } else {
             lines.extend(tool_lines(tool, width));
         }

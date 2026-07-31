@@ -20,7 +20,7 @@ unit-tested must be unit-tested.
 - The **live region** stays pinned at the bottom:
   - an **input field framed by a top/bottom rule** (`❯ ...`),
   - and, **only while a turn is in flight**, a strip above the box: a **preview
-    row** showing the in-progress AI line (or a running tool's blue header), a
+    row** showing the in-progress AI line (or a running tool's pulsing-grey header), a
     blank **gap row**, a **status line** —
     `(●•·   ) {verb}… ({elapsed}s · {↓|↑} {n} tokens · Thinking for {m}s · esc
     to interrupt)`, a
@@ -104,7 +104,7 @@ unit-tested must be unit-tested.
   shrink must each leave exactly one input box with the conversation tail in
   view).
 - **Tool calls (Claude-Code style).** A reply can interleave tool calls. Each
-  renders inline as a **coloured bullet header** `● name(args)` — **blue** while
+  renders inline as a **coloured bullet header** `● name(args)` — a **breathing grey** while
   it runs (shown live in the bottom region's preview row), **green** when it
   succeeds, **red** when it fails — plus a **collapsed** one-line `⎿` peek of its
   output with a `(ctrl+o to expand)` hint when more is hidden. The full output is
@@ -528,7 +528,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   scrollback; redraw (preview row shows the partial last line).
 - On `ToolStart{name,args}`: `flush_streaming_segment` finalises the run of text
   before the tool (so it slots ahead of the tool in order) and commits its
-  remainder; `start_tool` shows the tool running (blue) in the preview row.
+  remainder; `start_tool` shows the tool running (pulsing grey) in the preview row.
 - On `ToolEnd{output,ok,truncated}`: `end_tool` records the finished tool; commit it
   *collapsed* (green/red) to scrollback. The full output is kept for the Ctrl+O
   view.
@@ -613,7 +613,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   `None` when closed); the matches are derived from the input on demand.
 - `Message { role, text, timestamp }` — one finished message (the `timestamp` is
   displayed only for **user** messages, in the Ctrl+O transcript).
-- `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (blue/green/red).
+- `ToolStatus { Running, Ok, Failed }` — a tool's lifecycle (pulsing grey while
+  it runs — `docs/tool-pulse.md` — then green/red).
 - `ToolCall { name, args, status, output, timestamp, shell, truncated,
   context_output }` — one
   tool invocation; `current_tool` while running, then recorded in history
@@ -836,7 +837,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   preview + gap + status + gap strip only while streaming, the palette band
   below the box, and the session footer on the last row, and clamps to the
   screen; `render_live` grows the box, scrolls the input to
-  keep the end visible, stacks the streaming preview (or a running tool's blue
+  keep the end visible, stacks the streaming preview (or a running tool's grey
   header), a blank gap, the status line, then another blank gap above the box, and
   shows no strip when
   idle; `cursor_position` follows

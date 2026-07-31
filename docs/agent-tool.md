@@ -145,7 +145,7 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
 
 ## Rendering (`ui`)
 
-- **Live group cell** (`live_agent_group_lines`): blue `● Running {n}
+- **Live group cell** (`live_agent_group_lines`): a breathing-grey `● Running {n}
   agents… (ctrl+o to expand)` over the tree —
   `   ├ {description} · {n} tool uses · {tokens} tokens` with a
   `   │ ⎿  {activity}` status row per agent — plus the delayed

@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::ui::agent::agent_group_full_lines;
-use crate::ui::theme::{TOOL_FAIL_COLOR, TOOL_OK_COLOR};
+use crate::ui::theme::{
+    TOOL_FAIL_COLOR, TOOL_OK_COLOR, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
+};
 
 #[test]
 fn agent_group_lines_render_the_finished_tree() {
@@ -174,6 +176,41 @@ fn a_multi_agent_tree_keeps_the_sticky_tool_activity() {
         texts[2]
     );
     assert!(texts[4].ends_with("⎿  Write: game.py"), "{}", texts[4]);
+}
+
+#[test]
+fn a_live_agent_groups_bullet_breathes_like_a_running_tool() {
+    // The tree header is the round's "this is happening now" bullet, so it
+    // pulses on the same clock as a running tool cell — the two are on screen
+    // together in a mixed round and must not blink out of step
+    // (`docs/tool-pulse.md`).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(
+        false,
+        &[
+            spec("a1", "Fetch Warsaw", false),
+            spec("a2", "Fetch Oslo", false),
+        ],
+    );
+    let bullet = |app: &App| live_agent_group_lines(app, 90)[0].spans[0].style.fg;
+    assert_eq!(
+        bullet(&app),
+        Some(Color::Rgb(
+            TOOL_PULSE_DIM.0,
+            TOOL_PULSE_DIM.1,
+            TOOL_PULSE_DIM.2
+        ))
+    );
+    app.set_pulse(TOOL_PULSE_PERIOD / 2);
+    assert_eq!(
+        bullet(&app),
+        Some(Color::Rgb(
+            TOOL_PULSE_BRIGHT.0,
+            TOOL_PULSE_BRIGHT.1,
+            TOOL_PULSE_BRIGHT.2
+        ))
+    );
 }
 
 #[test]

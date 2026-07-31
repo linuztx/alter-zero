@@ -60,7 +60,8 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
     // An agent session view previews the *viewed agent's* stream — its live
     // tool cells or its reply's last row (docs/agent-tool.md).
     if let Some(run) = app.viewed_agent() {
-        return u16::try_from(agent_view_preview_lines(run, width).len()).unwrap_or(u16::MAX);
+        return u16::try_from(agent_view_preview_lines(run, app.pulse(), width).len())
+            .unwrap_or(u16::MAX);
     }
     // A live agent group previews its whole tree cell (over the tool queue's
     // cells when a mixed round runs both — docs/agent-tool.md); a live tool

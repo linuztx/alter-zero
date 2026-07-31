@@ -3,7 +3,7 @@
 //! See `docs/agent-tool.md`.
 
 use super::theme::*;
-use super::tool::result_row;
+use super::tool::{live_tool_lines, result_row, tool_pulse_color};
 use super::wrap::{cols, truncate_cols};
 use super::*;
 
@@ -186,7 +186,12 @@ fn single_live_agent_lines(
     width: u16,
 ) -> Vec<Line<'static>> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let mut lines = vec![agent_cell_header(TOOL_RUNNING_COLOR, &run.description)];
+    // The same breathing grey a running tool cell has — this *is* the round's
+    // running cell (`docs/tool-pulse.md`).
+    let mut lines = vec![agent_cell_header(
+        tool_pulse_color(app.pulse()),
+        &run.description,
+    )];
     let running_tool = run
         .tool_queue
         .front()
@@ -317,7 +322,8 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
 }
 
 /// The **live** agent group's tree cell — the strip preview while the round's
-/// agents run: a blue `● Running {n} agents… (ctrl+o to expand)` header over
+/// agents run: a breathing-grey `● Running {n} agents… (ctrl+o to expand)`
+/// header (the running tool cell's pulse, `docs/tool-pulse.md`) over
 /// live tree rows (counters ticking, the status row showing each agent's
 /// current activity). Rendered from the roster entries the live group names;
 /// an id already swept renders nothing (it settled long ago).
@@ -337,7 +343,7 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         return single_live_agent_lines(app, run, live.background, width);
     }
     let mut lines = vec![agent_group_header(
-        TOOL_RUNNING_COLOR,
+        tool_pulse_color(app.pulse()),
         format!("Running {}…", agent_count_phrase(runs.len())),
         EXPAND_HINT,
     )];
@@ -748,6 +754,7 @@ pub fn agent_view_status(run: &crate::agents::AgentRun) -> crate::app::TurnStatu
 /// this for a viewed agent so the two agree.
 pub(super) fn agent_view_preview_lines(
     run: &crate::agents::AgentRun,
+    pulse: Duration,
     width: u16,
 ) -> Vec<Line<'static>> {
     if !run.tool_queue.is_empty() {
@@ -756,7 +763,9 @@ pub(super) fn agent_view_preview_lines(
             if i > 0 {
                 lines.push(Line::default());
             }
-            lines.extend(tool_lines(tool, width));
+            // A live strip like the main one — the agent's running call
+            // breathes here too (`docs/tool-pulse.md`).
+            lines.extend(live_tool_lines(tool, width, pulse));
         }
         return lines;
     }

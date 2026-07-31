@@ -132,7 +132,7 @@ run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
 
 The event loop **already** interleaves `ToolStart`/`ToolEnd` with `Chunk`s — the
 dummy has scripted exactly this since day one (`stream::turn_events`), and
-`main.rs::on_stream_event` already flushes the text segment, shows the tool blue,
+`main.rs::on_stream_event` already flushes the text segment, shows the tool running,
 commits it green/red, and records it into `history`. A real model driving those
 same events needs almost **no new event-loop code** — the one addition is the
 `StreamEvent::ToolBatch` arm that registers a **parallel batch** up front (so its
@@ -321,7 +321,8 @@ so a `bash` command and its output are as legible as a normal message rather tha
 the old muted grey. Only the structural bits stay dim ([`TOOL_DIM_COLOR`]): the
 `⎿` corner glyph, the `Running…`/`Waiting…`/`(no output)` placeholders and the
 `… +N lines` / `+N lines (Ns)` hints. The `●` bullet keeps its lifecycle colour
-(blue running · vivid green ok · red fail). This is uniform across **every** tool
+(breathing grey while it runs — `docs/tool-pulse.md` — vivid green ok · red
+fail). This is uniform across **every** tool
 — `bash`/`read`/`write`/`edit` and any future tool — because the header goes
 through the shared `tool_header_lines` and command/shell output through the
 shared `output_row`. (A `read`/`write`/`edit` numbered cell instead

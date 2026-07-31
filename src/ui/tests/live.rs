@@ -5,7 +5,7 @@ use crate::ui::live::preview_tool_lines;
 use crate::ui::theme::{
     FOOTER_FOCUS_BG, FOOTER_FOCUS_FG, INPUT_CHROME_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS,
     STATUS_ROWS, TOOL_BACKGROUND_HINT, TOOL_BACKGROUND_HINT_DELAY, TOOL_PEEK_LINES,
-    TOOL_RUNNING_COLOR,
+    TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
 };
 use crate::ui::wrap::cols;
 
@@ -203,9 +203,12 @@ fn render_live_shows_streaming_text_in_preview_row() {
 }
 
 #[test]
-fn render_live_previews_a_running_tool_in_blue() {
+fn render_live_previews_a_running_tool_with_a_pulsing_bullet() {
     // While a tool runs, the strip's preview row shows its coloured header
-    // (blue) instead of the assistant text, so the user sees what's executing.
+    // instead of the assistant text, so the user sees what's executing — and
+    // the bullet **breathes** at the injected frame phase rather than sitting
+    // on a flat colour (`docs/tool-pulse.md`). This is the only place the
+    // pulse reaches the screen, so it is the wiring this test pins.
     let mut app = App::new();
     app.begin_stream();
     app.start_tool("Read", "src/main.rs");
@@ -217,11 +220,26 @@ fn render_live_previews_a_running_tool_in_blue() {
         preview.contains("Read(src/main.rs)"),
         "preview shows the running tool header: {preview:?}"
     );
+    let dim = buf[(0, 0)].fg;
+    assert_eq!(
+        dim,
+        Color::Rgb(TOOL_PULSE_DIM.0, TOOL_PULSE_DIM.1, TOOL_PULSE_DIM.2),
+        "an un-injected clock renders the bottom of the breath"
+    );
+    // Half a period on, the same cell is at the bright end — the boundary's
+    // per-frame `set_pulse` is what animates it.
+    app.set_pulse(TOOL_PULSE_PERIOD / 2);
+    render_live(buf.area, &mut buf, &app);
     assert_eq!(
         buf[(0, 0)].fg,
-        TOOL_RUNNING_COLOR,
-        "the running tool's bullet is blue"
+        Color::Rgb(
+            TOOL_PULSE_BRIGHT.0,
+            TOOL_PULSE_BRIGHT.1,
+            TOOL_PULSE_BRIGHT.2
+        ),
+        "the injected frame clock moves the bullet"
     );
+    assert_ne!(dim, buf[(0, 0)].fg, "…so it visibly changes between frames");
 }
 
 #[test]

@@ -133,7 +133,8 @@ pub(super) const BORDER_COLOR: Color = Color::Rgb(0xAA, 0xAA, 0xAA);
 
 // --- Tool-call styling. A tool renders as a coloured bullet header
 // `● name(args)` plus a collapsed `⎿` peek of its output; the bullet colour is
-// the tool's lifecycle (blue running, green ok, red fail). The full output is
+// the tool's lifecycle (a breathing grey while it runs, green ok, red fail —
+// `docs/tool-pulse.md`). The full output is
 // only shown in the Ctrl+O tool-output view, never inline. ---
 
 /// Bullet prefixing a tool call (same glyph as the assistant, recoloured by
@@ -277,11 +278,47 @@ pub(super) const TOOL_RUNNING: &str = "Running…";
 /// `docs/parallel-tools.md`.
 pub(super) const TOOL_WAITING: &str = "Waiting…";
 
-/// Blue — a tool that is still executing.
-pub(super) const TOOL_RUNNING_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
+/// The **resting** colour of a tool that is still executing: the same grey the
+/// permission prompt shows over the call it is asking about, so everything
+/// in flight reads muted and only the green/red *resolution* lands as colour.
+/// (It was a blue `#61AFEF`; the blue survives as [`CONTEXT_USER_COLOR`], which
+/// is a role tag, not a running state.)
+///
+/// In the **live region** the bullet does not sit at rest — it breathes
+/// between [`TOOL_PULSE_DIM`] and [`TOOL_PULSE_BRIGHT`] (see
+/// [`tool_pulse_color`](super::tool::tool_pulse_color)), Claude-Code's running
+/// dot. The breath's peak is this same grey, so the animation only ever dips
+/// *below* the resting colour — this value is both the still frame and the top
+/// of the cycle. A frozen render (a scrollback commit, the Ctrl+O transcript's
+/// pager) shows it.
+pub(super) const TOOL_RUNNING_COLOR: Color = TOOL_DIM_COLOR;
+
+// A running bullet's pulse — the raised-cosine breath the live region animates
+// it with, one full dim→bright→dim cycle per `TOOL_PULSE_PERIOD`. Kept as RGB
+// triples (not `Color`) because they are blended; the same shape as the status
+// line's `SHIMMER_*` wave, and driven by the same boundary-injected frame clock
+// (`App::set_pulse`). See `docs/tool-pulse.md`.
+
+/// The dim end of the breath — where the cycle starts and ends. Well below the
+/// resting grey, so the dip carries the whole animation (the peak can't help:
+/// it *is* the resting grey) without the bullet ever vanishing.
+pub(super) const TOOL_PULSE_DIM: (u8, u8, u8) = (0x4A, 0x4A, 0x4A);
+
+/// The bright end of the breath, reached at the half-cycle — [`TOOL_DIM_COLOR`]
+/// exactly, so the bullet **never goes brighter than the grey it rests on**.
+/// The pulse dips *down* from the permission prompt's grey and comes back; it
+/// does not flash toward white, which read as a blink rather than a breath and
+/// pulled the eye off the reply.
+pub(super) const TOOL_PULSE_BRIGHT: (u8, u8, u8) = (0x8A, 0x8A, 0x8A);
+
+/// One full dim→bright→dim breath. Slow enough to read as a pulse rather than a
+/// flicker, brisk enough to say "something is happening" — and comfortably
+/// coarser than the 32 ms animation frame the loop re-arms while a turn runs.
+pub(super) const TOOL_PULSE_PERIOD: Duration = Duration::from_millis(1000);
 
 /// Dim grey — a tool queued in a batch but not yet started (its `● name(args)`
-/// bullet and `⎿ Waiting…` row read muted, distinct from the blue running head,
+/// bullet and `⎿ Waiting…` row read muted; it is the running head's *resting*
+/// grey too, the difference being that a running bullet **moves**,
 /// since it hasn't begun). Shares the argument/peek dim grey.
 pub(super) const TOOL_WAITING_COLOR: Color = TOOL_DIM_COLOR;
 
@@ -419,8 +456,10 @@ pub(super) const CONTEXT_IMAGE_LABEL: &str = "image: ";
 pub(super) const CONTEXT_TOOL_CALL_PREFIX: &str = "→ ";
 
 /// Role-tag colours — the tool palette's hues (user blue, assistant green,
-/// system amber, tool-result purple) so the roles scan apart at a glance.
-pub(super) const CONTEXT_USER_COLOR: Color = TOOL_RUNNING_COLOR;
+/// system amber, tool-result purple) so the roles scan apart at a glance. The
+/// blue was the running tool's until that went grey ([`TOOL_RUNNING_COLOR`]);
+/// a role tag is not a running state, so it keeps the hue as its own value.
+pub(super) const CONTEXT_USER_COLOR: Color = Color::Rgb(0x61, 0xAF, 0xEF);
 
 pub(super) const CONTEXT_ASSISTANT_COLOR: Color = TOOL_OK_COLOR;
 

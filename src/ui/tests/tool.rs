@@ -6,10 +6,15 @@ use crate::ui::theme::{
     CODE_TAB_WIDTH, EXPAND_HINT, FILE_PEEK_LINES, TOOL_ARGS_COLOR, TOOL_DIFF_ADD_BG,
     TOOL_DIFF_ADD_COLOR, TOOL_DIFF_DEL_BG, TOOL_DIFF_DEL_COLOR, TOOL_DIM_COLOR, TOOL_FAIL_COLOR,
     TOOL_HEADER_MAX_ROWS, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PEEK_LINES, TOOL_PEEK_MAX_ROWS,
-    TOOL_RUNNING_COLOR, TOOL_WAITING_COLOR,
+    TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD, TOOL_RUNNING_COLOR, TOOL_WAITING_COLOR,
 };
-use crate::ui::tool::{running_command_lines, tool_full_lines};
+use crate::ui::tool::{live_tool_lines, running_command_lines, tool_full_lines};
 use crate::ui::wrap::cols;
+
+/// A theme RGB triple as the `Color` a rendered span carries.
+fn rgb((r, g, b): (u8, u8, u8)) -> Color {
+    Color::Rgb(r, g, b)
+}
 
 // --- tool_lines (collapsed, colour-by-status) ---
 
@@ -41,6 +46,82 @@ fn tool_lines_colours_the_bullet_by_status() {
             "bullet colour tracks status {status:?}"
         );
     }
+}
+
+#[test]
+fn a_running_bullet_is_the_permission_prompts_grey_never_blue() {
+    // The running `●` used to be blue. It now reads like the grey bullet the
+    // permission prompt shows over its pending call — one muted palette for
+    // "in flight", the green/red resolution the only colour that lands.
+    let lines = tool_lines(&tool("Bash", "cargo test", ToolStatus::Running, ""), 80);
+    assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_DIM_COLOR));
+}
+
+#[test]
+fn a_running_bullet_breathes_across_the_pulse_period() {
+    // …and in the live region it pulses, Claude-Code's running dot: dim at the
+    // top of the cycle, back up at the half, down again — a pure function of
+    // the boundary-injected frame clock, like the status shimmer. The breath
+    // only ever dips **below** the resting grey; its peak is that same grey, so
+    // the bullet never brightens toward white.
+    let call = tool("Bash", "cargo test", ToolStatus::Running, "");
+    let bullet = |at: Duration| live_tool_lines(&call, 80, at)[0].spans[0].style.fg;
+    let half = TOOL_PULSE_PERIOD / 2;
+    assert_eq!(bullet(Duration::ZERO), Some(rgb(TOOL_PULSE_DIM)));
+    assert_eq!(bullet(half), Some(rgb(TOOL_PULSE_BRIGHT)));
+    // A full period later it is back where it started — the cycle loops.
+    assert_eq!(bullet(TOOL_PULSE_PERIOD), Some(rgb(TOOL_PULSE_DIM)));
+    assert_eq!(
+        bullet(TOOL_PULSE_PERIOD + half),
+        Some(rgb(TOOL_PULSE_BRIGHT))
+    );
+    // Between the extremes it is genuinely in between, not snapped to one end.
+    let mid = bullet(TOOL_PULSE_PERIOD / 4);
+    assert_ne!(mid, Some(rgb(TOOL_PULSE_DIM)));
+    assert_ne!(mid, Some(rgb(TOOL_PULSE_BRIGHT)));
+}
+
+#[test]
+fn only_a_running_bullet_pulses() {
+    // The pulse means "this is happening now". A queued sibling stays its flat
+    // waiting grey and a resolved call keeps its green/red, whatever the frame
+    // clock says — otherwise the animation would say nothing.
+    for (status, color) in [
+        (ToolStatus::Waiting, TOOL_WAITING_COLOR),
+        (ToolStatus::Ok, TOOL_OK_COLOR),
+        (ToolStatus::Failed, TOOL_FAIL_COLOR),
+    ] {
+        let call = tool("X", "y", status, "out");
+        for at in [Duration::ZERO, TOOL_PULSE_PERIOD / 2] {
+            assert_eq!(
+                live_tool_lines(&call, 80, at)[0].spans[0].style.fg,
+                Some(color),
+                "{status:?} never animates"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_committed_cell_never_carries_a_pulse_frame() {
+    // `tool_lines` feeds scrollback, where a colour is frozen forever. It
+    // renders a running bullet **at rest** — the flat grey — so a cell can
+    // never be committed mid-breath.
+    let call = tool("Bash", "cargo test", ToolStatus::Running, "");
+    assert_eq!(
+        tool_lines(&call, 80)[0].spans[0].style.fg,
+        Some(TOOL_RUNNING_COLOR)
+    );
+    // The peak of the breath *is* the resting grey — the pulse only dips below
+    // it — so what a commit must never freeze is the **dip**. That is also the
+    // value an un-injected clock would render (phase 0), which is exactly the
+    // accident this renderer split exists to prevent.
+    assert_ne!(TOOL_RUNNING_COLOR, rgb(TOOL_PULSE_DIM));
+    assert_eq!(
+        TOOL_RUNNING_COLOR,
+        rgb(TOOL_PULSE_BRIGHT),
+        "the breath tops out at the resting grey, never brighter"
+    );
 }
 
 #[test]
@@ -245,7 +326,7 @@ fn running_command_lines_tails_recent_output_with_the_elapsed() {
         .collect::<Vec<_>>()
         .join("\n");
     let t = tool("Bash", "ping -c 10 x", ToolStatus::Running, &out);
-    let lines = running_command_lines(&t, Duration::from_secs(9), 80);
+    let lines = running_command_lines(&t, Duration::from_secs(9), Duration::ZERO, 80);
     assert_eq!(plain(&lines[0]), "● Bash(ping -c 10 x)");
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert!(
@@ -272,7 +353,7 @@ fn running_command_lines_without_overflow_shows_no_footer() {
     // Fewer lines than the window: show them all, no `+N lines` footer (the
     // status line carries the timer).
     let t = tool("Bash", "echo", ToolStatus::Running, "a\nb");
-    let lines = running_command_lines(&t, Duration::from_secs(1), 80);
+    let lines = running_command_lines(&t, Duration::from_secs(1), Duration::ZERO, 80);
     assert_eq!(
         lines.len(),
         3,
@@ -295,7 +376,7 @@ fn running_command_lines_tail_window_counts_display_rows_when_lines_wrap() {
     let long = "x".repeat(70); // 35 content cols → exactly 2 rows
     let out = format!("alpha\nbeta\ngamma\n{long}");
     let t = tool("Bash", "cat log", ToolStatus::Running, &out);
-    let lines = running_command_lines(&t, Duration::from_secs(7), 40);
+    let lines = running_command_lines(&t, Duration::from_secs(7), Duration::ZERO, 40);
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert_eq!(body.len(), 5, "4 tail rows + the footer: {body:?}");
     assert!(
@@ -382,15 +463,17 @@ fn tool_lines_waiting_shows_a_waiting_peek() {
 }
 
 #[test]
-fn tool_lines_colours_a_waiting_bullet_dim_not_blue() {
-    // The waiting bullet is dim grey (distinct from the blue running head),
+fn tool_lines_colours_a_waiting_bullet_dim_and_still() {
+    // The waiting bullet is dim grey — the same hue a running bullet rests on;
+    // what tells them apart in the live region is that the running one moves
+    // (`docs/tool-pulse.md`),
     // since the call hasn't started.
     let lines = tool_lines(&tool("Bash", "ping x.com", ToolStatus::Waiting, ""), 80);
     let bullet = lines[0].spans.first().expect("a bullet span");
     assert_eq!(
         bullet.style.fg,
         Some(TOOL_WAITING_COLOR),
-        "the waiting bullet is dim, not the running blue"
+        "the waiting bullet is the dim grey"
     );
 }
 

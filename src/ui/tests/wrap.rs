@@ -357,7 +357,7 @@ fn running_command_lines_wraps_a_long_tail_line_instead_of_clipping() {
     // width: every streamed column stays visible in the live cell.
     let long = "0123456789".repeat(6); // 60 cols
     let t = tool("Bash", "cat log", ToolStatus::Running, &long);
-    let lines = running_command_lines(&t, Duration::from_secs(1), 40);
+    let lines = running_command_lines(&t, Duration::from_secs(1), Duration::ZERO, 40);
     // width 40 − the 5-col `  ⎿  ` gutter = 35 content cols → 2 rows.
     let body: Vec<String> = lines[1..].iter().map(plain).collect();
     assert_eq!(body.len(), 2, "the 60-col line wraps to two rows: {body:?}");

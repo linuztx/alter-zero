@@ -478,7 +478,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // when the turn was submitted, and when the current thinking phase began
     // (`None` when not in one). The pure `App` only ever sees the *computed*
     // durations, via `set_status_times`. See docs/status-indicator.md.
-    let mut clocks = StatusClocks::default();
+    let mut clocks = StatusClocks::started_now();
     // When the transient toast above the box should self-clear (`None` when
     // none is live). The impurity kept here, at the boundary — the timestamp
     // pattern, like `clocks`: `App` holds only the toast text, the draw tick
@@ -2339,7 +2339,6 @@ fn spawn_model_fetch(
 /// verb's shimmer phase — and when the current thinking phase began (`None`
 /// outside one). Reset at each turn start; the pure `App` only ever sees the
 /// *computed* durations, via `set_status_times`. See docs/status-indicator.md.
-#[derive(Default)]
 struct StatusClocks {
     turn_start: Option<Instant>,
     thinking_start: Option<Instant>,
@@ -2349,6 +2348,26 @@ struct StatusClocks {
     /// Drives the delayed `(ctrl+b to run in background)` hint via
     /// `App::set_command_elapsed` (docs/background.md).
     command_start: Option<Instant>,
+    /// When the event loop started — the epoch of the **animation phase** every
+    /// pulsing bullet breathes against (`App::set_pulse`, docs/tool-pulse.md).
+    /// Unlike the others this is never cleared: one monotonic clock, so a
+    /// round's tool cells and its agent tree stay in step, and a background
+    /// agent's live cell keeps animating between turns.
+    loop_start: Instant,
+}
+
+impl StatusClocks {
+    /// Idle clocks whose animation epoch is **now** — built once, at the top of
+    /// the loop. No `Default`: `loop_start` is a real reading, and stamping it
+    /// implicitly would let a stray `default()` silently restart every pulse.
+    fn started_now() -> Self {
+        Self {
+            turn_start: None,
+            thinking_start: None,
+            command_start: None,
+            loop_start: Instant::now(),
+        }
+    }
 }
 
 /// Stop tracking the in-flight turn **without blocking the event loop**, and
@@ -3541,6 +3560,9 @@ fn update_status_times(app: &mut App, clocks: &StatusClocks) {
     // The current running command's own elapsed (None when none is running),
     // gating the delayed Ctrl+B hint (docs/background.md).
     app.set_command_elapsed(clocks.command_start.map(|start| start.elapsed()));
+    // The animation phase for the live region's pulsing bullets — a phase, not
+    // a measurement: nothing displays it (docs/tool-pulse.md).
+    app.set_pulse(clocks.loop_start.elapsed());
 }
 
 /// Local wall-clock stamp for recorded items: 12-hour time, no seconds, e.g.

@@ -226,6 +226,28 @@ impl App {
     pub fn set_command_elapsed(&mut self, elapsed: Option<Duration>) {
         self.command_elapsed = elapsed;
     }
+
+    /// Inject the **animation frame clock** before a draw (the
+    /// [`set_status_times`](App::set_status_times) pattern): time since the loop
+    /// started, monotonically increasing. It is a *phase*, not a measurement —
+    /// nothing displays it — so its epoch is arbitrary; what matters is that it
+    /// advances with the loop's 32 ms re-arm.
+    ///
+    /// One clock for every pulsing bullet, so a round's tool cells and its agent
+    /// tree breathe in unison rather than each on its own timer. Unlike the
+    /// turn's `elapsed` it keeps running between turns, so a background agent's
+    /// live cell animates too. See `docs/tool-pulse.md`.
+    pub fn set_pulse(&mut self, pulse: Duration) {
+        self.pulse = pulse;
+    }
+
+    /// The current animation phase — see [`set_pulse`](App::set_pulse). Zero
+    /// until the boundary injects one (the unit-test default), which simply
+    /// renders every pulsing bullet at the bottom of its breath.
+    #[must_use]
+    pub const fn pulse(&self) -> Duration {
+        self.pulse
+    }
     /// How long the current running command has executed, or `None` when no
     /// command is running (the boundary hasn't injected one). See
     /// [`set_command_elapsed`](App::set_command_elapsed).

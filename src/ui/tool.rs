@@ -6,23 +6,48 @@ use super::assistant::expand_code_tabs;
 use super::file_cell::{diff_line_color, file_cell_lines, gutter_row, is_diff_tool};
 use super::inline::wrap_inline;
 use super::theme::*;
-use super::wrap::{cols, truncate_cols, truncate_spans, wrap_output, wrap_verbatim};
+use super::wrap::{blend, cols, truncate_cols, truncate_spans, wrap_output, wrap_verbatim};
 use super::*;
 
-/// The bullet colour for a tool's lifecycle: dim waiting, blue running, green
+/// The bullet colour for a tool's lifecycle: dim waiting, grey running, green
 /// ok, red fail — and green for a call that resolved by moving to the
 /// background (the launch succeeded; see `docs/background.md`).
-const fn tool_status_color(status: ToolStatus) -> Color {
+///
+/// `pulse` is the live region's frame clock (`App::pulse`): `Some` animates a
+/// **running** bullet through [`tool_pulse_color`], `None` renders it at rest.
+/// Only `Running` ever animates — a queued sibling and a resolved call mean the
+/// same thing on every frame, so making them move would say nothing. See
+/// `docs/tool-pulse.md`.
+fn tool_status_color(status: ToolStatus, pulse: Option<Duration>) -> Color {
     match status {
         ToolStatus::Waiting => TOOL_WAITING_COLOR,
-        ToolStatus::Running => TOOL_RUNNING_COLOR,
+        ToolStatus::Running => pulse.map_or(TOOL_RUNNING_COLOR, tool_pulse_color),
         ToolStatus::Ok | ToolStatus::Backgrounded => TOOL_OK_COLOR,
         ToolStatus::Failed => TOOL_FAIL_COLOR,
     }
 }
 
+/// A running bullet's colour for the frame at `elapsed` — the breath
+/// Claude-Code's running dot has: a raised cosine easing
+/// [`TOOL_PULSE_DIM`] → [`TOOL_PULSE_BRIGHT`] → [`TOOL_PULSE_DIM`] once per
+/// [`TOOL_PULSE_PERIOD`], so it swells and fades rather than flicking on and
+/// off.
+///
+/// Pure, like [`shimmer_spans`](super::status) and the comet spinner: the phase
+/// derives entirely from the boundary-supplied `elapsed`
+/// ([`App::set_pulse`](crate::app::App::set_pulse)), and the loop's 32 ms
+/// animation re-arm is what makes it move. See `docs/tool-pulse.md`.
+pub(super) fn tool_pulse_color(elapsed: Duration) -> Color {
+    let period = TOOL_PULSE_PERIOD.as_secs_f32();
+    // `phase` is 0…1 through one breath; the cosine turns it into 0 → 1 → 0.
+    let phase = (elapsed.as_secs_f32() % period) / period;
+    let t = 0.5 * (1.0 - (std::f32::consts::TAU * phase).cos());
+    let (r, g, b) = blend(TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, t);
+    Color::Rgb(r, g, b)
+}
+
 /// The coloured bullet header row(s) for a backend tool call: `● {name}({args})`,
-/// the bullet recoloured by lifecycle (blue/green/red) and the args made bold +
+/// the bullet recoloured by lifecycle (grey running/green/red) and the args made bold +
 /// the normal reply white ([`TOOL_ARGS_COLOR`]) so a `bash` command reads
 /// clearly, the framing `(`/`)` left a dim [`TOOL_DIM_COLOR`] delimiter. Shared
 /// by the inline collapsed view ([`tool_lines`]) and the full-screen transcript
@@ -41,9 +66,10 @@ pub(super) fn tool_header_lines(
     tool: &ToolCall,
     width: u16,
     max_rows: Option<usize>,
+    pulse: Option<Duration>,
 ) -> Vec<Line<'static>> {
     let bullet_style = Style::new()
-        .fg(tool_status_color(tool.status))
+        .fg(tool_status_color(tool.status, pulse))
         .add_modifier(Modifier::BOLD);
     let name_style = Style::new()
         .fg(TOOL_NAME_COLOR)
@@ -218,12 +244,18 @@ pub(super) fn command_display_lines(tool: &ToolCall) -> Vec<String> {
 /// rows without growing the strip past its budget. Walking the source lines
 /// newest-first wraps only what the window can show — never the whole
 /// retained buffer — per animation frame.
+///
+/// Two clocks ride in: `elapsed` is how long the command has run (the `(Ns)`
+/// footer), `pulse` is the frame phase its bullet breathes at. Live-only by
+/// construction — only the strip calls this — so the pulse is unconditional
+/// here (`docs/tool-pulse.md`).
 pub(super) fn running_command_lines(
     tool: &ToolCall,
     elapsed: Duration,
+    pulse: Duration,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
+    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), Some(pulse));
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -270,8 +302,29 @@ pub(super) fn running_command_lines(
 /// hidden (Claude-Code's exec cell). A backend tool keeps its coloured
 /// `● name(args)` header and a single collapsed peek line. The full output is
 /// only rendered in the separate tool-output view, never here.
+///
+/// A **running** bullet renders at rest (the flat grey) — this is the renderer
+/// that feeds scrollback commits and the frozen transcript, where a colour
+/// lasts forever, so it must never capture a frame of the pulse.
+/// `live_tool_lines` is the animated one. See `docs/tool-pulse.md`.
 #[must_use]
 pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+    tool_cell_lines(tool, width, None)
+}
+
+/// [`tool_lines`] for the **live region**: identical, except a running bullet
+/// breathes at the frame `pulse` ([`tool_pulse_color`]). Only the live strip
+/// calls this — its rows are redrawn every animation frame and never committed,
+/// so the moving colour can't be frozen into scrollback. See
+/// `docs/tool-pulse.md`.
+#[must_use]
+pub(super) fn live_tool_lines(tool: &ToolCall, width: u16, pulse: Duration) -> Vec<Line<'static>> {
+    tool_cell_lines(tool, width, Some(pulse))
+}
+
+/// The shared body of [`tool_lines`] / [`live_tool_lines`] — `pulse` is `Some`
+/// only on a live frame.
+fn tool_cell_lines(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<Line<'static>> {
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -286,7 +339,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
         if tool.shell {
             return vec![row];
         }
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
         lines.push(row);
         return lines;
     }
@@ -312,7 +365,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // ([`file_cell_lines`]); output that doesn't parse (old sessions, error
     // bodies) falls through to the legacy first-char colouring below.
     if let Some(body) = file_cell_lines(tool, width, true) {
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
         lines.extend(body);
         return lines;
     }
@@ -321,7 +374,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // `+`/`-` rows are diff-coloured (the codex trick shows inline, not just in
     // the Ctrl+O view). Other backend tools keep the single collapsed peek line.
     if is_diff_tool(tool) && tool.status != ToolStatus::Running && !out_lines.is_empty() {
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
         // Wrap verbatim (a diff body is code, never reflowed at spaces) and
         // colour every wrapped row by the SOURCE line's `+`/`-` marker, so a
         // continuation row keeps its tint — the Ctrl+O view colours the same
@@ -358,7 +411,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
                 output_row(i, text)
             }),
         };
-        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
+        let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
         lines.extend(peek);
         return lines;
     }
@@ -367,7 +420,7 @@ pub fn tool_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // parse as the numbered/diff format, or an unknown tool): coloured header
     // (wrapped when long) + a single collapsed peek line — white output content,
     // dim placeholder — the rest behind the `… +N lines` hint.
-    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS));
+    let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
     lines.push(match tool.status {
         ToolStatus::Waiting => result_row(0, TOOL_WAITING.to_string()),
         ToolStatus::Running => result_row(0, TOOL_RUNNING.to_string()),
@@ -446,6 +499,12 @@ fn result_peek_block(
 /// gutter. An over-cap shell output ([`ToolCall::truncated`]) appends a dim
 /// [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
 pub(super) fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+    // At rest: the transcript is a pager over a cached, incrementally-built
+    // row list (`docs/tool-view-performance.md`) whose refresh short-circuits
+    // on a signature that has no clock in it. Animating here would either not
+    // move or cost a full-tail re-render every 32 ms, for a bullet nobody is
+    // watching breathe. See `docs/tool-pulse.md`.
+    let pulse: Option<Duration> = None;
     // A backgrounded call shows its fixed row in the transcript too — the
     // live output belongs to the ↓ manager, and the final output arrives as
     // the completion notice (docs/background.md).
@@ -454,7 +513,7 @@ pub(super) fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>>
         if tool.shell {
             return vec![row];
         }
-        let mut lines = tool_header_lines(tool, width, None);
+        let mut lines = tool_header_lines(tool, width, None, pulse);
         lines.push(row);
         return lines;
     }
@@ -463,7 +522,7 @@ pub(super) fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>>
     // goes through the plain row pipeline below.
     if let Some(body) = file_cell_lines(tool, width, false) {
         // The Ctrl+O transcript view never truncates the header (`None`).
-        let mut lines = tool_header_lines(tool, width, None);
+        let mut lines = tool_header_lines(tool, width, None, pulse);
         lines.extend(body);
         if tool.truncated {
             lines.push(gutter_row(1, TOOL_TRUNCATED_MARKER.to_string(), None));
@@ -527,7 +586,7 @@ pub(super) fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>>
         result.collect()
     } else {
         // The Ctrl+O transcript view shows the whole command (`None`).
-        let mut lines = tool_header_lines(tool, width, None);
+        let mut lines = tool_header_lines(tool, width, None, pulse);
         lines.extend(result);
         lines
     }

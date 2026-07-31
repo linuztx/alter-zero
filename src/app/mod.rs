@@ -401,6 +401,11 @@ pub struct App {
     /// `(ctrl+b to run in background)` preview hint so a fast command never
     /// flashes it (`docs/background.md`).
     command_elapsed: Option<Duration>,
+    /// The **animation frame clock** — time since the loop started, injected
+    /// before every draw ([`set_pulse`](App::set_pulse)). Purely a phase: the
+    /// live region's running bullets breathe against it, in unison, and nothing
+    /// ever displays it. See `docs/tool-pulse.md`.
+    pulse: Duration,
     /// The subagent roster (`docs/agent-tool.md`): one [`AgentRun`] per
     /// launched agent, created at its [`StreamEvent::AgentBatch`]
     /// announcement and updated from the dedicated agent channel

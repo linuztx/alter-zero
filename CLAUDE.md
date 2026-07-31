@@ -88,7 +88,16 @@ cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`
 parameter, persisted beside the `/model` selection) in `docs/reasoning.md`;
-the flicker-free frame pipeline
+the **running bullet's pulse** (a tool in flight no longer
+shows a blue `●` — it shows the permission prompt's grey, and in the live
+region that grey *breathes* dim→bright→dim once a second, Claude-Code's
+running dot: a raised cosine over the boundary-injected `App::set_pulse`
+frame clock (one shared phase, so a mixed round's tool cells and its agent
+tree blink in step and a background agent animates between turns), applied
+by `ui::live_tool_lines` in the strip only — `tool_lines` renders at rest so
+a scrollback commit can never freeze a frame mid-breath, and the Ctrl+O
+transcript stays still to keep its cache's signature clock-free) in
+`docs/tool-pulse.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
 `docs/flicker.md`; the `@` file-path picker (async walk+rank file search below
 the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
@@ -150,7 +159,7 @@ summary) in `docs/background.md`; and the **`Agent` tool** (Claude-Code-style su
 each running its own `run_agent` tool loop over a fresh context on its own
 thread, reporting on a dedicated `agents::AgentEvent` channel (a seventh
 `select!` source — agents outlive turns); a foreground group shows the live
-blue `● Running {n} agents…` tree (per-agent description · tool uses · tokens
+breathing-grey `● Running {n} agents…` tree (per-agent description · tool uses · tokens
 · a **sticky** `{Name}: {detail}` activity — a bash call's own `description`,
 held between calls — Ctrl+B moves the group to the background; a **lone**
 agent renders `● Agent({description})` over its live tool header instead)
@@ -268,7 +277,8 @@ at the ends, Enter accepts the preview as an editable draft seating ↑ at it,
 Esc/Ctrl+C cancel restoring the pre-search draft and cursor; see
 `docs/history-search.md`) —
 plus, *while a turn is in flight*, a strip above it — a streaming preview row (the
-preview shows a running tool's blue cell when one is executing — a backend tool's
+preview shows a running tool's cell when one is executing — its bullet a
+**breathing grey**, `docs/tool-pulse.md` — a backend tool's
 **whole** collapsed cell, the wrapped `● name(args)` header *plus* its output;
 before any output a `⎿ Running…` row, and once a `bash` command **streams** it
 **tails** its output — the last `TOOL_PEEK_LINES` display **rows**, long lines
@@ -485,7 +495,7 @@ of bug:
    one-line peek). When the model requests a **parallel batch** of calls in one
    round, they are announced up front (`StreamEvent::ToolBatch` →
    `App::start_tool_batch`, filling the `App::tool_queue` `VecDeque`) so the live
-   region shows *every* call at once — the running one live (blue), the not-yet-run
+   region shows *every* call at once — the running one live (pulsing grey), the not-yet-run
    siblings as dim `⎿ Waiting…` cells (`ToolStatus::Waiting`), each committing to
    scrollback as its `ToolEnd` arrives. Execution stays **sequential** (only the
    front of the queue is ever `Running`, so the invariant is "at most one running
@@ -605,7 +615,7 @@ backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok,trunc
 running `bash` cell tails them via `App::push_tool_output`, `docs/tool-streaming.md`)
 and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
-running (blue) then commits it collapsed (green/red), and flips its `thinking_start`
+running (pulsing grey) then commits it collapsed (green/red), and flips its `thinking_start`
 `Instant` so the status line shows/drops `Thinking for Ns`. Before a tool runs, the backend also streams the model **generating** the call as
 `ToolCallDelta(fragment)` events (the `name`/`arguments` pieces of a `tool_calls`
 delta — `openai::Delta::tool_call`, surfaced ahead of the `ToolStart`); the loop
@@ -765,7 +775,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
 
 - **All styling is centralized** as `const`s in `ui/theme.rs` — bullets,
   prompt, colours (including the red error bullet and the cyan system bullet),
-  border, the tool-call styling (`TOOL_*` — dim-waiting/blue/green/red status
+  border, the tool-call styling (`TOOL_*` — dim-waiting/grey-running/green/red status
   colours (`TOOL_WAITING_COLOR` for a batch's not-yet-run `⎿ Waiting…` calls,
   `docs/parallel-tools.md`), the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
