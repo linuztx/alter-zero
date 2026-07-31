@@ -124,6 +124,23 @@ pub struct InlineViewport {
     /// [`restore`]: InlineViewport::restore
     /// [`draw_overlay`]: InlineViewport::draw_overlay
     pending: Vec<Line<'static>>,
+    /// Conversation rows an inline **modal** ([`ui::region_is_modal`]) has
+    /// covered — the rows [`ui::repin_modal`] took by growing *upward* instead
+    /// of scrolling (`docs/permissions.md`).
+    ///
+    /// They are the one thing on screen that is neither in the terminal's
+    /// scrollback nor still painted: a hole between what scrollback ends with
+    /// and what the region shows. Nothing is lost — every one of them is still
+    /// in `App`'s history — but the boundary has to know **how many** to give
+    /// back when the modal closes, or its repaint would either leave the hole
+    /// (the box floating above blank rows) or overshoot it and re-show rows
+    /// scrollback already has. Accumulated across frames (a modal that grows
+    /// twice covers twice), taken by [`take_modal_cover`], and cleared by
+    /// [`reflow`], whose rebuild leaves no hole behind.
+    ///
+    /// [`take_modal_cover`]: InlineViewport::take_modal_cover
+    /// [`reflow`]: InlineViewport::reflow
+    modal_cover: u16,
     /// Whether [`init`] pushed the kitty keyboard-enhancement flags (so the
     /// terminal reports Shift+Enter distinctly from Enter — see
     /// `docs/shift-enter.md`). Recorded so [`restore`] and the panic hook only
@@ -212,6 +229,7 @@ impl InlineViewport {
             view,
             prev: None,
             pending: Vec::new(),
+            modal_cover: 0,
             keyboard_enhanced,
         })
     }
@@ -221,6 +239,29 @@ impl InlineViewport {
     #[must_use]
     pub const fn screen(&self) -> Rect {
         self.screen
+    }
+
+    /// The live region's top row — equivalently, how many screen rows above it
+    /// hold committed conversation (the region always sits directly below the
+    /// last committed row). The boundary's half of the modal-close window
+    /// arithmetic; see [`take_modal_cover`].
+    ///
+    /// [`take_modal_cover`]: InlineViewport::take_modal_cover
+    #[must_use]
+    pub const fn view_top(&self) -> u16 {
+        self.view.y
+    }
+
+    /// Take the rows an inline modal covered since the last repaint (`0` when
+    /// none did), clearing the count.
+    ///
+    /// The caller repaints exactly `view_top() + cover + (rows recorded while
+    /// the modal was up)` rows of the conversation, which is precisely the
+    /// stretch running from where the terminal's scrollback ends to the end of
+    /// history: the screen comes back whole, with no row shown twice. See
+    /// `modal_cover` and `docs/permissions.md`.
+    pub const fn take_modal_cover(&mut self) -> u16 {
+        std::mem::replace(&mut self.modal_cover, 0)
     }
 
     /// Repaint the live region at the new `height`, keeping it **content-anchored**
@@ -238,6 +279,11 @@ impl InlineViewport {
     ///
     /// The box grows in place until it reaches the screen bottom, at which point
     /// it scrolls the chat up into scrollback; a shrink blanks the rows it vacates.
+    /// An inline **modal** ([`ui::region_is_modal`] — the tool-permission prompt)
+    /// is the exception: it never scrolls, covering the conversation instead
+    /// ([`ui::repin_modal`]), because a scroll is one-way and the collapse back
+    /// to the composer could never fill the rows it vacated — the boundary
+    /// repaints what the modal covered when it closes (`docs/permissions.md`).
     ///
     /// [`enter_overlay`]: InlineViewport::enter_overlay
     /// [`insert_before`]: InlineViewport::insert_before
@@ -288,6 +334,15 @@ impl InlineViewport {
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<Buffer> {
+        // An inline **modal** — the tool-permission prompt, the one live view
+        // that can be as tall as the terminal — re-pins by a different rule:
+        // it covers the conversation instead of scrolling it away
+        // (`ui::repin_modal`, `docs/permissions.md`). Everything below keys off
+        // this: a modal frame reserves the *pre-modal* height for its pending
+        // flush too, so lines committed in the frame the prompt opens land
+        // above the composer's old seat — the way they would have without it —
+        // and the prompt then grows upward over the result.
+        let modal = ui::region_is_modal(app);
         // The pending flush reserves `self.view.height` rows *below* the lines
         // it writes ([`write_above_chunk`]'s scroll plan) — sync the tracked
         // height to THIS frame's height first. A commit that lands in the same
@@ -300,11 +355,22 @@ impl InlineViewport {
         // flush, not a mid-stream collapse). Gated on pending lines: without a
         // flush the height change must flow through `ui::repin` below, whose
         // shrink is what blanks the rows an in-place shrink vacates.
-        if !self.pending.is_empty() {
+        if !self.pending.is_empty() && !modal {
             self.view.height = height;
         }
         self.flush_pending()?;
-        let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
+        let repin = if modal {
+            let repin = ui::repin_modal(self.view.y, self.view.height, height, self.screen.height);
+            // Every row it took by growing upward is a conversation row now
+            // shown by nobody — count it so the close can hand it back
+            // (`modal_cover`).
+            self.modal_cover = self
+                .modal_cover
+                .saturating_add(self.view.y.saturating_sub(repin.top));
+            repin
+        } else {
+            ui::repin(self.view.y, self.view.height, height, self.screen.height)
+        };
         self.view = Rect::new(0, repin.top, self.screen.width, height);
         let mut buf = Buffer::empty(self.view);
         render(self.view, &mut buf);
@@ -531,6 +597,10 @@ impl InlineViewport {
     ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
         self.pending.clear();
+        // The rebuild below writes the conversation straight onto the screen,
+        // so whatever a modal had covered is either painted again or scrolled
+        // into scrollback — either way there is no hole left to hand back.
+        self.modal_cover = 0;
         queue!(self.backend, BeginSynchronizedUpdate)?;
         // Hide the cursor before the rebuild (see [`draw`]): a reflow homes the
         // cursor to the top (`clear_scrollback_and_screen`'s `ESC[H`, or

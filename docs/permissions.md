@@ -71,6 +71,62 @@ ordinary `⎿ Waiting…` rows. For the same reason `App::command_elapsed` reads
 `(ctrl+b to run in background)` hint: the prompt owns every key, so that one
 would be advertising a binding it swallows.
 
+## The screen it covers, and gives back
+
+A prompt is the one inline view that can be as tall as the whole terminal — the
+body is shown *whole* — and that makes the live region's ordinary geometry the
+wrong fit for it. The region is content-anchored: it grows downward and, once it
+reaches the screen bottom (where the composer sits for all but the first minutes
+of a session), each further row it needs **scrolls** a row of chat off the top
+into the terminal's scrollback. That is a one-way move. When the prompt closes
+and the region collapses back to a three-row composer, the rows it borrowed are
+gone from the screen and nothing can fill the ones it vacates: the box ends up
+floating mid-screen over a band of blank rows, which is exactly what this looked
+like from the outside.
+
+So a prompt re-pins by a different rule (`ui::region_is_modal` /
+`ui::repin_modal`): it takes the free rows below the region first — the ordinary
+content-anchored growth, invariant 3 — and then grows **upward, covering** the
+conversation. It never scrolls. Covering is reversible in a way scrolling is
+not: every row it hides is still in `App`'s history, so the close can put it
+back.
+
+Putting it back has to be exact. At the close, the terminal holds
+
+```
+scrollback │ ……………………………………………  ends here
+screen     │ rows still painted above the prompt   ← InlineViewport::view_top
+           │ rows the prompt covered               ← InlineViewport::take_modal_cover
+           │ rows recorded while it was up         ← history past the frontier
+```
+
+and those three counts sum to one contiguous stretch running from where
+scrollback ends to the end of history. `main.rs::modal_close_window` adds them
+up and `repaint_conversation_within` repaints exactly that many rows in place
+(`ReflowClear::InPlace`), which puts the screen back together with no row shown
+twice and none missing — and re-seats the box where the prompt found it, flush
+at the bottom of a full screen. Repainting the default window instead (the whole
+on-screen window, as the Ctrl+O return does) reaches back past what scrollback
+already holds and re-shows a screenful the user can scroll to; repainting less
+leaves the hole. A prompt that covered nothing — one that fit in the free rows
+below an early-session composer — needs no repaint at all, and doesn't get one.
+
+Two consequences worth knowing:
+
+- **Commits are held back while a prompt is up** (`main.rs::commits_allowed`,
+  invariant 4's list, beside the Ctrl+O overlay and the agent session view): a
+  commit under the modal would scroll its rows into scrollback, the one-way move
+  the covering exists to avoid. `App` records the item either way and the close
+  repaint carries it, which is what the "rows recorded while it was up" term
+  above counts.
+- **A repaint while the prompt is open would undo the trick**, since the rebuild
+  writes the conversation to the screen and scrolls the overflow away for real.
+  So the geometry deliberately does *not* refresh mid-prompt: Tab's amend field
+  shortening the prompt simply blanks the rows it vacates below (the ordinary
+  shrink), and they come back with the close. A resize is the exception — it
+  purge-rebuilds like every resize does, which leaves no hole, so the close then
+  finds nothing to hand back.
+
 ## The options
 
 Every prompt offers three, selected with ↑/↓ + Enter or by typing `1`/`2`/`3`:
@@ -237,11 +293,19 @@ integration tests) that builds a backend directly is unaffected.
   cells kept above it (header-only for the pending call, `⎿ Waiting…` for its
   siblings, the whole tree for a subagent's), and that `permission_height`
   equals the painted rows — at every height, the context rows included.
+- `ui/tests/layout.rs` — the modal geometry: `region_is_modal` is a prompt and
+  nothing else, and `repin_modal` takes the free rows below before covering
+  anything, never scrolls even at full screen height, and shrinks like any
+  other region (top put, vacated rows below blanked).
 - `smoke.sh` Phase 55 — the whole round trip against the dummy backend in a real
   terminal: draft typed, prompt shown, `2` approving, draft restored.
 - `smoke.sh` Phase 56 — Tab's amend end to end: the instructions land on the red
   cell and the model-facing denial (feedback included) shows in the Ctrl+D
   context view, with neither text leaking into the other's place.
+- `smoke.sh` Phase 58 — the covering geometry in a real terminal: from a
+  bottom-seated composer the prompt pushes nothing into scrollback, and
+  answering it puts the box back flush at the bottom with the conversation
+  whole and each message committed exactly once.
 - `tests/live_openrouter.rs` — against a real provider: the replayed rejection
   is a legible context shape and the model still follows the instructions a
   turn later.

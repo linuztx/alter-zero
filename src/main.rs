@@ -492,6 +492,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // old rows survives behind the repaint (the duplication `ReflowClear::Purge`
     // exists to clear). Consumed by the first overlay-exit repaint.
     let mut overlay_resized = false;
+    // Set while an inline **modal** — a tool permission prompt
+    // (`docs/permissions.md`) — is up, to the history length when it opened.
+    // A modal covers the conversation instead of scrolling it away
+    // ([`ui::repin_modal`]), so the rows it hides are still in `App`'s history
+    // and it is the *close* that owes them back: this is what lets the closing
+    // repaint size its window to exactly the stretch the terminal is missing
+    // — the covered rows plus whatever was recorded (commits being held back,
+    // `commits_allowed`) while the prompt was up. See `modal_close_window`.
+    let mut modal_frontier: Option<(usize, usize)> = None;
 
     // Init already queried the cursor over stdin; the EventStream is now the sole
     // stdin reader (see the module-level invariant note).
@@ -1591,13 +1600,39 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                 }
                 match app.view {
                     View::Conversation => {
-                        // Compute the strip preview cheaply once per frame (O(one
-                        // line); a forming table re-renders just its own block),
-                        // so the status animation never re-renders the whole
-                        // reply — and inject its row count so the layout reserves
-                        // it. See `docs/markdown.md`, `docs/table-streaming.md`.
-                        let preview = stream_preview_lines(&mut app, &mut render, term.screen());
-                        draw(term, &app, preview.as_deref())?;
+                        // A permission prompt that has just closed leaves a hole
+                        // where it covered the conversation (`ui::repin_modal`
+                        // grew it upward rather than scrolling those rows away),
+                        // and the region shrinking off them would strand the box
+                        // above a band of blank rows — the reported bug. Give
+                        // exactly that stretch back, in place, before anything
+                        // else paints. See `docs/permissions.md`.
+                        match modal_close_window(term, &app, &mut render, &mut modal_frontier) {
+                            // An agent session view keeps no scrollback of its
+                            // own — it is a purge-rebuild of that agent's
+                            // transcript — so there is no stretch to measure:
+                            // rebuilding it is the whole repair.
+                            Some(_) if app.agent_view.is_some() => {
+                                repaint_agent_view(term, &mut app, &mut agent_render)?;
+                            }
+                            Some(window) => repaint_conversation_within(
+                                term,
+                                &mut app,
+                                &mut render,
+                                ReflowClear::InPlace,
+                                Some(window),
+                            )?,
+                            // Compute the strip preview cheaply once per frame (O(one
+                            // line); a forming table re-renders just its own block),
+                            // so the status animation never re-renders the whole
+                            // reply — and inject its row count so the layout reserves
+                            // it. See `docs/markdown.md`, `docs/table-streaming.md`.
+                            None => {
+                                let preview =
+                                    stream_preview_lines(&mut app, &mut render, term.screen());
+                                draw(term, &app, preview.as_deref())?;
+                            }
+                        }
                     }
                     View::ToolOutput => draw_tool_view(term, &mut app, &mut transcript)?,
                     View::ResumePicker => draw_resume_picker(term, &app)?,
@@ -1649,7 +1684,7 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     }
                     Err(reason) => {
                         let text = format!("Failed to paste image: {reason}");
-                        if app.view == View::Conversation {
+                        if commits_allowed(&app) {
                             commit_error_notice(term, &mut app, &mut render, &text);
                         } else {
                             app.record_error_message(&text);
@@ -2633,6 +2668,21 @@ fn run_shell(
     Ok((cancel, handle))
 }
 
+/// Whether finished lines may be written to the terminal's scrollback right
+/// now (invariant 4). Three inline views hold them back — the Ctrl+O /
+/// `/resume` / Ctrl+D alternate screen, an agent session view, and an open
+/// **permission prompt** — and all three end the same way: `App` records the
+/// item regardless, and the return/close repaints the inline view from that
+/// history, so nothing is lost by waiting.
+///
+/// The prompt joins the list because it **covers** the conversation instead of
+/// scrolling it away ([`ui::repin_modal`], `docs/permissions.md`): a commit
+/// underneath it would scroll the modal's own rows into scrollback — the
+/// one-way move the modal exists to avoid.
+fn commits_allowed(app: &App) -> bool {
+    app.view == View::Conversation && app.agent_view.is_none() && app.permission().is_none()
+}
+
 /// Settle the background completions held so far (empty when none landed):
 /// record + commit each [`BackgroundNotice`] in arrival order — commits are
 /// view-gated (invariant 4: history always records; an overlay return
@@ -2642,7 +2692,7 @@ fn run_shell(
 /// can never split a committed reply (invariants 2/3). See
 /// `docs/background.md`.
 fn settle_bg_completions(term: &mut InlineViewport, app: &mut App) {
-    let committing = app.view == View::Conversation && app.agent_view.is_none();
+    let committing = commits_allowed(app);
     for completion in app.take_pending_bg_completions() {
         let notice = app.record_background_notice(&completion);
         if committing {
@@ -3031,11 +3081,7 @@ fn on_stream_event(
     event: StreamEvent,
 ) -> io::Result<bool> {
     let width = term.screen().width;
-    // Lines are only committed to scrollback in the conversation view; in the
-    // overlay — and while an agent session view covers the screen — we hold
-    // off and repaint the inline view on return, so the stream keeps
-    // advancing without touching what the user is looking at.
-    let committing = app.view == View::Conversation && app.agent_view.is_none();
+    let committing = commits_allowed(app);
     match event {
         StreamEvent::AgentBatch { background, agents } => {
             // The model launched a group of subagents: finalise the text
@@ -3679,6 +3725,27 @@ fn repaint_conversation(
     render: &mut ui::StreamRender,
     clear: ReflowClear,
 ) -> io::Result<()> {
+    repaint_conversation_within(term, app, render, clear, None)
+}
+
+/// [`repaint_conversation`] with an explicit row budget for the rebuilt tail.
+///
+/// `window` is the closing permission prompt's business ([`modal_close_window`])
+/// and nothing else's: the ordinary repaint wants the whole on-screen window
+/// (`None` — the [`ui::repaint_budget`] default), because that is exactly what
+/// it is replacing. A modal close wants **only the stretch the terminal is
+/// missing** — the rows the prompt covered plus anything recorded while it was
+/// up — because the rows above it are still on screen and the rows before those
+/// are in the terminal's own scrollback. Repainting the default window there
+/// would reach back past both and re-show a screenful the user can already
+/// scroll to (`docs/permissions.md`).
+fn repaint_conversation_within(
+    term: &mut InlineViewport,
+    app: &mut App,
+    render: &mut ui::StreamRender,
+    clear: ReflowClear,
+    window: Option<usize>,
+) -> io::Result<()> {
     let screen = term.screen();
     if clear == ReflowClear::Purge {
         // The purge drops every committed row (screen and scrollback alike),
@@ -3694,7 +3761,7 @@ fn repaint_conversation(
     let height = live_region_height(app, screen);
     let budget = match clear {
         ReflowClear::Purge => RESIZE_REFLOW_MAX_ROWS,
-        ReflowClear::InPlace => ui::repaint_budget(screen.height, height),
+        ReflowClear::InPlace => window.unwrap_or_else(|| ui::repaint_budget(screen.height, height)),
     };
     let tail = ui::repaint_tail(
         &app.history,
@@ -3735,6 +3802,77 @@ fn repaint_conversation(
         term.insert_before(render.commit(text, screen.width));
     }
     Ok(())
+}
+
+/// Track an inline modal across draws and, on the frame it closes, size the
+/// repaint that gives back what it covered — `None` on every other frame (draw
+/// normally). See `docs/permissions.md`.
+///
+/// A permission prompt grows **upward** over the conversation instead of
+/// scrolling it into scrollback ([`ui::repin_modal`]), because a scroll is
+/// one-way: the collapse back to the composer could never fill the rows it
+/// vacated, which is what left the box floating above a band of blank ones.
+/// Covering is reversible — but only if the close repaints *exactly* the rows
+/// the terminal is missing:
+///
+/// ```text
+///   scrollback │ …………………………  ends here
+///   screen     │ rows still painted above the prompt   ← term.view_top()
+///              │ rows the prompt covered               ← term.take_modal_cover()
+///              │ rows recorded while it was up         ← `held`, below
+/// ```
+///
+/// Their sum is one contiguous stretch running from where scrollback ends to
+/// the end of history, so repainting it puts the screen back together with no
+/// row shown twice and no row missing. Repainting *more* (the default window)
+/// reaches back into scrollback and duplicates it; repainting *less* leaves the
+/// hole. A prompt that covered nothing — one that fit in the free rows below an
+/// early-session composer — needs no repaint at all.
+///
+/// The third term is what commits being held back (`commits_allowed`) buys: the
+/// terminal stops keeping up with `App` the moment the prompt opens, so the
+/// difference between [`committed_row_count`] then and now is exactly the rows
+/// still owed. `frontier` carries that opening reading — the history length,
+/// which the count is measured *from*, and the partial reply's committed rows,
+/// which it is measured *against*.
+fn modal_close_window(
+    term: &mut InlineViewport,
+    app: &App,
+    render: &mut ui::StreamRender,
+    frontier: &mut Option<(usize, usize)>,
+) -> Option<usize> {
+    let width = term.screen().width;
+    if ui::region_is_modal(app) {
+        // Opening: take the reading the close will measure against.
+        frontier.get_or_insert_with(|| {
+            let items = app.history.len();
+            (items, committed_row_count(app, render, width, items))
+        });
+        return None;
+    }
+    let (items, partial) = frontier.take()?;
+    let cover = term.take_modal_cover();
+    if cover == 0 {
+        return None;
+    }
+    let held = committed_row_count(app, render, width, items).saturating_sub(partial);
+    Some(usize::from(term.view_top()) + usize::from(cover) + held)
+}
+
+/// The rows the terminal owes the conversation from history item `from` on:
+/// those items' rendered rows plus the in-flight partial reply's *already
+/// committed* ones — the same two pieces [`ui::repaint_tail`] rebuilds a window
+/// out of, so the difference between two readings counts exactly the rows
+/// recorded in between (`modal_close_window`). Cheap by construction:
+/// `conversation_lines` is per-item, so only the items after `from` are
+/// rendered.
+fn committed_row_count(app: &App, render: &mut ui::StreamRender, width: u16, from: usize) -> usize {
+    let items = ui::conversation_lines(&app.history[from.min(app.history.len())..], width).len();
+    let partial = app
+        .streaming_text()
+        .filter(|text| !text.is_empty())
+        .map_or(0, |text| render.committed_rows(text, width).len());
+    items + partial
 }
 
 /// How an overlay-return repaint prepares the screen: the usual spill-safe

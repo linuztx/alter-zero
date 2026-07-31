@@ -846,7 +846,9 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   part of its layout, so the always-visible cursor never lands on a strip
   row; and
   `repin` keeps the box top-anchored (scrolling up only on overflow, clearing rows
-  on shrink); `restore_cursor_row` lands the exit cursor just below the box (no
+  on shrink) while `repin_modal` gives an inline modal — a permission prompt,
+  `region_is_modal` — the covering re-pin instead (free rows below first, then
+  upward over the conversation, never scrolling; `docs/permissions.md`); `restore_cursor_row` lands the exit cursor just below the box (no
   blank gap on quit when the box is near the top); the `BULLET_WIDTH` / `repaint_budget`
   single-source-of-truth invariants; and `stable_commit`/`final_commit` proven to
   reconstruct a whole streamed reply with no gaps or duplicates, and to clamp

@@ -184,6 +184,95 @@ fn repin_scrolls_up_only_when_the_box_overflows_the_bottom() {
 }
 
 #[test]
+fn region_is_modal_only_while_a_permission_prompt_is_open() {
+    // The one inline view that covers the conversation instead of scrolling
+    // it away (docs/permissions.md) — every other band/picker is small enough
+    // to grow the region the ordinary way.
+    let mut app = App::new();
+    assert!(!region_is_modal(&app));
+    app.open_permission(crate::permission::PermissionRequest {
+        id: "perm_0".to_string(),
+        kind: crate::permission::PermissionKind::Write,
+        target: "hello.py".to_string(),
+        body: "1 print(\"hi\")".to_string(),
+        detail: None,
+        agent: None,
+    });
+    assert!(region_is_modal(&app));
+}
+
+#[test]
+fn repin_modal_grows_upward_instead_of_scrolling_the_conversation_away() {
+    // The composer sits flush at the bottom (20 + 4 = 24) when a permission
+    // prompt makes the region 12 rows tall. The ordinary `repin` scrolls 8
+    // rows of chat off the top into scrollback — gone from the screen for
+    // good, so the collapse back to the composer leaves 8 blank rows under
+    // the box. The modal **covers** them instead: no scroll, bottom put.
+    assert_eq!(
+        repin_modal(20, 4, 12, 24),
+        Repin {
+            scroll_up: 0,
+            top: 12,
+            clear_below: 0
+        }
+    );
+}
+
+#[test]
+fn repin_modal_takes_the_free_rows_below_before_covering_anything() {
+    // Early in a session the box sits high with free rows beneath it: the
+    // prompt grows downward in place first (invariant 3), covering nothing.
+    assert_eq!(
+        repin_modal(3, 4, 12, 24),
+        Repin {
+            scroll_up: 0,
+            top: 3,
+            clear_below: 0
+        }
+    );
+    // Taller than the room below (7 + 22 > 24): it takes all of it, then
+    // covers just the one row it still needs.
+    assert_eq!(
+        repin_modal(3, 4, 22, 24),
+        Repin {
+            scroll_up: 0,
+            top: 2,
+            clear_below: 0
+        }
+    );
+}
+
+#[test]
+fn repin_modal_fills_the_screen_without_scrolling() {
+    // A prompt as tall as the terminal seats at row 0 — still no scroll, so
+    // every row it covers is repaintable from history when it closes.
+    assert_eq!(
+        repin_modal(20, 4, 24, 24),
+        Repin {
+            scroll_up: 0,
+            top: 0,
+            clear_below: 0
+        }
+    );
+}
+
+#[test]
+fn repin_modal_shrinks_like_any_other_region() {
+    // Tab swapping the option rows for the amend field shortens the prompt:
+    // the top stays put and the vacated rows below are blanked, exactly as
+    // `repin` does. The modal only ever moves its top *up*, so nothing above
+    // it is ever left stale.
+    assert_eq!(
+        repin_modal(12, 12, 10, 24),
+        Repin {
+            scroll_up: 0,
+            top: 12,
+            clear_below: 2
+        }
+    );
+}
+
+#[test]
 fn restore_cursor_row_follows_the_box_down_the_screen() {
     // Box one row above the bottom → prompt on the last row, still no gap.
     assert_eq!(restore_cursor_row(20, 3, 24), Some(23));
