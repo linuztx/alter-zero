@@ -497,6 +497,15 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
     // O(history) to build, a slice to serve). Cleared the moment no covering
     // prompt is up.
     let mut modal_replay: Option<ModalReplay> = None;
+    // Set when a resize lands while a permission prompt is open. The resize's
+    // purge rebuild reset the covering (the prompt then sits below the rebuilt
+    // tail, having taken its rows by the rebuild's real scroll — a one-way
+    // move), so the close would find no cover to hand back and the collapse
+    // would strand the box above the vacated rows. Consumed on the first draw
+    // after the prompt closes, which purge-rebuilds like the resize did —
+    // reseating the box flush at the bottom with scrollback rebuilt, no row
+    // lost or doubled. The `overlay_resized` pattern (docs/permissions.md).
+    let mut modal_resized = false;
     // Set while an inline **modal** — a tool permission prompt
     // (`docs/permissions.md`) — is up, to the history length when it opened.
     // A modal covers the conversation instead of scrolling it away
@@ -1421,6 +1430,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                         // the new size (reflowing would write the alternate
                         // screen).
                         if size_changed && app.view == View::Conversation {
+                            // A resize under an open permission prompt resets
+                            // the covering with this purge — note it so the
+                            // prompt's close can purge-rebuild too instead of
+                            // stranding the box (see `modal_resized`).
+                            if ui::region_is_modal(&app) {
+                                modal_resized = true;
+                            }
                             repaint_active_view(
                                 term, &mut app, &mut render, &mut agent_render,
                                 ReflowClear::Purge,
@@ -1429,8 +1445,13 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                             // Under an overlay the inline view can't reflow
                             // (it would write the alternate screen) — remember
                             // to purge-rebuild on return instead of the usual
-                            // in-place overwrite (see `overlay_resized`).
+                            // in-place overwrite (see `overlay_resized`). A
+                            // prompt open beneath the overlay loses its
+                            // covering to that return's purge the same way.
                             overlay_resized = true;
+                            if ui::region_is_modal(&app) {
+                                modal_resized = true;
+                            }
                         }
                         burst.reset();
                         frame.schedule_frame();
@@ -1604,6 +1625,27 @@ async fn run(term: &mut InlineViewport) -> io::Result<()> {
                     }
                 }
                 match app.view {
+                    // A permission prompt closed after a mid-prompt resize: the
+                    // resize's purge reset the covering, so there is no window
+                    // to hand back — the prompt took its rows by the rebuild's
+                    // real scroll, and the collapse would strand the box above
+                    // the rows it vacates. Purge-rebuild like the resize did
+                    // (flush at the bottom, scrollback rebuilt, nothing lost or
+                    // doubled), discarding whatever covering accounting is left
+                    // — the purge regenerates everything it tracked. See
+                    // `modal_resized` and `docs/permissions.md`.
+                    View::Conversation if modal_resized && !ui::region_is_modal(&app) => {
+                        modal_resized = false;
+                        modal_frontier = None;
+                        let _ = term.take_modal_cover();
+                        repaint_active_view(
+                            term,
+                            &mut app,
+                            &mut render,
+                            &mut agent_render,
+                            ReflowClear::Purge,
+                        )?;
+                    }
                     View::Conversation => {
                         // A permission prompt that has just closed leaves a hole
                         // where it covered the conversation (`ui::repin_modal`

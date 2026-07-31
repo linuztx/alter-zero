@@ -238,7 +238,11 @@ at the boundary — `term::paint_live` skips the flush under an
 already-covering modal, the close's reflow regenerating it from history — so
 nothing scrolls away mid-cover; and the close repaints exactly
 what it covered, so the box comes back flush at the bottom instead of floating
-over a blank band (invariant 3, `smoke.sh` Phase 59); it **stashes the composer draft**
+over a blank band (invariant 3, `smoke.sh` Phase 59); a mid-prompt **resize**
+purge-rebuilds and resets that covering, so the first draw after the prompt
+closes purge-rebuilds too (`main.rs`'s `modal_resized`, the `overlay_resized`
+pattern, `smoke.sh` Phase 60) instead of stranding the box above the rows the
+collapse vacates; it **stashes the composer draft**
 and hands it straight back on close so a request landing mid-sentence costs
 nothing, Tab swaps the options for that same textarea as an amend field whose
 Enter rejects *with* the typed feedback, Esc cancels (reject + the ordinary

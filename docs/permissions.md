@@ -173,8 +173,18 @@ Two consequences worth knowing:
   So the geometry deliberately does *not* refresh mid-prompt: Tab's amend field
   shortening the prompt simply blanks the rows it vacates below (the ordinary
   shrink), and they come back with the close. A resize is the exception — it
-  purge-rebuilds like every resize does, which leaves no hole, so the close then
-  finds nothing to hand back.
+  purge-rebuilds like every resize does, and that rebuild **resets the
+  covering**: the prompt comes back seated *below* the rebuilt tail, having
+  taken its rows by the rebuild's real scroll (a one-way move). The close then
+  has no cover to hand back, and the plain collapse would strand the box above
+  the rows it vacates — the "blank band under the composer after a resized
+  prompt" bug. So the resize arm notes it (`main.rs`'s `modal_resized`, the
+  `overlay_resized` pattern — set for a resize under the Ctrl+O overlay with a
+  prompt open beneath it too), and the first draw after the prompt closes
+  consumes the note with another **purge rebuild**: box flush at the bottom,
+  scrollback rebuilt from history, nothing lost or doubled (any leftover
+  covering accounting is discarded — the purge regenerates everything it
+  tracked). Guarded by `smoke.sh` Phase 60.
 
 ## The options
 
@@ -402,6 +412,10 @@ integration tests) that builds a backend directly is unaffected.
   commit) still shows that finished cell and the message; and the final screen
   is whole — box flush at the bottom, the message exactly once in
   scrollback+screen.
+- `smoke.sh` Phase 60 — a resize while the prompt is open, then the answer:
+  the prompt survives the mid-prompt purge rebuild, and the close's own purge
+  lands the box flush at the bottom instead of floating above the rows the
+  collapsed prompt vacated, each message committed exactly once.
 - `tests/live_openrouter.rs` — against a real provider: the replayed rejection
   is a legible context shape and the model still follows the instructions a
   turn later.
