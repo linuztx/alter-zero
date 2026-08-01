@@ -78,16 +78,25 @@ fn context_entry_lines(
 #[must_use]
 pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // An agent session view debugs the *viewed agent's* context: its own
-    // transcript derived through the same mapping (the shared persona prompt
-    // stands in for the subagent's — it differs only by the subagent note),
-    // with no AGENTS.md fragment (subagents get none). See
-    // `docs/agent-tool.md`.
-    let (history, instructions) = match app.viewed_agent() {
-        Some(run) => (run.history.as_slice(), None),
-        None => (app.history.as_slice(), app.user_instructions.as_deref()),
+    // transcript derived through the same mapping, under the prompt a
+    // subagent is actually sent — the main prompt with the subagent note
+    // appended (`App::agent_system_prompt`, from
+    // `ReplySource::agent_system_prompt`) — with no AGENTS.md fragment
+    // (subagents get none). See `docs/agent-tool.md`.
+    let (history, instructions, system_prompt) = match app.viewed_agent() {
+        Some(run) => (
+            run.history.as_slice(),
+            None,
+            app.agent_system_prompt.as_ref(),
+        ),
+        None => (
+            app.history.as_slice(),
+            app.user_instructions.as_deref(),
+            app.system_prompt.as_ref(),
+        ),
     };
     let mut lines: Vec<Line<'static>> = Vec::new();
-    if let Some(prompt) = &app.system_prompt {
+    if let Some(prompt) = system_prompt {
         context_entry_lines(
             &mut lines,
             CONTEXT_SYSTEM_PROMPT_TAG,

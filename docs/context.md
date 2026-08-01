@@ -210,6 +210,17 @@ The view shows the context as of *finished* items: an in-flight partial reply
 lives in the streaming buffer, entering the window (and the next request)
 when its segment lands in history.
 
+Inside an **agent session view** (`docs/agent-tool.md`) the same overlay
+debugs the *viewed agent's* context instead: the body derives from that
+agent's own transcript through the same mapping, and the `system prompt:`
+block shows the prompt a subagent is **actually sent** — the main prompt with
+the subagent note appended (`prompts/subagent.md`), surfaced as
+`ReplySource::agent_system_prompt()` and injected beside the main one
+(`App::set_agent_system_prompt`) — with no AGENTS.md fragment, because
+subagent conversations start fresh without one (`llm::backend`'s
+`run_agent_calls`). So the note's presence is verifiable right where the
+user looks for it.
+
 ## Also fixed while wiring: the default system prompt was dead
 
 `build_backend` passed the raw `ALTER_ZERO_SYSTEM_PROMPT` env read straight

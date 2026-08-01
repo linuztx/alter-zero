@@ -473,8 +473,12 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
     // active model's known window (docs/compact.md).
     app.set_context_window(env_context_window.or(active_context));
     // The backend's system prompt rides into App so the Ctrl+D view shows the
-    // whole context window (docs/context.md). None for the dummy.
+    // whole context window (docs/context.md). None for the dummy. The
+    // subagent variant (the main prompt + the subagent note) rides beside it
+    // so an agent session view's Ctrl+D shows what a launched agent is
+    // actually sent (docs/agent-tool.md).
     app.set_system_prompt(backend.system_prompt());
+    app.set_agent_system_prompt(backend.agent_system_prompt());
     // The project's AGENTS.md instructions (codex's project doc,
     // docs/project-doc.md): discovered root→cwd and injected like the system
     // prompt — the context derivation prepends them, the Ctrl+D view and the
@@ -1423,6 +1427,9 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                                             cwd_display.clone(),
                                         );
                                         app.set_system_prompt(backend.system_prompt());
+                                        app.set_agent_system_prompt(
+                                            backend.agent_system_prompt(),
+                                        );
                                         // The switch knows its support first-hand —
                                         // a still-in-flight startup probe is stale.
                                         thinking_probe_pending = false;

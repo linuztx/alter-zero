@@ -719,6 +719,17 @@ pub trait ReplySource {
         None
     }
 
+    /// The system prompt a **subagent** launched by this backend is sent —
+    /// surfaced like [`system_prompt`](ReplySource::system_prompt) so the
+    /// *agent session view's* Ctrl+D shows the real thing
+    /// (`docs/agent-tool.md`). Defaults to the backend's own prompt: without
+    /// a distinct subagent prompt a launched agent would get the same one.
+    /// `LlmBackend` overrides this with the main prompt + the subagent note
+    /// (`prompts/subagent.md`).
+    fn agent_system_prompt(&self) -> Option<String> {
+        self.system_prompt()
+    }
+
     /// Send a chat message into a running/settled subagent's session
     /// (`docs/agent-tool.md`): queued into its loop at the next round
     /// boundary, or a continuation run when it is idle. Returns whether the
@@ -1159,6 +1170,35 @@ mod tests {
         // The footer under the input box names the active backend's model
         // (see docs/footer.md); the dummy reports its placeholder id.
         assert_eq!(DummyAi::default().model_name(), "dummy_model_name");
+    }
+
+    #[test]
+    fn agent_system_prompt_defaults_to_the_backends_own_prompt() {
+        // A backend without a distinct subagent prompt would send a launched
+        // agent its own prompt — the trait default says so honestly (the
+        // dummy's None included); `LlmBackend` overrides it with the note-
+        // suffixed one (docs/agent-tool.md).
+        struct Fixed;
+        impl ReplySource for Fixed {
+            fn spawn(
+                &self,
+                _prompt: String,
+                _images: Vec<PathBuf>,
+                _context: Vec<ContextMessage>,
+                _tx: UnboundedSender<StreamEvent>,
+                _cancel: CancelToken,
+            ) -> JoinHandle<()> {
+                thread::spawn(|| {})
+            }
+            fn model_name(&self) -> String {
+                "fixed".to_string()
+            }
+            fn system_prompt(&self) -> Option<String> {
+                Some("base".to_string())
+            }
+        }
+        assert_eq!(Fixed.agent_system_prompt().as_deref(), Some("base"));
+        assert!(DummyAi::new().agent_system_prompt().is_none());
     }
 
     #[test]

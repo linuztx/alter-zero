@@ -477,6 +477,15 @@ impl ReplySource for LlmBackend {
         self.system_prompt.clone()
     }
 
+    /// The prompt a launched subagent's leading system message carries — the
+    /// main prompt with the subagent note appended, exactly as
+    /// `subagent_config` hands it to `spawn_subagent_run` — so the agent
+    /// session view's Ctrl+D shows what that agent is actually sent
+    /// (`docs/agent-tool.md`).
+    fn agent_system_prompt(&self) -> Option<String> {
+        self.subagent_config().system_prompt
+    }
+
     /// Send a chat message into a subagent's session (`docs/agent-tool.md`):
     /// queued into its running loop, or a continuation run over its stored
     /// conversation when idle. `false` when agents aren't enabled here or the
@@ -1197,6 +1206,50 @@ mod tests {
     fn blank_system_prompt_is_dropped() {
         let backend = LlmBackend::with_system_prompt(ModelConfig::fallback(), Some("  ".into()));
         assert!(backend.system_prompt.is_none());
+    }
+
+    #[test]
+    fn agent_system_prompt_is_the_main_prompt_plus_the_subagent_note() {
+        // What a launched subagent's leading system message actually carries
+        // (`subagent_config`) — surfaced through the trait so the agent
+        // session view's Ctrl+D shows the real thing (docs/agent-tool.md).
+        // Tools off for determinism, like the sibling test above.
+        let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
+        let prompt =
+            ReplySource::agent_system_prompt(&backend).expect("subagents always get a prompt");
+        assert!(
+            prompt.starts_with("be nice\n\n"),
+            "the main prompt leads: {prompt}"
+        );
+        assert!(
+            prompt.ends_with(SUBAGENT_SYSTEM_SUFFIX.trim()),
+            "the subagent note closes it: {prompt}"
+        );
+        assert_eq!(
+            Some(prompt),
+            backend.subagent_config().system_prompt,
+            "the surfaced prompt IS the one a spawned subagent is sent"
+        );
+        // The main prompt stays note-less.
+        assert!(
+            !ReplySource::system_prompt(&backend)
+                .unwrap()
+                .contains("subagent"),
+            "the note never leaks into the main prompt"
+        );
+    }
+
+    #[test]
+    fn a_promptless_backend_still_hands_subagents_the_note() {
+        // An empty ALTER_ZERO_SYSTEM_PROMPT drops the main prompt entirely,
+        // but a subagent still needs its framing — the note alone is its
+        // prompt (`subagent_config`'s None arm), and the view must show it.
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, false);
+        assert!(ReplySource::system_prompt(&backend).is_none());
+        assert_eq!(
+            ReplySource::agent_system_prompt(&backend).as_deref(),
+            Some(SUBAGENT_SYSTEM_SUFFIX.trim())
+        );
     }
 
     #[test]

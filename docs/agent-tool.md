@@ -156,7 +156,12 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   work with the roster still below them; **Ctrl+O shows the viewed agent's
   own transcript** (a fresh bounded build — `ui::agent_transcript_lines` —
   the main cache untouched) and **Ctrl+D its derived context**
-  (`ui::context_lines` branches on the viewed agent); only `!` shell mode
+  (`ui::context_lines` branches on the viewed agent: the body derives from
+  the agent's transcript, the `system prompt:` block shows the prompt a
+  subagent is *actually sent* — the main prompt + the subagent note,
+  `ReplySource::agent_system_prompt()` injected at the boundary as
+  `App::agent_system_prompt` — and no AGENTS.md fragment, since subagent
+  conversations start without one; `docs/context.md`); only `!` shell mode
   stays off — a leading bang is literal chat text. Overlay returns and
   resizes repaint the agent view (`main.rs::repaint_active_view`).
 

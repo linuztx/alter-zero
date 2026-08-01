@@ -177,6 +177,64 @@ fn render_context_view_windows_by_the_debug_scroll() {
     );
 }
 
+#[test]
+fn an_agent_session_view_shows_the_subagents_own_system_prompt() {
+    // The wire hands a subagent the MAIN prompt with the subagent note
+    // appended (`prompts/subagent.md`, via `LlmBackend::subagent_config` —
+    // docs/agent-tool.md); the agent session view's Ctrl+D must show that
+    // prompt, or the note can never be verified. The body derives from the
+    // agent's own transcript, and the AGENTS.md fragment stays main-only
+    // (subagents get none).
+    let mut app = context_fixture();
+    app.set_user_instructions(Some("# AGENTS.md instructions\n\nguide".to_string()));
+    app.set_agent_system_prompt(Some(
+        "be nice\n\nYou are running as a subagent.".to_string(),
+    ));
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Warsaw weather", false)]);
+    app.open_agent_view("a1");
+    let texts: Vec<String> = context_lines(&app, 80)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(texts[0], "system prompt:", "{texts:?}");
+    assert_eq!(texts[1], "  be nice", "{texts:?}");
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == "  You are running as a subagent."),
+        "the subagent note is visible: {texts:?}"
+    );
+    // The agent's own transcript derives — its task prompt, not main history.
+    assert!(texts.iter().any(|t| t == "  task?"), "{texts:?}");
+    assert!(
+        !texts.iter().any(|t| t == "  hello"),
+        "main history stays out: {texts:?}"
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains("AGENTS.md")),
+        "subagents get no AGENTS.md fragment: {texts:?}"
+    );
+}
+
+#[test]
+fn the_main_view_keeps_the_main_prompt_beside_a_stored_agent_prompt() {
+    // Storing the subagent prompt must not leak it into the main Ctrl+D —
+    // the main request never carries the note.
+    let mut app = context_fixture();
+    app.set_agent_system_prompt(Some("be nice\n\nsubagent note".to_string()));
+    let texts: Vec<String> = context_lines(&app, 80)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(texts[0], "system prompt:", "{texts:?}");
+    assert_eq!(texts[1], "  be nice", "{texts:?}");
+    assert!(
+        !texts.iter().any(|t| t.contains("subagent note")),
+        "the note stays out of the main window: {texts:?}"
+    );
+}
+
 // ===== Ctrl+D context-debug view (docs/context.md) =====
 
 /// A conversation with a system prompt, a user turn, a raw tool record,

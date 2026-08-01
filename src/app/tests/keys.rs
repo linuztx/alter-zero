@@ -460,6 +460,22 @@ fn set_system_prompt_stores_the_backends_prompt_for_the_debug_view() {
 }
 
 #[test]
+fn set_agent_system_prompt_stores_the_subagent_prompt_for_the_agent_debug_view() {
+    // The boundary injects the prompt a launched subagent actually gets (the
+    // main prompt + the subagent note) beside the main one, so the agent
+    // session view's Ctrl+D shows the real thing (docs/agent-tool.md).
+    let mut app = App::new();
+    assert!(app.agent_system_prompt.is_none());
+    app.set_agent_system_prompt(Some("be nice\n\nsubagent note".to_string()));
+    assert_eq!(
+        app.agent_system_prompt.as_deref(),
+        Some("be nice\n\nsubagent note")
+    );
+    app.set_agent_system_prompt(None);
+    assert!(app.agent_system_prompt.is_none());
+}
+
+#[test]
 fn esc_in_the_conversation_still_quits() {
     let mut app = App::new();
     assert_eq!(app.on_key(key(KeyCode::Esc)), Action::Quit);

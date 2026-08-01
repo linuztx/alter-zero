@@ -220,6 +220,13 @@ pub struct App {
     /// ([`App::set_system_prompt`], from `ReplySource::system_prompt`) so the
     /// Ctrl+D view can show the *whole* context window. `None` for the dummy.
     pub system_prompt: Option<String>,
+    /// The system prompt a launched **subagent** is sent — the main prompt
+    /// with the subagent note appended — injected beside
+    /// [`system_prompt`](Self::system_prompt)
+    /// ([`App::set_agent_system_prompt`], from
+    /// `ReplySource::agent_system_prompt`) so the *agent session view's*
+    /// Ctrl+D shows what that agent actually gets. See `docs/agent-tool.md`.
+    pub agent_system_prompt: Option<String>,
     /// The project's AGENTS.md instructions, rendered as codex's
     /// user-instructions fragment and injected at the boundary
     /// ([`App::set_user_instructions`], from `project_doc::load_user_instructions`
@@ -608,6 +615,15 @@ impl App {
     /// the Ctrl+D view shows the whole context window. See `docs/context.md`.
     pub fn set_system_prompt(&mut self, prompt: Option<String>) {
         self.system_prompt = prompt;
+    }
+
+    /// Inject the prompt a launched subagent is sent (from
+    /// `ReplySource::agent_system_prompt`, beside every
+    /// [`set_system_prompt`](Self::set_system_prompt)) so the agent session
+    /// view's Ctrl+D shows it — the main prompt plus the subagent note. See
+    /// `docs/agent-tool.md`.
+    pub fn set_agent_system_prompt(&mut self, prompt: Option<String>) {
+        self.agent_system_prompt = prompt;
     }
 
     /// Inject the project's rendered AGENTS.md instructions (from

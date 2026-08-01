@@ -1289,6 +1289,85 @@ fn live_run_in_background_resolves_and_completes() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY; costs a few cents"]
+fn live_subagent_is_sent_the_subagent_note_and_ctrl_d_matches_it() {
+    // The agent-view Ctrl+D fix end to end (docs/agent-tool.md): a launched
+    // subagent's leading system message is the main prompt + the subagent
+    // note (`prompts/subagent.md`). Prove it on the real wire — the agent can
+    // quote a sentence that exists ONLY in the note — and that
+    // `ReplySource::agent_system_prompt()` (what the agent session view's
+    // Ctrl+D shows) carries that same sentence, so the view matches what was
+    // actually sent.
+    let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-agnote-{}", std::process::id()));
+    let registry = alter_zero::background::BackgroundRegistry::new(bg_tx, dir);
+    let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent_registry = alter_zero::agents::AgentRegistry::new(agent_tx);
+    let backend = backend()
+        .with_background(registry)
+        .with_agents(agent_registry);
+
+    // The sentinel phrase lives in prompts/subagent.md alone — not in the
+    // terse main prompt, and (deliberately) not in either prompt below.
+    let sentinel = "launched by the main agent";
+    let surfaced = ReplySource::agent_system_prompt(&backend)
+        .expect("the backend surfaces its subagent prompt");
+    assert!(
+        surfaced.contains(sentinel),
+        "the Ctrl+D-surfaced prompt carries the note: {surfaced}"
+    );
+    assert!(
+        !ReplySource::system_prompt(&backend)
+            .expect("the main prompt is set")
+            .contains(sentinel),
+        "the sentinel exists only in the subagent note"
+    );
+
+    // A verbatim-quote task trips the model's prompt-confidentiality
+    // guardrail ("I can't disclose internal instructions"), so ask for a
+    // ROLE PARAPHRASE instead: the child's task prompt (dictated verbatim
+    // below) never contains the words the note would make it say, so a
+    // reply describing a sub-agent role launched by a main agent can only
+    // have come from the appended note. Without it, the child's whole
+    // system prompt is the terse-assistant line — nothing to paraphrase a
+    // "launched by another agent" role from.
+    let prompt = "Use the agent tool exactly once: description \"Describe assigned role\", \
+                  subagent_type \"general-purpose\", run_in_background false, and this exact \
+                  prompt: \"Do not use any tools. Without quoting anything verbatim, describe \
+                  in one short sentence the role your system instructions assign to you and \
+                  who launched you.\" \
+                  When the agent returns, reply with one word: done.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+
+    let mut outputs: Vec<String> = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::AgentGroupDone { agents, .. } => {
+                outputs.extend(agents.into_iter().map(|done| done.output));
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("subagent outputs: {outputs:?}");
+    let described = outputs.iter().any(|output| {
+        let lower = output.to_lowercase();
+        lower.contains("subagent") || lower.contains("sub-agent") || lower.contains("main agent")
+    });
+    assert!(
+        described,
+        "the subagent described the role only the appended note assigns \
+         (its dictated task prompt never says these words), so the note \
+         demonstrably rode the wire: {outputs:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY; costs a few cents"]
 fn live_subagent_background_bash_stacks_into_the_shared_registry() {
     // The subagent background path (docs/agent-tool.md): a foreground agent
     // whose bash call sets run_in_background — the shell must join the SHARED
