@@ -612,15 +612,13 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
     // O(history) to build, a slice to serve). Cleared the moment no covering
     // prompt is up.
     let mut modal_replay: Option<ModalReplay> = None;
-    // Set when a resize lands while a permission prompt is open. The resize's
-    // purge rebuild reset the covering (the prompt then sits below the rebuilt
-    // tail, having taken its rows by the rebuild's real scroll — a one-way
-    // move), so the close would find no cover to hand back and the collapse
-    // would strand the box above the vacated rows. Consumed on the first draw
-    // after the prompt closes, which purge-rebuilds like the resize did —
-    // reseating the box flush at the bottom with scrollback rebuilt, no row
-    // lost or doubled. The `overlay_resized` pattern (docs/permissions.md).
-    let mut modal_resized = false;
+    // (A rebuild that runs while a permission prompt is open — a mid-prompt
+    // resize's purge, or an overlay return whose prompt opened underneath —
+    // resets the prompt's covering, so its close must purge-rebuild instead
+    // of handing a cover back. That note rides the viewport itself:
+    // `term.reflow` sets it at the one place every rebuild goes through, and
+    // the draw tick below consumes it — `InlineViewport::take_modal_rebuilt`,
+    // docs/permissions.md.)
     // Set while an inline **modal** — a tool permission prompt
     // (`docs/permissions.md`) — is up, to the history length when it opened.
     // A modal covers the conversation instead of scrolling it away
@@ -1614,12 +1612,10 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                         // screen).
                         if size_changed && app.view == View::Conversation {
                             // A resize under an open permission prompt resets
-                            // the covering with this purge — note it so the
-                            // prompt's close can purge-rebuild too instead of
-                            // stranding the box (see `modal_resized`).
-                            if ui::region_is_modal(&app) {
-                                modal_resized = true;
-                            }
+                            // the covering with this purge; the reflow notes
+                            // it itself (`term.take_modal_rebuilt`) so the
+                            // prompt's close purge-rebuilds too instead of
+                            // stranding the box (docs/permissions.md).
                             repaint_active_view(
                                 term, &mut app, &mut render, &mut agent_render,
                                 ReflowClear::Purge,
@@ -1630,11 +1626,9 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                             // to purge-rebuild on return instead of the usual
                             // in-place overwrite (see `overlay_resized`). A
                             // prompt open beneath the overlay loses its
-                            // covering to that return's purge the same way.
+                            // covering to that return's reflow, which notes
+                            // it then (`term.take_modal_rebuilt`).
                             overlay_resized = true;
-                            if ui::region_is_modal(&app) {
-                                modal_resized = true;
-                            }
                         }
                         burst.reset();
                         frame.schedule_frame();
@@ -1808,17 +1802,21 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                     }
                 }
                 match app.view {
-                    // A permission prompt closed after a mid-prompt resize: the
-                    // resize's purge reset the covering, so there is no window
-                    // to hand back — the prompt took its rows by the rebuild's
-                    // real scroll, and the collapse would strand the box above
-                    // the rows it vacates. Purge-rebuild like the resize did
-                    // (flush at the bottom, scrollback rebuilt, nothing lost or
-                    // doubled), discarding whatever covering accounting is left
-                    // — the purge regenerates everything it tracked. See
-                    // `modal_resized` and `docs/permissions.md`.
-                    View::Conversation if modal_resized && !ui::region_is_modal(&app) => {
-                        modal_resized = false;
+                    // A permission prompt closed after a rebuild that ran
+                    // while it was open — a mid-prompt resize's purge, or an
+                    // overlay return whose prompt opened underneath (Ctrl+O /
+                    // Ctrl+D up when the request arrived): the rebuild reset
+                    // the covering, so there is no window to hand back — the
+                    // prompt took its rows by the rebuild's real write, and
+                    // the collapse would strand the box above the rows it
+                    // vacates. Purge-rebuild like the resize did (flush at
+                    // the bottom, scrollback rebuilt, nothing lost or
+                    // doubled), discarding whatever covering accounting is
+                    // left — the purge regenerates everything it tracked. See
+                    // `InlineViewport::take_modal_rebuilt` and
+                    // `docs/permissions.md`.
+                    View::Conversation if term.modal_rebuilt() && !ui::region_is_modal(&app) => {
+                        let _ = term.take_modal_rebuilt();
                         modal_frontier = None;
                         let _ = term.take_modal_cover();
                         repaint_active_view(

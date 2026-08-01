@@ -145,6 +145,24 @@ pub struct InlineViewport {
     /// [`take_modal_cover`]: InlineViewport::take_modal_cover
     /// [`reflow`]: InlineViewport::reflow
     modal_cover: u16,
+    /// Set when a [`reflow`] rebuilt the screen **while an inline modal was
+    /// open** ([`ui::region_is_modal`]) — a mid-prompt resize's purge, or an
+    /// overlay return whose prompt opened underneath (Ctrl+O / Ctrl+D up when
+    /// the permission request arrived).
+    ///
+    /// The rebuild clears `modal_cover` and seats the prompt below the rebuilt
+    /// tail: the prompt now holds its rows by the rebuild's real (one-way)
+    /// write, so the close will find no cover to hand back — and its plain
+    /// shrink would strand the box above the rows it vacates (the "blank band
+    /// under the composer" bug, in both its resize and its Ctrl+O-first
+    /// shapes). The loop reads this ([`modal_rebuilt`], consumed by
+    /// [`take_modal_rebuilt`]) on the first draw after the prompt closes and
+    /// purge-rebuilds instead (`docs/permissions.md`).
+    ///
+    /// [`reflow`]: InlineViewport::reflow
+    /// [`modal_rebuilt`]: InlineViewport::modal_rebuilt
+    /// [`take_modal_rebuilt`]: InlineViewport::take_modal_rebuilt
+    modal_rebuilt: bool,
     /// Whether [`init`] pushed the kitty keyboard-enhancement flags (so the
     /// terminal reports Shift+Enter distinctly from Enter — see
     /// `docs/shift-enter.md`). Recorded so [`restore`] and the panic hook only
@@ -234,6 +252,7 @@ impl InlineViewport {
             prev: None,
             pending: Vec::new(),
             modal_cover: 0,
+            modal_rebuilt: false,
             keyboard_enhanced,
         })
     }
@@ -280,6 +299,25 @@ impl InlineViewport {
     /// [`view_top`]: InlineViewport::view_top
     pub const fn modal_cover(&self) -> u16 {
         self.modal_cover
+    }
+
+    /// Whether a [`reflow`] rebuilt the screen while an inline modal was open
+    /// (see `modal_rebuilt`) — the prompt's covering was reset, so its close
+    /// must purge-rebuild rather than hand a cover back. The loop's draw tick
+    /// reads this to route the close; [`take_modal_rebuilt`] is the consuming
+    /// read.
+    ///
+    /// [`reflow`]: InlineViewport::reflow
+    /// [`take_modal_rebuilt`]: InlineViewport::take_modal_rebuilt
+    pub const fn modal_rebuilt(&self) -> bool {
+        self.modal_rebuilt
+    }
+
+    /// Take the rebuilt-under-a-modal note (see `modal_rebuilt`), clearing it.
+    /// Called by the close's purge rebuild — and by the paths that make it
+    /// moot (a purge regenerates everything the covering tracked).
+    pub const fn take_modal_rebuilt(&mut self) -> bool {
+        std::mem::replace(&mut self.modal_rebuilt, false)
     }
 
     /// Repaint the live region at the new `height`, keeping it **content-anchored**
@@ -644,6 +682,14 @@ impl InlineViewport {
         // so whatever a modal had covered is either painted again or scrolled
         // into scrollback — either way there is no hole left to hand back.
         self.modal_cover = 0;
+        // …and a modal open right now takes its rows by this rebuild's real
+        // write instead of by covering — note it (`modal_rebuilt`), because
+        // the close can no longer be handed a cover: it must purge-rebuild or
+        // its collapse strands the box above the rows it vacates. Recording
+        // this HERE, at the one place every full rebuild goes through, is
+        // what keeps every rebuild source honest — the resize purge and the
+        // Ctrl+O / Ctrl+D / agent-view returns alike (`docs/permissions.md`).
+        self.modal_rebuilt |= ui::region_is_modal(app);
         queue!(self.backend, BeginSynchronizedUpdate)?;
         // Hide the cursor before the rebuild (see [`draw`]): a reflow homes the
         // cursor to the top (`clear_scrollback_and_screen`'s `ESC[H`, or

@@ -172,19 +172,24 @@ Two consequences worth knowing:
   writes the conversation to the screen and scrolls the overflow away for real.
   So the geometry deliberately does *not* refresh mid-prompt: Tab's amend field
   shortening the prompt simply blanks the rows it vacates below (the ordinary
-  shrink), and they come back with the close. A resize is the exception — it
-  purge-rebuilds like every resize does, and that rebuild **resets the
-  covering**: the prompt comes back seated *below* the rebuilt tail, having
-  taken its rows by the rebuild's real scroll (a one-way move). The close then
+  shrink), and they come back with the close. Two paths rebuild anyway, and
+  both **reset the covering** the same way: a mid-prompt **resize** (it
+  purge-rebuilds like every resize does) and an **overlay return** whose
+  prompt opened underneath — Ctrl+O / Ctrl+D up when the request arrived, so
+  the prompt never drew inline and the return's reflow is its first paint.
+  Either way the prompt comes back seated *below* the rebuilt tail, having
+  taken its rows by the rebuild's real write (a one-way move). The close then
   has no cover to hand back, and the plain collapse would strand the box above
-  the rows it vacates — the "blank band under the composer after a resized
-  prompt" bug. So the resize arm notes it (`main.rs`'s `modal_resized`, the
-  `overlay_resized` pattern — set for a resize under the Ctrl+O overlay with a
-  prompt open beneath it too), and the first draw after the prompt closes
-  consumes the note with another **purge rebuild**: box flush at the bottom,
-  scrollback rebuilt from history, nothing lost or doubled (any leftover
-  covering accounting is discarded — the purge regenerates everything it
-  tracked). Guarded by `smoke.sh` Phase 60.
+  the rows it vacates — the "blank band under the composer" bug, in its
+  resized-prompt and its Ctrl+O-first shapes. So the rebuild notes it
+  **itself**: `term.reflow` sets the viewport's modal-rebuilt flag whenever it
+  runs under an open prompt — the one place every full rebuild goes through,
+  so no rebuild source (the resize purge, the Ctrl+O / Ctrl+D / agent-view
+  returns) can forget — and the first draw after the prompt closes consumes
+  the note (`InlineViewport::take_modal_rebuilt`) with another **purge
+  rebuild**: box flush at the bottom, scrollback rebuilt from history, nothing
+  lost or doubled (any leftover covering accounting is discarded — the purge
+  regenerates everything it tracked). Guarded by `smoke.sh` Phases 60 and 62.
 
 ## The options
 
@@ -416,6 +421,11 @@ integration tests) that builds a backend directly is unaffected.
   the prompt survives the mid-prompt purge rebuild, and the close's own purge
   lands the box flush at the bottom instead of floating above the rows the
   collapsed prompt vacated, each message committed exactly once.
+- `smoke.sh` Phase 62 — the same close, reached through the overlay: Ctrl+O is
+  up when the request arrives, the return's reflow seats the prompt below the
+  rebuilt tail (covering reset), and answering still lands the box flush at
+  the bottom with the message committed exactly once — the "newlines at the
+  bottom, but only when Ctrl+O was opened first" bug.
 - `tests/live_openrouter.rs` — against a real provider: the replayed rejection
   is a legible context shape and the model still follows the instructions a
   turn later.
