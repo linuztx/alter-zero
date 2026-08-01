@@ -714,3 +714,42 @@ fn the_manager_band_replaces_the_composer_in_render_live() {
         "no composer prompt — the band replaced it: {all}"
     );
 }
+
+#[test]
+fn the_manager_band_keeps_the_running_tool_strip_above_it() {
+    // The user report (docs/background.md): mid-turn, opening the ↓ manager
+    // hid the running tool's live cell and the status line — the band
+    // replaced the whole region. It replaces the composer only: the
+    // streaming strip stays above it, the running cell tailing its output
+    // and the spinner status still ticking.
+    let mut app = App::new();
+    app.bg_started("bash_1", "sleep 100", None, true, None);
+    app.begin_stream();
+    app.start_tool("Bash", "seq 1 100");
+    app.push_tool_output("35\n36\n");
+    app.open_background_view();
+    let h = background_view_height(&app, 60, 40).unwrap();
+    let mut buf = buffer(60, h);
+    render_live(buf.area, &mut buf, &app);
+    let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 60)).collect();
+    let all = rows.join("\n");
+    assert!(
+        all.contains("● Bash(seq 1 100)"),
+        "the running cell stays visible: {all}"
+    );
+    assert!(all.contains("36"), "…tailing its streamed output: {all}");
+    assert!(
+        all.contains("esc to interrupt"),
+        "the status line stays: {all}"
+    );
+    assert!(
+        all.contains("1 active shell"),
+        "the band renders too: {all}"
+    );
+    let cell = rows.iter().position(|r| r.contains("● Bash")).unwrap();
+    let band = rows
+        .iter()
+        .position(|r| r.contains("1 active shell"))
+        .unwrap();
+    assert!(cell < band, "the strip sits above the band: {all}");
+}

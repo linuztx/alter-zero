@@ -210,6 +210,24 @@ An **inline** band that replaces the composer, exactly like the `/model`
 picker (never an alternate-screen overlay): `Option<BackgroundView>` with
 `List {selected}` and `Details {id}` modes, owning every key while open.
 
+It replaces the composer **only** — never the streaming strip. Opening the
+manager mid-turn keeps the running tool's live cell (its streamed tail
+included), the spinner status line, the queued messages, and the toast in
+their rows *above* the band (a user report: the band used to take the whole
+region, so the manager hid exactly the foreground command it sat next to).
+`ui::background_view_height` reserves the strip's rows over the band's own
+line count, and `render_live_with_preview`'s band branch paints the same
+strip the composer path does (the shared `render_strip` helper) with the
+band pinned at the bottom — on a terminal too short for both, the band keeps
+its full height and the strip is squeezed first. Tool cells still commit
+beneath the region as they resolve (commits stay allowed while the band is
+open), so the transition running-cell → committed-cell reads exactly like it
+does over the composer. One consequence of the band owning every key: the
+running cell's delayed `(ctrl+b to run in background)` hint is suppressed
+while the band is open — `App::command_elapsed` reads `None`, the
+permission-prompt rule — since Ctrl+B would not reach the runner from
+inside the band.
+
 - **Enter on the lit footer indicator** opens the list — the only way in, so
   the band never appears without a running shell behind it. Its
   `No tasks currently running` empty state is what remains on screen when the
@@ -285,7 +303,11 @@ over the launch facts, see Protocol above), the `!` shell via its normal
   drains between the loop's settle points) and vice versa; both always land,
   each exactly once.
 - The band is inline state, not a `View` — all four alternate-screen views
-  and the resize repaint behave exactly as before.
+  and the resize repaint behave exactly as before. It displaces the composer
+  but not the streaming strip: a running tool's preview, the status line,
+  the queue, and the toast render above it from the same helpers the
+  composer path uses, so the strip's geometry (`preview_rows`,
+  `strip_has_status`) stays the single source of truth for both.
 - The footer highlight is **not a mode**: it claims only a plain
   Enter/Esc/↑/↓/Ctrl+C and lets every other key through (after clearing
   itself), so no keystroke can be stranded on it and no existing key loses its

@@ -234,15 +234,23 @@ pub fn permission_height(app: &App, width: u16, term_height: u16) -> Option<u16>
 
 /// The inline live-region height when the ↓ background manager band is open,
 /// or `None` when it isn't (the caller falls back to [`live_height`]). Like
-/// the `/model` picker it **replaces** the composer. The height is the built
-/// line count ([`background_view_lines`]) **at the terminal's real width** —
-/// the details page's Command field wraps, so the count is width-dependent —
-/// clamped to the terminal. See `docs/background.md`.
+/// the `/model` picker it **replaces** the composer — but *only* the
+/// composer: the streaming strip (a running tool's live cell, the status
+/// line, the queued messages, the toast) keeps its rows **above** the band,
+/// so opening the manager mid-turn never hides what is executing (the
+/// user-reported fix, `docs/background.md`). The band's own height is the
+/// built line count ([`background_view_lines`]) **at the terminal's real
+/// width** — the details page's Command field wraps, so the count is
+/// width-dependent — the sum clamped to the terminal.
 #[must_use]
 pub fn background_view_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.background_view.as_ref()?;
-    let rows = background_view_lines(app, width).len() as u16;
-    Some(rows.min(term_height.max(1)))
+    // Summed in usize like `live_height`: `queued_rows` is uncapped.
+    let rows = usize::from(strip_rows(strip_has_status(app), preview_rows(app, width)))
+        + usize::from(queued_rows(app, width))
+        + usize::from(toast_rows(app))
+        + background_view_lines(app, width).len();
+    Some(rows.min(usize::from(term_height.max(1))) as u16)
 }
 
 /// How many rows the `/login` provider list occupies: the match count capped at

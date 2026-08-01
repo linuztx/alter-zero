@@ -255,10 +255,12 @@ impl App {
     /// Also `None` while a tool-permission prompt is open: the prompt owns
     /// every key, so Ctrl+B does nothing there — and the hint this gates would
     /// be advertising it (`docs/permissions.md`). Nothing is really *running*
-    /// while a call waits on the user, either.
+    /// while a call waits on the user, either. The ↓ manager band owns every
+    /// key the same way, so the running cell it keeps visible above itself
+    /// stays hintless while it is open (`docs/background.md`).
     #[must_use]
     pub fn command_elapsed(&self) -> Option<Duration> {
-        if self.permission.is_some() {
+        if self.permission.is_some() || self.background_view.is_some() {
             return None;
         }
         self.command_elapsed

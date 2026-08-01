@@ -454,6 +454,27 @@ fn ctrl_b_moves_a_running_shell_turn_too() {
 }
 
 #[test]
+fn the_open_manager_band_suppresses_the_ctrl_b_hint_clock() {
+    // The band owns every key while open, so Ctrl+B does nothing there — the
+    // delayed `(ctrl+b to run in background)` hint this clock gates must not
+    // advertise it (the permission-prompt rule; docs/background.md). The
+    // running cell itself stays visible above the band, hintless.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "sleep 100");
+    app.set_command_elapsed(Some(Duration::from_secs(5)));
+    assert!(app.command_elapsed().is_some());
+    app.bg_started("bash_1", "sleep 200", None, true, None);
+    app.open_background_view();
+    assert_eq!(app.command_elapsed(), None, "the band swallows Ctrl+B");
+    app.close_background_view();
+    assert!(
+        app.command_elapsed().is_some(),
+        "the hint clock returns when the band closes"
+    );
+}
+
+#[test]
 fn clear_conversation_wipes_the_background_state() {
     let mut app = app_with_shells(&["a"]);
     let completion = app.bg_exited("bash_1", Some(0), false).unwrap();

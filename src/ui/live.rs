@@ -166,80 +166,24 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// [`render_live`], but with the streaming strip's assistant-preview line(s)
-/// supplied by the caller (the boundary's cheap [`StreamRender::preview`] —
-/// O(one line), or the forming table's rows) instead of re-rendering the whole
-/// reply here (which was O(reply) *every animation frame* and starved the
-/// status spinner — `docs/markdown.md`). A `None` `stream_preview` falls back
-/// to rendering the last line from the buffer, so unit tests (which don't
-/// thread a `StreamRender`) keep their old behaviour; production always passes
-/// `Some`, its row count injected via [`App::set_stream_preview_rows`] so
-/// [`preview_rows`] sizes the same rows this draws (docs/table-streaming.md).
-pub fn render_live_with_preview(
-    area: Rect,
+/// Paint the streaming strip into `strip`: the preview line(s) at its top, the
+/// status line under them, the queued messages below that, and the toast on
+/// its last row. Factored out of [`render_live_with_preview`]'s composer path
+/// so the ↓ manager band keeps the same strip above itself while it replaces
+/// the composer (`docs/background.md`). `preview`/`preview_n` are the
+/// already-built [`preview_lines`] and their [`preview_rows`] count (they must
+/// agree — the caller asserts it).
+#[allow(clippy::too_many_arguments)]
+fn render_strip(
+    strip: Rect,
     buf: &mut Buffer,
     app: &App,
-    stream_preview: Option<&[Line<'static>]>,
+    preview: Vec<Line<'static>>,
+    preview_n: u16,
+    has_status: bool,
+    queued: u16,
+    toast: u16,
 ) {
-    // A pending tool-permission request replaces the whole live region — the
-    // streaming strip included, since the turn is blocked on the answer. It
-    // wins over every other inline view (it is modal). See
-    // `docs/permissions.md`.
-    if app.permission().is_some() {
-        render_permission(area, buf, app);
-        return;
-    }
-    // The inline `/model` picker replaces the whole live region — the composer,
-    // strip, band, and footer all give way to its own framed body. See
-    // `docs/llm.md`.
-    if let Some(picker) = &app.model_picker {
-        render_model_picker(area, buf, picker);
-        return;
-    }
-    // The inline `/login` onboarding flow likewise replaces the whole region.
-    if let Some(onboarding) = &app.key_onboarding {
-        render_key_onboarding(area, buf, onboarding);
-        return;
-    }
-    // The ↓ background manager band likewise replaces the whole region. See
-    // `docs/background.md`.
-    if app.background_view.is_some() {
-        render_background_view(area, buf, app);
-        return;
-    }
-    // The band below the box holds the palette, the shortcuts overview, *or* the
-    // `@` file picker (band_rows — mutually exclusive). Queued messages render
-    // in the strip *above* the box instead; the session-context footer takes
-    // the very last row unless a band displaces it, and the agent roster's
-    // rows sit below it (docs/agent-tool.md).
-    let band = band_rows(app);
-    let queued = queued_rows(app, area.width);
-    let toast = toast_rows(app);
-    let footer = footer_rows(app, band);
-    let agent_rows = agent_list_rows(app);
-    // The preview row + its gap are only reserved when there is something to
-    // preview; the pre-stream pause shows status-only (no stray blank line).
-    // The status row + its gap are reserved unless this is a `!` shell turn,
-    // which hides the spinner status and shows its elapsed in the preview.
-    // The preview line(s): a running backend tool's whole cell (wrapped header +
-    // `⎿ Running…`), a shell run's `⎿ Running… (Ns)`, or the reply's last line —
-    // empty during the pre-stream pause / idle. `preview_rows` is the **single
-    // source of truth** the box + cursor geometry size by (`cursor_position`,
-    // `main.rs`); the strip layout here uses it too, and the drawn `preview_lines`
-    // must match it exactly — same state, same width, so they agree by
-    // construction. The `debug_assert` catches any future drift (a desync would
-    // reserve one height but paint another, unseating the box/cursor).
-    let preview = preview_lines(app, area.width, stream_preview);
-    let preview_n = preview_rows(app, area.width);
-    debug_assert_eq!(
-        usize::from(preview_n),
-        preview.len(),
-        "preview_rows() must equal the drawn preview_lines()"
-    );
-    let has_status = strip_has_status(app);
-    let [strip, _, band_area, footer_area, agent_area] = live_layout(
-        area, has_status, preview_n, queued, toast, band, footer, agent_rows,
-    );
     // Rows the preview slot (content + its trailing gap) / status each occupy at
     // the strip's top (0 when absent).
     let preview_slot = if preview_n > 0 {
@@ -328,6 +272,111 @@ pub fn render_live_with_preview(
             Paragraph::new(toast_line(app, t_area.width)).render(t_area, buf);
         }
     }
+}
+
+/// [`render_live`], but with the streaming strip's assistant-preview line(s)
+/// supplied by the caller (the boundary's cheap [`StreamRender::preview`] —
+/// O(one line), or the forming table's rows) instead of re-rendering the whole
+/// reply here (which was O(reply) *every animation frame* and starved the
+/// status spinner — `docs/markdown.md`). A `None` `stream_preview` falls back
+/// to rendering the last line from the buffer, so unit tests (which don't
+/// thread a `StreamRender`) keep their old behaviour; production always passes
+/// `Some`, its row count injected via [`App::set_stream_preview_rows`] so
+/// [`preview_rows`] sizes the same rows this draws (docs/table-streaming.md).
+pub fn render_live_with_preview(
+    area: Rect,
+    buf: &mut Buffer,
+    app: &App,
+    stream_preview: Option<&[Line<'static>]>,
+) {
+    // A pending tool-permission request replaces the whole live region — the
+    // streaming strip included, since the turn is blocked on the answer. It
+    // wins over every other inline view (it is modal). See
+    // `docs/permissions.md`.
+    if app.permission().is_some() {
+        render_permission(area, buf, app);
+        return;
+    }
+    // The inline `/model` picker replaces the whole live region — the composer,
+    // strip, band, and footer all give way to its own framed body. See
+    // `docs/llm.md`.
+    if let Some(picker) = &app.model_picker {
+        render_model_picker(area, buf, picker);
+        return;
+    }
+    // The inline `/login` onboarding flow likewise replaces the whole region.
+    if let Some(onboarding) = &app.key_onboarding {
+        render_key_onboarding(area, buf, onboarding);
+        return;
+    }
+    // The ↓ background manager band replaces the composer (and the band/footer
+    // slots below it) — but **not** the streaming strip: a running tool's live
+    // cell, the status line, the queued messages and the toast keep their rows
+    // above it, so opening the manager mid-turn never hides what is executing
+    // (the user-reported fix). The band is pinned at the bottom with its full
+    // height (`Length` wins when the clamped region can't fit both, squeezing
+    // the strip first); `background_view_height` reserves the same sum. See
+    // `docs/background.md`.
+    if app.background_view.is_some() {
+        let preview = preview_lines(app, area.width, stream_preview);
+        let preview_n = preview_rows(app, area.width);
+        debug_assert_eq!(
+            usize::from(preview_n),
+            preview.len(),
+            "preview_rows() must equal the drawn preview_lines()"
+        );
+        let band_h = (background_view_lines(app, area.width).len() as u16).min(area.height);
+        let [strip, band] =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(band_h)]).areas(area);
+        render_strip(
+            strip,
+            buf,
+            app,
+            preview,
+            preview_n,
+            strip_has_status(app),
+            queued_rows(app, area.width),
+            toast_rows(app),
+        );
+        render_background_view(band, buf, app);
+        return;
+    }
+    // The band below the box holds the palette, the shortcuts overview, *or* the
+    // `@` file picker (band_rows — mutually exclusive). Queued messages render
+    // in the strip *above* the box instead; the session-context footer takes
+    // the very last row unless a band displaces it, and the agent roster's
+    // rows sit below it (docs/agent-tool.md).
+    let band = band_rows(app);
+    let queued = queued_rows(app, area.width);
+    let toast = toast_rows(app);
+    let footer = footer_rows(app, band);
+    let agent_rows = agent_list_rows(app);
+    // The preview row + its gap are only reserved when there is something to
+    // preview; the pre-stream pause shows status-only (no stray blank line).
+    // The status row + its gap are reserved unless this is a `!` shell turn,
+    // which hides the spinner status and shows its elapsed in the preview.
+    // The preview line(s): a running backend tool's whole cell (wrapped header +
+    // `⎿ Running…`), a shell run's `⎿ Running… (Ns)`, or the reply's last line —
+    // empty during the pre-stream pause / idle. `preview_rows` is the **single
+    // source of truth** the box + cursor geometry size by (`cursor_position`,
+    // `main.rs`); the strip layout here uses it too, and the drawn `preview_lines`
+    // must match it exactly — same state, same width, so they agree by
+    // construction. The `debug_assert` catches any future drift (a desync would
+    // reserve one height but paint another, unseating the box/cursor).
+    let preview = preview_lines(app, area.width, stream_preview);
+    let preview_n = preview_rows(app, area.width);
+    debug_assert_eq!(
+        usize::from(preview_n),
+        preview.len(),
+        "preview_rows() must equal the drawn preview_lines()"
+    );
+    let has_status = strip_has_status(app);
+    let [strip, _, band_area, footer_area, agent_area] = live_layout(
+        area, has_status, preview_n, queued, toast, band, footer, agent_rows,
+    );
+    render_strip(
+        strip, buf, app, preview, preview_n, has_status, queued, toast,
+    );
 
     // The input box: a top/bottom rule framing the wrapped input rows. An
     // agent session view carries the agent's description as a right-aligned

@@ -2,7 +2,8 @@
 
 use super::*;
 use crate::ui::theme::{
-    LOGIN_KEY_ROWS, MENU_MAX_ROWS, STREAM_PREVIEW_MIN_ROWS, STREAM_PREVIEW_RESERVED_ROWS,
+    GAP_ROWS, LOGIN_KEY_ROWS, MENU_MAX_ROWS, STATUS_GAP_ROWS, STATUS_ROWS, STREAM_PREVIEW_MIN_ROWS,
+    STREAM_PREVIEW_RESERVED_ROWS,
 };
 
 #[test]
@@ -569,6 +570,37 @@ fn the_details_page_names_a_subagent_launcher() {
             .any(|t| t == "  From:     general-purpose agent"),
         "{texts:?}"
     );
+}
+
+#[test]
+fn the_manager_band_reserves_the_running_tool_strip_above_it() {
+    // The user report (docs/background.md): opening the ↓ manager while a
+    // foreground tool ran swallowed its live cell — the band replaced the
+    // whole region, streaming strip included. The reserved height now keeps
+    // the strip's rows (the running cell + gap + status + gap) above the
+    // band's own lines, exactly what the composer path reserves.
+    let mut app = App::new();
+    app.bg_started("bash_1", "sleep 100", None, true, None);
+    app.begin_stream();
+    app.start_tool("Bash", "for i in $(seq 1 100); do echo $i; sleep 1; done");
+    app.open_background_view();
+    let band = background_view_lines(&app, 74).len() as u16;
+    let preview = preview_rows(&app, 74);
+    assert!(preview > 0, "the running tool previews mid-turn");
+    let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
+    assert_eq!(
+        background_view_height(&app, 74, 40),
+        Some(strip + band),
+        "the band keeps the streaming strip above its own lines"
+    );
+    // Clamped to the terminal height like every region.
+    assert_eq!(background_view_height(&app, 74, 8), Some(8));
+    // Idle again (turn over, tool resolved), the band is alone — the old
+    // geometry, no stray strip rows.
+    app.end_tool("done", true);
+    app.finish_stream();
+    app.end_turn(1);
+    assert_eq!(background_view_height(&app, 74, 40), Some(band));
 }
 
 // --- terminal-size sweep ---
