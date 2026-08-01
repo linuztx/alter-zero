@@ -1032,6 +1032,7 @@ mod tests {
             code: Some(0),
             killed: false,
             output_tail: "64 bytes from x.com\n200 packets transmitted".to_string(),
+            origin: None,
             timestamp: String::new(),
         })];
         let ctx = context_messages(&history);
@@ -1084,6 +1085,7 @@ mod tests {
             before: 0,
             after: 0,
             auto: false,
+            secs: 0,
         })
     }
 

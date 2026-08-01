@@ -17,7 +17,7 @@ use super::tools::{
     self, BashArgs, EditArgs, ReadArgs, TOOL_OUTPUT_MAX_BYTES, ToolCallRequest, ToolOutcome,
     WriteArgs,
 };
-use crate::background::BackgroundRegistry;
+use crate::background::{BackgroundRegistry, BgOrigin};
 use crate::stream::CancelToken;
 
 /// Runs the model's tool calls. Implemented by [`RealToolExecutor`] in
@@ -55,6 +55,12 @@ const BASH_POLL_INTERVAL: Duration = Duration::from_millis(20);
 #[derive(Debug, Clone, Default)]
 pub struct RealToolExecutor {
     background: Option<BackgroundRegistry>,
+    /// The launching **subagent**, when this executor runs one's tool calls
+    /// (`docs/agent-tool.md`): its `run_in_background` launches carry this
+    /// origin into the shared shell list, and the Ctrl+B latch is left alone
+    /// (the handoff belongs to the main turn's foreground command — a
+    /// subagent's concurrent `bash` must never steal it).
+    bg_origin: Option<BgOrigin>,
     /// The terminal-detach helper (`crate::subprocess`): the TUI's own binary,
     /// available as the re-exec fallback tier when the `setsid` binary is
     /// absent (macOS, minimal images) — so `bash` children run with **no
@@ -80,6 +86,17 @@ impl RealToolExecutor {
     #[must_use]
     pub fn with_background(mut self, registry: BackgroundRegistry) -> Self {
         self.background = Some(registry);
+        self
+    }
+
+    /// Attribute this executor's background launches to a **subagent**
+    /// (`docs/agent-tool.md`): its `run_in_background` shells join the same
+    /// shared list — stacking into the footer count — tagged with the
+    /// launcher, while the Ctrl+B handoff latch stays untouched (it belongs
+    /// to the main turn's foreground command).
+    #[must_use]
+    pub fn with_background_origin(mut self, origin: BgOrigin) -> Self {
+        self.bg_origin = Some(origin);
         self
     }
 
@@ -113,6 +130,7 @@ impl ToolExecutor for RealToolExecutor {
                 &call.arguments,
                 cancel,
                 self.background.as_ref(),
+                self.bg_origin.as_ref(),
                 self.detach_helper.as_deref(),
                 on_output,
             ),
@@ -179,6 +197,7 @@ fn run_bash(
     arguments: &str,
     cancel: &CancelToken,
     background: Option<&BackgroundRegistry>,
+    origin: Option<&BgOrigin>,
     detach_helper: Option<&Path>,
     on_output: &mut dyn FnMut(&str),
 ) -> ToolOutcome {
@@ -187,20 +206,30 @@ fn run_bash(
         Err(e) => return arg_error(e),
     };
     // A Ctrl+B pressed before this command started belongs to nothing — drop
-    // it so it can't instantly background us (docs/background.md).
-    if let Some(registry) = background {
+    // it so it can't instantly background us (docs/background.md). The latch
+    // is the MAIN turn's alone: a subagent's executor (origin set) leaves it
+    // for the foreground command it actually belongs to.
+    if let Some(registry) = background
+        && origin.is_none()
+    {
         registry.clear_background_request();
     }
     // `run_in_background`: hand the whole run to the registry and return the
     // launch text at once — the model gets the task id + interim-output path,
-    // the completion notification follows when the command exits.
+    // the completion notification follows when the command exits. A
+    // subagent's launch is attributed via `origin` (docs/agent-tool.md).
     if args.run_in_background {
         let Some(registry) = background else {
             return ToolOutcome::error(
                 "run_in_background is not available here — run the command in the foreground",
             );
         };
-        return match registry.launch(&args.command, args.description.clone(), true) {
+        return match registry.launch_from(
+            &args.command,
+            args.description.clone(),
+            true,
+            origin.cloned(),
+        ) {
             Ok(task) => ToolOutcome::backgrounded(task.id.clone(), background_launch_text(&task)),
             Err(err) => ToolOutcome::error(err),
         };
@@ -273,8 +302,12 @@ fn run_bash(
         // the agent loop keeps going with the HANDOFF text as the tool result
         // — the model asked for a foreground run, so it must be told the user
         // moved the command (not read a launch acknowledgement it never
-        // requested). See `docs/background.md`.
-        if let Some(registry) = background
+        // requested). See `docs/background.md`. A subagent's executor never
+        // consumes the latch — Ctrl+B targets the main turn's command (or its
+        // agent group's wait loop), not whatever bash a subagent happens to
+        // be running concurrently.
+        if origin.is_none()
+            && let Some(registry) = background
             && registry.take_background_request()
         {
             let task = registry.adopt(
@@ -1232,6 +1265,74 @@ mod tests {
         assert!(
             out.background.is_none(),
             "the stale request was dropped, the command ran in the foreground"
+        );
+    }
+
+    #[test]
+    fn a_subagent_executor_launches_in_background_with_its_origin() {
+        // A subagent's run_in_background works like the main turn's — the
+        // shell joins the shared registry — with the launcher attributed on
+        // the Started event (docs/agent-tool.md).
+        let (registry, mut rx) = test_registry();
+        let executor = RealToolExecutor::new()
+            .with_background(registry)
+            .with_background_origin(crate::background::BgOrigin {
+                agent_id: "a7k2m9x4q".into(),
+                agent_type: "general-purpose".into(),
+            });
+        let out = executor.execute(
+            &call(
+                "bash",
+                r#"{"command":"echo bg","run_in_background":true,"description":"noop"}"#,
+            ),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        assert!(out.ok, "got {}", out.output);
+        assert!(out.background.is_some(), "resolves as backgrounded");
+        let mut saw_origin = false;
+        for _ in 0..500 {
+            match rx.try_recv() {
+                Ok(crate::background::BgEvent::Started { origin, .. }) => {
+                    let origin = origin.expect("the launcher rides the event");
+                    assert_eq!(origin.agent_id, "a7k2m9x4q");
+                    assert_eq!(origin.agent_type, "general-purpose");
+                    saw_origin = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+        }
+        assert!(saw_origin, "the Started event carried the origin");
+    }
+
+    #[test]
+    fn a_subagent_executor_never_consumes_the_ctrl_b_latch() {
+        // Ctrl+B belongs to the MAIN turn's foreground command: a subagent's
+        // concurrently-running bash must neither clear a pending request as
+        // it starts nor take it mid-run (docs/agent-tool.md).
+        let (registry, _rx) = test_registry();
+        registry.request_background();
+        let executor = RealToolExecutor::new()
+            .with_background(registry.clone())
+            .with_background_origin(crate::background::BgOrigin {
+                agent_id: "a1".into(),
+                agent_type: "explore".into(),
+            });
+        let out = executor.execute(
+            &call("bash", r#"{"command":"echo hi"}"#),
+            &CancelToken::new(),
+            &mut |_| {},
+        );
+        assert!(out.ok);
+        assert!(
+            out.background.is_none(),
+            "the pending latch never backgrounds a subagent's command"
+        );
+        assert!(
+            registry.take_background_request(),
+            "…and the latch is still raised for the main turn's runner"
         );
     }
 }

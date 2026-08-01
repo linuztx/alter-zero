@@ -349,6 +349,31 @@ fn running_command_lines_tails_recent_output_with_the_elapsed() {
 }
 
 #[test]
+fn running_footers_humanize_the_elapsed_past_a_minute() {
+    // The user-report fix: every running counter reads `2m 3s`, never a bare
+    // `123s` — the streaming footer and the `!` shell's Running row alike
+    // (format_elapsed everywhere a runtime shows).
+    let out = (1..=9)
+        .map(|i| format!("line {i}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let t = tool("Bash", "ping -c 200 x", ToolStatus::Running, &out);
+    let lines = running_command_lines(&t, Duration::from_secs(123), Duration::ZERO, 80);
+    assert_eq!(
+        plain(lines.last().unwrap()).trim(),
+        "+5 lines (2m 3s)",
+        "the streaming footer humanizes"
+    );
+    let row = plain(&crate::ui::tool::shell_running_line(Duration::from_secs(
+        75,
+    )));
+    assert!(
+        row.ends_with("Running… (1m 15s)"),
+        "the shell running row humanizes: {row:?}"
+    );
+}
+
+#[test]
 fn running_command_lines_without_overflow_shows_no_footer() {
     // Fewer lines than the window: show them all, no `+N lines` footer (the
     // status line carries the timer).

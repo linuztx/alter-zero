@@ -28,7 +28,7 @@ fn background_notice_lines_render_the_headline_with_outcome_colours() {
 #[test]
 fn the_manager_empty_state_says_no_tasks_running() {
     let mut app = App::new();
-    app.bg_started("bash_1", "ping x.com", None, true);
+    app.bg_started("bash_1", "ping x.com", None, true, None);
     app.bg_exited("bash_1", Some(0), false);
     app.open_background_view();
     let texts: Vec<String> = background_view_lines(&app, 60)
@@ -47,7 +47,7 @@ fn the_manager_empty_state_says_no_tasks_running() {
 #[test]
 fn details_of_a_vanished_shell_fall_back_to_the_list() {
     let mut app = App::new();
-    app.bg_started("bash_1", "ping x.com", None, true);
+    app.bg_started("bash_1", "ping x.com", None, true, None);
     // A Details view pointing at an unknown id renders the list instead
     // (bg_exited retargets, so this is the defensive path).
     app.background_view = Some(BackgroundView::Details {

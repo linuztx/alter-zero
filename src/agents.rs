@@ -265,8 +265,10 @@ impl AgentRun {
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
-            // A subagent never backgrounds a bash call (its executor has no
-            // registry), but stay total: resolve the front call like an end.
+            // A subagent's `run_in_background` launch (its executor carries
+            // the shared registry, attributed via `BgOrigin`): resolve the
+            // front call as backgrounded — the shell itself lives on the
+            // shared list (`docs/background.md`).
             StreamEvent::ToolBackgrounded { output, .. } => {
                 if let Some(mut front) = self.tool_queue.pop_front() {
                     front.status = ToolStatus::Backgrounded;

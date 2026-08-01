@@ -69,7 +69,9 @@ pub fn message_lines(role: Role, text: &str, width: u16) -> Vec<Line<'static>> {
 /// The inline `/compact` marker cell: the one-line `● Context compacted`
 /// notice in the system-notice dress (cyan bullet, literal text), carrying a
 /// dim ` · {before} → {after} tokens` shrink clause when the marker recorded
-/// the gauge (0/0 — an old rollout — hides it) and a dim ` · auto` tag for an
+/// the gauge (0/0 — an old rollout — hides it), a dim ` · {elapsed}` clause
+/// when it recorded how long the summarization turn ran
+/// ([`format_elapsed`]-humanized; 0 hides it), and a dim ` · auto` tag for an
 /// auto-triggered compaction. A single unwrapped line, the [`summary_lines`]
 /// precedent. The summary body never shows inline — it expands in the Ctrl+O
 /// transcript only (`compaction_full_lines`). See `docs/compact.md`.
@@ -89,6 +91,12 @@ pub fn compaction_lines(compaction: &crate::app::Compaction, width: u16) -> Vec<
                 format_token_count(usize::try_from(compaction.before).unwrap_or(usize::MAX)),
                 format_token_count(usize::try_from(compaction.after).unwrap_or(usize::MAX)),
             ),
+            dim,
+        ));
+    }
+    if compaction.secs > 0 {
+        spans.push(Span::styled(
+            format!(" · {}", format_elapsed(compaction.secs)),
             dim,
         ));
     }

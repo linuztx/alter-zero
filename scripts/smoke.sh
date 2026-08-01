@@ -3769,7 +3769,9 @@ fi
 # footer shows the `{used}/{window} ({pct}%)` gauge, and one turn's estimate
 # blows past codex's 90% threshold — the loop then starts the summarization
 # turn ON ITS OWN (no /compact typed): the marker cell commits with the
-# `· {before} → {after} tokens · auto` clause and the transcript is untouched. ---
+# `· {before} → {after} tokens[ · {elapsed}] · auto` clause (the duration
+# appears when the summarization turn took ≥1s) and the transcript is
+# untouched. ---
 S51="${S}_autocompact"
 tmux new-session -d -s "$S51" -x 100 -y 24 "env ALTER_ZERO_CONTEXT_WINDOW=100 $APP"
 sleep 0.4
@@ -3784,7 +3786,7 @@ tmux send-keys -t "$S51" Enter
 auto_pane=""
 for _ in $(seq 1 100); do # up to ~10s (turn + startup pause + summary stream)
 	auto_pane="$(tmux capture-pane -t "$S51" -p -S -80)"
-	if printf '%s' "$auto_pane" | grep -qF "tokens · auto"; then
+	if printf '%s' "$auto_pane" | grep -qE "tokens( · [0-9]+[hms][0-9ms ]*)? · auto"; then
 		break
 	fi
 	sleep 0.1
@@ -3801,8 +3803,8 @@ if ! printf '%s' "$auto_pane" | grep -qF "Context compacted"; then
 	echo "FAIL: Phase 51 — no auto-compaction happened past the 90% threshold" >&2
 	status=1
 fi
-if ! printf '%s' "$auto_pane" | grep -qF "tokens · auto"; then
-	echo "FAIL: Phase 51 — the marker cell is missing the '· {before} → {after} tokens · auto' clause" >&2
+if ! printf '%s' "$auto_pane" | grep -qE "tokens( · [0-9]+[hms][0-9ms ]*)? · auto"; then
+	echo "FAIL: Phase 51 — the marker cell is missing the '· {before} → {after} tokens[ · {elapsed}] · auto' clause" >&2
 	status=1
 fi
 if ! printf '%s' "$auto_pane" | grep -qF "hello there"; then
@@ -3970,7 +3972,7 @@ if [ -z "$agents_swept" ]; then
 fi
 
 # --- Phase 54: background agents + the roster selection. A "background agents"
-# prompt resolves at once with `● 2 background agents launched (↓ to manage)`;
+# prompt resolves at once with `● 2 background agents launched (↓ to manage · ctrl+o to expand)`;
 # the roster keeps the two running rows, ↓ opens the selection (`❯` on
 # `● main`, the `↑/↓ to select · Enter to view` hint in the footer slot), a
 # second ↓ moves onto an agent (`Enter to view · x to stop`), and `x` stops it
@@ -3985,7 +3987,7 @@ tmux send-keys -t "$S54" Enter
 bg_launched=""
 for _ in $(seq 1 250); do
 	cap="$(tmux capture-pane -t "$S54" -p)"
-	if printf '%s' "$cap" | grep -qF "2 background agents launched (↓ to manage)" &&
+	if printf '%s' "$cap" | grep -qF "2 background agents launched (↓ to manage · ctrl+o to expand)" &&
 		printf '%s' "$cap" | grep -qF "Done for"; then
 		bg_launched="$cap"
 		break

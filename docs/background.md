@@ -43,6 +43,17 @@ told the result in a new turn.
   fixed row as its body inline, in the preview, and in the Ctrl+O transcript.
   The wire/tool-result content in the derived context stays `tool.output`
   (`context::context_messages` needs no special case).
+- **Subagents background too** (`docs/agent-tool.md`): a subagent's executor
+  carries the same registry, launching via `launch_from` with a
+  `BgOrigin { agent_id, agent_type }` so the shell is attributed everywhere —
+  the details page's `From: {type} agent` field, the notice's `· from the
+  {type} agent` suffix, the context note's `launched by the {type} agent`
+  clause (persisted on the notice record; omitted when absent so old rollouts
+  parse). The **Ctrl+B latch stays main-only**: a subagent's `bash` neither
+  clears nor consumes it. A subagent-launched shell's completion note routes
+  to its launcher first (`AgentRegistry::queue_input` into the running loop's
+  pending-input seam); a settled launcher can't hear it, so the note falls to
+  the shared board — the normal main-turn / follow-up path.
 
 ### The registry (`src/background.rs` — boundary, like `term`)
 
@@ -203,7 +214,13 @@ picker (never an alternate-screen overlay): `Option<BackgroundView>` with
 - List: `Background` title, `{n} active shells`, `❯`-marked selectable rows
   (`{command} (running)`), hints
   `↑/↓ to select · Enter to view · x to stop · Esc to close`.
-- Details: `Shell details`, `Status:/Runtime:/Command:` fields, an `Output:`
+- Details: `Shell details`, `Status:/Runtime:/Command:` fields — the Runtime
+  humanized (`format_elapsed`: `2m 3s`, never a bare `123s`), a `From:
+  {type} agent` field when a subagent launched the shell, and the Command
+  **word-wrapped** across rows under the value column (`wrap_output`, spaces
+  preserved) so a long command line is never truncated away
+  (`background_view_height` therefore takes the real width — the band's
+  height is width-dependent now) — an `Output:`
   box (rounded `╭─╮` border) tailing the last rows of the live output,
   `Showing N lines`, hints `← to go back · Esc/Enter/Space to close · x to
   stop`. The shell keeps streaming into the box (the bg channel schedules

@@ -198,6 +198,10 @@ struct CompactionRecord {
     after: u64,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     auto: bool,
+    /// The summarization turn's runtime (the cell's ` · 36s` clause) —
+    /// `serde(default)`ed like the gauge counts, 0 meaning unknown.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    secs: u64,
 }
 
 /// `skip_serializing_if` helper for the gauge counts' 0-means-unknown default.
@@ -262,6 +266,11 @@ struct BackgroundRecord {
     code: Option<i32>,
     killed: bool,
     output_tail: String,
+    /// The launching subagent's type label, when a subagent launched the
+    /// shell (`docs/agent-tool.md`) — omitted when absent so old rollouts
+    /// keep their shape and still parse.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    origin: Option<String>,
     timestamp: String,
 }
 
@@ -385,6 +394,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             code: notice.code,
             killed: notice.killed,
             output_tail: notice.output_tail.clone(),
+            origin: notice.origin.clone(),
             timestamp: notice.timestamp.clone(),
         }),
         HistoryItem::Compaction(compaction) => ItemRecord::Compaction(CompactionRecord {
@@ -393,6 +403,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             before: compaction.before,
             after: compaction.after,
             auto: compaction.auto,
+            secs: compaction.secs,
         }),
         // The recorder mirrors history append-only, so a background entry's
         // later completion update (`App::settle_agent_completion`) never
@@ -531,6 +542,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     code: notice.code,
                     killed: notice.killed,
                     output_tail: notice.output_tail,
+                    origin: notice.origin,
                     timestamp: notice.timestamp,
                 }));
             }
@@ -574,6 +586,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     before: compaction.before,
                     after: compaction.after,
                     auto: compaction.auto,
+                    secs: compaction.secs,
                 }));
             }
             // Checkpoints ride the same file but aren't transcript items —
@@ -760,18 +773,20 @@ mod tests {
     fn a_compaction_marker_round_trips() {
         // The /compact marker persists so a /resume stays compacted
         // (docs/compact.md); the summary — and the gauge's before/after token
-        // counts + the auto tag — are the payload.
+        // counts + the auto tag + the turn's elapsed — are the payload.
         let item = HistoryItem::Compaction(crate::app::Compaction {
             summary: "we did the thing".into(),
             timestamp: "03:20 PM".into(),
             before: 88_000,
             after: 2_100,
             auto: true,
+            secs: 36,
         });
         let line = item_line(&item, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
         assert_eq!(value["type"], "compaction");
         assert_eq!(value["payload"]["summary"], "we did the thing");
+        assert_eq!(value["payload"]["secs"], 36);
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
     }
@@ -779,7 +794,8 @@ mod tests {
     #[test]
     fn a_compaction_line_without_token_info_parses_with_defaults() {
         // Rollouts written before the gauge fields still load (the
-        // forward-compatibility contract) — counts default to 0, auto false.
+        // forward-compatibility contract) — counts default to 0, auto false,
+        // the turn's elapsed 0 (hiding its clause).
         let old =
             r#"{"timestamp":"t","type":"compaction","payload":{"summary":"s","timestamp":""}}"#;
         let text = format!("{}\n{old}\n", meta_line(&meta(), "t0"));
@@ -790,6 +806,7 @@ mod tests {
         assert_eq!(compaction.summary, "s");
         assert_eq!((compaction.before, compaction.after), (0, 0));
         assert!(!compaction.auto);
+        assert_eq!(compaction.secs, 0);
     }
 
     #[test]
@@ -1268,12 +1285,37 @@ mod tests {
             code: Some(0),
             killed: false,
             output_tail: "64 bytes from x.com\n200 packets transmitted".into(),
+            origin: None,
             timestamp: "03:21 PM".into(),
         });
         let line = item_line(&notice, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
         assert_eq!(value["type"], "background");
         assert_eq!(value["payload"]["id"], "bash_1");
+        assert!(
+            !line.contains("origin"),
+            "a main-conversation notice keeps the pre-origin shape: {line}"
+        );
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&notice))).expect("parses");
+        assert_eq!(parsed, vec![notice]);
+    }
+
+    #[test]
+    fn a_subagent_launched_notice_round_trips_its_origin() {
+        // The launcher label persists so a /resume still shows whose shell
+        // it was (docs/agent-tool.md).
+        let notice = HistoryItem::Background(crate::app::BackgroundNotice {
+            description: "Count 1-100".into(),
+            id: "b12345678".into(),
+            code: Some(0),
+            killed: false,
+            output_tail: "100".into(),
+            origin: Some("general-purpose".into()),
+            timestamp: String::new(),
+        });
+        let line = item_line(&notice, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["payload"]["origin"], "general-purpose");
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&notice))).expect("parses");
         assert_eq!(parsed, vec![notice]);
     }
@@ -1286,6 +1328,7 @@ mod tests {
             code: None,
             killed: true,
             output_tail: String::new(),
+            origin: None,
             timestamp: String::new(),
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&notice))).expect("parses");

@@ -88,7 +88,9 @@ impl AgentNotice {
         self.status.ok()
     }
 
-    /// The rendered one-liner (the user's reference wording).
+    /// The rendered one-liner (the user's reference wording). The runtime
+    /// humanizes past a minute (`· 6m 2s`, never a bare `362s`) — the
+    /// [`format_elapsed`] contract every runtime display shares.
     #[must_use]
     pub fn headline(&self) -> String {
         match self.status {
@@ -96,7 +98,11 @@ impl AgentNotice {
                 format!("Agent \"{}\" was stopped by user", self.description)
             }
             AgentStatus::Failed => format!("Agent \"{}\" failed", self.description),
-            _ => format!("Agent \"{}\" finished · {}s", self.description, self.secs),
+            _ => format!(
+                "Agent \"{}\" finished · {}",
+                self.description,
+                format_elapsed(self.secs)
+            ),
         }
     }
 
@@ -109,7 +115,7 @@ impl AgentNotice {
         let outcome = match self.status {
             AgentStatus::Interrupted => "was stopped by the user".to_string(),
             AgentStatus::Failed => "failed".to_string(),
-            _ => format!("completed in {}s", self.secs),
+            _ => format!("completed in {}", format_elapsed(self.secs)),
         };
         let body = if self.result.trim().is_empty() {
             "(no output)"
@@ -594,9 +600,9 @@ impl App {
                     .map(|a| a.id.clone());
                 if let Some(id) = agent {
                     // The selection hands over to the view: the composer owns
-                    // the keys again (typing chats), and the roster's `❯`
-                    // stays on the viewed agent implicitly
-                    // (`ui::agent_list_lines`).
+                    // the keys again (typing chats) and the `❯` leaves with
+                    // the selection — the roster marks the viewed agent by
+                    // its filled bullet instead (`ui::agent_list_lines`).
                     self.agent_selection = None;
                     if self.agent_view.as_deref() == Some(id.as_str()) {
                         // Already viewing it — nothing to switch.

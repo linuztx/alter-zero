@@ -169,6 +169,7 @@ pub(super) fn bare_compaction(summary: &str) -> crate::app::Compaction {
         before: 0,
         after: 0,
         auto: false,
+        secs: 0,
     }
 }
 
@@ -305,6 +306,7 @@ pub(super) fn bg_notice(code: Option<i32>, killed: bool) -> crate::app::Backgrou
         code,
         killed,
         output_tail: "tail".to_string(),
+        origin: None,
         timestamp: String::new(),
     }
 }

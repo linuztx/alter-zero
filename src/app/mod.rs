@@ -68,6 +68,7 @@ pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSum
 pub use self::tools::{ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, ToolCall, ToolStatus};
 pub use self::turn::{
     DONE_VERBS, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, StreamError, WORKING_VERBS,
+    format_elapsed,
 };
 pub(crate) use self::types::count_tokens;
 pub use self::types::{HistoryItem, Message, Role, SessionInfo, Toast, ToastKind, View};

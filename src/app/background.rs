@@ -24,6 +24,11 @@ pub struct BackgroundNotice {
     pub killed: bool,
     /// The last lines of output at exit — context-only, never rendered.
     pub output_tail: String,
+    /// The launching subagent's **type label** (`general-purpose`), when a
+    /// subagent launched the shell — the headline's ` · from the {type}
+    /// agent` suffix and the context note's attribution
+    /// (`docs/agent-tool.md`). `None` = the main conversation.
+    pub origin: Option<String>,
     /// Wall-clock stamp of when the completion was recorded. Recorded but not
     /// displayed, like tool stamps. See `docs/timestamps.md`.
     pub timestamp: String,
@@ -37,11 +42,17 @@ impl BackgroundNotice {
         !self.killed && self.code == Some(0)
     }
 
-    /// The rendered one-liner: `Background command "{description}" {outcome}`.
+    /// The rendered one-liner: `Background command "{description}" {outcome}`
+    /// — plus a ` · from the {type} agent` suffix when a subagent launched
+    /// the shell.
     #[must_use]
     pub fn headline(&self) -> String {
         let outcome = self.outcome_phrase();
-        format!("Background command \"{}\" {outcome}", self.description)
+        let mut headline = format!("Background command \"{}\" {outcome}", self.description);
+        if let Some(origin) = &self.origin {
+            headline.push_str(&format!(" · from the {origin} agent"));
+        }
+        headline
     }
 
     /// The outcome clause of the headline / context note.
@@ -59,7 +70,9 @@ impl BackgroundNotice {
 
     /// The model-facing context note: the headline plus the output tail (the
     /// bracketed user-role form `context::context_messages` sends). Also the
-    /// automatic follow-up turn's prompt text.
+    /// automatic follow-up turn's prompt text. A subagent-launched shell is
+    /// attributed (`launched by the {type} agent`) so the reader knows whose
+    /// task it belonged to.
     #[must_use]
     pub fn context_text(&self) -> String {
         let tail = if self.output_tail.trim().is_empty() {
@@ -67,8 +80,13 @@ impl BackgroundNotice {
         } else {
             self.output_tail.trim_end_matches('\n')
         };
+        let origin = self
+            .origin
+            .as_ref()
+            .map(|agent| format!(", launched by the {agent} agent"))
+            .unwrap_or_default();
         format!(
-            "[background] Background command \"{}\" (id {}) {}.\nFinal output (tail):\n{tail}",
+            "[background] Background command \"{}\" (id {}{origin}) {}.\nFinal output (tail):\n{tail}",
             self.description,
             self.id,
             self.outcome_phrase(),
@@ -93,6 +111,11 @@ pub struct BackgroundShell {
     /// follow-up turn; a user-launched (`!` + Ctrl+B) shell only commits the
     /// notice.
     pub from_model: bool,
+    /// The launching **subagent** (id + type), when one launched it — shown
+    /// as the details page's `From:` field and used to route the completion
+    /// note back into that agent's loop (`docs/agent-tool.md`). `None` = the
+    /// main conversation.
+    pub origin: Option<crate::background::BgOrigin>,
     /// The live output **tail** (capped at `BG_TAIL_MAX_BYTES`, trimmed to
     /// line boundaries) — what the details view's output box tails and the
     /// completion notice snapshots. The full output is teed to the task's
@@ -129,6 +152,10 @@ pub struct BgCompletion {
     pub command: String,
     pub description: Option<String>,
     pub from_model: bool,
+    /// The launching subagent, when one did — the boundary routes the note
+    /// into that agent's running loop first, falling back to the shared
+    /// board when it already settled (`docs/agent-tool.md`).
+    pub origin: Option<crate::background::BgOrigin>,
     /// Exit code, or `None` when the process died to a signal.
     pub code: Option<i32>,
     /// Whether the user stopped it (`x` in the manager, or a kill sweep).
@@ -158,9 +185,17 @@ impl BgCompletion {
             code: self.code,
             killed: self.killed,
             output_tail: self.output_tail.clone(),
+            origin: self.origin_label(),
             timestamp: String::new(),
         }
         .context_text()
+    }
+
+    /// The launching subagent's type label, when one launched the shell —
+    /// what the notice displays and persists.
+    #[must_use]
+    pub fn origin_label(&self) -> Option<String> {
+        self.origin.as_ref().map(|origin| origin.agent_type.clone())
     }
 }
 
@@ -237,19 +272,23 @@ impl App {
     }
 
     /// A background shell started (the registry's `BgEvent::Started`): list it
-    /// so the footer count, the summary suffix, and the ↓ manager see it.
+    /// so the footer count, the summary suffix, and the ↓ manager see it —
+    /// the one shared list, whatever session view is up, so a subagent's
+    /// launch stacks into the same count (`origin` says whose it is).
     pub fn bg_started(
         &mut self,
         id: &str,
         command: &str,
         description: Option<String>,
         from_model: bool,
+        origin: Option<crate::background::BgOrigin>,
     ) {
         self.background.push(BackgroundShell {
             id: id.to_string(),
             command: command.to_string(),
             description,
             from_model,
+            origin,
             output: String::new(),
             runtime: Duration::ZERO,
         });
@@ -317,6 +356,7 @@ impl App {
             command: shell.command,
             description: shell.description,
             from_model: shell.from_model,
+            origin: shell.origin,
             code,
             killed,
             output_tail: notice_tail(&shell.output),
@@ -347,6 +387,7 @@ impl App {
             code: completion.code,
             killed: completion.killed,
             output_tail: completion.output_tail.clone(),
+            origin: completion.origin_label(),
             timestamp: self.now_stamp(),
         };
         self.history.push(HistoryItem::Background(notice.clone()));

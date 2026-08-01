@@ -326,7 +326,7 @@ pub(super) fn key_app(provider_id: &str) -> App {
 pub(super) fn app_with_shells(commands: &[&str]) -> App {
     let mut app = App::new();
     for (i, cmd) in commands.iter().enumerate() {
-        app.bg_started(&format!("bash_{}", i + 1), cmd, None, true);
+        app.bg_started(&format!("bash_{}", i + 1), cmd, None, true, None);
     }
     app
 }

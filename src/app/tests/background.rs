@@ -80,7 +80,7 @@ fn accepting_a_bang_match_restores_shell_mode() {
 fn bg_started_lists_the_shell_for_the_footer_and_the_manager() {
     let mut app = App::new();
     assert!(app.background().is_empty());
-    app.bg_started("bash_1", "ping x.com", Some("Ping x".into()), true);
+    app.bg_started("bash_1", "ping x.com", Some("Ping x".into()), true, None);
     assert_eq!(app.background().len(), 1);
     let shell = &app.background()[0];
     assert_eq!(shell.id, "bash_1");
@@ -113,7 +113,7 @@ fn bg_output_appends_and_caps_the_tail_on_line_boundaries() {
 #[test]
 fn bg_exited_removes_the_shell_and_returns_its_completion() {
     let mut app = App::new();
-    app.bg_started("bash_1", "ping x.com", Some("Ping x".into()), true);
+    app.bg_started("bash_1", "ping x.com", Some("Ping x".into()), true, None);
     app.bg_output("bash_1", "64 bytes\n");
     let completion = app.bg_exited("bash_1", Some(0), false).expect("completes");
     assert!(
@@ -138,6 +138,7 @@ fn completion_notice_headline_covers_every_outcome() {
         code: Some(0),
         killed: false,
         output_tail: String::new(),
+        origin: None,
         timestamp: String::new(),
     };
     assert!(notice.ok());
@@ -172,6 +173,7 @@ fn completion_notice_context_text_carries_the_tail() {
         code: Some(0),
         killed: false,
         output_tail: "line1\nline2".into(),
+        origin: None,
         timestamp: String::new(),
     };
     assert_eq!(
@@ -184,6 +186,52 @@ fn completion_notice_context_text_carries_the_tail() {
         ..notice
     };
     assert!(silent.context_text().ends_with("(no output)"));
+}
+
+#[test]
+fn a_subagent_launched_shell_is_attributed_end_to_end() {
+    // The origin flows launch → shell list → completion → notice: the
+    // details page knows whose shell it is, the headline reads
+    // `· from the {type} agent`, and the context note says who launched it
+    // (docs/agent-tool.md).
+    let mut app = App::new();
+    let origin = crate::background::BgOrigin {
+        agent_id: "a7k2m9x4q".into(),
+        agent_type: "general-purpose".into(),
+    };
+    app.bg_started(
+        "b1",
+        "for i in $(seq 1 100); do echo $i; sleep 1; done",
+        Some("Count 1-100".into()),
+        true,
+        Some(origin.clone()),
+    );
+    assert_eq!(app.background()[0].origin.as_ref(), Some(&origin));
+    let completion = app.bg_exited("b1", Some(0), false).expect("completes");
+    assert_eq!(
+        completion.origin.as_ref(),
+        Some(&origin),
+        "the completion carries the launcher for the boundary's routing"
+    );
+    let notice = app.record_background_notice(&completion);
+    assert_eq!(notice.origin.as_deref(), Some("general-purpose"));
+    assert_eq!(
+        notice.headline(),
+        "Background command \"Count 1-100\" completed (exit code 0) \
+         · from the general-purpose agent"
+    );
+    assert!(
+        notice
+            .context_text()
+            .contains("(id b1, launched by the general-purpose agent)"),
+        "{}",
+        notice.context_text()
+    );
+    assert_eq!(
+        completion.context_text(),
+        notice.context_text(),
+        "the board note and the recorded notice never diverge"
+    );
 }
 
 #[test]
@@ -200,6 +248,7 @@ fn completion_context_text_matches_the_recorded_notices() {
         "python3 server.py",
         Some("Start the API".into()),
         true,
+        None,
     );
     app.bg_output("bash_1", "listening on 8888\n");
     let completion = app.bg_exited("bash_1", None, false).unwrap();
@@ -218,7 +267,7 @@ fn completion_context_text_matches_the_recorded_notices() {
 fn record_background_notice_lands_in_history_stamped() {
     let mut app = App::new();
     app.set_clock(|| "01:02 PM".to_string());
-    app.bg_started("bash_1", "ping x.com", None, true);
+    app.bg_started("bash_1", "ping x.com", None, true, None);
     let completion = app.bg_exited("bash_1", Some(0), false).unwrap();
     let notice = app.record_background_notice(&completion);
     assert_eq!(
@@ -251,7 +300,7 @@ fn down_reaches_the_manager_only_while_a_shell_is_running() {
     app.on_key(key(KeyCode::Down));
     assert!(!app.background_focused());
     assert!(app.background_view.is_none());
-    app.bg_started("bash_1", "ping x.com", None, true);
+    app.bg_started("bash_1", "ping x.com", None, true, None);
     // ↓ highlights the footer's indicator first; Enter opens the band.
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Enter));
@@ -345,7 +394,7 @@ fn the_last_shell_exiting_clears_the_shell_highlight() {
 #[test]
 fn down_with_a_draft_or_in_shell_mode_never_opens_the_manager() {
     let mut app = App::new();
-    app.bg_started("bash_1", "ping x.com", None, true);
+    app.bg_started("bash_1", "ping x.com", None, true, None);
     app.input = TextArea::from_text("draft");
     app.on_key(key(KeyCode::Down));
     assert!(
@@ -408,7 +457,7 @@ fn ctrl_b_moves_a_running_shell_turn_too() {
 fn clear_conversation_wipes_the_background_state() {
     let mut app = app_with_shells(&["a"]);
     let completion = app.bg_exited("bash_1", Some(0), false).unwrap();
-    app.bg_started("bash_2", "b", None, false);
+    app.bg_started("bash_2", "b", None, false, None);
     app.defer_bg_completion(completion);
     // Run /clear the real way: type it (the palette opens) and Enter.
     for c in "/clear".chars() {
@@ -451,7 +500,7 @@ fn the_manager_band_owns_every_key_while_open() {
 #[test]
 fn down_steps_onto_the_shell_indicator_then_into_the_roster() {
     let mut app = App::new();
-    app.bg_started("b1", "sleep 99", None, true);
+    app.bg_started("b1", "sleep 99", None, true, None);
     app.begin_stream();
     app.start_agent_group(false, &agent_specs(false));
     assert_eq!(app.on_key(key(KeyCode::Down)), Action::None);

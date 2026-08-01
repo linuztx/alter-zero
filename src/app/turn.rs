@@ -38,6 +38,29 @@ pub const SHELL_VERB: &str = "Running";
 pub const INTERRUPT_NOTICE: &str =
     "Conversation interrupted - tell the model what to do differently.";
 
+/// Humanize an elapsed count of whole seconds — combined two-unit, so the
+/// display scales past a bare seconds counter: `{s}s` under a minute (the
+/// live seconds keep ticking so a running timer never looks frozen),
+/// `{m}m {s}s` under an hour, `{h}h {m}m` past an hour (`h` grows
+/// unbounded). Distinct from `crate::session::relative_age`, which is a
+/// **single-unit** static age label (`2m`, `1h`). Shared by the live status
+/// line, its `Thinking for …` clause, the committed `… for …` summary, and
+/// every other runtime display — tool footers, the shell manager's Runtime
+/// field, an agent's counters and completion notice — so they all read the
+/// same (`docs/status-indicator.md`). Lives in the pure core (beside the
+/// state whose display strings use it); `ui` re-exports it.
+#[must_use]
+pub fn format_elapsed(secs: u64) -> String {
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    let minutes = secs / 60;
+    if minutes < 60 {
+        return format!("{minutes}m {}s", secs % 60);
+    }
+    format!("{}h {}m", minutes / 60, minutes % 60)
+}
+
 impl App {
     /// Finalise the current run of assistant text as a history message so a
     /// following tool call slots after it in order, then start a fresh empty

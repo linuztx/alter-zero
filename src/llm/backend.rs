@@ -514,6 +514,11 @@ struct SubagentConfig {
     system_prompt: Option<String>,
     vision: Option<bool>,
     detach_helper: Option<std::path::PathBuf>,
+    /// The shared background-shell registry, so a subagent's `bash` can
+    /// `run_in_background` too — its shells stack into the same footer count
+    /// and ↓ manager, attributed to the launcher (`docs/agent-tool.md`,
+    /// `docs/background.md`).
+    background: Option<crate::background::BackgroundRegistry>,
     /// The shared permission gate, so a subagent's `write`/`edit`/`bash` calls
     /// ask too — the prompt names the agent that asked
     /// (`docs/permissions.md`).
@@ -536,6 +541,7 @@ impl LlmBackend {
                 .background
                 .as_ref()
                 .and_then(crate::background::BackgroundRegistry::detach_helper),
+            background: self.background.clone(),
             permissions: self.permissions.clone(),
         }
     }
@@ -761,6 +767,7 @@ fn spawn_subagent_run(
         .with_tools(tools::subagent_tool_specs(&agent_type));
     let vision = config.vision;
     let detach = config.detach_helper.clone();
+    let background = config.background.clone();
     let permissions = config.permissions.clone();
     thread::spawn(move || {
         // The forwarder tags every event with the agent id and tracks the
@@ -789,9 +796,22 @@ fn spawn_subagent_run(
             }
             (final_text, outcome)
         });
-        let executor = RealToolExecutor::new()
+        let mut executor = RealToolExecutor::new()
             .with_vision(vision)
             .with_detach_helper(detach);
+        // The shared background registry rides in so the subagent's `bash`
+        // can `run_in_background` — every launch attributed to this agent,
+        // and the Ctrl+B latch untouched (docs/agent-tool.md).
+        if let Some(bg) = background {
+            executor =
+                executor
+                    .with_background(bg)
+                    .with_background_origin(crate::background::BgOrigin {
+                        agent_id: id.clone(),
+                        agent_type: agent_type.clone(),
+                    });
+        }
+        let executor = executor;
         let inputs_registry = registry.clone();
         let inputs_id = id.clone();
         agent::run_agent(

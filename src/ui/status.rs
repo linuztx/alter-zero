@@ -80,25 +80,11 @@ fn spinner_spans(elapsed: Duration) -> Vec<Span<'static>> {
     spans
 }
 
-/// Humanize an elapsed count of whole seconds for the status indicator —
-/// combined two-unit, so the display scales past a bare seconds counter:
-/// `{s}s` under a minute (the live seconds keep ticking so a running timer
-/// never looks frozen), `{m}m {s}s` under an hour, `{h}h {m}m` past an hour
-/// (`h` grows unbounded). Distinct from [`crate::session::relative_age`], which
-/// is a **single-unit** static age label (`2m`, `1h`). Shared by the live
-/// status line, its `Thinking for …` clause, and the committed `… for …`
-/// summary so all three read the same (`docs/status-indicator.md`).
-#[must_use]
-pub fn format_elapsed(secs: u64) -> String {
-    if secs < 60 {
-        return format!("{secs}s");
-    }
-    let minutes = secs / 60;
-    if minutes < 60 {
-        return format!("{minutes}m {}s", secs % 60);
-    }
-    format!("{}h {}m", minutes / 60, minutes % 60)
-}
+// Re-exported from the pure core so the historic `ui::format_elapsed` path
+// (and every in-module unqualified use) keeps working: the app's own display
+// strings (an agent notice's `finished · 6m 2s`) humanize with the same
+// helper, so it lives beside the state that formats with it.
+pub use crate::app::format_elapsed;
 
 /// Humanize a token count for the status line and the turn summary: bare under
 /// a thousand (`842`), one-decimal thousands up to a million (`8.1k`, a

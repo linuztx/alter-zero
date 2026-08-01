@@ -151,7 +151,13 @@ the same threshold — **90% of the model's context window**
 The marker cell's shrink clause (`· {before} → {after} tokens`) appears on
 manual compactions too — `before` is the gauge when the compaction began,
 `after` the fresh estimate of the compacted derivation; both persist in the
-rollout (old files parse with the clause hidden).
+rollout (old files parse with the clause hidden). A ` · {elapsed}` clause
+follows the shrink (before the ` · auto` tag): how long the summarization
+turn ran — the boundary's turn clock passed into `finish_compact`,
+`format_elapsed`-humanized (`36s`, `1m 36s`), recorded as `secs` on the
+marker and persisted beside the gauge counts (0/absent on old rollouts hides
+it). The cell reads e.g. `● Context compacted · 2.1k → 507 tokens · 36s ·
+auto`.
 
 ## Interrupts, errors, `/clear`
 

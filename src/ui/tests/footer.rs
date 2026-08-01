@@ -611,12 +611,12 @@ fn the_footer_appends_the_running_shell_count() {
         plain(&footer_line(&app, 80)).trim_end(),
         "  kimi-k2 · ~/repo"
     );
-    app.bg_started("bash_1", "ping x.com", None, true);
+    app.bg_started("bash_1", "ping x.com", None, true, None);
     assert_eq!(
         plain(&footer_line(&app, 80)).trim_end(),
         "  kimi-k2 · ~/repo · 1 shell"
     );
-    app.bg_started("bash_2", "ping y.com", None, true);
+    app.bg_started("bash_2", "ping y.com", None, true, None);
     assert_eq!(
         plain(&footer_line(&app, 80)).trim_end(),
         "  kimi-k2 · ~/repo · 2 shells"
@@ -627,7 +627,7 @@ fn the_footer_appends_the_running_shell_count() {
 fn the_focused_footer_shell_count_lights_up_on_cyan() {
     let mut app = App::new();
     app.set_session_info("kimi-k2", "~/repo");
-    app.bg_started("bash_1", "ping x.com", None, true);
+    app.bg_started("bash_1", "ping x.com", None, true, None);
     let shell_span = |line: &Line<'static>| {
         line.spans
             .iter()

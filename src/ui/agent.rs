@@ -112,13 +112,16 @@ fn agent_cell_header(color: Color, description: &str) -> Line<'static> {
     ])
 }
 
-/// The `Done ({n} tool uses · {tokens} tokens · {s}s)` settle clause shared by
-/// the Ctrl+O cell footer and the single-agent committed cell.
+/// The `Done ({n} tool uses · {tokens} tokens · {elapsed})` settle clause
+/// shared by the Ctrl+O cell footer and the single-agent committed cell. The
+/// runtime humanizes past a minute (`6m 2s`, never a bare `362s`) — the
+/// [`format_elapsed`] contract every runtime display shares.
 fn agent_done_clause(tool_uses: usize, tokens: u64, secs: u64) -> String {
     format!(
-        "Done ({tool_uses} tool use{} · {} tokens · {secs}s)",
+        "Done ({tool_uses} tool use{} · {} tokens · {})",
         if tool_uses == 1 { "" } else { "s" },
         format_token_count(usize::try_from(tokens).unwrap_or(usize::MAX)),
+        format_elapsed(secs),
     )
 }
 
@@ -227,14 +230,15 @@ fn single_live_agent_lines(
 }
 
 /// A **committed** agent group's tree cell (`docs/agent-tool.md`):
-/// `● {n} background agents launched (↓ to manage)` over description-only
-/// rows for a background launch, else `● {n} agents finished (ctrl+o to
-/// expand)` over counter rows with a `⎿ Done` / `⎿ Interrupted` / `⎿ Failed`
-/// status row per agent — green bullet when every agent finished cleanly,
-/// red otherwise. A **lone** agent keeps the tool-cell look instead:
-/// `● Agent({description})` over `⎿ Done ({n} tool uses · {tokens} tokens ·
-/// {s}s)` and a dim `(ctrl+o to expand)` line — or
-/// `⎿ Running in the background (↓ to manage)` for a lone background launch.
+/// `● {n} background agents launched (↓ to manage · ctrl+o to expand)` over
+/// description-only rows for a background launch, else `● {n} agents
+/// finished (ctrl+o to expand)` over counter rows with a `⎿ Done` /
+/// `⎿ Interrupted` / `⎿ Failed` status row per agent — green bullet when
+/// every agent finished cleanly, red otherwise. A **lone** agent keeps the
+/// tool-cell look instead: `● Agent({description})` over `⎿ Done ({n} tool
+/// uses · {tokens} tokens · {elapsed})` and a dim `(ctrl+o to expand)` line
+/// — or `⎿ Running in the background (↓ to manage · ctrl+o to expand)` for
+/// a lone background launch.
 #[must_use]
 pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line<'static>> {
     let color = if group.ok() {
@@ -246,7 +250,7 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
         let dim = Style::new().fg(TOOL_DIM_COLOR);
         let mut lines = vec![agent_cell_header(color, &entry.description)];
         let (settle, settle_color) = if group.background {
-            (TOOL_BACKGROUNDED.to_string(), TOOL_DIM_COLOR)
+            (AGENT_BACKGROUNDED.to_string(), TOOL_DIM_COLOR)
         } else {
             match entry.status {
                 crate::agents::AgentStatus::Done => (
@@ -609,11 +613,14 @@ pub fn agent_list_rows(app: &App) -> u16 {
     u16::try_from(2 + agents).unwrap_or(u16::MAX)
 }
 
-/// The footer roster: a blank spacer, the `● main` row, then one
-/// `◯ {type}  {description} {elapsed} · ↓ {tokens} tokens` row per visible
-/// agent — the `❯` selection marker on the active row, the viewed session
-/// bold, finished agents' `◯` coloured green/red for their linger. See
-/// `docs/agent-tool.md`.
+/// The footer roster: a blank spacer, the main row, then one
+/// `{type}  {description} {elapsed} · ↓ {tokens} tokens` row per visible
+/// agent. The **filled `●` bullet + bright bold text mark the session in
+/// view** — `● main` normally, or the viewed agent's row inside its session
+/// view (main demoting to the dim `◯` ring) — while the `❯` marker belongs
+/// to the active ↑/↓ selection alone and leaves with it when the focus
+/// returns to the composer. Finished agents' bullets colour green/red for
+/// their linger. See `docs/agent-tool.md`.
 #[must_use]
 pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let agents = app.visible_agents();
@@ -623,13 +630,19 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let selection = app.agent_selection();
     let mut lines = vec![Line::default()];
-    // The `● main` row.
+    // The main row: the filled bullet only while the MAIN session is the one
+    // in view — an open agent view moves the highlight to that agent's row.
     let main_selected = selection == Some(0);
     let main_viewed = app.agent_view.is_none();
     let marker = if main_selected {
         AGENT_LIST_MARKER
     } else {
         AGENT_LIST_INDENT
+    };
+    let bullet = if main_viewed {
+        AGENT_MAIN_BULLET
+    } else {
+        AGENT_ROW_BULLET
     };
     let mut main_style = if main_selected {
         Style::new().fg(MENU_SELECTED_COLOR)
@@ -643,27 +656,38 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     lines.push(Line::from(vec![
         Span::styled(marker.to_string(), Style::new().fg(MENU_SELECTED_COLOR)),
-        Span::styled(AGENT_MAIN_BULLET.to_string(), main_style),
+        Span::styled(bullet.to_string(), main_style),
         Span::styled(AGENT_MAIN_LABEL.to_string(), main_style),
     ]));
     for (i, run) in agents.iter().enumerate() {
         let selected = selection == Some(i + 1);
         let viewed = app.agent_view.as_deref() == Some(run.id.as_str());
-        // The `❯` marks the explicit selection — or, with none active, the
-        // agent whose session view is open (the user's reference look).
-        let marker = if selected || (selection.is_none() && viewed) {
+        // The `❯` marks the explicit ↑/↓ selection only — once Enter/Esc
+        // hand the keys back to the composer it leaves; the viewed session
+        // is marked by its filled bullet + bright row instead.
+        let marker = if selected {
             AGENT_LIST_MARKER
         } else {
             AGENT_LIST_INDENT
+        };
+        let bullet = if viewed {
+            AGENT_MAIN_BULLET
+        } else {
+            AGENT_ROW_BULLET
         };
         let bullet_style = match run.status {
             s if s.is_final() && s.ok() => Style::new().fg(TOOL_OK_COLOR),
             s if s.is_final() => Style::new().fg(TOOL_FAIL_COLOR),
             _ if selected => Style::new().fg(MENU_SELECTED_COLOR),
+            _ if viewed => Style::new()
+                .fg(TOOL_OUTPUT_COLOR)
+                .add_modifier(Modifier::BOLD),
             _ => dim,
         };
         let mut text_style = if selected {
             Style::new().fg(MENU_SELECTED_COLOR)
+        } else if viewed {
+            Style::new().fg(TOOL_OUTPUT_COLOR)
         } else {
             dim
         };
@@ -680,7 +704,7 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
                 format_token_count(usize::try_from(run.tokens).unwrap_or(usize::MAX))
             ));
         }
-        let lead = format!("{}{}", marker, AGENT_ROW_BULLET);
+        let lead = format!("{marker}{bullet}");
         let budget = (width as usize)
             .saturating_sub(cols(&lead) + cols(&suffix))
             .max(1);
@@ -691,7 +715,7 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         }
         lines.push(Line::from(vec![
             Span::styled(marker.to_string(), Style::new().fg(MENU_SELECTED_COLOR)),
-            Span::styled(AGENT_ROW_BULLET.to_string(), bullet_style),
+            Span::styled(bullet.to_string(), bullet_style),
             Span::styled(name, text_style),
             Span::styled(suffix, dim),
         ]));

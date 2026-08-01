@@ -674,7 +674,7 @@ fn render_live_paints_the_focused_count_on_the_footer_row() {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     let mut app = App::new();
     app.set_session_info("kimi-k2", "~/repo");
-    app.bg_started("bash_1", "ping x.com", None, true);
+    app.bg_started("bash_1", "ping x.com", None, true, None);
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
     let mut buf = buffer(60, h);
@@ -698,9 +698,9 @@ fn render_live_paints_the_focused_count_on_the_footer_row() {
 #[test]
 fn the_manager_band_replaces_the_composer_in_render_live() {
     let mut app = App::new();
-    app.bg_started("bash_1", "ping x.com", None, true);
+    app.bg_started("bash_1", "ping x.com", None, true, None);
     app.open_background_view();
-    let h = background_view_height(&app, 30).unwrap();
+    let h = background_view_height(&app, 60, 30).unwrap();
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     let all: String = (0..h)

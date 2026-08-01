@@ -1411,14 +1411,13 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                                     thinking.as_ref().map(|(_, mode)| *mode), vision,
                                 ) {
                                     Some(cfg) if cfg.is_usable() => {
-                                        backend = Box::new(
-                                            LlmBackend::with_system_prompt(
-                                                cfg,
-                                                system_prompt.clone(),
-                                            )
-                                            .with_background(registry.clone())
-                                            .with_agents(agent_registry.clone()),
-                                        );
+                                        backend = Box::new(session_backend(
+                                            cfg,
+                                            system_prompt.clone(),
+                                            &registry,
+                                            &agent_registry,
+                                            permissions.as_ref(),
+                                        ));
                                         active_provider = Some(provider.clone());
                                         active_model = id.clone();
                                         app.set_session_info(
@@ -1491,13 +1490,13 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                                     )
                                     && cfg.is_usable()
                                 {
-                                    backend = Box::new(
-                                        LlmBackend::with_system_prompt(
-                                            cfg,
-                                            system_prompt.clone(),
-                                        )
-                                        .with_background(registry.clone()),
-                                    );
+                                    backend = Box::new(session_backend(
+                                        cfg,
+                                        system_prompt.clone(),
+                                        &registry,
+                                        &agent_registry,
+                                        permissions.as_ref(),
+                                    ));
                                 }
                                 if let Some(provider) = active_provider.as_deref()
                                     && persisted_selection.as_ref().is_some_and(|(p, m)| {
@@ -1980,10 +1979,13 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                         )
                         && cfg.is_usable()
                     {
-                        backend = Box::new(
-                            LlmBackend::with_system_prompt(cfg, system_prompt.clone())
-                                .with_background(registry.clone()),
-                        );
+                        backend = Box::new(session_backend(
+                            cfg,
+                            system_prompt.clone(),
+                            &registry,
+                            &agent_registry,
+                            permissions.as_ref(),
+                        ));
                     }
                     app.set_thinking(thinking.clone());
                     active_vision = vision;
@@ -2025,18 +2027,53 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
             //    model-launched shell.
             Some(bg_event) = bg_rx.recv() => {
                 match bg_event {
-                    BgEvent::Started { id, command, description, from_model } => {
+                    BgEvent::Started { id, command, description, from_model, origin } => {
                         bg_clocks.insert(id.clone(), Instant::now());
-                        app.bg_started(&id, &command, description, from_model);
+                        app.bg_started(&id, &command, description, from_model, origin);
                     }
                     BgEvent::Output { id, chunk } => app.bg_output(&id, &chunk),
                     BgEvent::Exited { id, code, killed } => {
                         bg_clocks.remove(&id);
                         if let Some(completion) = app.bg_exited(&id, code, killed) {
-                            registry.post_notice(
-                                completion.context_text(),
-                                completion.from_model,
-                            );
+                            // A subagent-launched shell reports to its
+                            // launcher first: the note queues into that
+                            // agent's running loop (heard at its next round
+                            // via the pending-input seam) and is recorded on
+                            // its transcript so the session view shows what
+                            // the loop heard. A launcher that already
+                            // settled can't hear it — the shared board takes
+                            // the note instead, so the main turn (or the
+                            // idle follow-up turn) relays the outcome
+                            // (docs/agent-tool.md).
+                            let note = completion.context_text();
+                            let routed = completion.origin.as_ref().is_some_and(|origin| {
+                                agent_registry.queue_input(&origin.agent_id, &note)
+                            });
+                            if routed {
+                                if let Some(origin) = &completion.origin {
+                                    app.agent_chat(&origin.agent_id, &note);
+                                    // Inside that agent's session view the
+                                    // injected note commits in place (the
+                                    // AgentChat bubble's shape); any other
+                                    // view picks it up on its rebuild. Never
+                                    // under a covering permission modal
+                                    // (invariant 4 — the close repaint
+                                    // carries it).
+                                    if app.view == View::Conversation
+                                        && app.permission().is_none()
+                                        && app.agent_view.as_deref()
+                                            == Some(origin.agent_id.as_str())
+                                    {
+                                        let width = term.screen().width;
+                                        term.insert_before(ui::message_lines(
+                                            Role::User, &note, width,
+                                        ));
+                                        term.insert_before(vec![Line::default()]);
+                                    }
+                                }
+                            } else {
+                                registry.post_notice(note, completion.from_model);
+                            }
                             app.defer_bg_completion(completion);
                             if !app.turn_active() {
                                 inflight = dispatch_after_turn(
@@ -2544,6 +2581,31 @@ fn permissions_enabled() -> bool {
     }
 }
 
+/// Build a session [`LlmBackend`] with the **full shared attachment set** —
+/// the background-shell registry, the subagent registry (enabling the `agent`
+/// tool), and the permission gate. Every backend (re)build in the session
+/// goes through this: the initial pick and each rebind (a `/model` switch, a
+/// Shift+Tab thinking change, the startup probe) alike — a rebuild that
+/// attached only part of the set silently lost the `agent` tool and stopped
+/// asking permission for the rest of the session (the bug this helper fixes).
+fn session_backend(
+    cfg: ModelConfig,
+    system_prompt: Option<String>,
+    registry: &BackgroundRegistry,
+    agents: &AgentRegistry,
+    permissions: Option<&PermissionGate>,
+) -> LlmBackend {
+    let mut backend = LlmBackend::with_system_prompt(cfg, system_prompt)
+        .with_background(registry.clone())
+        .with_agents(agents.clone());
+    // The tool-permission gate (docs/permissions.md) — absent when
+    // `ALTER_ZERO_PERMISSIONS` is falsy, and every tool then runs unasked.
+    if let Some(gate) = permissions {
+        backend = backend.with_permissions(gate.clone());
+    }
+    backend
+}
+
 // The full set of knobs a backend needs; splitting them into a struct would
 // only add a shape the call sites have to build (the `live_height` precedent).
 #[allow(clippy::too_many_arguments)]
@@ -2574,15 +2636,13 @@ fn build_backend(
         )
         && cfg.is_usable()
     {
-        let mut backend = LlmBackend::with_system_prompt(cfg, system_prompt)
-            .with_background(registry.clone())
-            .with_agents(agents.clone());
-        // The tool-permission gate (docs/permissions.md) — absent when
-        // `ALTER_ZERO_PERMISSIONS` is falsy, and every tool then runs unasked.
-        if let Some(gate) = permissions {
-            backend = backend.with_permissions(gate.clone());
-        }
-        return Box::new(backend);
+        return Box::new(session_backend(
+            cfg,
+            system_prompt,
+            registry,
+            agents,
+            permissions,
+        ));
     }
     let dummy = DummyAi::with_startup_delay(startup_delay);
     Box::new(match permissions {
@@ -3542,8 +3602,13 @@ fn on_stream_event(
             // summary — the `● Context compacted` cell is the record.
             // dispatch_after_turn then snapshots + drains the queue like any
             // turn end, so a batch queued mid-compact goes out over the
-            // freshly compacted context.
-            if let Some(compaction) = app.finish_compact() {
+            // freshly compacted context. The turn's wall-clock rides the
+            // marker so the cell shows how long the compaction worked.
+            if let Some(compaction) = app.finish_compact(
+                clocks
+                    .turn_start
+                    .map_or(0, |start| start.elapsed().as_secs()),
+            ) {
                 if committing {
                     term.set_view_height(live_region_height(app, term.screen()));
                     term.insert_before(ui::compaction_lines(&compaction, width));
@@ -3912,7 +3977,7 @@ fn live_region_height(app: &App, screen: Rect) -> u16 {
     if let Some(height) = ui::key_onboarding_height(app, screen.height) {
         return height;
     }
-    if let Some(height) = ui::background_view_height(app, screen.height) {
+    if let Some(height) = ui::background_view_height(app, screen.width, screen.height) {
         return height;
     }
     let band = ui::band_rows(app);

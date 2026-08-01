@@ -150,14 +150,18 @@ pub(super) fn more_hint_line(hidden: usize) -> Line<'static> {
     ])
 }
 
-/// The live preview row for a running `!` shell command: `⎿ Running… (Ns)`. A
-/// shell turn hides the spinner status line entirely (see [`strip_has_status`]),
-/// so its running elapsed lives here instead — the boundary-supplied
-/// `elapsed` (whole seconds), like the status line's timer. Only shown live in
-/// [`render_live`]; the committed cell renders its output, not `Running…`. See
-/// `docs/shell-command.md`.
+/// The live preview row for a running `!` shell command: `⎿ Running…
+/// ({elapsed})`. A shell turn hides the spinner status line entirely (see
+/// [`strip_has_status`]), so its running elapsed lives here instead — the
+/// boundary-supplied `elapsed`, [`format_elapsed`]-humanized like the status
+/// line's timer (`1m 5s`, never a bare `65s`). Only shown live in
+/// [`render_live`]; the committed cell renders its output, not `Running…`.
+/// See `docs/shell-command.md`.
 pub(super) fn shell_running_line(elapsed: Duration) -> Line<'static> {
-    result_row(0, format!("{TOOL_RUNNING} ({}s)", elapsed.as_secs()))
+    result_row(
+        0,
+        format!("{TOOL_RUNNING} ({})", format_elapsed(elapsed.as_secs())),
+    )
 }
 
 /// The output of `tool` split into display lines (a single trailing blank from a
@@ -284,10 +288,12 @@ pub(super) fn running_command_lines(
     }
     if hidden > 0 {
         // A continuation row (index ≥ 1) so it indents under the content column;
-        // the `+N lines (Ns)` footer is meta, so it stays the dim `result_row`.
+        // the `+N lines ({elapsed})` footer is meta, so it stays the dim
+        // `result_row` — the elapsed humanized past a minute like every
+        // runtime display.
         lines.push(result_row(
             shown,
-            format!("+{hidden} lines ({}s)", elapsed.as_secs()),
+            format!("+{hidden} lines ({})", format_elapsed(elapsed.as_secs())),
         ));
     }
     lines

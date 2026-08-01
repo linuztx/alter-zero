@@ -12,7 +12,7 @@ user can **enter a subagent's own inline session and chat with it**.
 
 ● I'll spawn two agents...
 
-● 2 background agents launched (↓ to manage)
+● 2 background agents launched (↓ to manage · ctrl+o to expand)
    ├ Fetch current weather and time in Warsaw
    └ Fetch current weather and time in Manila
 
@@ -46,9 +46,21 @@ implemented — out of scope for this TUI.)
 A subagent's conversation starts fresh: the same persona/environment system
 prompt plus a subagent note (`prompts/subagent.md` — "your final message is
 returned to the caller"), then the `prompt` as the first user message. It runs
-`llm::agent::run_agent` with its own executor (no background registry — a
-subagent's `run_in_background` bash arg errors recoverably) and its own cancel
-token, on its own thread.
+`llm::agent::run_agent` with its own executor and its own cancel token, on its
+own thread. The executor carries the **shared background registry** too, so a
+subagent's `bash` can `run_in_background` like the main turn's — the shell
+joins the same list (stacking into the footer's `· N shells` count in every
+session view) attributed to its launcher via `BgOrigin { agent_id,
+agent_type }`: the ↓ manager's details page gains a `From: {type} agent`
+field, the completion notice reads `· from the {type} agent`, and the context
+note says `launched by the {type} agent`. Only the **Ctrl+B latch** stays
+main-only — a subagent's executor neither clears nor consumes it, so the
+handoff always belongs to the main turn's foreground command. A completion
+routes to its launcher first: the boundary queues the note into the launching
+agent's running loop (`AgentRegistry::queue_input` — heard at its next round
+via the pending-input seam); if the launcher already settled, the note falls
+to the shared board instead (the main turn / automatic-follow-up path), so
+someone always hears the outcome.
 
 ## Protocol
 
@@ -97,7 +109,8 @@ Background completion notices ride the **existing**
 agent hears a finished subagent within the same turn and
 `dispatch_after_turn`'s automatic follow-up turn covers idle completions with
 zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
-`● Agent "{description}" finished · 35s` (green) / `was stopped by user` /
+`● Agent "{description}" finished · {elapsed}` (green — the runtime
+`format_elapsed`-humanized, `6m 2s` past a minute) / `was stopped by user` /
 `failed` (red) — deferred to the same safe boundaries as shell notices
 (`App::pending agent completions`, settled beside `settle_bg_completions`).
 
@@ -163,28 +176,36 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   under the `(`) with a dim `Running…` row, or the sticky
   `⎿ {Name}: {detail}` line. The strip's `preview_rows`/`preview_lines`
   size and draw it like the tool queue.
-- **Committed cells**: `● {n} background agents launched (↓ to manage)` over
-  description-only tree rows (green); `● {n} agents finished (ctrl+o to
-  expand)` over the counted tree rows with `⎿ Done` / `⎿ Interrupted` /
-  `⎿ Failed` per agent (green when all done, red otherwise). A **lone**
-  agent commits as `● Agent({description})` over
-  `⎿ Done ({n} tool uses · {tokens} tokens · {s}s)` (or the red
-  `⎿ Interrupted`/`⎿ Failed`) and a dim `(ctrl+o to expand)` line — a lone
-  background launch keeps `⎿ Running in the background (↓ to manage)`.
+- **Committed cells**: `● {n} background agents launched (↓ to manage ·
+  ctrl+o to expand)` over description-only tree rows (green); `● {n} agents
+  finished (ctrl+o to expand)` over the counted tree rows with `⎿ Done` /
+  `⎿ Interrupted` / `⎿ Failed` per agent (green when all done, red
+  otherwise). A **lone** agent commits as `● Agent({description})` over
+  `⎿ Done ({n} tool uses · {tokens} tokens · {elapsed})` (the runtime
+  humanized) (or the red `⎿ Interrupted`/`⎿ Failed`) and a dim `(ctrl+o to
+  expand)` line — a lone background launch keeps `⎿ Running in the
+  background (↓ to manage · ctrl+o to expand)`, the ctrl+o half teaching
+  that the launch cell expands to the agent's prompt/tools/response in the
+  transcript.
 - **Ctrl+O**: each `AgentGroup` entry expands as its own cell —
   `● Agent({description})` / `⎿ Prompt:` (indented block) / the nested tool
   headers the agent ran (`Bash(curl …)`) / `⎿ Response:` (the final text) /
-  `⎿ Done ({n} tool uses · {tokens} tokens · {s}s)` or `⎿ Interrupted`. The
+  `⎿ Done ({n} tool uses · {tokens} tokens · {elapsed})` or `⎿ Interrupted`. The
   **live tail** walks `App::agent_group` + the roster the same way (activity
   `Running…`), and the `TranscriptSig` fingerprints the roster generation so
   a streaming agent invalidates the cache.
 - **Footer roster** (`agent_list_lines`): while agents exist, the live region
-  gains rows below the footer — a blank spacer, `  ● main`, then per agent
-  `  ◯ {type}  {description trimmed}… {elapsed}s · ↓ {tokens} tokens` (dim
-  type, live counters). The selection paints `❯ ` on the active row; a
-  finished agent's `◯` turns green/red for the linger window. The rows are a
-  fifth `live_layout` area, so `live_height`, the cursor seat, and the
-  overlays are untouched.
+  gains rows below the footer — a blank spacer, the main row, then per agent
+  `  {type}  {description trimmed}… {elapsed} · ↓ {tokens} tokens` (dim
+  type, live counters, the elapsed humanized). The **filled `●` + bright
+  bold row mark the session in view**: `● main` over dim `◯` agent rows
+  normally, and inside an agent's session view that agent's row takes the
+  `●` + highlight while main demotes to a dim `◯` (the user-report fix —
+  the highlight used to stick on `main`). The `❯ ` marker belongs to the
+  active ↑/↓ selection alone and leaves with it when Enter/Esc hand the keys
+  back to the composer. A finished agent's bullet turns green/red for the
+  linger window. The rows are a fifth `live_layout` area, so `live_height`,
+  the cursor seat, and the overlays are untouched.
 
 ## Invariant notes
 

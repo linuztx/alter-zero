@@ -1207,6 +1207,7 @@ fn a_completion_pending_at_turn_end_records_above_the_summary() {
         "python3 server.py",
         Some("API server".into()),
         true,
+        None,
     );
     let completion = app.bg_exited("bash_1", None, false).expect("it finished");
     app.defer_bg_completion(completion);

@@ -3,7 +3,8 @@
 use super::*;
 use crate::ui::agent::agent_group_full_lines;
 use crate::ui::theme::{
-    TOOL_FAIL_COLOR, TOOL_OK_COLOR, TOOL_PULSE_BRIGHT, TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
+    TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PULSE_BRIGHT,
+    TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
 };
 
 #[test]
@@ -45,7 +46,10 @@ fn agent_group_lines_render_the_background_launch() {
         timestamp: String::new(),
     };
     let texts: Vec<String> = agent_group_lines(&group, 80).iter().map(plain).collect();
-    assert_eq!(texts[0], "● 2 background agents launched (↓ to manage)");
+    assert_eq!(
+        texts[0],
+        "● 2 background agents launched (↓ to manage · ctrl+o to expand)"
+    );
     assert_eq!(texts[1], "   ├ Fetch Warsaw");
     assert_eq!(texts[2], "   └ Fetch Manila");
     assert_eq!(texts.len(), 3, "description-only rows, no status");
@@ -123,14 +127,52 @@ fn a_lone_committed_agent_renders_done_with_the_expand_hint() {
     stopped.agents[0].status = AgentStatus::Interrupted;
     let texts: Vec<String> = agent_group_lines(&stopped, 80).iter().map(plain).collect();
     assert_eq!(texts[1], "  ⎿  Interrupted");
-    // A lone background launch keeps the manage row instead.
+    // A lone background launch keeps the manage row instead — its trailing
+    // ctrl+o hint teaches that the launch cell expands in the transcript too.
     let mut launched = group;
     launched.background = true;
     launched.agents[0].status = AgentStatus::Running;
     let texts: Vec<String> = agent_group_lines(&launched, 80).iter().map(plain).collect();
     assert_eq!(texts[0], "● Agent(Fetch current weather in Warsaw)");
-    assert_eq!(texts[1], "  ⎿  Running in the background (↓ to manage)");
-    assert_eq!(texts.len(), 2, "no expand hint on the backgrounded cell");
+    assert_eq!(
+        texts[1],
+        "  ⎿  Running in the background (↓ to manage · ctrl+o to expand)"
+    );
+    assert_eq!(
+        texts.len(),
+        2,
+        "no separate expand row on the backgrounded cell"
+    );
+}
+
+#[test]
+fn agent_durations_humanize_past_a_minute() {
+    // The done clause and the completion notice both read `6m 2s`, never a
+    // bare `362s` — the status line's format_elapsed everywhere a runtime
+    // shows (the user-report fix).
+    use crate::agents::AgentStatus;
+    let mut entry = agent_entry("a1", "Count 1-100 with sleep", AgentStatus::Done);
+    entry.secs = 362;
+    let group = crate::app::AgentGroup {
+        background: false,
+        agents: vec![entry],
+        timestamp: String::new(),
+    };
+    let texts: Vec<String> = agent_group_lines(&group, 80).iter().map(plain).collect();
+    assert_eq!(texts[1], "  ⎿  Done (2 tool uses · 16.1k tokens · 6m 2s)");
+    let notice = crate::app::AgentNotice {
+        id: "a1".into(),
+        description: "Count 1-100 with sleep".into(),
+        status: AgentStatus::Done,
+        secs: 362,
+        result: String::new(),
+        timestamp: String::new(),
+    };
+    let texts: Vec<String> = agent_notice_lines(&notice, 100).iter().map(plain).collect();
+    assert_eq!(
+        texts[0],
+        "● Agent \"Count 1-100 with sleep\" finished · 6m 2s"
+    );
 }
 
 #[test]
@@ -341,9 +383,63 @@ fn the_agent_view_swaps_the_strip_to_the_agents_stream() {
         "the box rule carries the label: {all}"
     );
     assert!(
-        all.contains("❯ ◯ "),
-        "the roster marks the viewed agent: {all}"
+        all.contains("  ● general-purpose"),
+        "the roster's filled bullet marks the viewed agent: {all}"
     );
+    assert!(
+        all.contains("  ◯ main"),
+        "main demotes to the dim ring while an agent view is open: {all}"
+    );
+}
+
+#[test]
+fn the_roster_highlight_follows_the_viewed_session_and_the_marker_the_selection() {
+    // The user-report fix (docs/agent-tool.md): the filled `●` + bright row
+    // mark the SESSION IN VIEW — inside an agent's session view the highlight
+    // sits on that agent, not on `main` — and the `❯` belongs to the active
+    // ↑/↓ selection alone, leaving with the focus when Enter/Esc hand the
+    // keys back to the composer.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(
+        false,
+        &[spec("a1", "Count 1 to 100 with 1 second sleep", false)],
+    );
+    // Main session in view: `● main` white-bold, the agent row a dim `◯`,
+    // and — with no selection active — no `❯` anywhere.
+    let texts: Vec<String> = agent_list_lines(&app, 100).iter().map(plain).collect();
+    assert_eq!(texts[1], "  ● main");
+    assert!(texts[2].starts_with("  ◯ general-purpose"), "{}", texts[2]);
+    assert!(
+        !texts.iter().any(|t| t.contains('❯')),
+        "no selection marker at rest: {texts:?}"
+    );
+    // Inside the agent's session view the highlight moves with it.
+    app.open_agent_view("a1");
+    let lines = agent_list_lines(&app, 100);
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(texts[1], "  ◯ main", "main loses the filled bullet");
+    assert!(
+        texts[2].starts_with("  ● general-purpose"),
+        "the viewed agent gains it: {}",
+        texts[2]
+    );
+    assert!(
+        !texts.iter().any(|t| t.contains('❯')),
+        "entering the view returns the keys to the composer — the ❯ leaves \
+         with the selection: {texts:?}"
+    );
+    // The viewed row is the bright one; main is dim.
+    assert_eq!(lines[1].spans[1].style.fg, Some(TOOL_DIM_COLOR));
+    assert_eq!(lines[2].spans[1].style.fg, Some(TOOL_OUTPUT_COLOR));
+    // An active ↓ selection still shows its ❯ (and cyan) on the selected row
+    // (two ↓ from the empty composer: main, then the agent).
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    assert_eq!(app.agent_selection(), Some(1));
+    let texts: Vec<String> = agent_list_lines(&app, 100).iter().map(plain).collect();
+    assert!(texts[2].starts_with("❯ ● general-purpose"), "{}", texts[2]);
 }
 
 // ===== The Agent tool's cells + roster (docs/agent-tool.md) =====

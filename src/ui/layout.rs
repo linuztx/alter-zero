@@ -234,15 +234,14 @@ pub fn permission_height(app: &App, width: u16, term_height: u16) -> Option<u16>
 
 /// The inline live-region height when the ↓ background manager band is open,
 /// or `None` when it isn't (the caller falls back to [`live_height`]). Like
-/// the `/model` picker it **replaces** the composer. The band's rows never
-/// wrap (every line is truncated to the width), so the height is
-/// width-independent — it is simply the built line count
-/// ([`background_view_lines`]), clamped to the terminal. See
-/// `docs/background.md`.
+/// the `/model` picker it **replaces** the composer. The height is the built
+/// line count ([`background_view_lines`]) **at the terminal's real width** —
+/// the details page's Command field wraps, so the count is width-dependent —
+/// clamped to the terminal. See `docs/background.md`.
 #[must_use]
-pub fn background_view_height(app: &App, term_height: u16) -> Option<u16> {
+pub fn background_view_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.background_view.as_ref()?;
-    let rows = background_view_lines(app, 80).len() as u16;
+    let rows = background_view_lines(app, width).len() as u16;
     Some(rows.min(term_height.max(1)))
 }
 

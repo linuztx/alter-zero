@@ -29,6 +29,20 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::stream::CancelToken;
 
+/// Where a background shell was launched from, when not the main
+/// conversation: the launching **subagent**'s registry id (so the boundary
+/// can route the completion note back into that agent's running loop) and
+/// its type label (for display — the manager's `From:` field and the notice
+/// cell's ` · from the {type} agent` suffix). `None` everywhere = the main
+/// conversation, the pre-feature shape. See `docs/background.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BgOrigin {
+    /// The launching subagent's registry id (`a7k2m9x4q`).
+    pub agent_id: String,
+    /// Its subagent type (`general-purpose`, `explore`).
+    pub agent_type: String,
+}
+
 /// What the registry reports to the event loop about its shells.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BgEvent {
@@ -41,6 +55,9 @@ pub enum BgEvent {
         /// Whether the model launched it — its completion auto-starts a
         /// follow-up turn (`docs/background.md`).
         from_model: bool,
+        /// The launching subagent, when one did (`None` = the main
+        /// conversation).
+        origin: Option<BgOrigin>,
     },
     /// A chunk of a running shell's output (completed lines where possible;
     /// an adopted command's prior output arrives as one leading chunk).
@@ -251,6 +268,24 @@ impl BackgroundRegistry {
         description: Option<String>,
         from_model: bool,
     ) -> Result<LaunchedTask, String> {
+        self.launch_from(command, description, from_model, None)
+    }
+
+    /// [`launch`](BackgroundRegistry::launch) with the launching subagent
+    /// attributed: the `origin` rides the `Started` event into the shared
+    /// shell list, so every session view shows where the shell came from and
+    /// the boundary can route its completion note back to the launcher
+    /// (`docs/background.md`).
+    ///
+    /// # Errors
+    /// The spawn error text when the shell can't start.
+    pub fn launch_from(
+        &self,
+        command: &str,
+        description: Option<String>,
+        from_model: bool,
+        origin: Option<BgOrigin>,
+    ) -> Result<LaunchedTask, String> {
         // Group + terminal membership (and stdio) come from
         // `subprocess::spawn_detached_shell`: its own process group
         // (pgid == pid) so kill() reaps grandchildren too, and no controlling
@@ -277,6 +312,7 @@ impl BackgroundRegistry {
             command,
             description,
             from_model,
+            origin,
             child,
             chunk_rx,
             Vec::new(),
@@ -287,7 +323,9 @@ impl BackgroundRegistry {
     /// ownership of its child and pipe channel mid-run, replaying the output
     /// read so far (`prior`) into the task's stream + file so nothing is
     /// lost. The caller's own pipe-reader threads keep feeding `chunk_rx` and
-    /// exit at EOF on their own. See `docs/background.md`.
+    /// exit at EOF on their own. Always main-conversation-owned (only the
+    /// main turn's foreground runners poll the Ctrl+B latch — a subagent's
+    /// executor never hands off). See `docs/background.md`.
     pub fn adopt(
         &self,
         command: &str,
@@ -297,20 +335,30 @@ impl BackgroundRegistry {
         chunk_rx: mpsc::Receiver<Vec<u8>>,
         prior: Vec<u8>,
     ) -> LaunchedTask {
-        self.register(command, description, from_model, child, chunk_rx, prior)
+        self.register(
+            command,
+            description,
+            from_model,
+            None,
+            child,
+            chunk_rx,
+            prior,
+        )
     }
 
-    /// The shared tail of [`launch`]/[`adopt`]: allocate the id, open the
-    /// interim-output file, record the task, announce it, and hand the child
-    /// to its monitor thread.
+    /// The shared tail of [`launch_from`]/[`adopt`]: allocate the id, open
+    /// the interim-output file, record the task, announce it, and hand the
+    /// child to its monitor thread.
     ///
-    /// [`launch`]: BackgroundRegistry::launch
+    /// [`launch_from`]: BackgroundRegistry::launch_from
     /// [`adopt`]: BackgroundRegistry::adopt
+    #[allow(clippy::too_many_arguments)] // the launch facts, bundled once
     fn register(
         &self,
         command: &str,
         description: Option<String>,
         from_model: bool,
+        origin: Option<BgOrigin>,
         child: Child,
         chunk_rx: mpsc::Receiver<Vec<u8>>,
         prior: Vec<u8>,
@@ -348,6 +396,7 @@ impl BackgroundRegistry {
             command: command.to_string(),
             description,
             from_model,
+            origin,
         });
         if !prior.is_empty() {
             if let Some(f) = file.as_mut() {
@@ -678,6 +727,7 @@ mod tests {
                 command: "printf 'a\\nb\\n'".into(),
                 description: Some("print two lines".into()),
                 from_model: true,
+                origin: None,
             }
         );
         // Output (possibly split across chunks) then a clean exit.
@@ -701,6 +751,32 @@ mod tests {
         // The interim file got the full output too.
         let teed = std::fs::read_to_string(&task.output_path).expect("tee file exists");
         assert_eq!(teed, "a\nb\n");
+        std::fs::remove_file(&task.output_path).ok();
+    }
+
+    #[test]
+    fn launch_from_carries_the_subagent_origin_on_started() {
+        // A subagent's `run_in_background` launch attributes itself: the
+        // Started event carries the launcher's id + type so the shell list
+        // (and the completion routing) know where it came from
+        // (docs/background.md).
+        let (reg, mut rx) = registry();
+        let origin = BgOrigin {
+            agent_id: "a7k2m9x4q".into(),
+            agent_type: "general-purpose".into(),
+        };
+        let task = reg
+            .launch_from("true", Some("noop".into()), true, Some(origin.clone()))
+            .expect("launches");
+        match next(&mut rx) {
+            BgEvent::Started {
+                id, origin: got, ..
+            } => {
+                assert_eq!(id, task.id);
+                assert_eq!(got, Some(origin));
+            }
+            other => panic!("expected Started, got {other:?}"),
+        }
         std::fs::remove_file(&task.output_path).ok();
     }
 

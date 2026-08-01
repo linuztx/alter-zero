@@ -260,6 +260,35 @@ fn stop_agent_hides_the_row_and_a_background_stop_owes_a_notice() {
 }
 
 #[test]
+fn agent_notice_texts_humanize_the_runtime() {
+    // `362s` reads as `6m 2s` in both the rendered headline and the
+    // model-facing context note (the format_elapsed contract — the
+    // user-report fix); under a minute stays the bare seconds.
+    let notice = crate::app::AgentNotice {
+        id: "a1".into(),
+        description: "Count 1-100 with sleep".into(),
+        status: crate::agents::AgentStatus::Done,
+        secs: 362,
+        result: "done".into(),
+        timestamp: String::new(),
+    };
+    assert_eq!(
+        notice.headline(),
+        "Agent \"Count 1-100 with sleep\" finished · 6m 2s"
+    );
+    assert!(
+        notice.context_text().contains("completed in 6m 2s"),
+        "{}",
+        notice.context_text()
+    );
+    let quick = crate::app::AgentNotice { secs: 35, ..notice };
+    assert_eq!(
+        quick.headline(),
+        "Agent \"Count 1-100 with sleep\" finished · 35s"
+    );
+}
+
+#[test]
 fn the_agent_view_keeps_the_full_composer() {
     let mut app = App::new();
     app.begin_stream();

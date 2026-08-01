@@ -250,6 +250,9 @@ pub(super) const BG_FIELD_RUNTIME: &str = "Runtime:  ";
 
 pub(super) const BG_FIELD_COMMAND: &str = "Command:  ";
 
+/// The launcher field a subagent-launched shell adds (`From: {type} agent`).
+pub(super) const BG_FIELD_FROM: &str = "From:     ";
+
 /// The details page's output-box heading.
 pub(super) const BG_OUTPUT_LABEL: &str = "Output:";
 
@@ -1052,8 +1055,17 @@ pub(super) const AGENT_TREE_BLANK: &str = "  ";
 /// The status row's corner inside the tree (`⎿  Done`).
 pub(super) const AGENT_TREE_CORNER: &str = "⎿  ";
 
-/// The committed background-launch header's manager hint.
-pub(super) const AGENT_MANAGE_HINT: &str = " (↓ to manage)";
+/// The committed background-launch header's hint: the ↓ manager plus the
+/// Ctrl+O transcript, where the launch cell expands to each agent's prompt
+/// and tool headers (the user-requested pairing).
+pub(super) const AGENT_MANAGE_HINT: &str = " (↓ to manage · ctrl+o to expand)";
+
+/// The fixed `⎿` body of a **lone** agent cell resolved by a background
+/// launch — [`TOOL_BACKGROUNDED`]'s agent twin with the transcript hint
+/// added, since the cell expands in Ctrl+O to the agent's prompt, nested
+/// tool headers, and response.
+pub(super) const AGENT_BACKGROUNDED: &str =
+    "Running in the background (↓ to manage · ctrl+o to expand)";
 
 /// The Ctrl+O cell's `Prompt:` / `Response:` section labels (green bold,
 /// Claude Code's transcript look).

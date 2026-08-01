@@ -73,10 +73,13 @@ impl App {
     /// recorder watermark, and the checkpoint keys all stay valid), and clear
     /// the turn state with **no** `Done for Ns` summary. Returns the appended
     /// marker for the boundary to commit the `● Context compacted` cell, or
-    /// `None` when no compact turn was in flight. The context derivation
-    /// ([`crate::context::context_messages`]) applies the compacted shape from
-    /// the marker on. See `docs/compact.md`.
-    pub fn finish_compact(&mut self) -> Option<Compaction> {
+    /// `None` when no compact turn was in flight. `elapsed_secs` is the
+    /// summarization turn's wall-clock from the boundary's clock (the
+    /// [`take_turn_summary`](App::take_turn_summary) shape) — recorded on the
+    /// marker so the cell shows how long the compaction worked. The context
+    /// derivation ([`crate::context::context_messages`]) applies the
+    /// compacted shape from the marker on. See `docs/compact.md`.
+    pub fn finish_compact(&mut self, elapsed_secs: u64) -> Option<Compaction> {
         let summary = self.compact_buffer.take()?;
         self.streaming = None;
         self.status = None;
@@ -88,6 +91,7 @@ impl App {
             before: self.compact_before,
             after: 0,
             auto: self.compact_auto,
+            secs: elapsed_secs,
         };
         self.history
             .push(HistoryItem::Compaction(compaction.clone()));
@@ -194,4 +198,8 @@ pub struct Compaction {
     /// crossing the threshold (the cell appends `· auto`), vs the manual
     /// `/compact` command. See `docs/compact.md`.
     pub auto: bool,
+    /// How long the summarization turn ran, in whole seconds — the cell's
+    /// ` · {elapsed}` clause ([`format_elapsed`]-humanized). 0 = unknown (an
+    /// old rollout), hiding the clause.
+    pub secs: u64,
 }

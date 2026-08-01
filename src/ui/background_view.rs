@@ -3,7 +3,7 @@
 
 use super::model_view::model_rule;
 use super::theme::*;
-use super::wrap::{cols, truncate_cols};
+use super::wrap::{cols, truncate_cols, wrap_output};
 use super::*;
 
 /// A dim, `BG_INDENT`-inset single line for the ↓ manager band, truncated to
@@ -83,10 +83,15 @@ fn bg_list_lines(app: &App, selected: usize, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// The manager's **details** page for one shell: the status/runtime/command
-/// fields, the rounded output box tailing the last [`BG_OUTPUT_ROWS`] lines
-/// of the live output (streaming in as the shell runs), a `Showing N lines`
-/// caption, and the key hints. See `docs/background.md`.
+/// The manager's **details** page for one shell: the status/runtime (the
+/// humanized [`format_elapsed`], so a long-lived shell reads `6m 2s`) /
+/// origin/command fields — the command **word-wraps** across rows (spaces
+/// preserved, continuations aligned under the value column) so a long
+/// command line is never truncated away, and a subagent-launched shell shows
+/// a `From: {type} agent` field — the rounded output box tailing the last
+/// [`BG_OUTPUT_ROWS`] lines of the live output (streaming in as the shell
+/// runs), a `Showing N lines` caption, and the key hints. See
+/// `docs/background.md`.
 fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
     let dim = Style::new().fg(BG_DIM_COLOR);
     let value = Style::new().fg(AI_COLOR);
@@ -106,11 +111,40 @@ fn bg_details_lines(shell: &BackgroundShell, width: u16) -> Vec<Line<'static>> {
         bg_line(BG_DETAILS_TITLE, Style::new().fg(AI_COLOR), width),
         Line::default(),
         field(BG_FIELD_STATUS, BG_STATUS_RUNNING),
-        field(BG_FIELD_RUNTIME, &format!("{}s", shell.runtime.as_secs())),
-        field(BG_FIELD_COMMAND, &shell.command),
-        Line::default(),
-        bg_dim_line(BG_OUTPUT_LABEL, width),
+        field(BG_FIELD_RUNTIME, &format_elapsed(shell.runtime.as_secs())),
     ];
+    if let Some(origin) = &shell.origin {
+        lines.push(field(
+            BG_FIELD_FROM,
+            &format!("{} agent", origin.agent_type),
+        ));
+    }
+    // The command wraps instead of truncating (the user-requested fix): the
+    // label leads the first row and continuations align under the value
+    // column, `wrap_output` keeping the command's own spacing.
+    let cmd_room = (width as usize)
+        .saturating_sub(cols(BG_INDENT) + cols(BG_FIELD_COMMAND))
+        .max(1);
+    let rows = wrap_output(&shell.command, u16::try_from(cmd_room).unwrap_or(u16::MAX));
+    if rows.is_empty() {
+        lines.push(field(BG_FIELD_COMMAND, ""));
+    }
+    for (i, row) in rows.into_iter().enumerate() {
+        if i == 0 {
+            lines.push(Line::from(vec![
+                Span::raw(BG_INDENT),
+                Span::styled(BG_FIELD_COMMAND.to_string(), dim),
+                Span::styled(row, value),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(format!("{BG_INDENT}{}", " ".repeat(cols(BG_FIELD_COMMAND)))),
+                Span::styled(row, value),
+            ]));
+        }
+    }
+    lines.push(Line::default());
+    lines.push(bg_dim_line(BG_OUTPUT_LABEL, width));
     // The output box: rounded corners, one space of padding, the last
     // BG_OUTPUT_ROWS lines top-aligned over blank padding rows.
     let box_width = (width as usize).saturating_sub(cols(BG_INDENT) + 2).max(6);

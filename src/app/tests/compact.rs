@@ -60,7 +60,7 @@ fn begin_compact_starts_a_fixed_verb_turn_without_advancing_the_cycle() {
     );
     assert!(app.is_compacting());
     assert_eq!(app.status().expect("a compact status").verb, COMPACT_VERB);
-    app.finish_compact();
+    app.finish_compact(0);
     // The cycled per-turn verbs are unaffected: the next real turn still
     // picks the first (the verb-sequence contract).
     app.begin_stream();
@@ -79,7 +79,7 @@ fn compact_chunks_divert_to_the_buffer_and_never_render() {
         "the visible reply buffer stays empty — the summary is never rendered"
     );
     assert!(app.status().unwrap().tokens > 0, "the tally still ticks");
-    let compaction = app.finish_compact().expect("a marker");
+    let compaction = app.finish_compact(0).expect("a marker");
     assert_eq!(compaction.summary, "the summary text");
 }
 
@@ -90,7 +90,7 @@ fn finish_compact_appends_the_marker_and_ends_the_turn_without_a_summary() {
     let before = app.history.len();
     app.begin_compact(false);
     app.push_chunk("gist\n");
-    let compaction = app.finish_compact().expect("a marker");
+    let compaction = app.finish_compact(0).expect("a marker");
     assert_eq!(compaction.summary, "gist", "the streamed text, trimmed");
     assert_eq!(app.history.len(), before + 1);
     assert!(matches!(app.history.last(), Some(HistoryItem::Compaction(c)) if c.summary == "gist"));
@@ -110,7 +110,7 @@ fn a_compact_turn_with_no_streamed_text_still_appends_an_empty_marker() {
     let mut app = App::new();
     app.record_user_message("hello");
     app.begin_compact(false);
-    let compaction = app.finish_compact().expect("a marker");
+    let compaction = app.finish_compact(0).expect("a marker");
     assert_eq!(compaction.summary, "");
 }
 
@@ -306,7 +306,7 @@ fn auto_compact_is_blocked_after_a_compaction_until_the_next_turn() {
     app.set_context_window(Some(10)); // tiny: the bridge alone exceeds it
     app.begin_compact(false);
     app.push_chunk("a summary");
-    app.finish_compact();
+    app.finish_compact(0);
     assert!(
         app.context_used() > 9,
         "precondition: still over the threshold after compacting"
@@ -364,7 +364,7 @@ fn finish_compact_records_before_after_and_the_auto_tag() {
     app.end_turn(1);
     app.begin_compact(true);
     app.push_chunk("the gist");
-    let compaction = app.finish_compact().expect("a marker");
+    let compaction = app.finish_compact(0).expect("a marker");
     assert_eq!(
         compaction.before, 500,
         "the gauge value when compacting began"
@@ -387,7 +387,24 @@ fn a_manual_compaction_is_not_tagged_auto() {
     app.record_user_message("hi");
     app.begin_compact(false);
     app.push_chunk("s");
-    assert!(!app.finish_compact().expect("a marker").auto);
+    assert!(!app.finish_compact(0).expect("a marker").auto);
+}
+
+#[test]
+fn finish_compact_records_the_turns_elapsed_seconds() {
+    // The boundary passes the summarization turn's wall-clock (the
+    // take_turn_summary shape) so the cell can show `· 36s` — recorded on
+    // the marker and persisted with it (docs/compact.md).
+    let mut app = App::new();
+    app.record_user_message("hello");
+    app.begin_compact(false);
+    app.push_chunk("gist");
+    let compaction = app.finish_compact(36).expect("a marker");
+    assert_eq!(compaction.secs, 36);
+    assert!(matches!(
+        app.history.last(),
+        Some(HistoryItem::Compaction(recorded)) if recorded.secs == 36
+    ));
 }
 
 #[test]

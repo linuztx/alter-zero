@@ -531,7 +531,7 @@ fn the_manager_list_shows_title_count_rows_and_hints() {
     .iter()
     .enumerate()
     {
-        app.bg_started(&format!("bash_{}", i + 1), cmd, None, true);
+        app.bg_started(&format!("bash_{}", i + 1), cmd, None, true, None);
     }
     app.open_background_view();
     let texts: Vec<String> = background_view_lines(&app, 74)
@@ -555,13 +555,13 @@ fn the_manager_list_shows_title_count_rows_and_hints() {
     assert_eq!(texts[11], "─".repeat(74), "bottom rule");
     assert_eq!(texts.len(), 12);
     // The height helper reserves exactly the painted rows.
-    assert_eq!(background_view_height(&app, 40), Some(12));
+    assert_eq!(background_view_height(&app, 74, 40), Some(12));
 }
 
 #[test]
 fn the_manager_details_page_shows_fields_and_the_output_box() {
     let mut app = App::new();
-    app.bg_started("bash_1", "ping -c 120 x.com", None, true);
+    app.bg_started("bash_1", "ping -c 120 x.com", None, true, None);
     for i in 1..=12 {
         app.bg_output("bash_1", &format!("64 bytes from x.com seq={i}\n"));
     }
@@ -592,7 +592,80 @@ fn the_manager_details_page_shows_fields_and_the_output_box() {
         texts[23],
         "  ← to go back · Esc/Enter/Space to close · x to stop"
     );
-    assert_eq!(background_view_height(&app, 40), Some(texts.len() as u16));
+    assert_eq!(
+        background_view_height(&app, 74, 40),
+        Some(texts.len() as u16)
+    );
+}
+
+#[test]
+fn the_details_page_humanizes_the_runtime_and_wraps_the_command() {
+    // The user-report fixes (docs/background.md): a long-lived shell's
+    // Runtime reads `2m 3s` (never a bare `123s`), and a long command WRAPS
+    // under the value column instead of truncating away — the height helper
+    // counting the wrapped rows at the real width.
+    let mut app = App::new();
+    let long_cmd = "for i in $(seq 1 100); do echo tick $i; sleep 1; done \
+                    && echo all done at the end";
+    app.bg_started("b1", long_cmd, None, true, None);
+    app.set_background_runtime("b1", Duration::from_secs(123));
+    app.background_view = Some(BackgroundView::Details {
+        id: "b1".to_string(),
+    });
+    let texts: Vec<String> = background_view_lines(&app, 60)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert!(texts.iter().any(|t| t == "  Runtime:  2m 3s"), "{texts:?}");
+    let cmd_row = texts
+        .iter()
+        .position(|t| t.starts_with("  Command:  for i in"))
+        .expect("the command field leads its first row");
+    assert!(
+        texts[cmd_row + 1].starts_with("            "),
+        "continuations align under the value column: {:?}",
+        texts[cmd_row + 1]
+    );
+    let joined: String = texts.join(" ");
+    assert!(
+        joined.contains("all done at the end"),
+        "the tail of the command survives — nothing truncated: {texts:?}"
+    );
+    assert_eq!(
+        background_view_height(&app, 60, 40),
+        Some(texts.len() as u16),
+        "the reserved height counts the wrapped rows"
+    );
+}
+
+#[test]
+fn the_details_page_names_a_subagent_launcher() {
+    // A shell a subagent launched shows where it came from — the `From:`
+    // field (docs/agent-tool.md).
+    let mut app = App::new();
+    app.bg_started(
+        "b1",
+        "sleep 60",
+        None,
+        true,
+        Some(crate::background::BgOrigin {
+            agent_id: "a1".into(),
+            agent_type: "general-purpose".into(),
+        }),
+    );
+    app.background_view = Some(BackgroundView::Details {
+        id: "b1".to_string(),
+    });
+    let texts: Vec<String> = background_view_lines(&app, 74)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t == "  From:     general-purpose agent"),
+        "{texts:?}"
+    );
 }
 
 // --- terminal-size sweep ---

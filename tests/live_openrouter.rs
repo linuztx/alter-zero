@@ -1094,7 +1094,8 @@ fn live_killed_background_task_is_known_to_the_model_within_the_turn() {
                     command,
                     description,
                     from_model,
-                } => app.bg_started(&id, &command, description, from_model),
+                    origin,
+                } => app.bg_started(&id, &command, description, from_model, origin),
                 alter_zero::background::BgEvent::Output { id, chunk } => {
                     app.bg_output(&id, &chunk);
                 }
@@ -1283,5 +1284,93 @@ fn live_run_in_background_resolves_and_completes() {
     assert!(
         streamed.contains("live_bg_marker"),
         "the background output streamed: {streamed:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY; costs a few cents"]
+fn live_subagent_background_bash_stacks_into_the_shared_registry() {
+    // The subagent background path (docs/agent-tool.md): a foreground agent
+    // whose bash call sets run_in_background — the shell must join the SHARED
+    // registry attributed to its launcher (`BgOrigin`), the subagent's call
+    // resolving as ToolBackgrounded on the agent channel, and the process
+    // completing on the registry's own channel.
+    let (bg_tx, mut bg_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-agbg-{}", std::process::id()));
+    let registry = alter_zero::background::BackgroundRegistry::new(bg_tx, dir);
+    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent_registry = alter_zero::agents::AgentRegistry::new(agent_tx);
+    let backend = backend()
+        .with_background(registry)
+        .with_agents(agent_registry);
+
+    let prompt = "Use the agent tool exactly once: description \"Launch marker shell\", \
+                  subagent_type \"general-purpose\", run_in_background false, and this exact \
+                  prompt: \"Use the bash tool exactly once to run this command with \
+                  run_in_background set to true: sh -c 'echo live_subagent_bg_marker; sleep 1'. \
+                  After the tool result arrives, reply with just the task ID it reported.\" \
+                  When the agent returns, reply with one word: done.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+
+    // Drain the reply channel to the turn's end, capturing the announced
+    // agent id.
+    let mut launched_agent: Option<String> = None;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::AgentBatch { agents, .. } => {
+                launched_agent = agents.first().map(|spec| spec.id.clone());
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    let agent_id = launched_agent.expect("the round announced the agent");
+
+    // The subagent's own stream resolved its bash call as backgrounded.
+    let mut subagent_backgrounded = false;
+    while let Ok(alter_zero::agents::AgentEvent::Stream { id, event }) = agent_rx.try_recv() {
+        if id == agent_id && matches!(event, StreamEvent::ToolBackgrounded { .. }) {
+            subagent_backgrounded = true;
+        }
+    }
+    assert!(
+        subagent_backgrounded,
+        "the subagent's bash call resolved as ToolBackgrounded"
+    );
+
+    // The shared registry saw the launch — attributed to the subagent — and
+    // the shell ran to completion.
+    let mut origin_seen = false;
+    let mut streamed = String::new();
+    let mut exited = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while std::time::Instant::now() < deadline {
+        match bg_rx.try_recv() {
+            Ok(alter_zero::background::BgEvent::Started { origin, .. }) => {
+                let origin = origin.expect("a subagent launch carries its origin");
+                assert_eq!(origin.agent_id, agent_id, "attributed to the launcher");
+                assert_eq!(origin.agent_type, "general-purpose");
+                origin_seen = true;
+            }
+            Ok(alter_zero::background::BgEvent::Output { chunk, .. }) => streamed.push_str(&chunk),
+            Ok(alter_zero::background::BgEvent::Exited { code, killed, .. }) => {
+                assert_eq!(code, Some(0));
+                assert!(!killed);
+                exited = true;
+                break;
+            }
+            Err(_) => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    }
+    assert!(origin_seen, "the Started event carried the BgOrigin");
+    assert!(exited, "the subagent's background command completed");
+    assert!(
+        streamed.contains("live_subagent_bg_marker"),
+        "the shell's output streamed on the shared channel: {streamed:?}"
     );
 }
