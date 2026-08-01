@@ -260,6 +260,56 @@ fn stop_agent_hides_the_row_and_a_background_stop_owes_a_notice() {
 }
 
 #[test]
+fn up_from_the_main_row_steps_back_onto_the_shell_indicator() {
+    // The ↓ walk is composer → shell indicator → roster; ↑ must walk the
+    // same path back up (the user-requested flow): from `● main` it lands
+    // on the footer's lit `{n} shell` segment — not straight back in the
+    // textarea — and a second ↑ dismisses the indicator to the composer.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.bg_started("b1", "ping google.com", None, true, None);
+    // ↓ lights the indicator; a second ↓ enters the roster.
+    app.on_key(key(KeyCode::Down));
+    assert!(app.background_focused(), "↓ lights the shell indicator");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.agent_selection(), Some(0));
+    assert!(!app.background_focused());
+    // ↑ from `● main` steps back onto the indicator…
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.agent_selection(), None);
+    assert!(
+        app.background_focused(),
+        "↑ from the main row lands on the shell indicator"
+    );
+    // …and a second ↑ returns to the composer.
+    app.on_key(key(KeyCode::Up));
+    assert!(!app.background_focused());
+    assert_eq!(app.agent_selection(), None);
+}
+
+#[test]
+fn up_from_the_main_row_without_shells_returns_to_the_composer() {
+    // With no shell running there is no indicator to land on — ↑ from
+    // `● main` exits the selection to the composer, as before.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.agent_selection(),
+        Some(0),
+        "no shells: ↓ goes straight to the roster"
+    );
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.agent_selection(), None);
+    assert!(
+        !app.background_focused(),
+        "nothing to land on — back to the composer"
+    );
+}
+
+#[test]
 fn agent_notice_texts_humanize_the_runtime() {
     // `362s` reads as `6m 2s` in both the rendered headline and the
     // model-facing context note (the format_elapsed contract — the

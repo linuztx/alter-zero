@@ -557,9 +557,12 @@ impl App {
 
     /// Keys while the ↓ roster selection is active — the
     /// [`on_key_background_focus`](App::on_key_background_focus) contract:
-    /// ↑/↓ move (↑ from the `main` row exits), Enter views (`main` leaves an
-    /// open agent view / closes), `x` stops the selected agent, Esc/Ctrl+C
-    /// dismiss, and every other key clears the selection and falls through.
+    /// ↑/↓ move (↑ from the `main` row steps back onto the footer's shell
+    /// indicator when a shell is running — the reverse of ↓'s indicator →
+    /// roster walk — else exits to the composer), Enter views (`main`
+    /// leaves an open agent view / closes), `x` stops the selected agent,
+    /// Esc/Ctrl+C dismiss, and every other key clears the selection and
+    /// falls through.
     pub(super) fn on_key_agent_selection(&mut self, key: KeyEvent) -> Option<Action> {
         let selected = self.agent_selection?;
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
@@ -574,7 +577,14 @@ impl App {
             }
             KeyCode::Up => {
                 if selected == 0 {
+                    // Step back the way ↓ came: from `● main` onto the
+                    // footer's shell indicator when a shell is running (a
+                    // second ↑ there dismisses it to the composer), else
+                    // straight back to the composer.
                     self.agent_selection = None;
+                    if self.background_focusable() {
+                        self.background_focus = true;
+                    }
                 } else {
                     self.agent_selection = Some(selected - 1);
                 }

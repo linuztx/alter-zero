@@ -191,7 +191,10 @@ footer segment keeps its text *and* its dim styling:
   everything else (routed at the top of `on_key`, right after the band, so it
   also wins over the global Ctrl+C/Ctrl+O/Ctrl+D): a **plain Enter** opens the
   manager band, **Esc** / **↑** / **Ctrl+C** dismiss the highlight, a second
-  **↓** keeps it (there is only the one indicator). Every other key clears the
+  **↓** keeps it — or, with an agent roster listed, steps past the indicator
+  into the roster selection (`docs/agent-tool.md`; ↑ from the roster's
+  `● main` row steps back onto the indicator the same way, so ↑/↓ walk
+  composer ⇄ indicator ⇄ roster symmetrically). Every other key clears the
   highlight and then does its normal job — codex's reset-after-activity, the
   `?` band's rule — so typing dismisses it and types, the newline keys
   (Alt/Shift+Enter, Ctrl+J — `docs/shift-enter.md`) still insert their newline

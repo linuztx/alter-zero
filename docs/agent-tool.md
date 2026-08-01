@@ -130,11 +130,15 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   `● main` row, `i+1` the i-th agent. ↓ from an idle composer steps onto the
   **shell indicator first** when one is lit-able (the existing
   `background_focus`), a second ↓ moves into the roster; with no shells ↓
-  goes straight to the roster. ↑/↓ move, `Enter` views (main = leave the
-  view / close), `x` stops the selected agent, Esc dismisses, any other key
-  falls through after clearing (the `background_focus` contract). The footer
-  line swaps to the hint (`↑/↓ to select · Enter to view` on main,
-  `Enter to view · x to stop` on an agent) while the selection is active.
+  goes straight to the roster. ↑ walks the same path back: from the `● main`
+  row it lands on the shell indicator when a shell is running (a second ↑
+  there returns to the composer), else exits directly — so ↑/↓ traverse
+  composer ⇄ indicator ⇄ roster symmetrically. ↑/↓ move, `Enter` views
+  (main = leave the view / close), `x` stops the selected agent, Esc
+  dismisses, any other key falls through after clearing (the
+  `background_focus` contract). The footer line swaps to the hint
+  (`↑/↓ to select · Enter to view` on main, `Enter to view · x to stop` on
+  an agent) while the selection is active.
 - `App::agent_view: Option<String>` — the **agent session view**: the whole
   inline screen shows that agent's own conversation (banner + its transcript,
   Purge-rebuilt like `/clear`), the input box's top rule carries the agent's
