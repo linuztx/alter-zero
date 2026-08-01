@@ -128,41 +128,26 @@ pub struct InlineViewport {
     /// [`restore`]: InlineViewport::restore
     /// [`draw_overlay`]: InlineViewport::draw_overlay
     pending: Vec<Line<'static>>,
-    /// Conversation rows an inline **modal** ([`ui::region_is_modal`]) has
-    /// covered — the rows [`ui::repin_modal`] took by growing *upward* instead
-    /// of scrolling (`docs/permissions.md`).
+    /// Set when the screen moved **one-way while an inline modal was open**
+    /// ([`ui::region_is_modal`] — the tool-permission prompt): its growth (or
+    /// a commit under it) scrolled chat into the terminal's scrollback, or a
+    /// [`reflow`] rebuilt the screen beneath it (a mid-prompt resize's purge,
+    /// an overlay return whose prompt opened underneath).
     ///
-    /// They are the one thing on screen that is neither in the terminal's
-    /// scrollback nor still painted: a hole between what scrollback ends with
-    /// and what the region shows. Nothing is lost — every one of them is still
-    /// in `App`'s history — but the boundary has to know **how many** to give
-    /// back when the modal closes, or its repaint would either leave the hole
-    /// (the box floating above blank rows) or overshoot it and re-show rows
-    /// scrollback already has. Accumulated across frames (a modal that grows
-    /// twice covers twice), taken by [`take_modal_cover`], and cleared by
-    /// [`reflow`], whose rebuild leaves no hole behind.
-    ///
-    /// [`take_modal_cover`]: InlineViewport::take_modal_cover
-    /// [`reflow`]: InlineViewport::reflow
-    modal_cover: u16,
-    /// Set when a [`reflow`] rebuilt the screen **while an inline modal was
-    /// open** ([`ui::region_is_modal`]) — a mid-prompt resize's purge, or an
-    /// overlay return whose prompt opened underneath (Ctrl+O / Ctrl+D up when
-    /// the permission request arrived).
-    ///
-    /// The rebuild clears `modal_cover` and seats the prompt below the rebuilt
-    /// tail: the prompt now holds its rows by the rebuild's real (one-way)
-    /// write, so the close will find no cover to hand back — and its plain
-    /// shrink would strand the box above the rows it vacates (the "blank band
-    /// under the composer" bug, in both its resize and its Ctrl+O-first
-    /// shapes). The loop reads this ([`modal_rebuilt`], consumed by
-    /// [`take_modal_rebuilt`]) on the first draw after the prompt closes and
-    /// purge-rebuilds instead (`docs/permissions.md`).
+    /// A prompt grows like any other region — the chat above it scrolls into
+    /// **real** scrollback, so the user can scroll up and read while it asks
+    /// (`docs/permissions.md`). But a scroll is one-way: the collapse back to
+    /// the composer cannot refill the rows it vacates, and a plain shrink
+    /// would strand the box above a band of blank rows. The loop reads this
+    /// ([`modal_scrolled`], consumed by [`take_modal_scrolled`]) on the first
+    /// draw after the prompt closes and answers with a purge rebuild — box
+    /// flush at the bottom, scrollback rebuilt from history, nothing lost or
+    /// doubled.
     ///
     /// [`reflow`]: InlineViewport::reflow
-    /// [`modal_rebuilt`]: InlineViewport::modal_rebuilt
-    /// [`take_modal_rebuilt`]: InlineViewport::take_modal_rebuilt
-    modal_rebuilt: bool,
+    /// [`modal_scrolled`]: InlineViewport::modal_scrolled
+    /// [`take_modal_scrolled`]: InlineViewport::take_modal_scrolled
+    modal_scrolled: bool,
     /// Whether [`init`] pushed the kitty keyboard-enhancement flags (so the
     /// terminal reports Shift+Enter distinctly from Enter — see
     /// `docs/shift-enter.md`). Recorded so [`restore`] and the panic hook only
@@ -251,8 +236,7 @@ impl InlineViewport {
             view,
             prev: None,
             pending: Vec::new(),
-            modal_cover: 0,
-            modal_rebuilt: false,
+            modal_scrolled: false,
             keyboard_enhanced,
         })
     }
@@ -266,58 +250,28 @@ impl InlineViewport {
 
     /// The live region's top row — equivalently, how many screen rows above it
     /// hold committed conversation (the region always sits directly below the
-    /// last committed row). The boundary's half of the modal-close window
-    /// arithmetic; see [`take_modal_cover`].
-    ///
-    /// [`take_modal_cover`]: InlineViewport::take_modal_cover
+    /// last committed row).
     #[must_use]
     pub const fn view_top(&self) -> u16 {
         self.view.y
     }
 
-    /// Take the rows an inline modal covered since the last repaint (`0` when
-    /// none did), clearing the count.
-    ///
-    /// The caller repaints exactly `view_top() + cover + (rows recorded while
-    /// the modal was up)` rows of the conversation, which is precisely the
-    /// stretch running from where the terminal's scrollback ends to the end of
-    /// history: the screen comes back whole, with no row shown twice. See
-    /// `modal_cover` and `docs/permissions.md`.
-    pub const fn take_modal_cover(&mut self) -> u16 {
-        std::mem::replace(&mut self.modal_cover, 0)
-    }
-
-    /// The rows an inline modal is covering right now, **without** clearing
-    /// the count ([`take_modal_cover`] is the close's consuming read). With
-    /// [`view_top`] it reconstructs how many conversation rows the screen held
-    /// before any covering — the measure `main.rs::draw` sizes a modal by, so
-    /// a follow-up prompt in the same batch (opened before the previous one's
-    /// close was repaired, `view_top` already 0) still spans the screen and
-    /// replays the tail instead of shrinking against the top.
-    ///
-    /// [`take_modal_cover`]: InlineViewport::take_modal_cover
-    /// [`view_top`]: InlineViewport::view_top
-    pub const fn modal_cover(&self) -> u16 {
-        self.modal_cover
-    }
-
-    /// Whether a [`reflow`] rebuilt the screen while an inline modal was open
-    /// (see `modal_rebuilt`) — the prompt's covering was reset, so its close
-    /// must purge-rebuild rather than hand a cover back. The loop's draw tick
-    /// reads this to route the close; [`take_modal_rebuilt`] is the consuming
+    /// Whether the screen moved one-way while an inline modal was open (see
+    /// `modal_scrolled`) — the prompt's plain collapse cannot restore what
+    /// moved, so its close must purge-rebuild. The loop's draw tick reads
+    /// this to route the close; [`take_modal_scrolled`] is the consuming
     /// read.
     ///
-    /// [`reflow`]: InlineViewport::reflow
-    /// [`take_modal_rebuilt`]: InlineViewport::take_modal_rebuilt
-    pub const fn modal_rebuilt(&self) -> bool {
-        self.modal_rebuilt
+    /// [`take_modal_scrolled`]: InlineViewport::take_modal_scrolled
+    pub const fn modal_scrolled(&self) -> bool {
+        self.modal_scrolled
     }
 
-    /// Take the rebuilt-under-a-modal note (see `modal_rebuilt`), clearing it.
-    /// Called by the close's purge rebuild — and by the paths that make it
-    /// moot (a purge regenerates everything the covering tracked).
-    pub const fn take_modal_rebuilt(&mut self) -> bool {
-        std::mem::replace(&mut self.modal_rebuilt, false)
+    /// Take the moved-under-a-modal note (see `modal_scrolled`), clearing it.
+    /// Called by the close's purge rebuild, which regenerates everything the
+    /// note stood for.
+    pub const fn take_modal_scrolled(&mut self) -> bool {
+        std::mem::replace(&mut self.modal_scrolled, false)
     }
 
     /// Repaint the live region at the new `height`, keeping it **content-anchored**
@@ -335,11 +289,11 @@ impl InlineViewport {
     ///
     /// The box grows in place until it reaches the screen bottom, at which point
     /// it scrolls the chat up into scrollback; a shrink blanks the rows it vacates.
-    /// An inline **modal** ([`ui::region_is_modal`] — the tool-permission prompt)
-    /// is the exception: it never scrolls, covering the conversation instead
-    /// ([`ui::repin_modal`]), because a scroll is one-way and the collapse back
-    /// to the composer could never fill the rows it vacated — the boundary
-    /// repaints what the modal covered when it closes (`docs/permissions.md`).
+    /// A tool-permission prompt ([`ui::region_is_modal`]) grows the same way —
+    /// its scroll keeps the conversation reachable in real scrollback while it
+    /// asks — but the one-way move is noted (`modal_scrolled`) so the prompt's
+    /// close can purge-rebuild instead of shrinking over the rows it can't
+    /// refill (`docs/permissions.md`).
     ///
     /// [`enter_overlay`]: InlineViewport::enter_overlay
     /// [`insert_before`]: InlineViewport::insert_before
@@ -390,15 +344,6 @@ impl InlineViewport {
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<Buffer> {
-        // An inline **modal** — the tool-permission prompt, the one live view
-        // that can be as tall as the terminal — re-pins by a different rule:
-        // it covers the conversation instead of scrolling it away
-        // (`ui::repin_modal`, `docs/permissions.md`). Everything below keys off
-        // this: a modal frame reserves the *pre-modal* height for its pending
-        // flush too, so lines committed in the frame the prompt opens land
-        // above the composer's old seat — the way they would have without it —
-        // and the prompt then grows upward over the result.
-        let modal = ui::region_is_modal(app);
         // The pending flush reserves `self.view.height` rows *below* the lines
         // it writes ([`write_above_chunk`]'s scroll plan) — sync the tracked
         // height to THIS frame's height first. A commit that lands in the same
@@ -411,39 +356,26 @@ impl InlineViewport {
         // flush, not a mid-stream collapse). Gated on pending lines: without a
         // flush the height change must flow through `ui::repin` below, whose
         // shrink is what blanks the rows an in-place shrink vacates.
-        if !self.pending.is_empty() && !modal {
+        let flushing = !self.pending.is_empty();
+        if flushing {
             self.view.height = height;
         }
-        // …but a modal that has **already covered** conversation rows holds the
-        // queue instead of flushing it. This is the back-to-back-prompt gap
-        // (`docs/permissions.md`): a batch call resolves, its cell commits, and
-        // the *next* call's prompt opens before any draw repaired the first
-        // one's covering — so the tracked viewport is still the stale
-        // full-height modal rect, and `write_above`'s reserve-below scroll plan
-        // would push real rows into scrollback (the one-way move covering
-        // exists to avoid) and paint the cell over the covered stretch. Held,
-        // the lines cost nothing: they are recorded in history, the close
-        // window's `held` term counts them, and the close repaint (a [`reflow`],
-        // which drops the queue and regenerates from history) writes them
-        // exactly once. A prompt that has covered nothing keeps the ordinary
-        // open-frame flush above.
-        //
-        // [`reflow`]: InlineViewport::reflow
-        if !(modal && self.modal_cover > 0) {
-            self.flush_pending()?;
+        self.flush_pending()?;
+        let repin = ui::repin(self.view.y, self.view.height, height, self.screen.height);
+        // A tool-permission prompt grows by this same rule — the chat above
+        // it scrolls into the terminal's **real** scrollback, so the user can
+        // scroll up and read while it asks (`docs/permissions.md`; the
+        // covering geometry this replaces held those rows in no buffer at
+        // all, which read as "terminal scroll is disabled" — worst in kitty).
+        // But the move is one-way: the collapse back to the composer cannot
+        // refill what a grow scrolled off (or what a commit under the open
+        // prompt scrolled — a batch's cell resolving between back-to-back
+        // prompts), so note it and the loop answers the prompt's close with a
+        // purge rebuild instead of the plain shrink that stranded the box
+        // over a blank band.
+        if ui::region_is_modal(app) && (flushing || repin.scroll_up > 0) {
+            self.modal_scrolled = true;
         }
-        let repin = if modal {
-            let repin = ui::repin_modal(self.view.y, self.view.height, height, self.screen.height);
-            // Every row it took by growing upward is a conversation row now
-            // shown by nobody — count it so the close can hand it back
-            // (`modal_cover`).
-            self.modal_cover = self
-                .modal_cover
-                .saturating_add(self.view.y.saturating_sub(repin.top));
-            repin
-        } else {
-            ui::repin(self.view.y, self.view.height, height, self.screen.height)
-        };
         self.view = Rect::new(0, repin.top, self.screen.width, height);
         let mut buf = Buffer::empty(self.view);
         render(self.view, &mut buf);
@@ -678,18 +610,13 @@ impl InlineViewport {
     ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
         self.pending.clear();
-        // The rebuild below writes the conversation straight onto the screen,
-        // so whatever a modal had covered is either painted again or scrolled
-        // into scrollback — either way there is no hole left to hand back.
-        self.modal_cover = 0;
-        // …and a modal open right now takes its rows by this rebuild's real
-        // write instead of by covering — note it (`modal_rebuilt`), because
-        // the close can no longer be handed a cover: it must purge-rebuild or
-        // its collapse strands the box above the rows it vacates. Recording
-        // this HERE, at the one place every full rebuild goes through, is
-        // what keeps every rebuild source honest — the resize purge and the
+        // A modal open right now takes its seat by this rebuild's real write —
+        // note it (`modal_scrolled`): the close must purge-rebuild or its
+        // collapse strands the box above the rows it vacates. Recording this
+        // HERE, at the one place every full rebuild goes through, is what
+        // keeps every rebuild source honest — the resize purge and the
         // Ctrl+O / Ctrl+D / agent-view returns alike (`docs/permissions.md`).
-        self.modal_rebuilt |= ui::region_is_modal(app);
+        self.modal_scrolled |= ui::region_is_modal(app);
         queue!(self.backend, BeginSynchronizedUpdate)?;
         // Hide the cursor before the rebuild (see [`draw`]): a reflow homes the
         // cursor to the top (`clear_scrollback_and_screen`'s `ESC[H`, or

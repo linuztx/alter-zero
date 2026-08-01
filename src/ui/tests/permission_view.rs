@@ -668,85 +668,20 @@ fn an_idle_prompt_has_no_context_rows() {
     assert_eq!(rows(&app, 70, 40)[0], "─".repeat(70));
 }
 
-// --- the conversation replay above a covering prompt (docs/permissions.md) ---
+// --- the prompt rendered plain (docs/permissions.md) ---
 //
-// Once the prompt has to take conversation rows (a full screen), the modal
-// spans the whole terminal and the boundary hands the render the conversation
-// tail: the newest rows repaint above the live cells + prompt, so opening a
-// prompt never hides the messages the user just read — the Claude Code look.
-
-/// A caller-built conversation tail of `n` numbered rows.
-fn fake_tail(n: usize) -> Vec<Line<'static>> {
-    (0..n)
-        .map(|i| Line::from(format!("tail row {i}")))
-        .collect()
-}
+// The region is sized to exactly the prompt's rows, and the conversation
+// above it is the *real* screen — the prompt grew by scrolling like any other
+// region, so nothing needs replaying into the render.
 
 #[test]
-fn the_conversation_tail_replays_above_a_covering_prompt() {
+fn the_render_paints_exactly_the_prompt_rows() {
     let app = pending_write();
     let p = permission_height(&app, 70, 40).unwrap();
-    assert!(p < 40, "the prompt leaves room for a replay at this size");
-    let tail = fake_tail(50);
-    let area = Rect::new(0, 0, 70, 40);
-    let mut buf = Buffer::empty(area);
-    render_permission_with_context(area, &mut buf, &app, &tail);
-    let budget = usize::from(40 - p);
-    assert_eq!(
-        row(&buf, 0, 70).trim_end(),
-        format!("tail row {}", 50 - budget),
-        "the newest tail rows that fit, oldest first"
-    );
-    assert_eq!(
-        row(&buf, (40 - p) - 1, 70).trim_end(),
-        "tail row 49",
-        "…down to the very newest, hugging the prompt"
-    );
-    assert_eq!(
-        row(&buf, 40 - p, 70).trim_end(),
-        "● Write(tt.py)",
-        "the prompt block sits right below the replay"
-    );
-    assert_eq!(
-        row(&buf, 39, 70).trim_end(),
-        "─".repeat(70),
-        "…flush at the bottom"
-    );
-}
-
-#[test]
-fn a_short_tail_pads_above_so_the_prompt_stays_flush() {
-    let app = pending_write();
-    let p = permission_height(&app, 70, 40).unwrap();
-    let tail = fake_tail(1);
-    let area = Rect::new(0, 0, 70, 40);
-    let mut buf = Buffer::empty(area);
-    render_permission_with_context(area, &mut buf, &app, &tail);
-    assert_eq!(row(&buf, 0, 70).trim_end(), "", "blank padding above");
-    assert_eq!(
-        row(&buf, (40 - p) - 1, 70).trim_end(),
-        "tail row 0",
-        "the short tail hugs the prompt"
-    );
-    assert_eq!(row(&buf, 39, 70).trim_end(), "─".repeat(70));
-}
-
-#[test]
-fn a_region_sized_to_the_prompt_shows_no_replay() {
-    // The prompt fits below the conversation (an early-session screen): the
-    // region is exactly the prompt, and the tail the caller supplied has no
-    // rows to fill — nothing of it may paint over the prompt.
-    let app = pending_write();
-    let p = permission_height(&app, 70, 40).unwrap();
-    let tail = vec![Line::from("must not show")];
     let area = Rect::new(0, 0, 70, p);
     let mut buf = Buffer::empty(area);
-    render_permission_with_context(area, &mut buf, &app, &tail);
+    render_permission(area, &mut buf, &app);
     let painted: Vec<String> = (0..p).map(|y| row(&buf, y, 70)).collect();
-    assert!(
-        !painted.iter().any(|l| l.contains("must not show")),
-        "{painted:?}"
-    );
     assert_eq!(painted[0].trim_end(), "● Write(tt.py)");
     assert_eq!(painted.last().unwrap().trim_end(), &"─".repeat(70));
 }

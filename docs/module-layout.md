@@ -53,7 +53,7 @@ widened for the split.
 | `mod.rs` | The crate imports and the facade (`mod` + `pub use`). |
 | `theme.rs` | **Every** styling and live-region-geometry constant. |
 | `wrap.rs` | `cols` and the wrapping/truncating primitives. |
-| `layout.rs` | `live_height`, `repin` (plus `region_is_modal`/`repin_modal`, the covering re-pin a permission prompt gets — `docs/permissions.md`), `cursor_position`/`cursor_visible` (where the hardware cursor rests, and whether the frame shows one at all), `input_box` — the geometry policy `term.rs` acts on. |
+| `layout.rs` | `live_height`, `repin` (plus `region_is_modal` — the predicate `term.rs` reads to note a permission prompt's one-way scrolls for its close's purge rebuild, `docs/permissions.md`), `cursor_position`/`cursor_visible` (where the hardware cursor rests, and whether the frame shows one at all), `input_box` — the geometry policy `term.rs` acts on. |
 | `assistant.rs` | The markdown/code renderer (`AssistantRenderer`, `assistant_lines`). |
 | `inline.rs` | Inline-span rendering: `**bold**`, `` `code` ``, links, and the wrap that keeps spans intact across a row. |
 | `table.rs` | GFM table sizing, borders, and the narrow-terminal record fallback. |

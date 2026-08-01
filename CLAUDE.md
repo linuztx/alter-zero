@@ -237,32 +237,27 @@ with no content) and push the options off the bottom, so `permission_lines`
 reserves its fixed rows plus a body floor (`PERMISSION_MIN_BODY_ROWS`, the
 peek size; a shorter body reserves only its own height) and collapses the
 cells that don't fit into one dim `… +N more waiting` row, the first chunk —
-the asked-about call, or the tree that asked — never dropped); being the one
-live view that can fill the terminal it also re-pins
-differently — `ui::repin_modal` **covers** the conversation (growing upward,
-never scrolling, commits held back meanwhile) and a **covering prompt replays
-the conversation above itself**: the moment it would need a conversation row,
-`ui::modal_region_height` spans the region to the whole screen (its
-rows-above measure `view_top + modal_cover`, so a batch's follow-up prompt —
-opened before the previous one's covering was repaired — stays spanned) and
-`main.rs::draw` hands `ui::render_permission_with_context` the
-`repaint_tail`-rebuilt, cached (`ModalReplay`) tail to paint above the cells +
-prompt, so a full screen's newest messages stay visible instead of vanishing
-under the modal; a batch's **back-to-back prompts** (the next request landing
-in the same frame gap as the previous cell's commit) hold that pending commit
-at the boundary — `term::paint_live` skips the flush under an
-already-covering modal, the close's reflow regenerating it from history — so
-nothing scrolls away mid-cover; and the close repaints exactly
-what it covered, so the box comes back flush at the bottom instead of floating
-over a blank band (invariant 3, `smoke.sh` Phase 59); a rebuild that runs
-**while the prompt is open** — a mid-prompt resize's purge, or an overlay
-return whose prompt opened underneath (Ctrl+O/Ctrl+D up when the request
-arrived) — resets that covering and notes it on the viewport itself
-(`term.reflow` sets the modal-rebuilt flag at the one place every rebuild
-goes through), so the first draw after the prompt closes purge-rebuilds too
-(`InlineViewport::take_modal_rebuilt`, `smoke.sh` Phases 60/62) instead of
-stranding the box above the rows the collapse vacates; it **stashes the
-composer draft**
+the asked-about call, or the tree that asked — never dropped); the region
+**grows like any other** (ordinary `ui::repin`, invariant 3): the chat above
+the prompt scrolls into the terminal's **real scrollback**, so the newest
+messages sit right above the question — Claude Code's picture — and the user
+can scroll the terminal up and re-read anything while it asks (the retired
+covering geometry held the newest screenful in *no* buffer, which read as
+"terminal scroll is disabled while it asks", worst in kitty — `smoke.sh`
+Phase 58); commits flow under it too, so a batch's **back-to-back prompts**
+(the next request landing in the same frame gap as the previous cell's
+commit) just scroll the resolved cell in above the still-open prompt, visible
+at once and exactly once (`smoke.sh` Phase 59); the scrolls are one-way
+though, so every such move under an open prompt — its growth, a commit
+beneath it, or a rebuild while it was open (a mid-prompt resize's purge, an
+overlay return whose prompt opened underneath — Ctrl+O/Ctrl+D up when the
+request arrived) — is noted on the viewport itself (`term::paint_live` and
+`term.reflow` set the modal-scrolled flag, the two places one-way moves
+happen), and the first draw after the prompt closes consumes it with a
+**purge rebuild** (`InlineViewport::take_modal_scrolled`, `smoke.sh` Phases
+58/60/62) — box flush at the bottom, scrollback rebuilt from history, nothing
+lost or doubled — instead of a plain shrink stranding the box above the rows
+the collapse vacates; it **stashes the composer draft**
 and hands it straight back on close so a request landing mid-sentence costs
 nothing, Tab swaps the options for that same textarea as an amend field whose
 Enter rejects *with* the typed feedback, Esc cancels (reject + the ordinary
@@ -491,21 +486,18 @@ of bug:
    the screen *up* (oldest chat into scrollback) once the box would overflow the
    bottom; a shrink blanks the rows it vacates (the decision is the pure
    `ui::repin`). Never force it to `screen.height - height` — that reintroduces
-   the "box jumps to the bottom" bug. **One view re-pins differently: an inline
-   *modal*** — the tool-permission prompt, `ui::region_is_modal` — which can be
-   as tall as the terminal. `ui::repin_modal` takes the free rows below and then
-   grows **upward, covering** the conversation, and **never scrolls**: a scroll
-   is one-way, so the collapse back to the composer had nothing to fill the rows
-   it vacated and left the box floating over a blank band. Covering is
-   reversible — the hidden rows are still in `history` — so `InlineViewport`
-   counts them (`take_modal_cover`) and the close repaints *exactly* the stretch
-   the terminal is missing (`main.rs::modal_close_window` →
-   `repaint_conversation_within`): view top + covered + what was recorded while
-   the prompt was up, which runs from where scrollback ends to the end of
-   history, so no row is shown twice or lost. Repainting *while* the prompt is
-   open would undo it (the rebuild scrolls the overflow away for real), so the
-   geometry deliberately doesn't refresh mid-prompt (`docs/permissions.md`,
-   `smoke.sh` Phase 58). The streaming strip (preview + gap + status
+   the "box jumps to the bottom" bug. **One view closes differently: an inline
+   *modal*** — the tool-permission prompt, `ui::region_is_modal`, the one region
+   that can be as tall as the terminal. It *grows* by the same `ui::repin` as
+   everything else — the chat it displaces scrolls into the terminal's real
+   scrollback, staying reachable while it asks (`docs/permissions.md`) — but
+   those scrolls are one-way, so a plain shrink at the close would strand the
+   box above the rows it vacates. `InlineViewport` notes every one-way move
+   under an open prompt (`modal_scrolled`, set by `paint_live`'s scrolls and by
+   any `reflow` run while the prompt is open), and the first draw after the
+   prompt closes consumes the note with a purge rebuild — box flush at the
+   bottom, scrollback rebuilt from history, nothing lost or doubled
+   (`smoke.sh` Phases 58/60/62). The streaming strip (preview + gap + status
    + gap) sits *above* the box, so it grows the region upward; when a reply ends the
    strip's rows become the committed final line + spacer + the `Done for Ns` summary
    and the box must **stay put**, so `StreamDone`/`Error` call `term::set_view_height`
@@ -619,11 +611,11 @@ of bug:
    draining reply events into `App` but does *not* commit to scrollback** (that
    would write into the alt screen); on return, `repaint_conversation` rebuilds the
    inline view from `history`. Never commit to scrollback while
-   `app.view == View::ToolOutput` — nor while an agent session view or a
-   **permission prompt** covers the inline screen (the one gate,
-   `main.rs::commits_allowed`: a commit under the modal would scroll its rows
-   into scrollback, the one-way move invariant 3's covering exists to avoid;
-   the close repaint carries what was recorded meanwhile —
+   `app.view == View::ToolOutput` — nor while an agent session view
+   covers the inline screen (the one gate, `main.rs::commits_allowed`; an open
+   permission prompt is deliberately *not* on the list — a commit beneath it
+   scrolls in above the region, visible at once, and the scroll it causes is
+   one of the one-way moves the close's purge rebuild answers —
    `docs/permissions.md`). **Quitting from the overlay is also a return**:
    the `Action::Quit` arm must `exit_overlay` *then* `repaint_conversation` + `draw`
    before breaking — otherwise `restore` lands on the stale streaming strip a turn

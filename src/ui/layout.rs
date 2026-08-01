@@ -302,82 +302,24 @@ pub fn restore_cursor_row(view_top: u16, view_height: u16, screen_height: u16) -
     (below < screen_height).then_some(below)
 }
 
-/// Whether the live region is an **inline modal**: a view that covers the
-/// conversation rather than growing the region past it.
+/// Whether the live region is an **inline modal** — the tool-permission
+/// prompt, the one inline view that can be as tall as the whole terminal and
+/// whose close needs special care (`docs/permissions.md`).
 ///
-/// Only the tool-permission prompt is one (`docs/permissions.md`). It is the
-/// single inline view that can be as tall as the whole terminal, and the one
-/// the ordinary [`repin`] serves badly: growing to full height from a
-/// bottom-seated composer scrolls a screenful of chat into scrollback, where
-/// the collapse back to the composer can never get it back — leaving the box
-/// stranded mid-screen with a band of blank rows beneath it. Every other band
-/// and picker is short enough that the ordinary growth is right.
+/// The prompt grows through the ordinary [`repin`] like every other region —
+/// the chat above it scrolls into the terminal's *real* scrollback, so the
+/// user can scroll up and read while it asks. What makes it modal is the
+/// collapse: the growth's scroll is one-way, so a plain shrink back to the
+/// composer would strand the box above the rows it vacates. `term.rs` reads
+/// this predicate to note any one-way move under an open prompt
+/// (`InlineViewport::modal_scrolled`), and the loop answers the prompt's
+/// close with a purge rebuild.
 ///
-/// The sibling of [`strip_has_status`]: a pure predicate over `App` that
-/// `term.rs` reads to pick its geometry ([`repin_modal`] instead of
-/// [`repin`]), keeping the policy here and the I/O there.
+/// The sibling of [`strip_has_status`]: a pure predicate over `App`, keeping
+/// the policy here and the I/O there.
 #[must_use]
 pub fn region_is_modal(app: &App) -> bool {
     app.permission().is_some()
-}
-
-/// The screen height an open inline modal's region takes, given the rows the
-/// prompt itself needs (`prompt_rows`, the [`permission_height`] reading) and
-/// how many committed conversation rows sit painted above the region
-/// (`view_top`, the boundary's `InlineViewport::view_top`).
-///
-/// While the prompt fits between those rows and the screen bottom it keeps its
-/// own height — it covers nothing, and the conversation above stays exactly
-/// where it is. The moment it would need even one conversation row, the region
-/// takes the **whole screen**: the render then replays the conversation tail
-/// above the prompt ([`render_permission_with_context`]), so the newest
-/// messages stay in view — visually the conversation "scrolls up" to make
-/// room, Claude-Code style — while underneath it is still the reversible
-/// covering ([`repin_modal`] seats the region at row 0 and counts every row,
-/// and the close hands them all back). A partial cover can't do this: the
-/// replay and the rows still painted above it would have to meet mid-screen,
-/// and any shift between them tears the conversation. See
-/// `docs/permissions.md`.
-#[must_use]
-pub fn modal_region_height(prompt_rows: u16, view_top: u16, screen_height: u16) -> u16 {
-    let screen = screen_height.max(1);
-    let prompt = prompt_rows.min(screen);
-    if u32::from(view_top) + u32::from(prompt) > u32::from(screen) {
-        screen
-    } else {
-        prompt
-    }
-}
-
-/// How an **inline modal** ([`region_is_modal`]) re-pins: it takes the free
-/// rows below the region first and then grows *upward*, covering the
-/// conversation — and it **never scrolls**.
-///
-/// That is the whole point. A scroll is one-way: the rows it pushes into the
-/// terminal's scrollback are gone from the screen, so when the prompt closes
-/// the region shrinks with nothing to fill the rows it vacates and the box is
-/// left floating above a band of blank ones. Covering is reversible — every
-/// row a modal hides is still in `App`'s history, so closing it repaints them
-/// in place and the box lands exactly where it started (`docs/permissions.md`).
-///
-/// A **shrink** behaves exactly like [`repin`] (top put, vacated rows below
-/// blanked): the top only ever moves *up*, so no row above the region is ever
-/// left stale.
-#[must_use]
-pub fn repin_modal(top: u16, old_height: u16, new_height: u16, screen_height: u16) -> Repin {
-    let bottom = top.saturating_add(old_height);
-    // Grow downward while there is room (the ordinary content-anchored growth,
-    // invariant 3), then upward for whatever is left over.
-    let up = new_height
-        .saturating_sub(old_height)
-        .saturating_sub(screen_height.saturating_sub(bottom));
-    let new_top = top.saturating_sub(up);
-    let new_bottom = new_top.saturating_add(new_height).min(screen_height);
-    Repin {
-        scroll_up: 0,
-        top: new_top,
-        clear_below: bottom.saturating_sub(new_bottom),
-    }
 }
 
 /// Decide how to re-pin a live region currently at `top` with `old_height` to

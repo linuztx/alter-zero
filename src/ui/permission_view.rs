@@ -459,34 +459,13 @@ fn file_lang(path: &str) -> Option<&str> {
 }
 
 /// Paint the open permission prompt over the whole live region. Pure —
-/// [`render_live`] calls this in place of the composer.
+/// [`render_live`] calls this in place of the composer. The region is sized
+/// to exactly these rows ([`permission_height`](super::layout::permission_height)),
+/// and the conversation above it is the *real* screen — the prompt grew by
+/// scrolling like any other region, so what the user just read stays put
+/// (and stays reachable in the terminal's scrollback — `docs/permissions.md`).
 pub fn render_permission(area: Rect, buf: &mut Buffer, app: &App) {
-    render_permission_with_context(area, buf, app, &[]);
-}
-
-/// [`render_permission`] with the conversation `tail` the boundary rebuilt
-/// from history: when the region is taller than the prompt (a covering modal
-/// spans the whole screen — [`modal_region_height`]), the spare
-/// rows above the prompt replay the tail's newest rows, so opening a prompt
-/// on a full screen never hides the messages the user just read. The prompt
-/// block stays flush against the region's bottom (blank-padded above when the
-/// tail runs short), which is what keeps the cursor seat's
-/// bottom-edge arithmetic — and the close's covering accounting — unchanged.
-/// A region sized exactly to the prompt paints no tail at all.
-pub fn render_permission_with_context(
-    area: Rect,
-    buf: &mut Buffer,
-    app: &App,
-    tail: &[Line<'static>],
-) {
-    let prompt = permission_lines(app, area.width, area.height);
-    let budget = usize::from(area.height).saturating_sub(prompt.len());
-    let take = budget.min(tail.len());
-    let mut out: Vec<Line<'static>> = Vec::with_capacity(budget + prompt.len());
-    out.extend(std::iter::repeat_with(Line::default).take(budget - take));
-    out.extend(tail[tail.len() - take..].iter().cloned());
-    out.extend(prompt);
-    Paragraph::new(out).render(area, buf);
+    Paragraph::new(permission_lines(app, area.width, area.height)).render(area, buf);
 }
 
 /// The `bash` "don't ask again" label, re-exported for the boundary's toast
