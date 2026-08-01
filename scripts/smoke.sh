@@ -297,7 +297,9 @@ printf '%s\n' "$overlay_stream"
 tmux kill-session -t "$S_OVL" 2>/dev/null
 
 # --- Phase 4: the slash-command palette. Typing "/" opens the command list below
-# the box (/help and /clear); running /help posts a system notice listing them. ---
+# the box, capped at 8 rows (/quit — the 9th — starts off-window); ↓ walks the
+# selection down and the window scrolls /quit in (menu_window); running /help
+# posts a system notice listing them. ---
 # Clear the leftover "AAA\nBBB" draft from Phase 2 first — the palette only opens
 # when the input *starts* with "/".
 for _ in $(seq 1 12); do
@@ -309,6 +311,23 @@ sleep 0.3
 palette_open="$(tmux capture-pane -t "$S" -p)"
 echo "==== captured pane (slash palette open) ===="
 printf '%s\n' "$palette_open"
+
+# ↓ to the last command: the 8-row window scrolls (the top rows leave, /quit
+# arrives) instead of the band growing.
+for _ in $(seq 1 8); do
+	tmux send-keys -t "$S" Down
+done
+sleep 0.3
+palette_scrolled="$(tmux capture-pane -t "$S" -p)"
+echo "==== captured pane (slash palette scrolled to /quit) ===="
+printf '%s\n' "$palette_scrolled"
+
+# Back to the top (the window follows the selection up again) so Enter runs
+# /help, not /quit.
+for _ in $(seq 1 8); do
+	tmux send-keys -t "$S" Up
+done
+sleep 0.3
 
 # Run /help (highlighted first) → posts a system notice listing the commands.
 tmux send-keys -t "$S" Enter
@@ -2276,8 +2295,9 @@ if printf '%s' "$returned" | grep -qF "T R A N S C R I P T"; then
 	echo "FAIL: Ctrl+O did not return to the conversation" >&2
 	status=1
 fi
-# Typing "/" lists both commands below the box (their descriptions are unique to
-# the open palette).
+# Typing "/" lists the commands below the box (their descriptions are unique to
+# the open palette) — the first 8 only: the 9th (/quit) starts off-window and ↓
+# scrolls it in.
 if ! printf '%s' "$palette_open" | grep -qF "List the available commands"; then
 	echo "FAIL: typing '/' did not open the command palette (/help missing)" >&2
 	status=1
@@ -2286,8 +2306,20 @@ if ! printf '%s' "$palette_open" | grep -qF "Clear the conversation"; then
 	echo "FAIL: the command palette did not list /clear" >&2
 	status=1
 fi
-if ! printf '%s' "$palette_open" | grep -qF "Exit alter-zero"; then
-	echo "FAIL: the command palette did not list /quit" >&2
+if ! printf '%s' "$palette_open" | grep -qF "Add or update a provider API key"; then
+	echo "FAIL: the command palette did not list /login (the 8th command, the window's last row)" >&2
+	status=1
+fi
+if printf '%s' "$palette_open" | grep -qF "Exit alter-zero"; then
+	echo "FAIL: the palette shows /quit (the 9th command) in its first window — the 8-row cap is gone" >&2
+	status=1
+fi
+if ! printf '%s' "$palette_scrolled" | grep -qF "Exit alter-zero"; then
+	echo "FAIL: ↓ to the last command did not scroll /quit into the palette window" >&2
+	status=1
+fi
+if printf '%s' "$palette_scrolled" | grep -qF "List the available commands"; then
+	echo "FAIL: the scrolled palette still shows /help — the window did not move" >&2
 	status=1
 fi
 # The open palette DISPLACES the session footer (codex's popups take its row).

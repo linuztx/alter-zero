@@ -68,18 +68,28 @@ bindings, codex's phrasing and two-column layout, keys cyan and labels dim
 (`SHORTCUTS_*` consts):
 
 ```
-/ for commands            ! for shell command
-↑ for input history       ctrl+r to search history
-shift+enter for newline   ctrl+o for tool output
-esc to quit               ctrl+c to quit
-alt+↑ to edit queue       tab to queue next turn
-ctrl+v for image paste    ctrl+d for llm context
+/ for commands               ! for shell command
+↑ for input history          ctrl+r to search history
+shift+enter for newline      ctrl+o for tool output
+esc to quit                  ctrl+c to quit
+alt+↑ to edit queue          tab to queue next turn
+ctrl+v for image paste       ctrl+d for llm context
 shift+tab to cycle thinking
 ```
 
 (The `SHORTCUTS` const in `ui/theme.rs` is the single source of truth — entries laid
 out two per row in declaration order, so the band is
 `SHORTCUTS.len().div_ceil(2)` rows tall; currently 13 entries → 7 rows.)
+
+The second column starts at `SHORTCUTS_COL` (28), sized so the **widest**
+first-column variant keeps a readable gutter: the esc entry's context swaps
+reach 24 columns (`esc esc to edit previous`), which at the old column of 25
+left a single space before `ctrl+c to quit` — the two entries read as one
+run-on line. The
+`the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
+≥ 2-column gutter and the shared column across every `(turn_active,
+can_backtrack)` state; an entry added later that grows past it must widen
+`SHORTCUTS_COL` with it (the test fails until it does).
 
 The Esc entry is three-way context-sensitive (codex's quit entry): `esc to
 interrupt` while a turn is in flight, `esc esc to edit previous`
@@ -107,9 +117,11 @@ interrupt` while a turn is in flight, `esc esc to edit previous`
   performs its action (typing, ↑ recall, `/` palette); Esc only dismisses —
   idle (no quit) and mid-turn (no interrupt, band closed, turn untouched);
   `?` is ignored in the tool view.
-- `ui`: `shortcuts_rows` is 0 closed / `SHORTCUTS.len().div_ceil(2)` open (6
-  rows for the current 11 entries); the lines list the bindings in
-  two aligned columns (keys cyan, labels dim); the Esc entry flips between
+- `ui`: `shortcuts_rows` is 0 closed / `SHORTCUTS.len().div_ceil(2)` open (7
+  rows for the current 13 entries); the lines list the bindings in
+  two aligned columns (keys cyan, labels dim) with a ≥ 2-column gutter between
+  them in every context state (the esc swaps change the first column's width);
+  the Esc entry flips between
   `to quit` and `to interrupt` with the turn; `live_height` grows by the band;
   `render_live` paints it below the box and `cursor_position` stays put when
   it opens.

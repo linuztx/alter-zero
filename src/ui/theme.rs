@@ -760,12 +760,12 @@ pub(super) const SHIMMER_MAX_BLEND: f32 = 0.9;
 // caret/arrow), Claude-Code style. Capped at `MENU_MAX_ROWS`; longer lists scroll
 // to keep the selection visible (`menu_window`). ---
 
-/// The most command rows shown at once; longer match lists scroll within this.
-/// Sized to hold the whole [`crate::app::COMMANDS`] registry so a bare `/`
-/// lists every command without scrolling (the
-/// `the_menu_cap_holds_the_whole_command_registry` test pins it to the
-/// registry's growth — `/compact` grew it to 8, `/init` to 9).
-pub(super) const MENU_MAX_ROWS: u16 = 9;
+/// The most command rows shown at once; longer match lists scroll within this
+/// (`menu_window` follows the selection, like the `@` file picker's cap). The
+/// registry has outgrown the window — a bare `/` shows the first eight and ↓
+/// scrolls the rest in (the `the_palette_shows_at_most_eight_commands` /
+/// `the_palette_scrolls_down_to_the_last_command` tests pin both halves).
+pub(super) const MENU_MAX_ROWS: u16 = 8;
 
 /// The column descriptions start at — names are padded out to here so the
 /// descriptions line up in a tidy column regardless of command-name length.
@@ -850,8 +850,14 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
 ];
 
 /// The display column where a row's second entry starts (the first entry is
-/// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea.
-pub(super) const SHORTCUTS_COL: usize = 25;
+/// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
+/// **widest** first-column variant keeps a readable gutter: the esc entry's
+/// context swaps reach 24 columns (`esc esc to edit previous`), which at the
+/// old 25 left a single space before `ctrl+c to quit` — one run-on line. The
+/// `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
+/// ≥ 2-column gutter across every context state; widen this with any new
+/// entry that needs it.
+pub(super) const SHORTCUTS_COL: usize = 28;
 
 /// Cyan — an entry's key (the palette-selection accent).
 pub(super) const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;

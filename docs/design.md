@@ -162,9 +162,12 @@ unit-tested must be unit-tested.
   third band in the live region). It lists a registry of `SlashCommand`s
   (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
   `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, and `/quit`),
-  filtered by name-prefix as you type after the `/`; `/` alone lists everything.
-  ↑/↓ move the highlight (the window scrolls, capped at `MENU_MAX_ROWS`, to keep it
-  visible); descriptions line up in a column (names padded to `MENU_DESC_COL`), and
+  filtered by name-prefix as you type after the `/`; `/` alone matches everything.
+  ↑/↓ move the highlight, and the list shows at most `MENU_MAX_ROWS` (8) rows at a
+  time — the registry has outgrown the window, so a bare `/` shows the first eight
+  and the window scrolls (`menu_window`) as the selection walks past its bottom
+  edge, `/quit` arriving as `/help` leaves;
+  descriptions line up in a column (names padded to `MENU_DESC_COL`), and
   the selection is shown **by colour** — the whole highlighted row lights up cyan
   (name *and* description the same colour) while the others are dimmed grey — **no
   caret/arrow**.

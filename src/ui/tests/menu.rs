@@ -4,7 +4,7 @@
 use super::*;
 use crate::ui::theme::{
     FILE_MENU_MAX_ROWS, MENU_DESC_COL, MENU_MAX_ROWS, MENU_SELECTED_COLOR, SHORTCUTS,
-    SHORTCUTS_KEY_COLOR, SHORTCUTS_TEXT_COLOR,
+    SHORTCUTS_COL, SHORTCUTS_KEY_COLOR, SHORTCUTS_TEXT_COLOR,
 };
 use crate::ui::wrap::cols;
 
@@ -62,14 +62,54 @@ fn menu_rows_is_zero_when_the_palette_is_closed() {
 }
 
 #[test]
-fn the_menu_cap_holds_the_whole_command_registry() {
-    // MENU_MAX_ROWS is sized so a bare `/` lists EVERY command without
-    // scrolling (its doc contract; smoke.sh asserts /quit — the last —
-    // is visible). Adding a command must grow the cap with it.
+fn the_palette_shows_at_most_eight_commands() {
+    // The requested cap (the file picker's): a bare `/` shows the first eight
+    // commands and longer match lists scroll (menu_window) instead of growing
+    // the band — the registry has outgrown the window, so /quit (the ninth)
+    // starts off-window (smoke.sh Phase 4 asserts the same on the real
+    // binary).
+    assert_eq!(MENU_MAX_ROWS, 8, "the requested cap");
     assert!(
-        crate::app::COMMANDS.len() <= MENU_MAX_ROWS as usize,
-        "MENU_MAX_ROWS ({MENU_MAX_ROWS}) no longer fits the {} registered commands",
-        crate::app::COMMANDS.len()
+        crate::app::COMMANDS.len() > MENU_MAX_ROWS as usize,
+        "the registry outgrew the window — scrolling is exercised by a bare `/`"
+    );
+    let texts: Vec<String> = command_menu_lines(&palette("/", 0), 60)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(texts.len(), MENU_MAX_ROWS as usize, "{texts:?}");
+    assert!(texts[0].contains("/help"), "{texts:?}");
+    assert!(
+        !texts.iter().any(|t| t.contains("/quit")),
+        "the ninth command starts off-window: {texts:?}"
+    );
+}
+
+#[test]
+fn the_palette_scrolls_down_to_the_last_command() {
+    // ↓ walking the selection past the window's bottom edge scrolls the list
+    // to keep the highlight visible: with the last command selected the band
+    // still shows MENU_MAX_ROWS rows, the top scrolled off and the selection
+    // on the bottom row, cyan.
+    let last = crate::app::COMMANDS.len() - 1;
+    let lines = command_menu_lines(&palette("/", last), 60);
+    assert_eq!(lines.len(), MENU_MAX_ROWS as usize);
+    let texts: Vec<String> = lines
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert!(
+        !texts.iter().any(|t| t.contains("/help")),
+        "the first command scrolled out: {texts:?}"
+    );
+    let bottom = lines.last().expect("a windowed row");
+    assert!(plain(bottom).contains("/quit"), "{texts:?}");
+    assert!(
+        bottom
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(MENU_SELECTED_COLOR)),
+        "the selection rode the window down"
     );
 }
 
@@ -292,6 +332,40 @@ fn shortcuts_lines_flip_the_esc_entry_while_a_turn_runs() {
         "{busy:?}"
     );
     assert!(!busy.iter().any(|t| t.contains("esc to quit")), "{busy:?}");
+}
+
+#[test]
+fn the_shortcuts_columns_keep_a_readable_gutter_in_every_state() {
+    // The second column starts at SHORTCUTS_COL in every context state, with
+    // at least two blank columns of gutter after the first entry — the esc
+    // entry swaps text per state (` to interrupt` mid-turn, the `esc esc`
+    // edit hint idle-with-target: the widest first-column variant, which
+    // used to squeeze the gutter to a single space and read as one run-on
+    // line). Adding a wide entry later must widen SHORTCUTS_COL with it.
+    for (turn_active, can_backtrack) in [(false, false), (true, false), (false, true), (true, true)]
+    {
+        for line in shortcuts_lines(turn_active, can_backtrack) {
+            if line.spans.len() < 4 {
+                continue; // a lone trailing entry has no second column
+            }
+            let first: usize = line.spans[..2]
+                .iter()
+                .map(|s| cols(s.content.as_ref()))
+                .sum();
+            let gutter = cols(line.spans[2].content.as_ref());
+            assert!(
+                gutter >= 2,
+                "a {gutter}-space gutter after {:?} (turn_active={turn_active}, can_backtrack={can_backtrack})",
+                plain(&line)
+            );
+            assert_eq!(
+                first + gutter,
+                SHORTCUTS_COL,
+                "second column aligned: {:?}",
+                plain(&line)
+            );
+        }
+    }
 }
 
 #[test]
