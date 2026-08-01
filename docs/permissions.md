@@ -76,6 +76,21 @@ reads as `None` while a prompt is open, which drops the delayed
 `(ctrl+b to run in background)` hint: the prompt owns every key, so that one
 would be advertising a binding it swallows.
 
+The context must not crowd out the prompt itself, though. A model's big
+parallel batch (fifteen edits in one round) queues a screenful of
+`⎿ Waiting…` cells, which used to eat the whole terminal before the body's
+budget was computed: the prompt showed its title, question, and options with
+**no content at all** — the user could not see what edit they were approving
+— and with enough siblings even the options ran off the screen bottom. So the
+cells are budgeted: `permission_lines` sets aside its fixed rows *and* a
+floor for the body (the body's own height when short, else
+`PERMISSION_MIN_BODY_ROWS` — the inline peek size), and the context keeps
+whole cells in queue order while they fit, collapsing the excess into one dim
+`… +N more waiting` row. The first chunk — the agent tree that asked, else
+the asked-about call itself — is never dropped, so the prompt stays a
+question about something on screen; a body naturally shorter than the floor
+reserves only what it needs, handing the rest back to the siblings.
+
 ## The screen it covers, and gives back
 
 A prompt is the one inline view that can be as tall as the whole terminal — the
@@ -383,8 +398,13 @@ integration tests) that builds a backend directly is unaffected.
   alike, a genuinely running call's `⎿ Running…`, the whole tree for a
   subagent's), the conversation-tail replay (`render_permission_with_context`:
   the newest tail rows above the prompt, blank-padded when short, none at all
-  in a prompt-sized region), and that `permission_height` equals the painted
-  rows — at every height, the context rows included.
+  in a prompt-sized region), that `permission_height` equals the painted
+  rows — at every height, the context rows included — and the big-batch cap:
+  fifteen queued edits still leave the body its rows and the options on
+  screen (the excess siblings collapse into `… +N more waiting`, the
+  asked-about call survives at the top, the height contract holds), a tall
+  body under the same batch keeps its guaranteed peek + `… +N lines` tail,
+  and a small batch shows every sibling with no summary row.
 - `ui/tests/layout.rs` — the modal geometry: `region_is_modal` is a prompt and
   nothing else, `repin_modal` takes the free rows below before covering
   anything, never scrolls even at full screen height, and shrinks like any

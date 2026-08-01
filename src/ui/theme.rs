@@ -1170,3 +1170,14 @@ pub(super) const PERMISSION_AMEND_HINTS: &[(&str, &str)] = &[
 /// without re-deriving the body. `permission_lines` pads a capped prompt
 /// *above* the question to keep that block flush against this tail.
 pub(super) const PERMISSION_TAIL_ROWS: u16 = 4;
+
+/// The body rows a permission prompt is guaranteed even when a big parallel
+/// batch queues a screenful of `⎿ Waiting…` siblings above it. The body is
+/// the point of the prompt — you read what you approve — so the *context*
+/// gives way first: excess sibling cells collapse into the dim
+/// `… +N more waiting` summary row rather than squeezing the body's budget
+/// to nothing (the "prompt with no content" bug). Sized like the inline
+/// cell's [`FILE_PEEK_LINES`] peek, which is what a squeezed body degrades
+/// to (numbered rows + the `… +N lines` tail). A body naturally shorter
+/// reserves only what it needs.
+pub(super) const PERMISSION_MIN_BODY_ROWS: usize = 10;

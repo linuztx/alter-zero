@@ -186,9 +186,32 @@ fn command_rows(
     (lines, hidden)
 }
 
+/// The context cells above the prompt as separable chunks, in priority order:
+/// the round's live agent group (when a subagent asked), then one chunk per
+/// queued call — the asked-about front call first, its batch siblings behind
+/// it. [`context_lines`] joins them blank-separated and caps the tail.
+fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
+    let mut chunks = Vec::new();
+    let agents = live_agent_group_lines(app, width);
+    if !agents.is_empty() {
+        chunks.push(agents);
+    }
+    chunks.extend(app.tool_queue().iter().map(|tool| tool_lines(tool, width)));
+    chunks
+}
+
+/// The dim summary row standing in for the sibling cells the cap collapsed —
+/// each of them a `⎿ Waiting…` call, so the row wears their colour.
+fn waiting_summary_row(hidden: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        format!("… +{hidden} more waiting"),
+        Style::new().fg(TOOL_WAITING_COLOR),
+    ))
+}
+
 /// The live cells that sit **above** the prompt: the call being asked about
 /// (and any batch siblings behind it), led by the round's live agent group
-/// when there is one.
+/// when there is one — at most `budget` rows.
 ///
 /// A permission prompt must never be a box out of nowhere — it is a question
 /// *about something on screen*, so the strip's context survives the modal even
@@ -201,17 +224,47 @@ fn command_rows(
 /// request) keeps its running row. No pulse: the prompt is a still frame
 /// ([`tool_lines`] renders a running bullet at rest, `docs/tool-pulse.md`).
 ///
+/// The context must not crowd out the prompt itself, though: a model's big
+/// parallel batch queues a screenful of `⎿ Waiting…` siblings, which used to
+/// eat the whole terminal — the body's budget saturated to zero (the prompt
+/// showed no content at all) and the options ran off the screen bottom. So
+/// the cells are kept **whole, in queue order, while they fit the budget**,
+/// and the excess collapses into the dim [`waiting_summary_row`]. The first
+/// chunk — the agent tree that asked, else the asked-about call itself — is
+/// never dropped: the prompt stays a question about something on screen.
+///
 /// Empty when nothing raised the prompt on screen (a resumed session, the
 /// dummy's scripted turn), so the prompt simply opens with its own rule.
-fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
-    let mut lines = live_agent_group_lines(app, width);
-    for (i, tool) in app.tool_queue().iter().enumerate() {
-        if i > 0 || !lines.is_empty() {
-            lines.push(Line::default()); // blank row between cells
-        }
-        lines.extend(tool_lines(tool, width));
+fn context_lines(app: &App, width: u16, budget: usize) -> Vec<Line<'static>> {
+    let chunks = context_chunks(app, width);
+    if chunks.is_empty() {
+        return Vec::new();
     }
-    lines
+    // Rows the first `keep` chunks occupy: their cells, the blank separators
+    // between them, and — when anything is left over — the blank + summary
+    // row standing in for the rest.
+    let rows_for = |keep: usize| -> usize {
+        let cells: usize = chunks[..keep].iter().map(Vec::len).sum();
+        let summary = if keep < chunks.len() { 2 } else { 0 };
+        cells + keep.saturating_sub(1) + summary
+    };
+    let mut keep = chunks.len();
+    while keep > 1 && rows_for(keep) > budget {
+        keep -= 1;
+    }
+    let hidden = chunks.len() - keep;
+    let mut out = Vec::new();
+    for chunk in chunks.into_iter().take(keep) {
+        if !out.is_empty() {
+            out.push(Line::default()); // blank row between cells
+        }
+        out.extend(chunk);
+    }
+    if hidden > 0 {
+        out.push(Line::default());
+        out.push(waiting_summary_row(hidden));
+    }
+    out
 }
 
 /// The dim `… +N lines` tail appended when the body did not fit the terminal.
@@ -256,25 +309,10 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     let request = &prompt.request;
     let file_change = request.kind != PermissionKind::Bash;
 
-    // The live cells that raised this — kept visible above the modal so the
-    // question reads as being *about* something on screen — then the frame, the
-    // title, and (for a file change) the path it targets; a `bash` prompt gaps
-    // instead, its command being the body.
-    let mut out = context_lines(app, width);
-    if !out.is_empty() {
-        out.push(Line::default());
-    }
-    out.extend([rule(width), Line::default(), title_row(request, width)]);
-    if file_change {
-        out.push(text_row(&request.target, PERMISSION_TARGET_COLOR, width));
-    } else {
-        out.push(Line::default());
-    }
-
-    // Everything below it, built now so its height is known: the standing
-    // notice (commands only), the question, the options — or Tab's amend field,
-    // which is as tall as the feedback typed — the hint row, and the closing
-    // frame.
+    // Everything below the body, built FIRST so both budgets can see its
+    // height: the standing notice (commands only), the question, the options —
+    // or Tab's amend field, which is as tall as the feedback typed — the hint
+    // row, and the closing frame.
     let mut below = Vec::new();
     if !file_change {
         below.push(Line::default());
@@ -294,14 +332,39 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         below.push(hint_row(&hints(request)));
     }
 
+    // The live cells that raised this — kept visible above the modal so the
+    // question reads as being *about* something on screen — then the frame, the
+    // title, and (for a file change) the path it targets; a `bash` prompt gaps
+    // instead, its command being the body. The cells get whatever the terminal
+    // has left once the prompt's fixed rows AND a floor for the body are set
+    // aside — the head is the 5 rows this function adds around them (the blank
+    // after the cells, the rule, its gap, the title, the target/gap row) — so
+    // a big parallel batch collapses its excess `⎿ Waiting…` siblings into the
+    // summary row instead of squeezing the body out (see [`context_lines`]).
+    let framing = if file_change { 2 } else { 0 };
+    let context_budget = usize::from(term_height).saturating_sub(
+        5 + below.len() + framing + 2 /* the gap + rule */ + body_reserve(request, file_change),
+    );
+    let mut out = context_lines(app, width, context_budget);
+    if !out.is_empty() {
+        out.push(Line::default());
+    }
+    out.extend([rule(width), Line::default(), title_row(request, width)]);
+    if file_change {
+        out.push(text_row(&request.target, PERMISSION_TARGET_COLOR, width));
+    } else {
+        out.push(Line::default());
+    }
+
     // The body's row budget: whatever the terminal has left once those rows
     // (and, for a file change, its two dashed rules, plus the trailing gap and
-    // rule) are accounted for. Too small for even one numbered row beside the
-    // `… +N lines` tail means the terminal is too short for a preview at all —
-    // the body and its rules drop out entirely rather than pushing the options
-    // off screen (the numbered builder always emits its first row, so handing
-    // it a zero budget would overflow the terminal by the tail's row).
-    let framing = if file_change { 2 } else { 0 };
+    // rule) are accounted for — at least the reserve the context cap held
+    // back, and everything the (possibly shorter) context did not use. Too
+    // small for even one numbered row beside the `… +N lines` tail means the
+    // terminal is too short for a preview at all — the body and its rules
+    // drop out entirely rather than pushing the options off screen (the
+    // numbered builder always emits its first row, so handing it a zero
+    // budget would overflow the terminal by the tail's row).
     let budget = usize::from(term_height).saturating_sub(
         out.len() + below.len() + framing + 2, /* the gap + rule */
     );
@@ -367,6 +430,25 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
 /// content — which only ever errs toward reserving the tail row.
 fn body_fits(body: &str, budget: usize) -> bool {
     body.lines().count() <= budget
+}
+
+/// The body rows the context cap must leave free: the body's own natural
+/// height when it is short, else the [`PERMISSION_MIN_BODY_ROWS`] floor — so
+/// a big batch's siblings can take everything a short body doesn't need, but
+/// can never squeeze a tall body below its guaranteed peek. Counts *source*
+/// rows like [`body_fits`] (wrapping only ever makes the shown body cap
+/// earlier, never pushes the options off).
+fn body_reserve(request: &PermissionRequest, file_change: bool) -> usize {
+    let natural = if file_change {
+        request.body.lines().count()
+    } else {
+        request.target.lines().count()
+            + request
+                .detail
+                .as_ref()
+                .map_or(0, |d| d.trim().lines().count())
+    };
+    natural.min(PERMISSION_MIN_BODY_ROWS)
 }
 
 /// The highlight language for the preview — the target path's extension.

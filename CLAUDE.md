@@ -231,7 +231,14 @@ call, the main turn's own under a subagent's request, keeps its `⎿ Running…`
 at rest), and a subagent's request keeps the whole live
 `● Running 3 agents…` tree, with `App::command_elapsed` reading `None`
 meanwhile so the delayed Ctrl+B hint never advertises a key the modal
-swallows); being the one live view that can fill the terminal it also re-pins
+swallows — but the context is **budgeted**: a big parallel batch's screenful
+of `⎿ Waiting…` siblings used to squeeze the body's budget to zero (a prompt
+with no content) and push the options off the bottom, so `permission_lines`
+reserves its fixed rows plus a body floor (`PERMISSION_MIN_BODY_ROWS`, the
+peek size; a shorter body reserves only its own height) and collapses the
+cells that don't fit into one dim `… +N more waiting` row, the first chunk —
+the asked-about call, or the tree that asked — never dropped); being the one
+live view that can fill the terminal it also re-pins
 differently — `ui::repin_modal` **covers** the conversation (growing upward,
 never scrolling, commits held back meanwhile) and a **covering prompt replays
 the conversation above itself**: the moment it would need a conversation row,

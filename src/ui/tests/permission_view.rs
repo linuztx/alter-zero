@@ -484,6 +484,109 @@ fn a_batch_sibling_shows_its_waiting_row_too() {
     );
 }
 
+/// An app with `n` queued calls (a `Write` then `Edit` siblings) and a prompt
+/// with `body` open for the front one — the shape of a model's big parallel
+/// edit batch.
+fn pending_batch_with(n: usize, body: &str) -> App {
+    let mut app = App::new();
+    app.begin_stream();
+    let mut calls = vec![ToolCallSummary {
+        name: "Write".to_string(),
+        args: "nexgrad/viz.py".to_string(),
+    }];
+    for i in 1..n {
+        calls.push(ToolCallSummary {
+            name: "Edit".to_string(),
+            args: format!("nexgrad/file{i}.py"),
+        });
+    }
+    app.start_tool_batch(&calls);
+    app.open_permission(request(PermissionKind::Edit, "nexgrad/viz.py", body));
+    app
+}
+
+fn pending_batch(n: usize) -> App {
+    pending_batch_with(n, EDIT_BODY)
+}
+
+#[test]
+fn a_big_batch_of_waiting_siblings_never_squeezes_out_the_body() {
+    // The reported bug: a parallel batch of ~15 edits queues so many
+    // `⎿ Waiting…` cells above the prompt that the body's budget saturates to
+    // zero — the prompt shows the title, the question and the options with NO
+    // content at all, so the user cannot see what edit they are approving.
+    // The body is the point of the prompt: the *context* must give way first,
+    // the excess siblings collapsing into a dim summary row.
+    let app = pending_batch(15);
+    let lines = rows(&app, 80, 44);
+    assert!(
+        lines.len() <= 44,
+        "the prompt fits the terminal (options never pushed off): {}",
+        lines.len()
+    );
+    assert_eq!(lines[0], "● Write(nexgrad/viz.py)", "the asked-about call");
+    assert_eq!(lines[1], "  ⎿  Waiting…", "…keeps its cell: {lines:?}");
+    let dashed = lines.iter().filter(|l| l.starts_with('╌')).count();
+    assert_eq!(dashed, 2, "the body keeps its dashed frame: {lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("print(\"welcome\")")),
+        "the edit's content shows: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("more waiting")),
+        "the collapsed siblings are counted: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("make this edit")),
+        "the question survives: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("1. Yes")),
+        "…and the options: {lines:?}"
+    );
+    // The height contract holds under the cap too: the reserved height is the
+    // painted rows, and the builder is a fixpoint at that height.
+    let painted = permission_lines(&app, 80, 44).len();
+    assert_eq!(permission_height(&app, 80, 44), Some(painted as u16));
+    assert_eq!(permission_lines(&app, 80, painted as u16).len(), painted);
+}
+
+#[test]
+fn a_big_batch_keeps_a_minimum_body_even_when_the_body_is_tall() {
+    // A tall body under a big batch: the guaranteed floor shows several
+    // numbered rows plus the `… +N lines` tail, never nothing.
+    let body: String = (1..=120).map(|n| format!("{n:>3} line {n}\n")).collect();
+    let app = pending_batch_with(15, body.trim_end());
+    let lines = rows(&app, 80, 44);
+    assert!(lines.len() <= 44, "{}", lines.len());
+    let shown = lines.iter().filter(|l| l.contains(" line ")).count();
+    assert!(
+        shown >= 5,
+        "a real slice of the body shows ({shown} rows): {lines:?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("… +") && l.contains("lines")),
+        "the body's own tail says what was cut: {lines:?}"
+    );
+}
+
+#[test]
+fn a_small_batch_keeps_every_sibling_with_no_summary() {
+    // The ordinary look is untouched: a batch that fits shows every cell and
+    // no `… +N more waiting` row.
+    let app = pending_batch(3);
+    let lines = rows(&app, 80, 44);
+    assert!(lines.iter().any(|l| l == "● Edit(nexgrad/file1.py)"));
+    assert!(lines.iter().any(|l| l == "● Edit(nexgrad/file2.py)"));
+    assert!(
+        !lines.iter().any(|l| l.contains("more waiting")),
+        "nothing was collapsed: {lines:?}"
+    );
+    assert!(lines.iter().any(|l| l.contains("print(\"welcome\")")));
+}
+
 #[test]
 fn a_running_call_keeps_its_running_row_under_a_subagents_prompt() {
     // A subagent's request can land while the *main* turn's own tool is
