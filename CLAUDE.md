@@ -366,13 +366,19 @@ overlay, two dim columns of `{key} for {thing}` entries — when `?` is pressed 
 an empty composer; any other key dismisses it, Esc dismiss-only; see
 `docs/shortcuts.md`; **and the same slot shows an `@` file picker** — a fuzzy
 file list — whenever the cursor is in an `@token`: the boundary's background
-worker walks the cwd once and ranks it per query off-thread (codex's
-`StartFileSearch`/`FileSearchResult` round-trip — `App::file_search_query`
+worker walks the cwd **afresh per query** and ranks it off-thread (so a file
+the agent just created appears immediately — never a startup-cached index;
+codex's `StartFileSearch`/`FileSearchResult` round-trip — `App::file_search_query`
 changes drive a `dispatch_file_search`, results come back via
-`App::set_file_matches` with a staleness guard), ↑/↓ move and **Tab/Enter insert
+`App::set_file_matches` with a staleness guard), the rows **columned**
+codex-style — `→ name  parent/  File|Dir`: the selected row's `→` marker, the
+name column sized to the widest visible name, the parent dir (`./` at the
+root), and the kind label pinned at the right edge, at most 8 rows — ↑/↓ move
+and **Tab/Enter insert
 the path** (replacing the `@token`, a trailing space added, whitespace paths
 quoted), Esc dismisses sticky-per-token; the matched characters are bolded in
-each row; suppressed in `!` shell mode and mutually exclusive with the palette;
+each row (remapped across the name/parent split); suppressed in `!` shell mode
+and mutually exclusive with the palette;
 see `docs/file-search.md`); plus, *above* the box while a turn streams, **messages
 submitted with Enter queue** instead of waiting (shown like sent user messages,
 inset two columns — `  ❯ {msg}` rows in the strip under the status line —
@@ -862,7 +868,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   description column, the cyan/dimmed colours that light up the whole selected row
   — name and description alike — and the `MENU_MAX_ROWS` cap), the `@` file
   picker (`FILE_MENU_*` — it reuses the palette's `MENU_SELECTED_COLOR`/
-  `MENU_DIM_COLOR`, additionally bolding the query-matched characters, with a
+  `MENU_DIM_COLOR`, additionally bolding the query-matched characters; the
+  columned row geometry is `FILE_MENU_MARKER`/`FILE_MENU_INDENT` (the selected
+  `→ ` and the matching inset), `FILE_MENU_GAP` (name column = widest visible
+  name + gap), `FILE_MENU_TYPE_WIDTH` with the `FILE_MENU_FILE_LABEL`/
+  `FILE_MENU_DIR_LABEL` kind labels pinned at the right edge, and
+  `FILE_MENU_ROOT_DIR` (`./`) for root-level parents, with a
   `FILE_MENU_MAX_ROWS` cap and the `FILE_MENU_SEARCHING`/`FILE_MENU_NO_MATCH`
   placeholder rows; `file_menu_rows`/`file_menu_lines`/`file_menu_row` mirror the
   palette helpers — see `docs/file-search.md`), the `?` shortcuts

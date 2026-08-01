@@ -51,7 +51,7 @@ loop's existing `select!` + boundary-injection idioms:
 ```
 key ─► App edits draft ─► (loop) app.file_search_query() changed?
                                    └─ yes ─► req_tx.send(query)         [loop → worker]
-worker thread: recv(query) ─► coalesce (drain to newest) ─► walk once+cache
+worker thread: recv(query) ─► coalesce (drain to newest) ─► walk afresh
               ─► file_search::rank_files(query, &files, LIMIT)
               ─► res_tx.send(FileSearchResult{query, matches})         [worker → loop]
 loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stale-dropped]
@@ -62,14 +62,19 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stal
   `std::sync::mpsc::Receiver<String>` of queries and a tokio
   `UnboundedSender<FileSearchResult>` back to the loop (its `send` is sync,
   callable from any thread — same as the reply backend). On each request it
-  **coalesces** (drains queued queries to the newest — the debounce), walks the
-  cwd **once and caches** the file list, then re-ranks per query.
+  **coalesces** (drains queued queries to the newest — the debounce), then walks
+  the cwd **afresh** and ranks the result. The walk is deliberately per-query,
+  *not* cached at startup: a startup index went stale the moment the agent
+  created a file, so `@` in a fresh dir only ever listed the boot-time contents
+  (the "new files never appear" bug). Codex gets the same freshness by starting
+  a new walk per `@`-token session; per-query is simpler here, and the
+  `FILE_INDEX_CAP` bound plus the coalescing keep the repeated walks cheap and
+  off the loop.
 - **Walk** (`main.rs::walk_files`): dependency-free (the agreed choice). An
   iterative walk of the cwd skipping **hidden** entries (dotfiles, so `.git`
   too) and a small **denylist** (`target`, `node_modules`), capped at
   `FILE_INDEX_CAP` to bound memory/time. Directories are listed with a trailing
-  `/`. (Known divergence from codex: no `.gitignore` parsing, and the list is
-  captured on first use per worker lifetime.)
+  `/`. (Known divergence from codex: no `.gitignore` parsing.)
 - **Dispatch** (`main.rs::dispatch_file_search`): after each key, compare
   `app.file_search_query()` to the last dispatched query; on change, send the
   new query (or nothing when the picker closed). Boundary state (`last_file_query`),
@@ -84,12 +89,18 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stal
     `AtToken { range, query }`: `range` is the byte range of the whole `@token`
     (to replace on accept), `query` the text after `@`.
   - `FileMatch { path: String, score: i32, indices: Vec<usize> }` — `indices`
-    are byte offsets of matched chars (for popup highlighting).
+    are byte offsets of matched chars (for popup highlighting). Its accessors
+    feed the columned rows: `is_dir()` (the walk lists directories with a
+    trailing `/`, so the kind rides the path), `name()` / `name_start()` (the
+    final component and the byte where it starts — the offset that remaps
+    `indices` onto the name column), and `parent()` (the leading directories
+    through the last interior `/`, empty for a root-level entry).
   - `fuzzy_match(query, candidate) -> Option<(i32, Vec<usize>)>` —
     ASCII-case-insensitive **subsequence** match (the fold is
     `eq_ignore_ascii_case`, so non-ASCII characters must match exactly); scores
-    boundary/contiguous/basename hits higher. Empty query matches everything
-    (score 0).
+    boundary/contiguous/basename hits higher (a directory's basename is the
+    component *before* its trailing `/`, or every dir would lose the bonus).
+    Empty query matches everything (score 0).
   - `rank_files(query, &[String], limit) -> Vec<FileMatch>` — filter+sort
     (score desc, then shorter path, then lexicographic), capped at `limit`.
 - `app/file_picker.rs`:
@@ -123,11 +134,28 @@ A third band sharing the palette's slot below the box:
 `band = menu_rows + shortcuts_rows + file_menu_rows` (at most one is non-zero).
 
 - `file_menu_rows(app)` — 0 closed; one placeholder row for *Searching…* /
-  *No matching files*; else `matches.len().min(FILE_MENU_MAX_ROWS)`.
-- `file_menu_lines(app, width)` — one row per match, windowed (`menu_window`)
-  to keep the selection visible; the **selected** row lights up cyan (the
-  palette's convention) and **matched characters** are emphasized (from
-  `FileMatch.indices`).
+  *No matching files*; else `matches.len().min(FILE_MENU_MAX_ROWS)` (at most
+  **8** rows; longer lists scroll).
+- `file_menu_lines(app, width)` — one **columned** row per match, windowed
+  (`menu_window`) to keep the selection visible:
+
+  ```text
+  → public      ./                                                        Dir
+    assets      public/                                                   Dir
+    cv.pdf      public/assets/                                            File
+    next.svg    public/                                                   File
+  ```
+
+  The selected row carries the `→` marker (`FILE_MENU_MARKER`; the rest indent
+  by its width) and lights up cyan (the palette's convention). The **name**
+  column is the widest visible name + `FILE_MENU_GAP`; the **parent** column
+  shows the entry's directory (`FILE_MENU_ROOT_DIR` `./` for root-level
+  entries, deeper parents truncated so the row never overflows); the
+  **kind** column pins `File`/`Dir` at the right edge
+  (`width − FILE_MENU_TYPE_WIDTH`). **Matched characters** stay emphasized
+  (from `FileMatch.indices`, remapped across the name/parent split —
+  `file_menu_highlight`). A width too narrow for the columns degrades to
+  marker + name alone.
 - `render_live`/`cursor_position`/`live_height` (and `main.rs::live_region_height`)
   add `file_menu_rows` to the band so the box, cursor, and footer stay put when
   the picker opens — exactly like the palette/shortcuts.
@@ -146,8 +174,14 @@ A third band sharing the palette's slot below the box:
   cursor after); Esc dismisses and is sticky; `set_file_matches` drops stale
   results; the picker stays closed in shell mode and is suppressed in the
   tool view; submit/clear/recall close it.
-- `ui` (unit): `file_menu_rows` is 0/1/n; `file_menu_lines` lists matches with
-  the selected row highlighted and matched chars emphasized; `live_height`
-  grows by the band and `cursor_position` stays put when it opens.
+- `ui` (unit): `file_menu_rows` is 0/1/n capped at 8; `file_menu_lines` splits
+  each match into aligned name / parent / kind columns (`./` for root-level,
+  `File`/`Dir` pinned at `width − 6`, a truncated deep parent keeping the pin),
+  marks only the selected row with `→` and the cyan highlight, bolds matched
+  chars in *both* columns, and degrades to marker + name when too narrow;
+  `live_height` grows by the band and `cursor_position` stays put when it
+  opens.
 - `main.rs` (smoke, Phase 25): launch in a temp dir with known files, type
-  `@alpha`, the picker lists the file, Enter inserts its path into the composer.
+  `@alpha`, the picker lists the file in the columned `→ name  ./  File`
+  layout, Enter inserts its path into the composer — then create a file and
+  search again: the per-query walk lists a file that didn't exist at startup.

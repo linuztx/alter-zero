@@ -783,9 +783,10 @@ pub(super) const MENU_NO_MATCH: &str = "No matching commands";
 
 // --- The `@` file picker. A file list pinned **below the input box** (the
 // palette's slot — the bands never show together), opened by an `@token` under
-// the cursor — a port of codex's file-search popup. It reuses the palette's
-// cyan-selected / dim-unselected colours, additionally **bolding the characters
-// the query matched** (from `FileMatch.indices`). See docs/file-search.md. ---
+// the cursor — a port of codex's file-search popup. Each row is columned —
+// `→ name  parent/  …  File|Dir` — reusing the palette's cyan-selected /
+// dim-unselected colours, additionally **bolding the characters the query
+// matched** (from `FileMatch.indices`). See docs/file-search.md. ---
 
 /// The most file rows shown at once; longer match lists scroll to keep the
 /// selection visible (`menu_window`), like the command palette.
@@ -796,6 +797,30 @@ pub(super) const FILE_MENU_SEARCHING: &str = "Searching…";
 
 /// The picker's single placeholder row when the query matched nothing.
 pub(super) const FILE_MENU_NO_MATCH: &str = "No matching files";
+
+/// The selected row's arrow marker; unselected rows indent by its width.
+pub(super) const FILE_MENU_MARKER: &str = "→ ";
+
+/// The unselected rows' inset — the marker's width in spaces, so the name
+/// column starts at the same place on every row.
+pub(super) const FILE_MENU_INDENT: &str = "  ";
+
+/// Gap between the name column and the parent-dir column (the name column is
+/// the widest visible name plus this).
+pub(super) const FILE_MENU_GAP: usize = 2;
+
+/// Columns reserved at the right edge for the kind label — `File`/`Dir`
+/// left-aligned in this slot, so both start at `width − FILE_MENU_TYPE_WIDTH`.
+pub(super) const FILE_MENU_TYPE_WIDTH: usize = 6;
+
+/// The parent-dir cell of a root-level entry (its parent is the cwd itself).
+pub(super) const FILE_MENU_ROOT_DIR: &str = "./";
+
+/// The kind-column label for a directory match.
+pub(super) const FILE_MENU_DIR_LABEL: &str = "Dir";
+
+/// The kind-column label for a file match.
+pub(super) const FILE_MENU_FILE_LABEL: &str = "File";
 
 // --- The `?` shortcuts band. A keyboard-shortcuts overview pinned **below the
 // input box** (the palette's slot — the two never show together), toggled by

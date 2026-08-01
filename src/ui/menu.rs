@@ -137,11 +137,54 @@ pub fn file_menu_rows(app: &App) -> u16 {
     }
 }
 
-/// One file-picker row: the path with the query's matched characters bolded
-/// (the byte offsets in [`FileMatch::indices`]); the selected row lights up cyan
-/// like the palette, the rest dim. Truncated to `width` (the surviving prefix
-/// keeps the same byte offsets, so the highlight stays aligned).
-fn file_menu_row(m: &FileMatch, selected: bool, width: u16) -> Line<'static> {
+/// Append `text` to `spans`, bolding the characters the query matched: a
+/// character at local byte `off` is emphasized when `base_off + off` appears in
+/// `indices` (the byte offsets in the *whole* match path). Splitting a path
+/// into name/parent columns reorders its pieces, so each column passes its own
+/// `base_off` and the highlight follows the characters wherever they land
+/// (truncation keeps the surviving prefix's offsets, so it stays aligned).
+fn file_menu_highlight(
+    spans: &mut Vec<Span<'static>>,
+    text: &str,
+    base_off: usize,
+    indices: &[usize],
+    normal: Style,
+    matched: Style,
+) {
+    let mut run = String::new();
+    let mut run_matched = false;
+    for (off, ch) in text.char_indices() {
+        let is_match = indices.binary_search(&(base_off + off)).is_ok();
+        if !run.is_empty() && is_match != run_matched {
+            let style = if run_matched { matched } else { normal };
+            spans.push(Span::styled(std::mem::take(&mut run), style));
+        }
+        run_matched = is_match;
+        run.push(ch);
+    }
+    if !run.is_empty() {
+        let style = if run_matched { matched } else { normal };
+        spans.push(Span::styled(run, style));
+    }
+}
+
+/// One file-picker row — the codex-style columns:
+///
+/// ```text
+/// → public      ./                                          Dir
+///   cv.pdf      public/assets/                              File
+/// ```
+///
+/// The `→ ` marker on the selected row (the rest indent by its width), the
+/// entry's *name*, its parent directory (`./` for a root-level entry, deeper
+/// parents truncated to the column), and the `File`/`Dir` kind label pinned at
+/// the right edge (`width − FILE_MENU_TYPE_WIDTH`). `name_col` is the shared
+/// name-column width — the widest visible name plus [`FILE_MENU_GAP`], computed
+/// by [`file_menu_lines`] so the parent column aligns across rows. The selected
+/// row lights up cyan like the palette, the rest dim, and the query's matched
+/// characters ([`FileMatch::indices`]) stay bolded across the split columns.
+/// A width too narrow for the columns degrades to marker + name alone.
+fn file_menu_row(m: &FileMatch, selected: bool, name_col: usize, width: u16) -> Line<'static> {
     let color = if selected {
         MENU_SELECTED_COLOR
     } else {
@@ -149,27 +192,40 @@ fn file_menu_row(m: &FileMatch, selected: bool, width: u16) -> Line<'static> {
     };
     let base = Style::new().fg(color);
     let matched = base.add_modifier(Modifier::BOLD);
-    let shown = truncate_cols(&m.path, width as usize);
-    // Group consecutive matched / unmatched characters into spans.
-    let mut spans = Vec::new();
-    let mut run = String::new();
-    let mut run_matched = false;
-    for (off, ch) in shown.char_indices() {
-        let is_match = m.indices.binary_search(&off).is_ok();
-        if !run.is_empty() && is_match != run_matched {
-            let style = if run_matched { matched } else { base };
-            spans.push(Span::styled(std::mem::take(&mut run), style));
-        }
-        run_matched = is_match;
-        run.push(ch);
+    let marker = if selected {
+        FILE_MENU_MARKER
+    } else {
+        FILE_MENU_INDENT
+    };
+    let mut spans = vec![Span::styled(marker, base)];
+    let avail = (width as usize).saturating_sub(cols(marker));
+    if avail < name_col + FILE_MENU_TYPE_WIDTH {
+        // Too narrow for the parent/kind columns: just the (truncated) name.
+        let name = truncate_cols(m.name(), avail);
+        file_menu_highlight(&mut spans, &name, m.name_start(), &m.indices, base, matched);
+        return Line::from(spans);
     }
-    if !run.is_empty() {
-        let style = if run_matched { matched } else { base };
-        spans.push(Span::styled(run, style));
+    let name = truncate_cols(m.name(), name_col);
+    file_menu_highlight(&mut spans, &name, m.name_start(), &m.indices, base, matched);
+    spans.push(Span::styled(" ".repeat(name_col - cols(&name)), base));
+    let dir_w = avail - name_col - FILE_MENU_TYPE_WIDTH;
+    let parent = m.parent();
+    if parent.is_empty() {
+        // Root-level: a synthesized `./` no match byte can land on.
+        let root = truncate_cols(FILE_MENU_ROOT_DIR, dir_w);
+        let pad = " ".repeat(dir_w - cols(&root));
+        spans.push(Span::styled(format!("{root}{pad}"), base));
+    } else {
+        let shown = truncate_cols(parent, dir_w);
+        file_menu_highlight(&mut spans, &shown, 0, &m.indices, base, matched);
+        spans.push(Span::styled(" ".repeat(dir_w - cols(&shown)), base));
     }
-    if spans.is_empty() {
-        spans.push(Span::styled(String::new(), base));
-    }
+    let kind = if m.is_dir() {
+        FILE_MENU_DIR_LABEL
+    } else {
+        FILE_MENU_FILE_LABEL
+    };
+    spans.push(Span::styled(kind, base));
     Line::from(spans)
 }
 
@@ -195,12 +251,14 @@ pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     let max = FILE_MENU_MAX_ROWS as usize;
     let offset = menu_window(fs.matches.len(), fs.selected, max);
-    fs.matches
+    let visible = &fs.matches[offset..(offset + max).min(fs.matches.len())];
+    // The shared name-column width: the widest *visible* name + the gap, so
+    // the parent column starts at the same place on every shown row.
+    let name_col = visible.iter().map(|m| cols(m.name())).max().unwrap_or(0) + FILE_MENU_GAP;
+    visible
         .iter()
         .enumerate()
-        .skip(offset)
-        .take(max)
-        .map(|(i, m)| file_menu_row(m, i == fs.selected, width))
+        .map(|(i, m)| file_menu_row(m, offset + i == fs.selected, name_col, width))
         .collect()
 }
 

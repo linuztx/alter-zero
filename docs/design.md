@@ -375,14 +375,20 @@ unit-tested must be unit-tested.
   `docs/file-search.md`): whenever the cursor sits in an `@token` (an `@` at
   start-of-line or after whitespace, so `email@host` never triggers), a fuzzy
   file list shows **below the box** (the palette's slot — the bands are mutually
-  exclusive). The boundary's background worker walks the cwd **once** and ranks
-  it per query off-thread — codex's async `StartFileSearch`/`FileSearchResult`
+  exclusive). The boundary's background worker walks the cwd **afresh per
+  query** and ranks it off-thread — so a file the agent just created appears
+  immediately — codex's async `StartFileSearch`/`FileSearchResult`
   round-trip (`App::file_search_query` changes drive a `dispatch_file_search`;
   results return via `App::set_file_matches`, a staleness guard dropping ones the
-  token has outrun). ↑/↓ move the highlight, **Tab/Enter insert the path**
+  token has outrun). Each row is **columned** — `→ name  parent/  File|Dir`:
+  the selected row's `→` marker, the name column sized to the widest visible
+  name, the parent directory (`./` for root-level entries), and the kind label
+  pinned at the right edge, at most 8 rows. ↑/↓ move the highlight,
+  **Tab/Enter insert the path**
   (replacing the `@token`, a trailing space added, whitespace paths quoted), Esc
   dismisses (sticky within the token, like the palette). The query-matched
-  characters are bolded in each row; `Searching…`/`No matching files`
+  characters are bolded in each row (remapped across the name/parent split);
+  `Searching…`/`No matching files`
   placeholders cover the in-flight/empty states. Suppressed in `!` shell mode.
   The path is inserted as **plain text** — it just becomes part of the message
   (codex leaves raw file paths literal too; no on-the-wire encoding).
@@ -1049,9 +1055,11 @@ and its own pure corners — the `visible_cells` wide-glyph emitter, the
   `Conversation interrupted…` text. (Mid-turn `!command`s are no longer a
   limitation: they queue as standalone `QueuedTurn::Shell` entries and run
   locally when their turn comes — codex parity, `docs/queue.md`.)
-- The `@` file picker (`docs/file-search.md`) walks the cwd **once per worker
-  lifetime** (cached on first use), so files created mid-session don't appear
-  until restart; the walk is **dependency-free** — it skips hidden entries and a
+- The `@` file picker (`docs/file-search.md`) walks the cwd **afresh per
+  query** (bounded by `FILE_INDEX_CAP`, requests coalesced), so files created
+  mid-session appear as soon as the query next changes — though a picker
+  sitting open on an *unchanged* query won't refresh until an edit re-dispatches
+  it; the walk is **dependency-free** — it skips hidden entries and a
   small denylist (`target`, `node_modules`) but does **not** parse `.gitignore`
   (codex uses the `ignore` crate + nucleo). Fuzzy ranking is a hand-rolled
   subsequence scorer, not nucleo. The selected path is inserted as plain text

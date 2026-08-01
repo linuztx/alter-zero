@@ -498,14 +498,26 @@ fn file_menu_lines_placeholder_is_searching_then_no_match() {
 }
 
 #[test]
-fn file_menu_lines_lists_paths_with_the_selection_highlighted() {
+fn file_menu_lines_lists_names_with_the_selection_highlighted() {
     let app = file_picker("ma", vec![fmatch("src/main.rs"), fmatch("READ.md")], 1);
     let lines = file_menu_lines(&app, 40);
     assert_eq!(lines.len(), 2);
-    assert!(plain(&lines[0]).contains("src/main.rs"));
-    assert!(plain(&lines[1]).contains("READ.md"));
-    // The selected row (index 1) is rendered in the cyan selection colour;
-    // the unselected row is not.
+    // Each row shows the basename in the name column with its parent dir
+    // (`./` for a root-level entry) beside it — not one raw path string.
+    assert!(
+        plain(&lines[0]).contains("main.rs") && plain(&lines[0]).contains("src/"),
+        "{:?}",
+        plain(&lines[0])
+    );
+    assert!(
+        plain(&lines[1]).contains("READ.md") && plain(&lines[1]).contains("./"),
+        "{:?}",
+        plain(&lines[1])
+    );
+    // The selected row (index 1) carries the arrow marker and the cyan
+    // selection colour; the unselected row indents by the marker's width.
+    assert!(plain(&lines[1]).starts_with("→ "), "{:?}", plain(&lines[1]));
+    assert!(plain(&lines[0]).starts_with("  "), "{:?}", plain(&lines[0]));
     assert!(
         lines[1]
             .spans
@@ -518,6 +530,67 @@ fn file_menu_lines_lists_paths_with_the_selection_highlighted() {
             .iter()
             .all(|s| s.style.fg != Some(MENU_SELECTED_COLOR))
     );
+}
+
+#[test]
+fn file_menu_rows_split_name_parent_and_kind_into_columns() {
+    // The requested look — name, parent dir, and kind in aligned columns:
+    //   → public      ./       …             Dir
+    //     assets      public/  …             Dir
+    //     cv.pdf      public/assets/ …       File
+    let app = file_picker(
+        "public",
+        vec![
+            fmatch("public/"),
+            fmatch("public/assets/"),
+            fmatch("public/assets/cv.pdf"),
+        ],
+        0,
+    );
+    let texts: Vec<String> = file_menu_lines(&app, 80).iter().map(plain).collect();
+    assert_eq!(texts.len(), 3);
+    assert!(texts[0].starts_with("→ public"), "{texts:?}");
+    assert!(texts[1].starts_with("  assets"), "{texts:?}");
+    assert!(texts[2].starts_with("  cv.pdf"), "{texts:?}");
+    // Columns align by *display* width (the `→` marker is one column but three
+    // bytes, so measure in columns, not `find` offsets).
+    let col_of = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);
+    // The parent column starts right after the name column (the widest visible
+    // name + a two-space gap): every name here is 6 wide → column 10.
+    assert_eq!(col_of(&texts[0], "./"), 10, "{texts:?}");
+    assert_eq!(col_of(&texts[1], "public/"), 10, "{texts:?}");
+    assert_eq!(col_of(&texts[2], "public/assets/"), 10, "{texts:?}");
+    // The kind column is pinned at the right edge (width − 6): File / Dir.
+    assert_eq!(col_of(&texts[0], "Dir"), 74, "{texts:?}");
+    assert_eq!(col_of(&texts[1], "Dir"), 74, "{texts:?}");
+    assert_eq!(col_of(&texts[2], "File"), 74, "{texts:?}");
+}
+
+#[test]
+fn file_menu_pins_the_kind_column_under_a_truncated_parent() {
+    // A parent deeper than the dir column is truncated so the kind column
+    // stays put at width − 6.
+    let deep = format!("{}x.rs", "a/".repeat(30));
+    let app = file_picker("x", vec![fmatch(&deep)], 0);
+    let texts: Vec<String> = file_menu_lines(&app, 40).iter().map(plain).collect();
+    let before_kind = cols(&texts[0][..texts[0].find("File").expect("kind label")]);
+    assert_eq!(before_kind, 34, "{texts:?}");
+    assert!(cols(&texts[0]) <= 40, "row fits the width: {texts:?}");
+}
+
+#[test]
+fn file_menu_degrades_to_marker_and_name_on_narrow_widths() {
+    // Too narrow for the parent/kind columns → just the marker and the name.
+    let app = file_picker("cv", vec![fmatch("public/assets/cv.pdf")], 0);
+    let texts: Vec<String> = file_menu_lines(&app, 12).iter().map(plain).collect();
+    assert_eq!(texts[0].trim_end(), "→ cv.pdf", "{texts:?}");
+}
+
+#[test]
+fn the_file_picker_shows_at_most_eight_results() {
+    assert_eq!(FILE_MENU_MAX_ROWS, 8, "the requested cap");
+    let many: Vec<_> = (0..30).map(|i| fmatch(&format!("f{i}.rs"))).collect();
+    assert_eq!(file_menu_lines(&file_picker("f", many, 0), 80).len(), 8);
 }
 
 #[test]
@@ -539,6 +612,28 @@ fn file_menu_bolds_the_matched_characters() {
 }
 
 #[test]
+fn file_menu_bolds_matched_characters_in_both_columns() {
+    // "sma" matched the `s` of the parent (`src/`, byte 0) and `ma` in the
+    // name (bytes 4–5 of "src/main.rs"): the byte offsets in `indices` are
+    // remapped onto the split name / parent columns.
+    let m = FileMatch {
+        path: "src/main.rs".to_string(),
+        score: 1,
+        indices: vec![0, 4, 5],
+    };
+    let app = file_picker("sma", vec![m], 0);
+    let line = &file_menu_lines(&app, 60)[0];
+    let bold: Vec<&str> = line
+        .spans
+        .iter()
+        .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert!(bold.contains(&"ma"), "name-column hit bolded: {bold:?}");
+    assert!(bold.contains(&"s"), "parent-column hit bolded: {bold:?}");
+}
+
+#[test]
 fn render_live_draws_the_file_picker_below_the_box() {
     let app = file_picker("ma", vec![fmatch("src/main.rs")], 0);
     let band = file_menu_rows(&app);
@@ -550,7 +645,7 @@ fn render_live_draws_the_file_picker_below_the_box() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(
-        all.contains("src/main.rs"),
+        all.contains("main.rs") && all.contains("src/") && all.contains("File"),
         "the file picker rendered below the box: {all:?}"
     );
 }

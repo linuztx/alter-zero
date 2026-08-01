@@ -1183,9 +1183,11 @@ tmux kill-session -t "$S21" 2>/dev/null
 
 # --- Phase 25: `@` file-path mentions (docs/file-search.md). Typing `@query`
 # opens a file picker BELOW the box listing workspace files that fuzzy-match the
-# query (fetched asynchronously by a background walk+rank worker); Enter inserts
-# the highlighted path into the composer, replacing the `@token`. Launch in a
-# temp dir with known files so the match set is deterministic. ---
+# query (fetched asynchronously by a background walk+rank worker) in columned
+# `→ name  parent/  File|Dir` rows; Enter inserts the highlighted path into the
+# composer, replacing the `@token`; and the walk is per-query, so a file created
+# after startup shows up too. Launch in a temp dir with known files so the match
+# set is deterministic. ---
 S22="${S}_atmention"
 ATDIR="$(mktemp -d)"
 : >"$ATDIR/alpha_smoke.txt"
@@ -1214,6 +1216,21 @@ sleep 0.3
 at_inserted="$(tmux capture-pane -t "$S22" -p)"
 echo "==== captured pane (file path inserted into the composer) ===="
 printf '%s\n' "$at_inserted"
+# A file created AFTER startup (what the agent does when asked to create one)
+# must appear in a later `@` search: the worker walks the cwd afresh per query
+# instead of serving a startup-cached list (docs/file-search.md).
+: >"$ATDIR/gamma_new.txt"
+tmux send-keys -t "$S22" -l " @gamma"
+at_fresh=""
+for _ in $(seq 1 30); do # up to ~3s for the fresh walk to list the new file
+	at_fresh="$(tmux capture-pane -t "$S22" -p)"
+	if printf '%s' "$at_fresh" | grep -qF "gamma_new.txt"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (@ picker lists a file created after startup) ===="
+printf '%s\n' "$at_fresh"
 tmux kill-session -t "$S22" 2>/dev/null
 rm -rf "$ATDIR"
 
@@ -2807,6 +2824,17 @@ fi
 # The picker closed on accept: the session footer returns to its row.
 if ! printf '%s' "$at_inserted" | grep -qF "dummy_model_name ·"; then
 	echo "FAIL: the session footer did not return after the @ file picker closed on accept" >&2
+	status=1
+fi
+# The columned row layout (docs/file-search.md): the selected row carries the
+# `→` marker, then the name, the `./` parent column, and the `File` kind label.
+if ! printf '%s' "$at_open" | grep -qE "→ alpha_smoke\.txt +\./ +File"; then
+	echo "FAIL: the @ picker row is not the columned '→ name  ./  File' layout" >&2
+	status=1
+fi
+# The fresh-walk fix: a file created after startup appears in a later search.
+if ! printf '%s' "$at_fresh" | grep -qF "gamma_new.txt"; then
+	echo "FAIL: a file created after startup never appeared in the @ picker (stale startup index)" >&2
 	status=1
 fi
 # Phase 26: a large bracketed paste collapses to the "[Pasted Content N chars]"

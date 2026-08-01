@@ -5086,8 +5086,8 @@ fn read_head(path: &Path, max_lines: usize, cap: u64) -> Option<String> {
 
 // ===== `@` file-search boundary (docs/file-search.md) =====
 
-/// Max files the `@` picker's worker indexes — bounds the walk's memory/time
-/// (codex's nucleo walk is similarly capped). Captured once per worker lifetime.
+/// Max files the `@` picker's worker indexes — bounds each walk's memory/time
+/// (codex's nucleo walk is similarly capped).
 const FILE_INDEX_CAP: usize = 10_000;
 /// Max ranked matches returned per query (the picker shows up to this many).
 const FILE_MENU_LIMIT: usize = 8;
@@ -5142,10 +5142,14 @@ fn walk_files(root: &Path, cap: usize) -> Vec<String> {
     out
 }
 
-/// Spawn the `@` file-search worker: a background thread that walks `root` once
-/// (caching the file list), then for each query — coalescing any that queued
-/// while it worked (the debounce) — ranks the cache ([`rank_files`]) and sends a
-/// [`FileSearchResult`] back. Exits when the request channel closes (app exit).
+/// Spawn the `@` file-search worker: a background thread that, for each query —
+/// coalescing any that queued while it worked (the debounce) — walks `root`
+/// **afresh** and ranks the result ([`rank_files`]), sending a
+/// [`FileSearchResult`] back. The walk is per-query (bounded by
+/// [`FILE_INDEX_CAP`]) rather than cached at startup, so a file the agent just
+/// created — or anything else new on disk — appears in the picker immediately;
+/// codex gets the same freshness by starting a new walk per `@`-token session.
+/// Exits when the request channel closes (app exit).
 /// It only *sends* on the tokio channel; it never reads stdin (invariant 1).
 /// Run one Ctrl+V clipboard read ([`clipboard::read_clipboard_image`]) on a
 /// short-lived background thread, delivering the result on the loop's image
@@ -5168,14 +5172,16 @@ fn spawn_file_search_worker(
     res_tx: tokio::sync::mpsc::UnboundedSender<FileSearchResult>,
 ) -> JoinHandle<()> {
     std::thread::spawn(move || {
-        let mut cache: Option<Vec<String>> = None;
         while let Ok(mut query) = req_rx.recv() {
             // Coalesce: if the user kept typing, only serve the newest query.
             while let Ok(newer) = req_rx.try_recv() {
                 query = newer;
             }
-            let files = cache.get_or_insert_with(|| walk_files(&root, FILE_INDEX_CAP));
-            let matches = rank_files(&query, files, FILE_MENU_LIMIT);
+            // Walk fresh every time — a startup-cached list went stale the
+            // moment the agent (or anyone) created a file, so `@` in a fresh
+            // dir only ever showed the boot-time contents.
+            let files = walk_files(&root, FILE_INDEX_CAP);
+            let matches = rank_files(&query, &files, FILE_MENU_LIMIT);
             if res_tx.send(FileSearchResult { query, matches }).is_err() {
                 break; // the loop is gone
             }

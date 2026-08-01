@@ -34,6 +34,40 @@ pub struct FileMatch {
     pub indices: Vec<usize>,
 }
 
+impl FileMatch {
+    /// Is this match a directory? The boundary's walk lists directories with a
+    /// trailing `/` (see `docs/file-search.md`), so the kind is carried by the
+    /// path itself.
+    #[must_use]
+    pub fn is_dir(&self) -> bool {
+        self.path.ends_with('/')
+    }
+
+    /// Byte offset in [`path`](Self::path) where the display [`name`](Self::name)
+    /// begins — what remaps [`indices`](Self::indices) onto the picker's name
+    /// column.
+    #[must_use]
+    pub fn name_start(&self) -> usize {
+        let trimmed = self.path.strip_suffix('/').unwrap_or(&self.path);
+        trimmed.rfind('/').map_or(0, |i| i + 1)
+    }
+
+    /// The final path component (a directory's without its trailing `/`) — the
+    /// picker's name column.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        let trimmed = self.path.strip_suffix('/').unwrap_or(&self.path);
+        &trimmed[self.name_start()..]
+    }
+
+    /// The leading directories through the last interior `/` — empty for a
+    /// root-level entry (the picker renders that as `./`).
+    #[must_use]
+    pub fn parent(&self) -> &str {
+        &self.path[..self.name_start()]
+    }
+}
+
 /// The `@`-mention token at `cursor` in `text`, if one is active: scan back over
 /// non-whitespace to the token start (just after the previous whitespace, or the
 /// start of the text) — it is an `@`-token only when that first character is `@`
@@ -80,7 +114,10 @@ pub fn fuzzy_match(query: &str, candidate: &str) -> Option<(i32, Vec<usize>)> {
         return Some((0, Vec::new()));
     }
     let qchars: Vec<char> = query.chars().collect();
-    let basename_start = candidate.rfind('/').map_or(0, |i| i + 1);
+    // A walked directory carries a trailing `/`; its basename is the component
+    // *before* that slash, or every dir would lose the basename bonus.
+    let trimmed = candidate.strip_suffix('/').unwrap_or(candidate);
+    let basename_start = trimmed.rfind('/').map_or(0, |i| i + 1);
     let mut qi = 0;
     let mut indices = Vec::with_capacity(qchars.len());
     let mut score = 0i32;
@@ -200,7 +237,52 @@ mod tests {
         assert_eq!(fuzzy_match("", "anything"), Some((0, vec![])));
     }
 
+    // ===== FileMatch name/parent/kind split (the columned picker rows) =====
+
+    #[test]
+    fn file_match_splits_name_parent_and_kind() {
+        let m = |path: &str| FileMatch {
+            path: path.to_string(),
+            score: 0,
+            indices: Vec::new(),
+        };
+        let file = m("public/assets/cv.pdf");
+        assert!(!file.is_dir());
+        assert_eq!(file.name(), "cv.pdf");
+        assert_eq!(file.name_start(), 14);
+        assert_eq!(file.parent(), "public/assets/");
+
+        let dir = m("public/assets/");
+        assert!(dir.is_dir());
+        assert_eq!(dir.name(), "assets");
+        assert_eq!(dir.name_start(), 7);
+        assert_eq!(dir.parent(), "public/");
+
+        let root_dir = m("public/");
+        assert!(root_dir.is_dir());
+        assert_eq!(root_dir.name(), "public");
+        assert_eq!(root_dir.name_start(), 0);
+        assert_eq!(root_dir.parent(), "", "root-level: no parent prefix");
+
+        let root_file = m("README.md");
+        assert!(!root_file.is_dir());
+        assert_eq!(root_file.name(), "README.md");
+        assert_eq!(root_file.name_start(), 0);
+        assert_eq!(root_file.parent(), "");
+    }
+
     // ===== rank_files =====
+
+    #[test]
+    fn rank_files_gives_a_dir_its_basename_bonus() {
+        // A directory literally named `beta` must outrank a file that merely
+        // contains the letters: the trailing `/` a walked dir carries must not
+        // defeat the basename bonus (`rfind('/')` finding the trailing slash
+        // used to leave every dir with no basename at all).
+        let files = vec!["docs/beta/".to_string(), "xbeta.txt".to_string()];
+        let r = rank_files("beta", &files, 10);
+        assert_eq!(r[0].path, "docs/beta/", "{r:?}");
+    }
 
     #[test]
     fn rank_files_prefers_basename_contiguous_matches() {
