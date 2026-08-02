@@ -182,31 +182,81 @@ fn clear_conversation_drops_the_compact_state() {
 }
 
 #[test]
-fn clear_re_seats_the_gauge_on_what_still_rides_the_next_request() {
-    // /clear wipes the conversation, but the system prompt and the
-    // standing AGENTS.md instructions still ride the very next request —
-    // hard-zeroing the gauge would under-report them. It re-seats on the
-    // estimate instead; a bare session still reads 0.
+fn clear_leaves_the_gauge_reading_exactly_what_a_fresh_session_reads() {
+    // /clear promises a fresh slate, so its footer must be indistinguishable
+    // from the session that just booted in the same cwd with the same model.
+    // The gauge used to re-seat on the standing system prompt + AGENTS.md
+    // instructions (they do ride the next request) — but a *booted* session
+    // carries those same constants and reads 0, so the same empty
+    // conversation showed two different numbers and the post-clear one read
+    // as leftover conversation state (`139/1M` on an empty screen).
+    let standing = |app: &mut App| {
+        app.set_system_prompt(Some("a system prompt".to_string()));
+        app.set_user_instructions(Some("standing project instructions".to_string()));
+    };
+    let fresh = {
+        let mut app = App::new();
+        standing(&mut app);
+        app
+    };
+    let mut app = App::new();
+    standing(&mut app);
+    app.record_user_message("hello there");
+    app.begin_stream();
+    app.apply_usage(&usage_of(5_000, 0));
+    app.finish_stream();
+    app.end_turn(1);
+    assert!(app.context_used() > 0, "a real conversation counts");
+    app.clear_conversation();
+    assert_eq!(
+        app.context_used(),
+        fresh.context_used(),
+        "a cleared session reads exactly like a fresh one"
+    );
+    assert_eq!(app.context_used(), 0, "and that reading is a true zero");
+}
+
+#[test]
+fn the_gauge_reads_zero_exactly_when_there_is_nothing_to_compact() {
+    // The gauge's "is there a conversation?" test is the very predicate
+    // /compact uses for its `Nothing to compact` rejection, so the footer and
+    // the command can never disagree about whether anything is there: no
+    // derived context → a true zero (the system prompt and the standing
+    // AGENTS.md instructions are session constants, not conversation, and a
+    // freshly booted session reads 0 with both of them loaded); any derived
+    // context → they are counted along with it.
     let mut app = App::new();
     app.set_system_prompt(Some("a system prompt".to_string()));
     app.set_user_instructions(Some("standing project instructions".to_string()));
+    let agree = |app: &App| {
+        let derived = crate::context::context_messages(&app.history).is_empty();
+        assert_eq!(
+            derived,
+            app.context_used() == 0,
+            "gauge {} vs derived-empty {derived}",
+            app.context_used()
+        );
+    };
+    app.refresh_context_used();
+    agree(&app);
+    assert_eq!(app.context_used(), 0, "an empty conversation");
+    // A notice is not chat, but the model IS told about it (it derives as a
+    // user-role entry), so it counts — and /compact would have something to
+    // summarize. The two move together, which is the invariant.
+    app.record_system_message("a notice");
+    app.refresh_context_used();
+    agree(&app);
+    assert!(app.context_used() > 0);
+    // A real exchange, then a clear: back to a true zero, in step again.
     app.record_user_message("hello there");
     app.begin_stream();
     app.finish_stream();
     app.end_turn(1);
+    app.refresh_context_used();
+    agree(&app);
     app.clear_conversation();
-    assert!(
-        app.context_used() > 0,
-        "the prompt + instructions still count after a clear"
-    );
-
-    let mut bare = App::new();
-    bare.record_user_message("hello there");
-    bare.begin_stream();
-    bare.finish_stream();
-    bare.end_turn(1);
-    bare.clear_conversation();
-    assert_eq!(bare.context_used(), 0, "nothing standing → a true zero");
+    agree(&app);
+    assert_eq!(app.context_used(), 0);
 }
 
 #[test]

@@ -235,7 +235,17 @@ the bottom rule — the shape of the user's mock):
 - Type to filter (case-insensitive substring over `id`, provider, and name),
   `↑/↓`/PgUp/PgDn/Home/End move, `Enter` selects →
   `Action::SelectModel { provider, id }`, `Esc` clears the query then closes,
-  `Ctrl+C` closes. The ✓ marks the active `(provider, id)` — the boundary passes
+  `Ctrl+C` closes. A **bracketed paste** extends the filter too
+  (`App::paste_into_model_filter`, routed from the loop's `Event::Paste` arm):
+  a model id is copied from a provider's dashboard far more often than it is
+  typed. It was previously swallowed outright — dropped to keep it out of the
+  composer draft underneath the picker, which left the key doing nothing at
+  all; routing it to the filter keeps that draft untouched *and* makes paste
+  work. Whitespace runs flatten to single spaces (a copied id drags a trailing
+  newline) and an all-blank paste is a no-op, like the `/login` provider step
+  and the `/resume` search — but it appends **flush**, with no space
+  separator, because a model filter matches one id: pasting the tail of a
+  half-typed id has to complete the token, not start a new word. The ✓ marks the active `(provider, id)` — the boundary passes
   the active provider via `App::set_active_provider`, so a shared id across
   providers marks only the row actually in use. The list **keeps the highlight
   centered** (`ui::centered_window`): on a long list the selection rides the

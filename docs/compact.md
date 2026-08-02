@@ -137,6 +137,16 @@ the same threshold — **90% of the model's context window**
   across mutations by a tokenizer re-estimate: after a compaction (codex's
   `recompute_token_usage`), a `/clear` (→ 0), a backtrack, a `/resume`, and
   at the end of any turn that saw no usage frame (the dummy).
+- **An empty conversation reads a true zero.** The estimate returns 0 as soon
+  as the derived context is empty — the *same* predicate `/compact` uses for
+  `Nothing to compact`, so the footer and the command never disagree about
+  whether anything is there. The system prompt and the standing AGENTS.md
+  instructions do ride the next request, and the estimate counts them once a
+  conversation exists, but they are session constants: a freshly booted
+  session carries both and reads `0/1M`, so billing them to a *cleared*
+  session made one state show two numbers, and the leftover-looking one
+  (`139/1M` under a blank screen) read as conversation that hadn't really
+  gone. `/clear` now lands exactly where a fresh session starts.
 - **The trigger** lives at the loop bottom, where every turn end and gauge
   change lands: idle, past the threshold, and with a non-empty derivable
   context, the loop starts the same summarization turn the command runs —

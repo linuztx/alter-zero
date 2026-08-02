@@ -134,8 +134,22 @@ impl App {
     /// flat [`IMAGE_INPUT_TOKENS`] per attachment. The stand-in between real
     /// usage frames — and the only measure right after a history mutation
     /// (compaction, `/clear`, backtrack, `/resume`) made the last frame stale.
+    ///
+    /// **An empty conversation estimates zero.** The system prompt and the
+    /// standing instructions do ride the next request, but a *booted* session
+    /// carries those same constants and the gauge reads 0 there (nothing
+    /// seeds it until a turn), so counting them after a `/clear` showed the
+    /// same empty state as two different numbers — and the leftover-looking
+    /// one (`139/1M` under a blank screen) read as conversation that hadn't
+    /// really gone. The gauge measures the conversation; with none, it is 0,
+    /// and `/clear` lands exactly where a fresh session starts. The predicate
+    /// is the one `/compact` uses for `Nothing to compact`, so the two never
+    /// disagree about whether anything is there.
     #[must_use]
     fn estimate_context_tokens(&self) -> u64 {
+        if crate::context::context_messages(&self.history).is_empty() {
+            return 0;
+        }
         let mut total = self.system_prompt.as_deref().map_or(0, count_tokens);
         for message in
             crate::context::context_messages_with(self.user_instructions.as_deref(), &self.history)

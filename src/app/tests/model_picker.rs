@@ -64,6 +64,66 @@ fn selecting_a_model_carries_its_vision_support() {
 }
 
 #[test]
+fn paste_into_the_model_filter_extends_the_query() {
+    // A model id is copied from a docs page or the provider's dashboard far
+    // more often than it is typed out, so the picker's search takes pastes
+    // like the /login provider step and the /resume picker (they used to be
+    // swallowed outright — nothing happened at all).
+    let mut app = model_app(&sample_models());
+    type_chars(&mut app, "clau");
+    app.paste_into_model_filter("de-3.5-haiku");
+    let picker = app.model_picker.as_ref().expect("the picker is open");
+    assert_eq!(picker.query, "claude-3.5-haiku");
+    assert_eq!(
+        picker.selected, 0,
+        "a narrowed filter re-seats the highlight"
+    );
+    assert!(
+        picker.matches().iter().any(|m| m.id.contains("haiku")),
+        "the pasted id filters the list: {:?}",
+        picker.matches()
+    );
+}
+
+#[test]
+fn paste_into_the_model_filter_flattens_newlines_and_ignores_blanks() {
+    // A copied id usually drags a trailing newline; a multi-line paste
+    // flattens to spaces rather than smuggling control characters into the
+    // one-line filter. An all-whitespace paste is a no-op.
+    let mut app = model_app(&sample_models());
+    app.paste_into_model_filter("  openai/gpt-4o-mini \n");
+    let query = app.model_picker.as_ref().unwrap().query.clone();
+    assert_eq!(query, "openai/gpt-4o-mini");
+    app.paste_into_model_filter("   \n\t ");
+    assert_eq!(
+        app.model_picker.as_ref().unwrap().query,
+        query,
+        "a blank paste changes nothing"
+    );
+    assert!(
+        !app.model_picker.as_ref().unwrap().query.contains('\n'),
+        "no newline reaches the filter"
+    );
+}
+
+#[test]
+fn paste_with_the_model_picker_open_never_reaches_the_composer() {
+    // The picker only replaces the composer visually — the draft underneath
+    // must stay untouched (the reason pastes were swallowed in the first
+    // place; now they route to the filter instead).
+    let mut app = App::new();
+    type_chars(&mut app, "a draft");
+    app.open_model_picker("openai/gpt-4o-mini");
+    app.paste_into_model_filter("pasted");
+    assert_eq!(
+        app.input.text(),
+        "a draft",
+        "the composer draft is untouched"
+    );
+    assert_eq!(app.model_picker.as_ref().unwrap().query, "pasted");
+}
+
+#[test]
 fn slash_model_runs_to_open_the_picker_when_idle() {
     let mut app = App::new();
     type_chars(&mut app, "/model");

@@ -1636,13 +1636,17 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                     Event::Paste(pasted) => {
                         match app.view {
                             // The `/login` flow takes pastes (an API key is always
-                            // pasted); the `/model` picker's filter is typed, so a
-                            // paste there is swallowed rather than editing the
-                            // hidden composer draft underneath it.
+                            // pasted) and so does the `/model` filter (a model id
+                            // is copied from a provider's dashboard far more often
+                            // than it is typed). Both route to their own handler,
+                            // so the paste reaches the field the user is looking
+                            // at and never the composer draft underneath.
                             View::Conversation if app.key_onboarding.is_some() => {
                                 app.paste_into_key_onboarding(&pasted);
                             }
-                            View::Conversation if app.model_picker.is_some() => {}
+                            View::Conversation if app.model_picker.is_some() => {
+                                app.paste_into_model_filter(&pasted);
+                            }
                             View::Conversation => {
                                 app.on_paste(&pasted);
                                 // The paste may have changed the active `@token`.

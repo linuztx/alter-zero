@@ -287,6 +287,32 @@ impl App {
         }
     }
 
+    /// Extend the picker's type-to-search with a bracketed paste — the
+    /// `/login` provider step's and the `/resume` picker's handler, with one
+    /// divergence: it appends **flush**, no space separator. A model filter
+    /// matches one id (`openai/gpt-4o-mini`), so pasting the tail of a
+    /// half-typed id has to complete the token rather than start a new word.
+    /// Whitespace runs (a copied id's trailing newline, a multi-line
+    /// selection) still flatten to single spaces so no control character
+    /// reaches the one-line filter, an all-blank paste is a no-op, and the
+    /// highlight re-seats at the top of the narrowed list. A model id is copied from a
+    /// provider's dashboard far more often than it is typed, and the paste
+    /// used to be dropped on the floor to keep it out of the composer draft
+    /// underneath — routing it here keeps that draft untouched *and* makes
+    /// the key work. No-op if the picker was closed meanwhile. See
+    /// `docs/llm.md`.
+    pub fn paste_into_model_filter(&mut self, pasted: &str) {
+        let flat = pasted.split_whitespace().collect::<Vec<_>>().join(" ");
+        if flat.is_empty() {
+            return;
+        }
+        let Some(picker) = self.model_picker.as_mut() else {
+            return;
+        };
+        picker.query.push_str(&flat);
+        picker.selected = 0;
+    }
+
     /// Keys while the inline `/model` picker is open. Mirrors the `/resume`
     /// picker's grammar: ↑/↓ move (clamped), PageUp/PageDown jump by
     /// [`MODEL_PAGE`], Home/End to the ends, Enter selects the highlighted

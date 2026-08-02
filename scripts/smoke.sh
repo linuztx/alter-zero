@@ -1288,6 +1288,29 @@ for _ in $(seq 1 20); do # up to ~2s for the redraw
 done
 echo "==== captured pane (after one Backspace — placeholder gone) ===="
 printf '%s\n' "$paste_backspaced"
+
+# A bracketed paste into the /model picker's type-to-search FILTERS the list
+# (docs/llm.md): a model id is copied far more often than typed, and the paste
+# used to be swallowed outright. The dummy backend has no provider key, so the
+# picker shows its /login hint — the assertion is that the pasted text lands in
+# the search field (it echoes on the `❯` filter row), not in the composer
+# draft underneath.
+tmux send-keys -t "$S23" -l "/model"
+sleep 0.3
+tmux send-keys -t "$S23" Enter
+sleep 0.6
+tmux set-buffer -- "openai/gpt-4o-mini"
+tmux paste-buffer -p -t "$S23"
+model_paste=""
+for _ in $(seq 1 25); do # up to ~2.5s for the filter row to redraw
+	model_paste="$(tmux capture-pane -t "$S23" -p)"
+	if printf '%s' "$model_paste" | grep -qF "openai/gpt-4o-mini"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== captured pane (bracketed paste into the /model search) ===="
+printf '%s\n' "$model_paste"
 tmux kill-session -t "$S23" 2>/dev/null
 
 # --- Phase 27: Ctrl+V image paste (docs/image-paste.md). The happy path needs a
@@ -2883,6 +2906,16 @@ fi
 # keystroke, not one of its characters — docs/paste.md).
 if printf '%s' "$paste_backspaced" | grep -qF "[Pasted Content"; then
 	echo "FAIL: one Backspace did not remove the whole '[Pasted Content …]' placeholder (atomic delete regressed)" >&2
+	status=1
+fi
+# … and a bracketed paste into the /model picker's search reaches the FILTER
+# (docs/llm.md) — it used to be swallowed, so nothing happened at all.
+if ! printf '%s' "$model_paste" | grep -qF "openai/gpt-4o-mini"; then
+	echo "FAIL: a bracketed paste into the /model search never reached the filter (swallowed paste regressed)" >&2
+	status=1
+fi
+if ! printf '%s' "$model_paste" | grep -qF "No API key yet"; then
+	echo "FAIL: the /model picker was not open when the paste landed (the phase tested nothing)" >&2
 	status=1
 fi
 # Phase 27: Ctrl+V with no clipboard fails gracefully — a red "Failed to paste
