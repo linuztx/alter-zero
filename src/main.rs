@@ -1800,20 +1800,31 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                     }
                 }
                 match app.view {
-                    // A permission prompt just closed after the screen moved
-                    // one-way under it — its own growth scrolled chat into
-                    // scrollback (the ordinary case), a commit beneath it
-                    // scrolled, or a rebuild reseated it (a mid-prompt
-                    // resize's purge, an overlay return whose prompt opened
-                    // underneath). The plain collapse cannot refill what
-                    // moved, so it would strand the box above a band of blank
-                    // rows. Purge-rebuild instead: box flush at the bottom,
-                    // scrollback rebuilt from history, nothing lost or
-                    // doubled. (An open agent session view rebuilds itself —
+                    // The modal (permission-prompt) region needs a purge
+                    // rebuild instead of an in-place paint — two cases, one
+                    // pure decision (`ui::modal_needs_rebuild`,
+                    // `docs/permissions.md`). The prompt just CLOSED after
+                    // the screen moved one-way under it — its own growth
+                    // scrolled chat into scrollback (the ordinary case), a
+                    // commit beneath it scrolled, or a rebuild reseated it (a
+                    // mid-prompt resize's purge, an overlay return whose
+                    // prompt opened underneath): the plain collapse cannot
+                    // refill what moved. Or the prompt is still OPEN and this
+                    // frame would SHRINK the region seated at the screen
+                    // bottom — a batch's back-to-back prompts of different
+                    // heights (the tall body-capped one answered, a short one
+                    // opening as the resolved cell commits out of the live
+                    // region), which used to strand the open prompt above a
+                    // band of blank rows until it was answered. Purge-rebuild
+                    // instead: region flush at the bottom, scrollback rebuilt
+                    // from history, nothing lost or doubled — and a rebuild
+                    // under a still-open prompt re-arms the note
+                    // (`InlineViewport::reflow`), so its eventual close still
+                    // purges. (An open agent session view rebuilds itself —
                     // `repaint_active_view` routes there.) See
                     // `InlineViewport::take_modal_scrolled` and
                     // `docs/permissions.md`.
-                    View::Conversation if term.modal_scrolled() && !ui::region_is_modal(&app) => {
+                    View::Conversation if modal_rebuild_due(term, &app) => {
                         let _ = term.take_modal_scrolled();
                         repaint_active_view(
                             term,
@@ -3918,6 +3929,24 @@ fn os_context() -> String {
         }
     }
     os.to_string()
+}
+
+/// Whether this draw tick must purge-rebuild the conversation instead of
+/// painting the live region in place — the boundary read behind the pure
+/// [`ui::modal_needs_rebuild`]: the just-closed prompt's noted one-way move,
+/// or the still-open prompt about to seat short of the screen bottom it was
+/// painted flush against (a batch's back-to-back prompts of different
+/// heights — see the draw tick's rebuild arm and `docs/permissions.md`).
+fn modal_rebuild_due(term: &InlineViewport, app: &App) -> bool {
+    ui::modal_needs_rebuild(
+        ui::region_is_modal(app),
+        term.modal_scrolled(),
+        term.painted_bottom(),
+        term.view_top(),
+        term.pending_rows(),
+        live_region_height(app, term.screen()),
+        term.screen().height,
+    )
 }
 
 /// The live region's height for `app` at the current screen size — exactly what

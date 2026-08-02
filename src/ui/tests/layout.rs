@@ -185,6 +185,56 @@ fn repin_scrolls_up_only_when_the_box_overflows_the_bottom() {
 }
 
 #[test]
+fn modal_rebuild_fires_when_a_pinned_prompt_would_seat_short_of_the_bottom() {
+    // Back-to-back prompts of different heights: the tall body-capped prompt
+    // (painted flush at the bottom, rows 4..40) was answered, its resolved
+    // cell queued (14 pending rows), and a short prompt opened in its place —
+    // the flush would seat the region at 4+14, ending at 4+14+16 = 34 of 40.
+    // The scrolls that pinned it to the bottom are one-way, so that frame
+    // strands the open prompt above a band of blank rows until it is
+    // answered (the reported bug). The draw must purge-rebuild NOW, not wait
+    // for the close.
+    assert!(modal_needs_rebuild(true, false, 40, 4, 14, 16, 40));
+    // …whether or not a one-way move was already noted, and equally with
+    // nothing pending (the separate-frame ordering: the cell committed and
+    // flushed before the next prompt opened — a pure repin shrink).
+    assert!(modal_needs_rebuild(true, true, 40, 4, 14, 16, 40));
+    assert!(modal_needs_rebuild(true, false, 40, 19, 0, 16, 40));
+}
+
+#[test]
+fn modal_rebuild_waits_while_the_open_prompt_stays_seated_at_the_bottom() {
+    // Same frame → the ordinary diff paint; taller → the ordinary repin,
+    // whose scroll keeps the region flush at the bottom by itself.
+    assert!(!modal_needs_rebuild(true, true, 40, 4, 0, 36, 40));
+    assert!(!modal_needs_rebuild(true, true, 40, 4, 0, 39, 40));
+    // A flush whose own scroll plan re-seats the region flush (4+14+25 ≥ 40)
+    // needs no rebuild either — the paint lands it at the bottom.
+    assert!(!modal_needs_rebuild(true, true, 40, 4, 14, 25, 40));
+}
+
+#[test]
+fn modal_rebuild_skips_a_prompt_floating_above_the_bottom() {
+    // A floating region (a short conversation — the painted frame never
+    // reached the screen bottom) shrinks over rows that are already blank:
+    // no visible gap, and skipping the rebuild keeps the user's own terminal
+    // scrollback unpurged.
+    assert!(!modal_needs_rebuild(true, false, 22, 2, 0, 12, 40));
+    assert!(!modal_needs_rebuild(true, true, 22, 2, 0, 12, 40));
+}
+
+#[test]
+fn modal_rebuild_on_close_still_follows_the_one_way_note() {
+    // No prompt open: the note alone decides, exactly as before — a close
+    // after a one-way move purges, an unmoved close shrinks in place.
+    assert!(modal_needs_rebuild(false, true, 40, 4, 0, 8, 40));
+    assert!(!modal_needs_rebuild(false, false, 22, 2, 0, 8, 40));
+    // The geometry is irrelevant at the close: even a plan that reaches the
+    // bottom rebuilds after the note (it stands for what already moved).
+    assert!(modal_needs_rebuild(false, true, 40, 30, 0, 10, 40));
+}
+
+#[test]
 fn region_is_modal_only_while_a_permission_prompt_is_open() {
     // The one inline view whose close needs the purge rebuild — its growth
     // scrolls chat into real scrollback one-way (docs/permissions.md); every

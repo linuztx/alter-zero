@@ -823,12 +823,17 @@ impl ReplySource for DummyAi {
             // real backend's tool thread does, then resolve accordingly. A
             // prompt naming both "parallel" and "permission" plays the
             // two-command `bash` batch (back-to-back prompts, no pauses —
-            // the covering machinery's hardest timing); "permission" alone
-            // keeps the single `Write` approval.
+            // the covering machinery's hardest timing); "staggered" and
+            // "permission" the two-`write` batch whose prompts differ wildly
+            // in height (the tall one capped, the next tiny — the pinned
+            // modal region's hardest shrink); "permission" alone keeps the
+            // single `Write` approval.
             if let Some(gate) = permissions.filter(|_| prompt.to_lowercase().contains("permission"))
             {
                 if prompt.to_lowercase().contains("parallel") {
                     dummy_parallel_permission_turn(&gate, &tx, &cancel);
+                } else if prompt.to_lowercase().contains("staggered") {
+                    dummy_staggered_permission_turn(&gate, &tx, &cancel);
                 } else {
                     dummy_permission_turn(&gate, &tx, &cancel);
                 }
@@ -959,6 +964,126 @@ fn dummy_permission_turn(
     } else {
         "Understood, I have left the file alone."
     }) {
+        if cancel.is_cancelled() {
+            return;
+        }
+        if tx.send(StreamEvent::Chunk(chunk)).is_err() {
+            return;
+        }
+        nap(CHUNK_DELAY, cancel);
+    }
+    let _ = tx.send(StreamEvent::StreamDone);
+}
+
+/// The scripted **staggered** permission demo's files: two gated `write`s in
+/// one batch whose prompts differ wildly in height — the first's body is
+/// [`staggered_big_content`] (long enough to cap the prompt on any sane
+/// terminal, so it fills the screen), the second's a single line. The offline
+/// mirror of the reported gap-under-the-prompt shape: answering the tall
+/// prompt commits its cell and opens the short prompt in the same frame gap,
+/// shrinking the pinned modal region hard (`docs/permissions.md`, the smoke
+/// suite's staggered-prompt phase).
+const DUMMY_STAGGERED_BIG_PATH: &str = "big_module.py";
+const DUMMY_STAGGERED_TINY_PATH: &str = "tiny_note.py";
+const DUMMY_STAGGERED_TINY_CONTENT: &str = "# Reserved for a later chapter of the demo.";
+
+/// The tall `write`'s body — enough source lines that the first prompt's
+/// numbered preview caps (and so pads itself to fill the terminal) at any
+/// realistic height, maximising the height drop to the tiny second prompt.
+fn staggered_big_content() -> String {
+    let mut lines = vec![
+        "\"\"\"A module long enough to cap the permission prompt's preview.\"\"\"".to_string(),
+        String::new(),
+    ];
+    lines.extend((1..=58).map(|i| format!("VALUE_{i:02} = {i}")));
+    lines.join("\n")
+}
+
+/// Play the staggered batch approval round trip ([`DUMMY_STAGGERED_BIG_PATH`]
+/// / [`DUMMY_STAGGERED_TINY_PATH`]): announce both `Write` calls up front,
+/// then — per call, exactly like [`dummy_parallel_permission_turn`] — ask,
+/// block on the gate, and resolve the cell before moving on, with **no
+/// scripted pause anywhere** so the tall prompt's answer and the tiny
+/// prompt's request land in one frame gap.
+fn dummy_staggered_permission_turn(
+    gate: &crate::permission::PermissionGate,
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+) {
+    use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
+    let files = [
+        (DUMMY_STAGGERED_BIG_PATH, staggered_big_content()),
+        (
+            DUMMY_STAGGERED_TINY_PATH,
+            DUMMY_STAGGERED_TINY_CONTENT.to_string(),
+        ),
+    ];
+    let _ = tx.send(StreamEvent::ToolBatch(
+        files
+            .iter()
+            .map(|(path, _)| ToolCallSummary {
+                name: "Write".to_string(),
+                args: (*path).to_string(),
+            })
+            .collect(),
+    ));
+    for (path, content) in files {
+        let mut request = PermissionRequest {
+            id: gate.next_id(),
+            kind: PermissionKind::Write,
+            target: path.to_string(),
+            body: crate::llm::tools::render_numbered_content(&content),
+            detail: None,
+            agent: None,
+        };
+        let decision = if gate.allows(&request) {
+            Some(PermissionDecision::Approve)
+        } else {
+            let _ = tx.send(StreamEvent::Permission(request.clone()));
+            gate.wait(&request.id, &|| cancel.is_cancelled())
+        };
+        let resolved = match &decision {
+            Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
+                if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
+                    request.id.clear();
+                    gate.remember(&request);
+                }
+                Ok(format!(
+                    "Created {path} ({} lines)\n{}",
+                    content.lines().count(),
+                    crate::llm::tools::render_numbered_content(&content),
+                ))
+            }
+            Some(PermissionDecision::Deny(feedback)) => Err((
+                crate::permission::denied_display(&request, feedback.as_deref()),
+                crate::permission::denial_result(feedback.as_deref()),
+            )),
+            Some(PermissionDecision::Explain) => Err((
+                crate::permission::explain_display(),
+                crate::permission::explain_result(&request),
+            )),
+            // Cancelled out from under us — the channel is already abandoned.
+            None => return,
+        };
+        let _ = tx.send(StreamEvent::ToolStart {
+            name: "Write".to_string(),
+            args: path.to_string(),
+            detail: None,
+        });
+        match resolved {
+            Ok(output) => {
+                let _ = tx.send(StreamEvent::ToolEnd {
+                    output,
+                    ok: true,
+                    truncated: false,
+                });
+            }
+            Err((display, result)) => {
+                let _ = tx.send(StreamEvent::ToolRejected { display, result });
+            }
+        }
+    }
+    for chunk in chunks("Both files are written — the big module and the tiny note.") {
         if cancel.is_cancelled() {
             return;
         }
@@ -1883,6 +2008,70 @@ mod tests {
             ],
             "two gated calls, asked and resolved in order"
         );
+    }
+
+    #[test]
+    fn a_staggered_permission_demo_asks_a_tall_write_then_a_tiny_one() {
+        // The offline mirror of the reported gap-under-the-prompt shape
+        // (docs/permissions.md): a batch of two gated `write`s whose prompts
+        // differ wildly in height — the first's body is long enough to cap on
+        // any sane terminal (the prompt fills it), the second's is a single
+        // line — with **no scripted pause** between the first cell's
+        // resolution and the second request, so the loop sees the pinned
+        // modal region shrink hard inside one frame gap (the smoke suite's
+        // staggered-prompt phase drives this end to end).
+        let gate = crate::permission::PermissionGate::new();
+        let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
+        let (tx, mut rx) = unbounded_channel();
+        let handle = dummy.spawn(
+            "staggered permission demo".to_string(),
+            vec![],
+            vec![],
+            tx,
+            CancelToken::new(),
+        );
+        let mut order = Vec::new();
+        let mut body_lines = Vec::new();
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                StreamEvent::ToolBatch(items) => order.push(format!("batch:{}", items.len())),
+                StreamEvent::Permission(req) => {
+                    assert_eq!(req.kind, crate::permission::PermissionKind::Write);
+                    body_lines.push(req.body.lines().count());
+                    order.push(format!("ask:{}", req.target));
+                    gate.resolve(&req.id, crate::permission::PermissionDecision::Approve);
+                }
+                StreamEvent::ToolStart { args, .. } => order.push(format!("start:{args}")),
+                StreamEvent::ToolEnd { ok, .. } => order.push(format!("end:{ok}")),
+                StreamEvent::Chunk(_) => {}
+                StreamEvent::StreamDone => {
+                    order.push("done".to_string());
+                    break;
+                }
+                other => panic!("unexpected event in the demo: {other:?}"),
+            }
+        }
+        handle.join().unwrap();
+        assert_eq!(
+            order,
+            vec![
+                "batch:2",
+                "ask:big_module.py",
+                "start:big_module.py",
+                "end:true",
+                "ask:tiny_note.py",
+                "start:tiny_note.py",
+                "end:true",
+                "done",
+            ],
+            "two gated writes, asked and resolved in order"
+        );
+        assert!(
+            body_lines[0] >= 50,
+            "the first prompt's body caps any sane terminal, got {} lines",
+            body_lines[0]
+        );
+        assert_eq!(body_lines[1], 1, "the second prompt is a single line");
     }
 
     #[test]

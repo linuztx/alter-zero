@@ -141,6 +141,32 @@ list). The scroll such a commit causes is one of the one-way moves the note
 tracks, so the eventual close still purge-rebuilds cleanly (`smoke.sh`
 Phase 59).
 
+The close is not the only moment the one-way scrolls bite: the region can
+**shrink while a prompt is still open**. Back-to-back prompts differ in
+height — a body-capped prompt fills the terminal while a one-line file's is a
+dozen rows; answering the tall one commits its cell out of the live region
+and opens the short one, often inside the same frame gap (and a subagent's
+tree-topped prompt alternating with a main-turn one moves the height just the
+same). Painted in place, that frame stranded the *open* prompt above a band
+of blank rows for as long as it asked — the flush's scroll plan seats the
+region below the committed lines and reserves only the new, shorter height
+(its trailing clear blanking everything beneath), and the separate-frame
+ordering repin-shrinks into the same band without even setting the note (no
+flush, no scroll). So the loop's draw tick decides *before* painting
+(`ui::modal_needs_rebuild`, fed by `main.rs::modal_rebuild_due`): while the
+region is modal, if the last **painted** frame reached the screen bottom
+(`InlineViewport::painted_bottom` — the tracked `view` height re-syncs
+between paints for the flush plan, so it cannot serve) and this frame's plan
+— `view_top + pending rows + new height` — would seat it short of that
+bottom, the frame is answered with the same purge rebuild the close uses,
+reseating the open prompt flush with the resolved cell visible above it. The
+rebuild runs under the open prompt, so `reflow` re-arms the note and the
+eventual close still purges; a prompt floating above the bottom (a short
+conversation — nothing ever scrolled) keeps its plain shrink, blanking rows
+that were already free. Guarded by `smoke.sh` Phase 63 (the dummy's
+"staggered permission demo": a screen-tall `write` answered into a one-line
+one).
+
 ## The options
 
 Every prompt offers three, selected with ↑/↓ + Enter or by typing `1`/`2`/`3`:
@@ -340,10 +366,19 @@ integration tests) that builds a backend directly is unaffected.
   body under the same batch keeps its guaranteed peek + `… +N lines` tail,
   and a small batch shows every sibling with no summary row.
 - `ui/tests/layout.rs` — `region_is_modal` is a prompt and nothing else (the
-  predicate the boundary reads to note one-way moves for the close's purge).
+  predicate the boundary reads to note one-way moves for the close's purge);
+  and `modal_needs_rebuild`, the draw tick's whole rebuild decision: it fires
+  when a pinned open prompt's next frame would seat short of the screen
+  bottom (with or without pending lines, whether or not the note is set),
+  holds while the frame stays seated (same height, growth, a flush whose own
+  scroll re-seats flush), skips a prompt floating above the bottom, and at
+  the close follows the one-way note exactly as before.
 - `stream.rs` — the dummy's "parallel permission" turn: two gated `Bash` calls
   announced up front, each asking before it starts, the next request following
-  the previous cell's resolution with no scripted pause.
+  the previous cell's resolution with no scripted pause; and the "staggered
+  permission" turn — two gated `Write`s whose prompts differ wildly in height
+  (the first's body caps any sane terminal, the second's is one line), the
+  same no-pause timing, for the mid-open shrink.
 - `ui/tests/permission_view.rs` — the options show no cursor while the amend
   field and the composer do; and the seat, pinned to the rendered rows: it
   lands on whichever row carries the `❯` marker and steps down with each ↓, on
@@ -378,6 +413,12 @@ integration tests) that builds a backend directly is unaffected.
   rebuilt tail (a one-way reseat the note records), and answering still lands
   the box flush at the bottom with the message committed exactly once — the
   "newlines at the bottom, but only when Ctrl+O was opened first" bug.
+- `smoke.sh` Phase 63 — the mid-open shrink in a real terminal: the
+  "staggered permission" batch's screen-tall first prompt is answered, and
+  while the one-line second prompt is open its closing rule is the pane's
+  **last row** — no band of blank rows underneath the still-open prompt (the
+  reported empty-newlines bug) — with the tall `write`'s resolved cell
+  visible above it, committed exactly once, and the box back flush after.
 - `tests/live_openrouter.rs` — against a real provider: the replayed rejection
   is a legible context shape and the model still follows the instructions a
   turn later.

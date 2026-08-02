@@ -148,6 +148,16 @@ pub struct InlineViewport {
     /// [`modal_scrolled`]: InlineViewport::modal_scrolled
     /// [`take_modal_scrolled`]: InlineViewport::take_modal_scrolled
     modal_scrolled: bool,
+    /// The screen row just below the live region as it was last **painted**
+    /// ([`paint_frame`] records it) — unlike `view.height`, immune to the
+    /// between-paint re-syncs of [`set_view_height`]. Read by the loop
+    /// ([`painted_bottom`]) to tell a modal region pinned flush at the screen
+    /// bottom from one still floating above it (`docs/permissions.md`).
+    ///
+    /// [`paint_frame`]: InlineViewport::paint_frame
+    /// [`set_view_height`]: InlineViewport::set_view_height
+    /// [`painted_bottom`]: InlineViewport::painted_bottom
+    painted_bottom: u16,
     /// Whether [`init`] pushed the kitty keyboard-enhancement flags (so the
     /// terminal reports Shift+Enter distinctly from Enter — see
     /// `docs/shift-enter.md`). Recorded so [`restore`] and the panic hook only
@@ -237,6 +247,7 @@ impl InlineViewport {
             prev: None,
             pending: Vec::new(),
             modal_scrolled: false,
+            painted_bottom: top.saturating_add(height),
             keyboard_enhanced,
         })
     }
@@ -254,6 +265,32 @@ impl InlineViewport {
     #[must_use]
     pub const fn view_top(&self) -> u16 {
         self.view.y
+    }
+
+    /// The screen row just below the last **painted** live region (its bottom,
+    /// exclusive) — where the region actually ended on screen, as opposed to
+    /// the *tracked* `view` rect, whose height [`set_view_height`] re-syncs
+    /// between paints to plan the next flush. With [`view_top`] and
+    /// [`pending_rows`], what the loop's draw tick feeds
+    /// [`ui::modal_needs_rebuild`] to catch a modal region about to seat
+    /// short of the screen bottom it was painted flush against
+    /// (`docs/permissions.md`).
+    ///
+    /// [`set_view_height`]: InlineViewport::set_view_height
+    /// [`view_top`]: InlineViewport::view_top
+    /// [`pending_rows`]: InlineViewport::pending_rows
+    #[must_use]
+    pub const fn painted_bottom(&self) -> u16 {
+        self.painted_bottom
+    }
+
+    /// Rows queued by [`insert_before`] and not yet flushed — the lines the
+    /// next frame's flush will seat the live region below.
+    ///
+    /// [`insert_before`]: InlineViewport::insert_before
+    #[must_use]
+    pub const fn pending_rows(&self) -> usize {
+        self.pending.len()
     }
 
     /// Whether the screen moved one-way while an inline modal was open (see
@@ -413,6 +450,10 @@ impl InlineViewport {
             }
             _ => self.blit(buf)?,
         }
+        // Record where this frame's region actually ended on screen — the
+        // datum `painted_bottom` serves the loop (`view.height` alone can't:
+        // `set_view_height` re-syncs it between paints for the flush plan).
+        self.painted_bottom = repin.top.saturating_add(height);
         let (x, y) = ui::cursor_position(self.view, app);
         self.backend.set_cursor_position(Position::new(x, y))?;
         // Re-show the cursor at its final prompt seat, undoing the frame-start
@@ -579,6 +620,10 @@ impl InlineViewport {
         let view_height = self.view.height.clamp(1, height.max(1));
         let view_top = self.view.y.min(height.saturating_sub(view_height));
         self.view = Rect::new(0, view_top, width, view_height);
+        // The emulator moved the painted rows to fit the new height; clamp
+        // the painted-bottom note inside it (the forced repaint that follows
+        // re-records the real one).
+        self.painted_bottom = self.painted_bottom.min(height);
         self.prev = None; // geometry moved under us; repaint in full next draw
         changed
     }

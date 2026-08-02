@@ -132,6 +132,7 @@ use alter_zero::ui::{
     menu_rows,
     menu_window,
     message_lines,
+    modal_needs_rebuild,
     model_picker_height,
     permission_height,
     permission_lines,

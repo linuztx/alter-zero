@@ -257,7 +257,17 @@ happen), and the first draw after the prompt closes consumes it with a
 **purge rebuild** (`InlineViewport::take_modal_scrolled`, `smoke.sh` Phases
 58/60/62) — box flush at the bottom, scrollback rebuilt from history, nothing
 lost or doubled — instead of a plain shrink stranding the box above the rows
-the collapse vacates; it **stashes the composer draft**
+the collapse vacates; the same rebuild answers a **shrink while the prompt is
+still open** (`ui::modal_needs_rebuild` over the viewport's `painted_bottom`,
+Phase 63): back-to-back prompts differ in height — a body-capped screen-tall
+prompt answered into a one-line file's, the resolved cell committing out of
+the live region between them, a subagent's tree-topped prompt giving way to a
+main-turn one — and a frame that would seat the pinned region short of the
+screen bottom it was *painted* flush against used to strand the open prompt
+above a band of blank rows until it was answered (the reported
+empty-newlines-under-the-prompt bug), where the draw tick now purge-rebuilds
+first, `reflow` re-arming the note so the eventual close still purges; it
+**stashes the composer draft**
 and hands it straight back on close so a request landing mid-sentence costs
 nothing, Tab swaps the options for that same textarea as an amend field whose
 Enter rejects *with* the typed feedback, Esc cancels (reject + the ordinary
@@ -497,7 +507,15 @@ of bug:
    any `reflow` run while the prompt is open), and the first draw after the
    prompt closes consumes the note with a purge rebuild — box flush at the
    bottom, scrollback rebuilt from history, nothing lost or doubled
-   (`smoke.sh` Phases 58/60/62). The streaming strip (preview + gap + status
+   (`smoke.sh` Phases 58/60/62). A shrink **while the prompt is still open**
+   gets the same answer *before* the paint (back-to-back prompts of different
+   heights): `ui::modal_needs_rebuild` rebuilds when the frame's plan —
+   `view_top` + pending rows + the new height — would seat the region short
+   of the screen bottom the last frame was *painted* flush against
+   (`InlineViewport::painted_bottom`; the tracked height re-syncs between
+   paints, so it can't serve), since painted in place it would strand the
+   open prompt above that same blank band for as long as it asks (Phase 63).
+   The streaming strip (preview + gap + status
    + gap) sits *above* the box, so it grows the region upward; when a reply ends the
    strip's rows become the committed final line + spacer + the `Done for Ns` summary
    and the box must **stay put**, so `StreamDone`/`Error` call `term::set_view_height`

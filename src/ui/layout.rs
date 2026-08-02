@@ -330,6 +330,56 @@ pub fn region_is_modal(app: &App) -> bool {
     app.permission().is_some()
 }
 
+/// Whether this draw must **purge-rebuild** the conversation instead of
+/// painting the live region in place — the pure decision behind the loop's
+/// rebuild arm, the sibling of [`region_is_modal`] (`docs/permissions.md`).
+/// Both cases answer the same problem: the modal prompt's scrolls are
+/// one-way, so a plain shrink strands the region above rows it cannot refill.
+///
+/// - **The prompt just closed** (`modal` false): rebuild iff a one-way move
+///   was noted while it was open (`modal_scrolled`,
+///   `term::InlineViewport::modal_scrolled`) — the behaviour the close has
+///   always had; the geometry is irrelevant, the note stands for what already
+///   moved.
+/// - **The prompt is open** (`modal` true), the last painted frame reached
+///   the screen bottom (`painted_bottom`), **and this frame would seat the
+///   region short of it**: rebuild *now*. The coming frame's bottom is what
+///   the paint will produce — the flush seats the region below the
+///   `pending_rows` queued lines and the repin never moves the top down, so
+///   it ends at `view_top + pending_rows + new_height` (capped by the screen,
+///   which the paint reaches by scrolling). A batch's back-to-back prompts
+///   differ in height (a tall body-capped prompt answered, a short one
+///   opening as the resolved cell commits out of the live region — or a
+///   subagent's tree-topped prompt giving way to a main-turn one), and every
+///   short-of-the-bottom seat leaves a blank band under the open prompt for
+///   as long as it asks: [`repin`] blanks the vacated rows in place, and the
+///   flush's trailing clear blanks everything below the shorter seat. Neither
+///   can refill the bottom — only the rebuild reseats the prompt flush there.
+///   The comparison is against the **painted** bottom, not the tracked
+///   height: `set_view_height` re-syncs the tracked height between paints
+///   (the turn-end flush plan), and the one-way note is deliberately not
+///   consulted — the separate-frame shrink is a pure repin (no flush, no
+///   scroll), which never set it. A region floating above the bottom shrinks
+///   over rows that are already blank — no visible gap, and skipping the
+///   rebuild keeps the user's own terminal scrollback unpurged.
+#[must_use]
+pub fn modal_needs_rebuild(
+    modal: bool,
+    modal_scrolled: bool,
+    painted_bottom: u16,
+    view_top: u16,
+    pending_rows: usize,
+    new_height: u16,
+    screen_height: u16,
+) -> bool {
+    if modal {
+        let planned = usize::from(view_top) + pending_rows + usize::from(new_height);
+        painted_bottom >= screen_height && planned < usize::from(screen_height)
+    } else {
+        modal_scrolled
+    }
+}
+
 /// Decide how to re-pin a live region currently at `top` with `old_height` to
 /// `new_height` on a `screen_height`-row screen, keeping its top anchored.
 #[must_use]
