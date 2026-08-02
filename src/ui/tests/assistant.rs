@@ -79,6 +79,43 @@ fn assistant_renders_bullet_and_ordered_lists() {
 }
 
 #[test]
+fn assistant_keeps_every_nesting_level_of_a_deep_list() {
+    // Models nest 2 or 4 spaces per level; a third level (4+ spaces) must
+    // render DEEPER than its parent, not collapse to column 0 (the old ≤3
+    // indent cap fell through to prose, whose wrap collapsed the leading
+    // spaces — a child bullet rendered outdented below its own parent).
+    let text = "- a\n  - b\n    - c\n      - d";
+    let rows: Vec<String> = message_lines(Role::Assistant, text, 60)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        rows,
+        vec!["● - a", "    - b", "      - c", "        - d"],
+        "each level two columns deeper than the one above"
+    );
+}
+
+#[test]
+fn a_nested_item_after_a_blank_stays_a_list_not_indented_code() {
+    // A loose list (blank between parent and children) nests at 4 spaces —
+    // the indented-code rule must not swallow it. The ordered marker keeps
+    // its accent colour, which the verbatim code path would never apply.
+    let text = "- a\n\n    1. b";
+    let lines = message_lines(Role::Assistant, text, 60);
+    let rows: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(rows, vec!["● - a", "  ", "      1. b"], "{rows:?}");
+    assert!(
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .any(|s| s.content.as_ref() == "1. "
+                && s.style.fg == Some(crate::ui::theme::LIST_MARKER_COLOR)),
+        "the nested ordered marker keeps its list styling"
+    );
+}
+
+#[test]
 fn assistant_renders_blockquote() {
     let rows: Vec<String> = message_lines(Role::Assistant, "> quoted text", 40)
         .iter()

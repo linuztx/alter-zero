@@ -289,6 +289,23 @@ fn stream_render_matches_batch_render_on_every_prefix() {
         // hanging-indent wraps, and list text with inline emphasis. ---
         "- first item\n- second item\n  - nested item\ndone",
         "1. one\n2. two\n10. ten\ntail",
+        // Deep nesting: a 4-space third level (and 6-space fourth) is a NESTED
+        // item, not indented code — tight lists keep every level's indent.
+        "- top\n  - mid\n    - deep\n      - deeper\nend",
+        // A LOOSE nested list: the blank line used to hand the 4-space items
+        // to the indented-code rule; list-marker lines are exempt from opening
+        // an indented block, so they stay (styled) list items at every prefix.
+        "- a\n\n    - loose nested\n\n      2. deep ordered\nend",
+        // A nested ordered marker forming mid-stream: the prefix `    5` (a
+        // bare digit run at 4+ spaces) must be withheld until the `.` settles
+        // it — committing it as prose/code would diverge from the final list
+        // render (is_partial_list_marker covers deep indents too).
+        "quiz\n\n    5. five\n    6. six\nend",
+        // The bullet/indented-code cliff: `    -` previews as an empty nested
+        // bullet, but the completed `    --…` line is NOT a list item — after
+        // a blank it opens an indented code block instead. Every prefix must
+        // still match the batch render of that prefix.
+        "x\n\n    -- weird\nend",
         "> a quoted line\n> continued quote\n\nafter the quote",
         "- a bullet with **bold** and `code` that wraps over rows\n- next item",
         "intro\n\n- [x] done task\n- [ ] pending task\n\nafter",

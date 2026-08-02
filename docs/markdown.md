@@ -281,7 +281,13 @@ at start-of-text (`prev_blank` in `markdown::BlockScanner` / `parse_blocks`), so
 it never mis-classifies a lazy paragraph continuation as code — matching codex's
 `CodeBlockKind::Indented` (which strips the 4-space marker then re-adds a 4-space
 prefix; net = the source indentation, which we keep). Blank lines inside the run
-stay part of it. This is prefix-stable (a line's membership depends only on the
+stay part of it. One exemption: a line that parses as a **list item**
+(`markdown::list_item` — a `- `/`N. ` marker at any space indent) never *starts*
+an indented block — a 4-space marker line after a blank is a loose list's
+**nested item**, which the top-level indent rule would otherwise swallow (the
+CommonMark rule is context-dependent; line-local, the marker is the better
+evidence). A marker-looking line *inside* an already-open block still continues
+it, so genuine code containing `- x` lines stays whole. This is prefix-stable (a line's membership depends only on the
 lines before it) and plain (no highlighter → no within-line lookahead), so its
 completed lines stream to scrollback per row like prose.
 
@@ -314,7 +320,14 @@ restyle). See *Prefix-stable holdback* for the trailing-line case.
 (`-`/`*`/`+`) or ordered (`N.`/`N)`) item — its nesting **indent**, marker, and
 content — and `markdown::block_quote` strips a `>`. Both are **line-local** (the
 line's own prefix decides), checked *after* `thematic_break` so `- - -` / `* * *`
-stay rules. `ui::render_list_item` keeps the nesting indent, styles the marker
+stay rules. The item indent is **uncapped**: models nest 2 or 4 spaces per
+level, and CommonMark's "4+ spaces is code" rule is a top-level rule a
+line-local parser must not apply inside a list — the old ≤3 cap dropped every
+third level to prose, whose wrap collapsed the indent and rendered a child
+bullet *outdented below its own parent* (a tab indent stays code, and the
+block scanners exempt marker lines from *starting* an indented block — see the
+indented-code section). `ui::render_list_item` keeps the nesting indent, styles
+the marker
 (`-` plain, `N.` accent-coloured), inline-parses the content and wraps it with a
 **hanging indent** (continuation rows align under the text). `ui::render_block_quote`
 prefixes each wrapped row with a dim `> `. **Task lists** (`- [x]`) need no

@@ -100,9 +100,13 @@ pub fn parse_blocks(text: &str) -> Vec<Block> {
             open = Some((ch, len));
             lang = fence_lang(info);
             prev_blank = false;
-        } else if !blank && prev_blank && is_indented_code_line(line) {
+        } else if !blank && prev_blank && is_indented_code_line(line) && list_item(line).is_none() {
             // An indented code block starts only after a blank/at start-of-text
-            // (it cannot interrupt a paragraph).
+            // (it cannot interrupt a paragraph) — and never on a list-marker
+            // line: a 4-space `- x` after a blank is a loose list's *nested
+            // item*, which the top-level indent rule would otherwise swallow
+            // (see [`list_item`]). A marker line inside an already-open block
+            // still continues it above.
             flush_prose(&mut prose, &mut blocks);
             in_indented = true;
             code.push(line.to_string());
@@ -216,9 +220,16 @@ impl BlockScanner {
             self.open = Some((ch, len));
             self.prev_blank = false;
             LineKind::CodeStart(fence_lang(info))
-        } else if !blank && self.prev_blank && is_indented_code_line(line) {
+        } else if !blank
+            && self.prev_blank
+            && is_indented_code_line(line)
+            && list_item(line).is_none()
+        {
             // Start an indented code block (its first line is code content, so
             // there is no separate `CodeStart` — the renderer highlights it plain).
+            // Never on a list-marker line — that is a loose list's nested item
+            // (see [`list_item`]); a marker line inside an already-open block
+            // still continues it above. Mirrors [`parse_blocks`].
             self.in_indented = true;
             self.prev_blank = false;
             LineKind::Code
@@ -885,19 +896,24 @@ pub struct ListItem<'a> {
     pub content: &'a str,
 }
 
-/// If `line` is a list item — after ≤3 leading spaces, a `-`/`*`/`+` bullet or an
-/// `N.`/`N)` ordered marker **followed by a space** (or nothing) — return its
-/// parts. A marker with no following space (`-x`, `1.x`) is prose; a bare `---`
-/// is a thematic break (its marker isn't space-separated), and 4+ spaces of
-/// indent is code. The caller checks [`thematic_break`] first, so `- - -` / `* * *`
-/// stay rules.
+/// If `line` is a list item — any run of leading spaces, then a `-`/`*`/`+`
+/// bullet or an `N.`/`N)` ordered marker **followed by a space** (or nothing) —
+/// return its parts. A marker with no following space (`-x`, `1.x`) is prose; a
+/// bare `---` is a thematic break (its marker isn't space-separated); a **tab**
+/// indent is code, never a list. The caller checks [`thematic_break`] first, so
+/// `- - -` / `* * *` stay rules.
+///
+/// The indent is deliberately uncapped: CommonMark's "4+ spaces is indented
+/// code" rule is a *top-level* rule — inside a list, a 4-space-indented marker
+/// is a **nested item**, and a line-local parser can't see the enclosing list.
+/// Models nest 2 or 4 spaces per level, so capping at 3 collapsed every third
+/// level to column 0 (prose wrap swallowed the indent — a child bullet rendered
+/// *outdented* below its own parent). The scanners keep genuine indented code
+/// working by exempting only marker lines ([`parse_blocks`]/[`BlockScanner`]).
 #[must_use]
 pub fn list_item(line: &str) -> Option<ListItem<'_>> {
     let trimmed = line.trim_start_matches(' ');
     let indent = line.len() - trimmed.len();
-    if indent > 3 {
-        return None; // 4+ spaces is indented code
-    }
     let first = trimmed.chars().next()?;
     if matches!(first, '-' | '*' | '+') {
         return list_content(&trimmed[1..]).map(|content| ListItem {
@@ -934,19 +950,19 @@ fn list_content(after_marker: &str) -> Option<&str> {
         .map(|rest| rest.trim_start_matches(' '))
 }
 
-/// Whether `line` is a *partial* ordered-list marker — after ≤3 leading spaces, a
+/// Whether `line` is a *partial* ordered-list marker — leading spaces, then a
 /// bare run of 1–9 ASCII digits and nothing else. Such a line renders as prose
-/// now, but a following `.`/`)` would flip it into an ordered-list marker
-/// (recolouring the digits and, at a narrow width, collapsing their wrapped rows
-/// into one marker span) — so the streaming committer withholds it, exactly like
-/// [`is_partial_heading`]. A bullet's `-`/`*` is already covered by
-/// [`is_partial_thematic_break`]; `+` renders atomically, so neither needs this.
+/// (or, at 4+ spaces after a blank, as indented code) now, but a following
+/// `.`/`)` would flip it into an ordered-list marker — recolouring the digits,
+/// restoring the indent [`list_item`] keeps at any depth, and at a narrow width
+/// collapsing wrapped rows — so the streaming committer withholds it, exactly
+/// like [`is_partial_heading`]. The indent is uncapped to match [`list_item`]:
+/// a `    5` can settle into a *nested* `    5. …`. A bullet's `-`/`*` is
+/// already covered by [`is_partial_thematic_break`]; `+` renders atomically,
+/// so neither needs this.
 #[must_use]
 pub fn is_partial_list_marker(line: &str) -> bool {
     let trimmed = line.trim_start_matches(' ');
-    if line.len() - trimmed.len() > 3 {
-        return false; // 4+ spaces is indented code
-    }
     (1..=9).contains(&trimmed.len()) && trimmed.bytes().all(|b| b.is_ascii_digit())
 }
 
@@ -991,8 +1007,26 @@ mod tests {
         assert!(list_item("---").is_none(), "thematic break, not a list");
         assert!(list_item("1.no space").is_none());
         assert!(list_item("-nospace").is_none());
-        assert!(list_item("    - too indented").is_none(), "4-space is code");
         assert!(list_item("plain").is_none());
+        assert!(
+            list_item("\t- tab indented").is_none(),
+            "tab indent is code"
+        );
+    }
+
+    #[test]
+    fn list_item_accepts_deep_nesting_indents() {
+        // A third-level bullet indents 4+ spaces — a NESTED item, not indented
+        // code (models nest 2 or 4 spaces per level; the old ≤3 cap collapsed
+        // level three to column 0, outdented below its own parent).
+        let deep = list_item("    - deep").expect("a 4-space bullet is a nested item");
+        assert_eq!(deep.indent, 4);
+        assert_eq!(deep.marker, ListMarker::Bullet);
+        assert_eq!(deep.content, "deep");
+        let deeper = list_item("      3) deeper").expect("a 6-space ordered item");
+        assert_eq!(deeper.indent, 6);
+        assert_eq!(deeper.marker, ListMarker::Ordered(3, ')'));
+        assert_eq!(deeper.content, "deeper");
     }
 
     #[test]
@@ -1003,8 +1037,44 @@ mod tests {
         assert!(!is_partial_list_marker("1."), "a settled ordered marker");
         assert!(!is_partial_list_marker("1 x"), "prose");
         assert!(!is_partial_list_marker(""));
-        assert!(!is_partial_list_marker("    5"), "4-space indent is code");
+        assert!(
+            is_partial_list_marker("    5"),
+            "a nested ordered marker forms at 4+ spaces too (list_item accepts them)"
+        );
         assert!(!is_partial_list_marker("abc"));
+    }
+
+    #[test]
+    fn a_nested_list_item_after_a_blank_is_not_indented_code() {
+        // The indented-code rule (≥4 spaces after a blank) must not swallow a
+        // nested list item in a loose list — the line-local list_item wins.
+        let mut sc = BlockScanner::new();
+        assert_eq!(sc.classify("- top"), LineKind::Prose);
+        assert_eq!(sc.classify(""), LineKind::Prose);
+        assert_eq!(
+            sc.classify("    - nested"),
+            LineKind::Prose,
+            "a nested bullet, not code"
+        );
+        assert_eq!(
+            sc.classify("      1. deeper"),
+            LineKind::Prose,
+            "a nested ordered item, not code"
+        );
+        // parse_blocks agrees: the whole thing is one prose block.
+        let blocks = parse_blocks("- top\n\n    - nested\n      1. deeper");
+        assert_eq!(blocks.len(), 1, "{blocks:?}");
+        assert!(matches!(&blocks[0], Block::Prose(_)), "{blocks:?}");
+        // A genuine code line after a blank still opens the indented block.
+        let mut sc = BlockScanner::new();
+        assert_eq!(sc.classify("text"), LineKind::Prose);
+        assert_eq!(sc.classify(""), LineKind::Prose);
+        assert_eq!(sc.classify("    let x = 1;"), LineKind::Code);
+        assert_eq!(
+            sc.classify("    - inside the open block"),
+            LineKind::Code,
+            "a bullet-looking line CONTINUES an open indented block"
+        );
     }
 
     #[test]
