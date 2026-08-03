@@ -23,7 +23,7 @@ cross-thread handshake in [`crate::permission::PermissionGate`].
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
  Do you want to create hello.py?
  ❯ 1. Yes
-   2. Yes, allow all edits during this session (a)
+   2. Yes, allow all edits during this session (ctrl+a)
    3. No
 
  Esc to cancel · Tab to amend
@@ -172,10 +172,28 @@ one).
 Every prompt offers three, selected with ↑/↓ + Enter or by typing `1`/`2`/`3`:
 
 1. **Yes** — approve this call only.
-2. **Yes, allow all edits during this session (a)** for `write`/`edit`;
-   **Yes, and don't ask again for: {prefix} (a)** for `bash`. Also bound to `a`
-   (`shift+tab` already cycles the thinking mode — `docs/reasoning.md`).
+2. **Yes, allow all edits during this session (ctrl+a)** for `write`/`edit` —
+   this *is* the switch to [edit mode](#permission-modes-manual--edit), and
+   Ctrl+A (the mode toggle) selects it directly;
+   **Yes, and don't ask again for: {rule}** for `bash` — the rule as it will
+   be stored: `python3 *` for a prefix rule (the star saying "this program,
+   any arguments", Claude Code's `Bash(prefix:*)`), or the whole command when
+   only an exact match is safe. No letter shortcut: the old `(a)` binding was
+   one fat-finger away from a standing approval, so the remember row is
+   picked by number or ↑/↓ + Enter, like Claude Code.
 3. **No** — reject; the model is told to stop and wait.
+
+A long option **word-wraps** instead of truncating (`option_rows`, the
+command body's `wrap_output`): an exact-only rule is the whole command, and
+the old one-row `…` cut hid exactly the text being approved. Continuation
+rows align under the label past the number, only the first row carries the
+`❯`, the whole block lights up when selected — and the cursor's resting seat
+still lands on the highlighted option's first row, because the seat and the
+renderer share the per-option heights (`option_heights`, read by
+`ui::cursor_position`). A *pathological* label (a kilobytes-long exact
+command) caps at `PERMISSION_OPTION_MAX_ROWS` with the familiar `…` — the
+region clamps to the terminal and paints top-down, so an unbounded wrap
+would push `3. No` and the hints off the screen bottom.
 
 Plus, on the hint row:
 
@@ -190,25 +208,41 @@ Plus, on the hint row:
 
 ### What "don't ask again" remembers
 
-`permission::command_scope` reduces a command to the keys the session allowlist
+`permission::command_scope` reduces a command to the rules the allowlist
 stores:
 
 - The command is split into segments on `|`, `||`, `&&`, `;`, `&` and newlines
-  (quotes respected), and each segment is reduced to its **prefix**: the first
-  token, plus the second when it isn't a flag — `git status --short` → `git
-  status`, `ls -la` → `ls`, `python3 script.py` → `python3 script.py`.
+  (quotes respected), and each segment is reduced to its **prefix**: the
+  program word — `python3 script.py` → `python3`, `ls -la` → `ls`, `mkdir
+  build` → `mkdir` — a file/argument is an *argument*, not part of the rule.
+  (The old prefix kept a non-flag second token, so approving `python3
+  script.py` never covered `python3 other.py`: every new script re-asked,
+  which made "don't ask again" nearly useless — the flaw this rework fixes.)
+- The curated **subcommand tools** (`git`, `cargo`, `npm`, `docker`, …) keep
+  their verb — `git status --short` → `git status`, `npm run build` → `npm
+  run` — because `git *` would cover `git push --force`; the verb keeps the
+  rule as narrow as the action approved. A flag or path in the verb seat
+  falls back to the program (`git -C /tmp status` → `git`).
 - A later command is auto-approved only when **every** one of its segment
-  prefixes is allow-listed, so allow-listing `python3 script.py` never silently
-  admits a `; rm -rf /` tail.
+  prefixes is allow-listed, so allow-listing `python3` never silently admits
+  a `; rm -rf /` tail.
 - Approving stores every segment's prefix (so the identical command never asks
-  twice) while the option's **label** names the last one — the command the user
-  reads as the action, matching Claude Code (`echo "" | python3 script.py`
-  offers `python3 script.py`).
+  twice) while the option's **label** names the last one with the `*` —
+  the command the user reads as the action, matching Claude Code
+  (`echo "" | python3 script.py` offers `python3 *`).
 - A segment carrying a redirect or a substitution (`>`, `<`, `` ` ``, `$(`)
   cannot be summarized by a prefix — the prefix wouldn't mention the part that
-  matters — so the scope degrades to `Exact`: the label and the stored key are
-  the **whole command**, and only a byte-identical command is ever
-  auto-approved.
+  matters — so the scope degrades to `Exact`: the label and the stored rule are
+  the **whole command** (no star), and only a byte-identical command is ever
+  auto-approved. The scan is quote-aware: `echo "a > b"` redirects nothing and
+  stays a prefix scope (the old raw `contains('>')` degraded it for no
+  reason), while `"$(whoami)"` still substitutes inside double quotes and
+  degrades; only single quotes defuse a substitution.
+- A segment that **no prefix can honestly summarize** degrades the same way:
+  a leading env assignment (`FOO=1 python3 …` — `PATH=…` can redirect what
+  the program *is*) or a command wrapper (`sudo`, `sh -c`, `xargs`, `env`,
+  `timeout`, …) whose "argument" is itself a command — a `sudo` prefix would
+  allow-list everything sudo can carry.
 
 Approving with option 2 also **sweeps the requests already waiting**. Parallel
 agents raise theirs before any of them is answered — each thread consulted the
@@ -219,8 +253,71 @@ covers (`App::drain_covered_permissions`, given the gate's own `allows`); one
 that isn't covered still asks.
 
 There is no built-in safe-command list. Every `bash`, `write`, and `edit` asks
-until the session allowlist says otherwise — Claude Code's default posture, and
+until the rules say otherwise — Claude Code's default posture, and
 the only one that can't be wrong about what is safe. `read` is never gated.
+
+## Permission modes (manual · edit)
+
+The session has a **permission posture**, `permission::PermissionMode`, pinned
+flush at the footer's **right edge** (`{model} · {cwd}      manual` — its own
+zone, reserved off the left chain's truncation budget so a long cwd's `…` cut
+can never eat it; `docs/footer.md`) and toggled with **Ctrl+A** from the
+composer:
+
+- **manual** (the default) — every `write`/`edit` and every `bash` command
+  asks, as above.
+- **edit** — Claude Code's "auto-accept edits on": `write`/`edit` run without
+  asking, `bash` commands still ask (until allow-listed).
+
+Option 2 on a `write`/`edit` prompt **is** the switch to edit mode — the mode
+is exactly the old "allow all edits during this session" flag, made visible
+and reversible — so choosing it (or pressing Ctrl+A on the prompt) approves
+the pending change, flips the footer segment, and raises the confirming toast
+(`Mode: edit — file edits run without asking (ctrl+a to switch back)`).
+Ctrl+A on a **bash** prompt only flips the posture — the mode never covers
+commands, so the prompt stays open — and from the composer it works idle or
+mid-turn (the gate's rules are shared state; the very next `approve` consult
+obeys the new posture). Toggling **back to manual makes file changes ask
+again**: the mode is the single source of truth the gate consults, not a
+one-way latch. Every toggle path lands on `Action::SetPermissionMode` (or the
+`ResolvePermission` arm for option 2), where the loop mirrors the mode onto
+the gate, **sweeps** queued requests the new mode now covers (parallel
+agents' file changes waiting behind the open prompt approve at once —
+the option-2 sweep above), persists it (below), and toasts. With permissions
+disabled there is no mode: the footer segment is hidden and Ctrl+A raises a
+`Tool permissions are disabled` toast instead of silently doing nothing.
+
+## Persisted per project (`~/.alter-zero/permissions.json`)
+
+Standing approvals used to be session-only — quit and every rule was gone,
+which is not what "don't ask again" says. They now persist in the config home
+(`ALTER_ZERO_CONFIG_DIR`, else `~/.alter-zero`), **keyed by project
+directory** so a rule granted in one project never leaks into another —
+Claude Code's per-project settings:
+
+```json
+{
+  "projects": {
+    "/home/user/Codes/rust/project/alter-zero": {
+      "allow_commands": ["git status *", "python3 *"],
+      "mode": "edit"
+    }
+  }
+}
+```
+
+`allow_commands` rows ending in ` *` are prefix rules; anything else is an
+exact command. `mode` is the saved posture (absent = `manual`, and an unknown
+label degrades to `manual` — a hand-edited file asks more, never less). The
+pure format/parse is `permission::PermissionsFile`/`ProjectPermissions` (the
+`Settings` pattern); `main.rs` owns the file I/O: the startup load seeds the
+gate (`seed_commands` + `set_mode`) before the first frame, and every rule
+change — an option-2 approval, a Ctrl+A toggle — **re-reads, updates this
+project's entry, and rewrites** (read-modify-write, so instances in other
+directories never clobber each other; best-effort like `config.json`, a
+write failure never kills the TUI). Restart the app — or `--continue` /
+`--resume` a session — in the same directory and the footer comes up in the
+saved mode with the saved allowlist in force.
 
 ## The handshake
 
@@ -339,17 +436,36 @@ at every body size.
 `ALTER_ZERO_PERMISSIONS=0` (or `false`/`no`/`off`) starts the session with no
 gate attached, and every tool runs as it did before this feature. The
 `LlmBackend` only asks when a gate was installed, so an embedder (and the live
-integration tests) that builds a backend directly is unaffected.
+integration tests) that builds a backend directly is unaffected. With no gate
+there is no mode either: the footer's right-edge segment disappears and Ctrl+A
+explains itself with a toast instead of pretending to toggle anything.
 
 ## Tests
 
-- `permission.rs` — the pure vocabulary: titles, questions, option labels,
-  `command_scope`'s segmentation/prefixing/degradation, the rules' allow +
-  remember, and the gate's blocking round trip (real threads).
+- `permission.rs` — the pure vocabulary: titles, questions, option labels
+  (the `{prefix} *` display, the exact command verbatim),
+  `command_scope`'s segmentation/prefixing/degradation (subcommand tools,
+  wrappers, env assignments, quote-aware redirects), the mode's
+  label/parse/toggle round trip, the rules' allow + remember (mode gating file
+  changes both ways), the `PermissionsFile` round trip (the documented shape,
+  other projects preserved, garbage → default, manual omitted), and the
+  gate's blocking round trip (real threads) + shared mode + seeded commands.
 - `app/tests` — opening stashes and closing restores the draft, the key map
-  (↑/↓/1/2/3/a/Tab/Esc/ctrl+e), the amend field, the queue — plus the whole
+  (↑/↓/1/2/3/Tab/Esc/ctrl+e — a bare `a` now does nothing; Ctrl+A takes the
+  remember option on a file prompt, toggles the mode on a bash prompt and
+  from the composer both ways, and explains itself when permissions are
+  disabled), the amend field, the queue — plus the whole
   amend round trip (real gate, real keys) asserting the recorded call and the
   derived context carry exactly what the model was told.
+- `ui/tests/footer.rs` — the footer's right-edge mode segment (flush at the
+  row's edge, dim, the left content truncating first at narrow widths; absent
+  when no mode is injected).
+- `ui/tests/permission_view.rs` — a long remember rule wraps instead of
+  hiding its tail (every token survives, continuations aligned and
+  marker-free), a pathological one caps at `PERMISSION_OPTION_MAX_ROWS` with
+  the `…` (the options and hints stay on screen), every wrapped row of the
+  selected option lights up, and the cursor seat still lands on each
+  option's `❯` row past a wrapped block.
 - `app/tests/tools.rs` — `reject_tool` keeps both texts and charges the tally
   on the model-facing one; `session.rs` — the rejection round-trips through a
   rollout file while an ordinary call's line keeps its old shape.
@@ -384,7 +500,10 @@ integration tests) that builds a backend directly is unaffected.
   lands on whichever row carries the `❯` marker and steps down with each ↓, on
   a capped prompt as well as one that fits.
 - `smoke.sh` Phase 55 — the whole round trip against the dummy backend in a real
-  terminal: draft typed, prompt shown, `2` approving, draft restored — plus the
+  terminal: draft typed, prompt shown, `2` approving, draft restored — the
+  footer's right-edge mode flipping to `edit` and the project's entry landing
+  in `permissions.json` with `"mode": "edit"` (cleaned up after, so the later
+  permission phases still get their prompts) — plus the
   hardware cursor read back from the terminal (`#{cursor_flag}`): hidden over
   the options, shown again in Tab's amend field and in the composer after, and
   resting on the `❯ 1. Yes` row, one lower after ↓.

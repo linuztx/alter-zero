@@ -18,7 +18,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::agents::{AgentRun, AgentStatus};
 use crate::file_search::{FileMatch, at_token};
 use crate::llm::{ModelEntry, ReasoningSupport, ThinkingMode};
-use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
+use crate::permission::{PermissionDecision, PermissionKind, PermissionMode, PermissionRequest};
 use crate::session::SessionSummary;
 use crate::stream::{AgentCallDone, AgentSpec, StreamEvent, ToolCallSummary};
 use crate::textarea::TextArea;
@@ -452,6 +452,13 @@ pub struct App {
     /// the boundary and released on the gate so no tool thread parks forever —
     /// see [`take_abandoned_permissions`](Self::take_abandoned_permissions).
     abandoned_permissions: Vec<String>,
+    /// The session's permission posture (`manual`/`edit`) — pinned at the
+    /// footer's right edge, toggled with Ctrl+A. `None` while permissions are
+    /// disabled (`ALTER_ZERO_PERMISSIONS=0`), which hides the segment and
+    /// makes the toggle explain itself instead. Injected at startup and kept
+    /// in sync by the boundary (the gate owns the live rules); see
+    /// `docs/permissions.md`.
+    permission_mode: Option<PermissionMode>,
 }
 
 impl App {

@@ -847,17 +847,18 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("ctrl+v", " for image paste"),
     ("ctrl+d", " for llm context"),
     ("shift+tab", " to cycle thinking"),
+    ("ctrl+a", " for permission mode"),
 ];
 
 /// The display column where a row's second entry starts (the first entry is
 /// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
-/// **widest** first-column variant keeps a readable gutter: the esc entry's
-/// context swaps reach 24 columns (`esc esc to edit previous`), which at the
-/// old 25 left a single space before `ctrl+c to quit` — one run-on line. The
+/// **widest** first-column variant keeps a readable gutter: the ctrl+a entry
+/// paired `shift+tab to cycle thinking` (27 columns) into the first column,
+/// which at the old 28 left a single space before it — one run-on line. The
 /// `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
 /// ≥ 2-column gutter across every context state; widen this with any new
 /// entry that needs it.
-pub(super) const SHORTCUTS_COL: usize = 28;
+pub(super) const SHORTCUTS_COL: usize = 30;
 
 /// Cyan — an entry's key (the palette-selection accent).
 pub(super) const SHORTCUTS_KEY_COLOR: Color = MENU_SELECTED_COLOR;
@@ -905,6 +906,12 @@ pub(super) const FOOTER_SEPARATOR: &str = " · ";
 /// The footer's text colour — every segment dim, codex's no-theme-colours
 /// status-line style.
 pub(super) const FOOTER_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The least gap kept between the footer's left chain and the permission
+/// mode pinned at the row's right edge — the mode's reservation is its own
+/// columns plus this, so the left content's `…` cut can never run into it
+/// (`docs/permissions.md`).
+pub(super) const FOOTER_MODE_GAP: usize = 2;
 
 /// The **focused** shell indicator's fill: ↓ lights the footer's `{n} shell(s)`
 /// segment on the palette-selection cyan and waits for the Enter that opens the
@@ -1201,6 +1208,14 @@ pub(super) const PERMISSION_AMEND_HINTS: &[(&str, &str)] = &[
 /// without re-deriving the body. `permission_lines` pads a capped prompt
 /// *above* the question to keep that block flush against this tail.
 pub(super) const PERMISSION_TAIL_ROWS: u16 = 4;
+
+/// The most rows one option label may wrap to before it caps with a `…` —
+/// a long "don't ask again" rule (an exact command) wraps instead of hiding
+/// its tail, but a *pathological* one (kilobytes on a line) must not stack
+/// the option block taller than the terminal and push `3. No` and the hints
+/// off the bottom (the region clamps to the screen and paints top-down).
+/// Four ~100-column rows show any realistic command whole.
+pub(super) const PERMISSION_OPTION_MAX_ROWS: usize = 4;
 
 /// The body rows a permission prompt is guaranteed even when a big parallel
 /// batch queues a screenful of `⎿ Waiting…` siblings above it. The body is

@@ -35,6 +35,36 @@ impl App {
         self.permission.as_ref()
     }
 
+    /// The session's permission posture — `None` while permissions are
+    /// disabled (no gate, nothing asks, no footer segment).
+    #[must_use]
+    pub const fn permission_mode(&self) -> Option<PermissionMode> {
+        self.permission_mode
+    }
+
+    /// Inject or update the permission mode (the startup seed, a Ctrl+A
+    /// toggle's echo, an option-2 "allow all edits" — the boundary keeps this
+    /// field and the gate's rules in step).
+    pub const fn set_permission_mode(&mut self, mode: Option<PermissionMode>) {
+        self.permission_mode = mode;
+    }
+
+    /// Ctrl+A — toggle manual ⇄ edit and hand the loop the new mode
+    /// ([`Action::SetPermissionMode`]: mirror it onto the gate, persist it
+    /// for this project, sweep newly covered requests, toast). With
+    /// permissions disabled there is no mode to toggle — the toast says so
+    /// (the `cycle_thinking` pattern).
+    pub(super) fn toggle_permission_mode(&mut self) -> Action {
+        match self.permission_mode {
+            Some(mode) => {
+                let next = mode.toggled();
+                self.permission_mode = Some(next);
+                Action::SetPermissionMode(next)
+            }
+            None => Action::Toast("Tool permissions are disabled".to_string()),
+        }
+    }
+
     /// Requests that arrived while another was open, oldest first — each opens
     /// as the one before it resolves (their tool threads simply stay blocked).
     #[must_use]
@@ -173,9 +203,12 @@ impl App {
     /// Keys while a permission prompt is open — it owns all of them.
     ///
     /// Options: ↑/↓ move (clamped), Enter takes the highlighted one, and
-    /// `1`/`2`/`3` (plus `a` for the remember row — `shift+tab` already cycles
-    /// the thinking mode) take one directly. Esc aborts the turn, Tab opens the
-    /// amend field, and Ctrl+E asks a `bash` prompt for an explanation.
+    /// `1`/`2`/`3` take one directly. **Ctrl+A** — the permission-mode toggle
+    /// — selects the remember row on a `write`/`edit` prompt (choosing it *is*
+    /// the switch to edit mode), and on a `bash` prompt just flips the mode,
+    /// the prompt staying open (the mode never covers commands). Esc aborts
+    /// the turn, Tab opens the amend field, and Ctrl+E asks a `bash` prompt
+    /// for an explanation.
     ///
     /// In the amend field the composer is live: every editing key goes to it,
     /// Enter rejects with the typed feedback, and Esc backs out to the options.
@@ -193,6 +226,21 @@ impl App {
                 .is_some_and(|p| p.request.kind == PermissionKind::Bash)
         {
             return self.resolve_permission(PermissionDecision::Explain);
+        }
+        // Ctrl+A — the mode toggle, reachable inside the prompt too. On a
+        // file prompt it IS option 2 (allow all edits = edit mode); on a
+        // command prompt it only flips the posture — the command still asks,
+        // and the loop's sweep releases any queued file requests the new
+        // mode covers.
+        if ctrl && key.code == KeyCode::Char('a') {
+            if self
+                .permission
+                .as_ref()
+                .is_some_and(|p| p.request.kind != PermissionKind::Bash)
+            {
+                return self.resolve_permission(PermissionDecision::ApproveAlways);
+            }
+            return self.toggle_permission_mode();
         }
         // Ctrl+C is Esc here: the prompt owns the key, so it neither clears a
         // draft (there is none — it is stashed) nor quits mid-decision.
@@ -220,9 +268,7 @@ impl App {
                 self.resolve_permission(decision)
             }
             KeyCode::Char('1') => self.resolve_permission(PermissionDecision::Approve),
-            KeyCode::Char('2' | 'a' | 'A') => {
-                self.resolve_permission(PermissionDecision::ApproveAlways)
-            }
+            KeyCode::Char('2') => self.resolve_permission(PermissionDecision::ApproveAlways),
             KeyCode::Char('3') => self.resolve_permission(PermissionDecision::Deny(None)),
             KeyCode::Tab => {
                 if let Some(prompt) = self.permission.as_mut() {

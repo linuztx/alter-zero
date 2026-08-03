@@ -142,6 +142,16 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         return Line::default();
     };
     let dim = Style::new().fg(FOOTER_COLOR);
+    // The permission mode is pinned flush at the row's RIGHT edge — its own
+    // zone, like the transcript separator's right-aligned percentage, not
+    // another ` · ` segment — so however long the model/cwd/gauge chain
+    // grows, the ellipsis truncation below eats the left content and never
+    // the one segment with a safety meaning (docs/permissions.md). Its
+    // columns (plus a gap) come off the chain's budget up front. Absent
+    // while permissions are disabled: nothing asks, and a mode would be a
+    // lie.
+    let mode = app.permission_mode().map(|mode| mode.label());
+    let reserved = mode.map_or(0, |label| cols(label) + FOOTER_MODE_GAP);
     let mut segments = vec![Span::styled(session.model.clone(), dim)];
     if let Some(thinking) = &app.thinking {
         segments.push(Span::styled(format!(" {}", thinking.mode.label()), dim));
@@ -185,29 +195,40 @@ pub fn footer_line(app: &App, width: u16) -> Line<'static> {
         segments.push(Span::styled(FOOTER_SEPARATOR.to_string(), dim));
         segments.push(Span::styled(format!("{shells} shell{plural}"), style));
     }
-    let mut budget = (width as usize).saturating_sub(cols(FOOTER_INDENT));
+    let mut budget = (width as usize).saturating_sub(cols(FOOTER_INDENT) + reserved);
     let mut spans = vec![Span::raw(FOOTER_INDENT)];
     if segments.iter().map(|s| cols(&s.content)).sum::<usize>() <= budget {
         spans.extend(segments);
-        return Line::from(spans);
-    }
-    // Overflow: keep whole leading segments while they fit, cut the first that
-    // doesn't, and close with the ellipsis.
-    budget = budget.saturating_sub(cols(STATUS_ELLIPSIS));
-    for segment in segments {
-        let w = cols(&segment.content);
-        if w <= budget {
-            budget -= w;
-            spans.push(segment);
-        } else {
-            let cut = truncate_cols(&segment.content, budget);
-            if !cut.is_empty() {
-                spans.push(Span::styled(cut, segment.style));
+    } else {
+        // Overflow: keep whole leading segments while they fit, cut the first
+        // that doesn't, and close with the ellipsis.
+        budget = budget.saturating_sub(cols(STATUS_ELLIPSIS));
+        for segment in segments {
+            let w = cols(&segment.content);
+            if w <= budget {
+                budget -= w;
+                spans.push(segment);
+            } else {
+                let cut = truncate_cols(&segment.content, budget);
+                if !cut.is_empty() {
+                    spans.push(Span::styled(cut, segment.style));
+                }
+                break;
             }
-            break;
         }
+        spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
     }
-    spans.push(Span::styled(STATUS_ELLIPSIS.to_string(), dim));
+    // Seat the mode flush against the right edge: pad the gap the reservation
+    // held back (at least [`FOOTER_MODE_GAP`]), then the label, dim like the
+    // rest of the row.
+    if let Some(label) = mode {
+        let used: usize = spans.iter().map(|s| cols(&s.content)).sum();
+        let pad = (width as usize).saturating_sub(used + cols(label));
+        if pad > 0 {
+            spans.push(Span::raw(" ".repeat(pad)));
+        }
+        spans.push(Span::styled(label.to_string(), dim));
+    }
     Line::from(spans)
 }
 

@@ -3,7 +3,8 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::super::theme::{
-    PERMISSION_AGENT_COLOR, PERMISSION_SELECTED_COLOR, PERMISSION_TITLE_COLOR,
+    PERMISSION_AGENT_COLOR, PERMISSION_OPTION_MAX_ROWS, PERMISSION_SELECTED_COLOR,
+    PERMISSION_TITLE_COLOR,
 };
 use super::*;
 use crate::permission::{PermissionKind, PermissionRequest};
@@ -111,7 +112,7 @@ fn the_question_and_three_options_sit_under_the_body() {
     assert_eq!(lines[q + 1], " ❯ 1. Yes");
     assert_eq!(
         lines[q + 2],
-        "   2. Yes, allow all edits during this session (a)"
+        "   2. Yes, allow all edits during this session (ctrl+a)"
     );
     assert_eq!(lines[q + 3], "   3. No");
 }
@@ -172,7 +173,8 @@ fn a_command_prompt_shows_the_command_its_description_and_the_notice() {
         .expect("the question");
     assert_eq!(
         lines[q + 2],
-        "   2. Yes, and don't ask again for: python3 script.py (a)"
+        "   2. Yes, and don't ask again for: python3 *",
+        "the rule is the program with the any-arguments star, no (a) shortcut"
     );
 }
 
@@ -217,7 +219,7 @@ fn the_whole_file_shows_when_it_fits() {
     assert!(lines.iter().any(|l| l.contains("line 1")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("line 30")), "{lines:?}");
     assert!(
-        !lines.iter().any(|l| l.contains("+")),
+        !lines.iter().any(|l| l.contains("… +")),
         "no `… +N lines` tail when it all fits: {lines:?}"
     );
 }
@@ -347,6 +349,138 @@ fn the_options_show_no_cursor_at_all() {
 fn the_composer_shows_its_cursor() {
     // The default, so the prompt's hiding can't quietly become the rule.
     assert!(cursor_visible(&App::new()));
+}
+
+/// A command long enough that its exact-scope remember label cannot fit one
+/// 60-column row — the wrap cases below all share it.
+const LONG_EXACT: &str = "cat /very/long/path/segment/one/two/three/four/five.txt > /tmp/some/deep/output/location/result-file.txt";
+
+#[test]
+fn a_long_remember_option_wraps_instead_of_hiding_its_tail() {
+    // An exact-only scope puts the WHOLE command in option 2 — a long one
+    // used to be cut at the width with a `…`, hiding exactly the text being
+    // approved. It now word-wraps like the command body, continuations
+    // aligned under the label text.
+    let mut app = app_with(request(PermissionKind::Bash, LONG_EXACT, ""));
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)); // select it
+    let lines = rows(&app, 60, 44);
+    let start = lines
+        .iter()
+        .position(|l| l.contains("2. Yes, and don't ask again for:"))
+        .expect("the remember row");
+    let block: Vec<&String> = lines[start..]
+        .iter()
+        .take_while(|l| !l.contains("3. No"))
+        .collect();
+    assert!(block.len() > 1, "the long label wrapped: {block:?}");
+    let joined = block
+        .iter()
+        .map(|l| l.trim().trim_start_matches("❯ ").to_string())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for token in format!("2. Yes, and don't ask again for: {LONG_EXACT}").split_whitespace() {
+        assert!(joined.contains(token), "token {token} hidden: {joined}");
+    }
+    assert!(
+        !joined.contains('…'),
+        "wrapping replaced the truncation: {joined}"
+    );
+    // Continuations sit under the label text (past the marker and number),
+    // marker-free — only the first row carries the `❯`.
+    for row in &block[1..] {
+        assert!(row.starts_with("      "), "aligned continuation: {row:?}");
+        assert!(!row.contains('❯'), "one marker per option: {row:?}");
+    }
+}
+
+#[test]
+fn a_pathological_option_label_caps_its_rows_instead_of_eating_the_screen() {
+    // Wrapping fixed the hidden tail, but an unbounded wrap has the opposite
+    // failure: a kilobytes-long exact command would stack enough option rows
+    // to push `3. No` and the hints off the terminal bottom (the region is
+    // clamped to the screen and painted top-down). The label caps at
+    // PERMISSION_OPTION_MAX_ROWS with the familiar `…` — still several rows
+    // of context where the old cut showed one.
+    let huge = format!("cat {} > /tmp/out", "a/very/long/path/segment ".repeat(80));
+    let mut app = app_with(request(PermissionKind::Bash, huge.trim(), ""));
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let lines = rows(&app, 60, 44);
+    let start = lines
+        .iter()
+        .position(|l| l.contains("2. Yes, and don't ask again for:"))
+        .expect("the remember row");
+    let block: Vec<&String> = lines[start..]
+        .iter()
+        .take_while(|l| !l.contains("3. No"))
+        .collect();
+    assert_eq!(
+        block.len(),
+        PERMISSION_OPTION_MAX_ROWS,
+        "the block caps: {block:?}"
+    );
+    assert!(
+        block.last().unwrap().ends_with('…'),
+        "the cap is honest about the cut: {:?}",
+        block.last()
+    );
+    // The rest of the prompt survives on screen.
+    assert!(lines.iter().any(|l| l.contains("3. No")), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("Esc to cancel")),
+        "{lines:?}"
+    );
+}
+
+#[test]
+fn every_wrapped_row_of_the_selected_option_lights_up() {
+    let mut app = app_with(request(PermissionKind::Bash, LONG_EXACT, ""));
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let lines = permission_lines(&app, 60, 44);
+    let start = lines
+        .iter()
+        .position(|l| plain(l).contains("2. Yes, and don't ask again for:"))
+        .expect("the remember row");
+    let block: Vec<_> = lines[start..]
+        .iter()
+        .take_while(|l| !plain(l).contains("3. No"))
+        .collect();
+    assert!(block.len() > 1, "the long label wrapped");
+    for line in &block {
+        assert!(
+            line.spans
+                .iter()
+                .filter(|s| !s.content.trim().is_empty())
+                .all(|s| s.style.fg == Some(PERMISSION_SELECTED_COLOR)),
+            "every wrapped row wears the selection colour: {line:?}"
+        );
+    }
+}
+
+#[test]
+fn the_cursor_seat_survives_wrapped_options() {
+    // Option 2 wraps to several rows; the seat still lands on each option's
+    // FIRST row — the one carrying the `❯` — stepping past the wrapped block
+    // to reach No.
+    let mut app = app_with(request(PermissionKind::Bash, LONG_EXACT, ""));
+    let mut seats = Vec::new();
+    for step in 0..3 {
+        if step > 0 {
+            app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let (marker, (x, y)) = marker_row_and_cursor(&app, 60, 44);
+        assert_eq!(y, marker, "the cursor sits on the highlighted ❯ row");
+        assert_eq!(x, 3);
+        seats.push(y);
+    }
+    assert!(
+        seats[2] - seats[1] > 1,
+        "No sits past the wrapped remember block: {seats:?}"
+    );
+    assert_eq!(
+        seats[1] - seats[0],
+        1,
+        "Yes → remember is one row: {seats:?}"
+    );
 }
 
 #[test]

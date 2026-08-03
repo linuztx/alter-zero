@@ -467,6 +467,14 @@ impl App {
                     Action::None
                 }
             }
+            // Ctrl+A toggles the permission mode — manual (ask before edits
+            // and commands) ⇄ edit (file changes run unasked, commands still
+            // ask). The loop mirrors it onto the gate and persists it per
+            // project; the mode pinned at the footer's right edge shows
+            // where you are. See docs/permissions.md.
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.toggle_permission_mode()
+            }
             KeyCode::Home => {
                 self.input.move_home();
                 Action::None

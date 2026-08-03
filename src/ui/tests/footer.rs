@@ -54,6 +54,59 @@ fn live_layout_splits_the_area_into_the_strip_box_band_and_footer() {
     }
 }
 
+// --- the permission-mode segment (docs/permissions.md) ---
+
+#[test]
+fn the_footer_pins_the_permission_mode_at_the_right_edge() {
+    // The mode gets its own zone flush at the row's right edge — the
+    // transcript separator's right-aligned percentage, not another ` · `
+    // segment — so however long the model/cwd/gauge chain grows, truncation
+    // eats the left content and never the one segment with a safety meaning.
+    // With permissions disabled (no mode injected) the row keeps its old
+    // shape: nothing asks, so a mode would be a lie.
+    let mut app = App::new();
+    app.set_session_info("kimi-k3", "~/Codes/rust/project/alter-zero");
+    let text = plain(&footer_line(&app, 120));
+    assert!(
+        !text.contains("manual"),
+        "no mode injected → no segment: {text}"
+    );
+    app.set_permission_mode(Some(crate::permission::PermissionMode::Manual));
+    let line = footer_line(&app, 120);
+    let text = plain(&line);
+    assert!(
+        text.starts_with("  kimi-k3 · ~/Codes/rust/project/alter-zero"),
+        "the left chain keeps its old shape: {text}"
+    );
+    assert!(text.ends_with("manual"), "{text}");
+    assert_eq!(cols(&text), 120, "flush at the right edge: {text:?}");
+    // Dim like every other segment (codex's no-theme-colours status line).
+    let mode_span = line.spans.last().expect("the mode span");
+    assert_eq!(mode_span.content, "manual");
+    assert_eq!(mode_span.style.fg, Some(FOOTER_COLOR));
+    app.set_permission_mode(Some(crate::permission::PermissionMode::Edit));
+    let text = plain(&footer_line(&app, 120));
+    assert!(text.ends_with("edit"), "{text}");
+    assert_eq!(cols(&text), 120);
+}
+
+#[test]
+fn a_narrow_footer_truncates_the_left_content_never_the_mode() {
+    // The reservation comes off the left chain's budget, so the cwd gets the
+    // `…` cut while the right-edge mode survives whole, a gap still between
+    // them.
+    let mut app = App::new();
+    app.set_session_info(
+        "a-rather-long-model-name",
+        "~/a/deeply/nested/working/directory",
+    );
+    app.set_permission_mode(Some(crate::permission::PermissionMode::Edit));
+    let text = plain(&footer_line(&app, 40));
+    assert_eq!(cols(&text), 40, "{text:?}");
+    assert!(text.ends_with(" edit"), "the mode survives whole: {text}");
+    assert!(text.contains('…'), "the left content gave way: {text}");
+}
+
 // --- the footer context gauge (docs/compact.md) ---
 
 #[test]

@@ -67,7 +67,10 @@ use alter_zero::llm::{
     Settings, ThinkingMode, ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
 use alter_zero::paste::{self, PasteBurst};
-use alter_zero::permission::{PermissionDecision, PermissionGate};
+use alter_zero::permission::{
+    PermissionDecision, PermissionGate, PermissionKind, PermissionMode, PermissionRules,
+    PermissionsFile,
+};
 use alter_zero::project_doc;
 use alter_zero::session::{self, SessionMeta, SessionSummary};
 use alter_zero::stream::{self, CancelToken, DummyAi, ReplySource, StreamEvent};
@@ -309,6 +312,21 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
     // turns and across a `/model` rebuild. `ALTER_ZERO_PERMISSIONS=0` starts
     // without one and every tool runs unasked, as before the feature.
     let permissions: Option<PermissionGate> = permissions_enabled().then(PermissionGate::new);
+    // The persisted per-project permissions (`~/.alter-zero/permissions.json`,
+    // docs/permissions.md): the "don't ask again" command allowlist and the
+    // manual/edit mode survive restarts, keyed by this working directory so a
+    // rule granted in one project never leaks into another. Loaded once here
+    // to seed the gate; rewritten (read-modify-write) on every rule change.
+    let permissions_path = permissions_file_path();
+    let permissions_project = cwd.display().to_string();
+    if let Some(gate) = permissions.as_ref() {
+        let saved_permissions = load_permissions(permissions_path.as_deref());
+        if let Some(entry) = saved_permissions.project(&permissions_project) {
+            let (prefixes, exact) = entry.command_sets();
+            gate.seed_commands(prefixes, exact);
+            gate.set_mode(entry.saved_mode());
+        }
+    }
     // The reply backend. The dummy is the default (and the fallback) so the app
     // always runs offline; a real OpenAI-compatible model activates only when a
     // provider, a model, and an API key all resolve and `ALTER_ZERO_DUMMY` isn't
@@ -469,6 +487,11 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
     // it names the real file even under an `ALTER_ZERO_ENV_FILE` override.
     let env_path_display = ui::display_cwd(&env_file_path, home.as_deref());
     app.set_session_info(backend.model_name(), cwd_display.clone());
+    // The footer's leading permission-mode segment (docs/permissions.md):
+    // seeded from the gate (which just loaded this project's saved mode), or
+    // hidden entirely when permissions are disabled — nothing asks, so a mode
+    // would be a lie. Kept in sync with the gate on every toggle.
+    app.set_permission_mode(permissions.as_ref().map(PermissionGate::mode));
     // The footer gauge + auto-compact window: the env override wins, else the
     // active model's known window (docs/compact.md).
     app.set_context_window(env_context_window.or(active_context));
@@ -1066,6 +1089,33 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                                     // thread would only remember once it woke).
                                     if decision == PermissionDecision::ApproveAlways {
                                         gate.remember(&request);
+                                        // Option 2 is a standing, per-project
+                                        // rule: persist it, mirror an edit
+                                        // prompt's mode switch onto the footer
+                                        // segment, and confirm with a toast.
+                                        save_permissions(
+                                            permissions_path.as_deref(),
+                                            &permissions_project,
+                                            &gate.rules(),
+                                        );
+                                        let toast = if request.kind == PermissionKind::Bash {
+                                            format!(
+                                                "Won't ask again for {} in this project",
+                                                ui::permission_remember_label(&request)
+                                            )
+                                        } else {
+                                            app.set_permission_mode(Some(PermissionMode::Edit));
+                                            "Mode: edit — file edits run without asking \
+                                             (ctrl+a to switch back)"
+                                                .to_string()
+                                        };
+                                        present_toast(
+                                            &mut app,
+                                            &mut toast_deadline,
+                                            &frame,
+                                            toast,
+                                            ToastKind::Info,
+                                        );
                                     }
                                     gate.resolve(&request.id, decision);
                                     // Parallel agents ask before any of them is
@@ -1079,6 +1129,45 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                                         gate.resolve(&id, PermissionDecision::Approve);
                                     }
                                 }
+                                frame.schedule_frame();
+                            }
+                            Action::SetPermissionMode(mode) => {
+                                // Ctrl+A (composer, or an open bash prompt):
+                                // App::permission_mode already advanced — mirror
+                                // it onto the gate's rules (the approve seam
+                                // reads them, so the very next write/edit obeys
+                                // the new posture), sweep the queued requests
+                                // edit mode now covers (parallel agents' file
+                                // changes waiting behind a prompt), and persist
+                                // this project's entry. See docs/permissions.md.
+                                if let Some(gate) = permissions.as_ref() {
+                                    gate.set_mode(mode);
+                                    for id in
+                                        app.drain_covered_permissions(&|r| gate.allows(r))
+                                    {
+                                        gate.resolve(&id, PermissionDecision::Approve);
+                                    }
+                                    save_permissions(
+                                        permissions_path.as_deref(),
+                                        &permissions_project,
+                                        &gate.rules(),
+                                    );
+                                }
+                                present_toast(
+                                    &mut app,
+                                    &mut toast_deadline,
+                                    &frame,
+                                    match mode {
+                                        PermissionMode::Edit => {
+                                            "Mode: edit — file edits run without asking, \
+                                             commands still ask"
+                                        }
+                                        PermissionMode::Manual => {
+                                            "Mode: manual — asking before edits and commands"
+                                        }
+                                    },
+                                    ToastKind::Info,
+                                );
                                 frame.schedule_frame();
                             }
                             Action::Interrupt => {
@@ -2388,6 +2477,40 @@ fn load_env_file(path: &Path) -> EnvFile {
 /// there's no config home — persistence is then disabled. See `docs/llm.md`.
 fn settings_file_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("config.json"))
+}
+
+/// The persisted per-project permissions path
+/// (`{config_home}/permissions.json`) — the "don't ask again" command rules
+/// and the manual/edit mode, keyed by project directory — or `None` when
+/// there's no config home (persistence is then disabled, and every session
+/// starts asking afresh). See `docs/permissions.md`.
+fn permissions_file_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("permissions.json"))
+}
+
+/// Load the permissions file; an absent, unreadable, or corrupt file yields
+/// the empty one (the `load_settings` posture — never block startup).
+fn load_permissions(path: Option<&Path>) -> PermissionsFile {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| PermissionsFile::parse(&text))
+        .unwrap_or_default()
+}
+
+/// Persist the session's live rules as this project's entry. A
+/// read-modify-write — the file is re-read first, so entries other projects
+/// wrote meanwhile survive — and best-effort like `save_settings`: a write
+/// failure is swallowed (a read-only home must never kill the TUI). See
+/// `docs/permissions.md`.
+fn save_permissions(path: Option<&Path>, project: &str, rules: &PermissionRules) {
+    let Some(path) = path else {
+        return;
+    };
+    let mut file = load_permissions(Some(path));
+    file.record(project, rules);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, file.to_json());
 }
 
 /// The checkpoints root — `ALTER_ZERO_CHECKPOINTS_DIR` (the smoke test points

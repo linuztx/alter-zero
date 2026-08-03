@@ -7,11 +7,14 @@ below the input box's bottom rule, giving ambient session context —
 ────────────────────────────────────────────────────────────
 ❯
 ────────────────────────────────────────────────────────────
-  dummy_model_name · ~/alter-zero
+  dummy_model_name · ~/alter-zero                    manual
 ```
 
 — the backend's model name and the current working directory, joined with
-` · `. See `CLAUDE.md` for where this sits in the runtime model.
+` · `, and — pinned flush at the row's **right edge**, its own zone — the
+session's **permission mode** (`manual`/`edit`, the posture Ctrl+A toggles —
+`docs/permissions.md`; hidden when permissions are disabled). See `CLAUDE.md`
+for where this sits in the runtime model.
 
 ## What codex does (findings)
 
@@ -82,8 +85,14 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
   `{used}/{window} ({pct}%)` whenever the model's context window is known
   (`1.3k/160k (0.8%)`, both counts through `format_token_count`, the share one
   decimal — `docs/compact.md`) and the running **background shell** count
-  (`docs/background.md`) — so a full row reads
-  `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell`.
+  (`docs/background.md`) — and one segment sits *outside* the chain, pinned
+  flush at the row's **right edge**: the **permission mode** (`manual`/`edit`
+  — `App::permission_mode`, injected by the boundary and `None` while
+  permissions are disabled, which drops it; `docs/permissions.md`). Its
+  columns plus a `FOOTER_MODE_GAP` gutter are reserved off the chain's budget
+  up front, so the `…` truncation always eats the left content and never the
+  one segment with a safety meaning. A full row reads
+  `deepseek-v3.2 medium · ~/Codes/tmp · 1.3k/160k (0.8%) · 1 shell     manual`.
   That last segment is the one **focusable** one: ↓ from an idle composer
   lights it on the palette cyan (`FOOTER_FOCUS_BG`/`FOOTER_FOCUS_FG`) and
   Enter opens the ↓ manager band, Claude-Code-style. Only that span's style

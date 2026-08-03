@@ -2,7 +2,7 @@
 //! the composer, the key map, the amend field, and the queue.
 
 use super::*;
-use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
+use crate::permission::{PermissionDecision, PermissionKind, PermissionMode, PermissionRequest};
 
 fn request(id: &str, kind: PermissionKind, target: &str) -> PermissionRequest {
     PermissionRequest {
@@ -129,16 +129,73 @@ fn the_number_keys_pick_an_option_directly() {
 }
 
 #[test]
-fn a_picks_the_remember_option_since_shift_tab_is_taken() {
+fn a_bare_a_no_longer_answers_the_prompt() {
+    // The old `a` shortcut is gone with the `(a)` hint: options are picked by
+    // number or ↑/↓ + Enter (Claude Code's shape) — a bare letter was one
+    // fat-finger away from a standing approval.
     let mut app = App::new();
     app.open_permission(bash_request("p1"));
-    let action = app.on_key(key(KeyCode::Char('a')));
+    assert_eq!(app.on_key(key(KeyCode::Char('a'))), Action::None);
+    assert!(app.permission().is_some(), "the prompt is still open");
+}
+
+#[test]
+fn ctrl_a_on_a_file_prompt_is_the_remember_option() {
+    // Option 2 on a write/edit prompt IS the switch to edit mode, and Ctrl+A
+    // is the mode toggle — inside a file prompt it selects that option (the
+    // label advertises it: `… during this session (ctrl+a)`).
+    let mut app = App::new();
+    app.set_permission_mode(Some(PermissionMode::Manual));
+    app.open_permission(write_request("p1"));
+    let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
     assert_eq!(
         action,
         Action::ResolvePermission {
-            request: bash_request("p1"),
+            request: write_request("p1"),
             decision: PermissionDecision::ApproveAlways,
         }
+    );
+    assert!(app.permission().is_none(), "the prompt is answered");
+}
+
+#[test]
+fn ctrl_a_on_a_bash_prompt_toggles_the_mode_and_keeps_asking() {
+    // The mode never covers commands, so the prompt stays open — Ctrl+A just
+    // flips the posture (the loop mirrors it onto the gate and sweeps any
+    // queued file requests the new mode covers).
+    let mut app = App::new();
+    app.set_permission_mode(Some(PermissionMode::Manual));
+    app.open_permission(bash_request("p1"));
+    let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    assert_eq!(action, Action::SetPermissionMode(PermissionMode::Edit));
+    assert_eq!(app.permission_mode(), Some(PermissionMode::Edit));
+    assert!(app.permission().is_some(), "the command still asks");
+}
+
+#[test]
+fn ctrl_a_toggles_the_permission_mode_from_the_composer() {
+    // manual ⇄ edit, both ways — the loop persists it and shows the toast;
+    // the footer's right-edge mode tracks the field.
+    let mut app = App::new();
+    app.set_permission_mode(Some(PermissionMode::Manual));
+    let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    assert_eq!(action, Action::SetPermissionMode(PermissionMode::Edit));
+    assert_eq!(app.permission_mode(), Some(PermissionMode::Edit));
+    let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    assert_eq!(action, Action::SetPermissionMode(PermissionMode::Manual));
+    assert_eq!(app.permission_mode(), Some(PermissionMode::Manual));
+}
+
+#[test]
+fn ctrl_a_with_permissions_disabled_explains_instead() {
+    // ALTER_ZERO_PERMISSIONS=0 → no gate, nothing ever asks, no mode to
+    // toggle. A silent no-op would read as a broken key; the toast says why
+    // (the cycle_thinking pattern for a non-reasoning model).
+    let mut app = App::new();
+    assert_eq!(app.permission_mode(), None);
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        Action::Toast("Tool permissions are disabled".to_string())
     );
 }
 
@@ -313,9 +370,9 @@ fn a_standing_approval_sweeps_the_requests_it_now_covers() {
     app.open_permission(bash_request("p1"));
     app.open_permission(bash_request("p2"));
     app.open_permission(request("p3", PermissionKind::Bash, "rm -rf /"));
-    // The loop answers p1 with "always", then sweeps whatever the new rule
-    // covers — here p2 (the identical command), never p3.
-    app.on_key(key(KeyCode::Char('a')));
+    // The loop answers p1 with "always" (option 2), then sweeps whatever the
+    // new rule covers — here p2 (the identical command), never p3.
+    app.on_key(key(KeyCode::Char('2')));
     let swept = app.drain_covered_permissions(&|r| r.target == "python3 script.py");
     assert_eq!(swept, vec!["p2".to_string()]);
     assert_eq!(

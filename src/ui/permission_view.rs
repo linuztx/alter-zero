@@ -68,28 +68,69 @@ fn title_row(request: &PermissionRequest, width: u16) -> Line<'static> {
     Line::from(spans)
 }
 
-/// One option row: `❯ 1. Yes` when highlighted (the whole row in the accent
-/// colour), `  1. Yes` otherwise.
-fn option_row(index: usize, label: &str, selected: bool, width: u16) -> Line<'static> {
+/// One option's rows: `❯ 1. Yes` when highlighted (the whole block in the
+/// accent colour), `  1. Yes` otherwise — the label **word-wrapped** to the
+/// width. A long remember rule (an exact command's whole text) used to be cut
+/// with a `…`, hiding exactly the text being approved; it now wraps like the
+/// command body (`wrap_output`, spaces preserved), the continuation rows
+/// aligned under the label past the marker and number, only the first row
+/// carrying the `❯`.
+fn option_rows(index: usize, label: &str, selected: bool, width: u16) -> Vec<Line<'static>> {
     let marker = if selected {
         PERMISSION_MARKER.to_string()
     } else {
         " ".repeat(cols(PERMISSION_MARKER))
     };
-    let text = format!("{}. {label}", index + 1);
+    let number = format!("{}. ", index + 1);
     let room = (width as usize)
-        .saturating_sub(cols(PERMISSION_INDENT) + cols(&marker))
+        .saturating_sub(cols(PERMISSION_INDENT) + cols(PERMISSION_MARKER) + cols(&number))
         .max(1);
     let style = if selected {
         Style::new().fg(PERMISSION_SELECTED_COLOR)
     } else {
         Style::default()
     };
-    Line::from(vec![
-        Span::raw(PERMISSION_INDENT),
-        Span::styled(marker, style),
-        Span::styled(truncate_cols(&text, room), style),
-    ])
+    let mut rows = wrap_output(label, room as u16);
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    // A pathological label (a kilobytes-long exact command) caps with the
+    // familiar `…` instead of stacking the option block off the screen bottom
+    // — the region clamps to the terminal and paints top-down, so an
+    // unbounded wrap would push `3. No` and the hints out of reach.
+    if rows.len() > PERMISSION_OPTION_MAX_ROWS {
+        rows.truncate(PERMISSION_OPTION_MAX_ROWS);
+        let last = rows.last_mut().expect("the cap is nonzero");
+        *last = format!("{}…", truncate_cols(last, room.saturating_sub(1)));
+    }
+    let continuation = " ".repeat(cols(PERMISSION_MARKER) + cols(&number));
+    rows.into_iter()
+        .enumerate()
+        .map(|(i, text)| {
+            let lead = if i == 0 {
+                format!("{marker}{number}")
+            } else {
+                continuation.clone()
+            };
+            Line::from(vec![
+                Span::raw(PERMISSION_INDENT),
+                Span::styled(lead, style),
+                Span::styled(text, style),
+            ])
+        })
+        .collect()
+}
+
+/// Per-option wrapped heights at `width` — the seat's map: shared with
+/// [`cursor_position`](super::layout::cursor_position) so the `❯` row the
+/// renderer paints and the row the cursor rests on can never drift. The
+/// selection changes an option's colour, never its height.
+pub(super) fn option_heights(request: &PermissionRequest, width: u16) -> Vec<usize> {
+    options(request)
+        .iter()
+        .enumerate()
+        .map(|(i, label)| option_rows(i, label, false, width).len())
+        .collect()
 }
 
 /// The hint row under the options — `{key}{label}` pairs joined by ` · `, keys
@@ -326,7 +367,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         below.push(hint_row(PERMISSION_AMEND_HINTS));
     } else {
         for (i, label) in options(request).iter().enumerate() {
-            below.push(option_row(i, label, i == prompt.selected, width));
+            below.extend(option_rows(i, label, i == prompt.selected, width));
         }
         below.push(Line::default());
         below.push(hint_row(&hints(request)));
@@ -468,12 +509,13 @@ pub fn render_permission(area: Rect, buf: &mut Buffer, app: &App) {
     Paragraph::new(permission_lines(app, area.width, area.height)).render(area, buf);
 }
 
-/// The `bash` "don't ask again" label, re-exported for the boundary's toast
-/// after an [`crate::permission::PermissionDecision::ApproveAlways`].
+/// The `bash` "don't ask again" label — the stored rule as the option showed
+/// it (`{prefix} *`, or the exact command) — for the boundary's toast after an
+/// [`crate::permission::PermissionDecision::ApproveAlways`].
 #[must_use]
 pub fn permission_remember_label(request: &PermissionRequest) -> String {
     match request.kind {
-        PermissionKind::Bash => command_scope(&request.target).label().to_string(),
+        PermissionKind::Bash => command_scope(&request.target).display(),
         _ => "all edits".to_string(),
     }
 }

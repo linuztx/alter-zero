@@ -175,6 +175,16 @@ pub enum Action {
     /// child off, and resolves the cell as
     /// [`ToolStatus::Backgrounded`]. See `docs/background.md`.
     MoveToBackground,
+    /// Ctrl+A toggled the permission mode (manual ⇄ edit) — from the
+    /// composer, or from an open `bash` prompt (whose own question the
+    /// toggle doesn't answer). [`App::permission_mode`] already advanced; the
+    /// loop mirrors the mode onto the gate's rules, persists this project's
+    /// entry in `permissions.json`, sweeps any queued requests the new mode
+    /// now covers, and presents the confirming toast. (Option 2 on a
+    /// `write`/`edit` prompt switches the mode through
+    /// [`ResolvePermission`](Self::ResolvePermission) instead.) See
+    /// `docs/permissions.md`.
+    SetPermissionMode(PermissionMode),
     /// The user answered the inline tool-permission prompt. The prompt is
     /// already closed (and the composer draft restored); the loop applies
     /// `decision` on the [`crate::permission::PermissionGate`] — remembering

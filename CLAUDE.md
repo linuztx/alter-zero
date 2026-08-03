@@ -211,8 +211,10 @@ permission requests** (Claude-Code's ask-before-you-change: the `approve` seam
 command` title (`· from the {type} agent` when a subagent asked), the target,
 the **whole** numbered content/diff framed by `╌` rules (capped only to fit the
 terminal, with a `… +N lines` tail), the question, and `❯ 1. Yes` / `2. Yes,
-allow all edits during this session (a)` — for `bash`, `2. Yes, and don't ask
-again for: {prefix} (a)` — / `3. No` over `Esc to cancel · Tab to amend`
+allow all edits during this session (ctrl+a)` — for `bash`, `2. Yes, and don't
+ask again for: {rule}` where the rule reads `python3 *` for a prefix scope
+(the star = any arguments; an exact-only scope shows the whole command, no
+star, and there is no letter shortcut any more) — / `3. No` over `Esc to cancel · Tab to amend`
 (`· ctrl+e to explain` on a command; the options show **no hardware cursor at
 all** — `ui::cursor_visible`, the frame just skips its closing `Show`: a menu
 has nothing for one to point at, and a kitty cursor trail drew a streak on
@@ -285,12 +287,30 @@ instructions (they used to survive exactly one round, history having kept only
 the one-line cell), a `/resume` restores them (`session::ToolRecord`, the
 field omitted when absent so old rollouts still parse), a subagent's refused
 call keeps both texts on its own transcript, and the token tally charges the
-uploaded text rather than the cell line; and option 2's session allowlist remembers
-every segment prefix of the command — degrading to the exact command when a
-redirect/substitution means a prefix would hide what matters, and **sweeping the
-requests already queued** that the new rule covers
+uploaded text rather than the cell line; and option 2's allowlist remembers
+every segment's **program-word prefix** (`python3 script.py` → `python3 *`;
+the curated subcommand tools keep their verb — `git status`, `npm run` —
+Claude-Code-style) — degrading to the exact command when a
+redirect/substitution (quote-aware), a leading env assignment, or a command
+wrapper (`sudo`, `sh -c`, …) means a prefix would hide what matters — and
+**sweeps the requests already queued** that the new rule covers
 (`App::drain_covered_permissions` — parallel agents all ask before any is
-answered, so one `a` answers them all); gated by `ALTER_ZERO_PERMISSIONS`) in
+answered, so one answer covers them all); the session carries a **permission
+mode** (`permission::PermissionMode` — `manual` asks for everything, `edit`
+auto-approves `write`/`edit` while commands still ask) pinned flush at the
+footer's **right edge** (`{model} · {cwd}      manual` — its columns reserved
+off the left chain's budget, so the `…` truncation can never eat it) and
+toggled with **Ctrl+A** (from
+the composer, or on an open prompt — a file prompt's option 2 *is* the
+switch to `edit`, with a `Mode: edit …` toast; back to `manual` and file
+changes ask again); the rules **persist per project** in
+`~/.alter-zero/permissions.json` (`{"projects": {"/abs/cwd":
+{"allow_commands": ["python3 *", …], "mode": "edit"}}}` — prefix rules
+star-suffixed, exact commands verbatim, the pure format in
+`permission::PermissionsFile`, the read-modify-write I/O + startup gate seed
+in `main.rs`), so "don't ask again" and the mode survive a restart in the
+same directory; gated by `ALTER_ZERO_PERMISSIONS` (disabled = no gate, no
+footer segment, Ctrl+A explains via toast)) in
 `docs/permissions.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
@@ -428,7 +448,9 @@ and its expiry is timed at the boundary (`main.rs`'s `toast_deadline` +
 `docs/toast.md`; plus a one-row
 **session footer** on the region's last row —
 codex's footer status line, `{model} · {cwd}` dim and two-space inset
-(`dummy_model_name · ~/repo`; a reasoning-capable model carries its Shift+Tab
+(`dummy_model_name · ~/repo      manual` — the Ctrl+A **permission mode**
+pinned flush at the row's right edge, `docs/permissions.md`, hidden when
+permissions are off; a reasoning-capable model carries its Shift+Tab
 thinking mode beside the name — `{model} {mode} · {cwd}`, `docs/reasoning.md`)
 — whenever no band is open (the palette/shortcuts
 band displaces it, and the Ctrl+R search line / `!` shell-mode hint take its

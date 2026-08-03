@@ -6,8 +6,6 @@
 //! (`docs/status-indicator.md`), the bands (`docs/shortcuts.md`,
 //! `docs/file-search.md`) and the footer (`docs/footer.md`).
 
-use crate::permission::OPTION_COUNT;
-
 use super::agent::agent_view_preview_lines;
 use super::live::preview_tool_lines;
 use super::theme::*;
@@ -557,11 +555,18 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
                 ccol,
             )
         } else {
-            let options = OPTION_COUNT as u16;
+            // Options wrap (a long remember rule spans rows), so the block's
+            // height and the highlighted option's first row come from the
+            // renderer's own per-option heights — the seat lands on the `❯`
+            // row however tall the labels are.
+            let heights = super::permission_view::option_heights(&prompt.request, area.width);
+            let selected = prompt.selected.min(heights.len().saturating_sub(1));
+            let total: usize = heights.iter().sum();
+            let before: usize = heights[..selected].iter().sum();
             (
                 area.height
-                    .saturating_sub(PERMISSION_TAIL_ROWS.saturating_add(options))
-                    + prompt.selected.min(OPTION_COUNT - 1) as u16,
+                    .saturating_sub(PERMISSION_TAIL_ROWS.saturating_add(total as u16))
+                    + before as u16,
                 0,
             )
         };

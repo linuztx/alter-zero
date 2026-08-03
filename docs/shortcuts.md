@@ -74,18 +74,18 @@ shift+enter for newline      ctrl+o for tool output
 esc to quit                  ctrl+c to quit
 alt+↑ to edit queue          tab to queue next turn
 ctrl+v for image paste       ctrl+d for llm context
-shift+tab to cycle thinking
+shift+tab to cycle thinking  ctrl+a for permission mode
 ```
 
 (The `SHORTCUTS` const in `ui/theme.rs` is the single source of truth — entries laid
 out two per row in declaration order, so the band is
-`SHORTCUTS.len().div_ceil(2)` rows tall; currently 13 entries → 7 rows.)
+`SHORTCUTS.len().div_ceil(2)` rows tall; currently 14 entries → 7 rows.)
 
-The second column starts at `SHORTCUTS_COL` (28), sized so the **widest**
-first-column variant keeps a readable gutter: the esc entry's context swaps
-reach 24 columns (`esc esc to edit previous`), which at the old column of 25
-left a single space before `ctrl+c to quit` — the two entries read as one
-run-on line. The
+The second column starts at `SHORTCUTS_COL` (30), sized so the **widest**
+first-column variant keeps a readable gutter: the ctrl+a entry paired
+`shift+tab to cycle thinking` (27 columns) into the first column, which at
+the old column of 28 left a single space before it — the two entries read as
+one run-on line (the esc context swaps reach 24 the same way). The
 `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
 ≥ 2-column gutter and the shared column across every `(turn_active,
 can_backtrack)` state; an entry added later that grows past it must widen
@@ -118,7 +118,7 @@ interrupt` while a turn is in flight, `esc esc to edit previous`
   idle (no quit) and mid-turn (no interrupt, band closed, turn untouched);
   `?` is ignored in the tool view.
 - `ui`: `shortcuts_rows` is 0 closed / `SHORTCUTS.len().div_ceil(2)` open (7
-  rows for the current 13 entries); the lines list the bindings in
+  rows for the current 14 entries); the lines list the bindings in
   two aligned columns (keys cyan, labels dim) with a ≥ 2-column gutter between
   them in every context state (the esc swaps change the first column's width);
   the Esc entry flips between
