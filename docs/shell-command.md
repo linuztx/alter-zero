@@ -136,7 +136,7 @@ the `! command` dark header (the `Role::Shell` message) and the **full** output
 as an uncapped `⎿` block — never the `● command` bullet that a backend tool
 gets.
 
-`main.rs::run_shell` (the I/O boundary, like `start_turn`): `begin_shell`,
+`tui::turn::Session::run_shell` (the I/O boundary, like `start_turn`): `begin_shell`,
 commit the header lines **without** a trailing blank, then spawn
 `spawn_shell_command` on a background thread that — reusing the `StreamEvent`
 channel and `CancelToken` like `DummyAi` — runs `sh -c {command}` with piped
@@ -173,7 +173,7 @@ It is **not** a leak — RSS returns to baseline and repeated runs don't accumul
 box). The earlier "save the full output to a file" approach didn't help: it still
 read everything into memory *first*, then wrote the file.
 
-So the runner **caps what it keeps as it reads** (`main.rs::read_capped`, codex's
+So the runner **caps what it keeps as it reads** (`tui::shell::append_capped`, codex's
 `read_capped`/`append_capped` pattern). Each pipe reader retains at most
 `SHELL_OUTPUT_MAX_BYTES` (100KB) and **drains the rest** — so the child never
 blocks on a full pipe (the reason for the two reader threads) — tracking whether
@@ -266,7 +266,7 @@ The `?` shortcuts band gains a `! for shell command` entry.
   `tool_header` still omits `()` for an empty-args backend tool.
 - `app`: `set_tool_truncated` flags the running tool and the flag survives
   `end_tool`; it is a no-op when no tool is running.
-- `main.rs` (smoke, Phase 19): typing `!echo …` shows the `! echo …` prompt and
+- `src/tui/` (smoke, Phase 19): typing `!echo …` shows the `! echo …` prompt and
   the `Shell mode` footer (never `❯ !echo`); the run commits the exec cell
   (`! echo …` header + `⎿` output, no `●` header, no `Ran for` summary); a
   failing command reports `[exit status: N]`; a running `!sleep 9` shows the

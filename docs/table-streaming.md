@@ -277,7 +277,7 @@ is what blanks rows an in-place shrink vacates. Guarded by `smoke.sh` Phase 41
 `ui::preview_rows` sizes the strip's preview slot, and `live_height` /
 `cursor_position` / `render_live_with_preview` all consume it — but only the
 boundary's `StreamRender` knows the forming table's height. The boundary
-computes the preview once per frame (`main.rs::stream_preview_lines`, passing
+computes the preview once per frame (`tui::view::Session::stream_preview_lines`, passing
 `ui::stream_preview_max_rows(screen.height)` as the cap — the screen minus the
 strip/box/footer chrome, floored) and injects its row count into the pure state
 via `App::set_stream_preview_rows` — the `set_status_times` /`set_clock`

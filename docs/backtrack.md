@@ -129,7 +129,7 @@ re-attach.
 - **Scroll-into-view** — the pure `ui::backtrack_scroll` decides the new
   `tool_scroll` (only when `scroll_pending`): scroll up just enough to show
   the highlight's top, or down just enough to show its bottom, else stay put.
-  `main.rs::draw_tool_view` applies it before the settle/clamp.
+  `tui::view::Session::draw_tool_view` applies it before the settle/clamp.
 - **Footer hint** — while primed, the footer slot (the search-line / shell-hint
   slot, `docs/footer.md`) shows `esc again to edit previous message` — the
   `esc` key cyan-bold like the search hints, the label dim (codex's

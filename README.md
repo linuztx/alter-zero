@@ -102,7 +102,8 @@ without a real terminal.
 | `src/paste.rs` | Paste handling: burst detection + the `[Pasted Content N chars]` / `[Image #N]` placeholders. | ✅ |
 | `src/clipboard.rs` | Clipboard I/O: the Ctrl+V image read and the `/copy` write (arboard + OSC 52 fallback). | ✅ (pure parts) |
 | `src/term.rs` | The custom dynamic-height inline viewport: scrollback commits, synchronized draws, the Ctrl+O overlay. | ⚪ I/O boundary |
-| `src/main.rs` | Thin glue: the async `select!` loop, backend cancel/reap, the shell-command and file-search workers. | ⚪ I/O boundary |
+| `src/main.rs` | 77-line shell: the detached-exec hook, the CLI resolution, the viewport, the loop. | ⚪ I/O boundary |
+| `src/tui/` | The terminal shell, 20 area modules over one `Session` struct: the async `select!` loop, the `Action` dispatch, turns, the stream/agent folds, drawing, the backend selection, the stores and workers (`docs/module-layout.md`). | ⚪ I/O boundary |
 
 The loop `select!`s over its four sources and redraws on coalesced ticks:
 
@@ -127,8 +128,8 @@ commit logic never drops, duplicates, or reorders a line.
 
 ### Manual smoke test
 
-`main.rs` itself isn't unit-tested (it's the terminal I/O boundary), so there's
-a script that drives the real binary inside `tmux`:
+`src/main.rs` and `src/tui/` aren't unit-tested (they're the terminal I/O
+boundary), so there's a script that drives the real binary inside `tmux`:
 
 ```bash
 cargo build

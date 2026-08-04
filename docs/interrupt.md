@@ -219,17 +219,17 @@ segment (lowercase, matching this codebase's hint convention —
 - `stream`: `StallAi` (the test double for a wedged backend) ignores the
   cancel for its stall — a caller that `join()`s it pays the full stall — and
   streams a normal reply when left to run.
-- `main.rs` (smoke, Phase 8): mid-stream Esc (after a partial streamed) leaves
+- `src/tui/` (smoke, Phase 8): mid-stream Esc (after a partial streamed) leaves
   the partial text and the `Conversation interrupted` notice on screen, clears
   the status line (no `tokens`), commits no `Done for`, and the app still
   completes a following turn normally.
-- `main.rs` (smoke, Phase 32 — the interrupt-lag regression guard, req 1): with a
+- `src/tui/` (smoke, Phase 32 — the interrupt-lag regression guard, req 1): with a
   backend stalled 3 s (`ALTER_ZERO_STALL_MS`, ignoring the cancel and streaming
   nothing), Esc **undoes** the turn — the status line clears **within a frame**
   (asserted `< 1.5 s`, well under the stall) and `hello there` returns to the
   composer with **no** `Conversation interrupted` notice — proving the loop
   detaches the thread rather than `join()`ing it. Measured live: ~3.0 s (old,
   frozen) → ~0.015 s (fixed).
-- `main.rs` (smoke, Phase 19 — req 2/3): a running `!sleep 9` shows the
+- `src/tui/` (smoke, Phase 19 — req 2/3): a running `!sleep 9` shows the
   `⎿ Running… (Ns)` preview with **no** status line, and Esc resolves it
   `⎿ Interrupted by user` with **no** `Conversation interrupted` notice.

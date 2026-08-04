@@ -58,7 +58,7 @@ for a release binary, where a 1080p screenshot PNG-encodes in ~25 ms. Run inline
 on our loop it would stall **everything** for the encode's duration — the comet
 spinner, the shimmer, the timer, keystrokes — since one thread drives the whole
 `select!`. So the `Action::PasteImage` arm only **spawns**
-(`main.rs::spawn_image_paste`): a short-lived thread does the clipboard read +
+(`tui::workers::spawn_image_paste`): a short-lived thread does the clipboard read +
 decode + encode and sends the `Result` back on the loop's **fifth `select!`
 channel**, whose branch attaches the image (`App::attach_image`) or surfaces
 the red notice — view-gated like every commit (under the Ctrl+O overlay the

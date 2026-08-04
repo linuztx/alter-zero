@@ -149,7 +149,7 @@ through the existing pure helpers.
   sits at the end of the query in the footer row; the previewed match's query
   occurrences render `REVERSED` in the input box; the shortcuts band lists
   `ctrl+r`.
-- `main.rs` (smoke, Phase 18): drive the real binary — Ctrl+R shows the search
+- `src/tui/` (smoke, Phase 18): drive the real binary — Ctrl+R shows the search
   line, typing a query previews the matching history entry in the composer,
   Ctrl+R steps to the older match, Enter accepts it (search line gone, footer
   back, text editable), a garbage query shows `no match` with the draft

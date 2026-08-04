@@ -132,7 +132,7 @@ run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
 
 The event loop **already** interleaves `ToolStart`/`ToolEnd` with `Chunk`s — the
 dummy has scripted exactly this since day one (`stream::turn_events`), and
-`main.rs::on_stream_event` already flushes the text segment, shows the tool running,
+`tui::stream::Session::on_stream_event` already flushes the text segment, shows the tool running,
 commits it green/red, and records it into `history`. A real model driving those
 same events needs almost **no new event-loop code** — the one addition is the
 `StreamEvent::ToolBatch` arm that registers a **parallel batch** up front (so its

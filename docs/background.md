@@ -62,7 +62,7 @@ executor (`llm::exec`), and the `!` shell runner:
 
 - Task ids are **Claude-Code-style** — a `b` prefix + 8 lowercase base36
   chars (`bvyo7tkbe`), rolled per launch from a splitmix64-mixed entropy seed
-  (nanos ⊕ pid ⊕ a launch counter — `main.rs::session_id`'s no-`rand`
+  (nanos ⊕ pid ⊕ a launch counter — `tui::host::session_id`'s no-`rand`
   pattern) with a collision re-roll against the running set. The pure
   `task_id(seed)` pins the format.
 - The interim files live in **Claude Code's tasks layout** — the pure
@@ -71,7 +71,7 @@ executor (`llm::exec`), and the `!` shell runner:
   (e.g. `/tmp/alter-zero-0/-home-user-proj/18f…-4e2/tasks/bvyo7tkbe.output`) —
   a stable per-user root, the project cwd as one dashed segment, and a
   per-session dir keeping concurrent instances apart. The boundary injects
-  the uid (`main.rs::process_uid` — `/proc/self`'s owner; no `libc` in a
+  the uid (`tui::host::process_uid` — `/proc/self`'s owner; no `libc` in a
   `forbid(unsafe)` crate), cwd, and session id.
 
 - `launch(command, description, from_model)` spawns `sh -c` in its own process
@@ -108,7 +108,7 @@ executor (`llm::exec`), and the `!` shell runner:
     turn (the `LlmBackend::spawn` wiring; the note lands ephemeral in that
     turn's request list exactly where the settled history item replays it for
     later turns);
-  - the **turn-boundary dispatch** (`main.rs::dispatch_after_turn`) — notes
+  - the **turn-boundary dispatch** (`tui::turn::Session::dispatch_after_turn`) — notes
     still on the board at a turn end were never heard by a model: a
     model-launched one (with nothing queued) starts the automatic follow-up
     turn; an agent that already read the note owes no follow-up, so a

@@ -78,7 +78,7 @@ threshold, so there is nothing to gate app-side.
 
 A cache hit needs the request to land where the cache *is*. Two routing hints
 ride every request once the boundary mints its per-process key
-(`main.rs::session_cache_key` — pid + startup time, the same key for every
+(`tui::config::session_cache_key` — pid + startup time, the same key for every
 backend built this session):
 
 - **`prompt_cache_key`** — the standard OpenAI parameter, verified accepted

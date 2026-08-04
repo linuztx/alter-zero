@@ -136,7 +136,7 @@ refactored onto it. The two fixed strings live as `pub const COPY_OK_NOTICE` /
 - `clipboard` (unit, pure helpers only): `base64_encode` against known vectors
   (the 0/1/2 trailing-pad cases and empty); `osc52_sequence` frames the base64 as
   `\x1b]52;c;…\x07` and refuses input over `OSC52_MAX_BYTES`.
-- `main.rs` (smoke, new Phase 28): in a tmux session with `set-clipboard on`,
+- `src/tui/` (smoke, new Phase 28): in a tmux session with `set-clipboard on`,
   send a message, let the dummy reply finish, type `/copy`, Enter — assert (a)
   the pane shows `Copied last message to clipboard` and (b) `tmux show-buffer`
   holds the tail of the reply (the OSC 52 fallback reached the clipboard, since

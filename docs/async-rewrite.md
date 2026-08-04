@@ -40,9 +40,10 @@ already in this codebase; this change ports the rest.
   (tokio's unbounded `send` is sync, callable off-runtime), preserving "the
   backend never reads stdin".
 
-- **`main.rs`** — `#[tokio::main(flavor = "current_thread")]`. After the (sync)
-  viewport init queries the cursor, an `EventStream` becomes the sole stdin
-  reader. The loop:
+- **`main.rs` + `src/tui/`** — `#[tokio::main(flavor = "current_thread")]`. After
+  the (sync) viewport init queries the cursor, an `EventStream` becomes the sole
+  stdin reader. The loop lives in `tui::event_loop::run`, one handler call per
+  branch on the `Session` that holds the loop's state (`docs/module-layout.md`):
 
   ```text
   tokio::select! {

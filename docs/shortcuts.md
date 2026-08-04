@@ -125,6 +125,6 @@ interrupt` while a turn is in flight, `esc esc to edit previous`
   `to quit` and `to interrupt` with the turn; `live_height` grows by the band;
   `render_live` paints it below the box and `cursor_position` stays put when
   it opens.
-- `main.rs` (smoke, Phase 11): `?` shows the band (`for commands` visible),
+- `src/tui/` (smoke, Phase 11): `?` shows the band (`for commands` visible),
   `?` again hides it, and typing a draft containing `?` ends up in the input
   box untouched.

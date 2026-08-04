@@ -150,7 +150,7 @@ use), else `None` when there's no `HOME` (persistence then disabled, falling bac
 to `./.env`). It holds two files, both written best-effort (a failure is swallowed
 so it can never kill the TUI) and created on first write:
 
-- **`.env`** — the API-key store the `/login` flow writes (`main.rs::env_file_path`,
+- **`.env`** — the API-key store the `/login` flow writes (`tui::config::env_file_path`,
   overridable with `ALTER_ZERO_ENV_FILE`). Git-ignored so keys are never committed.
 - **`config.json`** — the last `/model` selection (`{ "provider", "model" }`), so
   the choice is the default next run (`llm::settings::Settings`).
@@ -160,7 +160,7 @@ so it can never kill the TUI) and created on first write:
 Because `std::env::set_var` is `unsafe` (this crate `forbid`s unsafe), the app
 never mutates the process environment. Instead the `.env` file is loaded once at
 startup into an in-memory `llm::keystore::EnvFile` map. Key resolution
-(`main.rs::resolve_api_key`) checks the **real process env first** (dotenv
+(`tui::config::resolve_api_key`) checks the **real process env first** (dotenv
 precedence — an exported `OPENROUTER_API_KEY` still wins) and falls back to the
 `.env` map, so a key set either way is found.
 
@@ -175,7 +175,7 @@ preserved — which is what the `/login` flow writes back.
 (`{ "provider", "model" }`, all fields optional so an old or partial file still
 loads). At startup the saved provider/model seed the active selection (env vars
 still win); on a successful `/model` switch the boundary writes the new choice
-back (`main.rs::save_settings`). So a model picked once is the default on every
+back (`tui::config::save_settings`). So a model picked once is the default on every
 later run — and if its key still resolves, the real backend activates
 automatically at startup.
 

@@ -163,7 +163,7 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   `App::agent_system_prompt` — and no AGENTS.md fragment, since subagent
   conversations start without one; `docs/context.md`); only `!` shell mode
   stays off — a leading bang is literal chat text. Overlay returns and
-  resizes repaint the agent view (`main.rs::repaint_active_view`).
+  resizes repaint the agent view (`tui::view::Session::repaint_active_view`).
 
 ## Rendering (`ui`)
 

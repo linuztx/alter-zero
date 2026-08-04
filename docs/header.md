@@ -52,7 +52,7 @@ trailing `…`, exactly like `footer_line`.
 The header is **pure chrome**, like the session footer — it never enters
 `App::history`. That means it is never sent to the model
 (`context::context_messages` only walks history) and never recorded to a
-`/resume` rollout file (`main.rs::SessionRecorder` mirrors history). It **does**
+`/resume` rollout file (`tui::recorder::SessionRecorder` mirrors history). It **does**
 top the Ctrl+O transcript — `ui::transcript_build` prepends `header_lines` + a
 blank before walking history, so the overlay mirrors the inline scrollback,
 which opens with the banner (the empty-transcript placeholder keys on "nothing
@@ -67,7 +67,7 @@ The one wrinkle of an inline TUI whose reflow rebuilds from `history`
 (invariant 3): every repaint regenerates the screen from history, which the
 header is not part of. So it is re-emitted at the I/O boundary:
 
-1. **Startup** — `main.rs::run` commits it once via
+1. **Startup** — `tui::event_loop::run` commits it once via
    `term.insert_before(ui::header_lines(&app, width))` (plus a blank spacer),
    right before the first paint. It flows into scrollback through the normal
    flicker-free pipeline.

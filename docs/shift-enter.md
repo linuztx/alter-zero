@@ -106,7 +106,7 @@ Shift+Enter goes dark (it can't be reported without the protocol).
   `plain_enter_submits_a_multi_line_message_intact` tests still hold.
 - `term` (unit): `keyboard_enhancement_disabled` is off by default / for
   unrecognised values and on for the truthy set.
-- `main.rs` (smoke): Phase 2 already drives `Alt+Enter` (`M-Enter`) to grow the
+- `src/tui/` (smoke): Phase 2 already drives `Alt+Enter` (`M-Enter`) to grow the
   box with keyboard enhancement now on (so it also guards that enabling the
   protocol didn't break ordinary key delivery — plain Enter, Esc, Ctrl+C all still
   work across every phase). Phase 23 drives `Ctrl+J` through the real

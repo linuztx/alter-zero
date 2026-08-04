@@ -57,7 +57,7 @@ worker thread: recv(query) ─► coalesce (drain to newest) ─► walk afresh
 loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stale-dropped]
 ```
 
-- **Worker** (`main.rs::spawn_file_search_worker`): a dedicated thread (not the
+- **Worker** (`tui::workers::spawn_file_search_worker`): a dedicated thread (not the
   reply backend — invariant 1 keeps the one stdin reader untouched). It owns a
   `std::sync::mpsc::Receiver<String>` of queries and a tokio
   `UnboundedSender<FileSearchResult>` back to the loop (its `send` is sync,
@@ -70,12 +70,12 @@ loop select!: file_rx.recv() ─► app.set_file_matches(query, matches)   [stal
   a new walk per `@`-token session; per-query is simpler here, and the
   `FILE_INDEX_CAP` bound plus the coalescing keep the repeated walks cheap and
   off the loop.
-- **Walk** (`main.rs::walk_files`): dependency-free (the agreed choice). An
+- **Walk** (`tui::workers::walk_files`): dependency-free (the agreed choice). An
   iterative walk of the cwd skipping **hidden** entries (dotfiles, so `.git`
   too) and a small **denylist** (`target`, `node_modules`), capped at
   `FILE_INDEX_CAP` to bound memory/time. Directories are listed with a trailing
   `/`. (Known divergence from codex: no `.gitignore` parsing.)
-- **Dispatch** (`main.rs::dispatch_file_search`): after each key, compare
+- **Dispatch** (`tui::workers::dispatch_file_search`): after each key, compare
   `app.file_search_query()` to the last dispatched query; on change, send the
   new query (or nothing when the picker closed). Boundary state (`last_file_query`),
   like `committed`/`clocks`.
@@ -156,7 +156,7 @@ A third band sharing the palette's slot below the box:
   (from `FileMatch.indices`, remapped across the name/parent split —
   `file_menu_highlight`). A width too narrow for the columns degrades to
   marker + name alone.
-- `render_live`/`cursor_position`/`live_height` (and `main.rs::live_region_height`)
+- `render_live`/`cursor_position`/`live_height` (and `tui::view::Session::live_region_height`)
   add `file_menu_rows` to the band so the box, cursor, and footer stay put when
   the picker opens — exactly like the palette/shortcuts.
 
@@ -181,7 +181,7 @@ A third band sharing the palette's slot below the box:
   chars in *both* columns, and degrades to marker + name when too narrow;
   `live_height` grows by the band and `cursor_position` stays put when it
   opens.
-- `main.rs` (smoke, Phase 25): launch in a temp dir with known files, type
+- `src/tui/` (smoke, Phase 25): launch in a temp dir with known files, type
   `@alpha`, the picker lists the file in the columned `→ name  ./  File`
   layout, Enter inserts its path into the composer — then create a file and
   search again: the per-query walk lists a file that didn't exist at startup.

@@ -112,7 +112,7 @@ fn spawn(&self, prompt: String, images: Vec<PathBuf>,
 fn system_prompt(&self) -> Option<String> { None }  // for the Ctrl+D view
 ```
 
-`main.rs::start_turn` records the turn's user message(s) into history first
+`tui::turn::Session::start_turn` records the turn's user message(s) into history first
 (as it always did), then derives the context — so its **last entry is the
 current user message**, text and attachments included — and hands it to the
 backend. `prompt`/`images` still travel for the backends that want them:

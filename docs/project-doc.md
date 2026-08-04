@@ -75,7 +75,7 @@ The port keeps the project's pure-core / boundary split.
     `load_user_instructions_with` is the same under an explicit budget (the
     testable seam).
   - **The reads are capped at the budget** (`read_capped` —
-    `File::take(cap)`, `main.rs::read_capped`'s pattern). The budget has to
+    `File::take(cap)`, `tui::shell::append_capped`'s pattern). The budget has to
     bound the *I/O*, not just the folded output: a huge file that merely
     happens to be named `AGENTS.md` would otherwise be slurped whole while
     the raw-mode terminal waits for its first frame — and because this

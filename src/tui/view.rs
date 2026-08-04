@@ -1,0 +1,543 @@
+//! Painting: the inline live region, the alternate-screen overlays, and the
+//! repaints that rebuild the conversation from source.
+//!
+//! Two pure decisions from `ui` drive everything here, and this module is only
+//! their boundary half:
+//!
+//! - **How tall the region is.** [`Session::live_region_height`] asks the same
+//!   question the next draw will, which is why a post-stream commit can reseat
+//!   the viewport *before* flushing (invariant 3 — otherwise the box rises off
+//!   the bottom and leaves blank rows beneath it).
+//! - **How the screen is prepared.** `ReflowClear::InPlace` keeps the
+//!   terminal's own scrollback; `Purge` drops it and rebuilds the whole
+//!   conversation from history. Every resize and `/clear` purges; an overlay
+//!   return purges only if a resize landed underneath it
+//!   ([`Session::overlay_return_clear`]).
+//!
+//! A repaint must not lose the in-flight partial reply — it lives in the
+//! streaming buffer, not `history` — so the tail carries the rows the stream
+//! already committed and the rows that arrived since are queued right after
+//! through the normal `insert_before` pipeline (`docs/flicker.md`).
+//!
+//! The clock injections live here too ([`Session::update_status_times`]): time
+//! is impure, so the pure `App`/`ui` only ever see already-computed durations.
+
+use std::io;
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::text::Line;
+
+use alter_zero::app::{App, View};
+use alter_zero::paste;
+use alter_zero::term::ReflowClear;
+use alter_zero::ui;
+
+use super::Session;
+
+/// How often the live status re-arms its next animation frame while a turn is in
+/// flight (~30 fps — codex's status-widget cadence): drives the verb's shimmer
+/// sweep and keeps the timer advancing through event-less pauses.
+pub(crate) const STATUS_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(32);
+
+/// Upper bound on the rows a [`ReflowClear::Purge`] repaint (`/clear`, resize)
+/// re-renders into scrollback. A purge drops the terminal's own scrollback, so
+/// the whole conversation is rebuilt from history — capped here so a
+/// pathologically long conversation can't turn one resize into an unbounded
+/// write. codex bounds its resize reflow the same way (per-terminal 1k–10k rows);
+/// 10k is effectively "everything" for any real conversation.
+pub(crate) const RESIZE_REFLOW_MAX_ROWS: usize = 10_000;
+
+impl Session<'_> {
+    /// The live region's height for the current state and screen size — exactly
+    /// what the next [`Session::draw_conversation`] will use. Shared so a
+    /// post-stream commit can reserve that same idle height before flushing the
+    /// final lines (see `InlineViewport::set_view_height`).
+    pub(crate) fn live_region_height(&self) -> u16 {
+        live_region_height(&self.app, self.term.screen())
+    }
+
+    /// Write the live status's times onto `App` before a draw: how long the turn
+    /// has run (whole seconds for display; sub-second for the shimmer phase) and
+    /// the current thinking-phase duration (`Some` while thinking). Time is
+    /// impure, so this is the boundary's job — the pure `App`/`ui` only ever see
+    /// the already-computed values. No-op when no turn is in flight.
+    pub(crate) fn update_status_times(&mut self) {
+        let elapsed = self
+            .clocks
+            .turn_start
+            .map_or(std::time::Duration::ZERO, |start| start.elapsed());
+        let thinking = self.clocks.thinking_start.map(|start| start.elapsed());
+        self.app.set_status_times(elapsed, thinking);
+        // The current running command's own elapsed (None when none is
+        // running), gating the delayed Ctrl+B hint (docs/background.md).
+        self.app
+            .set_command_elapsed(self.clocks.command_start.map(|start| start.elapsed()));
+        // The animation phase for the live region's pulsing bullets — a phase,
+        // not a measurement: nothing displays it (docs/tool-pulse.md).
+        self.app.set_pulse(self.clocks.loop_start.elapsed());
+    }
+
+    /// Schedule the redraw for a just-handled key. A plain typed character that
+    /// lands in a `PasteBurst` asks for a *relaxed* frame a beat out instead of
+    /// an immediate one; every other key (and the first characters of a run)
+    /// paints at once. The scheduler keeps the soonest pending deadline and its
+    /// rate limiter caps everything at 120 fps — that floor, not the burst
+    /// branch, is what coalesces a paste run into a few paints (see
+    /// `alter_zero::paste`).
+    pub(crate) fn schedule_for_key(&mut self, key: &KeyEvent) {
+        let plain_char =
+            matches!(key.code, KeyCode::Char(_)) && !key.modifiers.contains(KeyModifiers::CONTROL);
+        if !plain_char {
+            self.burst.reset(); // a navigation/submit key ends any burst
+        }
+        if plain_char && self.burst.note_char(std::time::Instant::now()) {
+            self.frame.schedule_frame_in(paste::BURST_CHAR_INTERVAL);
+        } else {
+            self.frame.schedule_frame();
+        }
+    }
+
+    /// Whether this draw tick must purge-rebuild the conversation instead of
+    /// painting the live region in place — the boundary read behind the pure
+    /// `ui::modal_needs_rebuild`: the just-closed prompt's noted one-way move,
+    /// or the still-open prompt about to seat short of the screen bottom it was
+    /// painted flush against (a batch's back-to-back prompts of different
+    /// heights — see the draw tick's rebuild arm and `docs/permissions.md`).
+    pub(crate) fn modal_rebuild_due(&self) -> bool {
+        ui::modal_needs_rebuild(
+            ui::region_is_modal(&self.app),
+            self.term.modal_scrolled(),
+            self.term.painted_bottom(),
+            self.term.view_top(),
+            self.term.pending_rows(),
+            self.live_region_height(),
+            self.term.screen().height,
+        )
+    }
+
+    /// The strip's streaming preview: the reply's last rendered line — or, while
+    /// a table is forming, the whole forming block (capped to
+    /// `ui::stream_preview_max_rows` so its frontier tail-follows on a small
+    /// screen) — computed cheaply by `ui::StreamRender::preview`; `None` when
+    /// idle or while a tool runs (the tool's own header previews instead).
+    /// Called before every conversation-view draw so the status animation never
+    /// pays to re-render the whole reply, and **injects the row count into
+    /// `App`** (`App::set_stream_preview_rows`) so `ui::preview_rows` — and with
+    /// it [`Session::live_region_height`], the strip layout, and the cursor seat
+    /// — reserve exactly the rows the strip draws. See `docs/markdown.md`,
+    /// `docs/table-streaming.md`.
+    fn stream_preview_lines(&mut self) -> Option<Vec<Line<'static>>> {
+        let screen = self.term.screen();
+        let preview = match self.app.streaming_text() {
+            Some(text) if !text.is_empty() && self.app.current_tool().is_none() => {
+                Some(self.render.preview(
+                    text,
+                    screen.width,
+                    ui::stream_preview_max_rows(screen.height),
+                ))
+            }
+            _ => None,
+        };
+        self.app.set_stream_preview_rows(
+            preview
+                .as_ref()
+                .map_or(1, |p| u16::try_from(p.len()).unwrap_or(u16::MAX)),
+        );
+        preview
+    }
+
+    /// Render the live region at its current grown height and place the cursor.
+    /// The composer keeps its cursor even while a reply streams (codex-style —
+    /// typing mid-turn edits the draft, Enter queues it); only the overlays hide
+    /// it (`enter_overlay`).
+    ///
+    /// A permission prompt needs no branch of its own: the height is its
+    /// `ui::permission_height` and `render_live` paints it in the composer's
+    /// place, so the region simply grows to the prompt like any other view — the
+    /// chat above it scrolling into real scrollback (`InlineViewport` notes that
+    /// one-way move for the close's purge rebuild; `docs/permissions.md`).
+    pub(crate) fn draw_conversation(&mut self) -> io::Result<()> {
+        // Compute the strip preview cheaply once per frame (O(one line); a
+        // forming table re-renders just its own block), so the status animation
+        // never re-renders the whole reply — and inject its row count so the
+        // layout reserves it. See `docs/markdown.md`, `docs/table-streaming.md`.
+        let preview = self.stream_preview_lines();
+        let height = self.live_region_height();
+        let app = &self.app;
+        // `term` places the cursor from the final (content-anchored) viewport
+        // via `ui::cursor_position`, which mirrors render_live's layout exactly.
+        self.term.draw(
+            height,
+            |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
+            app,
+        )
+    }
+
+    /// Render the full-screen tool-output overlay. Clamps the scroll to the
+    /// current screen first (so the last line can reach the bottom but not
+    /// scroll past it), then paints the view onto the alternate screen.
+    pub(crate) fn draw_tool_view(&mut self) -> io::Result<()> {
+        let screen = self.term.screen();
+        // An agent session view's Ctrl+O shows the *viewed agent's* transcript —
+        // a fresh, bounded build (docs/agent-tool.md); the main cache below is
+        // untouched, so the ordinary open stays warm.
+        if let Some(lines) = ui::agent_transcript_lines(&self.app, screen.width) {
+            let max = ui::tool_view_max_scroll_for(lines.len(), screen.height);
+            self.app.settle_tool_scroll(max);
+            let app = &self.app;
+            return self
+                .term
+                .draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, &lines));
+        }
+        // A backtrack preview open/step requested a scroll to its highlighted
+        // message (docs/backtrack.md): apply the pure decision once — consumed,
+        // so it never fights the user's own scrolling — before the normal clamp.
+        if self.app.take_backtrack_scroll() {
+            let selection = self.transcript.selection(&self.app, screen.width);
+            if let Some(scroll) =
+                ui::backtrack_scroll_for(selection, self.app.tool_scroll, screen.height)
+            {
+                self.app.apply_backtrack_scroll(scroll);
+            }
+        }
+        // Build the transcript at most once here (the cache skips even that
+        // while the user only scrolls): the same cached lines feed the clamp and
+        // the render, so a scroll keypress no longer re-highlights all of
+        // history (twice).
+        let max = ui::tool_view_max_scroll_for(
+            self.transcript.line_count(&self.app, screen.width),
+            screen.height,
+        );
+        self.app.settle_tool_scroll(max);
+        let lines = self.transcript.lines(&self.app, screen.width);
+        let app = &self.app;
+        self.term
+            .draw_overlay(|area, buf| ui::render_tool_view(area, buf, app, lines))
+    }
+
+    /// Render the full-screen `/resume` session picker onto the alternate screen
+    /// (the transcript overlay's twin). See `docs/resume.md`.
+    pub(crate) fn draw_resume_picker(&mut self) -> io::Result<()> {
+        let app = &self.app;
+        self.term
+            .draw_overlay(|area, buf| ui::render_resume_picker(area, buf, app))
+    }
+
+    /// Render the Ctrl+D context-debug view onto the alternate screen — the
+    /// transcript pager's raw-context sibling: settle the scroll against the
+    /// current screen, then paint. See `docs/context.md`.
+    pub(crate) fn draw_context_view(&mut self) -> io::Result<()> {
+        let screen = self.term.screen();
+        let max = ui::context_view_max_scroll(&self.app, screen.width, screen.height);
+        self.app.settle_debug_scroll(max);
+        let app = &self.app;
+        self.term
+            .draw_overlay(|area, buf| ui::render_context_view(area, buf, app))
+    }
+
+    /// Paint whichever view is current — the draw tick's whole body.
+    pub(crate) fn draw_active_view(&mut self) -> io::Result<()> {
+        match self.app.view {
+            // The modal (permission-prompt) region needs a purge rebuild
+            // instead of an in-place paint — two cases, one pure decision
+            // (`ui::modal_needs_rebuild`, `docs/permissions.md`). The prompt
+            // just CLOSED after the screen moved one-way under it — its own
+            // growth scrolled chat into scrollback (the ordinary case), a commit
+            // beneath it scrolled, or a rebuild reseated it (a mid-prompt
+            // resize's purge, an overlay return whose prompt opened
+            // underneath): the plain collapse cannot refill what moved. Or the
+            // prompt is still OPEN and this frame would SHRINK the region seated
+            // at the screen bottom — a batch's back-to-back prompts of different
+            // heights (the tall body-capped one answered, a short one opening as
+            // the resolved cell commits out of the live region), which used to
+            // strand the open prompt above a band of blank rows until it was
+            // answered. Purge-rebuild instead: region flush at the bottom,
+            // scrollback rebuilt from history, nothing lost or doubled — and a
+            // rebuild under a still-open prompt re-arms the note
+            // (`InlineViewport::reflow`), so its eventual close still purges.
+            // (An open agent session view rebuilds itself —
+            // `repaint_active_view` routes there.) See
+            // `InlineViewport::take_modal_scrolled` and `docs/permissions.md`.
+            View::Conversation if self.modal_rebuild_due() => {
+                let _ = self.term.take_modal_scrolled();
+                self.repaint_active_view(ReflowClear::Purge)
+            }
+            View::Conversation => self.draw_conversation(),
+            View::ToolOutput => self.draw_tool_view(),
+            View::ResumePicker => self.draw_resume_picker(),
+            View::ContextDebug => self.draw_context_view(),
+        }
+    }
+
+    /// Repaint whatever the inline screen is showing — the **agent session
+    /// view** when one is open (always a purge rebuild of the agent's
+    /// transcript), else the main conversation with the caller's clear mode.
+    /// The shared overlay-return / resize repaint (`docs/agent-tool.md`).
+    pub(crate) fn repaint_active_view(&mut self, clear: ReflowClear) -> io::Result<()> {
+        if self.app.agent_view.is_some() {
+            self.repaint_agent_view()
+        } else {
+            self.repaint_conversation(clear)
+        }
+    }
+
+    /// How an overlay-return repaint prepares the screen: the usual spill-safe
+    /// in-place overwrite — unless a resize landed while the overlay covered the
+    /// inline view, which forces the purge-rebuild every resize gets
+    /// (invariant 3; the emulator reflowed the main screen's rows under the
+    /// overlay, and an in-place overwrite would leave its re-wrapped copies
+    /// behind). Consumes the flag, so only the first return purges.
+    pub(crate) fn overlay_return_clear(&mut self) -> ReflowClear {
+        if std::mem::take(&mut self.overlay_resized) {
+            ReflowClear::Purge
+        } else {
+            ReflowClear::InPlace
+        }
+    }
+
+    /// Repaint the inline conversation from `App`'s retained history, re-wrapped
+    /// to the current width — tail and live region in one synchronized frame
+    /// (`InlineViewport::reflow`). Used after a resize, on `/clear`, and when
+    /// returning from an overlay (which kept the stream advancing without
+    /// committing).
+    ///
+    /// `clear` selects how the screen is prepared (see `ReflowClear`). A
+    /// [`Purge`](ReflowClear::Purge) rebuilds scrollback from scratch, so it
+    /// repaints the **whole** history (bounded by [`RESIZE_REFLOW_MAX_ROWS`]) —
+    /// otherwise older turns would be lost from the purged scrollback. An
+    /// [`InPlace`](ReflowClear::InPlace) repaint keeps the terminal's scrollback
+    /// and only repaints the on-screen tail.
+    ///
+    /// A mid-stream repaint must not lose the in-flight partial reply — it lives
+    /// in `App`'s streaming buffer, not `history`, so the tail carries the rows
+    /// the stream had **already committed** to scrollback (`ui::repaint_tail`)
+    /// and the rows that arrived *since* (chunks drained under the overlay, or
+    /// the whole partial after a purge dropped its committed copies) are queued
+    /// right after via `ui::StreamRender::commit` — the standard `insert_before`
+    /// pipeline, landing in the next draw's synchronized update. Repainting from
+    /// history alone blanked the partial until its next chunk (the Ctrl+O
+    /// disappear-then-flicker bug), and the old
+    /// reset-then-recommit-from-scratch duplicated the already-scrolled rows in
+    /// the terminal's kept scrollback.
+    pub(crate) fn repaint_conversation(&mut self, clear: ReflowClear) -> io::Result<()> {
+        let screen = self.term.screen();
+        if clear == ReflowClear::Purge {
+            // The purge drops every committed row (screen and scrollback
+            // alike), so nothing is "already committed" any more: reset, and let
+            // the catch-up below re-commit the whole partial at the current
+            // width.
+            self.render.reset();
+        }
+        // The preview comes FIRST: it injects the strip's preview row count
+        // (`set_stream_preview_rows` — a forming table previews multi-row) that
+        // `live_region_height` below must reserve (docs/table-streaming.md).
+        let preview = self.stream_preview_lines();
+        let height = self.live_region_height();
+        let budget = match clear {
+            ReflowClear::Purge => RESIZE_REFLOW_MAX_ROWS,
+            ReflowClear::InPlace => ui::repaint_budget(screen.height, height),
+        };
+        let tail = ui::repaint_tail(
+            &self.app.history,
+            self.app.streaming_text(),
+            &mut self.render,
+            screen.width,
+            budget,
+        );
+        // Re-emit the header banner atop the rebuilt tail — it lives outside
+        // `history` and would otherwise be lost (docs/header.md). A `Purge`
+        // rebuilt scrollback from scratch (resize, `/clear`), so the banner tops
+        // the full rebuild uncapped. An `InPlace` overwrite (the Ctrl+O /
+        // `/resume` return) rewrites the on-screen window — where a short
+        // conversation still *shows* the banner, which the overwrite used to
+        // wipe — so the banner joins that tail too, re-capped to the window
+        // budget: exactly as much of it as the window held comes back, and one
+        // that scrolled wholly into the terminal's kept scrollback is not
+        // duplicated.
+        let tail = ui::banner_tail(
+            ui::header_lines(&self.app, screen.width),
+            tail,
+            match clear {
+                ReflowClear::Purge => usize::MAX,
+                ReflowClear::InPlace => budget,
+            },
+        );
+        let app = &self.app;
+        self.term.reflow(
+            tail,
+            height,
+            clear,
+            |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
+            app,
+        )?;
+        // Catch scrollback up on what streamed while the overlay was showing
+        // (or, after a purge, on the whole partial): exactly the rows live
+        // streaming would have committed, queued for the next draw. `reflow`
+        // cleared the pending queue, so these can never double up with
+        // pre-repaint leftovers.
+        if let Some(text) = self.app.streaming_text().filter(|text| !text.is_empty()) {
+            let lines = self.render.commit(text, screen.width);
+            self.term.insert_before(lines);
+        }
+        Ok(())
+    }
+
+    /// Rebuild the screen as an **agent session view** (`docs/agent-tool.md`):
+    /// purge scrollback + screen (the `/clear` shape — the main conversation
+    /// returns the same way), then the banner over the agent's own transcript,
+    /// with the live region (the agent's strip + the labelled composer + footer +
+    /// roster) painted below in the same synchronized frame. The in-flight
+    /// partial commits through `agent_render` so later chunks append seamlessly.
+    pub(crate) fn repaint_agent_view(&mut self) -> io::Result<()> {
+        let screen = self.term.screen();
+        self.agent_render.reset();
+        let Some(run) = self.app.viewed_agent() else {
+            return Ok(());
+        };
+        let history = run.history.clone();
+        let streaming = run.streaming.clone().filter(|text| !text.is_empty());
+        let height = self.live_region_height();
+        let mut tail = ui::conversation_lines(&history, screen.width);
+        if let Some(text) = &streaming {
+            tail.extend(self.agent_render.committed_rows(text, screen.width));
+        }
+        let tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail, usize::MAX);
+        let app = &self.app;
+        self.term.reflow(
+            tail,
+            height,
+            ReflowClear::Purge,
+            |area, buf| ui::render_live_with_preview(area, buf, app, None),
+            app,
+        )
+    }
+}
+
+/// The live region's height for `app` at the current screen size — exactly what
+/// the next draw will use.
+///
+/// A free function (not a [`Session`] method) because the commit paths call it
+/// while `app` is already borrowed out of `self`.
+fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
+    // A pending tool-permission request replaces the whole region — the
+    // streaming strip included, since the turn is blocked on the answer. It is
+    // modal, so it is checked first (docs/permissions.md).
+    if let Some(height) = ui::permission_height(app, screen.width, screen.height) {
+        return height;
+    }
+    // The inline `/model` picker, `/login` flow, and ↓ background manager each
+    // replace the whole region with their own framed body (see docs/llm.md /
+    // docs/background.md); the open one's height stands in for the composer's.
+    if let Some(height) = ui::model_picker_height(app, screen.height) {
+        return height;
+    }
+    if let Some(height) = ui::key_onboarding_height(app, screen.height) {
+        return height;
+    }
+    if let Some(height) = ui::background_view_height(app, screen.width, screen.height) {
+        return height;
+    }
+    let band = ui::band_rows(app);
+    ui::live_height(
+        &app.input,
+        screen.width,
+        screen.height,
+        ui::strip_has_status(app),
+        ui::preview_rows(app, screen.width),
+        ui::queued_rows(app, screen.width),
+        ui::toast_rows(app),
+        band,
+        ui::footer_rows(app, band),
+        ui::agent_list_rows(app),
+    )
+}
+
+impl Session<'_> {
+    /// Ctrl+O: `App::on_key` already flipped the view — sync the overlay. The
+    /// transcript cache is deliberately RETAINED across the close
+    /// (`docs/tool-view-performance.md`): its frozen prefix is what makes the
+    /// next Ctrl+O instant, and the loop-bottom `transcript.warm` keeps appending
+    /// to it as items commit.
+    pub(crate) fn toggle_tool_view(&mut self) -> io::Result<()> {
+        if self.app.view == View::ToolOutput {
+            self.term.enter_overlay()?;
+            // Paint the overlay now rather than on the next tick — the
+            // freshly-cleared alt screen would show as a black flash for a frame
+            // otherwise.
+            self.draw_tool_view()
+        } else {
+            self.term.exit_overlay()?;
+            // Catch the inline view up on whatever streamed — or was dispatched
+            // off the queue — while the overlay was showing (the reflow
+            // regenerates any pending user bubbles from history). An in-place
+            // repaint keeps the terminal's own scrollback (invariant 4 / Phase 7)
+            // — unless a resize landed under the overlay, which forces the
+            // purge-rebuild every resize gets. An open agent session view
+            // repaints itself instead (docs/agent-tool.md).
+            let clear = self.overlay_return_clear();
+            self.repaint_active_view(clear)
+        }
+    }
+
+    /// Ctrl+D: the raw-context view — the same overlay dance as Ctrl+O
+    /// (`docs/context.md`).
+    pub(crate) fn toggle_context_debug(&mut self) -> io::Result<()> {
+        if self.app.view == View::ContextDebug {
+            self.term.enter_overlay()?;
+            self.draw_context_view()
+        } else {
+            self.term.exit_overlay()?;
+            let clear = self.overlay_return_clear();
+            self.repaint_active_view(clear)
+        }
+    }
+}
+
+impl Session<'_> {
+    /// A coalesced draw tick: refresh the injected times, expire the toast, sweep
+    /// the agent roster, paint — then, while a turn is in flight, **re-arm** the
+    /// next animation frame (codex's status-widget pattern) so the verb's shimmer
+    /// sweeps and the timer advances even when no reply event arrives (a tool run,
+    /// a thinking pause). The chain seeds from the Submit keypress and stops by
+    /// itself on the first draw after the turn ends.
+    pub(crate) fn on_draw_tick(&mut self) -> io::Result<()> {
+        self.update_status_times();
+        // Inject each background shell's runtime (the boundary owns the started
+        // clocks — docs/background.md), so the manager's details view ticks.
+        for (id, started) in &self.bg_clocks {
+            self.app.set_background_runtime(id, started.elapsed());
+        }
+        // …and each running agent's, plus the linger sweep (docs/agent-tool.md).
+        self.tick_agent_roster();
+        self.expire_toast();
+        self.draw_active_view()?;
+        // The ↓ manager band re-arms frames like an active turn: its details
+        // view's Runtime ticks with no events otherwise — and so does a non-empty
+        // agent roster (its elapsed counters tick, and the linger sweep needs the
+        // frames to fire).
+        if self.app.turn_active()
+            || self.app.background_view.is_some()
+            || !self.app.agents().is_empty()
+        {
+            self.frame.schedule_frame_in(STATUS_FRAME_INTERVAL);
+        }
+        Ok(())
+    }
+
+    /// Expire the transient toast when its deadline passes (so this very frame
+    /// paints without it); while it still lingers, keep a frame pending for the
+    /// eventual clear — a coalesced keystroke frame can consume the one
+    /// [`Session::toast`] scheduled, so re-arming here guarantees the clear fires.
+    /// See `docs/toast.md`.
+    fn expire_toast(&mut self) {
+        if let Some(deadline) = self.toast_deadline {
+            let now = std::time::Instant::now();
+            if now >= deadline {
+                self.app.clear_toast();
+                self.toast_deadline = None;
+            } else {
+                self.frame.schedule_frame_in(deadline - now);
+            }
+        }
+    }
+}

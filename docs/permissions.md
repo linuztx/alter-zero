@@ -135,7 +135,7 @@ blanks rows that were already free. Guarded by `smoke.sh` Phases 58, 60 and
 One consequence worth knowing: **commits flow while a prompt is up**. The
 region sits at the bottom like any other, so a cell resolving between a
 batch's back-to-back prompts simply scrolls in above the still-open next
-prompt — visible at once, exactly once (`main.rs::commits_allowed` keeps only
+prompt — visible at once, exactly once (`tui::commit::Session::commits_allowed` keeps only
 the alternate-screen overlay and the agent session view on its held-back
 list). The scroll such a commit causes is one of the one-way moves the note
 tracks, so the eventual close still purge-rebuilds cleanly (`smoke.sh`
@@ -153,7 +153,7 @@ region below the committed lines and reserves only the new, shorter height
 (its trailing clear blanking everything beneath), and the separate-frame
 ordering repin-shrinks into the same band without even setting the note (no
 flush, no scroll). So the loop's draw tick decides *before* painting
-(`ui::modal_needs_rebuild`, fed by `main.rs::modal_rebuild_due`): while the
+(`ui::modal_needs_rebuild`, fed by `tui::view::Session::modal_rebuild_due`): while the
 region is modal, if the last **painted** frame reached the screen bottom
 (`InlineViewport::painted_bottom` — the tracked `view` height re-syncs
 between paints for the flush plan, so it cannot serve) and this frame's plan

@@ -1,4 +1,4 @@
-# Module layout: `app/` and `ui/`
+# Module layout: `app/`, `ui/`, and `tui/`
 
 `app.rs` and `ui.rs` were the two files everything grew into. By the time they
 were split they held 13,872 and 17,665 lines — one 4,038-line `impl App`, two
@@ -10,7 +10,13 @@ its position relative to its neighbours; the only edits were the module headers,
 the imports, and widening the visibility of items that are now reached across a
 module boundary. The public API is unchanged: each `mod.rs` re-exports its areas
 by name, so every `crate::app::X` and `ui::y(…)` path still resolves exactly as
-before, and `main.rs`/`term.rs` did not change at all.
+before, and `term.rs` did not change at all.
+
+`main.rs` was the third such file — 5,304 lines, one 2,058-line `run()` — and it
+is now `src/main.rs` (77 lines) plus `src/tui/`, 20 area modules built on the
+same pattern. That split needed one thing the other two did not: the loop's state
+had to become a struct before the code could move. See
+[`src/tui/` — the terminal shell](#srctui--the-terminal-shell).
 
 ## Where things live
 
@@ -73,6 +79,113 @@ widened for the split.
 | `permission_view.rs` | The tool-permission modal (`docs/permissions.md`). |
 | `stream_render.rs` | `StreamRender`, the incremental commit-to-scrollback renderer. |
 
+### `src/tui/` — the terminal shell
+
+`main.rs` is the I/O boundary, so it is the one file unit tests can't reach (bar
+the odd pure helper) — which is exactly why it grew worst. At 5,304 lines it held
+a dozen unrelated boundary concerns (the CLI, provider config, session recording,
+input-history persistence, the `/resume` scan, the `!` shell runner, three worker
+threads, the stream fold, the agent fold, rendering) and one `run()` of 2,058
+lines whose `select!` input branch carried ~40 inline `Action` arms.
+
+`main.rs` now does four things — the detached-exec hook, the CLI resolution,
+opening the viewport, running the loop — and everything else lives here:
+
+| Module | Holds |
+|--------|-------|
+| `mod.rs` | The `Session` struct and `StatusClocks` — the loop's state. |
+| `event_loop.rs` | `run`: the `select!` over the eight sources (62 lines), and `Sources`. |
+| `actions.rs` | The `Action` dispatch — one arm per key-press outcome — plus `Flow`, `/clear`, `/copy`, the resize and paste routing. |
+| `turn.rs` | Turn lifecycle: `start_turn`, `run_shell`, the background follow-up, `/compact`, `dispatch_after_turn`, `abandon_inflight`. |
+| `stream.rs` | `on_stream_event`: folding one reply event into `App` + scrollback. |
+| `agent.rs` | Subagent events, the roster's clocks, the linger sweep, the session view's arms (`docs/agent-tool.md`). |
+| `background.rs` | Background-shell events and `settle_bg_completions` (`docs/background.md`). |
+| `permission.rs` | `PermissionStore` — the gate, its file, this project's key — and the prompt's answers (`docs/permissions.md`). |
+| `view.rs` | Drawing: the draw tick, the overlays, the repaints, `live_region_height`, the injected clocks. |
+| `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
+| `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, `/login`, Shift+Tab and probe arms (`docs/llm.md`). |
+| `config.rs` | Reading the environment: providers, keys, settings, permission rules, paths. |
+| `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
+| `startup.rs` | The `--continue`/`--resume` argument resolution (`docs/cli.md`). |
+| `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
+| `resume.rs` | Finding recorded sessions on disk, and the `/resume` + backtrack arms. |
+| `history_store.rs` | `InputHistoryStore` (`docs/history-persistence.md`). |
+| `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
+| `workers.rs` | The off-thread file-search / clipboard / model-list jobs. |
+| `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |
+
+#### Why this split needed a struct first
+
+`app.rs` and `ui.rs` were collections of items, so moving them was enough. `run()`
+was one function holding ~50 locals, and its helpers took them nine arguments at a
+time (five `#[allow(clippy::too_many_arguments)]` marked where that hurt most).
+Cutting *that* into modules without a state type would just have widened the
+signatures.
+
+So the state became **`Session`** (30 fields), and every handler is a method on
+it. That is the same trick `app/mod.rs` plays with `App`: a struct's private
+fields are visible to the module that defines it *and all its descendants*, so
+each area module holds an `impl Session` block and reaches the state directly. No
+field is public, and no accessor exists purely to cross a module boundary.
+
+Three cohesive groups became types of their own, because their pieces only ever
+move together:
+
+- **`ModelSession`** — the backend plus the provider table, key store, active
+  model, its reasoning mode, image support and context window. It owns *clones* of
+  the background/subagent registries and the permission gate, so
+  `ModelSession::rebuild` can re-attach the whole set; a rebuild that attached
+  only part of it used to drop the `agent` tool silently.
+- **`PermissionStore`** — the gate, the file its rules persist to, and this
+  project's key inside that file. Every method that changes a rule persists it in
+  the same breath, so there is no way to grant one and forget to save it.
+- **`StatusClocks`** — already existed; it gained `start_turn`/`end_turn` so the
+  four turn-start paths can't drift on which clocks they reset.
+
+#### What stayed outside `Session`
+
+The **receivers**. `select!` borrows several at once, which only type-checks while
+they are separate places, so they live in `event_loop::Sources` and `Session`
+holds the matching senders. Two are passed *into* handlers rather than held: the
+reply receiver, because an interrupt or `/clear` replaces the whole channel
+(`Session::abandon_inflight` returns the new one), and the subagent receiver,
+because a group's resolution has to drain its members' events first.
+
+#### What the loop reads like now
+
+```rust
+Some(event) = sources.reply_rx.recv() => session.on_reply_event(event, &mut sources.agent_rx),
+Some(()) = sources.draw_rx.recv() => session.on_draw_tick()?,
+Some(result) = sources.file_rx.recv() => session.on_file_matches(result),
+```
+
+Adding a feature is now: a method in the area module that owns it, and one line in
+`actions.rs`'s dispatch or one branch in the `select!`.
+
+#### Behaviour is unchanged
+
+This is a refactor: the same 1,807 unit tests, the same 7 shell drain/cap tests
+(moved with the runner into `tui/shell.rs`), the same integration tests, and a
+full `scripts/smoke.sh` run — all 64 phases — pass. Every arm's body, ordering and
+comment moved verbatim; the loop-bottom sequence, the commit ordering, and the
+turn-end dispatch order are the same statements in the same order.
+
+Four things were tidied along the way, all of them latent bugs in comments rather
+than code: `main.rs` had four doc comments orphaned onto the *next* function by
+later insertions (`build_backend`'s onto `permissions_enabled`,
+`dispatch_after_turn`'s onto `checkpoint_turn_end`, `overlay_return_clear`'s onto
+`repaint_active_view`, `spawn_file_search_worker`'s onto `spawn_image_paste`).
+Each doc now sits with the item it describes.
+
+#### Reading the feature docs
+
+The per-feature docs under `docs/` name the boundary as `main.rs` in prose —
+"the boundary (`main.rs`)", "`main.rs` reads the env", and so on. Every
+*symbol-qualified* reference was updated to its new path (`tui::turn`'s
+`Session::start_turn`, `tui::config::save_settings`, …), so a search for the
+name lands in the right module; where a doc says `main.rs` on its own, read it
+as "the boundary", and the table above says which module holds it.
+
 ## The conventions the split had to preserve
 
 **Styling stays centralised.** Every `const` from `ui.rs` moved into `ui/theme.rs`
@@ -96,6 +209,11 @@ re-exported `pub(super)` items into `crate::app` / `crate::ui` at their own
 visibility, which is how sibling modules were reaching them through
 `use super::*`. Those are explicit imports now.
 
+`src/tui/` has no facade and needs none: it belongs to the **binary** crate, so
+nothing outside the binary can name it and there is no public surface to lock.
+`main.rs` reaches exactly two paths — `tui::startup::resolve_cli` and
+`tui::event_loop::run`.
+
 ## Doc links
 
 `cargo doc --no-deps --lib` is part of the gate. The crate denies warnings, which
@@ -113,6 +231,11 @@ so items that other areas reach for widened from private to `pub(super)` —
 public, and nothing that was public changed. Where an item is only used inside
 its own module, it stayed private.
 
+In `src/tui/` the equivalent is `pub(crate)`, which reaches no further than the
+binary. `Session`'s fields stayed **private** — the descendant-visibility trick
+above is what makes that work — and `Sources`' fields are `pub(super)` because
+`bootstrap` builds them.
+
 ## Tests
 
 The tests moved with the code into `src/app/tests/` and `src/ui/tests/`, one file
@@ -126,3 +249,10 @@ Everything else was pushed down to its one caller.
 The test set is unchanged by the split: the same 1591 unit tests with the same
 names, all green, plus a clean `cargo fmt --check`, `cargo clippy --all-targets
 -- -D warnings`, `cargo doc --no-deps --lib`, and a full `scripts/smoke.sh` run.
+
+`src/tui/` is the I/O boundary, so it is verified by `scripts/smoke.sh` rather
+than unit tests — with one exception, the same one it always had: the `!` runner's
+reader-generic drain/cap pair, whose 7 tests moved with it into `tui/shell.rs`.
+The suite after the `tui/` split is 1,807 unit tests (the library has grown since
+the first two splits), those 7 per binary target, and the integration tests, all
+green, with all 64 smoke phases passing.

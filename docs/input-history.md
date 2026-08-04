@@ -118,6 +118,6 @@ state and the box already renders whatever the textarea holds.
   recorded; Ctrl+C's cleared draft is recallable; recalling a `/token` reopens
   the palette; `/clear` keeps the recall history; with no history the arrows
   behave exactly as before (existing cursor-movement tests stay green).
-- `main.rs` (smoke, Phase 10): after a finished turn, ↑ shows the sent message
+- `src/tui/` (smoke, Phase 10): after a finished turn, ↑ shows the sent message
   in the input box again, ↓ clears it, and ↑ + Enter resubmits it — a second
   committed copy and a second turn summary appear.

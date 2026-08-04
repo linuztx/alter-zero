@@ -184,7 +184,7 @@ and `save_settings`):
   an immediately re-sent message persists once; a submission equal to the newest
   seeded entry isn't re-persisted; **`seed` collapses adjacent duplicates** like
   `record` (a messy/concurrent file seeds a clean buffer).
-- `main.rs` (smoke, Phase 37): submit a message in one process, quit, **append an
+- `src/tui/` (smoke, Phase 37): submit a message in one process, quit, **append an
   invalid-UTF-8 line to the file**, start a **second** process against the same
   `ALTER_ZERO_HISTORY_FILE`, and confirm ↑ recalls the previous session's message
   and Ctrl+R finds it — cross-session persistence end to end, and a corrupt tail

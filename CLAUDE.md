@@ -38,9 +38,15 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`, `permission`, `cli`) holds the logic; **`src/main.rs`** is a thin terminal
-shell driving a
-codex-style **async (tokio) `select!`** loop. The two big ones are **directories
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`, `permission`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
+the detached-exec hook, the CLI resolution, the viewport, the loop — over
+**`src/tui/`**, the binary-private tree that drives the codex-style **async
+(tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
+`background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
+`startup`, `recorder`, `resume`, `history_store`, `shell`, `workers`, `host`,
+with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
+Session` block in its area module, reaching the private fields the way `app/`'s
+submodules reach `App`'s). The three big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
 `compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `background`,
@@ -49,16 +55,18 @@ the test tree keeps its private-field access) and `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `stream_render`). Each `mod.rs` re-exports its areas **by name** — never a glob,
+`permission_view`, `stream_render`). The two library `mod.rs`es re-export their areas **by name** — never a glob,
 so the public surface is auditable and `tests/api_surface.rs` can lock it — and
-every `crate::app::X` / `ui::y(…)` path is what it always was;
+every `crate::app::X` / `ui::y(…)` path is what it always was; `src/tui/` needs
+no facade (nothing outside the binary can name it — `main.rs` reaches exactly
+`tui::startup::resolve_cli` and `tui::event_loop::run`);
 see `docs/module-layout.md` for the map. The pure, unit-tested logic lives in
 `app`/`stream`/`ui`/`textarea`/`file_search`/`session`/`history`/`context` (plus the pure cores of `frame`/`paste`/`subprocess`) so behavior
-is testable with a plain `Buffer`/`TestBackend` and no real terminal. `main.rs`
+is testable with a plain `Buffer`/`TestBackend` and no real terminal. `src/tui/`
 **and `term.rs`** are the I/O boundary (as is `clipboard.rs`'s Ctrl+V read, the
-`/resume` session recording + dir scan — `main.rs::SessionRecorder`/`list_sessions`,
+`/resume` session recording + dir scan — `tui::recorder::SessionRecorder`/`list_sessions`,
 whose JSONL format/parse core is the pure `session` module — and the
-cross-session input-history file — `main.rs::InputHistoryStore`, whose JSONL
+cross-session input-history file — `tui::history_store::InputHistoryStore`, whose JSONL
 format/parse core is the pure `history` module, `docs/history-persistence.md`) — verified via `scripts/smoke.sh`, not
 unit-tested save for the odd pure helper that has no terminal in it (like
 `term`'s `keyboard_enhancement_disabled` env predicate — see
@@ -328,7 +336,7 @@ per project** in
 star-suffixed, exact commands verbatim, `auto`/`master` labels round-tripping
 the same way, the pure format in
 `permission::PermissionsFile`, the read-modify-write I/O + startup gate seed
-in `main.rs`), so "don't ask again" and the mode survive a restart in the
+in `tui::config`/`tui::permission`), so "don't ask again" and the mode survive a restart in the
 same directory; gated by `ALTER_ZERO_PERMISSIONS` (disabled = no gate, no
 footer segment, Ctrl+A explains via toast)) in
 `docs/permissions.md`; and the **Ctrl+O
@@ -463,8 +471,8 @@ beside `queued_rows`; dim for info, red for errors). It's raised for
 confirmations and soft rejections the user should see but never keep — `/copy`
 (`Copied last message to clipboard`), a model switch, a mid-turn `/resume`/`/help`
 rejection — instead of committing a scrollback bullet; it never enters `history`,
-and its expiry is timed at the boundary (`main.rs`'s `toast_deadline` +
-`present_toast`, the timestamp pattern, cleared in the draw tick). See
+and its expiry is timed at the boundary (`Session::toast_deadline` +
+`Session::toast`, the timestamp pattern, cleared in the draw tick). See
 `docs/toast.md`; plus a one-row
 **session footer** on the region's last row —
 codex's footer status line, `{model} · {cwd}` dim and two-space inset
@@ -533,7 +541,7 @@ of bug:
    `highlight::Highlighter`) — without re-checking those invariants.
 
 3. **The viewport is content-anchored (top fixed), and resize reflows both
-   directions** (`main.rs::repaint_conversation`). Like Claude Code / codex, the
+   directions** (`tui::view::Session::repaint_conversation`). Like Claude Code / codex, the
    box grows *downward* in place — `term::draw` keeps its top put and only scrolls
    the screen *up* (oldest chat into scrollback) once the box would overflow the
    bottom; a shrink blanks the rows it vacates (the decision is the pure
@@ -637,7 +645,7 @@ of bug:
    (`ui::queued_lines`' inset rows, so Ctrl+O never hides a queued message —
    `docs/queue.md`). That walk is **O(history)** and re-runs the markdown +
    syntax highlighter over the whole transcript, so the loop drives it through a
-   **`ui::TranscriptCache`** (a `main.rs`-owned cache, like `StreamRender`) that
+   **`ui::TranscriptCache`** (a `Session`-owned cache, like `StreamRender`) that
    builds **incrementally** (`docs/tool-view-performance.md`): committed items
    are immutable and history otherwise only grows — every non-append mutation
    (a `/clear`, a `/resume` load, a backtrack truncation, an interrupt-undo
@@ -672,7 +680,7 @@ of bug:
    would write into the alt screen); on return, `repaint_conversation` rebuilds the
    inline view from `history`. Never commit to scrollback while
    `app.view == View::ToolOutput` — nor while an agent session view
-   covers the inline screen (the one gate, `main.rs::commits_allowed`; an open
+   covers the inline screen (the one gate, `tui::commit::Session::commits_allowed`; an open
    permission prompt is deliberately *not* on the list — a commit beneath it
    scrolls in above the region, visible at once, and the scroll it causes is
    one of the one-way moves the close's purge rebuild answers —
@@ -713,7 +721,7 @@ image-paste worker ► tokio mpsc ───┘
                                         └─ turn active? re-arm a frame in 32ms (status shimmer + timer)
 ```
 
-`Submit(text)` runs `main.rs::start_turn` — a batch of one: it records each
+`Submit(text)` runs `tui::turn::Session::start_turn` — a batch of one: it records each
 user message (the Enter arm also records the text into `App::input_history` for
 the ↑/↓ shell-style recall — adjacent duplicates collapse, `/clear` doesn't
 touch it), `insert_before`s it, then spawns one reply via the selected
@@ -728,7 +736,7 @@ sequence of **typed entries** (`QueuedTurn`): Enter appends to the last
 `Messages` batch (`queue_draft(false)`), **Tab opens a new batch**
 (`queue_draft(true)`, a separate follow-up turn), and a **mid-turn `!command`
 queues as a standalone `Shell` entry** (`queue_shell`, run locally, never
-merged); `main.rs::flush_next_queued` dispatches **one entry**
+merged); `tui::turn::Session::flush_next_queued` dispatches **one entry**
 (`drain_next_batch`) per turn end — a `Messages` batch via `start_turn`, a
 `Shell` via `run_shell` — so Enter messages batch into one turn while Tab
 follow-ups and `!` commands iterate in order (Alt+Up pulls the **last entry**
@@ -837,7 +845,8 @@ root→cwd discovery, the first of `AGENTS.override.md`/`AGENTS.md` per dir
 read bytes-lossily, codex's 32 KiB cap via `ALTER_ZERO_PROJECT_DOC_MAX_BYTES`
 with `0` disabling, the `# AGENTS.md instructions … <INSTRUCTIONS>` fragment;
 the read is
-`main.rs`'s `start_turn` + a startup seed) into `App::user_instructions`, and
+`tui::turn`'s `Session::start_turn` + a startup seed) into
+`App::user_instructions`, and
 `context::context_messages_with` injects it as the derived context's leading
 user entry — in front of the post-`/compact` shape too, never entering
 `history` — so the Ctrl+D view shows it and `App::estimate_context_tokens`
@@ -882,8 +891,9 @@ Red → Green → Refactor cycles:
 3. **Refactor** — clean up with tests staying green.
 
 If you wrote production code before its test, delete it and re-derive it from the
-test. `main.rs` is the **only** exception (terminal I/O boundary) — verify changes
-there by running the app and `scripts/smoke.sh` in tmux, not unit tests. Every
+test. `src/main.rs` + `src/tui/` are the **only** exception (terminal I/O
+boundary) — verify changes there by running the app and `scripts/smoke.sh` in
+tmux, not unit tests. Every
 gate (`fmt`, `clippy -D warnings`, `test`) must be clean before you call work done.
 
 ### Design before implementing (for features / non-trivial changes)
@@ -968,8 +978,8 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   rather than clipping, the `TOOL_PEEK_MAX_ROWS` display-row ceiling keeping
   one huge line from ballooning the cell) then `… +N lines (ctrl+o
   to expand)`, `⎿ Running…` live, the retained output uncapped in the Ctrl+O view;
-  output over `main.rs`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
-  read (`main.rs::read_capped`, codex's pattern — bounds peak RSS so `! tree ~/`
+  output over `tui::shell`'s `SHELL_OUTPUT_MAX_BYTES` is **capped in memory** as it's
+  read (`tui::shell::append_capped`, codex's pattern — bounds peak RSS so `! tree ~/`
   can't spike memory; the dropped tail is gone, not saved) and the expanded cell
   appends a dim `TOOL_TRUNCATED_MARKER` (`…`) when `tool.truncated` —
   kept flush by `conversation_lines`), and
@@ -1015,7 +1025,7 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `docs/textarea.md`.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
   as a template) and changing the single `let backend = …;` line in
-  `main.rs::run`. `spawn(prompt, images, tx, cancel)` hands you the text prompt
+  `tui::event_loop::run`. `spawn(prompt, images, tx, cancel)` hands you the text prompt
   **plus** the paths of any Ctrl+V-pasted images (`images: Vec<PathBuf>` — codex's
   `UserInput::LocalImage` typed channel; a real vision backend reads each file and
   attaches it, the dummy only acknowledges the count — see `docs/image-paste.md`).

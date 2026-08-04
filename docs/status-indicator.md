@@ -306,7 +306,7 @@ same events straight from its streamed `tool_calls` deltas
   `ThinkingChunk`s strictly inside the pair; chunks still reconstruct the reply;
   `DummyAi` waits the startup delay before the first chunk (a short delay in the
   test), and a cancel during the wait streams nothing.
-- `main.rs` (smoke): the live line shows `tokens` while streaming with a blank
+- `src/tui/` (smoke): the live line shows `tokens` while streaming with a blank
   gap row between it and the box, and a committed `Done for Ns` after the turn
   settles. Phase 20 (longer startup delay): mid-pause the status shows
   `↑ N tokens` with no reply text, then the reply streams with the arrow `↓`.

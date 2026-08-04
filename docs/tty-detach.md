@@ -2,7 +2,7 @@
 
 Every shell command this app runs — the model's `bash` tool
 ([`llm::exec::run_bash`](../src/llm/exec.rs), `docs/tools.md`), the user's `!`
-shell ([`main.rs::spawn_shell_command`](../src/main.rs),
+shell ([`tui::shell::spawn_shell_command`](../src/tui/shell.rs),
 `docs/shell-command.md`), and background tasks
 ([`background::BackgroundRegistry::launch`](../src/background.rs),
 `docs/background.md`) — spawns through one shared boundary helper,

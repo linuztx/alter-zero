@@ -70,5 +70,5 @@ unchanged.
   stamp line entirely for an empty stamp, shows **no** stamp on
   assistant/tool/summary items, and the inline builders
   (`conversation_lines`, `message_lines`) never contain it.
-- `main.rs` (smoke): the overlay shows a right-aligned `hh:mm AM/PM` line and
+- `src/tui/` (smoke): the overlay shows a right-aligned `hh:mm AM/PM` line and
   no dated/seconds stamp anywhere.
