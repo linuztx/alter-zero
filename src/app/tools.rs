@@ -37,6 +37,7 @@ impl App {
                 shell: false,
                 truncated: false,
                 context_output: None,
+                approval_note: None,
             })
             .collect();
     }
@@ -66,6 +67,7 @@ impl App {
             shell: false,
             truncated: false,
             context_output: None,
+            approval_note: None,
         });
     }
 
@@ -78,6 +80,20 @@ impl App {
     pub fn set_tool_truncated(&mut self) {
         if let Some(tool) = self.tool_queue.front_mut() {
             tool.truncated = true;
+        }
+    }
+
+    /// Record how the **running** tool came to run without the user — the
+    /// auto mode classifier's `Allowed by auto mode classifier` — so the
+    /// resolved cell appends it as a dim `⎿` row (the boundary's handler for
+    /// [`crate::stream::StreamEvent::ToolNote`]; see `docs/permissions.md`).
+    /// A no-op unless the front call is [`ToolStatus::Running`] — the note
+    /// always follows its call's `ToolStart`.
+    pub fn set_tool_note(&mut self, note: &str) {
+        if let Some(tool) = self.tool_queue.front_mut()
+            && tool.status == ToolStatus::Running
+        {
+            tool.approval_note = Some(note.to_string());
         }
     }
 
@@ -249,6 +265,13 @@ pub struct ToolCall {
     /// side: its `output` holds the model-facing launch text and the cell's
     /// row is synthesized from the status.)
     pub context_output: Option<String>,
+    /// How the call came to run **without the user's approval** — the auto
+    /// mode classifier's `Allowed by auto mode classifier`
+    /// (`docs/permissions.md`). Set by [`App::set_tool_note`] right after
+    /// the call starts; the resolved cell appends it as a dim `⎿` row (the
+    /// example transcript's last line), and a `/resume` restores it. `None`
+    /// for every call the user approved (or that needed no approval).
+    pub approval_note: Option<String>,
 }
 
 impl ToolCall {

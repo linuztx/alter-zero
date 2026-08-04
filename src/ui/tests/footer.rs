@@ -84,10 +84,18 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
     let mode_span = line.spans.last().expect("the mode span");
     assert_eq!(mode_span.content, "manual");
     assert_eq!(mode_span.style.fg, Some(FOOTER_COLOR));
-    app.set_permission_mode(Some(crate::permission::PermissionMode::Edit));
-    let text = plain(&footer_line(&app, 120));
-    assert!(text.ends_with("edit"), "{text}");
-    assert_eq!(cols(&text), 120);
+    // Every mode of the Ctrl+A cycle renders its label there — auto and
+    // master included (docs/permissions.md).
+    for (mode, label) in [
+        (crate::permission::PermissionMode::Edit, "edit"),
+        (crate::permission::PermissionMode::Auto, "auto"),
+        (crate::permission::PermissionMode::Master, "master"),
+    ] {
+        app.set_permission_mode(Some(mode));
+        let text = plain(&footer_line(&app, 120));
+        assert!(text.ends_with(label), "{text}");
+        assert_eq!(cols(&text), 120);
+    }
 }
 
 #[test]

@@ -19,10 +19,10 @@ use serde::{Deserialize, Serialize};
 const WAIT_POLL: Duration = Duration::from_millis(50);
 
 /// The session's permission posture — which tool calls ask before running.
-/// Pinned at the footer's right edge (`{model} · {cwd}      manual`), toggled
-/// with **Ctrl+A** (option 2 on a `write`/`edit` prompt switches to `Edit`
-/// too), and persisted per project in `permissions.json`. See
-/// `docs/permissions.md`.
+/// Pinned at the footer's right edge (`{model} · {cwd}      manual`), cycled
+/// with **Ctrl+A** in increasing autonomy (option 2 on a `write`/`edit`
+/// prompt switches to `Edit` too), and persisted per project in
+/// `permissions.json`. See `docs/permissions.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum PermissionMode {
     /// Ask before every `write`/`edit` **and** every `bash` command — Claude
@@ -33,6 +33,18 @@ pub enum PermissionMode {
     /// Auto-approve `write`/`edit` (Claude Code's "auto-accept edits on");
     /// `bash` commands still ask until allow-listed.
     Edit,
+    /// Claude Code's auto mode: `write`/`edit` run unasked like [`Edit`],
+    /// and a `bash` command is reviewed by the **auto mode classifier** — a
+    /// silent LLM safety check — instead of the user. An allowed command
+    /// runs (its cell noting [`CLASSIFIER_ALLOWED_NOTE`]); a denied one is
+    /// rejected with the classifier's reason; a classifier *failure* falls
+    /// back to the ordinary prompt. See `docs/permissions.md`.
+    ///
+    /// [`Edit`]: Self::Edit
+    Auto,
+    /// Everything runs unasked — Claude Code's bypass-permissions posture.
+    /// No prompt, no classifier: the user has taken the seatbelt off.
+    Master,
 }
 
 impl PermissionMode {
@@ -42,6 +54,8 @@ impl PermissionMode {
         match self {
             Self::Manual => "manual",
             Self::Edit => "edit",
+            Self::Auto => "auto",
+            Self::Master => "master",
         }
     }
 
@@ -52,16 +66,21 @@ impl PermissionMode {
         match text.trim() {
             "manual" => Some(Self::Manual),
             "edit" => Some(Self::Edit),
+            "auto" => Some(Self::Auto),
+            "master" => Some(Self::Master),
             _ => None,
         }
     }
 
-    /// The other mode — Ctrl+A's toggle.
+    /// The next mode in Ctrl+A's cycle — manual → edit → auto → master →
+    /// manual, each step handing the session more autonomy.
     #[must_use]
-    pub const fn toggled(self) -> Self {
+    pub const fn cycled(self) -> Self {
         match self {
             Self::Manual => Self::Edit,
-            Self::Edit => Self::Manual,
+            Self::Edit => Self::Auto,
+            Self::Auto => Self::Master,
+            Self::Master => Self::Manual,
         }
     }
 }
@@ -123,6 +142,11 @@ pub enum PermissionDecision {
 pub enum Approval {
     /// Proceed — emit `ToolStart`, run the tool, emit `ToolEnd`.
     Allow,
+    /// Proceed like [`Allow`](Self::Allow), and record `note` on the cell —
+    /// how the call came to run without the user: the auto mode classifier's
+    /// [`CLASSIFIER_ALLOWED_NOTE`], shown as a dim `⎿` row once the call
+    /// resolves (`ToolCall::approval_note`, `docs/permissions.md`).
+    AllowNoted { note: String },
     /// Don't run it. `display` is the short red cell output the user sees;
     /// `result` is the longer text the *model* reads as the tool result. Two
     /// fields so the cell can stay a one-liner while the instruction is
@@ -251,6 +275,129 @@ pub fn explain_result(request: &PermissionRequest) -> String {
 #[must_use]
 pub fn explain_display() -> String {
     "User asked for an explanation first".to_string()
+}
+
+/// The **auto mode classifier**'s verdict on one `bash` command
+/// (`docs/permissions.md`): whether it may run unasked, and — for a denial —
+/// the reason both the red cell and the model read. Produced by the real
+/// LLM classifier (`crate::llm::classifier`) or the dummy's offline
+/// heuristic ([`auto_verdict`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassifierVerdict {
+    /// `true` — run the command; `false` — reject it with `reason`.
+    pub allow: bool,
+    /// The classifier's one-line justification. Shown on a denial's cell
+    /// (`Reason: …`) and in the model-facing result; informational (and
+    /// often empty) for an allow.
+    pub reason: String,
+}
+
+/// The dim note appended to a command cell the classifier allowed — the
+/// transcript's record that no human approved this call.
+pub const CLASSIFIER_ALLOWED_NOTE: &str = "Allowed by auto mode classifier";
+
+/// The short output recorded on a command cell the classifier **denied** —
+/// the red counterpart of [`CLASSIFIER_ALLOWED_NOTE`], with the classifier's
+/// reason on a second line when it gave one (the amend-feedback shape).
+#[must_use]
+pub fn classifier_denied_display(reason: Option<&str>) -> String {
+    let headline = "Denied by auto mode classifier";
+    match reason.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(reason) => format!("{headline}\nReason: {reason}"),
+        None => headline.to_string(),
+    }
+}
+
+/// The model-facing tool result for a classifier denial — adapted from
+/// Claude Code's auto-mode rejection message: the command did not run, other
+/// work may continue, a safer approach is fine, but the intent behind the
+/// denial must not be bypassed; if the capability is essential, stop and ask
+/// the user.
+#[must_use]
+pub fn classifier_denial_result(reason: Option<&str>) -> String {
+    let reason = match reason.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(reason) => format!(" Reason: {reason}."),
+        None => String::new(),
+    };
+    format!(
+        "Permission to run this command was denied by the auto mode classifier.{reason} \
+         The command was not executed. If you have other tasks that don't depend on this \
+         action, continue working on those. You may try to accomplish the goal in a safer, \
+         narrower way, but do not attempt to bypass the intent behind this denial. If this \
+         capability is essential to the user's request, STOP and explain what you were \
+         trying to do and why — the user can run it themselves, approve it in manual mode, \
+         or switch modes (ctrl+a)."
+    )
+}
+
+/// Program prefixes the offline heuristic classifier treats as read-only
+/// inspection — a deliberately small subset of Claude Code's read-only
+/// allowlist, enough for the dummy's auto-mode demo. Subcommand tools keep
+/// their verb (the [`segment_prefix`] shape), so `git status` is safe while
+/// bare `git` — and so `git push` — is not.
+const HEURISTIC_SAFE_PREFIXES: &[&str] = &[
+    "cat",
+    "date",
+    "df",
+    "du",
+    "echo",
+    "file",
+    "git branch",
+    "git diff",
+    "git log",
+    "git show",
+    "git status",
+    "grep",
+    "head",
+    "ls",
+    "printf",
+    "ps",
+    "pwd",
+    "rg",
+    "stat",
+    "tail",
+    "tree",
+    "uname",
+    "uptime",
+    "wc",
+    "which",
+    "whoami",
+];
+
+/// The **offline** stand-in for the auto mode classifier — the deterministic
+/// heuristic the dummy backend consults so the feature demos (and smoke-tests)
+/// without a network (`docs/permissions.md`). Allows a command only when
+/// every pipeline segment reduces to a known read-only prefix
+/// (`HEURISTIC_SAFE_PREFIXES`); anything else — mutations, wrappers,
+/// redirects, substitutions, an empty command — is denied with a short
+/// reason. The real backend never uses this: its verdicts come from the LLM
+/// (`crate::llm::classifier`), and an LLM failure falls back to the prompt,
+/// not to this list.
+#[must_use]
+pub fn auto_verdict(command: &str) -> ClassifierVerdict {
+    let deny = |reason: &str| ClassifierVerdict {
+        allow: false,
+        reason: reason.to_string(),
+    };
+    match command_scope(command) {
+        CommandScope::Exact(command) if command.is_empty() => deny("empty command"),
+        // A redirect, substitution, wrapper, or env assignment — the shapes a
+        // prefix can't summarize can't be called read-only either.
+        CommandScope::Exact(_) => deny("redirection, substitution, or a command wrapper"),
+        CommandScope::Prefixes { keys, .. } => {
+            match keys
+                .iter()
+                .find(|key| !HEURISTIC_SAFE_PREFIXES.contains(&key.as_str()))
+            {
+                None if keys.is_empty() => deny("empty command"),
+                None => ClassifierVerdict {
+                    allow: true,
+                    reason: "read-only command".to_string(),
+                },
+                Some(key) => deny(&format!("`{key}` is not a read-only command")),
+            }
+        }
+    }
 }
 
 /// What a `bash` command's "don't ask again" remembers — see
@@ -500,11 +647,21 @@ pub struct PermissionRules {
 }
 
 impl PermissionRules {
-    /// Does a standing approval already cover this request?
+    /// Does a standing approval already cover this request? File changes are
+    /// covered by every mode above manual; a command only by
+    /// [`PermissionMode::Master`] or the allowlist — auto mode's classifier
+    /// is a per-call consult in the approve seam, never a standing rule, so
+    /// `allows` still says no for its commands.
     #[must_use]
     pub fn allows(&self, request: &PermissionRequest) -> bool {
+        if self.mode == PermissionMode::Master {
+            return true;
+        }
         match request.kind {
-            PermissionKind::Write | PermissionKind::Edit => self.mode == PermissionMode::Edit,
+            PermissionKind::Write | PermissionKind::Edit => matches!(
+                self.mode,
+                PermissionMode::Edit | PermissionMode::Auto | PermissionMode::Master
+            ),
             PermissionKind::Bash => match command_scope(&request.target) {
                 CommandScope::Prefixes { keys, .. } => {
                     !keys.is_empty() && keys.iter().all(|k| self.prefixes.contains(k))
@@ -1054,14 +1211,132 @@ mod tests {
     }
 
     #[test]
-    fn the_mode_labels_round_trip_and_toggle() {
+    fn the_mode_labels_round_trip_and_cycle() {
         assert_eq!(PermissionMode::default(), PermissionMode::Manual);
-        for mode in [PermissionMode::Manual, PermissionMode::Edit] {
+        let all = [
+            PermissionMode::Manual,
+            PermissionMode::Edit,
+            PermissionMode::Auto,
+            PermissionMode::Master,
+        ];
+        for mode in all {
             assert_eq!(PermissionMode::parse(mode.label()), Some(mode));
-            assert_ne!(mode.toggled(), mode);
-            assert_eq!(mode.toggled().toggled(), mode);
         }
+        // Ctrl+A steps through the modes in increasing autonomy and wraps.
+        assert_eq!(PermissionMode::Manual.cycled(), PermissionMode::Edit);
+        assert_eq!(PermissionMode::Edit.cycled(), PermissionMode::Auto);
+        assert_eq!(PermissionMode::Auto.cycled(), PermissionMode::Master);
+        assert_eq!(PermissionMode::Master.cycled(), PermissionMode::Manual);
         assert_eq!(PermissionMode::parse("turbo"), None);
+        assert_eq!(PermissionMode::Auto.label(), "auto");
+        assert_eq!(PermissionMode::Master.label(), "master");
+    }
+
+    #[test]
+    fn auto_mode_covers_file_changes_but_never_a_command() {
+        // Auto sits above edit: files run unasked, while a command goes to
+        // the CLASSIFIER — which is approve_call's business, not a standing
+        // rule — so `allows` still says no for bash (docs/permissions.md).
+        let rules = PermissionRules {
+            mode: PermissionMode::Auto,
+            ..PermissionRules::default()
+        };
+        assert!(rules.allows(&request(PermissionKind::Write, "a.py")));
+        assert!(rules.allows(&request(PermissionKind::Edit, "a.py")));
+        assert!(!rules.allows(&request(PermissionKind::Bash, "ls")));
+        // An allow-listed command still short-circuits the classifier.
+        let mut listed = rules.clone();
+        listed.remember(&request(PermissionKind::Bash, "cargo test"));
+        assert!(listed.allows(&request(PermissionKind::Bash, "cargo test")));
+    }
+
+    #[test]
+    fn master_mode_covers_everything() {
+        let rules = PermissionRules {
+            mode: PermissionMode::Master,
+            ..PermissionRules::default()
+        };
+        assert!(rules.allows(&request(PermissionKind::Write, "a.py")));
+        assert!(rules.allows(&request(PermissionKind::Edit, "a.py")));
+        assert!(rules.allows(&request(PermissionKind::Bash, "rm -rf /")));
+    }
+
+    #[test]
+    fn auto_and_master_modes_persist_their_labels() {
+        for (mode, label) in [
+            (PermissionMode::Auto, "auto"),
+            (PermissionMode::Master, "master"),
+        ] {
+            let rules = PermissionRules {
+                mode,
+                ..PermissionRules::default()
+            };
+            let entry = ProjectPermissions::from_rules(&rules);
+            assert_eq!(entry.mode.as_deref(), Some(label));
+            assert_eq!(entry.saved_mode(), mode);
+        }
+    }
+
+    // --- the auto-mode classifier vocabulary ---
+
+    #[test]
+    fn the_classifier_texts_name_the_classifier_on_both_sides() {
+        assert_eq!(CLASSIFIER_ALLOWED_NOTE, "Allowed by auto mode classifier");
+        let display = classifier_denied_display(Some("privilege escalation"));
+        assert_eq!(
+            display,
+            "Denied by auto mode classifier\nReason: privilege escalation"
+        );
+        // No reason → the one-line headline stands alone.
+        assert_eq!(
+            classifier_denied_display(None),
+            "Denied by auto mode classifier"
+        );
+        assert_eq!(
+            classifier_denied_display(Some("   ")),
+            "Denied by auto mode classifier"
+        );
+        let result = classifier_denial_result(Some("privilege escalation"));
+        assert!(
+            result.contains("auto mode classifier") && result.contains("privilege escalation"),
+            "the model reads who denied it and why: {result}"
+        );
+        assert!(
+            result.contains("was not executed"),
+            "the model must know nothing ran: {result}"
+        );
+    }
+
+    #[test]
+    fn the_heuristic_classifier_allows_read_only_commands() {
+        // The offline stand-in the dummy backend consults in auto mode
+        // (docs/permissions.md) — read-only inspection passes…
+        for command in [
+            "ls -la",
+            "pwd",
+            "cat README.md",
+            "git status --short",
+            "git log --oneline | head -5",
+            "grep -rn TODO src",
+        ] {
+            let verdict = auto_verdict(command);
+            assert!(verdict.allow, "{command} should classify safe");
+        }
+        // …while anything else — mutations, privilege, wrappers, redirects —
+        // is denied with a reason.
+        for command in [
+            "rm -rf /",
+            "sudo apt install x",
+            "python3 script.py",
+            "cat a > b",
+            "ls; rm -rf /",
+            "echo $(whoami)",
+            "",
+        ] {
+            let verdict = auto_verdict(command);
+            assert!(!verdict.allow, "{command} must classify unsafe");
+            assert!(!verdict.reason.is_empty(), "a denial carries its reason");
+        }
     }
 
     #[test]

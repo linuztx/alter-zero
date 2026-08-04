@@ -297,16 +297,36 @@ wrapper (`sudo`, `sh -c`, …) means a prefix would hide what matters — and
 (`App::drain_covered_permissions` — parallel agents all ask before any is
 answered, so one answer covers them all); the session carries a **permission
 mode** (`permission::PermissionMode` — `manual` asks for everything, `edit`
-auto-approves `write`/`edit` while commands still ask) pinned flush at the
+auto-approves `write`/`edit` while commands still ask, `auto` additionally
+sends a non-allowlisted `bash` command to the **auto mode classifier** — a
+silent LLM safety check on the session's own provider
+(`llm::classifier::SafetyClassifier`, prompt in `prompts/classifier.md`,
+`ALTER_ZERO_CLASSIFIER_MODEL` overrides the model) consulted by the approve
+seam in the user's stead: the asked-about cell just keeps its `⎿ Waiting…`
+row while the verdict streams (silently — no UI events), an **allow** runs
+the call with a dim `⎿ Allowed by auto mode classifier` row appended to the
+resolved cell (the `Approval::AllowNoted` → `StreamEvent::ToolNote` →
+`ToolCall::approval_note` chain — rendered inline and in Ctrl+O, recorded in
+the rollout so a `/resume` keeps it, and on a subagent's own transcript via
+the same event), a **deny** rejects it red (`Denied by auto mode
+classifier` + `Reason: …`) through the ordinary `ToolRejected` path with a
+Claude-Code-style stop-or-adjust model text, and a classifier **failure**
+falls back to the ordinary prompt (never an allow); `master` runs
+*everything* unasked — no prompt, no classifier, Claude Code's
+bypass-permissions) pinned flush at the
 footer's **right edge** (`{model} · {cwd}      manual` — its columns reserved
 off the left chain's budget, so the `…` truncation can never eat it) and
-toggled with **Ctrl+A** (from
-the composer, or on an open prompt — a file prompt's option 2 *is* the
-switch to `edit`, with a `Mode: edit …` toast; back to `manual` and file
-changes ask again); the rules **persist per project** in
+**cycled** with **Ctrl+A** (manual → edit → auto → master → manual, one step
+per press — from the composer, or on an open prompt: a file prompt's option
+2 *is* the switch to `edit`, with a `Mode: edit …` toast; back to `manual`
+and file changes ask again; a step onto `master` sweeps the open/queued
+prompts it now covers; the offline dummy demos auto mode with the pure
+heuristic `permission::auto_verdict` instead of an LLM); the rules **persist
+per project** in
 `~/.alter-zero/permissions.json` (`{"projects": {"/abs/cwd":
 {"allow_commands": ["python3 *", …], "mode": "edit"}}}` — prefix rules
-star-suffixed, exact commands verbatim, the pure format in
+star-suffixed, exact commands verbatim, `auto`/`master` labels round-tripping
+the same way, the pure format in
 `permission::PermissionsFile`, the read-modify-write I/O + startup gate seed
 in `main.rs`), so "don't ask again" and the mode survive a restart in the
 same directory; gated by `ALTER_ZERO_PERMISSIONS` (disabled = no gate, no

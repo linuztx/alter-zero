@@ -49,15 +49,15 @@ impl App {
         self.permission_mode = mode;
     }
 
-    /// Ctrl+A — toggle manual ⇄ edit and hand the loop the new mode
-    /// ([`Action::SetPermissionMode`]: mirror it onto the gate, persist it
-    /// for this project, sweep newly covered requests, toast). With
-    /// permissions disabled there is no mode to toggle — the toast says so
-    /// (the `cycle_thinking` pattern).
+    /// Ctrl+A — step the mode cycle (manual → edit → auto → master) and hand
+    /// the loop the new mode ([`Action::SetPermissionMode`]: mirror it onto
+    /// the gate, persist it for this project, sweep newly covered requests,
+    /// toast). With permissions disabled there is no mode to cycle — the
+    /// toast says so (the `cycle_thinking` pattern).
     pub(super) fn toggle_permission_mode(&mut self) -> Action {
         match self.permission_mode {
             Some(mode) => {
-                let next = mode.toggled();
+                let next = mode.cycled();
                 self.permission_mode = Some(next);
                 Action::SetPermissionMode(next)
             }

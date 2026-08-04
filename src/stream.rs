@@ -145,6 +145,14 @@ pub enum StreamEvent {
     /// later turn would otherwise see only the one-liner and lose the user's
     /// instructions entirely.
     ToolRejected { display: String, result: String },
+    /// A provenance note for the **in-flight** tool call — today only the
+    /// auto mode classifier's `Allowed by auto mode classifier`
+    /// (`docs/permissions.md`). Sent right after the call's
+    /// [`StreamEvent::ToolStart`]; the loop stores it on the running call
+    /// ([`crate::app::App::set_tool_note`]) so the resolved cell appends it
+    /// as a dim `⎿` row — the transcript's record that no human approved
+    /// the call. A backend with no classifier never sends it.
+    ToolNote(String),
     /// The in-flight tool call resolved by **moving to the background**
     /// (a `run_in_background` bash call, or Ctrl+B on a running command) —
     /// sent **in place of** [`StreamEvent::ToolEnd`]. `id` is the registry
@@ -830,7 +838,9 @@ impl ReplySource for DummyAi {
             // single `Write` approval.
             if let Some(gate) = permissions.filter(|_| prompt.to_lowercase().contains("permission"))
             {
-                if prompt.to_lowercase().contains("parallel") {
+                if prompt.to_lowercase().contains("auto") {
+                    dummy_auto_permission_turn(&gate, &tx, &cancel);
+                } else if prompt.to_lowercase().contains("parallel") {
                     dummy_parallel_permission_turn(&gate, &tx, &cancel);
                 } else if prompt.to_lowercase().contains("staggered") {
                     dummy_staggered_permission_turn(&gate, &tx, &cancel);
@@ -1198,6 +1208,163 @@ fn dummy_parallel_permission_turn(
         "Both commands are done — sudo whoami failed (no terminal here) and the ping to \
          google.com came back clean.",
     ) {
+        if cancel.is_cancelled() {
+            return;
+        }
+        if tx.send(StreamEvent::Chunk(chunk)).is_err() {
+            return;
+        }
+        nap(CHUNK_DELAY, cancel);
+    }
+    let _ = tx.send(StreamEvent::StreamDone);
+}
+
+/// The **auto-mode** demo's two commands: a read-only listing the offline
+/// heuristic classifier allows (its output long enough for the collapsed
+/// `… +N lines` hint, like the reference transcript) and a deletion it
+/// denies. See [`dummy_auto_permission_turn`].
+const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
+    (
+        "ls -la",
+        "List the project files",
+        "Exit code: 0\ntotal 40\ndrwxr-xr-x 1 user user  256 Aug  4 17:14 .\n\
+         drwxr-xr-x 1 user user  126 Aug  1 14:35 ..\n\
+         -rw-r--r-- 1 user user 1017 Aug  4 16:59 config.py\n\
+         -rw-r--r-- 1 user user  188 Aug  4 16:59 README.md\n\
+         -rw-r--r-- 1 user user 2044 Aug  4 17:01 game.py\n\
+         -rw-r--r-- 1 user user  310 Aug  4 17:02 utils.py\n\
+         -rw-r--r-- 1 user user  452 Aug  4 17:03 test_game.py\n\
+         -rw-r--r-- 1 user user   96 Aug  4 17:05 Makefile\n\
+         -rw-r--r-- 1 user user  120 Aug  4 17:08 .gitignore\n\
+         -rw-r--r-- 1 user user  640 Aug  4 17:10 notes.md\n\
+         -rw-r--r-- 1 user user  517 Aug  4 17:12 setup.py\n\
+         drwxr-xr-x 1 user user  128 Aug  4 17:13 tests",
+        true,
+    ),
+    (
+        "rm -rf /tmp/scratch",
+        "Clean up the scratch directory",
+        // Only reachable when something other than the classifier cleared it
+        // (master mode, an allowlist rule) — the classifier path rejects
+        // before any output exists.
+        "Exit code: 0",
+        true,
+    ),
+];
+
+/// Play the offline **auto mode** round trip (`docs/permissions.md`): the
+/// [`DUMMY_AUTO_COMMANDS`] batch announced up front, then — per call, the
+/// real approve seam's disposition — the allowlist first, then in
+/// [`PermissionMode::Auto`] the offline heuristic classifier
+/// ([`crate::permission::auto_verdict`]) in the user's stead: an allowed
+/// command runs with the [`CLASSIFIER_ALLOWED_NOTE`] riding a `ToolNote`, a
+/// denied one resolves red via `ToolRejected` with the classifier texts. In
+/// any other mode the call asks like the ordinary demos, so the same prompt
+/// exercises the Ctrl+A switch (smoke drives it in auto).
+///
+/// [`PermissionMode::Auto`]: crate::permission::PermissionMode::Auto
+/// [`CLASSIFIER_ALLOWED_NOTE`]: crate::permission::CLASSIFIER_ALLOWED_NOTE
+fn dummy_auto_permission_turn(
+    gate: &crate::permission::PermissionGate,
+    tx: &UnboundedSender<StreamEvent>,
+    cancel: &CancelToken,
+) {
+    use crate::permission::{
+        CLASSIFIER_ALLOWED_NOTE, PermissionDecision, PermissionKind, PermissionMode,
+        PermissionRequest, auto_verdict, classifier_denial_result, classifier_denied_display,
+    };
+    let _ = tx.send(StreamEvent::ToolBatch(
+        DUMMY_AUTO_COMMANDS
+            .iter()
+            .map(|(cmd, ..)| ToolCallSummary {
+                name: "Bash".to_string(),
+                args: (*cmd).to_string(),
+            })
+            .collect(),
+    ));
+    let mut any_rejected = false;
+    for (cmd, detail, output, ok) in DUMMY_AUTO_COMMANDS {
+        let mut request = PermissionRequest {
+            id: gate.next_id(),
+            kind: PermissionKind::Bash,
+            target: cmd.to_string(),
+            body: String::new(),
+            detail: Some(detail.to_string()),
+            agent: None,
+        };
+        // The approve seam's disposition, offline: standing approvals first,
+        // then auto mode's classifier — here the deterministic heuristic —
+        // and the prompt only outside auto mode.
+        let mut note = None;
+        let resolved = if gate.allows(&request) {
+            Ok(output.to_string())
+        } else if gate.mode() == PermissionMode::Auto {
+            let verdict = auto_verdict(cmd);
+            if verdict.allow {
+                note = Some(CLASSIFIER_ALLOWED_NOTE.to_string());
+                Ok(output.to_string())
+            } else {
+                let reason = Some(verdict.reason.as_str()).filter(|r| !r.trim().is_empty());
+                Err((
+                    classifier_denied_display(reason),
+                    classifier_denial_result(reason),
+                ))
+            }
+        } else {
+            let decision = {
+                let _ = tx.send(StreamEvent::Permission(request.clone()));
+                gate.wait(&request.id, &|| cancel.is_cancelled())
+            };
+            match &decision {
+                Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
+                    if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
+                        request.id.clear();
+                        gate.remember(&request);
+                    }
+                    Ok(output.to_string())
+                }
+                Some(PermissionDecision::Deny(feedback)) => Err((
+                    crate::permission::denied_display(&request, feedback.as_deref()),
+                    crate::permission::denial_result(feedback.as_deref()),
+                )),
+                Some(PermissionDecision::Explain) => Err((
+                    crate::permission::explain_display(),
+                    crate::permission::explain_result(&request),
+                )),
+                // Cancelled out from under us — the channel is abandoned.
+                None => return,
+            }
+        };
+        let _ = tx.send(StreamEvent::ToolStart {
+            name: "Bash".to_string(),
+            args: cmd.to_string(),
+            detail: None,
+        });
+        if let Some(note) = note {
+            let _ = tx.send(StreamEvent::ToolNote(note));
+        }
+        match resolved {
+            Ok(output) => {
+                let _ = tx.send(StreamEvent::ToolEnd {
+                    output,
+                    ok: *ok,
+                    truncated: false,
+                });
+            }
+            Err((display, result)) => {
+                any_rejected = true;
+                let _ = tx.send(StreamEvent::ToolRejected { display, result });
+            }
+        }
+    }
+    // The closing reply reports what actually happened — in auto mode the
+    // delete is blocked, while master (or an allowlist) runs both.
+    let closing = if any_rejected {
+        "Done — the listing ran and the delete was blocked, so nothing was removed."
+    } else {
+        "Done — both commands ran to completion."
+    };
+    for chunk in chunks(closing) {
         if cancel.is_cancelled() {
             return;
         }
@@ -1892,6 +2059,9 @@ mod tests {
                 StreamEvent::ToolRejected { .. } => {
                     panic!("no gate attached — nothing is ever rejected")
                 }
+                StreamEvent::ToolNote(_) => {
+                    panic!("no gate attached — the classifier never speaks")
+                }
                 StreamEvent::Error(e) => panic!("dummy never errors, got {e:?}"),
             }
         }
@@ -2008,6 +2178,131 @@ mod tests {
             ],
             "two gated calls, asked and resolved in order"
         );
+    }
+
+    #[test]
+    fn the_auto_demo_classifies_instead_of_asking_in_auto_mode() {
+        // The offline mirror of auto mode (docs/permissions.md): with the
+        // gate in `Auto`, the heuristic classifier stands in for the user —
+        // the read-only listing runs with the ToolNote riding it, the delete
+        // rejects with the classifier texts, and NO Permission event is ever
+        // raised.
+        let gate = crate::permission::PermissionGate::new();
+        gate.set_mode(crate::permission::PermissionMode::Auto);
+        let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
+        let (tx, mut rx) = unbounded_channel();
+        let handle = dummy.spawn(
+            "auto permission demo".to_string(),
+            vec![],
+            vec![],
+            tx,
+            CancelToken::new(),
+        );
+        let mut order = Vec::new();
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                StreamEvent::ToolBatch(items) => order.push(format!("batch:{}", items.len())),
+                StreamEvent::ToolStart { args, .. } => order.push(format!("start:{args}")),
+                StreamEvent::ToolNote(note) => order.push(format!("note:{note}")),
+                StreamEvent::ToolEnd { ok, .. } => order.push(format!("end:{ok}")),
+                StreamEvent::ToolRejected { display, result } => {
+                    assert!(
+                        display.starts_with("Denied by auto mode classifier"),
+                        "got {display}"
+                    );
+                    assert!(
+                        result.contains("was not executed"),
+                        "the model reads the denial: {result}"
+                    );
+                    order.push("rejected".to_string());
+                }
+                StreamEvent::Permission(req) => {
+                    panic!("auto mode must never raise a prompt: {req:?}")
+                }
+                StreamEvent::Chunk(_) => {}
+                StreamEvent::StreamDone => {
+                    order.push("done".to_string());
+                    break;
+                }
+                other => panic!("unexpected event in the demo: {other:?}"),
+            }
+        }
+        handle.join().unwrap();
+        assert_eq!(
+            order,
+            vec![
+                "batch:2",
+                "start:ls -la",
+                "note:Allowed by auto mode classifier",
+                "end:true",
+                "start:rm -rf /tmp/scratch",
+                "rejected",
+                "done",
+            ],
+            "the classifier decided both calls without the user"
+        );
+    }
+
+    #[test]
+    fn the_auto_demo_still_asks_outside_auto_mode() {
+        // The same prompt under `Manual` goes to the user — so smoke can
+        // start the demo, flip Ctrl+A, and watch the difference.
+        let gate = crate::permission::PermissionGate::new();
+        let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
+        let (tx, mut rx) = unbounded_channel();
+        let handle = dummy.spawn(
+            "auto permission demo".to_string(),
+            vec![],
+            vec![],
+            tx,
+            CancelToken::new(),
+        );
+        let mut asked = 0;
+        let mut notes = 0;
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                StreamEvent::Permission(req) => {
+                    asked += 1;
+                    gate.resolve(&req.id, crate::permission::PermissionDecision::Approve);
+                }
+                StreamEvent::ToolNote(_) => notes += 1,
+                StreamEvent::StreamDone => break,
+                _ => {}
+            }
+        }
+        handle.join().unwrap();
+        assert_eq!(asked, 2, "both commands prompt in manual mode");
+        assert_eq!(notes, 0, "no classifier note when the user approved");
+    }
+
+    #[test]
+    fn the_auto_demo_runs_everything_silently_in_master_mode() {
+        let gate = crate::permission::PermissionGate::new();
+        gate.set_mode(crate::permission::PermissionMode::Master);
+        let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
+        let (tx, mut rx) = unbounded_channel();
+        let handle = dummy.spawn(
+            "auto permission demo".to_string(),
+            vec![],
+            vec![],
+            tx,
+            CancelToken::new(),
+        );
+        let mut ends = 0;
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                StreamEvent::Permission(req) => panic!("master mode never asks: {req:?}"),
+                StreamEvent::ToolRejected { display, .. } => {
+                    panic!("master mode never rejects: {display}")
+                }
+                StreamEvent::ToolNote(note) => panic!("…and never notes: {note}"),
+                StreamEvent::ToolEnd { .. } => ends += 1,
+                StreamEvent::StreamDone => break,
+                _ => {}
+            }
+        }
+        handle.join().unwrap();
+        assert_eq!(ends, 2, "both calls ran unasked");
     }
 
     #[test]

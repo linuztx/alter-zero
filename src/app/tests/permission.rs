@@ -173,17 +173,22 @@ fn ctrl_a_on_a_bash_prompt_toggles_the_mode_and_keeps_asking() {
 }
 
 #[test]
-fn ctrl_a_toggles_the_permission_mode_from_the_composer() {
-    // manual ⇄ edit, both ways — the loop persists it and shows the toast;
-    // the footer's right-edge mode tracks the field.
+fn ctrl_a_cycles_the_permission_mode_from_the_composer() {
+    // manual → edit → auto → master → manual, one step per press — the loop
+    // persists each and shows the toast; the footer's right-edge mode tracks
+    // the field.
     let mut app = App::new();
     app.set_permission_mode(Some(PermissionMode::Manual));
-    let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
-    assert_eq!(action, Action::SetPermissionMode(PermissionMode::Edit));
-    assert_eq!(app.permission_mode(), Some(PermissionMode::Edit));
-    let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
-    assert_eq!(action, Action::SetPermissionMode(PermissionMode::Manual));
-    assert_eq!(app.permission_mode(), Some(PermissionMode::Manual));
+    for expected in [
+        PermissionMode::Edit,
+        PermissionMode::Auto,
+        PermissionMode::Master,
+        PermissionMode::Manual,
+    ] {
+        let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        assert_eq!(action, Action::SetPermissionMode(expected));
+        assert_eq!(app.permission_mode(), Some(expected));
+    }
 }
 
 #[test]
@@ -437,7 +442,7 @@ fn amended_rejection(feedback: &str) -> (String, ToolCall) {
     // The backend thread blocks on the gate, exactly as `run_agent` does.
     let waiter = {
         let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
-        std::thread::spawn(move || approve_call(Some(&gate), &tx, &cancel, None, &call))
+        std::thread::spawn(move || approve_call(Some(&gate), None, &tx, &cancel, None, &call))
     };
     let request = loop {
         if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {

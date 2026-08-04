@@ -164,11 +164,13 @@ pub fn run_agent(
                     }
                     // The permission gate (docs/permissions.md), asked BEFORE
                     // the ToolStart so nothing has run — and nothing has been
-                    // announced as running — while the user decides. A
-                    // rejection still emits the Start/End pair, so the call
-                    // lands in history and the transcript as a red cell, while
-                    // the *model* reads the longer instruction.
-                    if let Approval::Reject { display, result } = approve(call) {
+                    // announced as running — while the user (or auto mode's
+                    // classifier) decides. A rejection still emits the
+                    // Start/End pair, so the call lands in history and the
+                    // transcript as a red cell, while the *model* reads the
+                    // longer instruction.
+                    let approval = approve(call);
+                    if let Approval::Reject { display, result } = approval {
                         let _ = tx.send(StreamEvent::ToolStart {
                             name: display_name(&call.name),
                             args: summarize_call(&call.name, &call.arguments),
@@ -190,6 +192,12 @@ pub fn run_agent(
                         args: summarize_call(&call.name, &call.arguments),
                         detail: super::tools::call_description(&call.name, &call.arguments),
                     });
+                    // A noted approval (the auto mode classifier's allow)
+                    // rides its own event so the resolved cell can append the
+                    // provenance row (docs/permissions.md).
+                    if let Approval::AllowNoted { note } = approval {
+                        let _ = tx.send(StreamEvent::ToolNote(note));
+                    }
                     // Forward the tool's live output to the UI as it is produced,
                     // so the running cell tails it (docs/tool-streaming.md). The
                     // sink targets the front running call app-side; a tool that
@@ -1105,6 +1113,59 @@ mod tests {
                 if t.starts_with("The user doesn't want to proceed")),
             "got {result:?}"
         );
+        assert!(events.iter().any(|e| matches!(e, StreamEvent::StreamDone)));
+    }
+
+    #[test]
+    fn a_noted_approval_emits_the_note_after_start_and_still_runs_the_call() {
+        // The auto mode classifier's allow (docs/permissions.md): the call
+        // runs exactly like a plain Allow, with one extra ToolNote event
+        // between its ToolStart and its execution so the resolved cell can
+        // append the provenance row.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bash", r#"{"command":"ls -la"}"#)];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("list files")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |_c, _sink| ToolOutcome::ok("Exit code: 0\ntotal 40"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call| Approval::AllowNoted {
+                note: "Allowed by auto mode classifier".to_string(),
+            },
+        );
+        let events = drain(&mut rx);
+        let start = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolStart { .. }))
+            .expect("the call starts");
+        let note = events
+            .iter()
+            .position(
+                |e| matches!(e, StreamEvent::ToolNote(n) if n == "Allowed by auto mode classifier"),
+            )
+            .expect("the note is emitted");
+        let end = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolEnd { ok: true, .. }))
+            .expect("the call still runs to its end");
+        assert!(start < note && note < end, "start → note → end: {events:?}");
         assert!(events.iter().any(|e| matches!(e, StreamEvent::StreamDone)));
     }
 

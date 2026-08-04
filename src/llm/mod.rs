@@ -18,6 +18,7 @@ pub mod agent;
 pub mod approval;
 pub mod backend;
 pub mod cache;
+pub mod classifier;
 pub mod config;
 pub mod exec;
 pub mod keystore;

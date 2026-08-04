@@ -299,6 +299,20 @@ pub(super) fn running_command_lines(
     lines
 }
 
+/// The auto mode classifier's provenance row (`docs/permissions.md`): a
+/// fresh dim `⎿ Allowed by auto mode classifier` corner appended under a
+/// **resolved** cell that carries the note — the reference transcript's last
+/// line. A waiting/running cell keeps its live look (the note is recorded
+/// the moment the call starts, but only a finished command shows it).
+fn approval_note_row(tool: &ToolCall) -> Option<Line<'static>> {
+    if matches!(tool.status, ToolStatus::Waiting | ToolStatus::Running) {
+        return None;
+    }
+    tool.approval_note
+        .as_ref()
+        .map(|note| result_row(0, note.clone()))
+}
+
 /// Build the styled lines for one tool call as shown **inline**.
 ///
 /// A `!` shell command is **headerless** — its `Role::Shell` header (`! pwd`)
@@ -331,6 +345,14 @@ pub(super) fn live_tool_lines(tool: &ToolCall, width: u16, pulse: Duration) -> V
 /// The shared body of [`tool_lines`] / [`live_tool_lines`] — `pulse` is `Some`
 /// only on a live frame.
 fn tool_cell_lines(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<Line<'static>> {
+    let mut lines = tool_cell_body(tool, width, pulse);
+    lines.extend(approval_note_row(tool));
+    lines
+}
+
+/// [`tool_cell_lines`] minus the trailing provenance note, so every branch's
+/// early return stays as it was and the note lands exactly once.
+fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<Line<'static>> {
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -505,6 +527,16 @@ fn result_peek_block(
 /// gutter. An over-cap shell output ([`ToolCall::truncated`]) appends a dim
 /// [`TOOL_TRUNCATED_MARKER`] line to show the rest was dropped.
 pub(super) fn tool_full_lines(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
+    let mut lines = tool_full_body(tool, width);
+    // The classifier's provenance row closes the expanded cell too
+    // (docs/permissions.md).
+    lines.extend(approval_note_row(tool));
+    lines
+}
+
+/// [`tool_full_lines`] minus the trailing provenance note (the
+/// [`tool_cell_body`] split).
+fn tool_full_body(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // At rest: the transcript is a pager over a cached, incrementally-built
     // row list (`docs/tool-view-performance.md`) whose refresh short-circuits
     // on a signature that has no clock in it. Animating here would either not

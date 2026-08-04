@@ -15,8 +15,9 @@ use super::tools::{
     render_numbered_diff,
 };
 use crate::permission::{
-    Approval, PermissionDecision, PermissionGate, PermissionKind, PermissionRequest, denial_result,
-    denied_display, explain_display, explain_result,
+    Approval, CLASSIFIER_ALLOWED_NOTE, ClassifierVerdict, PermissionDecision, PermissionGate,
+    PermissionKind, PermissionMode, PermissionRequest, classifier_denial_result,
+    classifier_denied_display, denial_result, denied_display, explain_display, explain_result,
 };
 use crate::stream::{CancelToken, StreamEvent};
 
@@ -24,6 +25,16 @@ use crate::stream::{CancelToken, StreamEvent};
 /// under a waiting request — the call never ran, and the events go to an
 /// already-swapped channel, so this is only ever a well-formed placeholder.
 const CANCELLED_DISPLAY: &str = "Interrupted by user";
+
+/// The **auto mode classifier** seam ([`approve_call`]'s `classify`
+/// parameter): given the request (the command in `target`, the model's
+/// description in `detail`), return the safety verdict — or `Err` when the
+/// classifier itself failed (network, an unparseable reply), which falls
+/// back to the ordinary prompt. The real implementation is
+/// [`crate::llm::classifier::SafetyClassifier`]; tests inject scripts. (The
+/// explicit lifetime keeps the trait object borrow-friendly — a bare alias
+/// would default it to `'static`, refusing the backend's stack closures.)
+pub type ClassifyCommand<'a> = dyn Fn(&PermissionRequest) -> Result<ClassifierVerdict, String> + 'a;
 
 /// What the user is being asked to approve for `call`, or `None` when the tool
 /// needs no approval — a `read`, an unknown tool, or an `edit` that cannot
@@ -98,11 +109,20 @@ pub fn permission_request(
 /// rules, and when they don't already cover the call, raise the prompt and
 /// **block this thread** until the user answers (or the turn is cancelled).
 ///
+/// In [`PermissionMode::Auto`] a `bash` command the rules don't cover goes to
+/// the **classifier** instead of the user (`docs/permissions.md`): an allowed
+/// verdict runs the call with the [`CLASSIFIER_ALLOWED_NOTE`] on its cell, a
+/// denial rejects it with the classifier's reason on both texts, and a
+/// classifier *failure* falls through to the ordinary prompt below — unless
+/// the turn was cancelled out from under it, which resolves like a reaped
+/// gate wait.
+///
 /// With no `gate` — `ALTER_ZERO_PERMISSIONS` off, or an embedder that built the
 /// backend directly — every call is allowed, exactly as before the feature.
 #[must_use]
 pub fn approve_call(
     gate: Option<&PermissionGate>,
+    classify: Option<&ClassifyCommand<'_>>,
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
     agent: Option<&str>,
@@ -116,6 +136,37 @@ pub fn approve_call(
     };
     if gate.allows(&request) {
         return Approval::Allow;
+    }
+    if gate.mode() == PermissionMode::Auto
+        && request.kind == PermissionKind::Bash
+        && let Some(classify) = classify
+    {
+        match classify(&request) {
+            Ok(ClassifierVerdict { allow: true, .. }) => {
+                return Approval::AllowNoted {
+                    note: CLASSIFIER_ALLOWED_NOTE.to_string(),
+                };
+            }
+            Ok(ClassifierVerdict { reason, .. }) => {
+                let reason = Some(reason.trim()).filter(|r| !r.is_empty());
+                return Approval::Reject {
+                    display: classifier_denied_display(reason),
+                    result: classifier_denial_result(reason),
+                };
+            }
+            // An Esc mid-classification resolves like a reaped gate wait —
+            // never a prompt raised into a turn that is being torn down.
+            Err(_) if cancel.is_cancelled() => {
+                return Approval::Reject {
+                    display: CANCELLED_DISPLAY.to_string(),
+                    result: denial_result(None),
+                };
+            }
+            // The classifier failed (network, an unparseable reply): fall
+            // back to asking the user — the safe posture, and the one that
+            // still works offline.
+            Err(_) => {}
+        }
     }
     request.id = gate.next_id();
     let _ = tx.send(StreamEvent::Permission(request.clone()));
@@ -272,6 +323,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let approval = approve_call(
             None,
+            None,
             &tx,
             &CancelToken::new(),
             None,
@@ -288,7 +340,7 @@ mod tests {
         let call = call("bash", r#"{"command":"cargo test"}"#);
         gate.remember(&permission_request(&call, None).unwrap());
         assert_eq!(
-            approve_call(Some(&gate), &tx, &CancelToken::new(), None, &call),
+            approve_call(Some(&gate), None, &tx, &CancelToken::new(), None, &call),
             Approval::Allow
         );
         assert!(rx.try_recv().is_err(), "no request was raised");
@@ -302,7 +354,7 @@ mod tests {
         let call = call("bash", r#"{"command":"python3 script.py"}"#);
         let waiter = {
             let (gate, tx, cancel, call) = (gate.clone(), tx.clone(), cancel.clone(), call.clone());
-            std::thread::spawn(move || approve_call(Some(&gate), &tx, &cancel, None, &call))
+            std::thread::spawn(move || approve_call(Some(&gate), None, &tx, &cancel, None, &call))
         };
         // The event names the request; answering it under that id unblocks.
         let event = loop {
@@ -319,7 +371,7 @@ mod tests {
         assert_eq!(waiter.join().unwrap(), Approval::Allow);
         // …and option 2 remembered the scope, so the next identical call is silent.
         assert_eq!(
-            approve_call(Some(&gate), &tx, &cancel, None, &call),
+            approve_call(Some(&gate), None, &tx, &cancel, None, &call),
             Approval::Allow
         );
     }
@@ -335,7 +387,7 @@ mod tests {
         let call = call("write", &args.to_string());
         let waiter = {
             let (gate, tx, cancel, call) = (gate.clone(), tx.clone(), cancel.clone(), call.clone());
-            std::thread::spawn(move || approve_call(Some(&gate), &tx, &cancel, None, &call))
+            std::thread::spawn(move || approve_call(Some(&gate), None, &tx, &cancel, None, &call))
         };
         let request = loop {
             if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
@@ -359,6 +411,272 @@ mod tests {
         assert!(result.contains("use pathlib"), "got {result}");
     }
 
+    // ===== the auto mode classifier (docs/permissions.md) =====
+
+    /// A gate pre-set to `mode`, plus the plumbing every approve test needs.
+    fn gate_in(mode: crate::permission::PermissionMode) -> PermissionGate {
+        let gate = PermissionGate::new();
+        gate.set_mode(mode);
+        gate
+    }
+
+    #[test]
+    fn auto_mode_runs_a_classifier_allowed_command_with_the_note() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let classify = |request: &PermissionRequest| {
+            assert_eq!(request.target, "ls -la");
+            assert_eq!(request.detail.as_deref(), Some("List files"));
+            Ok(ClassifierVerdict {
+                allow: true,
+                reason: "read-only".to_string(),
+            })
+        };
+        let approval = approve_call(
+            Some(&gate),
+            Some(&classify),
+            &tx,
+            &CancelToken::new(),
+            None,
+            &call("bash", r#"{"command":"ls -la","description":"List files"}"#),
+        );
+        assert_eq!(
+            approval,
+            Approval::AllowNoted {
+                note: CLASSIFIER_ALLOWED_NOTE.to_string(),
+            }
+        );
+        assert!(rx.try_recv().is_err(), "the user was never asked");
+    }
+
+    #[test]
+    fn auto_mode_rejects_a_classifier_denied_command_with_the_reason() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let classify = |_: &PermissionRequest| {
+            Ok(ClassifierVerdict {
+                allow: false,
+                reason: "privilege escalation".to_string(),
+            })
+        };
+        let approval = approve_call(
+            Some(&gate),
+            Some(&classify),
+            &tx,
+            &CancelToken::new(),
+            None,
+            &call("bash", r#"{"command":"sudo rm -rf /"}"#),
+        );
+        let Approval::Reject { display, result } = approval else {
+            panic!("a denied command must not run: {approval:?}");
+        };
+        assert_eq!(
+            display,
+            "Denied by auto mode classifier\nReason: privilege escalation"
+        );
+        assert!(
+            result.contains("privilege escalation") && result.contains("was not executed"),
+            "the model reads the reason and the outcome: {result}"
+        );
+        assert!(rx.try_recv().is_err(), "the user was never asked");
+    }
+
+    #[test]
+    fn auto_mode_never_classifies_a_file_change_or_an_allowlisted_command() {
+        // Files are covered by the mode itself (the edit-mode rule), and an
+        // allow-listed command short-circuits before the classifier — both
+        // must come back as a plain Allow with the classifier untouched.
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let classify = |_: &PermissionRequest| -> Result<ClassifierVerdict, String> {
+            panic!("the classifier must not be consulted")
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({
+            "path": dir.path().join("a.py").to_str().unwrap(),
+            "content": "x\n",
+        });
+        assert_eq!(
+            approve_call(
+                Some(&gate),
+                Some(&classify),
+                &tx,
+                &CancelToken::new(),
+                None,
+                &call("write", &args.to_string()),
+            ),
+            Approval::Allow
+        );
+        let listed = call("bash", r#"{"command":"cargo test"}"#);
+        gate.remember(&permission_request(&listed, None).unwrap());
+        assert_eq!(
+            approve_call(
+                Some(&gate),
+                Some(&classify),
+                &tx,
+                &CancelToken::new(),
+                None,
+                &listed,
+            ),
+            Approval::Allow
+        );
+    }
+
+    #[test]
+    fn manual_and_edit_modes_never_consult_the_classifier() {
+        // The classifier belongs to auto mode alone: in every other mode the
+        // command goes to the user exactly as before the feature.
+        for mode in [
+            crate::permission::PermissionMode::Manual,
+            crate::permission::PermissionMode::Edit,
+        ] {
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            let gate = gate_in(mode);
+            let cancel = CancelToken::new();
+            let classify = move |_: &PermissionRequest| -> Result<ClassifierVerdict, String> {
+                panic!("the classifier must not be consulted in {mode:?}")
+            };
+            let waiter = {
+                let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+                std::thread::spawn(move || {
+                    approve_call(
+                        Some(&gate),
+                        Some(&classify),
+                        &tx,
+                        &cancel,
+                        None,
+                        &call("bash", r#"{"command":"python3 x.py"}"#),
+                    )
+                })
+            };
+            let request = loop {
+                if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                    break request;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            gate.resolve(&request.id, PermissionDecision::Approve);
+            assert_eq!(waiter.join().unwrap(), Approval::Allow);
+        }
+    }
+
+    #[test]
+    fn master_mode_allows_everything_without_asking_or_classifying() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Master);
+        let classify = |_: &PermissionRequest| -> Result<ClassifierVerdict, String> {
+            panic!("master mode has no classifier")
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let args = serde_json::json!({
+            "path": dir.path().join("a.py").to_str().unwrap(),
+            "content": "x\n",
+        });
+        for request in [
+            call("bash", r#"{"command":"sudo rm -rf /"}"#),
+            call("write", &args.to_string()),
+        ] {
+            assert_eq!(
+                approve_call(
+                    Some(&gate),
+                    Some(&classify),
+                    &tx,
+                    &CancelToken::new(),
+                    None,
+                    &request,
+                ),
+                Approval::Allow
+            );
+        }
+        assert!(rx.try_recv().is_err(), "nothing was ever asked");
+    }
+
+    #[test]
+    fn a_classifier_failure_falls_back_to_the_prompt() {
+        // Network down, unparseable verdict — auto mode degrades to asking
+        // the user, never to silently allowing (or wedging the thread).
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let cancel = CancelToken::new();
+        let classify = |_: &PermissionRequest| Err("boom".to_string());
+        let waiter = {
+            let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    Some(&classify),
+                    &tx,
+                    &cancel,
+                    None,
+                    &call("bash", r#"{"command":"python3 x.py"}"#),
+                )
+            })
+        };
+        let request = loop {
+            if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                break request;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        gate.resolve(&request.id, PermissionDecision::Approve);
+        assert_eq!(waiter.join().unwrap(), Approval::Allow);
+    }
+
+    #[test]
+    fn a_classifier_failure_on_a_cancelled_turn_rejects_without_a_prompt() {
+        // Esc lands while the classifier request is in flight: the classify
+        // call errors out (cancelled), and the resolution is the reaped-wait
+        // rejection — no prompt may be raised into the torn-down turn.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let classify = |_: &PermissionRequest| Err("cancelled".to_string());
+        let approval = approve_call(
+            Some(&gate),
+            Some(&classify),
+            &tx,
+            &cancel,
+            None,
+            &call("bash", r#"{"command":"python3 x.py"}"#),
+        );
+        assert!(
+            matches!(approval, Approval::Reject { .. }),
+            "a cancelled classification never allows the call: {approval:?}"
+        );
+        assert!(rx.try_recv().is_err(), "and no prompt was raised");
+    }
+
+    #[test]
+    fn auto_mode_without_a_classifier_falls_back_to_the_prompt() {
+        // A backend with no classifier attached (the dummy goes its own way;
+        // an embedder) still asks rather than allowing or wedging.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let cancel = CancelToken::new();
+        let waiter = {
+            let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    None,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call("bash", r#"{"command":"python3 x.py"}"#),
+                )
+            })
+        };
+        let request = loop {
+            if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
+                break request;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        gate.resolve(&request.id, PermissionDecision::Approve);
+        assert_eq!(waiter.join().unwrap(), Approval::Allow);
+    }
+
     #[test]
     fn a_cancelled_turn_releases_the_waiting_call_without_running_it() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
@@ -367,7 +685,7 @@ mod tests {
         let call = call("bash", r#"{"command":"sleep 100"}"#);
         let waiter = {
             let (gate, tx, cancel, call) = (gate.clone(), tx.clone(), cancel.clone(), call.clone());
-            std::thread::spawn(move || approve_call(Some(&gate), &tx, &cancel, None, &call))
+            std::thread::spawn(move || approve_call(Some(&gate), None, &tx, &cancel, None, &call))
         };
         std::thread::sleep(std::time::Duration::from_millis(30));
         cancel.cancel();

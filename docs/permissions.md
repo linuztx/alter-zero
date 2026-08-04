@@ -256,36 +256,131 @@ There is no built-in safe-command list. Every `bash`, `write`, and `edit` asks
 until the rules say otherwise — Claude Code's default posture, and
 the only one that can't be wrong about what is safe. `read` is never gated.
 
-## Permission modes (manual · edit)
+## Permission modes (manual · edit · auto · master)
 
 The session has a **permission posture**, `permission::PermissionMode`, pinned
 flush at the footer's **right edge** (`{model} · {cwd}      manual` — its own
 zone, reserved off the left chain's truncation budget so a long cwd's `…` cut
-can never eat it; `docs/footer.md`) and toggled with **Ctrl+A** from the
-composer:
+can never eat it; `docs/footer.md`) and **cycled** with **Ctrl+A** from the
+composer, one step per press in increasing autonomy:
 
 - **manual** (the default) — every `write`/`edit` and every `bash` command
   asks, as above.
 - **edit** — Claude Code's "auto-accept edits on": `write`/`edit` run without
   asking, `bash` commands still ask (until allow-listed).
+- **auto** — Claude Code's auto mode: `write`/`edit` run like edit mode, and
+  a `bash` command the allowlist doesn't already cover is reviewed by the
+  **auto mode classifier** — a silent LLM safety check in the user's stead
+  (the next section). No prompt opens in auto mode unless the classifier
+  itself fails.
+- **master** — Claude Code's bypass-permissions posture: everything runs
+  unasked. No prompt, no classifier; the user has taken the seatbelt off.
+
+The cycle wraps (`master` → `manual`), so one key walks the whole ladder.
+`PermissionRules::allows` encodes the standing coverage: file changes are
+covered by every mode above manual; a command only by master or the
+allowlist — auto mode's classifier is a **per-call consult in the approve
+seam**, never a standing rule, which is what lets a classifier failure fall
+back to the prompt.
 
 Option 2 on a `write`/`edit` prompt **is** the switch to edit mode — the mode
 is exactly the old "allow all edits during this session" flag, made visible
 and reversible — so choosing it (or pressing Ctrl+A on the prompt) approves
 the pending change, flips the footer segment, and raises the confirming toast
 (`Mode: edit — file edits run without asking (ctrl+a to switch back)`).
-Ctrl+A on a **bash** prompt only flips the posture — the mode never covers
-commands, so the prompt stays open — and from the composer it works idle or
-mid-turn (the gate's rules are shared state; the very next `approve` consult
-obeys the new posture). Toggling **back to manual makes file changes ask
-again**: the mode is the single source of truth the gate consults, not a
-one-way latch. Every toggle path lands on `Action::SetPermissionMode` (or the
-`ResolvePermission` arm for option 2), where the loop mirrors the mode onto
-the gate, **sweeps** queued requests the new mode now covers (parallel
-agents' file changes waiting behind the open prompt approve at once —
-the option-2 sweep above), persists it (below), and toasts. With permissions
+Ctrl+A on a **bash** prompt only steps the posture — a step onto a mode that
+covers the open request (master covers everything) resolves it through the
+ordinary sweep; otherwise the prompt stays open — and from the composer it
+works idle or mid-turn (the gate's rules are shared state; the very next
+`approve` consult obeys the new posture). Cycling **back to manual makes file
+changes ask again**: the mode is the single source of truth the gate
+consults, not a one-way latch. Every toggle path lands on
+`Action::SetPermissionMode` (or the `ResolvePermission` arm for option 2),
+where the loop mirrors the mode onto the gate, **sweeps** queued requests the
+new mode now covers (parallel agents' file changes waiting behind the open
+prompt approve at once — the option-2 sweep above; a switch to master sweeps
+every queued prompt), persists it (below), and toasts. With permissions
 disabled there is no mode: the footer segment is hidden and Ctrl+A raises a
 `Tool permissions are disabled` toast instead of silently doing nothing.
+
+## Auto mode: the classifier
+
+In auto mode a `bash` command that would have prompted goes to the **auto
+mode classifier** instead — Claude Code's auto-mode reviewer, rebuilt on the
+session's own provider (`llm::classifier::SafetyClassifier`). The approve
+seam (`llm::approval::approve_call`) consults it between the allowlist check
+and the prompt:
+
+```
+approve(bash call) ── gate.allows()? ── yes ─────────────────────► runs (no note)
+                       └ no · mode == auto
+                          classifier ── allow ──► runs, cell notes the classifier
+                                      ── deny ───► rejected with the reason
+                                      ── error ──► the ordinary prompt (fallback)
+```
+
+The request is **one silent completion** — no events reach the UI, so the
+asked-about cell just keeps the `⎿ Waiting…` row its batch announcement gave
+it while the verdict is decided. The classifier sees only the command, the
+model's stated `description` (labelled a claim, not proof), and the cwd —
+never the conversation, so a poisoned transcript can't lobby it. Its system
+prompt (`prompts/classifier.md`, the `include_str!` seam every prompt uses)
+ends with the reference's strict output contract — the reply must begin
+`<block>yes</block><reason>…</reason>` or `<block>no</block>` — which
+survives arbitrary OpenAI-compatible models far better than JSON; the parse
+(`classifier::parse_verdict`) still tolerates a chatty model's preamble, and
+anything without a recognisable verdict is an **error, never an allow**. The
+call runs on a tools-free clone of the session's `ModelConfig` with thinking
+dropped (a verdict needs no reasoning budget); `ALTER_ZERO_CLASSIFIER_MODEL`
+swaps in a cheaper model id on the same provider — Claude Code's
+small-fast-model slot. Cancellation rides the same `CancelToken` polling as
+every request, and a classify that fails *because* the turn was torn down
+resolves like a reaped gate wait — no prompt is raised into a dying turn.
+
+An **allowed** command runs exactly like a user-approved one, plus a
+provenance note: `run_agent` emits `StreamEvent::ToolNote` right after the
+`ToolStart` (the `Approval::AllowNoted` variant), the loop keeps it on the
+running call (`App::set_tool_note` → `ToolCall::approval_note`), and once the
+call resolves the cell appends a fresh dim `⎿` row — the transcript's record
+that no human approved it:
+
+```
+● Bash(ls -la)
+  ⎿  total 40
+     drwxr-xr-x 1 user user  256 Aug  4 17:14 .
+     …
+     … +12 lines (ctrl+o to expand)
+  ⎿  Allowed by auto mode classifier
+```
+
+The note renders in the collapsed cell and the Ctrl+O transcript alike
+(`ui::tool` appends it after every branch's body, only for resolved
+statuses — a running cell keeps its live look), rides the rollout as
+`ToolRecord::approval_note` (omitted when absent, so old files parse) and so
+survives a `/resume`, and a subagent's allowed call carries it onto its own
+transcript through the same `ToolNote` event (`AgentRun::apply`).
+
+A **denied** command never runs: the seam returns `Approval::Reject` with
+`Denied by auto mode classifier` (+ `Reason: {…}` on a second line, the
+amend-feedback shape) as the red cell and a longer model-facing result —
+adapted from Claude Code's auto-mode denial — telling the model the command
+was not executed, other work may continue, a safer approach is fine, the
+denial's intent must not be bypassed, and an essential capability means stop
+and ask the user (who can run it themselves, approve it in manual mode, or
+Ctrl+A). Both texts ride the recorded call like any rejection
+(`context_output`), so later turns replay exactly what the model was told.
+
+A classifier **failure** — network, an unparseable reply — falls back to the
+ordinary prompt: asking the user is the safe posture, and the one that still
+works offline. The **dummy backend** never talks HTTP, so its auto-mode demo
+(a prompt naming "auto" + "permission") consults the deterministic offline
+heuristic instead (`permission::auto_verdict` — a small read-only prefix
+list): the scripted `ls -la` runs with the note, the scripted
+`rm -rf /tmp/scratch` rejects, and the same demo in manual mode prompts —
+which is what lets `smoke.sh` drive the whole feature without a provider.
+The live OpenRouter suite (`tests/live_openrouter.rs`) covers the real
+thing: verdicts both ways, and a full auto-mode turn whose events show
+`ToolStart → ToolNote → ToolEnd` with no `Permission` in sight.
 
 ## Persisted per project (`~/.alter-zero/permissions.json`)
 
@@ -446,10 +541,24 @@ explains itself with a toast instead of pretending to toggle anything.
   (the `{prefix} *` display, the exact command verbatim),
   `command_scope`'s segmentation/prefixing/degradation (subcommand tools,
   wrappers, env assignments, quote-aware redirects), the mode's
-  label/parse/toggle round trip, the rules' allow + remember (mode gating file
-  changes both ways), the `PermissionsFile` round trip (the documented shape,
-  other projects preserved, garbage → default, manual omitted), and the
-  gate's blocking round trip (real threads) + shared mode + seeded commands.
+  label/parse round trip and the four-step Ctrl+A cycle, the rules' allow +
+  remember (mode gating file changes both ways; auto covering files but
+  never commands; master covering everything), the classifier vocabulary
+  (the allowed note, the denied display/result texts, the offline
+  `auto_verdict` heuristic's allow/deny split), the `PermissionsFile` round
+  trip (the documented shape, auto/master labels included, other projects
+  preserved, garbage → default, manual omitted), and the gate's blocking
+  round trip (real threads) + shared mode + seeded commands.
+- `llm/approval.rs` — the auto-mode seam with scripted classifiers: an
+  allowed verdict returns `AllowNoted` (no prompt), a denial the classifier
+  texts, files and allow-listed commands never consult it, manual/edit modes
+  never consult it, master allows everything silently, a classifier failure
+  falls back to the prompt, a failure on a cancelled turn rejects without
+  one, and auto mode with no classifier attached still asks.
+  `llm/classifier.rs` — the user-prompt build and the `<block>` contract
+  parse (noise/case/whitespace tolerated; no verdict → error, never allow).
+  `llm/agent.rs` — a noted approval emits `ToolStart → ToolNote → ToolEnd`
+  and still runs the call.
 - `app/tests` — opening stashes and closing restores the draft, the key map
   (↑/↓/1/2/3/Tab/Esc/ctrl+e — a bare `a` now does nothing; Ctrl+A takes the
   remember option on a file prompt, toggles the mode on a bash prompt and
@@ -494,7 +603,21 @@ explains itself with a toast instead of pretending to toggle anything.
   the previous cell's resolution with no scripted pause; and the "staggered
   permission" turn — two gated `Write`s whose prompts differ wildly in height
   (the first's body caps any sane terminal, the second's is one line), the
-  same no-pause timing, for the mid-open shrink.
+  same no-pause timing, for the mid-open shrink; and the "auto permission"
+  demo three ways — auto mode classifying both calls with no prompt (the
+  note on the listing, the rejection on the delete), manual mode prompting
+  for both, master mode running both silently.
+- `app/tests/tools.rs` — `set_tool_note` rides the running call into history
+  (and ignores a Waiting front / an idle queue); `agents.rs` — a subagent's
+  `ToolNote` lands on its own transcript; `ui/tests/tool.rs` — the note row
+  renders after the collapsed peek and in the expanded view, dim, only once
+  the call resolves (a failed run included, a backgrounded cell under its
+  fixed row), with an unnoted cell byte-identical to before; `session.rs` —
+  the note round-trips a rollout while an unnoted line keeps its shape.
+- `tests/live_openrouter.rs` (ignored; needs `OPENROUTER_API_KEY`) — the real
+  classifier allowing `ls -la` and denying `sudo rm -rf /etc` with a reason,
+  and a whole live auto-mode turn: `ToolStart → ToolNote → ToolEnd`, no
+  `Permission` event, the command's output in the model's reply.
 - `ui/tests/permission_view.rs` — the options show no cursor while the amend
   field and the composer do; and the seat, pinned to the rendered rows: it
   lands on whichever row carries the `❯` marker and steps down with each ↓, on

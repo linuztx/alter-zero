@@ -196,6 +196,7 @@ impl AgentRun {
                         shell: false,
                         truncated: false,
                         context_output: None,
+                        approval_note: None,
                     });
                 }
             }
@@ -224,7 +225,19 @@ impl AgentRun {
                         shell: false,
                         truncated: false,
                         context_output: None,
+                        approval_note: None,
                     }),
+                }
+            }
+            // The auto mode classifier allowed this agent's command: the note
+            // rides the running call so its resolved cell appends the
+            // provenance row, exactly like the main turn's
+            // (docs/permissions.md).
+            StreamEvent::ToolNote(note) => {
+                if let Some(front) = self.tool_queue.front_mut()
+                    && front.status == ToolStatus::Running
+                {
+                    front.approval_note = Some(note.clone());
                 }
             }
             StreamEvent::ToolOutput(chunk) => {
@@ -712,6 +725,35 @@ mod tests {
         };
         assert_eq!(m.role, Role::User);
         assert_eq!(m.text, "Get Warsaw weather");
+    }
+
+    #[test]
+    fn apply_keeps_the_classifier_note_on_the_resolved_call() {
+        // A subagent's command allowed by the auto mode classifier
+        // (docs/permissions.md): the ToolNote lands on the running front and
+        // rides into the transcript, so the agent's own cells show the same
+        // provenance row as the main turn's.
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        run.apply(&StreamEvent::ToolStart {
+            name: "Bash".to_string(),
+            args: "ls -la".to_string(),
+            detail: None,
+        });
+        run.apply(&StreamEvent::ToolNote(
+            "Allowed by auto mode classifier".to_string(),
+        ));
+        run.apply(&StreamEvent::ToolEnd {
+            output: "Exit code: 0\ntotal 40".to_string(),
+            ok: true,
+            truncated: false,
+        });
+        let HistoryItem::Tool(tool) = run.history.last().expect("the call recorded") else {
+            panic!("a tool call lands in the transcript");
+        };
+        assert_eq!(
+            tool.approval_note.as_deref(),
+            Some("Allowed by auto mode classifier")
+        );
     }
 
     #[test]

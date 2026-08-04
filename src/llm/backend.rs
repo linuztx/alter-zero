@@ -12,6 +12,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::agent::{self, RoundOutcome};
 use super::approval;
+use super::classifier::SafetyClassifier;
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
 use super::openai::{Delta, OpenAiClient};
@@ -61,6 +62,11 @@ pub struct LlmBackend {
     /// (`docs/permissions.md`). Without it (an embedder, the live tests,
     /// `ALTER_ZERO_PERMISSIONS` off) tools run unasked, as they always did.
     permissions: Option<PermissionGate>,
+    /// The auto mode classifier bound to this backend's provider
+    /// (`docs/permissions.md`): consulted by the approve seam for `bash`
+    /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
+    /// other mode, and moot without a gate.
+    classifier: SafetyClassifier,
 }
 
 impl LlmBackend {
@@ -87,6 +93,7 @@ impl LlmBackend {
     pub fn configure(cfg: ModelConfig, system_prompt: Option<String>, tools_enabled: bool) -> Self {
         let model = cfg.model.clone();
         let vision = cfg.vision;
+        let classifier = SafetyClassifier::new(&cfg);
         let mut client = OpenAiClient::new(cfg);
         // Trim so the prompt-file trailing newline (or a whitespace-only
         // override) normalizes away; a now-empty prompt sends no system message.
@@ -111,6 +118,7 @@ impl LlmBackend {
             vision,
             agents: None,
             permissions: None,
+            classifier,
         }
     }
 
@@ -395,6 +403,7 @@ impl ReplySource for LlmBackend {
         let agents = self.agents.clone();
         let subagent = self.subagent_config();
         let permissions = self.permissions.clone();
+        let classifier = self.classifier.clone();
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
@@ -463,8 +472,22 @@ impl ReplySource for LlmBackend {
                 },
                 // The permission gate: a `write`/`edit`/`bash` call raises the
                 // inline prompt and blocks this thread on the answer, unless a
-                // standing approval already covers it (docs/permissions.md).
-                |call| approval::approve_call(permissions.as_ref(), &tx, &cancel, None, call),
+                // standing approval already covers it — or, in auto mode, the
+                // classifier reviews the command in the user's stead
+                // (docs/permissions.md).
+                |call| {
+                    let classify = |request: &crate::permission::PermissionRequest| {
+                        classifier.classify(request, &cancel)
+                    };
+                    approval::approve_call(
+                        permissions.as_ref(),
+                        Some(&classify),
+                        &tx,
+                        &cancel,
+                        None,
+                        call,
+                    )
+                },
             );
         })
     }
@@ -532,6 +555,9 @@ struct SubagentConfig {
     /// ask too — the prompt names the agent that asked
     /// (`docs/permissions.md`).
     permissions: Option<PermissionGate>,
+    /// The auto mode classifier, so a subagent's `bash` calls are reviewed
+    /// in auto mode exactly like the main turn's (`docs/permissions.md`).
+    classifier: SafetyClassifier,
 }
 
 impl LlmBackend {
@@ -552,6 +578,7 @@ impl LlmBackend {
                 .and_then(crate::background::BackgroundRegistry::detach_helper),
             background: self.background.clone(),
             permissions: self.permissions.clone(),
+            classifier: self.classifier.clone(),
         }
     }
 }
@@ -778,6 +805,7 @@ fn spawn_subagent_run(
     let detach = config.detach_helper.clone();
     let background = config.background.clone();
     let permissions = config.permissions.clone();
+    let classifier = config.classifier.clone();
     thread::spawn(move || {
         // The forwarder tags every event with the agent id and tracks the
         // final reply text + terminal outcome (the last uninterrupted text
@@ -848,9 +876,20 @@ fn spawn_subagent_run(
             },
             // A subagent's tool calls ask too — the prompt says which agent
             // is asking (docs/permissions.md). The event rides tx2, so the
-            // forwarder tags it with this agent's id like every other.
+            // forwarder tags it with this agent's id like every other; in
+            // auto mode its commands go to the same classifier.
             |call| {
-                approval::approve_call(permissions.as_ref(), &tx2, &cancel, Some(&agent_type), call)
+                let classify = |request: &crate::permission::PermissionRequest| {
+                    classifier.classify(request, &cancel)
+                };
+                approval::approve_call(
+                    permissions.as_ref(),
+                    Some(&classify),
+                    &tx2,
+                    &cancel,
+                    Some(&agent_type),
+                    call,
+                )
             },
         );
         drop(tx2);

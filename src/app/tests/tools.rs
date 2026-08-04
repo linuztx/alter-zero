@@ -111,6 +111,7 @@ fn end_tool_records_a_successful_tool_call_and_clears_the_slot() {
             shell: false,
             truncated: false,
             context_output: None,
+            approval_note: None,
         }))
     );
 }
@@ -198,6 +199,42 @@ fn set_tool_truncated_is_a_noop_when_no_tool_is_running() {
     let mut app = App::new();
     app.set_tool_truncated(); // must not panic
     assert!(app.current_tool().is_none());
+}
+
+#[test]
+fn set_tool_note_rides_the_running_call_into_history() {
+    // The auto mode classifier's note (docs/permissions.md): recorded on the
+    // running call right after its ToolStart, kept by end_tool so the
+    // committed cell (and a /resume of it) can append the provenance row.
+    let mut app = App::new();
+    app.start_tool("Bash", "ls -la");
+    app.set_tool_note("Allowed by auto mode classifier");
+    let finished = app.end_tool("Exit code: 0\ntotal 40", true).expect("ran");
+    assert_eq!(
+        finished.approval_note.as_deref(),
+        Some("Allowed by auto mode classifier")
+    );
+    let Some(HistoryItem::Tool(recorded)) = app.history.last() else {
+        panic!("the finished call is recorded");
+    };
+    assert_eq!(
+        recorded.approval_note.as_deref(),
+        Some("Allowed by auto mode classifier")
+    );
+}
+
+#[test]
+fn set_tool_note_ignores_a_waiting_sibling_and_an_idle_queue() {
+    // The note always follows its own call's ToolStart — a batch whose front
+    // is still Waiting (and an empty queue) must not pick it up.
+    let mut app = App::new();
+    app.set_tool_note("stray"); // must not panic
+    app.start_tool_batch(&ping_batch());
+    app.set_tool_note("stray");
+    assert!(
+        app.tool_queue().iter().all(|t| t.approval_note.is_none()),
+        "a Waiting front takes no note"
+    );
 }
 
 #[test]

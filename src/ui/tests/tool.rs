@@ -32,6 +32,115 @@ fn tool_lines_header_omits_the_parens_when_args_are_empty() {
     assert_eq!(plain(&lines[0]), "● echo hi");
 }
 
+// --- the auto mode classifier's provenance note (docs/permissions.md) ---
+
+/// [`tool`] with the classifier's allowed note riding it.
+fn noted(name: &str, args: &str, status: ToolStatus, output: &str) -> ToolCall {
+    let mut call = tool(name, args, status, output);
+    call.approval_note = Some("Allowed by auto mode classifier".to_string());
+    call
+}
+
+#[test]
+fn a_classifier_allowed_bash_cell_appends_the_note_row() {
+    // The reference transcript: the collapsed cell's output peek (and its
+    // `… +N lines` hint) first, then a fresh dim `⎿` row with the note.
+    let output = "Exit code: 0\ntotal 40\na\nb\nc\nd\ne\nf";
+    let lines = tool_lines(&noted("Bash", "ls -la", ToolStatus::Ok, output), 80);
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(
+        texts.last().map(String::as_str),
+        Some("  ⎿  Allowed by auto mode classifier"),
+        "the note is the cell's last row: {texts:?}"
+    );
+    assert!(
+        texts[texts.len() - 2].contains(EXPAND_HINT),
+        "the note sits under the hint, not inside the output: {texts:?}"
+    );
+    let note = lines.last().unwrap();
+    assert_eq!(
+        note.spans.last().unwrap().style.fg,
+        Some(TOOL_DIM_COLOR),
+        "the note is meta, so it renders dim"
+    );
+}
+
+#[test]
+fn the_note_shows_in_the_expanded_transcript_view_too() {
+    let lines = tool_full_lines(
+        &noted("Bash", "ls -la", ToolStatus::Ok, "Exit code: 0\ntotal 40"),
+        80,
+    );
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(
+        texts.last().map(String::as_str),
+        Some("  ⎿  Allowed by auto mode classifier"),
+        "got {texts:?}"
+    );
+}
+
+#[test]
+fn the_note_waits_for_the_call_to_resolve() {
+    // The note is set right after ToolStart, but the user's example (and the
+    // request) show it once the command has finished — a running cell keeps
+    // its live look untouched.
+    for status in [ToolStatus::Waiting, ToolStatus::Running] {
+        let lines = tool_lines(&noted("Bash", "ls -la", status, ""), 80);
+        assert!(
+            !lines.iter().map(plain).any(|t| t.contains("Allowed by")),
+            "no note while {status:?}"
+        );
+    }
+    // …and a failed run still shows it: the classifier did allow the call.
+    let lines = tool_lines(
+        &noted("Bash", "ls /gone", ToolStatus::Failed, "Exit code: 2"),
+        80,
+    );
+    assert!(
+        lines
+            .iter()
+            .map(plain)
+            .any(|t| t.ends_with("Allowed by auto mode classifier"))
+    );
+}
+
+#[test]
+fn a_noted_backgrounded_cell_keeps_its_fixed_row_over_the_note() {
+    let lines = tool_lines(
+        &noted(
+            "Bash",
+            "ping x.com",
+            ToolStatus::Backgrounded,
+            "launch text",
+        ),
+        80,
+    );
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert!(
+        texts
+            .iter()
+            .any(|t| t.contains("Running in the background")),
+        "got {texts:?}"
+    );
+    assert_eq!(
+        texts.last().map(String::as_str),
+        Some("  ⎿  Allowed by auto mode classifier"),
+        "got {texts:?}"
+    );
+}
+
+#[test]
+fn an_unnoted_cell_is_byte_identical_to_before_the_feature() {
+    let plain_cell = tool_lines(&tool("Bash", "ls", ToolStatus::Ok, "Exit code: 0\nout"), 80);
+    assert!(
+        !plain_cell
+            .iter()
+            .map(plain)
+            .any(|t| t.contains("classifier")),
+        "no note row without a note"
+    );
+}
+
 #[test]
 fn tool_lines_colours_the_bullet_by_status() {
     for (status, color) in [

@@ -97,12 +97,16 @@ fn main() {
                 println!("\n\x1b[90m[backgrounded as {id}]\x1b[0m\n{output}");
             }
             // This harness builds its backend with no permission gate, so a
-            // request can never arrive (docs/permissions.md).
+            // request — or the auto mode classifier's note — can never
+            // arrive (docs/permissions.md).
             StreamEvent::Permission(request) => {
                 println!(
                     "\n\x1b[90m[permission requested: {}]\x1b[0m",
                     request.target
                 );
+            }
+            StreamEvent::ToolNote(note) => {
+                println!("\n\x1b[90m[{note}]\x1b[0m");
             }
             StreamEvent::ToolBatch(items) => {
                 // The model requested a batch of calls at once; the TUI shows the

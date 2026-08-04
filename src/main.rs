@@ -1162,6 +1162,13 @@ async fn run(term: &mut InlineViewport, startup: Option<Startup>) -> io::Result<
                                             "Mode: edit — file edits run without asking, \
                                              commands still ask"
                                         }
+                                        PermissionMode::Auto => {
+                                            "Mode: auto — file edits run; a classifier \
+                                             reviews commands"
+                                        }
+                                        PermissionMode::Master => {
+                                            "Mode: master — everything runs without asking"
+                                        }
                                         PermissionMode::Manual => {
                                             "Mode: manual — asking before edits and commands"
                                         }
@@ -3656,6 +3663,14 @@ fn on_stream_event(
             // is live-only until the ToolEnd commits the finished cell; the next
             // draw tick repaints the preview with the grown output.
             app.push_tool_output(&chunk);
+            Ok(false)
+        }
+        StreamEvent::ToolNote(note) => {
+            // The auto mode classifier allowed the running call: keep the
+            // provenance note on it so the resolved cell appends the dim
+            // `⎿ Allowed by auto mode classifier` row (docs/permissions.md).
+            // No commit — the note rides the call into its ToolEnd.
+            app.set_tool_note(&note);
             Ok(false)
         }
         StreamEvent::Permission(request) => {

@@ -252,6 +252,11 @@ struct ToolRecord {
     /// field keep their shape and still parse.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_output: Option<String>,
+    /// The auto mode classifier's provenance note (`Allowed by auto mode
+    /// classifier`, `docs/permissions.md`) — the cell's dim trailing row.
+    /// Omitted when absent, the `context_output` rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    approval_note: Option<String>,
 }
 
 /// A [`BackgroundNotice`] on disk — a background shell's completion notice
@@ -380,6 +385,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             truncated: tool.truncated,
             backgrounded: matches!(tool.status, ToolStatus::Backgrounded),
             context_output: tool.context_output.clone(),
+            approval_note: tool.approval_note.clone(),
         }),
         HistoryItem::Summary(summary) => ItemRecord::Summary(SummaryRecord {
             verb: summary.verb.to_string(),
@@ -524,6 +530,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 shell: tool.shell,
                 truncated: tool.truncated,
                 context_output: tool.context_output,
+                approval_note: tool.approval_note,
             })),
             ItemRecord::Summary(summary) => items.push(HistoryItem::Summary(TurnSummary {
                 verb: done_verb(&summary.verb),
@@ -971,6 +978,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            approval_note: None,
         });
         let failed_shell = HistoryItem::Tool(ToolCall {
             name: "tree ~/".into(),
@@ -981,6 +989,7 @@ mod tests {
             shell: true,
             truncated: true,
             context_output: None,
+            approval_note: None,
         });
         let (_, parsed) =
             parse_session(&file_of(&[ok_tool.clone(), failed_shell.clone()])).expect("parses");
@@ -1005,9 +1014,43 @@ mod tests {
                  following instructions instead: use pathlib"
                     .into(),
             ),
+            approval_note: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&rejected))).expect("parses");
         assert_eq!(parsed, vec![rejected]);
+    }
+
+    #[test]
+    fn a_classifier_allowed_tool_round_trips_its_note() {
+        // The `⎿ Allowed by auto mode classifier` row must survive a /resume
+        // — it is the transcript's only record that no human approved the
+        // call (docs/permissions.md).
+        let tool = HistoryItem::Tool(ToolCall {
+            name: "Bash".into(),
+            args: "ls -la".into(),
+            status: ToolStatus::Ok,
+            output: "Exit code: 0\ntotal 40".into(),
+            timestamp: "03:21 PM".into(),
+            shell: false,
+            truncated: false,
+            context_output: None,
+            approval_note: Some("Allowed by auto mode classifier".into()),
+        });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&tool))).expect("parses");
+        assert_eq!(parsed, vec![tool]);
+        // …and a call nobody noted keeps the pre-feature line shape.
+        let plain = HistoryItem::Tool(ToolCall {
+            name: "Bash".into(),
+            args: "ls".into(),
+            status: ToolStatus::Ok,
+            output: "Exit code: 0".into(),
+            timestamp: String::new(),
+            shell: false,
+            truncated: false,
+            context_output: None,
+            approval_note: None,
+        });
+        assert!(!item_line(&plain, "t").contains("approval_note"));
     }
 
     #[test]
@@ -1024,6 +1067,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            approval_note: None,
         });
         let line = item_line(&tool, "t");
         assert!(!line.contains("context_output"), "not recorded: {line}");
@@ -1244,6 +1288,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            approval_note: None,
         });
         let line = item_line(&tool, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -1265,6 +1310,7 @@ mod tests {
             shell: false,
             truncated: false,
             context_output: None,
+            approval_note: None,
         });
         let line = item_line(&tool, "t");
         assert!(
