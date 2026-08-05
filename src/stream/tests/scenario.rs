@@ -80,6 +80,36 @@ fn selection_always_resolves_to_a_scenario() {
 }
 
 #[test]
+fn the_last_scenario_really_catches_everything() {
+    // `select` ends in `unwrap_or(last)`, and `turn_events` documents its
+    // gated arm as unreachable. Both rest on two properties of the last
+    // entry that nothing at the call site can see: it matches **any** cue,
+    // and it is a `Script`, so a gate-free session can always play it.
+    //
+    // The fallback actively hides the first one — narrow that entry's cue and
+    // `select` keeps returning it, now for prompts it just rejected, with
+    // every other test still green. So assert both here, where breaking
+    // either names the reason.
+    let last = SCENARIOS.last().expect("the registry is never empty");
+    for prompt in [
+        "",
+        "hello there",
+        "!@#$",
+        crate::context::SUMMARIZATION_PROMPT,
+    ] {
+        assert!(
+            (last.selects)(&Cue::new(prompt, 0)),
+            "the catch-all rejected {prompt:?} — `select`'s fallback would \
+             return it anyway, silently answering a cue it does not match"
+        );
+    }
+    assert!(
+        matches!(last.play, Play::Script(_)),
+        "the catch-all must be playable with no gate attached"
+    );
+}
+
+#[test]
 fn a_gated_scenario_is_only_selected_when_a_gate_is_attached() {
     // The permission demos block on the gate, so they are unreachable
     // without one: the same prompt then falls through to a scripted turn.
