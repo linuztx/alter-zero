@@ -87,6 +87,34 @@ use alter_zero::app::{
     shell_query,
 };
 
+// --- `stream` — the backend seam and the offline dummy ---
+// `stream.rs` was a single file too, and it split the same way (see
+// `docs/module-layout.md`): the protocol, the trait, the cancel flag and the
+// dummy demo are separate modules behind a by-name facade. Every symbol it
+// exported before that split is named here.
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::stream::{
+    AgentCallDone,
+    AgentSpec,
+    CancelToken,
+    DummyAi,
+    ReplySource,
+    StallAi,
+    StreamEvent,
+    TokenUsage,
+    ToolCallSummary,
+    AGENT_DELAY,
+    CHUNK_DELAY,
+    STARTUP_DELAY,
+    THINK_CHUNK_DELAY,
+    TOOL_DELAY,
+    chunks,
+    dummy_response,
+    image_ack,
+    turn_events,
+};
+
 // --- `ui` — rendering ---
 #[rustfmt::skip]
 #[allow(unused_imports)]
