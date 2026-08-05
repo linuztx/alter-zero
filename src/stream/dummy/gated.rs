@@ -6,12 +6,165 @@
 //! exactly as a real backend's tool thread does, so `scripts/smoke.sh` can drive
 //! the whole approval round trip (draft stash, options, Tab's amend, the
 //! restore) with no provider attached.
+//!
+//! All four run the same three steps per call — ask, block, resolve — so those
+//! live once on [`Stage`] and each demo is just its own script of calls.
 
-use tokio::sync::mpsc::UnboundedSender;
+use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
 
-use super::super::{CancelToken, StreamEvent, ToolCallSummary};
+use super::super::{StreamEvent, ToolCallSummary};
+use super::scenario::Stage;
 use super::script::chunks;
 use super::{CHUNK_DELAY, nap};
+
+/// How a gated call resolved: `Ok(output)` ran, `Err((display, result))` was
+/// refused. The two texts of a refusal are deliberately different — `display`
+/// is the short red cell the user reads, `result` the longer stop-and-wait
+/// text the *model* receives — which is the real backend's shape, so the
+/// offline demo exercises Tab's amend feedback all the way into the derived
+/// context (`docs/permissions.md`).
+type Resolution = Result<String, (String, String)>;
+
+impl Stage<'_> {
+    /// Announce a batch of calls up front, so the ones not yet running show
+    /// as dim `⎿ Waiting…` cells (`docs/parallel-tools.md`).
+    fn announce(&self, kind: &str, targets: impl IntoIterator<Item = String>) {
+        let _ = self.tx.send(StreamEvent::ToolBatch(
+            targets
+                .into_iter()
+                .map(|args| ToolCallSummary {
+                    name: kind.to_string(),
+                    args,
+                })
+                .collect(),
+        ));
+    }
+
+    /// The approve seam's disposition for one call, offline: a standing
+    /// approval runs it unasked, otherwise raise the request and **block on
+    /// the gate** until the user answers. `output` is what an approval
+    /// resolves with (built lazily — a rejection never needs it).
+    ///
+    /// `None` means the turn was cancelled out from under us: the channel is
+    /// already abandoned, so the caller must simply stop.
+    fn ask(
+        &self,
+        request: &mut PermissionRequest,
+        output: impl FnOnce() -> String,
+    ) -> Option<Resolution> {
+        if self.gate.allows(request) {
+            return Some(Ok(output()));
+        }
+        let _ = self.tx.send(StreamEvent::Permission(request.clone()));
+        let decision = self.gate.wait(&request.id, &|| self.cancel.is_cancelled());
+        self.judge(request, decision, output)
+    }
+
+    /// Map one gate answer onto a [`Resolution`], remembering an
+    /// "allow always" as a session rule on the way through.
+    fn judge(
+        &self,
+        request: &mut PermissionRequest,
+        decision: Option<PermissionDecision>,
+        output: impl FnOnce() -> String,
+    ) -> Option<Resolution> {
+        Some(match &decision {
+            Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
+                if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
+                    request.id.clear();
+                    self.gate.remember(request);
+                }
+                Ok(output())
+            }
+            Some(PermissionDecision::Deny(feedback)) => Err((
+                crate::permission::denied_display(request, feedback.as_deref()),
+                crate::permission::denial_result(feedback.as_deref()),
+            )),
+            Some(PermissionDecision::Explain) => Err((
+                crate::permission::explain_display(),
+                crate::permission::explain_result(request),
+            )),
+            // Cancelled out from under us — the channel is already abandoned.
+            None => return None,
+        })
+    }
+
+    /// Resolve the announced call: flip its cell to running, append the
+    /// provenance `note` when something other than the user cleared it (auto
+    /// mode's classifier), then commit it green via `ToolEnd` or red via
+    /// `ToolRejected`.
+    fn resolve(
+        &self,
+        kind: &str,
+        args: &str,
+        note: Option<String>,
+        resolved: Resolution,
+        ok: bool,
+    ) {
+        let _ = self.tx.send(StreamEvent::ToolStart {
+            name: kind.to_string(),
+            args: args.to_string(),
+            detail: None,
+        });
+        if let Some(note) = note {
+            let _ = self.tx.send(StreamEvent::ToolNote(note));
+        }
+        match resolved {
+            Ok(output) => {
+                let _ = self.tx.send(StreamEvent::ToolEnd {
+                    output,
+                    ok,
+                    truncated: false,
+                });
+            }
+            Err((display, result)) => {
+                let _ = self.tx.send(StreamEvent::ToolRejected { display, result });
+            }
+        }
+    }
+
+    /// Close the turn: stream `text` word-by-word, then `StreamDone`. Stops
+    /// early if the turn is cancelled or the receiver has hung up.
+    fn close(&self, text: &str) {
+        for chunk in chunks(text) {
+            if self.cancel.is_cancelled() {
+                return;
+            }
+            if self.tx.send(StreamEvent::Chunk(chunk)).is_err() {
+                return;
+            }
+            nap(CHUNK_DELAY, self.cancel);
+        }
+        let _ = self.tx.send(StreamEvent::StreamDone);
+    }
+
+    /// A fresh request for one gated call.
+    fn request(
+        &self,
+        kind: PermissionKind,
+        target: &str,
+        body: String,
+        detail: Option<&str>,
+    ) -> PermissionRequest {
+        PermissionRequest {
+            id: self.gate.next_id(),
+            kind,
+            target: target.to_string(),
+            body,
+            detail: detail.map(str::to_string),
+            agent: None,
+        }
+    }
+}
+
+/// The `write` output a real executor reports for a created file.
+fn created(path: &str, content: &str) -> String {
+    format!(
+        "Created {path} ({} lines)\n{}",
+        content.lines().count(),
+        crate::llm::tools::render_numbered_content(content),
+    )
+}
 
 /// The dummy's scripted `write` for the permission demo (`docs/permissions.md`).
 const DUMMY_PERMISSION_PATH: &str = "hello.py";
@@ -26,88 +179,26 @@ const DUMMY_PERMISSION_CONTENT: &str = "#!/usr/bin/env python3\n\n\
 /// request, **block on the gate** exactly as a real backend's tool thread does,
 /// then resolve the cell green (approved) or red (rejected). Lets `smoke.sh`
 /// drive the whole prompt — draft stash, options, restore — with no provider.
-pub(super) fn dummy_permission_turn(
-    gate: &crate::permission::PermissionGate,
-    tx: &UnboundedSender<StreamEvent>,
-    cancel: &CancelToken,
-) {
-    use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
-    let _ = tx.send(StreamEvent::ToolBatch(vec![ToolCallSummary {
-        name: "Write".to_string(),
-        args: DUMMY_PERMISSION_PATH.to_string(),
-    }]));
-    let mut request = PermissionRequest {
-        id: gate.next_id(),
-        kind: PermissionKind::Write,
-        target: DUMMY_PERMISSION_PATH.to_string(),
-        body: crate::llm::tools::render_numbered_content(DUMMY_PERMISSION_CONTENT),
-        detail: None,
-        agent: None,
-    };
-    let decision = if gate.allows(&request) {
-        Some(PermissionDecision::Approve)
-    } else {
-        let _ = tx.send(StreamEvent::Permission(request.clone()));
-        gate.wait(&request.id, &|| cancel.is_cancelled())
-    };
-    // `Ok(output)` ran; `Err((display, result))` was refused at the prompt —
-    // the real backend's two-text shape, so the offline demo exercises Tab's
-    // amend feedback all the way into the derived context (docs/permissions.md).
-    let resolved = match &decision {
-        Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
-            if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
-                request.id.clear();
-                gate.remember(&request);
-            }
-            Ok(format!(
-                "Created {DUMMY_PERMISSION_PATH} ({} lines)\n{}",
-                DUMMY_PERMISSION_CONTENT.lines().count(),
-                crate::llm::tools::render_numbered_content(DUMMY_PERMISSION_CONTENT),
-            ))
-        }
-        Some(PermissionDecision::Deny(feedback)) => Err((
-            crate::permission::denied_display(&request, feedback.as_deref()),
-            crate::permission::denial_result(feedback.as_deref()),
-        )),
-        Some(PermissionDecision::Explain) => Err((
-            crate::permission::explain_display(),
-            crate::permission::explain_result(&request),
-        )),
-        // Cancelled out from under us — the channel is already abandoned.
-        None => return,
+pub(in crate::stream) fn write_permission_turn(stage: &Stage<'_>) {
+    stage.announce("Write", [DUMMY_PERMISSION_PATH.to_string()]);
+    let mut request = stage.request(
+        PermissionKind::Write,
+        DUMMY_PERMISSION_PATH,
+        crate::llm::tools::render_numbered_content(DUMMY_PERMISSION_CONTENT),
+        None,
+    );
+    let Some(resolved) = stage.ask(&mut request, || {
+        created(DUMMY_PERMISSION_PATH, DUMMY_PERMISSION_CONTENT)
+    }) else {
+        return;
     };
     let ok = resolved.is_ok();
-    let _ = tx.send(StreamEvent::ToolStart {
-        name: "Write".to_string(),
-        args: DUMMY_PERMISSION_PATH.to_string(),
-        detail: None,
-    });
-    match resolved {
-        Ok(output) => {
-            let _ = tx.send(StreamEvent::ToolEnd {
-                output,
-                ok: true,
-                truncated: false,
-            });
-        }
-        Err((display, result)) => {
-            let _ = tx.send(StreamEvent::ToolRejected { display, result });
-        }
-    }
-    for chunk in chunks(if ok {
+    stage.resolve("Write", DUMMY_PERMISSION_PATH, None, resolved, true);
+    stage.close(if ok {
         "Done — the file is written."
     } else {
         "Understood, I have left the file alone."
-    }) {
-        if cancel.is_cancelled() {
-            return;
-        }
-        if tx.send(StreamEvent::Chunk(chunk)).is_err() {
-            return;
-        }
-        nap(CHUNK_DELAY, cancel);
-    }
-    let _ = tx.send(StreamEvent::StreamDone);
+    });
 }
 
 /// The scripted **staggered** permission demo's files: two gated `write`s in
@@ -136,16 +227,11 @@ fn staggered_big_content() -> String {
 
 /// Play the staggered batch approval round trip ([`DUMMY_STAGGERED_BIG_PATH`]
 /// / [`DUMMY_STAGGERED_TINY_PATH`]): announce both `Write` calls up front,
-/// then — per call, exactly like [`dummy_parallel_permission_turn`] — ask,
-/// block on the gate, and resolve the cell before moving on, with **no
-/// scripted pause anywhere** so the tall prompt's answer and the tiny
-/// prompt's request land in one frame gap.
-pub(super) fn dummy_staggered_permission_turn(
-    gate: &crate::permission::PermissionGate,
-    tx: &UnboundedSender<StreamEvent>,
-    cancel: &CancelToken,
-) {
-    use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
+/// then — per call, exactly like [`parallel_permission_turn`] — ask, block on
+/// the gate, and resolve the cell before moving on, with **no scripted pause
+/// anywhere** so the tall prompt's answer and the tiny prompt's request land
+/// in one frame gap.
+pub(in crate::stream) fn staggered_permission_turn(stage: &Stage<'_>) {
     let files = [
         (DUMMY_STAGGERED_BIG_PATH, staggered_big_content()),
         (
@@ -153,81 +239,20 @@ pub(super) fn dummy_staggered_permission_turn(
             DUMMY_STAGGERED_TINY_CONTENT.to_string(),
         ),
     ];
-    let _ = tx.send(StreamEvent::ToolBatch(
-        files
-            .iter()
-            .map(|(path, _)| ToolCallSummary {
-                name: "Write".to_string(),
-                args: (*path).to_string(),
-            })
-            .collect(),
-    ));
-    for (path, content) in files {
-        let mut request = PermissionRequest {
-            id: gate.next_id(),
-            kind: PermissionKind::Write,
-            target: path.to_string(),
-            body: crate::llm::tools::render_numbered_content(&content),
-            detail: None,
-            agent: None,
-        };
-        let decision = if gate.allows(&request) {
-            Some(PermissionDecision::Approve)
-        } else {
-            let _ = tx.send(StreamEvent::Permission(request.clone()));
-            gate.wait(&request.id, &|| cancel.is_cancelled())
-        };
-        let resolved = match &decision {
-            Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
-                if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
-                    request.id.clear();
-                    gate.remember(&request);
-                }
-                Ok(format!(
-                    "Created {path} ({} lines)\n{}",
-                    content.lines().count(),
-                    crate::llm::tools::render_numbered_content(&content),
-                ))
-            }
-            Some(PermissionDecision::Deny(feedback)) => Err((
-                crate::permission::denied_display(&request, feedback.as_deref()),
-                crate::permission::denial_result(feedback.as_deref()),
-            )),
-            Some(PermissionDecision::Explain) => Err((
-                crate::permission::explain_display(),
-                crate::permission::explain_result(&request),
-            )),
-            // Cancelled out from under us — the channel is already abandoned.
-            None => return,
-        };
-        let _ = tx.send(StreamEvent::ToolStart {
-            name: "Write".to_string(),
-            args: path.to_string(),
-            detail: None,
-        });
-        match resolved {
-            Ok(output) => {
-                let _ = tx.send(StreamEvent::ToolEnd {
-                    output,
-                    ok: true,
-                    truncated: false,
-                });
-            }
-            Err((display, result)) => {
-                let _ = tx.send(StreamEvent::ToolRejected { display, result });
-            }
-        }
-    }
-    for chunk in chunks("Both files are written — the big module and the tiny note.") {
-        if cancel.is_cancelled() {
+    stage.announce("Write", files.iter().map(|(path, _)| (*path).to_string()));
+    for (path, content) in &files {
+        let mut request = stage.request(
+            PermissionKind::Write,
+            path,
+            crate::llm::tools::render_numbered_content(content),
+            None,
+        );
+        let Some(resolved) = stage.ask(&mut request, || created(path, content)) else {
             return;
-        }
-        if tx.send(StreamEvent::Chunk(chunk)).is_err() {
-            return;
-        }
-        nap(CHUNK_DELAY, cancel);
+        };
+        stage.resolve("Write", path, None, resolved, true);
     }
-    let _ = tx.send(StreamEvent::StreamDone);
+    stage.close("Both files are written — the big module and the tiny note.");
 }
 
 /// The scripted **parallel** permission demo: two gated `bash` commands in one
@@ -262,92 +287,30 @@ const DUMMY_PARALLEL_COMMANDS: [(&str, &str, &str, bool); 2] = [
 /// machinery's hardest timing (`docs/permissions.md`, the smoke suite's
 /// back-to-back-prompt phase). A rejection resolves that cell red and still
 /// asks for the next call, as the real loop does.
-pub(super) fn dummy_parallel_permission_turn(
-    gate: &crate::permission::PermissionGate,
-    tx: &UnboundedSender<StreamEvent>,
-    cancel: &CancelToken,
-) {
-    use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
-    let _ = tx.send(StreamEvent::ToolBatch(
+pub(in crate::stream) fn parallel_permission_turn(stage: &Stage<'_>) {
+    stage.announce(
+        "Bash",
         DUMMY_PARALLEL_COMMANDS
             .iter()
-            .map(|(cmd, ..)| ToolCallSummary {
-                name: "Bash".to_string(),
-                args: (*cmd).to_string(),
-            })
-            .collect(),
-    ));
+            .map(|(cmd, ..)| (*cmd).to_string()),
+    );
     for (cmd, detail, output, ok) in DUMMY_PARALLEL_COMMANDS {
-        let mut request = PermissionRequest {
-            id: gate.next_id(),
-            kind: PermissionKind::Bash,
-            target: cmd.to_string(),
-            body: String::new(),
-            detail: Some(detail.to_string()),
-            agent: None,
+        let mut request = stage.request(PermissionKind::Bash, cmd, String::new(), Some(detail));
+        let Some(resolved) = stage.ask(&mut request, || output.to_string()) else {
+            return;
         };
-        let decision = if gate.allows(&request) {
-            Some(PermissionDecision::Approve)
-        } else {
-            let _ = tx.send(StreamEvent::Permission(request.clone()));
-            gate.wait(&request.id, &|| cancel.is_cancelled())
-        };
-        let resolved = match &decision {
-            Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
-                if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
-                    request.id.clear();
-                    gate.remember(&request);
-                }
-                Ok(output.to_string())
-            }
-            Some(PermissionDecision::Deny(feedback)) => Err((
-                crate::permission::denied_display(&request, feedback.as_deref()),
-                crate::permission::denial_result(feedback.as_deref()),
-            )),
-            Some(PermissionDecision::Explain) => Err((
-                crate::permission::explain_display(),
-                crate::permission::explain_result(&request),
-            )),
-            // Cancelled out from under us — the channel is already abandoned.
-            None => return,
-        };
-        let _ = tx.send(StreamEvent::ToolStart {
-            name: "Bash".to_string(),
-            args: cmd.to_string(),
-            detail: None,
-        });
-        match resolved {
-            Ok(output) => {
-                let _ = tx.send(StreamEvent::ToolEnd {
-                    output,
-                    ok,
-                    truncated: false,
-                });
-            }
-            Err((display, result)) => {
-                let _ = tx.send(StreamEvent::ToolRejected { display, result });
-            }
-        }
+        stage.resolve("Bash", cmd, None, resolved, ok);
     }
-    for chunk in chunks(
+    stage.close(
         "Both commands are done — sudo whoami failed (no terminal here) and the ping to \
          google.com came back clean.",
-    ) {
-        if cancel.is_cancelled() {
-            return;
-        }
-        if tx.send(StreamEvent::Chunk(chunk)).is_err() {
-            return;
-        }
-        nap(CHUNK_DELAY, cancel);
-    }
-    let _ = tx.send(StreamEvent::StreamDone);
+    );
 }
 
 /// The **auto-mode** demo's two commands: a read-only listing the offline
 /// heuristic classifier allows (its output long enough for the collapsed
 /// `… +N lines` hint, like the reference transcript) and a deletion it
-/// denies. See [`dummy_auto_permission_turn`].
+/// denies. See [`auto_permission_turn`].
 const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
     (
         "ls -la",
@@ -389,41 +352,27 @@ const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
 ///
 /// [`PermissionMode::Auto`]: crate::permission::PermissionMode::Auto
 /// [`CLASSIFIER_ALLOWED_NOTE`]: crate::permission::CLASSIFIER_ALLOWED_NOTE
-pub(super) fn dummy_auto_permission_turn(
-    gate: &crate::permission::PermissionGate,
-    tx: &UnboundedSender<StreamEvent>,
-    cancel: &CancelToken,
-) {
+pub(in crate::stream) fn auto_permission_turn(stage: &Stage<'_>) {
     use crate::permission::{
-        CLASSIFIER_ALLOWED_NOTE, PermissionDecision, PermissionKind, PermissionMode,
-        PermissionRequest, auto_verdict, classifier_denial_result, classifier_denied_display,
+        CLASSIFIER_ALLOWED_NOTE, PermissionMode, auto_verdict, classifier_denial_result,
+        classifier_denied_display,
     };
-    let _ = tx.send(StreamEvent::ToolBatch(
+    stage.announce(
+        "Bash",
         DUMMY_AUTO_COMMANDS
             .iter()
-            .map(|(cmd, ..)| ToolCallSummary {
-                name: "Bash".to_string(),
-                args: (*cmd).to_string(),
-            })
-            .collect(),
-    ));
+            .map(|(cmd, ..)| (*cmd).to_string()),
+    );
     let mut any_rejected = false;
     for (cmd, detail, output, ok) in DUMMY_AUTO_COMMANDS {
-        let mut request = PermissionRequest {
-            id: gate.next_id(),
-            kind: PermissionKind::Bash,
-            target: cmd.to_string(),
-            body: String::new(),
-            detail: Some(detail.to_string()),
-            agent: None,
-        };
+        let mut request = stage.request(PermissionKind::Bash, cmd, String::new(), Some(detail));
         // The approve seam's disposition, offline: standing approvals first,
         // then auto mode's classifier — here the deterministic heuristic —
         // and the prompt only outside auto mode.
         let mut note = None;
-        let resolved = if gate.allows(&request) {
+        let resolved = if stage.gate.allows(&request) {
             Ok(output.to_string())
-        } else if gate.mode() == PermissionMode::Auto {
+        } else if stage.gate.mode() == PermissionMode::Auto {
             let verdict = auto_verdict(cmd);
             if verdict.allow {
                 note = Some(CLASSIFIER_ALLOWED_NOTE.to_string());
@@ -436,67 +385,20 @@ pub(super) fn dummy_auto_permission_turn(
                 ))
             }
         } else {
-            let decision = {
-                let _ = tx.send(StreamEvent::Permission(request.clone()));
-                gate.wait(&request.id, &|| cancel.is_cancelled())
-            };
-            match &decision {
-                Some(PermissionDecision::Approve | PermissionDecision::ApproveAlways) => {
-                    if matches!(decision, Some(PermissionDecision::ApproveAlways)) {
-                        request.id.clear();
-                        gate.remember(&request);
-                    }
-                    Ok(output.to_string())
-                }
-                Some(PermissionDecision::Deny(feedback)) => Err((
-                    crate::permission::denied_display(&request, feedback.as_deref()),
-                    crate::permission::denial_result(feedback.as_deref()),
-                )),
-                Some(PermissionDecision::Explain) => Err((
-                    crate::permission::explain_display(),
-                    crate::permission::explain_result(&request),
-                )),
+            match stage.ask(&mut request, || output.to_string()) {
+                Some(resolved) => resolved,
                 // Cancelled out from under us — the channel is abandoned.
                 None => return,
             }
         };
-        let _ = tx.send(StreamEvent::ToolStart {
-            name: "Bash".to_string(),
-            args: cmd.to_string(),
-            detail: None,
-        });
-        if let Some(note) = note {
-            let _ = tx.send(StreamEvent::ToolNote(note));
-        }
-        match resolved {
-            Ok(output) => {
-                let _ = tx.send(StreamEvent::ToolEnd {
-                    output,
-                    ok: *ok,
-                    truncated: false,
-                });
-            }
-            Err((display, result)) => {
-                any_rejected = true;
-                let _ = tx.send(StreamEvent::ToolRejected { display, result });
-            }
-        }
+        any_rejected |= resolved.is_err();
+        stage.resolve("Bash", cmd, note, resolved, *ok);
     }
     // The closing reply reports what actually happened — in auto mode the
     // delete is blocked, while master (or an allowlist) runs both.
-    let closing = if any_rejected {
+    stage.close(if any_rejected {
         "Done — the listing ran and the delete was blocked, so nothing was removed."
     } else {
         "Done — both commands ran to completion."
-    };
-    for chunk in chunks(closing) {
-        if cancel.is_cancelled() {
-            return;
-        }
-        if tx.send(StreamEvent::Chunk(chunk)).is_err() {
-            return;
-        }
-        nap(CHUNK_DELAY, cancel);
-    }
-    let _ = tx.send(StreamEvent::StreamDone);
+    });
 }

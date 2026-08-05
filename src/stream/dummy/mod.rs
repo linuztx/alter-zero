@@ -3,16 +3,19 @@
 //! It is the demo's stand-in for a real model and the only backend
 //! `scripts/smoke.sh` can drive deterministically, so every UI feature that a
 //! provider would otherwise be needed to exercise has a scripted turn here.
-//! The split keeps those two jobs apart:
+//! The split keeps those jobs apart:
 //!
-//! - [`script`] — the canned replies and the streaming primitives.
-//! - [`turns`] — the **pure** scripted turns (`prompt → Vec<StreamEvent>`),
+//! - `scenario` — the registry: which demo a prompt selects. **Adding a demo
+//!   is one entry there plus its turn function** (`docs/dummy-backend.md`).
+//! - `script` — the canned replies and the streaming primitives.
+//! - `turns` — the **pure** scripted turns (`Cue → Vec<StreamEvent>`),
 //!   unit-testable event-by-event.
-//! - [`gated`] — the turns that *ask*, blocking on the permission gate the way
+//! - `gated` — the turns that *ask*, blocking on the permission gate the way
 //!   a real backend's tool thread does (`docs/permissions.md`).
 //!
-//! This module holds only the [`ReplySource`] impl: pick the turn for the
-//! prompt, then play it back with the delays that make streaming visible.
+//! This module holds only the driver: select the scenario for the prompt, then
+//! either play its script back with the delays that make streaming visible, or
+//! hand a gated demo the channel and let it ask.
 
 use std::path::PathBuf;
 use std::thread::{self, JoinHandle};
@@ -22,14 +25,39 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::context::ContextMessage;
 
+use self::scenario::{Cue, Play, Stage};
 use super::{CancelToken, ReplySource, StreamEvent};
 
 mod gated;
+pub(super) mod scenario;
 mod script;
 mod turns;
 
 pub use self::script::{chunks, dummy_response, image_ack};
-pub use self::turns::{AGENT_DELAY, turn_events};
+pub use self::turns::AGENT_DELAY;
+
+/// The full ordered sequence of events for one dummy turn — the **pure** twin
+/// of [`DummyAi::spawn`], and the entry point every offline test drives.
+///
+/// The scenario registry picks the turn (`docs/dummy-backend.md`): a "table"
+/// prompt streams the markdown-table demo, an "agents" prompt the subagent
+/// group, a "parallel" prompt the vivid three-`Bash` batch, `/compact`'s
+/// request a text-only summary, and anything else the default turn — half the
+/// reply, a thinking phase, a `Read`+`Bash` batch, the rest of the reply.
+///
+/// No permission gate is in play here, so the gated demos are skipped and
+/// *every* prompt resolves to a script. Deterministic, so a turn's whole event
+/// order is unit-testable; [`DummyAi`] plays the same script back with delays.
+#[must_use]
+pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
+    let cue = Cue::new(prompt, image_count);
+    match scenario::select(&cue, false).play {
+        Play::Script(script) => script(&cue),
+        // Unreachable: selecting with no gate attached skips every gated
+        // entry. Answering with the default turn beats panicking either way.
+        Play::Gated(_) => turns::tools_turn(&cue),
+    }
+}
 
 /// How long [`DummyAi`] waits after a turn starts before streaming its first
 /// chunk — so the status indicator (the spinner, the ticking elapsed timer, and
@@ -106,16 +134,23 @@ impl DummyAi {
 }
 
 impl ReplySource for DummyAi {
-    /// Plays back [`turn_events`]: streams the reply word-by-word (with
-    /// [`CHUNK_DELAY`] between words) with a **parallel batch** interleaved
-    /// (announced up front, so the not-yet-run calls show `⎿ Waiting…` while the
-    /// front one runs — three `Bash(ping …)` calls for a "parallel" prompt, else a
-    /// compact `Read`+`Bash` batch), pausing [`TOOL_DELAY`] after each
-    /// `ToolStart` so the blue running state shows before it resolves, and ends with
-    /// [`StreamEvent::StreamDone`]. Stops early — sending nothing further — if
-    /// `cancel` is tripped or the receiver has hung up. With `images` attached the
-    /// reply opens with an acknowledgement (the dummy has no vision; see
-    /// [`turn_events`] and `docs/image-paste.md`).
+    /// Pauses for the startup delay, then plays the scenario the prompt selects
+    /// (`docs/dummy-backend.md`).
+    ///
+    /// A **scripted** one is [`turn_events`]' list, replayed with the delays
+    /// that make streaming visible: the reply word-by-word ([`CHUNK_DELAY`]
+    /// between words) with a parallel batch interleaved — announced up front,
+    /// so the not-yet-run calls show `⎿ Waiting…` while the front one runs —
+    /// pausing [`TOOL_DELAY`] after each `ToolStart` so the running state shows
+    /// before it resolves, ending in [`StreamEvent::StreamDone`]. A **gated**
+    /// one instead streams as it goes, blocking on the attached permission gate
+    /// for each call's answer (`docs/permissions.md`); it is only ever selected
+    /// when [`with_permissions`](DummyAi::with_permissions) supplied a gate.
+    ///
+    /// Either way it stops early — sending nothing further — if `cancel` is
+    /// tripped or the receiver has hung up. With `images` attached the reply
+    /// opens with an acknowledgement (the dummy has no vision; see
+    /// `docs/image-paste.md`).
     fn spawn(
         &self,
         prompt: String,
@@ -135,39 +170,23 @@ impl ReplySource for DummyAi {
             if cancel.is_cancelled() {
                 return;
             }
-            // The scripted approval demos: ask, block on the gate exactly as a
-            // real backend's tool thread does, then resolve accordingly. A
-            // prompt naming both "parallel" and "permission" plays the
-            // two-command `bash` batch (back-to-back prompts, no pauses —
-            // the covering machinery's hardest timing); "staggered" and
-            // "permission" the two-`write` batch whose prompts differ wildly
-            // in height (the tall one capped, the next tiny — the pinned
-            // modal region's hardest shrink); "permission" alone keeps the
-            // single `Write` approval.
-            if let Some(gate) = permissions.filter(|_| prompt.to_lowercase().contains("permission"))
-            {
-                if prompt.to_lowercase().contains("auto") {
-                    gated::dummy_auto_permission_turn(&gate, &tx, &cancel);
-                } else if prompt.to_lowercase().contains("parallel") {
-                    gated::dummy_parallel_permission_turn(&gate, &tx, &cancel);
-                } else if prompt.to_lowercase().contains("staggered") {
-                    gated::dummy_staggered_permission_turn(&gate, &tx, &cancel);
-                } else {
-                    gated::dummy_permission_turn(&gate, &tx, &cancel);
-                }
-                return;
-            }
-            for event in turn_events(&prompt, image_count) {
-                if cancel.is_cancelled() {
-                    return; // asked to stop — drop the rest quietly
-                }
-                let pause = pace(&event);
-                if tx.send(event).is_err() {
-                    return; // receiver gone — stop quietly
-                }
-                if let Some(pause) = pause {
-                    nap(pause, &cancel);
-                }
+            let cue = Cue::new(&prompt, image_count);
+            match (
+                scenario::select(&cue, permissions.is_some()).play,
+                &permissions,
+            ) {
+                // A gated demo asks, blocking on the gate exactly as a real
+                // backend's tool thread does, and streams as it resolves.
+                // Selection only offers one when a gate was attached, so this
+                // is the only pair `Play::Gated` is ever reached through.
+                (Play::Gated(play), Some(gate)) => play(&Stage {
+                    gate,
+                    tx: &tx,
+                    cancel: &cancel,
+                }),
+                (Play::Script(script), _) => replay(script(&cue), &tx, &cancel),
+                // Unreachable by construction; a script is the safe answer.
+                (Play::Gated(_), None) => replay(turns::tools_turn(&cue), &tx, &cancel),
             }
         })
     }
@@ -175,6 +194,24 @@ impl ReplySource for DummyAi {
     /// The dummy's placeholder model id (a real backend reports its real one).
     fn model_name(&self) -> String {
         "dummy_model_name".to_string()
+    }
+}
+
+/// Play a scripted turn onto the channel: send each event, then pause for as
+/// long as [`pace`] says so the reply visibly streams. Stops early — sending
+/// nothing further — the moment `cancel` is tripped or the receiver hangs up.
+fn replay(events: Vec<StreamEvent>, tx: &UnboundedSender<StreamEvent>, cancel: &CancelToken) {
+    for event in events {
+        if cancel.is_cancelled() {
+            return; // asked to stop — drop the rest quietly
+        }
+        let pause = pace(&event);
+        if tx.send(event).is_err() {
+            return; // receiver gone — stop quietly
+        }
+        if let Some(pause) = pause {
+            nap(pause, cancel);
+        }
     }
 }
 

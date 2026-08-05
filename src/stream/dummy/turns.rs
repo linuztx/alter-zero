@@ -1,13 +1,17 @@
-//! The dummy's **scripted** turns: the pure `prompt → Vec<StreamEvent>` demos.
+//! The dummy's **scripted** turns: one pure `Cue -> Vec<StreamEvent>` per
+//! scenario.
 //!
 //! Everything here is deterministic and side-effect free, so a turn's whole
 //! event order is unit-testable; [`super::DummyAi`] just plays a script back on
 //! a thread with delays. The turns that need the *user* — the permission demos
 //! — live in [`super::gated`] instead, because they block on the gate.
+//!
+//! Which one runs is [`super::scenario`]'s call, not a chain of `if`s here.
 
 use std::time::Duration;
 
 use super::super::{AgentCallDone, AgentSpec, StreamEvent, ToolCallSummary};
+use super::scenario::Cue;
 use super::script::{chunks, dummy_response, image_ack, tool_output_events};
 
 /// The dummy's canned reasoning, streamed word-by-word as
@@ -31,28 +35,76 @@ const DUMMY_READ_OUTPUT: &str = "fn main() -> io::Result<()> {\n    \
     let restored = term.restore();\n    \
     result.and(restored)\n}";
 
-/// The dummy's **parallel batch** command + output for the `Bash` half. The turn
-/// announces a two-call batch — a `Read` then this `Bash` — up front, so while
-/// the `Read` runs the `Bash` shows `⎿ Waiting…` (the visible batch, offline; see
-/// `docs/parallel-tools.md`). Kept to two calls with the same output footprint as
-/// the pre-batch demo so the committed scrollback is unchanged (a real backend
-/// renders however many parallel calls the model actually requests — the display
-/// scales to N). This `Bash` resolves **red** (an unresolvable host), so the demo
-/// still shows both a green (`Read`) and a red outcome.
+/// The dummy's `Bash` command + output for the default batch's second call.
+/// It resolves **red** (an unresolvable host), so the default turn shows both
+/// a green (`Read`) and a red outcome.
 const DUMMY_BASH_CMD: &str = "ping -c 3 x.invalid";
 const DUMMY_BASH_OUTPUT: &str = "ping: cannot resolve x.invalid: Unknown host\nexit status 68";
 
-/// The dummy's vivid **three-call parallel `Bash(ping …)` batch** — the user's
-/// example. Shown **only when the prompt mentions "parallel"** (opt-in), so the
-/// default turn keeps its compact two-call batch and every unrelated smoke phase
-/// keeps its footprint; the dedicated phase (and `cargo run` with a "parallel"
-/// prompt) triggers this. All three are announced up front, so while the first
-/// runs the other two show `⎿ Waiting…`; two resolve green, one red. Each entry
-/// is `(command, output, ok)`. See `docs/parallel-tools.md`.
-const DUMMY_PARALLEL_BATCH: &[(&str, &str, bool)] = &[
-    ("ping -c 20 google.com", DUMMY_PING_GOOGLE, true),
-    ("ping -c 20 facebook.com", DUMMY_PING_FACEBOOK, true),
-    ("ping -c 20 x.invalid", DUMMY_PING_FAIL, false),
+/// One scripted tool call: the two strings its `● name(args)` header shows,
+/// the output it resolves with, whether that is a success (green) or a failure
+/// (red), and whether the output **streams** as live `ToolOutput` deltas
+/// first — a `bash` command tails its output as it is produced, while a `read`
+/// returns all at once, exactly as the real executor does
+/// (`docs/tool-streaming.md`).
+struct ScriptedCall {
+    name: &'static str,
+    args: &'static str,
+    output: &'static str,
+    ok: bool,
+    streams: bool,
+}
+
+/// The **default** turn's batch: a `Read` then a `Bash`, announced up front so
+/// the `Bash` shows `⎿ Waiting…` while the `Read` runs (the visible batch,
+/// offline; see `docs/parallel-tools.md`). Kept to two calls with the same
+/// output footprint as the pre-batch demo so the committed scrollback is
+/// unchanged — a real backend renders however many parallel calls the model
+/// actually requests, and the display scales to N.
+const DEFAULT_BATCH: &[ScriptedCall] = &[
+    ScriptedCall {
+        name: "Read",
+        args: "src/main.rs",
+        output: DUMMY_READ_OUTPUT,
+        ok: true,
+        streams: false,
+    },
+    ScriptedCall {
+        name: "Bash",
+        args: DUMMY_BASH_CMD,
+        output: DUMMY_BASH_OUTPUT,
+        ok: false,
+        streams: true,
+    },
+];
+
+/// The vivid **three-call parallel `Bash(ping …)` batch** — the user's example,
+/// opt-in via a prompt mentioning "parallel" so the default turn keeps its
+/// compact footprint and every unrelated smoke phase keeps its sizing. All
+/// three are announced up front, so while the first runs the other two show
+/// `⎿ Waiting…`; two resolve green, one red. See `docs/parallel-tools.md`.
+const PARALLEL_BATCH: &[ScriptedCall] = &[
+    ScriptedCall {
+        name: "Bash",
+        args: "ping -c 20 google.com",
+        output: DUMMY_PING_GOOGLE,
+        ok: true,
+        streams: true,
+    },
+    ScriptedCall {
+        name: "Bash",
+        args: "ping -c 20 facebook.com",
+        output: DUMMY_PING_FACEBOOK,
+        ok: true,
+        streams: true,
+    },
+    ScriptedCall {
+        name: "Bash",
+        args: "ping -c 20 x.invalid",
+        output: DUMMY_PING_FAIL,
+        ok: false,
+        streams: true,
+    },
 ];
 
 const DUMMY_PING_GOOGLE: &str = "PING google.com (142.250.72.14): 56 data bytes\n\
@@ -68,9 +120,7 @@ const DUMMY_PING_FACEBOOK: &str = "PING facebook.com (157.240.1.35): 56 data byt
     2 packets transmitted, 2 packets received, 0.0% packet loss";
 const DUMMY_PING_FAIL: &str = "ping: cannot resolve x.invalid: Unknown host\nexit status 68";
 
-/// The dummy's **subagent demo** (`docs/agent-tool.md`), played for a prompt
-/// mentioning "agents" (opt-in, like "parallel"/"table" — but never for
-/// `/init`, whose canned prompt names `AGENTS.md`): a two-agent group is
+/// The dummy's **subagent demo** (`docs/agent-tool.md`): a two-agent group is
 /// announced, "runs" for [`AGENT_DELAY`] (the live tree cell shows, each row
 /// `⎿ Initializing…`), then resolves with canned final responses. A prompt
 /// also mentioning "background" launches the group in background mode instead
@@ -100,9 +150,10 @@ const DUMMY_AGENTS: &[(&str, &str, &str, &str)] = &[
 pub const AGENT_DELAY: Duration = Duration::from_millis(1600);
 
 /// The opening of codex's `/compact` summarization prompt
-/// ([`crate::context::SUMMARIZATION_PROMPT`]) — how [`turn_events`] recognizes
-/// a compact turn's request and scripts a text-only summary for it.
-const COMPACT_PROMPT_MARKER: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION";
+/// ([`crate::context::SUMMARIZATION_PROMPT`]) — how the registry recognizes a
+/// compact turn's request and scripts a text-only summary for it.
+pub(in crate::stream) const COMPACT_PROMPT_MARKER: &str =
+    "You are performing a CONTEXT CHECKPOINT COMPACTION";
 
 /// The dummy's canned `/compact` summary — streamed word-by-word like every
 /// reply, captured (never rendered) by the compact turn (docs/compact.md).
@@ -110,112 +161,127 @@ const DUMMY_COMPACT_SUMMARY: &str = "Progress so far: this is a canned handoff s
      Key decisions: none - no real model is attached. Next steps: keep \
      chatting; the compacted context now rides this summary.";
 
-/// The full ordered sequence of events for one dummy turn, with a thinking phase
-/// and tool calls **interleaved** in the reply: stream the first half of the
-/// text, *think* for a moment, run a **parallel batch** announced up front — so
-/// its not-yet-run calls show `⎿ Waiting…` while the front one runs
-/// (`docs/parallel-tools.md`) — then stream the rest and finish.
-///
-/// The batch is **prompt-gated**: a prompt mentioning "parallel" runs the vivid
-/// three-call `Bash(ping …)` demo (the user's example); any other prompt runs the
-/// compact two-call `Read`+`Bash` batch (baseline footprint, so unrelated smoke
-/// phases keep their sizing, with the feature still visible every turn).
-///
-/// The thinking phase sits after the first text segment (so the demo shows
-/// `↓ tokens · Thinking for Ns`) and before the tools. The batch is announced via
-/// a [`StreamEvent::ToolBatch`] before its `ToolStart`s, and every `ToolStart` is
-/// still immediately followed by its `ToolEnd` — execution stays sequential (one
-/// running call at a time; see `docs/parallel-tools.md`). Between the thinking
-/// pair the dummy streams `DUMMY_THINKING` word-by-word as
-/// [`StreamEvent::ThinkingChunk`]s, so the token tally keeps ticking while the
-/// thinking timer runs.
-///
-/// Pure and deterministic so it is unit-testable; [`super::DummyAi`] just plays
-/// it back on a thread with delays. The `Chunk` events still concatenate to
-/// exactly [`dummy_response`], so streaming stays faithful.
-#[must_use]
-pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
-    // `/compact`'s summarization request plays a **text-only** canned summary
-    // — no thinking phase, no tool batch (codex sends the summarize request
-    // with no tools) — so the offline dummy path (and smoke.sh) can drive the
-    // whole compact flow with no provider (docs/compact.md).
-    if prompt.starts_with(COMPACT_PROMPT_MARKER) {
-        let mut events: Vec<StreamEvent> = chunks(DUMMY_COMPACT_SUMMARY)
-            .into_iter()
-            .map(StreamEvent::Chunk)
-            .collect();
-        events.push(StreamEvent::StreamDone);
-        return events;
-    }
-    let reply = dummy_response(prompt);
+/// The events a user-facing reply **opens** with: an acknowledgement of any
+/// Ctrl+V images, since the dummy can't actually see them. Visible proof the
+/// typed image channel (codex's `UserInput::LocalImage`) carried the paths to
+/// the backend; a real vision model would read the files instead. Empty when
+/// no images rode along. See `docs/image-paste.md`.
+fn opening(cue: &Cue) -> Vec<StreamEvent> {
+    image_ack(cue.images())
+        .map(|ack| chunks(&ack).into_iter().map(StreamEvent::Chunk).collect())
+        .unwrap_or_default()
+}
+
+/// The canned reply for this prompt, split in two at the middle word — the
+/// text a turn streams *before* its tools/agents and the text it streams
+/// after, so the demo shows a reply genuinely interleaved with its work.
+fn reply_halves(cue: &Cue) -> (String, String) {
+    let reply = dummy_response(cue.text());
     let words: Vec<&str> = reply.split_inclusive(' ').collect();
     let mid = (words.len() / 2).max(1).min(words.len());
-    let first: String = words[..mid].concat();
-    let second: String = words[mid..].concat();
+    (words[..mid].concat(), words[mid..].concat())
+}
 
-    let mut events = Vec::new();
-    // The dummy can't actually see images, so when some are attached it opens by
-    // acknowledging them — visible proof the typed image channel (codex's
-    // `UserInput::LocalImage`) carried the paths to the backend. A real vision
-    // model would read the files instead. See `docs/image-paste.md`.
-    if let Some(ack) = image_ack(image_count) {
-        events.extend(chunks(&ack).into_iter().map(StreamEvent::Chunk));
-    }
-    // A "table" prompt plays the markdown-table demo as a **text-only** turn:
-    // no thinking pause and no tool batch — a tool call would split the reply
-    // around it, flushing the block early — so the whole table streams through
-    // the strip preview and its block commits at the close
-    // (docs/table-streaming.md).
-    if prompt.to_lowercase().contains("table") {
-        events.extend(chunks(&reply).into_iter().map(StreamEvent::Chunk));
-        events.push(StreamEvent::StreamDone);
-        return events;
-    }
-    // An "agents" prompt plays the subagent demo (docs/agent-tool.md): the
-    // first half of the text, then the scripted two-agent group — announced,
-    // "running" for AGENT_DELAY, resolved — then the closing text. Never for
-    // /init (its canned prompt names AGENTS.md).
-    let lower = prompt.to_lowercase();
-    if lower.contains("agents") && !lower.contains("agents.md") {
-        let background = lower.contains("background");
-        events.extend(chunks(&first).into_iter().map(StreamEvent::Chunk));
-        events.push(StreamEvent::AgentBatch {
-            background,
-            agents: DUMMY_AGENTS
-                .iter()
-                .map(|&(id, description, prompt, _)| AgentSpec {
-                    id: id.to_string(),
-                    description: description.to_string(),
-                    agent_type: "general-purpose".to_string(),
-                    prompt: prompt.to_string(),
-                    background,
-                })
-                .collect(),
-        });
-        events.push(StreamEvent::AgentGroupDone {
-            background,
-            agents: DUMMY_AGENTS
-                .iter()
-                .map(|&(id, description, _, response)| AgentCallDone {
-                    id: id.to_string(),
-                    output: if background {
-                        format!(
-                            "Background agent launched with ID: {id} \
-                             (\"{description}\"). You will be notified when it \
-                             completes."
-                        )
-                    } else {
-                        response.to_string()
-                    },
-                    ok: true,
-                })
-                .collect(),
-        });
-        events.extend(chunks(&second).into_iter().map(StreamEvent::Chunk));
-        events.push(StreamEvent::StreamDone);
-        return events;
-    }
-    events.extend(chunks(&first).into_iter().map(StreamEvent::Chunk));
+/// Stream `text` word-by-word as reply chunks.
+fn say(text: &str) -> Vec<StreamEvent> {
+    chunks(text).into_iter().map(StreamEvent::Chunk).collect()
+}
+
+/// `/compact`'s summarization request plays a **text-only** canned summary —
+/// no thinking phase, no tool batch (codex sends the summarize request with no
+/// tools) — so the offline dummy path (and `smoke.sh`) can drive the whole
+/// compact flow with no provider (docs/compact.md). It is the one scripted
+/// turn with no image acknowledgement: the loop builds this request itself and
+/// never attaches images to it.
+pub(in crate::stream) fn compact_turn(_cue: &Cue) -> Vec<StreamEvent> {
+    let mut events = say(DUMMY_COMPACT_SUMMARY);
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
+/// The markdown-table demo as a **text-only** turn: no thinking pause and no
+/// tool batch — a tool call would split the reply around it, flushing the
+/// block early — so the whole table streams through the strip preview and its
+/// block commits at the close (docs/table-streaming.md).
+pub(in crate::stream) fn table_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let mut events = opening(cue);
+    events.extend(say(&dummy_response(cue.text())));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
+/// The subagent demo (docs/agent-tool.md): the first half of the text, then
+/// the scripted two-agent group — announced, "running" for [`AGENT_DELAY`],
+/// resolved — then the closing text. A prompt also mentioning "background"
+/// launches it in background mode, so the calls resolve at once with launch
+/// texts and the roster entries stay running.
+pub(in crate::stream) fn agents_turn(cue: &Cue) -> Vec<StreamEvent> {
+    let background = cue.mentions("background");
+    let (first, second) = reply_halves(cue);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    events.push(StreamEvent::AgentBatch {
+        background,
+        agents: DUMMY_AGENTS
+            .iter()
+            .map(|&(id, description, prompt, _)| AgentSpec {
+                id: id.to_string(),
+                description: description.to_string(),
+                agent_type: "general-purpose".to_string(),
+                prompt: prompt.to_string(),
+                background,
+            })
+            .collect(),
+    });
+    events.push(StreamEvent::AgentGroupDone {
+        background,
+        agents: DUMMY_AGENTS
+            .iter()
+            .map(|&(id, description, _, response)| AgentCallDone {
+                id: id.to_string(),
+                output: if background {
+                    format!(
+                        "Background agent launched with ID: {id} \
+                         (\"{description}\"). You will be notified when it \
+                         completes."
+                    )
+                } else {
+                    response.to_string()
+                },
+                ok: true,
+            })
+            .collect(),
+    });
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
+/// The vivid three-call `Bash(ping …)` batch — the user's example.
+pub(in crate::stream) fn parallel_turn(cue: &Cue) -> Vec<StreamEvent> {
+    tool_turn(cue, &[DUMMY_BASH_CALL], PARALLEL_BATCH)
+}
+
+/// The **default** turn, and the fallback for any prompt no other scenario
+/// claims: stream the first half of the text, *think* for a moment, run the
+/// compact `Read`+`Bash` batch, then stream the rest and finish.
+pub(in crate::stream) fn tools_turn(cue: &Cue) -> Vec<StreamEvent> {
+    tool_turn(cue, &[DUMMY_READ_CALL, DUMMY_BASH_CALL], DEFAULT_BATCH)
+}
+
+/// The shared envelope both tool turns use: half the reply, a thinking phase,
+/// the model "generating" the calls (`deltas`, one group per call — their
+/// fragments tick the token tally like reasoning), the batch announced up
+/// front so the not-yet-run calls show `⎿ Waiting…`, the calls executed in
+/// order, then the rest of the reply.
+///
+/// Every `ToolStart` still lands immediately before its `ToolEnd`, so
+/// execution stays sequential — one running call at a time, exactly what the
+/// UI's "at most one running tool" invariant expects (`docs/parallel-tools.md`).
+fn tool_turn(cue: &Cue, deltas: &[&[&str]], batch: &[ScriptedCall]) -> Vec<StreamEvent> {
+    let (first, second) = reply_halves(cue);
+    let mut events = opening(cue);
+    events.extend(say(&first));
     events.push(StreamEvent::ThinkingStart);
     events.extend(
         chunks(DUMMY_THINKING)
@@ -223,83 +289,39 @@ pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
             .map(StreamEvent::ThinkingChunk),
     );
     events.push(StreamEvent::ThinkingEnd);
-    // The model "generates" a **parallel batch** (its fragments tick the token
-    // tally, like reasoning) and announces every call up front — so the not-yet-run
-    // ones show `⎿ Waiting…` while the front one runs — then executes them in
-    // order. Each ToolStart still lands immediately before its ToolEnd, so
-    // execution stays sequential (one running call at a time; see
-    // `docs/parallel-tools.md`).
-    //
-    // A prompt mentioning **"parallel"** triggers the vivid three-call
-    // `Bash(ping …)` batch (the user's example); otherwise the default turn runs a
-    // compact two-call `Read`+`Bash` batch (baseline footprint — so unrelated
-    // smoke phases keep their sizing — with the feature still visible every turn).
-    let summary = |name: &str, args: &str| ToolCallSummary {
-        name: name.to_string(),
-        args: args.to_string(),
-    };
-    if prompt.to_lowercase().contains("parallel") {
-        for frag in DUMMY_BASH_CALL {
+    for call in deltas {
+        for frag in *call {
             events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
         }
-        events.push(StreamEvent::ToolBatch(
-            DUMMY_PARALLEL_BATCH
-                .iter()
-                .map(|&(cmd, _, _)| summary("Bash", cmd))
-                .collect(),
-        ));
-        for &(cmd, output, ok) in DUMMY_PARALLEL_BATCH {
-            events.push(StreamEvent::ToolStart {
-                name: "Bash".to_string(),
-                args: cmd.to_string(),
-                detail: None,
-            });
-            // Stream the output line-by-line so the live cell tails it, then the
-            // authoritative ToolEnd commits the finished cell (docs/tool-streaming.md).
-            events.extend(tool_output_events(output));
-            events.push(StreamEvent::ToolEnd {
-                output: output.to_string(),
-                ok,
-                truncated: false,
-            });
-        }
-    } else {
-        for frag in DUMMY_READ_CALL {
-            events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
-        }
-        for frag in DUMMY_BASH_CALL {
-            events.push(StreamEvent::ToolCallDelta((*frag).to_string()));
-        }
-        events.push(StreamEvent::ToolBatch(vec![
-            summary("Read", "src/main.rs"),
-            summary("Bash", DUMMY_BASH_CMD),
-        ]));
+    }
+    events.push(StreamEvent::ToolBatch(
+        batch
+            .iter()
+            .map(|call| ToolCallSummary {
+                name: call.name.to_string(),
+                args: call.args.to_string(),
+            })
+            .collect(),
+    ));
+    for call in batch {
         events.push(StreamEvent::ToolStart {
-            name: "Read".to_string(),
-            args: "src/main.rs".to_string(),
+            name: call.name.to_string(),
+            args: call.args.to_string(),
             detail: None,
         });
+        // A streaming call's output arrives line-by-line so the live cell
+        // tails it; the authoritative ToolEnd then commits the finished cell
+        // (docs/tool-streaming.md).
+        if call.streams {
+            events.extend(tool_output_events(call.output));
+        }
         events.push(StreamEvent::ToolEnd {
-            output: DUMMY_READ_OUTPUT.to_string(),
-            ok: true,
-            truncated: false,
-        });
-        events.push(StreamEvent::ToolStart {
-            name: "Bash".to_string(),
-            args: DUMMY_BASH_CMD.to_string(),
-            detail: None,
-        });
-        // Stream the output line-by-line so the live cell tails it (the Read
-        // above returns all at once, like the real executor). See
-        // `docs/tool-streaming.md`.
-        events.extend(tool_output_events(DUMMY_BASH_OUTPUT));
-        events.push(StreamEvent::ToolEnd {
-            output: DUMMY_BASH_OUTPUT.to_string(),
-            ok: false,
+            output: call.output.to_string(),
+            ok: call.ok,
             truncated: false,
         });
     }
-    events.extend(chunks(&second).into_iter().map(StreamEvent::Chunk));
+    events.extend(say(&second));
     events.push(StreamEvent::StreamDone);
     events
 }

@@ -11,6 +11,7 @@ use super::*;
 mod cancel;
 mod dummy;
 mod gated;
+mod scenario;
 mod script;
 mod source;
 mod stall;

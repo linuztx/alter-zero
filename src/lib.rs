@@ -43,7 +43,10 @@
 //!   context fragment (see `docs/project-doc.md`).
 //! - [`session`]     — the `/resume` rollout-file format: serialize/parse the
 //!   JSONL session record, the picker preview + humanized age.
-//! - [`stream`]      — the dummy AI: canned responses and chunked streaming.
+//! - [`stream`]      — the backend seam: the `StreamEvent` reply protocol, the
+//!   `ReplySource` trait the event loop depends on, and the built-in offline
+//!   `DummyAi` whose scripted turns drive the smoke suite (see
+//!   `docs/dummy-backend.md`).
 //! - [`subprocess`]  — the shared detached `sh -c` spawn (setsid binary →
 //!   helper re-exec → attached): every shell runner's child is severed from
 //!   the controlling terminal so a `/dev/tty` password prompt (`sudo`) fails

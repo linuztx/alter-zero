@@ -95,7 +95,7 @@ without a real terminal.
 | `src/app/`  | Conversation state + pure update logic, one module per area (`docs/module-layout.md`): `on_key` → `Action`, streaming, tool calls, the slash palette, input history + Ctrl+R search, the mid-turn queue, `!` shell mode, message `history`. | ✅ |
 | `src/textarea.rs` | The editable multi-line input: a movable grapheme-aware cursor, wrapped ↑/↓, insert/delete anywhere. | ✅ |
 | `src/ui/`    | Pure rendering, one module per area (`docs/module-layout.md`): display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. All styling lives in `ui/theme.rs`. | ✅ |
-| `src/stream.rs` | The backend seam: the `ReplySource` trait + built-in `DummyAi`, a `CancelToken`, and the `StreamEvent` protocol. | ✅ (pure parts, token & dummy) |
+| `src/stream/` | The backend seam, one module per area (`docs/module-layout.md`): the `StreamEvent` protocol, the `ReplySource` trait, a `CancelToken` — and the offline `DummyAi` in its own `dummy/` subtree, whose scenario registry decides which canned demo a prompt plays (`docs/dummy-backend.md`). | ✅ (pure parts, token & dummy) |
 | `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), the `config.json` model store (`/model`), and the `ReplySource` bridge. | ✅ (pure cores) |
 | `src/file_search.rs` | The pure core of the `@` file picker: token detection, fuzzy matching, ranking. | ✅ |
 | `src/frame.rs` | The frame scheduler: coalesces redraw requests into ticks, rate-limited to 120 fps. | ✅ (pure parts) |
@@ -148,7 +148,7 @@ them in one place to retheme.
 
 ## Using a real model
 
-The backend is a `ReplySource` trait in `src/stream.rs`. By default the app runs
+The backend is a `ReplySource` trait in `src/stream/source.rs`. By default the app runs
 the built-in `DummyAi` (canned, offline), but a real **OpenAI-compatible** model
 is built in — the `llm` module (`src/llm/`, see `docs/llm.md`). It streams
 `/chat/completions` over SSE, splits `<think>`/native reasoning into the

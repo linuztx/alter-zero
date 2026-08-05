@@ -46,18 +46,29 @@ the detached-exec hook, the CLI resolution, the viewport, the loop — over
 `startup`, `recorder`, `resume`, `history_store`, `shell`, `workers`, `host`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
-submodules reach `App`'s). The three big ones are **directories
+submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
 `compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `background`,
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
-the test tree keeps its private-field access) and `src/ui/` (`theme`, `wrap`,
+the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `stream_render`). The two library `mod.rs`es re-export their areas **by name** — never a glob,
+`permission_view`, `stream_render`), and **`src/stream/`** — the backend seam
+kept apart from the offline demo that used to crowd it: `event` (the whole
+`StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
+(`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
+subtree (`mod` — `DummyAi` + `turn_events` + the playback pacing, `scenario` —
+**the registry that decides which demo a prompt plays**, `script` — the canned
+replies, `turns` — the pure `Cue → Vec<StreamEvent>` turns, `gated` — the ones
+that block on the permission gate); adding a demo is one `SCENARIOS` entry plus
+its turn function plus its example prompt in the suite, and the suite proves
+every entry is still reachable (the two hand-written `if`/`else` chains it
+replaced could retire a demo silently by shadowing its cue) — see
+`docs/dummy-backend.md`. The three library `mod.rs`es re-export their areas **by name** — never a glob,
 so the public surface is auditable and `tests/api_surface.rs` can lock it — and
-every `crate::app::X` / `ui::y(…)` path is what it always was; `src/tui/` needs
+every `crate::app::X` / `ui::y(…)` / `stream::Z` path is what it always was; `src/tui/` needs
 no facade (nothing outside the binary can name it — `main.rs` reaches exactly
 `tui::startup::resolve_cli` and `tui::event_loop::run`);
 see `docs/module-layout.md` for the map. The pure, unit-tested logic lives in

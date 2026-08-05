@@ -1,4 +1,4 @@
-# Module layout: `app/`, `ui/`, and `tui/`
+# Module layout: `app/`, `ui/`, `tui/`, and `stream/`
 
 `app.rs` and `ui.rs` were the two files everything grew into. By the time they
 were split they held 13,872 and 17,665 lines — one 4,038-line `impl App`, two
@@ -17,6 +17,10 @@ is now `src/main.rs` (77 lines) plus `src/tui/`, 20 area modules built on the
 same pattern. That split needed one thing the other two did not: the loop's state
 had to become a struct before the code could move. See
 [`src/tui/` — the terminal shell](#srctui--the-terminal-shell).
+
+`stream.rs` was the fourth — 2,459 lines, of which the backend *seam* every real
+model implements was about 250 and the offline demo backend was 1,100. See
+[`src/stream/` — the backend seam](#srcstream--the-backend-seam).
 
 ## Where things live
 
@@ -113,6 +117,39 @@ opening the viewport, running the loop — and everything else lives here:
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
 | `workers.rs` | The off-thread file-search / clipboard / model-list jobs. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |
+
+### `src/stream/` — the backend seam
+
+`stream.rs` held two things that have nothing to do with each other: the
+protocol *every* backend speaks — `StreamEvent`, `ReplySource`, `CancelToken`,
+about 250 lines — and `DummyAi`, the 1,100-line offline demo whose canned turns
+grow every time a UI feature lands (it is the only backend `scripts/smoke.sh`
+can drive). Reading the seam meant scrolling past canned `ping` output.
+
+| Module | Holds |
+|--------|-------|
+| `mod.rs` | The facade (`mod` + `pub use`). |
+| `event.rs` | `StreamEvent` and its payloads (`ToolCallSummary`, `AgentSpec`, `AgentCallDone`, `TokenUsage`) — the whole wire format. |
+| `source.rs` | `ReplySource`: the one trait the event loop depends on. |
+| `cancel.rs` | `CancelToken`. |
+| `stall.rs` | `StallAi`, the wedged-backend double (`docs/interrupt.md`). |
+| `dummy/mod.rs` | `DummyAi` — the `ReplySource` impl, `turn_events`, the playback pacing. |
+| `dummy/scenario.rs` | The scenario registry: which demo a prompt selects. |
+| `dummy/script.rs` | Canned replies and the streaming primitives. |
+| `dummy/turns.rs` | The **pure** scripted turns, one `Cue -> Vec<StreamEvent>` each. |
+| `dummy/gated.rs` | The turns that block on the permission gate. |
+
+The dummy is a subtree rather than four sibling files because it is genuinely
+separable: it is the one backend that could be deleted without touching the
+seam, and now that is a directory rather than a excision.
+
+Unlike the other three splits this one is not *only* code motion. Which demo
+plays used to be decided by two hand-written `if`/`else` chains in two different
+files, with nine cues and no table — so a cue shadowed by an earlier one
+retired a demo silently, and the smoke suite would keep passing while testing a
+different turn than it thought. That is one ordered `SCENARIOS` table now, and
+the suite proves every entry is still reachable. See
+[`dummy-backend.md`](dummy-backend.md).
 
 #### Why this split needed a struct first
 
@@ -220,8 +257,8 @@ Each `mod.rs` re-exports its areas **by name**, not with `pub use self::m::*;`.
 A glob keeps the paths working but leaves the public surface implicit: nothing
 states what the module exports, and a `pub` added to a submodule later escapes
 the crate without anyone deciding it should. `tests/api_surface.rs` locks the
-result — it names all 144 items the pre-split files exported, so a forgotten
-re-export fails to compile.
+result — it names all 144 items the pre-split `app.rs`/`ui.rs` exported, plus
+the 18 `stream.rs` did, so a forgotten re-export fails to compile.
 
 Naming every re-export also surfaced work the glob had been doing silently: it
 re-exported `pub(super)` items into `crate::app` / `crate::ui` at their own

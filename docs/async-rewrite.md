@@ -35,7 +35,7 @@ already in this codebase; this change ports the rest.
   single scheduled frame instead of one per char. Unit-tested with injected
   `Instant`s.
 
-- **`stream.rs`** — `StreamEvent` now travels a `tokio::sync::mpsc::Unbounded`
+- **`stream/`** — `StreamEvent` now travels a `tokio::sync::mpsc::Unbounded`
   channel. The backend still runs on a plain `std::thread` that *only sends*
   (tokio's unbounded `send` is sync, callable off-runtime), preserving "the
   backend never reads stdin".

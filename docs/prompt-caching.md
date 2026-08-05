@@ -110,7 +110,7 @@ TurnSummary { tokens, cached } → "Done for 12s · 8.2k tokens (8k cached)"
                                                               so old rollouts still parse)
 ```
 
-- [`TokenUsage`](../src/stream.rs) carries `input`, `output`, `cached` (reads,
+- [`TokenUsage`](../src/stream/event.rs) carries `input`, `output`, `cached` (reads,
   a subset of `input` per the OpenAI accounting shape), and `cache_write`.
   The parse normalizes the spelling zoo: `prompt_tokens_details.cached_tokens`
   (OpenRouter/OpenAI), the top-level `cache_read_input_tokens` /

@@ -1,6 +1,6 @@
 # The real LLM backend and the `/model` picker
 
-The app ships with a canned [`DummyAi`](../src/stream.rs) so it runs offline and
+The app ships with a canned [`DummyAi`](../src/stream/dummy/mod.rs) so it runs offline and
 `smoke.sh` stays deterministic. This document covers the **real** backend that
 streams from any OpenAI-compatible endpoint, the flag that toggles the dummy back
 on, and the inline **`/model`** picker that lists and switches models.
@@ -8,7 +8,7 @@ on, and the inline **`/model`** picker that lists and switches models.
 ## The seam
 
 Nothing about the event loop changes: the backend is still a
-[`stream::ReplySource`](../src/stream.rs) whose
+[`stream::ReplySource`](../src/stream/source.rs) whose
 `spawn(prompt, images, context, tx, cancel)` runs on a plain OS thread that
 *only sends* `StreamEvent`s and polls the `CancelToken`. `main.rs` holds the
 backend as a **`Box<dyn ReplySource>`** instead of a concrete `DummyAi`, so
@@ -92,7 +92,7 @@ The policy lives in the pure, unit-tested [`llm::retry`](../src/llm/retry.rs):
   **duplicate** it, so a mid-stream drop is surfaced rather than retried.
 - **`run_stream`** — the generic driver `backend.rs::spawn` wraps its one
   streaming attempt in: it announces each retry as a
-  [`StreamEvent::Retrying { attempt, max }`](../src/stream.rs), backs off, and
+  [`StreamEvent::Retrying { attempt, max }`](../src/stream/event.rs), backs off, and
   re-runs the attempt, then sends the terminal `StreamDone` / `Error` (or nothing
   on a cancel). It is generic over the attempt and the sleep, so the whole loop is
   unit-tested with fakes and **no network**.

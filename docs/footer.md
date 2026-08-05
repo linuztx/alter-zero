@@ -53,7 +53,7 @@ footer-mode multiplexing: the Ctrl+R `reverse-i-search: {query}` line
 (`docs/history-search.md`) and the `!` shell mode's red `Shell mode` hint
 (`docs/shell-command.md`).
 
-### State (`app/`, `stream.rs`)
+### State (`app/`, `stream/`)
 
 - `SessionInfo { model: String, cwd: String }` and `App.session:
   Option<SessionInfo>` — display-ready strings, injected **once at the I/O

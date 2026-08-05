@@ -598,7 +598,7 @@ explains itself with a toast instead of pretending to toggle anything.
   holds while the frame stays seated (same height, growth, a flush whose own
   scroll re-seats flush), skips a prompt floating above the bottom, and at
   the close follows the one-way note exactly as before.
-- `stream.rs` — the dummy's "parallel permission" turn: two gated `Bash` calls
+- `stream/dummy/gated.rs` — the dummy's "parallel permission" turn: two gated `Bash` calls
   announced up front, each asking before it starts, the next request following
   the previous cell's resolution with no scripted pause; and the "staggered
   permission" turn — two gated `Write`s whose prompts differ wildly in height

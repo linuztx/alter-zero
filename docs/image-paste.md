@@ -206,8 +206,9 @@ renders `[Image #N]` as a text marker. The `?` shortcuts band gains a
   *and* `take_submission_images()` yields the path), atomic deletion (one
   Backspace clears the whole `[Image #N]` and drops the path), and Ctrl+V →
   `Action::PasteImage`.
-- `stream.rs`: `turn_events` prepends the acknowledgement when `image_count > 0`
-  and is unchanged at 0; `DummyAi::spawn` carries the new parameter.
+- `stream/dummy/turns.rs`: every user-facing script `opening`s with the
+  acknowledgement when the cue carries images
+  and emits nothing at 0; `DummyAi::spawn` carries the new parameter.
 - `scripts/smoke.sh`: a phase pressing Ctrl+V with **no image on the clipboard**
   (the headless CI reality — `arboard` errors) asserts the red
   `Failed to paste image` notice appears and the app stays alive. The happy path

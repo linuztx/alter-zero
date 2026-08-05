@@ -48,7 +48,7 @@ right model is: announce the batch, run in order, show the rest waiting. This:
 
 ## The mechanism
 
-### Protocol (`stream.rs`)
+### Protocol (`stream/event.rs`)
 
 A new event announces the batch **before** the first `ToolStart`, carrying a
 small named struct per call (`ToolCallSummary { name, args }` — the *same* two

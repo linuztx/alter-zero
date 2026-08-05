@@ -220,7 +220,8 @@ fully streamed.
   seeding/persistence.
 - `src/llm/models.rs` / `src/llm/settings.rs` — `ModelEntry::context`
   (`context_length` sniffing) and its `config.json` persistence.
-- `src/stream.rs` — the dummy's text-only compact script.
+- `src/stream/dummy/turns.rs` — the dummy's text-only compact script (the
+  `compact` scenario; `docs/dummy-backend.md`).
 
 ## Limitations
 
