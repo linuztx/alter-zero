@@ -389,15 +389,12 @@ impl Session<'_> {
     /// bookkeeping around it in step, and run the turn-end dispatch when the
     /// stream resolved.
     ///
-    /// The `agent_rx` borrow is what makes a group's resolution correct: the
-    /// members' terminal events were enqueued on that channel *before* the backend
-    /// sent the resolution, so they are drained first and the roster snapshots the
-    /// recorded group entries are built from are final (`docs/agent-tool.md`).
-    pub(crate) fn on_reply_event(
-        &mut self,
-        event: StreamEvent,
-        agent_rx: &mut tokio::sync::mpsc::UnboundedReceiver<alter_zero::agents::AgentEvent>,
-    ) {
+    /// Draining the subagent channel first is what makes a group's resolution
+    /// correct: the members' terminal events were enqueued there *before* the
+    /// backend sent the resolution, so taking them first is what makes the roster
+    /// snapshots the recorded group entries are built from final
+    /// (`docs/agent-tool.md`).
+    pub(crate) fn on_reply_event(&mut self, event: StreamEvent) {
         // A launched agent group: start each member's runtime clock (the boundary
         // owns the clocks — docs/agent-tool.md).
         if let StreamEvent::AgentBatch { agents, .. } = &event {
@@ -413,7 +410,7 @@ impl Session<'_> {
                 None
             };
         if matches!(&event, StreamEvent::AgentGroupDone { .. }) {
-            self.drain_agent_events(agent_rx);
+            self.drain_agent_events();
         }
         let resolved = self.on_stream_event(event);
         // A foreground group's members are settled now — arm their linger sweeps

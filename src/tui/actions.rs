@@ -25,7 +25,6 @@ use alter_zero::app::{
 };
 use alter_zero::checkpoint;
 use alter_zero::clipboard;
-use alter_zero::stream::StreamEvent;
 use alter_zero::term::ReflowClear;
 
 use super::turn::TurnInput;
@@ -42,15 +41,11 @@ impl Session<'_> {
     /// Handle one terminal event: a key press (through `App::on_key` and the
     /// action it returns), a resize, or a bracketed paste. Anything else — key
     /// releases, focus, mouse — is ignored.
-    pub(crate) fn on_terminal_event(
-        &mut self,
-        event: Event,
-        reply_rx: &mut tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
-    ) -> std::io::Result<Flow> {
+    pub(crate) fn on_terminal_event(&mut self, event: Event) -> std::io::Result<Flow> {
         match event {
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 let action = self.app.on_key(key);
-                let flow = self.on_action(action, reply_rx)?;
+                let flow = self.on_action(action)?;
                 if flow == Flow::Quit {
                     return Ok(Flow::Quit);
                 }
@@ -74,11 +69,7 @@ impl Session<'_> {
 
     /// Perform the I/O an `Action` asks for. One arm per variant; the work lives
     /// in the module that owns the feature (see the module doc).
-    fn on_action(
-        &mut self,
-        action: Action,
-        reply_rx: &mut tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
-    ) -> std::io::Result<Flow> {
+    fn on_action(&mut self, action: Action) -> std::io::Result<Flow> {
         match action {
             Action::None => {}
             Action::Quit => {
@@ -127,7 +118,7 @@ impl Session<'_> {
                 // and resize repaint all work exactly like an AI turn.
                 self.run_shell(command);
             }
-            Action::Interrupt => self.interrupt_turn(reply_rx)?,
+            Action::Interrupt => self.interrupt_turn()?,
             Action::Compact => {
                 // /compact (docs/compact.md): run codex's summarization turn —
                 // the whole current context plus the fixed handoff prompt — with
@@ -138,7 +129,7 @@ impl Session<'_> {
                 // it like any other turn.
                 self.start_compact_turn(/*auto=*/ false);
             }
-            Action::Clear => self.clear_conversation(reply_rx)?,
+            Action::Clear => self.clear_conversation()?,
             Action::KillBackground(id) => self.kill_background(&id),
             Action::MoveToBackground => self.move_to_background(),
             Action::StopAgent(id) => self.stop_agent(&id),
@@ -234,11 +225,8 @@ impl Session<'_> {
     /// fresh reply channel, so any stale event it still emits (a final chunk, or a
     /// ToolStart that would otherwise wedge a phantom running tool) lands on the
     /// dropped receiver and can't reach the next turn. See `docs/interrupt.md`.
-    fn interrupt_turn(
-        &mut self,
-        reply_rx: &mut tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
-    ) -> std::io::Result<()> {
-        *reply_rx = self.abandon_inflight();
+    fn interrupt_turn(&mut self) -> std::io::Result<()> {
+        self.abandon_inflight();
         // Interrupt only arises in the conversation view (overlay Esc returns
         // instead), so nothing here touches the alternate screen.
         match self.app.interrupt_turn() {
@@ -295,16 +283,13 @@ impl Session<'_> {
     /// user asked for a fresh slate, not a finished turn — so stop the backend and
     /// isolate it from the blank screen, then wipe every subsystem that outlives a
     /// turn and rebuild the screen from nothing.
-    fn clear_conversation(
-        &mut self,
-        reply_rx: &mut tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
-    ) -> std::io::Result<()> {
+    fn clear_conversation(&mut self) -> std::io::Result<()> {
         // `abandon_inflight` cancels + detaches the backend and hands back a
         // fresh channel (never join() on the loop — the interrupt-lag freeze):
         // any stale chunk or ToolStart the dying thread still emits lands on the
         // dropped receiver, so it can't repopulate the cleared state. See
         // docs/interrupt.md.
-        *reply_rx = self.abandon_inflight();
+        self.abandon_inflight();
         self.render.reset();
         // A fresh slate kills the background shells too (clear_conversation
         // already forgot them, so their Exited events find nothing and owe no

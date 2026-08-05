@@ -94,7 +94,7 @@ opening the viewport, running the loop — and everything else lives here:
 | Module | Holds |
 |--------|-------|
 | `mod.rs` | The `Session` struct and `StatusClocks` — the loop's state. |
-| `event_loop.rs` | `run`: the `select!` over the eight sources (62 lines), and `Sources`. |
+| `event_loop.rs` | `run`: the `select!` over the nine sources — one handler call per branch. |
 | `actions.rs` | The `Action` dispatch — one arm per key-press outcome — plus `Flow`, `/clear`, `/copy`, the resize and paste routing. |
 | `turn.rs` | Turn lifecycle: `start_turn`, `run_shell`, the background follow-up, `/compact`, `dispatch_after_turn`, `abandon_inflight`. |
 | `stream.rs` | `on_stream_event`: folding one reply event into `App` + scrollback. |
@@ -122,7 +122,7 @@ time (five `#[allow(clippy::too_many_arguments)]` marked where that hurt most).
 Cutting *that* into modules without a state type would just have widened the
 signatures.
 
-So the state became **`Session`** (30 fields), and every handler is a method on
+So the state became **`Session`** (40 fields), and every handler is a method on
 it. That is the same trick `app/mod.rs` plays with `App`: a struct's private
 fields are visible to the module that defines it *and all its descendants*, so
 each area module holds an `impl Session` block and reaches the state directly. No
@@ -142,14 +142,33 @@ move together:
 - **`StatusClocks`** — already existed; it gained `start_turn`/`end_turn` so the
   four turn-start paths can't drift on which clocks they reset.
 
-#### What stayed outside `Session`
+#### The channels live on it too
 
-The **receivers**. `select!` borrows several at once, which only type-checks while
-they are separate places, so they live in `event_loop::Sources` and `Session`
-holds the matching senders. Two are passed *into* handlers rather than held: the
-reply receiver, because an interrupt or `/clear` replaces the whole channel
-(`Session::abandon_inflight` returns the new one), and the subagent receiver,
-because a group's resolution has to drain its members' events first.
+Both ends of all nine — the senders *and* the receivers the `select!` polls.
+
+The first cut of this split put the receivers in a separate `Sources` struct, on
+the belief that `select!` needs them as separate places to borrow. **That is
+false**, and it cost real plumbing: the reply receiver had to be threaded
+`on_terminal_event` → `on_action` → `interrupt_turn`/`clear_conversation` just so
+the bottom of that chain could swap the channel — exactly the hand-threaded state
+this refactor exists to remove.
+
+`select!` scopes its futures. The nine it builds borrow nine *distinct fields* of
+one `&mut` place, which is allowed, and they are all dropped before the winning
+branch's body runs — so that body can take `&mut session` freely. A handler that
+drains a second channel does it the same way, since `recv`/`try_recv` return
+owned values and hold no borrow past the call:
+
+```rust
+pub(crate) fn drain_agent_events(&mut self) {
+    while let Ok(AgentEvent::Stream { id, event }) = self.agent_rx.try_recv() {
+        self.on_agent_event(&id, event);   // &mut self, mid-drain
+    }
+}
+```
+
+So the receivers are fields, `Session::abandon_inflight` swaps both ends of the
+reply channel in place, and three signatures lost a parameter.
 
 #### What the loop reads like now
 
@@ -232,9 +251,9 @@ public, and nothing that was public changed. Where an item is only used inside
 its own module, it stayed private.
 
 In `src/tui/` the equivalent is `pub(crate)`, which reaches no further than the
-binary. `Session`'s fields stayed **private** — the descendant-visibility trick
-above is what makes that work — and `Sources`' fields are `pub(super)` because
-`bootstrap` builds them.
+binary. **Every** `Session` field stayed private — the descendant-visibility trick
+above is what makes that work, and it is why no accessor exists purely to cross a
+module boundary.
 
 ## Tests
 

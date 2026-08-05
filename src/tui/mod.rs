@@ -16,17 +16,20 @@
 //! the state it needs directly. Before this, the same state was ~50 locals in
 //! one 2,000-line function, threaded into helpers nine arguments at a time.
 //!
-//! The receivers deliberately stay *outside* `Session`, in
-//! [`event_loop::Sources`]: `select!` borrows several of them at once, which
-//! only type-checks while they are separate places. `Session` holds the
-//! matching senders, so a handler can start a turn or ask for a frame.
+//! Both ends of every channel live on it too — the senders *and* the receivers
+//! the `select!` polls. That works because `select!` scopes its futures: the
+//! nine it builds borrow nine distinct fields, and they are dropped before the
+//! winning branch's body runs, so that body can take `&mut self`. Keeping the
+//! receivers here is what lets `Session::abandon_inflight` swap the reply
+//! channel in place instead of the loop threading a `&mut` receiver down
+//! through three call layers.
 //!
 //! # Where things live
 //!
 //! | Module | Holds |
 //! |--------|-------|
 //! | `mod.rs` | The [`Session`] struct and [`StatusClocks`] — the shared state. |
-//! | [`event_loop`] | [`event_loop::run`]: the `select!` over the eight sources, the loop-bottom work, the teardown. |
+//! | [`event_loop`] | [`event_loop::run`]: the `select!` over the nine sources, the loop-bottom work, the teardown. |
 //! | [`actions`] | The [`alter_zero::app::Action`] dispatch — one method per key-press outcome. |
 //! | [`turn`] | Starting and ending turns: user, queued, `!` shell, background follow-up, `/compact`. |
 //! | [`stream`] | Folding one streamed reply event into `App` + scrollback. |
@@ -51,9 +54,11 @@ use std::path::PathBuf;
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use alter_zero::agents::AgentRegistry;
+use ratatui::crossterm::event::EventStream;
+
+use alter_zero::agents::{AgentEvent, AgentRegistry};
 use alter_zero::app::App;
-use alter_zero::background::BackgroundRegistry;
+use alter_zero::background::{BackgroundRegistry, BgEvent};
 use alter_zero::checkpoint::CheckpointStore;
 use alter_zero::clipboard::ClipboardLease;
 use alter_zero::frame::FrameRequester;
@@ -66,7 +71,7 @@ use self::history_store::InputHistoryStore;
 use self::models::ModelSession;
 use self::permission::PermissionStore;
 use self::recorder::SessionRecorder;
-use self::workers::ModelFetch;
+use self::workers::{FileSearchResult, ModelFetch};
 
 pub(crate) mod actions;
 pub(crate) mod agent;
@@ -133,21 +138,47 @@ pub(crate) struct Session<'t> {
     /// (`docs/agent-tool.md`).
     agent_expiry: HashMap<String, Instant>,
 
-    // ----- senders into the loop's own channels (the receivers are Sources) -----
-    /// Asks the frame scheduler for a redraw.
+    // ----- the loop's own channels: what wakes it, and what it sends on -----
+    //
+    // Both ends live here. `select!` creates all nine futures up front, each
+    // borrowing a *distinct field* of this struct, and scopes them so the branch
+    // body that wins can still take `&mut self` — which is what lets a handler
+    // both read a receiver and mutate everything else. `recv`/`try_recv` hand
+    // back owned values, so no borrow outlives the call itself.
+    /// Terminal input — the **sole** stdin reader (invariant 1). Created after
+    /// the viewport's synchronous cursor query, in [`Session::bootstrap`].
+    events: EventStream,
+    /// Asks the frame scheduler for a redraw, and its coalesced, rate-limited
+    /// draw ticks coming back.
     frame: FrameRequester,
-    /// The reply channel a turn streams on. Swapped wholesale by
+    draw_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    /// The reply channel a turn streams on. Both ends are swapped wholesale by
     /// [`Session::abandon_inflight`] so a detached backend can't reach the next
     /// turn (`docs/interrupt.md`).
     tx: tokio::sync::mpsc::UnboundedSender<StreamEvent>,
-    /// Queries for the `@` file-search worker, and the last one sent — the
-    /// dedupe that keeps an unchanged token from re-walking the tree.
+    reply_rx: tokio::sync::mpsc::UnboundedReceiver<StreamEvent>,
+    /// Queries for the `@` file-search worker and its ranked matches, plus the
+    /// last query sent — the dedupe that keeps an unchanged token from
+    /// re-walking the tree (`docs/file-search.md`).
     file_req_tx: std::sync::mpsc::Sender<String>,
+    file_rx: tokio::sync::mpsc::UnboundedReceiver<FileSearchResult>,
     last_file_query: Option<String>,
     /// A Ctrl+V clipboard read's result channel (`docs/image-paste.md`).
     img_tx: tokio::sync::mpsc::UnboundedSender<Result<PathBuf, String>>,
-    /// The `/model` picker's fetch results (`docs/llm.md`).
+    img_rx: tokio::sync::mpsc::UnboundedReceiver<Result<PathBuf, String>>,
+    /// The `/model` picker's fetch results (`docs/llm.md`), and the startup
+    /// capability probe's own channel — separate so a concurrently-open picker
+    /// can't confuse the results (`docs/reasoning.md`).
     model_tx: tokio::sync::mpsc::UnboundedSender<ModelFetch>,
+    model_rx: tokio::sync::mpsc::UnboundedReceiver<ModelFetch>,
+    probe_rx: tokio::sync::mpsc::UnboundedReceiver<ModelFetch>,
+    /// Background shells (`docs/background.md`) and subagents
+    /// (`docs/agent-tool.md`) — never swapped, because both outlive turns.
+    bg_rx: tokio::sync::mpsc::UnboundedReceiver<BgEvent>,
+    agent_rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    /// The `@` file-search worker's handle, kept so the thread's lifetime is
+    /// tied to the session's. Never joined.
+    _file_worker: JoinHandle<()>,
 
     // ----- registries, the gate, the stores -----
     /// Background shells: the `run_in_background` launches, Ctrl+B hand-offs,

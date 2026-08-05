@@ -38,7 +38,7 @@ use alter_zero::checkpoint;
 use alter_zero::context;
 use alter_zero::paste;
 use alter_zero::project_doc;
-use alter_zero::stream::{CancelToken, ReplySource, StreamEvent};
+use alter_zero::stream::{CancelToken, ReplySource};
 use alter_zero::ui;
 
 use super::Session;
@@ -311,8 +311,8 @@ impl Session<'_> {
         }
     }
 
-    /// Stop tracking the in-flight turn **without blocking the event loop**, and
-    /// return a fresh reply receiver for the caller to install.
+    /// Stop tracking the in-flight turn **without blocking the event loop**,
+    /// swapping in a fresh reply channel — both ends, in place.
     ///
     /// The backend observes cancellation *cooperatively*, but a real network
     /// backend can be parked in a blocking read (waiting for the response headers
@@ -321,7 +321,7 @@ impl Session<'_> {
     /// composer) for that long: the interrupt-lag bug. Instead we **detach** the
     /// thread (it exits on its own once its read returns and it re-checks the
     /// token) and mint a **fresh** channel. Any last event the dying thread emits
-    /// goes to its old sender, whose receiver the caller is about to drop, so it
+    /// goes to its old sender, whose receiver this call has just dropped, so it
     /// can never leak into the next turn (which spawns on the new sender). This
     /// replaces the old `cancel + join + drain` teardown wholesale — the channel
     /// swap is both the "thread stopped sending" guarantee *and* the drain. The
@@ -329,14 +329,14 @@ impl Session<'_> {
     /// cancelled `LlmBackend` / `DummyAi` / `StallAi` / shell runner streams
     /// nothing further and returns within one op-timeout). See
     /// `docs/interrupt.md`.
-    pub(crate) fn abandon_inflight(&mut self) -> tokio::sync::mpsc::UnboundedReceiver<StreamEvent> {
+    pub(crate) fn abandon_inflight(&mut self) {
         if let Some((cancel, handle)) = self.inflight.take() {
             cancel.cancel();
             self.reaping.push(handle);
         }
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         self.tx = tx;
+        self.reply_rx = rx;
         self.clocks.end_turn();
-        rx
     }
 }

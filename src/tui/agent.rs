@@ -155,11 +155,8 @@ impl Session<'_> {
     /// members' terminal events were enqueued *before* the backend sent the
     /// resolution, so taking them first is what makes the roster snapshots the
     /// recorded group entries are built from final (`docs/agent-tool.md`).
-    pub(crate) fn drain_agent_events(
-        &mut self,
-        agent_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
-    ) {
-        while let Ok(AgentEvent::Stream { id, event }) = agent_rx.try_recv() {
+    pub(crate) fn drain_agent_events(&mut self) {
+        while let Ok(AgentEvent::Stream { id, event }) = self.agent_rx.try_recv() {
             self.on_agent_event(&id, event);
         }
     }

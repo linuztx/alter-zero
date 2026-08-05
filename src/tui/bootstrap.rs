@@ -39,7 +39,6 @@ use alter_zero::stream::{CancelToken, StreamEvent};
 use alter_zero::term::InlineViewport;
 use alter_zero::ui;
 
-use super::event_loop::Sources;
 use super::history_store::InputHistoryStore;
 use super::models::ModelSession;
 use super::permission::PermissionStore;
@@ -51,7 +50,8 @@ use super::workers::{ModelFetch, spawn_file_search_worker, spawn_model_fetch};
 use super::{Session, StatusClocks, config, host};
 
 impl<'t> Session<'t> {
-    /// Build the session and its event sources, then paint the first frame.
+    /// Build the session — both ends of every channel included — then paint the
+    /// first frame.
     ///
     /// `startup` is the CLI's `--continue`/`--resume` directive (`docs/cli.md`),
     /// applied before that frame: a `Load` restores the code state, installs the
@@ -60,7 +60,7 @@ impl<'t> Session<'t> {
     pub(crate) fn bootstrap(
         term: &'t mut InlineViewport,
         startup: Option<Startup>,
-    ) -> io::Result<(Self, Sources)> {
+    ) -> io::Result<Self> {
         // Backend → loop (the streamed reply). A tokio channel so the loop can
         // `select!` on it; the backend thread sends without touching the runtime.
         let (tx, reply_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
@@ -196,12 +196,25 @@ impl<'t> Session<'t> {
             bg_clocks: HashMap::new(),
             agent_clocks: HashMap::new(),
             agent_expiry: HashMap::new(),
+            // Invariant 1: the `EventStream` is created HERE — after
+            // `InlineViewport::init` (in `main`) queried the cursor position over
+            // stdin, synchronously — so it is the sole stdin reader from now on.
+            events: EventStream::new(),
             frame,
+            draw_rx,
             tx,
+            reply_rx,
             file_req_tx,
+            file_rx,
             last_file_query: None,
             img_tx,
+            img_rx,
             model_tx,
+            model_rx,
+            probe_rx,
+            bg_rx,
+            agent_rx,
+            _file_worker: file_worker,
             registry,
             agent_registry,
             permissions,
@@ -220,22 +233,7 @@ impl<'t> Session<'t> {
         let picker = session.apply_startup(startup);
         session.paint_first_frame(picker)?;
 
-        // Invariant 1: the `EventStream` is created HERE — after
-        // `InlineViewport::init` (in `main`) queried the cursor position over
-        // stdin, synchronously — so it is the sole stdin reader from now on.
-        let sources = Sources {
-            events: EventStream::new(),
-            reply_rx,
-            draw_rx,
-            file_rx,
-            img_rx,
-            model_rx,
-            probe_rx,
-            bg_rx,
-            agent_rx,
-            _file_worker: file_worker,
-        };
-        Ok((session, sources))
+        Ok(session)
     }
 
     /// The injections the pure `App` needs from the boundary before the first
