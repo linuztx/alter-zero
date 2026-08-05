@@ -8,6 +8,18 @@
 # mismatch, so it can gate in CI or a pre-commit hook.
 set -uo pipefail
 
+# Every assertion below is written against the DUMMY backend's canned turns, so
+# the suite must not inherit the caller's provider credentials: with a real key
+# resolvable the app reaches a live provider instead, and the phases that drive
+# the /model picker then race a network model-list fetch (the reported Phase 33
+# failure, which reproduces exactly when OPENROUTER_API_KEY is exported and
+# vanishes when it is not). Strip every `*_API_KEY` before the first launch —
+# the phases that want one set it themselves, per command, which survives this.
+for _key_var in $(env | sed -n 's/^\([A-Za-z0-9_]*API_KEY\)=.*/\1/p'); do
+	unset "$_key_var"
+done
+unset _key_var
+
 BIN="${1:-target/debug/alter-zero}"
 S="alterzero_smoke_$$"
 USER_MSG="hello there"
