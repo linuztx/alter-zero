@@ -100,7 +100,17 @@ no new user bubble:
   model can only answer with text (codex sends the summarize request with no
   tools). When no real backend is configured the session backend (the dummy)
   is used instead; `stream::turn_events` scripts a text-only summary for the
-  compact prompt so the flow is drivable offline (and by `smoke.sh`);
+  compact prompt so the flow is drivable offline (and by `smoke.sh`).
+
+  **"No real backend" means the session isn't talking to one** — the tracked
+  `ModelSession::real_backend`, not "does a config resolve". Gating on a usable
+  config instead was a bug: `ModelConfig::is_usable` only proves that a *key*
+  resolved, so a configured provider with **no model selected** (the session
+  therefore running the dummy, `active_model` = `dummy_model_name`) still built
+  a real one-off backend and sent `POST /chat/completions` for a model that
+  doesn't exist — `HTTP 400: dummy_model_name is not a valid model ID`, the
+  turn resolving red with no marker cell. `smoke.sh` Phase 65 pins it, offline,
+  with a provider whose base is the discard port;
 - streamed `Chunk`s **divert** into `compact_buffer` (`App::push_chunk` checks
   the flag) — the streaming buffer stays empty, so the strip shows the status
   line only (no preview row, no scrollback commits) and the token tally still
@@ -202,10 +212,12 @@ fully streamed.
   skip the unknown line, the established forward-compat contract).
 - `src/ui/message.rs` — `compaction_lines` (inline cell) and the transcript arm
   (cell + dim summary body); a `conversation_lines` arm so resizes repaint it.
-- `src/main.rs` — the `Action::Compact` arm (boundary), the compact branches
-  in the `Chunk`/`StreamDone` handling, `build_compact_backend` /
-  `start_compact_turn` (shared with the loop-bottom auto trigger), the
-  `ALTER_ZERO_CONTEXT_WINDOW` override and window seeding/persistence.
+- `src/tui/` — the `Action::Compact` arm (`actions.rs`), the `StreamDone`
+  compact branch (`stream.rs`), `Session::start_compact_turn` (`turn.rs`,
+  shared with the loop-bottom auto trigger in `bootstrap.rs`),
+  `ModelSession::compact_backend` + its `real_backend` gate (`models.rs`), and
+  the `ALTER_ZERO_CONTEXT_WINDOW` override (`config.rs`) with the window's
+  seeding/persistence.
 - `src/llm/models.rs` / `src/llm/settings.rs` — `ModelEntry::context`
   (`context_length` sniffing) and its `config.json` persistence.
 - `src/stream.rs` — the dummy's text-only compact script.

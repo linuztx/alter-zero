@@ -80,6 +80,16 @@ pub(crate) struct ModelSession {
     active_context: Option<u64>,
     /// The backend itself — the dummy unless a real provider/model/key resolved.
     backend: Box<dyn ReplySource>,
+    /// Whether [`Self::backend`] is a **real** model rather than the dummy (or
+    /// the stalled test backend).
+    ///
+    /// This has to be tracked, not re-derived: `ModelConfig::is_usable` only
+    /// proves that a *key* resolved, so a configured provider with no model
+    /// selected still yields a "usable" config — for `active_model`, which is
+    /// then whatever the dummy answers as. Deriving a one-off backend from that
+    /// sent `POST /chat/completions` for `dummy_model_name` and failed the turn
+    /// (`Self::compact_backend`).
+    real_backend: bool,
     /// The shared attachment set every rebuild must re-attach (see the module
     /// doc). Cheap `Arc` clones of the loop's own registries.
     registry: BackgroundRegistry,
@@ -234,6 +244,7 @@ impl ModelSession {
             active_vision: real_backend.then_some(saved_vision).flatten(),
             active_context: real_backend.then_some(saved_context).flatten(),
             backend,
+            real_backend,
             registry: registry.clone(),
             agents: agents.clone(),
             permissions: permissions.cloned(),
@@ -376,6 +387,9 @@ impl ModelSession {
             return false;
         };
         self.rebuild(cfg);
+        // The picked row names a model the provider serves, so from here on the
+        // one-off backends may derive from it.
+        self.real_backend = true;
         self.active_provider = Some(provider.to_string());
         self.active_model = id.to_string();
         self.active_vision = vision;
@@ -399,6 +413,9 @@ impl ModelSession {
     /// request (the running turn streams on its own thread, untouched — the
     /// `/model` pattern). A model with no usable config is left alone.
     pub(crate) fn rebind_thinking(&mut self, mode: ThinkingMode) {
+        if !self.real_backend {
+            return; // nothing to rebind: the dummy has no request to carry a mode
+        }
         if let Some(provider) = self.active_provider.clone()
             && let Some(cfg) = self
                 .config_for(
@@ -482,11 +499,17 @@ impl ModelSession {
 
     /// The one-off **tools-free** backend a `/compact` turn runs on (codex
     /// sends the summarize request with no tools): the same persona +
-    /// environment prompt, no background-notice injection. `None` when no real
-    /// backend is configured — the caller falls back to the session backend
-    /// (the dummy scripts a text-only canned summary). See `docs/compact.md`.
+    /// environment prompt, no background-notice injection. See `docs/compact.md`.
+    ///
+    /// `None` whenever the session itself isn't talking to a real model — the
+    /// dummy, `ALTER_ZERO_DUMMY`, or the stalled test backend — and the caller
+    /// then falls back to the session backend (the dummy scripts a text-only
+    /// canned summary). That single [`Self::real_backend`] check is load-bearing:
+    /// gating on a *usable config* instead only proved a key had resolved, so a
+    /// configured provider with no model selected summarized against
+    /// `dummy_model_name` and failed the turn with an HTTP error.
     pub(crate) fn compact_backend(&self, thinking: Option<ThinkingMode>) -> Option<LlmBackend> {
-        if self.stall_ms.is_some() || config::dummy_forced() {
+        if !self.real_backend {
             return None;
         }
         self.active_provider
