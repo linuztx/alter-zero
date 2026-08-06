@@ -15,9 +15,13 @@ fn a_table_prompt_streams_a_pure_table_turn() {
     let text: String = chunk_text(&events);
     assert_eq!(text, dummy_response("show me a table"));
     assert!(text.contains("| ID | Name |"), "carries the table: {text}");
+    let tail = text
+        .split_once("| 10 | Regex |")
+        .expect("the table's last row")
+        .1;
     assert!(
-        text.trim_end().ends_with("Markdown."),
-        "prose follows the table so the block closes mid-stream"
+        tail.contains("properly in Markdown.") && tail.contains("/model"),
+        "prose follows the table so the block closes mid-stream: {tail}"
     );
     assert!(
         !events.iter().any(|e| matches!(
@@ -161,6 +165,240 @@ fn the_default_turn_keeps_the_compact_two_call_batch() {
     assert_eq!(items[0].name, "Read", "the Read runs first: {items:?}");
 }
 
+/// Every `(name, args, output)` a turn's tools resolved with, in order.
+fn resolved_tools(events: &[StreamEvent]) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    let mut open: Option<(String, String)> = None;
+    for event in events {
+        match event {
+            StreamEvent::ToolStart { name, args, .. } => {
+                open = Some((name.clone(), args.clone()));
+            }
+            StreamEvent::ToolEnd { output, .. } => {
+                let (name, args) = open.take().expect("a ToolEnd closes a ToolStart");
+                out.push((name, args, output.clone()));
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The one tool call of `name` a turn resolved (its args and output).
+fn resolved_tool(events: &[StreamEvent], name: &str) -> (String, String) {
+    resolved_tools(events)
+        .into_iter()
+        .find(|(n, ..)| n == name)
+        .map(|(_, args, output)| (args, output))
+        .unwrap_or_else(|| panic!("the turn ran no {name} call"))
+}
+
+#[test]
+fn the_read_cell_carries_the_executor_s_numbered_output() {
+    // The demo's whole point is that it renders like the live agent, so a
+    // scripted `read` resolves with **the real executor's output**:
+    // `llm::tools::format_read`'s `{n:>W} {text}` gutter. That format is what
+    // `ui::file_cell_lines` parses into a numbered, syntax-highlighted file
+    // cell — canned prose resolves as a plain text peek instead, which is the
+    // difference the user sees. See `docs/dummy-backend.md`.
+    let (args, output) = resolved_tool(&turn_events("hello there", 0), "Read");
+    assert!(
+        args.ends_with(".rs"),
+        "the demo reads a source file: {args}"
+    );
+    let width = output.lines().count().to_string().len().max(1);
+    for (i, line) in output.lines().enumerate() {
+        let (gutter, rest) = line.split_at(width);
+        assert_eq!(
+            gutter.trim_start().parse::<usize>().ok(),
+            Some(i + 1),
+            "line {} is not numbered like format_read: {line:?}",
+            i + 1
+        );
+        assert!(
+            rest.starts_with(' '),
+            "a single space separates number from text: {line:?}"
+        );
+    }
+    // `ui::FILE_PEEK_LINES` (private to `ui`) caps a file cell's inline peek
+    // at 10 rows. The default turn answers *anything*, so its cell must fit
+    // inside that peek: a capped read would add a dozen rows to every message
+    // in the demo. Showing a capped body — and the `… +N lines` tail that
+    // teaches ctrl+o — is the opt-in file-change demo's job.
+    assert!(
+        output.lines().count() <= 10,
+        "the default turn's read must fit the file cell's peek, uncapped"
+    );
+}
+
+/// The cell the loop would build for the resolved call named `name` in
+/// `prompt`'s turn, rendered at 80 columns.
+fn rendered_cell(prompt: &str, name: &str) -> Vec<ratatui::text::Line<'static>> {
+    let (args, output) = resolved_tool(&turn_events(prompt, 0), name);
+    let call = crate::app::ToolCall {
+        name: name.to_string(),
+        args,
+        status: crate::app::ToolStatus::Ok,
+        output,
+        timestamp: String::new(),
+        shell: false,
+        truncated: false,
+        context_output: None,
+        approval_note: None,
+    };
+    crate::ui::tool_lines(&call, 80)
+}
+
+/// A rendered line's text, styles dropped.
+fn plain(line: &ratatui::text::Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.to_string()).collect()
+}
+
+#[test]
+fn the_demo_s_read_really_renders_as_a_numbered_file_cell() {
+    // The end of the chain the test above starts: the scripted output must
+    // survive `ui::file_cell_lines`' parse, or the cell silently falls back to
+    // the legacy plain-text peek and the demo shows the wrong design.
+    let lines = rendered_cell("hello there", "Read");
+    assert_eq!(plain(&lines[0]), "● Read(src/main.rs)");
+    assert_eq!(
+        plain(&lines[1]),
+        "  ⎿  Read 7 lines",
+        "the synthesized file-cell summary, not a text peek"
+    );
+    // The gutter is dim and the source is syntax-highlighted (Catppuccin
+    // Mocha, via the path's `.rs` extension) — the two styling facts that
+    // separate a file cell from the plain peek this demo used to render.
+    let row = &lines[3]; // source line 2: `async fn tui_main(…)`
+    assert_eq!(row.spans[1].content.trim(), "2", "a dim line number");
+    let keyword = row
+        .spans
+        .iter()
+        .find(|s| s.content.as_ref() == "fn")
+        .expect("the `fn` keyword is its own segment");
+    assert!(keyword.style.fg.is_some(), "the keyword is coloured");
+    assert_ne!(
+        keyword.style.fg, row.spans[1].style.fg,
+        "the keyword and the dim line number are distinct colours"
+    );
+    assert_eq!(
+        lines.len(),
+        2 + 7,
+        "header + summary + one row per source line, uncapped"
+    );
+}
+
+#[test]
+fn the_file_change_demo_renders_a_capped_write_and_a_tinted_diff() {
+    // The opt-in demo is where the *tall* file bodies live: a `Write` capped
+    // at the peek with the `… +N lines (ctrl+o to expand)` tail that teaches
+    // the key, and an `Edit` whose `+`/`-` rows carry the diff tints.
+    let write = rendered_cell("show me a diff", "Write");
+    assert_eq!(plain(&write[0]), "● Write(fizzbuzz.py)");
+    assert!(
+        plain(&write[1]).starts_with("  ⎿  Created fizzbuzz.py ("),
+        "the executor's created head: {:?}",
+        plain(&write[1])
+    );
+    assert!(
+        plain(write.last().expect("a capped cell has a tail")).contains("lines (ctrl+o to expand)"),
+        "the capped body's tail teaches ctrl+o: {:?}",
+        plain(write.last().unwrap())
+    );
+
+    let edit = rendered_cell("show me a diff", "Edit");
+    assert_eq!(plain(&edit[0]), "● Edit(fizzbuzz.py)");
+    assert_eq!(plain(&edit[1]), "  ⎿  Updated fizzbuzz.py (+3 -1)");
+    let added = edit
+        .iter()
+        .find(|l| plain(l).contains("print(\"FizzBuzz\")"))
+        .expect("the added row");
+    let removed = edit
+        .iter()
+        .find(|l| plain(l).contains("if i % 3 == 0:") && plain(l).contains('-'))
+        .expect("the removed row");
+    let bg = |line: &ratatui::text::Line<'_>| line.spans.iter().find_map(|s| s.style.bg);
+    assert!(bg(added).is_some(), "the added row carries the green tint");
+    assert!(
+        bg(removed).is_some(),
+        "the removed row carries the red tint"
+    );
+    assert_ne!(bg(added), bg(removed), "the two tints differ");
+}
+
+#[test]
+fn every_bash_cell_carries_the_executor_s_exit_code_frame() {
+    // A real `bash` result is framed `Exit code: N\n{output}` — the UI drops
+    // the frame on success and turns it into a red `Error: Exit code N` head
+    // on failure (`ui::command_display_output`). A scripted command that
+    // invents its own footer ("exit status 68") renders as ordinary output,
+    // so a failing demo cell never says why it failed.
+    for prompt in ["hello there", "run three pings in parallel"] {
+        for (name, args, output) in resolved_tools(&turn_events(prompt, 0)) {
+            if name != "Bash" {
+                continue;
+            }
+            let code = output
+                .strip_prefix("Exit code: ")
+                .and_then(|rest| rest.split('\n').next())
+                .unwrap_or_else(|| panic!("Bash({args}) is unframed: {output}"));
+            assert!(
+                code.parse::<u8>().is_ok(),
+                "Bash({args}) has no numeric exit code: {output}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_diff_prompt_scripts_the_write_then_edit_demo() {
+    // The file-change design (`docs/tools.md`) has no offline demo otherwise:
+    // a `Write` shows the whole new file numbered, an `Edit` shows only the
+    // changed hunks with `+`/`-` signs the cell tints green and red. The
+    // scripted outputs are built by the executor's own renderers, so the
+    // cells are the live ones.
+    let events = turn_events("show me a diff", 0);
+    let tools = resolved_tools(&events);
+    let names: Vec<&str> = tools.iter().map(|(n, ..)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Write", "Edit", "Bash"],
+        "the demo writes a file, edits it, then runs it"
+    );
+    let (_, path, created) = &tools[0];
+    assert!(
+        created.starts_with(&format!("Created {path} (")),
+        "the Write reports the executor's created head: {created}"
+    );
+    assert!(
+        created
+            .lines()
+            .skip(1)
+            .all(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit())),
+        "the created body is numbered content: {created}"
+    );
+    let (_, _, updated) = &tools[1];
+    assert!(
+        updated.starts_with(&format!("Updated {path} (+")),
+        "the Edit reports the executor's updated head: {updated}"
+    );
+    let body: Vec<&str> = updated.lines().skip(1).collect();
+    assert!(
+        body.iter().any(|l| l
+            .trim_start()
+            .trim_start_matches(char::is_numeric)
+            .starts_with(" +")),
+        "the diff body carries an added row: {updated}"
+    );
+    assert!(
+        body.iter().any(|l| l
+            .trim_start()
+            .trim_start_matches(char::is_numeric)
+            .starts_with(" -")),
+        "the diff body carries a removed row: {updated}"
+    );
+}
+
 #[test]
 fn turn_events_includes_one_paired_thinking_phase_before_the_tools() {
     let events = turn_events("hi", 0);
@@ -255,8 +493,11 @@ fn turn_events_resolve_each_tool_before_the_next_starts() {
 #[test]
 fn turn_events_streams_each_bash_output_before_its_end() {
     // Each Bash call streams its output as ToolOutput chunks between its
-    // ToolStart and ToolEnd; concatenated, they equal the ToolEnd output
-    // (the authoritative full cell). See `docs/tool-streaming.md`.
+    // ToolStart and ToolEnd. What streams is what the command *printed* — the
+    // executor frames the result with its `Exit code: N` line only when it
+    // resolves, so the live tail shows command output and nothing else. The
+    // ToolEnd then carries the framed body (the authoritative full cell). See
+    // `docs/tool-streaming.md`.
     let events = turn_events("run three pings in parallel", 0);
     let mut streamed = String::new();
     let mut resolved = 0;
@@ -264,8 +505,11 @@ fn turn_events_streams_each_bash_output_before_its_end() {
         match event {
             StreamEvent::ToolOutput(chunk) => streamed.push_str(chunk),
             StreamEvent::ToolEnd { output, .. } => {
-                // Each Bash cell's streamed output equals its final output.
-                assert_eq!(&streamed, output, "the tail reconstructs the final cell");
+                let (frame, body) = output
+                    .split_once('\n')
+                    .expect("a framed command result has a body");
+                assert!(frame.starts_with("Exit code: "), "unframed: {output}");
+                assert_eq!(streamed, body, "the tail reconstructs the final cell");
                 streamed.clear();
                 resolved += 1;
             }

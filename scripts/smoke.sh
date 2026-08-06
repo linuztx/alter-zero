@@ -26,6 +26,19 @@ USER_MSG="hello there"
 # The dummy reply is deterministic per prompt (dummy_response: char-count % 3).
 # "hello there" is 11 chars → responses[2], which opens with this phrase.
 EXPECT_REPLY="Happy to help"
+# Every canned demo reply CLOSES on the same hand-off paragraph — the two
+# commands that swap the dummy for a real model (docs/dummy-backend.md). It is
+# one shared sentence, pinned by
+# `stream::tests::script::the_handoff_paragraph_closes_every_demo_reply`, so
+# this one marker means "the turn finished streaming" whatever prompt was sent.
+SETTLED_REPLY="Two commands away"
+# A demo turn is about 27 rows now (the reply's two paragraphs plus the hand-off,
+# and a Read cell that renders the real numbered file body — docs/dummy-backend.md),
+# so a finished turn no longer fits in an 80x24 pane: its older rows scroll into
+# the terminal's real scrollback, which is exactly where they belong. Assertions
+# about *committed* content therefore capture the pane WITH scrollback
+# (`capture-pane -S -N`); the ones about layout — where the box sits, what the
+# live region shows — still read the visible screen alone.
 
 cleanup() {
 	tmux kill-session -t "$S" 2>/dev/null
@@ -368,14 +381,14 @@ sleep 0.4
 tmux send-keys -t "$S2" -l "hello there"
 sleep 0.2
 tmux send-keys -t "$S2" Enter
-# Wait until the reply has fully finished (its last text "changes size" is
+# Wait until the reply has fully finished (its closing hand-off paragraph is
 # committed) AND the screen has stopped changing — so we measure the *settled*
 # layout, not a mid-stream frame (where the box legitimately sits at the bottom).
 settled_prev=""
 for _ in $(seq 1 60); do # up to ~12s
 	tmux capture-pane -t "$S2" -p >"$TMP5"
 	settled_cur="$(cat "$TMP5")"
-	if printf '%s' "$settled_cur" | grep -qF "changes size" &&
+	if printf '%s' "$settled_cur" | grep -qF "$SETTLED_REPLY" &&
 		[ "$settled_cur" = "$settled_prev" ]; then
 		break
 	fi
@@ -445,7 +458,7 @@ tmux send-keys -t "$S4" C-o
 # "Done for Ns" summary. This is the precondition for the bug (the turn ended with
 # scrollback commits deferred).
 overlay_done=""
-for _ in $(seq 1 80); do # up to ~12s
+for _ in $(seq 1 134); do # up to ~20s
 	overlay_done="$(tmux capture-pane -t "$S4" -p)"
 	if printf '%s' "$overlay_done" | grep -qF "Done for"; then
 		break
@@ -491,7 +504,7 @@ tmux send-keys -t "$S5" -l "again please"
 sleep 0.2
 tmux send-keys -t "$S5" Enter
 after_interrupt=""
-for _ in $(seq 1 60); do # up to ~9s: wait for the follow-up turn's summary
+for _ in $(seq 1 134); do # up to ~20s: wait for the follow-up turn's summary
 	after_interrupt="$(tmux capture-pane -t "$S5" -p -S -30)"
 	if printf '%s' "$after_interrupt" | grep -qF "Finished for"; then
 		break
@@ -546,7 +559,7 @@ sleep 0.4
 tmux send-keys -t "$S7" -l "$RECALL_MSG"
 sleep 0.2
 tmux send-keys -t "$S7" Enter
-for _ in $(seq 1 80); do # up to ~12s: wait for turn 1 to finish ("Done for")
+for _ in $(seq 1 134); do # up to ~20s: wait for turn 1 to finish ("Done for")
 	if tmux capture-pane -t "$S7" -p | grep -qF "Done for"; then
 		break
 	fi
@@ -554,19 +567,19 @@ for _ in $(seq 1 80); do # up to ~12s: wait for turn 1 to finish ("Done for")
 done
 tmux send-keys -t "$S7" Up
 sleep 0.4
-recalled="$(tmux capture-pane -t "$S7" -p -S -40)"
+recalled="$(tmux capture-pane -t "$S7" -p -S -200)"
 echo "==== captured pane (last message recalled with Up) ===="
 printf '%s\n' "$recalled"
 recall_up_count=$(printf '%s\n' "$recalled" | grep -cF "❯ $RECALL_MSG")
 tmux send-keys -t "$S7" Down
 sleep 0.4
-recall_down_count=$(tmux capture-pane -t "$S7" -p -S -40 | grep -cF "❯ $RECALL_MSG")
+recall_down_count=$(tmux capture-pane -t "$S7" -p -S -200 | grep -cF "❯ $RECALL_MSG")
 tmux send-keys -t "$S7" Up # recall again …
 sleep 0.3
 tmux send-keys -t "$S7" Enter # … and resubmit it
 resubmitted=""
-for _ in $(seq 1 80); do # up to ~12s: wait for turn 2's summary
-	resubmitted="$(tmux capture-pane -t "$S7" -p -S -40)"
+for _ in $(seq 1 134); do # up to ~20s: wait for turn 2's summary
+	resubmitted="$(tmux capture-pane -t "$S7" -p -S -200)"
 	if printf '%s' "$resubmitted" | grep -qF "Finished for"; then
 		break
 	fi
@@ -640,7 +653,7 @@ done
 echo "==== captured pane (world + again queued above the box) ===="
 printf '%s\n' "$queued_band"
 queue_done=""
-for _ in $(seq 1 100); do # up to ~15s: turn 1 then the batched turn 2 finish
+for _ in $(seq 1 134); do # up to ~20s: turn 1 then the batched turn 2 finish
 	queue_done="$(tmux capture-pane -t "$S9" -p -S -80)"
 	if printf '%s' "$queue_done" | grep -qF "Finished for"; then
 		break
@@ -674,7 +687,7 @@ tmux send-keys -t "$S10" Enter # queued while streaming
 sleep 0.3
 tmux send-keys -t "$S10" Escape # interrupt turn 1 → send "world" right away
 queueint=""
-for _ in $(seq 1 80); do # up to ~12s: the flushed "world" turn finishes
+for _ in $(seq 1 134); do # up to ~20s: the flushed "world" turn finishes
 	queueint="$(tmux capture-pane -t "$S10" -p -S -60)"
 	if printf '%s' "$queueint" | grep -qF "Finished for"; then
 		break
@@ -738,7 +751,7 @@ tmux pipe-pane -t "$S12" -o "cat > $RAW15"
 tmux send-keys -t "$S12" -l "hello there"
 sleep 0.2
 tmux send-keys -t "$S12" Enter
-for _ in $(seq 1 80); do # up to ~12s: the whole turn (text + thinking + tools)
+for _ in $(seq 1 134); do # up to ~20s: the whole turn (text + thinking + tools)
 	if tmux capture-pane -t "$S12" -p -S -60 | grep -qF "Done for"; then
 		break
 	fi
@@ -809,7 +822,7 @@ tmux send-keys -t "$S13" -l "again please"
 sleep 0.2
 tmux send-keys -t "$S13" Enter
 after_clear=""
-for _ in $(seq 1 80); do # up to ~12s: wait for the fresh turn's summary
+for _ in $(seq 1 134); do # up to ~20s: wait for the fresh turn's summary
 	after_clear="$(tmux capture-pane -t "$S13" -p -S -30)"
 	if printf '%s' "$after_clear" | grep -qF "Finished for"; then
 		break
@@ -836,7 +849,7 @@ sleep 0.4
 tmux send-keys -t "$S14" -l "hello there"
 sleep 0.2
 tmux send-keys -t "$S14" Enter
-for _ in $(seq 1 80); do # up to ~8s: wait for the turn's committed summary
+for _ in $(seq 1 200); do # up to ~20s: wait for the turn's committed summary
 	if tmux capture-pane -t "$S14" -p | grep -qE "^Done for [0-9]+s"; then
 		break
 	fi
@@ -849,8 +862,8 @@ echo "==== captured visible screen (after height-only shrink to 80x12) ===="
 printf '%s\n' "$resize_shrunk"
 tmux resize-window -t "$S14" -x 80 -y 24
 sleep 0.6
-resize_regrown="$(tmux capture-pane -t "$S14" -p)"
-echo "==== captured visible screen (after height grow back to 80x24) ===="
+resize_regrown="$(tmux capture-pane -t "$S14" -p -S -60)"
+echo "==== captured pane (+scrollback) after height grow back to 80x24 ===="
 printf '%s\n' "$resize_regrown"
 # A WIDTH change is the classic duplication trigger: the emulator re-wraps the
 # on-screen lines, and the old in-place overwrite left that reflowed copy behind
@@ -874,7 +887,7 @@ tmux send-keys -t "$S14" Enter
 sleep 0.7 # mid-stream: the first text segment is flowing
 tmux resize-window -t "$S14" -x 80 -y 14
 resize_mid=""
-for _ in $(seq 1 80); do # up to ~12s: wait for the resized turn's summary
+for _ in $(seq 1 134); do # up to ~20s: wait for the resized turn's summary
 	resize_mid="$(tmux capture-pane -t "$S14" -p)"
 	if printf '%s' "$resize_mid" | grep -qE "^Finished for [0-9]+s"; then
 		break
@@ -899,7 +912,7 @@ sleep 0.4
 tmux send-keys -t "$S15" -l "alpha bravo"
 sleep 0.2
 tmux send-keys -t "$S15" Enter
-for _ in $(seq 1 80); do # up to ~8s: the turn must finish first
+for _ in $(seq 1 200); do # up to ~20s: the turn must finish first
 	if tmux capture-pane -t "$S15" -p | grep -qE "^Done for [0-9]+s"; then
 		break
 	fi
@@ -916,29 +929,29 @@ echo "==== captured visible screen (Ctrl+R pressed — search open, idle) ===="
 printf '%s\n' "$search_open"
 tmux send-keys -t "$S15" -l "alpha"
 sleep 0.3
-search_match="$(tmux capture-pane -t "$S15" -p)"
-echo "==== captured visible screen (query 'alpha' typed — newest match previews) ===="
+search_match="$(tmux capture-pane -t "$S15" -p -S -60)"
+echo "==== captured pane (query 'alpha' typed — newest match previews) ===="
 printf '%s\n' "$search_match"
 tmux send-keys -t "$S15" C-r
 sleep 0.3
-search_older="$(tmux capture-pane -t "$S15" -p)"
-echo "==== captured visible screen (Ctrl+R again — older match) ===="
+search_older="$(tmux capture-pane -t "$S15" -p -S -60)"
+echo "==== captured pane (Ctrl+R again — older match) ===="
 printf '%s\n' "$search_older"
 tmux send-keys -t "$S15" Enter
 sleep 0.3
-search_accept="$(tmux capture-pane -t "$S15" -p)"
-echo "==== captured visible screen (Enter — match accepted as a draft) ===="
+search_accept="$(tmux capture-pane -t "$S15" -p -S -60)"
+echo "==== captured pane (Enter — match accepted as a draft) ===="
 printf '%s\n' "$search_accept"
 tmux send-keys -t "$S15" C-r
 sleep 0.2
 tmux send-keys -t "$S15" -l "zzz"
 sleep 0.3
-search_nomatch="$(tmux capture-pane -t "$S15" -p)"
-echo "==== captured visible screen (query 'zzz' — no match) ===="
+search_nomatch="$(tmux capture-pane -t "$S15" -p -S -60)"
+echo "==== captured pane (query 'zzz' — no match) ===="
 printf '%s\n' "$search_nomatch"
 tmux send-keys -t "$S15" Escape
 sleep 0.3
-search_cancel="$(tmux capture-pane -t "$S15" -p)"
+search_cancel="$(tmux capture-pane -t "$S15" -p -S -60)"
 echo "==== captured visible screen (Esc — search cancelled, app still alive) ===="
 printf '%s\n' "$search_cancel"
 tmux kill-session -t "$S15" 2>/dev/null
@@ -1016,8 +1029,8 @@ tmux kill-session -t "$S16" 2>/dev/null
 # reply must still stream once the pause elapses. ---
 S17="${S}_delay"
 DELAY_MSG="count my input tokens"
-# 21 chars → responses[0] ("Sure! This is a streaming demo …").
-DELAY_REPLY="Sure! This is a streaming demo"
+# 21 chars → responses[0], which opens with this phrase.
+DELAY_REPLY="Sure thing"
 tmux new-session -d -s "$S17" -x 80 -y 24 "env $CFG_ENV ALTER_ZERO_STARTUP_DELAY_MS=2000 $BIN"
 sleep 0.5
 tmux send-keys -t "$S17" -l "$DELAY_MSG"
@@ -1383,7 +1396,7 @@ for _ in $(seq 1 30); do # up to ~3s
 done
 echo "==== captured pane (/copy with nothing to copy) ===="
 printf '%s\n' "$copy_empty"
-# Now send a message and let the dummy reply finish (its tail "changes size"
+# Now send a message and let the dummy reply finish (its closing hand-off
 # committed AND the screen settled, so the final segment is in history).
 tmux send-keys -t "$S25" -l "hello there"
 sleep 0.2
@@ -1391,7 +1404,7 @@ tmux send-keys -t "$S25" Enter
 copy_prev=""
 for _ in $(seq 1 60); do # up to ~12s
 	copy_cur="$(tmux capture-pane -t "$S25" -p)"
-	if printf '%s' "$copy_cur" | grep -qF "changes size" && [ "$copy_cur" = "$copy_prev" ]; then
+	if printf '%s' "$copy_cur" | grep -qF "$SETTLED_REPLY" && [ "$copy_cur" = "$copy_prev" ]; then
 		break
 	fi
 	copy_prev="$copy_cur"
@@ -1425,7 +1438,7 @@ tmux kill-session -t "$S25" 2>/dev/null
 # runs to its "Finished for" summary — all without leaving the overlay. The
 # Ctrl+O return then repaints the inline conversation with both turns. ---
 S29="${S}_queueoverlay"
-tmux new-session -d -s "$S29" -x 80 -y 24 "$APP"
+tmux new-session -d -s "$S29" -x 80 -y 40 "$APP" # 40 rows: two demo turns
 sleep 0.4
 tmux send-keys -t "$S29" -l "hello there"
 sleep 0.2
@@ -1501,7 +1514,7 @@ sleep 0.4
 tmux send-keys -t "$S30" -l "alpha question"
 sleep 0.2
 tmux send-keys -t "$S30" Enter
-for _ in $(seq 1 80); do # up to ~12s: turn 1 runs to its "Done for" summary
+for _ in $(seq 1 134); do # up to ~20s: turn 1 runs to its "Done for" summary
 	if tmux capture-pane -t "$S30" -p -S -40 | grep -qF "Done for"; then
 		break
 	fi
@@ -1510,7 +1523,7 @@ done
 tmux send-keys -t "$S30" -l "beta question"
 sleep 0.2
 tmux send-keys -t "$S30" Enter
-for _ in $(seq 1 80); do # turn 2 → "Finished for"
+for _ in $(seq 1 134); do # turn 2 → "Finished for"
 	if tmux capture-pane -t "$S30" -p -S -40 | grep -qF "Finished for"; then
 		break
 	fi
@@ -1569,7 +1582,7 @@ sleep 0.4
 tmux send-keys -t "$S31" -l "$USER_MSG"
 sleep 0.2
 tmux send-keys -t "$S31" Enter
-for _ in $(seq 1 80); do # instance 1, turn 1 → "Done for"
+for _ in $(seq 1 134); do # instance 1, turn 1 → "Done for"
 	if tmux capture-pane -t "$S31" -p -S -40 | grep -qF "Done for"; then
 		break
 	fi
@@ -1594,15 +1607,15 @@ echo "==== captured pane (/resume — the session picker on the alt screen) ====
 printf '%s\n' "$resume_picker"
 tmux send-keys -t "$S31" Enter # resume the highlighted session
 sleep 0.8
-resume_loaded="$(tmux capture-pane -t "$S31" -p)"
+resume_loaded="$(tmux capture-pane -t "$S31" -p -S -60)"
 echo "==== captured pane (Enter — the saved conversation repainted inline) ===="
 printf '%s\n' "$resume_loaded"
 tmux send-keys -t "$S31" -l "again please"
 sleep 0.2
 tmux send-keys -t "$S31" Enter
 resume_appended=""
-for _ in $(seq 1 80); do # the follow-up turn (this process's turn 1 → "Done for" #2)
-	resume_appended="$(tmux capture-pane -t "$S31" -p -S -40)"
+for _ in $(seq 1 134); do # the follow-up turn (this process's turn 1 → "Done for" #2)
+	resume_appended="$(tmux capture-pane -t "$S31" -p -S -200)"
 	if [ "$(printf '%s' "$resume_appended" | grep -cF "Done for")" -ge 2 ]; then
 		break
 	fi
@@ -1619,7 +1632,7 @@ sleep 0.4
 tmux send-keys -t "$S31" -l "fresh session"
 sleep 0.2
 tmux send-keys -t "$S31" Enter
-for _ in $(seq 1 80); do # post-/clear turn (this process's turn 2 → "Finished for")
+for _ in $(seq 1 134); do # post-/clear turn (this process's turn 2 → "Finished for")
 	if tmux capture-pane -t "$S31" -p -S -40 | grep -qF "Finished for"; then
 		break
 	fi
@@ -1691,7 +1704,7 @@ tmux send-keys -t "$S33" Enter
 toast_prev=""
 for _ in $(seq 1 90); do # up to ~18s: reply committed AND the screen settled
 	toast_cur="$(tmux capture-pane -t "$S33" -p)"
-	if printf '%s' "$toast_cur" | grep -qF "changes size" && [ "$toast_cur" = "$toast_prev" ]; then
+	if printf '%s' "$toast_cur" | grep -qF "$SETTLED_REPLY" && [ "$toast_cur" = "$toast_prev" ]; then
 		break
 	fi
 	toast_prev="$toast_cur"
@@ -1772,7 +1785,7 @@ tmux send-keys -t "$S34" -l "hello there"
 sleep 0.2
 tmux send-keys -t "$S34" Enter
 curhide_done=0
-for _ in $(seq 1 80); do # up to ~8s for the committed summary (a seated box)
+for _ in $(seq 1 200); do # up to ~20s for the committed summary (a seated box)
 	if tmux capture-pane -t "$S34" -p | grep -qE "^Done for [0-9]+s"; then
 		curhide_done=1
 		break
@@ -1843,13 +1856,13 @@ tmux send-keys -t "$S35" C-o
 sleep 0.15
 tmux send-keys -t "$S35" C-o # straight back, well inside the thinking pause
 sleep 0.15
-midstream_returned="$(tmux capture-pane -t "$S35" -p)"
+midstream_returned="$(tmux capture-pane -t "$S35" -p -S -60)"
 echo "==== Phase 35: returned from Ctrl+O mid-stream (thinking pause still open) ===="
 printf '%s\n' "$midstream_returned"
 # Let the turn finish, then check the reply committed exactly ONCE — the return's
 # catch-up must not re-insert rows the screen already holds.
 midstream_done=""
-for _ in $(seq 1 80); do # up to ~8s
+for _ in $(seq 1 200); do # up to ~20s
 	midstream_done="$(tmux capture-pane -t "$S35" -p -S -80)"
 	if printf '%s' "$midstream_done" | grep -qE "^Done for [0-9]+s"; then
 		break
@@ -1870,7 +1883,7 @@ sleep 0.5
 tmux send-keys -t "$S36" -l "hello there"
 sleep 0.2
 tmux send-keys -t "$S36" Enter
-for _ in $(seq 1 80); do # let the turn finish so the tools are in history
+for _ in $(seq 1 200); do # let the turn finish so the tools are in history
 	if tmux capture-pane -t "$S36" -p | grep -qE "^Done for [0-9]+s"; then
 		break
 	fi
@@ -1963,7 +1976,7 @@ tmux send-keys -t "$S41" -l "table demo"
 sleep 0.2
 tmux send-keys -t "$S41" Enter
 tableflush_pane=""
-for _ in $(seq 1 150); do # the ~140-word table reply streams in ~7s
+for _ in $(seq 1 200); do # ~20s cap; the table reply streams in about eight
 	tableflush_pane="$(tmux capture-pane -t "$S41" -p)"
 	if printf '%s' "$tableflush_pane" | grep -qF "properly in Markdown." \
 		&& printf '%s' "$tableflush_pane" | grep -qE "^Done for [0-9]+s"; then
@@ -2369,7 +2382,7 @@ if ! printf '%s' "$help_ran" | grep -qF "Available commands:"; then
 	echo "FAIL: running /help did not post its system notice" >&2
 	status=1
 fi
-if ! printf '%s' "$settled_cur" | grep -qF "changes size"; then
+if ! printf '%s' "$settled_cur" | grep -qF "$SETTLED_REPLY"; then
 	echo "FAIL: the reply never finished on the short terminal (Phase 5 could not settle)" >&2
 	status=1
 else
@@ -2670,9 +2683,12 @@ for step in shrunk regrown mid; do
 		status=1
 	fi
 done
-# The full conversation fits again once the screen regrows: the repaint must
+# The whole conversation is back once the screen regrows: the repaint must
 # rebuild the *whole* tail from history, not just the rows the shrunken screen
-# showed.
+# showed. Read with scrollback (the resize reflow purges it and rebuilds from
+# history, so what `-S` holds is exactly what this repaint wrote) — a demo turn
+# is taller than 24 rows, so "rebuilt" and "on the visible screen" stopped
+# meaning the same thing.
 if ! printf '%s' "$resize_regrown" | grep -qF "❯ $USER_MSG"; then
 	echo "FAIL: after growing back to 80x24 the user message did not return to view" >&2
 	status=1
@@ -2954,7 +2970,7 @@ if ! printf '%s' "$copy_ok" | grep -qF "Copied last message to clipboard"; then
 	echo "FAIL: /copy did not confirm with 'Copied last message to clipboard'" >&2
 	status=1
 fi
-if ! printf '%s' "$copy_clip" | grep -qF "changes size"; then
+if ! printf '%s' "$copy_clip" | grep -qF "$SETTLED_REPLY"; then
 	echo "FAIL: /copy's OSC 52 fallback did not put the reply on the clipboard (tmux buffer missing the reply tail)" >&2
 	status=1
 fi
@@ -3439,7 +3455,7 @@ sleep 0.6
 tmux send-keys -t "$S_HEADER" -l "hello there"
 sleep 0.2
 tmux send-keys -t "$S_HEADER" Enter
-for _ in $(seq 1 90); do # up to ~13s — the full dummy turn, tools included
+for _ in $(seq 1 134); do # up to ~20s — the full dummy turn, tools included
 	if tmux capture-pane -t "$S_HEADER" -p | grep -qF "Done for"; then
 		break
 	fi
@@ -3518,7 +3534,7 @@ sleep 0.5
 tmux send-keys -t "$S46" -l "$USER_MSG"
 sleep 0.2
 tmux send-keys -t "$S46" Enter
-for _ in $(seq 1 80); do # text turn 1 → "Done for" (checkpoint {pristine})
+for _ in $(seq 1 134); do # text turn 1 → "Done for" (checkpoint {pristine})
 	if tmux capture-pane -t "$S46" -p -S -40 | grep -qF "Done for"; then break; fi
 	sleep 0.15
 done
@@ -3572,7 +3588,7 @@ sleep 0.5
 tmux send-keys -t "$S47" -l "$USER_MSG" # a user message so the session lists in the picker
 sleep 0.2
 tmux send-keys -t "$S47" Enter
-for _ in $(seq 1 80); do
+for _ in $(seq 1 134); do
 	if tmux capture-pane -t "$S47" -p -S -40 | grep -qF "Done for"; then break; fi
 	sleep 0.15
 done
@@ -3807,7 +3823,7 @@ for _ in $(seq 1 30); do # up to ~3s
 done
 echo "==== captured pane (/compact with nothing to compact) ===="
 printf '%s\n' "$compact_empty"
-# A real turn first (the dummy reply for "hello there" ends "changes size"),
+# A real turn first (every dummy reply ends on the hand-off paragraph),
 # settled like Phase 28: the tail committed AND the screen stable.
 tmux send-keys -t "$S50" -l "hello there"
 sleep 0.2
@@ -3815,7 +3831,7 @@ tmux send-keys -t "$S50" Enter
 compact_prev=""
 for _ in $(seq 1 60); do # up to ~12s
 	compact_cur="$(tmux capture-pane -t "$S50" -p)"
-	if printf '%s' "$compact_cur" | grep -qF "changes size" && [ "$compact_cur" = "$compact_prev" ]; then
+	if printf '%s' "$compact_cur" | grep -qF "$SETTLED_REPLY" && [ "$compact_cur" = "$compact_prev" ]; then
 		break
 	fi
 	compact_prev="$compact_cur"
@@ -3825,7 +3841,7 @@ tmux send-keys -t "$S50" -l "/compact"
 sleep 0.3
 tmux send-keys -t "$S50" Enter
 compact_pane=""
-for _ in $(seq 1 60); do # up to ~6s (the dummy pause + the summary stream)
+for _ in $(seq 1 200); do # up to ~20s (the dummy pause + the summary stream)
 	compact_pane="$(tmux capture-pane -t "$S50" -p -S -80)"
 	if printf '%s' "$compact_pane" | grep -qF "Context compacted"; then
 		break
@@ -4094,7 +4110,7 @@ tmux send-keys -t "$S54" -l "call background agents for the weather"
 sleep 0.2
 tmux send-keys -t "$S54" Enter
 bg_launched=""
-for _ in $(seq 1 250); do
+for _ in $(seq 1 400); do
 	cap="$(tmux capture-pane -t "$S54" -p)"
 	if printf '%s' "$cap" | grep -qF "2 background agents launched (↓ to manage · ctrl+o to expand)" &&
 		printf '%s' "$cap" | grep -qF "Done for"; then
@@ -4718,12 +4734,19 @@ if [ -z "$parperm_prompt1" ]; then
 	status=1
 fi
 # While the FIRST prompt is up: the just-sent message, the previous turn, and
-# both batch cells (each ⎿ Waiting…) are all still on screen above it.
+# both batch cells (each ⎿ Waiting…) are all still on screen above it. The
+# previous turn is checked by its REPLY (its closing hand-off paragraph, right
+# above the just-sent message), not by its user message: a demo turn is a
+# dozen rows taller now that its Read cell renders the real numbered file body
+# (docs/dummy-backend.md), so three of them plus a screen-tall prompt no longer
+# fit on a 30-row pane — the older rows scroll into real scrollback, which is
+# what Phase 58 checks with `-S`. What matters here is unchanged: the rows
+# above the prompt are real, visible conversation, not a covered void.
 if ! printf '%s' "$parperm_prompt1" | grep -qF "❯ parallel permission demo"; then
 	echo "FAIL: Phase 59 — the just-sent user message is hidden while the first prompt is up" >&2
 	status=1
 fi
-if ! printf '%s' "$parperm_prompt1" | grep -qF "and a little more"; then
+if ! printf '%s' "$parperm_prompt1" | grep -qF "$SETTLED_REPLY"; then
 	echo "FAIL: Phase 59 — the previous turn is hidden while the first prompt is up" >&2
 	status=1
 fi
@@ -4857,7 +4880,7 @@ sleep 0.4
 tmux send-keys -t "$S61" -l "$USER_MSG"
 sleep 0.2
 tmux send-keys -t "$S61" Enter
-for _ in $(seq 1 80); do # instance 1, turn 1 → "Done for"
+for _ in $(seq 1 134); do # instance 1, turn 1 → "Done for"
 	if tmux capture-pane -t "$S61" -p -S -40 | grep -qF "Done for"; then
 		break
 	fi
@@ -4893,7 +4916,7 @@ tmux send-keys -t "$S61" -l "again please"
 sleep 0.2
 tmux send-keys -t "$S61" Enter
 cli_continue_appended=""
-for _ in $(seq 1 80); do # the follow-up (this process's turn 1 → "Done for" #2)
+for _ in $(seq 1 134); do # the follow-up (this process's turn 1 → "Done for" #2)
 	cli_continue_appended="$(tmux capture-pane -t "$S61" -p -S -60)"
 	if [ "$(printf '%s' "$cli_continue_appended" | grep -cF "Done for")" -ge 2 ]; then
 		break
@@ -5378,12 +5401,15 @@ APP_CD="env ALTER_ZERO_CONFIG_DIR=$CD_DIR/cfg ALTER_ZERO_SESSIONS_DIR=$CD_DIR/se
 tmux new-session -d -s "$S65" -x 80 -y 24 "$APP_CD"
 sleep 0.6
 compact_dummy_footer="$(tmux capture-pane -t "$S65" -p)"
-# One real turn, settled (the dummy's "hello there" reply ends "changes size").
+# One real turn, settled (every dummy reply ends on the hand-off paragraph).
 tmux send-keys -t "$S65" -l "hello there"
 sleep 0.2
 tmux send-keys -t "$S65" Enter
-for _ in $(seq 1 80); do # up to ~8s
-	if tmux capture-pane -t "$S65" -p -S -40 | grep -qF "changes size"; then
+# Waits for the committed "Done for" SUMMARY, not for the reply text: the
+# hand-off paragraph starts a second before the stream ends, and /compact is
+# rejected with a toast while a turn is still in flight.
+for _ in $(seq 1 200); do # up to ~20s
+	if tmux capture-pane -t "$S65" -p -S -40 | grep -qE "^Done for [0-9]+s"; then
 		break
 	fi
 	sleep 0.1

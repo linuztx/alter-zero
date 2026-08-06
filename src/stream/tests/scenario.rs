@@ -2,6 +2,7 @@
 //! (`docs/dummy-backend.md`).
 
 use super::super::dummy::scenario::{Cue, Play, SCENARIOS, select};
+use super::super::dummy::script::HANDOFF;
 use super::*;
 
 /// A prompt that must select each [`SCENARIOS`] entry, in the same order.
@@ -19,6 +20,7 @@ const EXAMPLES: &[&str] = &[
     "show me a table",
     "call agents for weather",
     "run three pings in parallel",
+    "show me a diff",
     "hello there",
 ];
 
@@ -171,6 +173,40 @@ fn every_user_facing_script_acknowledges_attached_images() {
         checked += 1;
     }
     assert!(checked >= 3, "the walk found the scripted scenarios");
+}
+
+#[test]
+fn every_user_facing_script_hands_the_user_off_to_a_real_model() {
+    // A session on the dummy has no model behind it, and the two commands
+    // that fix that are `/login` and `/model`. Whichever demo the user
+    // stumbles into must say so — otherwise the offline first run is a dead
+    // end that never explains itself (`docs/dummy-backend.md`). The
+    // `/compact` request is exempt for the same reason as the image
+    // acknowledgement: the loop builds it, and its summary is never rendered.
+    for (example, scenario) in EXAMPLES.iter().zip(SCENARIOS) {
+        let Play::Script(script) = scenario.play else {
+            continue; // a gated demo streams live; it has no script to inspect
+        };
+        if scenario.name == "compact" {
+            continue;
+        }
+        let text = chunk_text(&script(&Cue::new(example, 0)));
+        assert!(
+            text.trim_end().ends_with(HANDOFF),
+            "{} doesn't close on the /login → /model hand-off: {text}",
+            scenario.name,
+        );
+    }
+}
+
+#[test]
+fn the_init_prompt_never_selects_the_file_change_demo() {
+    // `/init` submits a canned prompt about authoring AGENTS.md as an
+    // ordinary user turn (`docs/init.md`). The file-change demo's cue is the
+    // vocabulary that prompt lives in, so — like the `agents.md` guard above
+    // it — this pins that the prompt still falls through to the default turn
+    // instead of being answered with a scripted `Write` of fizzbuzz.
+    assert_eq!(gated(crate::app::INIT_PROMPT), "tools");
 }
 
 #[test]

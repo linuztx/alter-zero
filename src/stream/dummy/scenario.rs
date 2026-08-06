@@ -171,6 +171,18 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("parallel"),
         play: Play::Script(turns::parallel_turn),
     },
+    // A `Write` then an `Edit`: the numbered file cell and its tinted diff.
+    Scenario {
+        #[cfg(test)]
+        name: "files",
+        // Never for `/init`, whose canned prompt says "do not overwrite" —
+        // the same AGENTS.md guard the agent demo above needs.
+        selects: |cue| {
+            (cue.mentions("diff") || cue.mentions("edit") || cue.mentions("write"))
+                && !cue.mentions("agents.md")
+        },
+        play: Play::Script(turns::files_turn),
+    },
     // The default turn: think, then a compact `Read`+`Bash` batch.
     Scenario {
         #[cfg(test)]

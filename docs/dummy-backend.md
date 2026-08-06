@@ -55,7 +55,7 @@ subtree inside it:
 |--------|-------|
 | `dummy/mod.rs` | `DummyAi` — the `ReplySource` impl, `turn_events`, and the playback pacing. |
 | `dummy/scenario.rs` | **The registry**: `Cue`, `Scenario`, `SCENARIOS`, `select`. |
-| `dummy/script.rs` | The canned replies and the streaming primitives (`chunks`, `dummy_response`, `image_ack`). |
+| `dummy/script.rs` | The canned replies, the `handoff!()` sentence they close on, and the streaming/output primitives (`chunks`, `dummy_response`, `reply_parts`, `image_ack`, `created_output`, `updated_output`). |
 | `dummy/turns.rs` | The **pure** scripted turns — one `Cue -> Vec<StreamEvent>` per scenario. |
 | `dummy/gated.rs` | The turns that *ask*, blocking on the permission gate. |
 
@@ -145,6 +145,8 @@ prompts, one per entry in order, and the suite asserts:
   has no vision and the image channel's only visible proof is that opening
   chunk (`docs/image-paste.md`). `/compact`'s request is the one exemption: the
   loop builds it, and never attaches images to it.
+- **every user-facing script ends on the hand-off** — the `/login` → `/model`
+  sentence below. Same exemption, same reason.
 - **`turn_events` agrees with the registry** — so the second dispatch copy
   can't grow back.
 
@@ -165,19 +167,79 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `table` | "table" | a streaming GFM table with wide emoji (`docs/table-streaming.md`) |
 | `agents` | "agents", not "agents.md" | a two-subagent group, foreground or background (`docs/agent-tool.md`) |
 | `parallel-batch` | "parallel" | three parallel `Bash(ping …)` calls and their `⎿ Waiting…` cells (`docs/parallel-tools.md`) |
+| `files` | "diff"/"edit"/"write", not "agents.md" | a `Write` then an `Edit` of the same file: the numbered file cell and its green/red diff hunk (`docs/tools.md`) |
 | `tools` | anything | the default turn: think, then a compact `Read`+`Bash` batch |
 
 Cue order is registry order, so a narrower cue sits above a broader one that
-would also match it.
+would also match it. Two cues carry a guard rather than an order: `agents` and
+`files` both exclude `agents.md`, because `/init` submits a canned prompt that
+names it and says "do not over**write**" — without the guard that turn would be
+answered with a scripted fizzbuzz.
+
+## What the dummy actually says
+
+The dummy is what a first run meets — no key configured means no model, and the
+session is the dummy whether the user meant to demo it or not. So the replies do
+a job rather than fill space:
+
+- **They admit what they are.** Every reply opens by saying the words are canned
+  and the tool calls scripted.
+- **They narrate the cells under them.** Each scenario has its own two-part
+  text, so the `parallel` demo talks about `⎿ Waiting…` and the `files` demo
+  talks about the diff tints. The default turn rotates three of them
+  (`dummy_response`, still keyed on `prompt.chars().count() %` the table's
+  length, so it stays deterministic and testable).
+- **They end on the hand-off.** Every user-facing reply closes on one shared
+  sentence — the `handoff!()` macro in `script.rs`:
+
+  > Two commands away from the real thing: `/login` saves a provider API key,
+  > then `/model` picks the model to run.
+
+  `stream::tests::scenario::every_user_facing_script_hands_the_user_off_to_a_real_model`
+  walks the registry and fails any scenario that doesn't, and `smoke.sh` settles
+  on that same sentence (`SETTLED_REPLY`) whatever prompt it sent.
+
+A reply is written in **two parts split by a blank line** (`reply_parts`): the
+text before the turn's work and the text after it. That is not cosmetic — a
+tool call finalises the text before it as its own history message
+(`App::flush_streaming_segment`, invariant 4), so a split anywhere else would
+cut a paragraph, or a list, across two messages and render two broken blocks.
+The separator rides the first part, so the two still concatenate to
+`dummy_response`'s whole reply.
+
+## Scripted tools resolve with *real* tool output
+
+A demo that renders differently from the live agent is a demo of the wrong
+thing. So every scripted call resolves with the output the real executor would
+have produced, built by the executor's own renderers (`llm::tools` is pure, so
+this costs nothing):
+
+| Call | Output | What that buys |
+|------|--------|----------------|
+| `Read` | `tools::format_read` | the `{n:>W} {text}` gutter `ui::file_cell_lines` parses — a numbered, syntax-highlighted (Catppuccin Mocha) cell under a `Read N lines` head, instead of a plain text peek |
+| `Write` | `Created {path} ({N} lines)` + `tools::render_numbered_content` | the numbered new-file body (`script::created_output`, shared with the gated permission demos) |
+| `Edit` | `Updated {path} (+A -D)` + `tools::render_numbered_diff` | only the touched hunk, `+` rows on the green tint and `-` rows on the red one (`script::updated_output`) |
+| `Bash` | `Exit code: N` + the body | the frame `ui::command_display_output` reads: dropped on success, rewritten to a red `Error: Exit code N` head on failure, so a red cell says *why* |
+
+Sizing follows from which demo it is. The **default** turn answers anything, so
+it is the footprint everything else is measured against: its read is deliberately
+shorter than the cell's ten-row peek, because a capped one would add a dozen rows
+to every message in the session. The **opt-in** `files` demo is where the tall
+numbered body lives — its `Write` caps, and the `… +N lines (ctrl+o to expand)`
+tail it grows is what teaches the key.
+
+The `bash` framing has a second half worth keeping straight: the executor
+**streams the raw output lines while the command runs** and frames the result
+only when it resolves. `ScriptedCall` mirrors that — `output` is the body it
+streams as `ToolOutput`, `result()` is the framed `ToolEnd` — so the live tail
+never shows an `Exit code:` line the real one wouldn't.
 
 ## What did not change
 
-The events. Every scenario emits exactly the sequence it did before — the same
-`ToolBatch` up front, the same one-running-call-at-a-time execution, the same
-`ToolOutput` tails on the `bash` cells and none on the `read`, the same
-image acknowledgement in front of everything but the compact summary. The
-pre-existing suite (which asserts those orders event by event) passes
-unchanged, and so does `scripts/smoke.sh`.
+The event *shape*. Every scenario still emits the same sequence it did: the
+`ToolBatch` up front, one running call at a time, `ToolOutput` tails on the
+`bash` cells and none on the file ones, the image acknowledgement in front of
+everything but the compact summary.
 
 The shared work moved rather than multiplied. The four gated demos each carried
 their own copy of the same 40-line approval body — build the request, consult

@@ -14,7 +14,7 @@ use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
 
 use super::super::{StreamEvent, ToolCallSummary};
 use super::scenario::Stage;
-use super::script::chunks;
+use super::script::{chunks, created_output as created};
 use super::{CHUNK_DELAY, nap};
 
 /// How a gated call resolved: `Ok(output)` ran, `Err((display, result))` was
@@ -155,15 +155,6 @@ impl Stage<'_> {
             agent: None,
         }
     }
-}
-
-/// The `write` output a real executor reports for a created file.
-fn created(path: &str, content: &str) -> String {
-    format!(
-        "Created {path} ({} lines)\n{}",
-        content.lines().count(),
-        crate::llm::tools::render_numbered_content(content),
-    )
 }
 
 /// The dummy's scripted `write` for the permission demo (`docs/permissions.md`).

@@ -1,24 +1,53 @@
 # alter-zero
 
 A tiny, well-documented **inline terminal chat UI** built with
-[ratatui](https://ratatui.rs). You type a message, press Enter, and a *dummy*
-AI streams a canned reply word by word. The layout reflows responsively to the
-terminal width and the style echoes Claude Code: finished messages flow up into
-your normal terminal scrollback, with a rule-framed input field pinned at the bottom.
+[ratatui](https://ratatui.rs). You type a message, press Enter, and — until you
+point it at a real model — a *dummy* backend streams a canned demo turn word by
+word, tool cells and all. The layout reflows responsively to the terminal width
+and the style echoes Claude Code: finished messages flow up into your normal
+terminal scrollback, with a rule-framed input field pinned at the bottom.
 
 It's deliberately minimal so the whole thing is easy to read, and almost all of
 the logic is pure and unit-tested.
 
 ```
-❯ what is ratatui?
-● Great question. There's no AI behind this yet — these words are streamed from
-  a canned response to show off the inline TUI. Finished messages scroll up into
-  your normal terminal history, just like Claude Code.
+❯ hello there
+
+● Happy to help — with one asterisk: I'm alter-zero's built-in demo backend, a
+  scripted stand-in for the model that isn't plugged in yet.
+
+● Read(src/main.rs)
+  ⎿  Read 7 lines
+      1 #[tokio::main(flavor = "current_thread")]
+      2 async fn tui_main(startup: Option<Startup>) -> io::Result<()> {
+      3     let mut term = InlineViewport::init(ui::LIVE_MIN_HEIGHT)?;
+      4     let result = tui::event_loop::run(&mut term, startup).await;
+      5     let restored = term.restore();
+      6     result.map(|_| ()).and(restored)
+      7 }
+
+● Bash(ping -c 3 x.invalid)
+  ⎿  Error: Exit code 68
+     ping: cannot resolve x.invalid: Unknown host
+
+● That is a whole turn: a thinking phase, a tool batch with live output, then
+  finished cells committed into your terminal's own scrollback — canned words,
+  real interface.
+
+  Two commands away from the real thing: /login saves a provider API key, then
+  /model picks the model to run.
 
 ────────────────────────────────────────────────────────────────────────────────
 ❯
 ────────────────────────────────────────────────────────────────────────────────
 ```
+
+The demo's cells are the *real* cells: the `Read` body is numbered and
+syntax-highlighted exactly as the live agent's is, and a failed command carries
+the exit code the executor would have reported. Ask it for a *diff*, a *table*,
+some *parallel* commands or a couple of *agents* to see the other scripted
+demos — then run `/login` and `/model` to put a real model behind it
+(`docs/dummy-backend.md`).
 
 ## Run it
 

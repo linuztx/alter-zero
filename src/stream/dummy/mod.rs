@@ -30,7 +30,7 @@ use super::{CancelToken, ReplySource, StreamEvent};
 
 mod gated;
 pub(super) mod scenario;
-mod script;
+pub(super) mod script;
 mod turns;
 
 pub use self::script::{chunks, dummy_response, image_ack};

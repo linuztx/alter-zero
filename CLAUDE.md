@@ -65,8 +65,20 @@ replies, `turns` — the pure `Cue → Vec<StreamEvent>` turns, `gated` — the 
 that block on the permission gate); adding a demo is one `SCENARIOS` entry plus
 its turn function plus its example prompt in the suite, and the suite proves
 every entry is still reachable (the two hand-written `if`/`else` chains it
-replaced could retire a demo silently by shadowing its cue) — see
-`docs/dummy-backend.md`. The three library `mod.rs`es re-export their areas **by name** — never a glob,
+replaced could retire a demo silently by shadowing its cue). The dummy is what a
+first run *meets*, so it behaves like one: each scenario carries its own
+two-part reply (split at a blank line — a tool call finalises the text before it
+as its own history message, so a mid-paragraph split would break the block)
+narrating the cells it is drawing, every user-facing one closes on the shared
+`handoff!()` sentence pointing at **`/login`** then **`/model`** (the suite fails
+a scenario that doesn't; `smoke.sh` settles on that sentence), and every scripted
+call resolves with **the real executor's output** — `tools::format_read`'s
+numbered gutter for `Read`, `Created …`/`Updated …` over
+`render_numbered_content`/`render_numbered_diff` for `Write`/`Edit`, and the
+`Exit code: N` frame for `Bash` (streamed body first, framed only at the
+`ToolEnd`, exactly as `llm::exec` does) — so the offline cells are numbered,
+syntax-highlighted and red-on-failure like the live ones instead of plain text
+peeks — see `docs/dummy-backend.md`. The three library `mod.rs`es re-export their areas **by name** — never a glob,
 so the public surface is auditable and `tests/api_surface.rs` can lock it — and
 every `crate::app::X` / `ui::y(…)` / `stream::Z` path is what it always was; `src/tui/` needs
 no facade (nothing outside the binary can name it — `main.rs` reaches exactly
