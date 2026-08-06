@@ -245,12 +245,20 @@ chain-of-thought in the `⎿` gutter, tail-following the newest rows:
       landing page, so the structure should be: a hero, three feature…
 ```
 
+The bullet breathes and `Thinking…` carries the same white shimmer the
+`Working…` verb below it wears — the live block is the only part of this that
+moves, because nothing there is ever committed.
+
 When the phase ends the whole block collapses into one bullet-less line —
 nothing is happening any more, so what is left is a fact about the turn:
 
 ```
 Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
 ```
+
+Dim, like the `Done for Ns` summary that closes the turn — the weight belongs
+to the live block, where something is still happening. **Ctrl+O** expands the
+thought under the same line, minus the hint.
 
 The thought is not lost — **Ctrl+O** expands it in the transcript, and it
 survives a `/resume`. The token count is the provider's own

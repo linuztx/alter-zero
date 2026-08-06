@@ -5,8 +5,11 @@
 use super::*;
 use crate::app::Reasoning;
 use crate::ui::live::preview_lines;
-use crate::ui::reasoning::{live_reasoning_lines, reasoning_full_lines};
-use crate::ui::theme::{REASONING_PEEK_LINES, TOOL_PULSE_PERIOD};
+use crate::ui::reasoning::{live_reasoning_lines, reasoning_full_lines, reasoning_live_full_lines};
+use crate::ui::theme::{
+    REASONING_LABEL_COLOR, REASONING_PEEK_LINES, REASONING_SHIMMER_BASE, SHIMMER_BASE,
+    SHIMMER_SWEEP, TOOL_PULSE_PERIOD,
+};
 use crate::ui::wrap::cols;
 
 fn thought(text: &str, secs: u64, tokens: usize) -> Reasoning {
@@ -48,7 +51,23 @@ fn the_settled_line_carries_no_bullet() {
         "no bullet, no indent: {:?}",
         plain(&lines[0])
     );
-    assert_eq!(lines[0].spans.len(), 1, "one styled span, no bullet span");
+}
+
+#[test]
+fn the_settled_line_is_dim_throughout() {
+    // `Done for Ns`'s exact dress. A finished thought is a footnote about work
+    // already done, so it settles into the transcript instead of competing
+    // with the reply it sits above — the weight belongs to the live block.
+    let lines = reasoning_lines(&thought("…", 3, 12), 80);
+    let [span] = lines[0].spans.as_slice() else {
+        panic!("one tone across the whole row, got {:?}", lines[0].spans);
+    };
+    assert_eq!(
+        span.content,
+        "Thought for 3s · 12 tokens (ctrl+o to expand)"
+    );
+    assert_eq!(span.style.fg, Some(REASONING_LABEL_COLOR));
+    assert!(!span.style.add_modifier.contains(Modifier::BOLD));
 }
 
 #[test]
@@ -68,6 +87,20 @@ fn the_transcript_expands_the_whole_chain_of_thought() {
         text.iter().any(|l| l.contains("second thought")),
         "{text:?}"
     );
+}
+
+#[test]
+fn the_transcript_label_is_the_same_dim_line_with_no_background() {
+    // A thought looks like the same thing wherever you meet it: the settled
+    // line wears exactly what the inline one wears, minus the expand hint.
+    let lines = reasoning_full_lines(&thought("hm", 3, 12), 40);
+    let [span] = lines[0].spans.as_slice() else {
+        panic!("one label span, got {:?}", lines[0].spans);
+    };
+    assert_eq!(span.content, "Thought for 3s · 12 tokens");
+    assert_eq!(span.style.fg, Some(REASONING_LABEL_COLOR));
+    assert!(!span.style.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(span.style.bg, None, "no band, no padding to the width");
 }
 
 #[test]
@@ -133,6 +166,87 @@ fn an_opening_phase_with_no_text_yet_is_just_the_header() {
 }
 
 #[test]
+fn the_live_label_shimmers_at_the_frame_pulse() {
+    // The status line's own white sweep, on `Thinking…` — one span per char,
+    // each a different point of the wave, and the wave moves between frames.
+    let at = |pulse| {
+        live_reasoning_lines("x", pulse, 60)[0]
+            .spans
+            .iter()
+            .skip(1) // the bullet
+            .map(|s| (s.content.to_string(), s.style.fg))
+            .collect::<Vec<_>>()
+    };
+    let early = at(Duration::ZERO);
+    assert_eq!(
+        early.len(),
+        "Thinking…".chars().count(),
+        "one shimmer span per char"
+    );
+    assert_eq!(
+        early.iter().map(|(c, _)| c.as_str()).collect::<String>(),
+        "Thinking…"
+    );
+    assert_ne!(
+        early,
+        at(SHIMMER_SWEEP / 3),
+        "the sweep advances with the frame clock"
+    );
+}
+
+#[test]
+fn the_live_label_rests_at_bold_white_not_codexs_grey() {
+    // Between crests — most of the sweep — the header must still read as a
+    // header. Codex's grey base is right for the status metric below it and
+    // wrong here: at rest it would be indistinguishable from the dim body.
+    let rgb = |(r, g, b)| Color::Rgb(r, g, b);
+    let resting: Vec<Color> = (0..40)
+        .map(|i| {
+            live_reasoning_lines("x", SHIMMER_SWEEP * i / 40, 60)[0].spans[1]
+                .style
+                .fg
+        })
+        .map(|fg| fg.expect("the label is coloured"))
+        .collect();
+    assert!(
+        resting.contains(&rgb(REASONING_SHIMMER_BASE)),
+        "the wave rests at the near-white floor: {resting:?}"
+    );
+    assert!(
+        !resting.contains(&rgb(SHIMMER_BASE)),
+        "and never at codex's grey: {resting:?}"
+    );
+    let brightest = resting
+        .iter()
+        .map(|fg| {
+            let Color::Rgb(r, _, _) = fg else {
+                panic!("expected an RGB colour, got {fg:?}")
+            };
+            assert!(
+                *r >= REASONING_SHIMMER_BASE.0,
+                "never dimmer than the floor"
+            );
+            *r
+        })
+        .max()
+        .expect("sampled the sweep");
+    assert!(
+        brightest >= 0xF0,
+        "and the crest does reach the text — a wave nobody sees is not a wave \
+         (brightest sampled: {brightest:#04x})"
+    );
+}
+
+#[test]
+fn the_transcript_header_never_shimmers() {
+    // The overlay's cache signature is clock-free, so its header must render
+    // at rest — one plain label span, not a per-char wave.
+    let lines = reasoning_live_full_lines("x", 60);
+    assert_eq!(lines[0].spans.len(), 2, "bullet + one plain label span");
+    assert_eq!(lines[0].spans[1].content, "Thinking…");
+}
+
+#[test]
 fn the_live_bullet_breathes_but_the_committed_one_never_does() {
     // The pulse is live-only, like a running tool's (docs/tool-pulse.md): a
     // scrollback commit must never freeze a frame of the animation.
@@ -144,9 +258,12 @@ fn the_live_bullet_breathes_but_the_committed_one_never_does() {
         .fg;
     assert_ne!(dim, bright, "the live header pulses");
     assert_eq!(
-        reasoning_lines(&thought("x", 1, 1), 60)[0].spans.len(),
-        1,
-        "the committed line has no bullet to freeze a frame of the pulse into"
+        reasoning_lines(&thought("x", 1, 1), 60)[0].spans[0]
+            .style
+            .fg,
+        Some(REASONING_LABEL_COLOR),
+        "the committed line is a fixed colour — no frame of the pulse or the \
+         shimmer can be frozen into scrollback"
     );
 }
 

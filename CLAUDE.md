@@ -121,17 +121,22 @@ with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`
 parameter, persisted beside the `/model` selection) in `docs/reasoning.md`;
 the **thinking stream** — that reasoning, *shown* (a phase's
 chain-of-thought streams live in the strip wearing the **tool cell's shape**:
-a breathing `● Thinking…` header — the same `TOOL_BULLET` a running tool wears,
-because it means the same thing — over the thought in the `⎿` gutter, dim and
-**italic** (the one cue separating it from a tool's output there),
-tail-following its last `REASONING_PEEK_LINES` wrapped rows; at the phase's end
-the cell shape goes away entirely and it **collapses** into one committed
-**bullet-less** `Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the
-`summary_lines` shape, because nothing is happening any more and what is left
-is a fact about the turn, like `Done for 7s` — with the text itself never
-reaching immutable scrollback (which is *why* it can collapse) but expanding in
-Ctrl+O like a tool's output (the expansion drops the hint: it *is* the
-expansion); `HistoryItem::Reasoning` records it, the rollout keeps it
+a `● Thinking…` header — the same `TOOL_BULLET` a running tool wears, because
+it means the same thing, breathing at the frame pulse beside a label carrying
+the status line's **shimmer** (`ui::status::shimmer_spans_from`, the same wave
+`Working…` wears but floored at the near-white `REASONING_SHIMMER_BASE`, since
+codex's grey base is right for a metric and unreadable for a header) — over the
+thought in the `⎿` gutter, dim and **italic** (the one cue separating it from a
+tool's output there), tail-following its last `REASONING_PEEK_LINES` wrapped
+rows; at the phase's end the cell shape goes away entirely and it **collapses**
+into one committed **bullet-less** two-tone
+`Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the `summary_lines`
+shape, because nothing is happening any more and what is left is a fact about
+the turn — **dim throughout** (`REASONING_LABEL_COLOR` = `STATUS_DONE_COLOR`,
+`Done for Ns`'s exact dress, so the pair bracketing a turn reads as a pair);
+the text itself never reaches immutable scrollback (which is *why* it can
+collapse) but expands in Ctrl+O under that same dim line, minus the hint since
+the expansion has none to make room for; `HistoryItem::Reasoning` records it, the rollout keeps it
 across a `/resume`, `context::context_messages` **skips** it (a Chat
 Completions request has nowhere to put a previous round's chain-of-thought,
 so Ctrl+D shows no trace either), the settle points are `ThinkingEnd`/Esc/a
@@ -967,10 +972,12 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
   (`TOOL_VIEW_*`), the thinking stream (`REASONING_*` — it *borrows* the tool
   cell's `TOOL_BULLET`/`TOOL_RESULT_PREFIX` while it runs rather than owning a
-  glyph, so its own consts are just the dim italic `REASONING_TEXT_COLOR`/
+  glyph, so its own consts are the dim italic `REASONING_TEXT_COLOR`/
   `REASONING_TEXT_MODIFIER` the chain-of-thought renders in, the
-  `REASONING_RUNNING`/`REASONING_DONE` labels, the `REASONING_DONE_COLOR` the
-  bullet-less settled line takes from `STATUS_DONE_COLOR`, and the
+  `REASONING_RUNNING`/`REASONING_DONE` labels, the near-white
+  `REASONING_SHIMMER_BASE` the live label's sweep rests at (codex's grey
+  `SHIMMER_BASE` would read as dim), the `REASONING_LABEL_COLOR` the settled
+  line takes from `STATUS_DONE_COLOR` on **both** surfaces, and the
   `REASONING_PEEK_LINES` live tail window — see `docs/thinking-stream.md`), the transcript timestamp (`TIMESTAMP_COLOR` — the dim
   `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,
   the only stamp shown, only in the Ctrl+O view), the status

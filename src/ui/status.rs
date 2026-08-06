@@ -14,7 +14,29 @@ use super::*;
 /// crest. A faithful port of openai/codex `tui/src/shimmer.rs::shimmer_spans`,
 /// made pure: the phase comes from the boundary-supplied `elapsed` (sub-second
 /// resolution), not a process-wide clock — so it's deterministic in tests.
-fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
+///
+/// **Live regions only**: every span carries a colour sampled from one frame
+/// of the wave, so committing these rows to scrollback would freeze the sweep
+/// mid-stride forever.
+pub(super) fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
+    shimmer_spans_from(text, elapsed, SHIMMER_BASE)
+}
+
+/// [`shimmer_spans`] with the wave's **resting** colour chosen by the caller —
+/// what the text reads as between crests, which is most of the sweep (the band
+/// is [`SHIMMER_BAND_HALF_WIDTH`] wide inside a period of the text plus
+/// `2 × `[`SHIMMER_PADDING`]).
+///
+/// The status verb keeps codex's grey [`SHIMMER_BASE`], so it reads as *grey
+/// text with a white wave*. The thinking stream's `Thinking…`
+/// (`docs/thinking-stream.md`) passes the near-white
+/// [`REASONING_SHIMMER_BASE`] instead, so it reads as *bold white with a
+/// brighter wave* — a header, not a metric. Same motion, different floor.
+pub(super) fn shimmer_spans_from(
+    text: &str,
+    elapsed: Duration,
+    base: (u8, u8, u8),
+) -> Vec<Span<'static>> {
     let chars: Vec<char> = text.chars().collect();
     if chars.is_empty() {
         return Vec::new();
@@ -34,7 +56,7 @@ fn shimmer_spans(text: &str, elapsed: Duration) -> Vec<Span<'static>> {
             } else {
                 0.0
             };
-            let (r, g, b) = blend(SHIMMER_HIGHLIGHT, SHIMMER_BASE, t * SHIMMER_MAX_BLEND);
+            let (r, g, b) = blend(SHIMMER_HIGHLIGHT, base, t * SHIMMER_MAX_BLEND);
             Span::styled(
                 ch.to_string(),
                 Style::new()

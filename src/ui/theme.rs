@@ -191,10 +191,13 @@ pub(super) const TOOL_NO_OUTPUT: &str = "(no output)";
 // ---------------------------------------------------------------------------
 // The thinking stream (docs/thinking-stream.md). It borrows the tool cell's
 // shape while it runs — a [`TOOL_BULLET`] `● Thinking…` header (its bullet
-// breathing like a running tool's) over the chain-of-thought in the
+// breathing like a running tool's, its label carrying the status line's
+// [`SHIMMER_BASE`] white sweep) over the chain-of-thought in the
 // [`TOOL_RESULT_PREFIX`] `⎿` gutter — and then collapses into a **bullet-less**
 // `Thought for … · … tokens (ctrl+o to expand)` line: the [`summary_lines`]
-// shape, because a settled thought is turn meta, not a cell.
+// shape *and* its dim, because a settled thought is turn meta, not a cell —
+// a footnote about work already done. The strip is where the weight and the
+// motion are: nothing there is ever committed, so it can afford both.
 // ---------------------------------------------------------------------------
 
 /// The chain-of-thought's own colour — dim, and italic
@@ -208,13 +211,31 @@ pub(super) const REASONING_TEXT_MODIFIER: Modifier = Modifier::ITALIC;
 /// The live block's header, under which the thought tails.
 pub(super) const REASONING_RUNNING: &str = "Thinking…";
 
+/// The **resting** colour of the live header's shimmer — what `Thinking…`
+/// reads as between crests, which is most of the sweep (the band is
+/// [`SHIMMER_BAND_HALF_WIDTH`] wide inside a period of the text plus twice
+/// [`SHIMMER_PADDING`]).
+///
+/// Deliberately *not* codex's grey [`SHIMMER_BASE`]: that makes the status
+/// verb read as grey text with a white wave, which is right for a metric and
+/// wrong for a header — at rest it is indistinguishable from the dim body
+/// under it. This near-white floor reads as **bold white**, with the wave a
+/// brightening on top rather than the only thing making it visible — the one
+/// place in the feature that draws the eye, because it is the one place
+/// something is still happening.
+pub(super) const REASONING_SHIMMER_BASE: (u8, u8, u8) = (0xC8, 0xC8, 0xC8);
+
 /// The settled line's opener — `Thought for 1m 5s · 1.5k tokens`.
 pub(super) const REASONING_DONE: &str = "Thought for ";
 
 /// The settled line's colour: [`STATUS_DONE_COLOR`], the dim the committed
-/// `Done for Ns` summary uses — the two are the same kind of line, and they
-/// bracket a turn.
-pub(super) const REASONING_DONE_COLOR: Color = STATUS_DONE_COLOR;
+/// `Done for Ns` summary wears. The two are the same kind of line — turn meta,
+/// bullet-less, one row — and they bracket a turn, so they read as a pair.
+///
+/// One tone across the whole line and both surfaces: a settled thought is a
+/// footnote about work already done, not a heading. What is *happening* — the
+/// live `● Thinking…` block — is what carries weight and motion.
+pub(super) const REASONING_LABEL_COLOR: Color = STATUS_DONE_COLOR;
 
 /// How many **wrapped display rows** of the thought the live block tails. The
 /// window is small on purpose: it grows the live region upward (invariant 3),

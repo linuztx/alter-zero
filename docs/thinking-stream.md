@@ -23,12 +23,27 @@ Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
 
 Two shapes, deliberately: while it runs it **is** a tool cell — a `●` bullet
 over a `⎿` gutter, because that is what is happening (something working, with
-output under it), and the bullet breathes like any running tool's. When it
-settles the cell shape goes away entirely: no bullet, because nothing is
-happening any more. What is left is a fact about the turn, in the dim
-bullet-less shape `Done for 7s` already uses, with the `(ctrl+o to expand)`
-hint saying where the thought went — the same promise a capped tool peek
-makes.
+output under it) — and it is the **only** part of the feature that moves: the
+bullet breathes like any running tool's, and `Thinking…` carries the status
+line's shimmer sweep. When it settles the cell shape goes away entirely: no
+bullet, because nothing is happening any more. What is left is a fact about
+the turn, in the bullet-less shape `Done for 7s` already uses, with the
+`(ctrl+o to expand)` hint saying where the thought went — the same promise a
+capped tool peek makes.
+
+## Where the weight goes
+
+All of it to the live block, none to the settled line:
+
+| Surface | Renders | Why |
+| --- | --- | --- |
+| **Strip** (live) | `● Thinking…` — breathing bullet, shimmering bold-white label | the one place something is still happening, and nothing here is ever committed, so motion is free |
+| **Inline** (settled) | one dim row, `Done for Ns`'s exact dress | a finished thought is a footnote about work already done |
+| **Ctrl+O** (expanded) | the same dim row, minus the hint | no hint to make room for — this *is* the expansion |
+
+The settled line is dim on both surfaces so a thought looks like the same thing
+wherever you meet it, and so it never competes with the assistant reply it sits
+directly above.
 
 The full text is never lost — it expands in the **Ctrl+O transcript** like a
 tool call's output, records into the rollout, and comes back on `/resume`.
@@ -56,7 +71,9 @@ machinery in `term.rs`.
 
 - the `● Thinking…` header — the tool cell's own `TOOL_BULLET`, **breathing**
   at the shared frame pulse (`docs/tool-pulse.md`) exactly like a running
-  tool's; and
+  tool's, beside a label carrying the status line's **shimmer** sweep
+  (`ui::status::shimmer_spans_from`, the same wave the `Working…` verb below it
+  wears, off the same frame clock); and
 - the **tail** of the reasoning so far in the `⎿` gutter
   (`TOOL_RESULT_PREFIX`, via `ui::file_cell::gutter_row_styled` — the corner on
   the first row, the rest aligned under it): the last `REASONING_PEEK_LINES`
@@ -68,6 +85,17 @@ Blank source lines are skipped: reasoning is full of paragraph breaks, and
 spending the small window on them would show a third as much thought. Walking
 the source lines newest-first wraps only what the window shows, so a long think
 costs O(window) per animation frame, not O(reasoning).
+
+**The shimmer's floor is raised here.** Codex's `SHIMMER_BASE` is grey
+`#888888`, so the status verb reads as *grey text with a white wave* — right
+for a metric, wrong for a header: between crests (roughly a third of each
+sweep) it would be indistinguishable from the dim body under it. So
+`shimmer_spans_from` takes the resting colour, and `Thinking…` passes the
+near-white `REASONING_SHIMMER_BASE` (`#C8C8C8`). At rest it is bold near-white;
+the wave brightens it to `#FFFFFF` rather than being the only thing making it
+visible. The status line keeps codex's grey, byte-identical. This is the one
+place in the feature that draws the eye — deliberately, because it is the one
+place something is still happening.
 
 `ui::preview_rows` sizes the same block from the same state (the strip's
 `debug_assert` holds it to that), so the box and cursor stay seated.
@@ -93,11 +121,13 @@ pub struct Reasoning {
 }
 ```
 
-`ui::reasoning_lines` renders it as one unwrapped, **bullet-less** line — the
-`summary_lines` shape:
+`ui::reasoning_lines` renders it as one unwrapped, **bullet-less**, dim line —
+`summary_lines`' shape *and* its colour (`STATUS_DONE_COLOR`), so the pair that
+brackets a turn reads as a pair:
 
 ```
 Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
+Done for 1m 12s · 2.8k tokens (64 cached)
 ```
 
 `format_elapsed` humanizes the seconds (`5s`, `1m 5s`, `1h 2m`) and
@@ -117,7 +147,7 @@ scrollback, so a resize repaint reorders them. An *empty* phase skips the flush
 entirely: it records no cell, and splitting the paragraph for nothing would
 show a stray second `●` bullet.
 
-`ui::reasoning_full_lines` is the Ctrl+O expansion — the same settled label
+`ui::reasoning_full_lines` is the Ctrl+O expansion — the same dim line
 **without** the `(ctrl+o to expand)` hint (this *is* the expansion) over the
 whole text in the `⎿` gutter, the model's own paragraph breaks preserved.
 

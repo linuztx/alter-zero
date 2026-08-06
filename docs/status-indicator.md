@@ -226,6 +226,15 @@ The verb (`Working…`) renders one **bold span per char**, colours from
 The `SHIMMER_*` constants (base/highlight colours, sweep, padding, band width,
 max blend) live with the other styling consts in `ui/theme.rs`.
 
+**One other caller.** The thinking stream's live `● Thinking…` header wears the
+same wave (`docs/thinking-stream.md`), sweeping against the frame pulse rather
+than the turn's elapsed. It goes through `ui::shimmer_spans_from`, which takes
+the **resting** colour — `shimmer_spans` is that with codex's grey base. The
+header passes a near-white floor instead, because grey-at-rest is right for a
+metric and wrong for a header. Either way the spans are **live-only**: each
+carries a colour sampled from one frame, so committing them to scrollback would
+freeze the sweep mid-stride forever.
+
 ## The comet spinner
 
 The line's opening `(●•·   )` is a **comet** — a Larson-scanner sweep (codex

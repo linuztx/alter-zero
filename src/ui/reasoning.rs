@@ -8,7 +8,9 @@
 //! goes away entirely: the committed line is bullet-less
 //! (`Thought for 3s · 228 tokens (ctrl+o to expand)`), the
 //! [`summary_lines`](super::summary_lines) shape, because a finished thought
-//! is turn meta rather than a cell.
+//! is turn meta rather than a cell — dim on both surfaces, `Done for Ns`'s
+//! exact dress. The weight and the motion live in the block above, which is
+//! where something is still happening.
 //!
 //! Nothing here ever renders the chain-of-thought into a *committed* row —
 //! [`reasoning_lines`] (the one renderer scrollback and the resize repaint
@@ -17,6 +19,7 @@
 //! collapsed-inline / expanded-in-Ctrl+O contract a tool call has.
 
 use super::file_cell::gutter_row_styled;
+use super::status::shimmer_spans_from;
 use super::theme::*;
 use super::tool::tool_pulse_color;
 use super::wrap::{cols, wrap_output};
@@ -45,38 +48,49 @@ fn body_width(width: u16) -> u16 {
         .max(1)
 }
 
-/// The `● Thinking…` header of an open phase, its bullet in `color` — the
-/// breathing [`tool_pulse_color`] in the strip, the flat
-/// [`TOOL_RUNNING_COLOR`] at rest in the transcript. The same
-/// [`TOOL_BULLET`] a running tool wears, because it means the same thing.
-fn thinking_header(color: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(
-            TOOL_BULLET.to_string(),
-            Style::new().fg(color).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            REASONING_RUNNING.to_string(),
-            Style::new().fg(REASONING_TEXT_COLOR),
-        ),
-    ])
+/// The `● Thinking…` header of an open phase: the same [`TOOL_BULLET`] a
+/// running tool wears (because it means the same thing) in `bullet_color`,
+/// over the label built by `label`.
+///
+/// The two callers differ only in how alive the row is allowed to look. In the
+/// strip the bullet breathes ([`tool_pulse_color`]) and the label **shimmers**
+/// ([`shimmer_spans_from`]); in the Ctrl+O pager both render flat, because
+/// that view's cache signature is deliberately clock-free
+/// (`docs/tool-pulse.md`).
+fn thinking_header(bullet_color: Color, label: Vec<Span<'static>>) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        TOOL_BULLET.to_string(),
+        Style::new().fg(bullet_color).add_modifier(Modifier::BOLD),
+    )];
+    spans.extend(label);
+    Line::from(spans)
 }
 
-/// The settled phase's label: `Thought for {elapsed}[ · {n} tokens]`.
+/// The settled phase's label — `Thought for {elapsed}` — and, separately, its
+/// `· {n} tokens` metrics. Split because the two surfaces compose them
+/// differently: inline the `EXPAND_HINT` follows, in Ctrl+O nothing does.
 ///
 /// [`format_elapsed`] humanizes the seconds and [`format_token_count`] the
 /// tokens, so this reads like every other duration and count in the TUI. A
 /// zero token count (an old rollout, a backend that reported none and
-/// estimated nothing) hides its clause rather than claiming `· 0 tokens`.
+/// estimated nothing) yields empty metrics rather than claiming `· 0 tokens`.
 fn thought_label(reasoning: &Reasoning) -> String {
-    let mut text = format!("{REASONING_DONE}{}", format_elapsed(reasoning.secs));
-    if reasoning.tokens > 0 {
-        text.push_str(&format!(
-            " · {} tokens",
-            format_token_count(reasoning.tokens)
-        ));
+    format!("{REASONING_DONE}{}", format_elapsed(reasoning.secs))
+}
+
+/// The settled line's span: dim, the same on both surfaces. A finished
+/// thought is a footnote about work already done — the weight belongs to the
+/// live block, which is where something is still happening.
+fn settled_span(text: String) -> Span<'static> {
+    Span::styled(text, Style::new().fg(REASONING_LABEL_COLOR))
+}
+
+/// See [`thought_label`] — `" · 1.5k tokens"`, or empty when unknown.
+fn thought_metrics(reasoning: &Reasoning) -> String {
+    if reasoning.tokens == 0 {
+        return String::new();
     }
-    text
+    format!(" · {} tokens", format_token_count(reasoning.tokens))
 }
 
 /// The settled thinking phase as **committed** lines: one dim, **bullet-less**
@@ -84,26 +98,30 @@ fn thought_label(reasoning: &Reasoning) -> String {
 /// [`summary_lines`] shape (`width` is unused, kept for the uniform `*_lines`
 /// signature).
 ///
-/// No bullet: the `● Thinking…` header meant *something is happening*, and
-/// nothing is any more. What is left is a fact about the turn, like
-/// `Done for 7s` — and the `EXPAND_HINT` says where the thought itself went,
-/// the same promise a capped tool peek makes.
+/// No bullet, and dim throughout — `Done for Ns`'s exact dress. The
+/// `● Thinking…` header meant *something is happening*, and nothing is any
+/// more; what is left is a fact about the turn, so it settles into the
+/// transcript rather than competing with the reply it sits above. The
+/// `EXPAND_HINT` says where the thought itself went, the same promise a capped
+/// tool peek makes.
 #[must_use]
 pub fn reasoning_lines(reasoning: &Reasoning, _width: u16) -> Vec<Line<'static>> {
-    vec![Line::from(Span::styled(
-        format!("{}{EXPAND_HINT}", thought_label(reasoning)),
-        Style::new().fg(REASONING_DONE_COLOR),
-    ))]
+    vec![Line::from(settled_span(format!(
+        "{}{}{EXPAND_HINT}",
+        thought_label(reasoning),
+        thought_metrics(reasoning)
+    )))]
 }
 
-/// The Ctrl+O transcript's expanded cell: the settled label — **without** the
-/// `(ctrl+o to expand)` hint, since this *is* the expansion — over the whole
-/// chain-of-thought in the `⎿` gutter.
+/// The Ctrl+O transcript's expanded cell: the same dim settled line — minus
+/// the `(ctrl+o to expand)` hint, since this *is* the expansion — over the
+/// whole chain-of-thought in the `⎿` gutter.
 pub(super) fn reasoning_full_lines(reasoning: &Reasoning, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::from(Span::styled(
+    let mut lines = vec![Line::from(settled_span(format!(
+        "{}{}",
         thought_label(reasoning),
-        Style::new().fg(REASONING_DONE_COLOR),
-    ))];
+        thought_metrics(reasoning)
+    )))];
     lines.extend(gutter_body(&reasoning.text, width));
     lines
 }
@@ -112,10 +130,18 @@ pub(super) fn reasoning_full_lines(reasoning: &Reasoning, width: u16) -> Vec<Lin
 /// over the whole thought so far. The pager has no row budget — it
 /// tail-follows the frontier the way it does a streaming `bash` call's output
 /// (`docs/tool-view-performance.md`) — so unlike the strip's block this is not
-/// windowed. The bullet renders **at rest**: the transcript's cache signature
-/// is deliberately clock-free (`docs/tool-pulse.md`).
+/// windowed.
+///
+/// Rendered **at rest**, bullet and label both: the transcript's cache
+/// signature is deliberately clock-free, so an animation here would either not
+/// move or cost a full-tail re-render every 32 ms for something nobody is
+/// watching (`docs/tool-pulse.md`).
 pub(super) fn reasoning_live_full_lines(text: &str, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![thinking_header(TOOL_RUNNING_COLOR)];
+    let label = vec![Span::styled(
+        REASONING_RUNNING.to_string(),
+        Style::new().fg(REASONING_TEXT_COLOR),
+    )];
+    let mut lines = vec![thinking_header(TOOL_RUNNING_COLOR, label)];
     lines.extend(gutter_body(text, width));
     lines
 }
@@ -140,19 +166,28 @@ fn gutter_body(text: &str, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The **live** block for an open thinking phase, drawn in the strip's preview
-/// slot: a `● Thinking…` header whose bullet breathes at the frame `pulse`
-/// (`docs/tool-pulse.md`), over the **tail** of the thought so far in the `⎿`
-/// gutter — the last [`REASONING_PEEK_LINES`] wrapped rows, dim and italic.
+/// slot: a `● Thinking…` header — the bullet breathing at the frame `pulse`
+/// and the label carrying the status line's **shimmer** sweep
+/// ([`shimmer_spans_from`], the same wave the `Working…` verb below it wears,
+/// but floored at the near-white [`REASONING_SHIMMER_BASE`] so it reads as
+/// bold white between crests rather than codex's grey) — over the **tail** of
+/// the thought so far in the `⎿` gutter: the last [`REASONING_PEEK_LINES`]
+/// wrapped rows, dim and italic.
+///
+/// Two animations off one clock, and neither can ever be committed: the whole
+/// block is live-only by construction (only the strip calls this), which is
+/// why the pulse and the shimmer are unconditional here and absent from every
+/// other renderer in this module.
 ///
 /// Blank source lines are skipped: reasoning is full of paragraph breaks, and
 /// spending the small window on them would show a third as much thought.
 /// Walking newest-first wraps only what the window can show, so redrawing this
 /// every animation frame costs O(window), not O(reasoning).
-///
-/// Live-only by construction — only the strip calls it — which is why the
-/// pulse is unconditional here and absent from [`reasoning_lines`].
 pub(super) fn live_reasoning_lines(text: &str, pulse: Duration, width: u16) -> Vec<Line<'static>> {
-    let mut lines = vec![thinking_header(tool_pulse_color(pulse))];
+    let mut lines = vec![thinking_header(
+        tool_pulse_color(pulse),
+        shimmer_spans_from(REASONING_RUNNING, pulse, REASONING_SHIMMER_BASE),
+    )];
     let inner = body_width(width);
     let mut window: VecDeque<String> = VecDeque::new();
     for source in text.split('\n').rev() {
