@@ -55,6 +55,7 @@ widened for the split.
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `background.rs` | Background shells and the ↓ manager band. |
 | `agent.rs` | The `Agent` tool's roster, groups, and notices. |
+| `reasoning.rs` | The thinking stream: the live reasoning buffer, the `Reasoning` cell it settles into, and the provider's reasoning-token snap (`docs/thinking-stream.md`). |
 
 ### `src/ui/` — pure rendering
 
@@ -81,6 +82,7 @@ widened for the split.
 | `context_view.rs` | The Ctrl+D context-debug overlay. |
 | `resume_view.rs`, `model_view.rs`, `login_view.rs`, `background_view.rs` | The pickers and the manager band. |
 | `permission_view.rs` | The tool-permission modal (`docs/permissions.md`). |
+| `reasoning.rs` | The thinking stream's cells: the live `● Thinking…` block, the collapsed `Thought for …` line, and its Ctrl+O expansion (`docs/thinking-stream.md`). |
 | `stream_render.rs` | `StreamRender`, the incremental commit-to-scrollback renderer. |
 
 ### `src/tui/` — the terminal shell

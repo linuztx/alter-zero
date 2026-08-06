@@ -7,6 +7,7 @@
 use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use super::conversation::is_shell_header;
 use super::message::{compaction_full_lines, user_stamp_lines};
+use super::reasoning::{reasoning_full_lines, reasoning_live_full_lines};
 use super::theme::*;
 use super::tool::tool_full_lines;
 use super::wrap::cols;
@@ -89,6 +90,9 @@ fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>,
         // The transcript expands the marker with its summary body — the
         // inline view keeps it collapsed (docs/compact.md).
         HistoryItem::Compaction(c) => lines.extend(compaction_full_lines(c, width)),
+        // The transcript is where a thought's whole chain-of-thought lives —
+        // inline it is the one collapsed line (docs/thinking-stream.md).
+        HistoryItem::Reasoning(r) => lines.extend(reasoning_full_lines(r, width)),
     }
     if !is_shell_header(item) {
         lines.push(Line::default());
@@ -240,6 +244,11 @@ struct TranscriptSig {
     cwd_len: Option<usize>,
     /// Live in-progress reply length (`None` when not streaming).
     streaming_len: Option<usize>,
+    /// The open thinking phase's length (`None` outside one) — so a thought
+    /// streaming under the overlay invalidates the tail exactly like a
+    /// streaming tool's output, and Ctrl+O mid-think follows it rather than
+    /// showing a frozen snapshot (`docs/thinking-stream.md`).
+    reasoning_len: Option<usize>,
     /// The live tool queue's shape: `(number of live calls, front call status,
     /// front output length)`, `None` when none run. A **parallel batch** shrinks
     /// as each call commits (also bumping `history_len`) and the front flips
@@ -268,6 +277,7 @@ impl TranscriptSig {
             history_len: app.history.len(),
             cwd_len: app.session.as_ref().map(|s| s.cwd.len()),
             streaming_len: app.streaming_text().map(str::len),
+            reasoning_len: app.reasoning().map(str::len),
             tool_queue: queue
                 .front()
                 .map(|t| (queue.len(), t.status, t.output.len())),
@@ -413,6 +423,12 @@ impl TranscriptCache {
         {
             self.lines
                 .extend(message_lines(Role::Assistant, text, width));
+            self.lines.push(Line::default());
+        }
+        // An open thinking phase, whole (the pager has no row budget, unlike
+        // the strip's windowed block) — docs/thinking-stream.md.
+        if let Some(text) = app.reasoning() {
+            self.lines.extend(reasoning_live_full_lines(text, width));
             self.lines.push(Line::default());
         }
         // The live agent group's members expand as their own `● Agent(…)`

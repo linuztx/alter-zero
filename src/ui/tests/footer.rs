@@ -128,6 +128,7 @@ fn the_footer_shows_the_context_gauge_when_the_window_is_known() {
         output: 100,
         cached: 0,
         cache_write: 0,
+        ..crate::stream::TokenUsage::default()
     });
     let text = plain(&footer_line(&app, 120));
     assert!(text.contains("18k/300k (6.0%)"), "{text}");
@@ -146,6 +147,7 @@ fn the_footer_gauge_humanizes_the_used_tokens_beside_the_window() {
         output: 50,
         cached: 0,
         cache_write: 0,
+        ..crate::stream::TokenUsage::default()
     });
     let text = plain(&footer_line(&app, 120));
     assert!(text.contains("1.3k/160k (0.8%)"), "{text}");
@@ -164,6 +166,7 @@ fn the_footer_gauge_shows_a_small_context_bare() {
         output: 42,
         cached: 0,
         cache_write: 0,
+        ..crate::stream::TokenUsage::default()
     });
     let text = plain(&footer_line(&app, 120));
     assert!(text.contains("842/160k (0.5%)"), "{text}");

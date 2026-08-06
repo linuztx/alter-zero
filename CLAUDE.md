@@ -119,6 +119,28 @@ cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`
 parameter, persisted beside the `/model` selection) in `docs/reasoning.md`;
+the **thinking stream** — that reasoning, *shown* (a phase's
+chain-of-thought streams live in the strip wearing the **tool cell's shape**:
+a breathing `● Thinking…` header — the same `TOOL_BULLET` a running tool wears,
+because it means the same thing — over the thought in the `⎿` gutter, dim and
+**italic** (the one cue separating it from a tool's output there),
+tail-following its last `REASONING_PEEK_LINES` wrapped rows; at the phase's end
+the cell shape goes away entirely and it **collapses** into one committed
+**bullet-less** `Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)` line — the
+`summary_lines` shape, because nothing is happening any more and what is left
+is a fact about the turn, like `Done for 7s` — with the text itself never
+reaching immutable scrollback (which is *why* it can collapse) but expanding in
+Ctrl+O like a tool's output (the expansion drops the hint: it *is* the
+expansion); `HistoryItem::Reasoning` records it, the rollout keeps it
+across a `/resume`, `context::context_messages` **skips** it (a Chat
+Completions request has nowhere to put a previous round's chain-of-thought,
+so Ctrl+D shows no trace either), the settle points are `ThinkingEnd`/Esc/a
+backend error via the one `tui::stream::Session::settle_reasoning`, and the
+cell's tokenizer estimate is **snapped** to the provider's own
+`completion_tokens_details.reasoning_tokens` — `TokenUsage::reasoning` — when
+the round's usage frame lands, split by weight across a round's several
+phases; gated by `ALTER_ZERO_SHOW_THINKING`, whose falsy value restores the
+old counted-and-dropped behaviour exactly) in `docs/thinking-stream.md`;
 the **running bullet's pulse** (a tool in flight no longer
 shows a blue `●` — it shows the permission prompt's grey, and in the live
 region that grey *breathes* dim→bright→dim once a second, Claude-Code's
@@ -769,10 +791,15 @@ earlier entries stay queued; see `docs/queue.md`). The
 backend interleaves `StreamEvent::ToolStart{name,args}`/`ToolEnd{output,ok,truncated}` pairs
 (with `ToolOutput(chunk)` **live-output** deltas streamed in between — the
 running `bash` cell tails them via `App::push_tool_output`, `docs/tool-streaming.md`)
-and a `ThinkingStart`/`ThinkingEnd` pair (with opaque `ThinkingChunk` reasoning
+and a `ThinkingStart`/`ThinkingEnd` pair (with `ThinkingChunk` reasoning
 deltas streamed in between) between `Chunk`s; the loop shows the tool
 running (pulsing grey) then commits it collapsed (green/red), and flips its `thinking_start`
-`Instant` so the status line shows/drops `Thinking for Ns`. Before a tool runs, the backend also streams the model **generating** the call as
+`Instant` so the status line shows/drops `Thinking for Ns` — while the
+reasoning deltas themselves accumulate in `App::reasoning` for the live
+`● Thinking…` block, collapsing at `ThinkingEnd` into the committed
+`Thought for …` cell (`docs/thinking-stream.md`; with
+`ALTER_ZERO_SHOW_THINKING` falsy no buffer is ever opened and they stay opaque,
+counted-only, as they were). Before a tool runs, the backend also streams the model **generating** the call as
 `ToolCallDelta(fragment)` events (the `name`/`arguments` pieces of a `tool_calls`
 delta — `openai::Delta::tool_call`, surfaced ahead of the `ToolStart`); the loop
 counts them via `App::push_tool_call_progress` (never rendered) so the tally ticks
@@ -784,7 +811,8 @@ before its first chunk so the indicator is visibly working first — overridable
 via `ALTER_ZERO_STARTUP_DELAY_MS`; the strip reserves **no preview row** while
 there's nothing to preview — `ui::preview_rows` 0 — so the pause is status +
 gap only, no stray empty line, like codex). Then `Chunk`s,
-`ThinkingChunk`s (counted via `App::push_thinking` — never rendered), the
+`ThinkingChunk`s (counted via `App::push_thinking`, and kept for the thinking
+stream's live block when a phase is open — `docs/thinking-stream.md`), the
 tool-call generation deltas, and a tool's
 output grow the cumulative token tally on `App::status` (`↓` while replying,
 thinking, or generating a tool call, `↑` for the input and right after a tool — never reset); on `StreamDone` `App::end_turn`
@@ -937,7 +965,13 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   colours (`TOOL_WAITING_COLOR` for a batch's not-yet-run `⎿ Waiting…` calls,
   `docs/parallel-tools.md`), the
   `⎿` peek prefix, the `(ctrl+o to expand)` hint), tool-view chrome
-  (`TOOL_VIEW_*`), the transcript timestamp (`TIMESTAMP_COLOR` — the dim
+  (`TOOL_VIEW_*`), the thinking stream (`REASONING_*` — it *borrows* the tool
+  cell's `TOOL_BULLET`/`TOOL_RESULT_PREFIX` while it runs rather than owning a
+  glyph, so its own consts are just the dim italic `REASONING_TEXT_COLOR`/
+  `REASONING_TEXT_MODIFIER` the chain-of-thought renders in, the
+  `REASONING_RUNNING`/`REASONING_DONE` labels, the `REASONING_DONE_COLOR` the
+  bullet-less settled line takes from `STATUS_DONE_COLOR`, and the
+  `REASONING_PEEK_LINES` live tail window — see `docs/thinking-stream.md`), the transcript timestamp (`TIMESTAMP_COLOR` — the dim
   `hh:mm AM/PM` stamp right-aligned on its own line under the *user* message,
   the only stamp shown, only in the Ctrl+O view), the status
   indicator (`STATUS_*` — the comet spinner's white head + mid-grey

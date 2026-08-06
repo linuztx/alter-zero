@@ -48,6 +48,10 @@ impl App {
         // Per-turn usage accumulators reset with every turn machinery start.
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
+        // The summarizer's own thinking is never shown (the turn is invisible
+        // by design) — `begin_reasoning` no-ops while the buffer below is
+        // open; this only clears anything a previous turn abandoned.
+        self.drop_reasoning();
         self.status = Some(TurnStatus {
             verb: COMPACT_VERB,
             // Never rendered: a compact turn ends without a summary (the

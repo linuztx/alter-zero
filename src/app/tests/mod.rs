@@ -25,6 +25,7 @@ mod login;
 mod model_picker;
 mod permission;
 mod queue;
+mod reasoning;
 mod resume;
 mod tools;
 mod turn;
@@ -122,6 +123,7 @@ pub(super) fn usage_of(total_input: u64, output: u64) -> crate::stream::TokenUsa
         output,
         cached: 0,
         cache_write: 0,
+        ..crate::stream::TokenUsage::default()
     }
 }
 

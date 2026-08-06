@@ -842,6 +842,7 @@ mod tests {
             output: 100,
             cached: 0,
             cache_write: 0,
+            ..TokenUsage::default()
         }));
         assert_eq!(run.tokens, 1000, "snapped to the billed total");
         run.apply(&StreamEvent::Usage(TokenUsage {
@@ -849,6 +850,7 @@ mod tests {
             output: 100,
             cached: 0,
             cache_write: 0,
+            ..TokenUsage::default()
         }));
         assert_eq!(run.tokens, 1500, "frames accumulate");
     }

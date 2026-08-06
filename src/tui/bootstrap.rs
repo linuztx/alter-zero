@@ -191,6 +191,7 @@ impl<'t> Session<'t> {
             agent_render: ui::StreamRender::new(),
             transcript: ui::TranscriptCache::new(),
             burst: PasteBurst::new(),
+            show_thinking: config::show_thinking(),
             clocks: StatusClocks::started_now(),
             toast_deadline: None,
             bg_clocks: HashMap::new(),

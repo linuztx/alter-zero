@@ -532,6 +532,12 @@ fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
             HistoryItem::AgentNotice(notice) => {
                 push_text(out, ContextRole::User, notice.context_text(), vec![]);
             }
+            // A settled thinking phase is **not** conversation: Chat
+            // Completions has nowhere to put a previous round's raw
+            // chain-of-thought, and re-sending it would burn context for
+            // nothing. The Ctrl+D view showing no trace of it is the truth
+            // about what the model receives (docs/thinking-stream.md).
+            HistoryItem::Reasoning(_) => {}
         }
     }
 }
@@ -1020,6 +1026,31 @@ mod tests {
             shells: 0,
         })];
         assert!(context_messages(&history).is_empty());
+    }
+
+    #[test]
+    fn thinking_phases_are_skipped() {
+        // Chat Completions has nowhere to put a previous round's raw
+        // chain-of-thought, and re-sending it would burn context for nothing —
+        // so the derived context (and the Ctrl+D view) shows no trace of it.
+        // See docs/thinking-stream.md.
+        let history = vec![
+            HistoryItem::Reasoning(crate::app::Reasoning {
+                text: "a long private deliberation".to_string(),
+                secs: 65,
+                tokens: 1_500,
+                timestamp: String::new(),
+            }),
+            HistoryItem::Message(Message {
+                role: Role::Assistant,
+                text: "the answer".to_string(),
+                timestamp: String::new(),
+                images: Vec::new(),
+            }),
+        ];
+        let messages = context_messages(&history);
+        assert_eq!(messages.len(), 1, "only the reply is conversation");
+        assert_eq!(messages[0].text, "the answer");
     }
 
     #[test]

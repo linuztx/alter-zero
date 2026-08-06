@@ -18,9 +18,16 @@ use super::script::{
 };
 
 /// The dummy's canned reasoning, streamed word-by-word as
-/// [`StreamEvent::ThinkingChunk`]s during its thinking phase. Never shown —
-/// it only feeds the token tally (like a real API's reasoning deltas).
-const DUMMY_THINKING: &str = "Let me look at the code first.";
+/// [`StreamEvent::ThinkingChunk`]s during its thinking phase — the offline
+/// stand-in for a real API's reasoning deltas.
+///
+/// It is **two lines** on purpose: the thinking stream previews the last rows
+/// of the thought live and then collapses them into one `Thought for … · …
+/// tokens` cell (`docs/thinking-stream.md`), so a first run should meet a
+/// thought that actually moves rather than a single static line. With the
+/// display off (`ALTER_ZERO_SHOW_THINKING=0`) it is counted and dropped, as it
+/// always was.
+const DUMMY_THINKING: &str = "Let me read the file first.\nThen edit it and run it.";
 
 /// The dummy's canned tool-call "generation" fragments, streamed as
 /// [`StreamEvent::ToolCallDelta`]s just before each `ToolStart` — the pieces a

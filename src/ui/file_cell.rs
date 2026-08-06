@@ -15,15 +15,22 @@ use super::*;
 /// [`result_row`] and the diff-coloured rows.
 pub(super) fn gutter_row(index: usize, text: String, color: Option<Color>) -> Line<'static> {
     let dim = Style::new().fg(TOOL_DIM_COLOR);
+    gutter_row_styled(index, text, color.map_or(dim, |c| Style::new().fg(c)))
+}
+
+/// [`gutter_row`] with the content's whole [`Style`], not just its colour — for
+/// a body that also carries a modifier, like the thinking stream's italic
+/// chain-of-thought (`docs/thinking-stream.md`). The corner/indent stays dim
+/// either way; this is the one place that geometry lives.
+pub(super) fn gutter_row_styled(index: usize, text: String, style: Style) -> Line<'static> {
     let prefix = if index == 0 {
         TOOL_RESULT_PREFIX.to_string()
     } else {
         " ".repeat(cols(TOOL_RESULT_PREFIX))
     };
-    let content_style = color.map_or(dim, |c| Style::new().fg(c));
     Line::from(vec![
-        Span::styled(prefix, dim),
-        Span::styled(text, content_style),
+        Span::styled(prefix, Style::new().fg(TOOL_DIM_COLOR)),
+        Span::styled(text, style),
     ])
 }
 

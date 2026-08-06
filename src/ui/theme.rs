@@ -189,6 +189,40 @@ pub(super) const TOOL_TRUNCATED_MARKER: &str = "…";
 pub(super) const TOOL_NO_OUTPUT: &str = "(no output)";
 
 // ---------------------------------------------------------------------------
+// The thinking stream (docs/thinking-stream.md). It borrows the tool cell's
+// shape while it runs — a [`TOOL_BULLET`] `● Thinking…` header (its bullet
+// breathing like a running tool's) over the chain-of-thought in the
+// [`TOOL_RESULT_PREFIX`] `⎿` gutter — and then collapses into a **bullet-less**
+// `Thought for … · … tokens (ctrl+o to expand)` line: the [`summary_lines`]
+// shape, because a settled thought is turn meta, not a cell.
+// ---------------------------------------------------------------------------
+
+/// The chain-of-thought's own colour — dim, and italic
+/// ([`REASONING_TEXT_MODIFIER`]), so it reads as the model thinking aloud
+/// rather than as a tool's output in the same `⎿` gutter.
+pub(super) const REASONING_TEXT_COLOR: Color = TOOL_DIM_COLOR;
+
+/// Italic: the one cue separating a thought's `⎿` body from a tool's.
+pub(super) const REASONING_TEXT_MODIFIER: Modifier = Modifier::ITALIC;
+
+/// The live block's header, under which the thought tails.
+pub(super) const REASONING_RUNNING: &str = "Thinking…";
+
+/// The settled line's opener — `Thought for 1m 5s · 1.5k tokens`.
+pub(super) const REASONING_DONE: &str = "Thought for ";
+
+/// The settled line's colour: [`STATUS_DONE_COLOR`], the dim the committed
+/// `Done for Ns` summary uses — the two are the same kind of line, and they
+/// bracket a turn.
+pub(super) const REASONING_DONE_COLOR: Color = STATUS_DONE_COLOR;
+
+/// How many **wrapped display rows** of the thought the live block tails. The
+/// window is small on purpose: it grows the live region upward (invariant 3),
+/// and what the user wants is the frontier — what the model is thinking
+/// *now*. The whole thing is in the Ctrl+O transcript.
+pub(super) const REASONING_PEEK_LINES: usize = 5;
+
+// ---------------------------------------------------------------------------
 // Background shells (docs/background.md): the backgrounded cell's fixed row,
 // the running-command Ctrl+B hint, the ↓ manager band, and the footer count.
 // ---------------------------------------------------------------------------

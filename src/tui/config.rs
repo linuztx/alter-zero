@@ -333,7 +333,27 @@ pub(crate) fn thinking_settings_of(
 /// starts the session with no gate so every tool runs unasked — the pre-feature
 /// behaviour. See `docs/permissions.md`.
 pub(crate) fn permissions_enabled() -> bool {
-    match std::env::var("ALTER_ZERO_PERMISSIONS") {
+    env_flag("ALTER_ZERO_PERMISSIONS")
+}
+
+/// Does this session **show** the model's thinking? On by default; disabled by
+/// a falsy `ALTER_ZERO_SHOW_THINKING`, which restores the pre-feature
+/// behaviour exactly — the chain-of-thought is counted into the token tally
+/// and dropped, with only the status line's `Thinking for Ns` clause to show
+/// for it.
+///
+/// It does not change what is *asked of* the model: the Shift+Tab thinking
+/// mode (`docs/reasoning.md`) still rides every request. See
+/// `docs/thinking-stream.md`.
+pub(crate) fn show_thinking() -> bool {
+    env_flag("ALTER_ZERO_SHOW_THINKING")
+}
+
+/// A feature toggle read from the environment: **on** unless `name` is set to
+/// one of `0`/`false`/`no`/`off` (case- and whitespace-insensitive). The one
+/// grammar every `ALTER_ZERO_*` on/off flag uses.
+fn env_flag(name: &str) -> bool {
+    match std::env::var(name) {
         Ok(v) => !matches!(
             v.trim().to_ascii_lowercase().as_str(),
             "0" | "false" | "no" | "off"

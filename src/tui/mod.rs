@@ -123,6 +123,11 @@ pub(crate) struct Session<'t> {
     transcript: ui::TranscriptCache,
     /// Detects a paste / fast-type burst so its redraws coalesce.
     burst: PasteBurst,
+    /// Whether the model's thinking is **shown** — `ALTER_ZERO_SHOW_THINKING`,
+    /// read once at bootstrap. The feature's whole gate: with it off the
+    /// `Thinking*` arms never open a reasoning buffer, so `App` has nothing to
+    /// preview and nothing to record (`docs/thinking-stream.md`).
+    show_thinking: bool,
 
     // ----- the boundary's clocks and deadlines (the set_status_times pattern) -----
     /// The live status indicator's clocks.

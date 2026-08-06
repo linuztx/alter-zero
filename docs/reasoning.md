@@ -1,5 +1,9 @@
 # Shift+Tab thinking modes (reasoning effort)
 
+> This is about **what is asked of** the model. What comes *back* — the
+> chain-of-thought itself, streamed live and collapsed into a
+> `Thought for 1m 5s · 1.5k tokens` cell — is `docs/thinking-stream.md`.
+
 Reasoning-capable models ("thinking" models) accept a **reasoning effort** —
 how much chain-of-thought to spend before answering. This document covers how
 the TUI detects that capability per model, the **Shift+Tab** cycle that

@@ -769,9 +769,20 @@ struct UsagePayload {
     #[serde(default)]
     prompt_tokens_details: Option<PromptTokensDetails>,
     #[serde(default)]
+    completion_tokens_details: Option<CompletionTokensDetails>,
+    #[serde(default)]
     cache_read_input_tokens: Option<u64>,
     #[serde(default)]
     cache_creation_input_tokens: Option<u64>,
+}
+
+/// The `completion_tokens_details` block: the breakdown of what the round
+/// *generated*. Only the reasoning share interests us — it is what the
+/// `Thought for …` cell reports (`docs/thinking-stream.md`).
+#[derive(Debug, Default, Deserialize)]
+struct CompletionTokensDetails {
+    #[serde(default)]
+    reasoning_tokens: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -813,11 +824,17 @@ fn parse_sse_usage(data: &str) -> Option<TokenUsage> {
         .or_else(|| details.and_then(|d| d.cache_creation_input_tokens))
         .or(u.cache_creation_input_tokens)
         .unwrap_or(0);
+    let reasoning = u
+        .completion_tokens_details
+        .as_ref()
+        .and_then(|d| d.reasoning_tokens)
+        .unwrap_or(0);
     Some(TokenUsage {
         input,
         output,
         cached,
         cache_write,
+        reasoning,
     })
 }
 
@@ -1543,10 +1560,41 @@ mod tests {
                 output: 5,
                 cached: 8063,
                 cache_write: 17,
+                ..TokenUsage::default()
             })
         );
         assert_eq!(deltas.len(), 1, "the usage frame emits no delta");
         assert_eq!(outcome.text.response, "Hi");
+    }
+
+    #[test]
+    fn usage_reports_the_reasoning_token_detail() {
+        // A reasoning model bills its chain-of-thought under
+        // `completion_tokens_details.reasoning_tokens` (verified live against
+        // OpenRouter). It is what the committed `Thought for …` cell snaps
+        // its estimate to — see docs/thinking-stream.md.
+        let (out, _deltas) = drain_queued(vec![
+            Ok(br#"data: {"choices":[],"usage":{"prompt_tokens":33,"completion_tokens":74,"total_tokens":107,"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":23,"image_tokens":0}}}
+"#
+            .to_vec()),
+            Ok(b"data: [DONE]\n".to_vec()),
+        ]);
+        let usage = out.unwrap().usage.expect("the frame reports usage");
+        assert_eq!(usage.reasoning, 23);
+        assert_eq!(usage.output, 74, "the reasoning share is part of output");
+    }
+
+    #[test]
+    fn usage_without_the_reasoning_detail_reports_none_of_it() {
+        // A non-reasoning model (or a provider that omits the detail) reports
+        // 0, which keeps the cell's tokenizer estimate.
+        let (out, _deltas) = drain_queued(vec![
+            Ok(br#"data: {"choices":[],"usage":{"prompt_tokens":13,"completion_tokens":2,"total_tokens":15}}
+"#
+            .to_vec()),
+            Ok(b"data: [DONE]\n".to_vec()),
+        ]);
+        assert_eq!(out.unwrap().usage.unwrap().reasoning, 0);
     }
 
     #[test]
@@ -1568,6 +1616,7 @@ mod tests {
                 output: 2,
                 cached: 3072,
                 cache_write: 11,
+                ..TokenUsage::default()
             })
         );
     }
@@ -1601,6 +1650,7 @@ mod tests {
                 output: 2,
                 cached: 0,
                 cache_write: 0,
+                ..TokenUsage::default()
             })
         );
     }

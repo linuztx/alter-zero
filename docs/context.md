@@ -51,6 +51,7 @@ session back restores its history, and therefore its context, in one move.
 | `Message(Error)` | `user`, `[error] {text}` (interrupts and backend failures) |
 | `Message(System)` | `user`, `[system] {text}` (slash-command notices) |
 | `Summary` | skipped — `Done for Ns` is TUI chrome, not conversation |
+| `Reasoning` | skipped — Chat Completions has nowhere to put a previous round's raw chain-of-thought, and re-sending it would burn context for nothing (`docs/thinking-stream.md`) |
 
 A model tool call maps to the **provider-native** Chat Completions shape — the
 exact protocol the live agent loop already streams within a turn (`docs/tools.md`),

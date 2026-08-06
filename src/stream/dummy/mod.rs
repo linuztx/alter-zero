@@ -78,10 +78,11 @@ pub const CHUNK_DELAY: Duration = Duration::from_millis(45);
 pub const TOOL_DELAY: Duration = Duration::from_millis(450);
 
 /// Delay after `ThinkingStart` and after each `ThinkingChunk`, so the
-/// reasoning trickles and the token tally visibly ticks while the model
-/// "thinks". The phase's total length is one step per event —
-/// `(1 + chunks) × THINK_CHUNK_DELAY` (≈1.2s for the canned reasoning's seven
-/// words), long enough that `Thinking for Ns` ticks from 0s.
+/// reasoning trickles — visibly, in the live block (`docs/thinking-stream.md`)
+/// — and the token tally ticks while the model "thinks". The phase's total
+/// length is one step per event — `(1 + chunks) × THINK_CHUNK_DELAY` (≈2s for
+/// the canned reasoning's twelve words), long enough that `Thinking for Ns`
+/// ticks from 0s.
 pub const THINK_CHUNK_DELAY: Duration = Duration::from_millis(150);
 
 /// The built-in canned-reply backend used by the demo.

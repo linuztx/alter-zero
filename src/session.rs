@@ -113,6 +113,27 @@ enum ItemRecord {
     AgentGroup(AgentGroupRecord),
     /// A background agent's completion notice (`docs/agent-tool.md`).
     AgentNotice(AgentNoticeRecord),
+    /// A settled thinking phase (`docs/thinking-stream.md`) — persists so a
+    /// `/resume` brings the `Thought for …` cells and their chain-of-thought
+    /// back. Old builds skip the unknown record type (the forward-compatibility
+    /// contract).
+    Reasoning(ReasoningRecord),
+}
+
+/// A [`Reasoning`] on disk (`docs/thinking-stream.md`). `tokens` is whatever
+/// the cell settled on — the provider's `reasoning_tokens` when its usage
+/// frame arrived, else the tokenizer estimate — and `serde(default)`s to 0
+/// (unknown), which hides the cell's clause.
+///
+/// [`Reasoning`]: crate::app::Reasoning
+#[derive(Serialize, Deserialize)]
+struct ReasoningRecord {
+    text: String,
+    timestamp: String,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    secs: u64,
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    tokens: usize,
 }
 
 /// An [`AgentGroup`] on disk (`docs/agent-tool.md`).
@@ -207,6 +228,12 @@ struct CompactionRecord {
 /// `skip_serializing_if` helper for the gauge counts' 0-means-unknown default.
 #[allow(clippy::trivially_copy_pass_by_ref)] // the signature serde requires
 const fn is_zero(count: &u64) -> bool {
+    *count == 0
+}
+
+/// [`is_zero`] for the `usize` counts (a thought's tokens).
+#[allow(clippy::trivially_copy_pass_by_ref)] // the signature serde requires
+const fn is_zero_usize(count: &usize) -> bool {
     *count == 0
 }
 
@@ -445,6 +472,12 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             result: notice.result.clone(),
             timestamp: notice.timestamp.clone(),
         }),
+        HistoryItem::Reasoning(reasoning) => ItemRecord::Reasoning(ReasoningRecord {
+            text: reasoning.text.clone(),
+            timestamp: reasoning.timestamp.clone(),
+            secs: reasoning.secs,
+            tokens: reasoning.tokens,
+        }),
     };
     line(stamp, record)
 }
@@ -594,6 +627,14 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     after: compaction.after,
                     auto: compaction.auto,
                     secs: compaction.secs,
+                }));
+            }
+            ItemRecord::Reasoning(reasoning) => {
+                items.push(HistoryItem::Reasoning(crate::app::Reasoning {
+                    text: reasoning.text,
+                    secs: reasoning.secs,
+                    tokens: reasoning.tokens,
+                    timestamp: reasoning.timestamp,
                 }));
             }
             // Checkpoints ride the same file but aren't transcript items —
@@ -796,6 +837,42 @@ mod tests {
         assert_eq!(value["payload"]["secs"], 36);
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_thinking_phase_round_trips() {
+        // A settled thought persists so a /resume brings back both the
+        // `Thought for …` cell and the chain-of-thought its Ctrl+O expansion
+        // shows (docs/thinking-stream.md).
+        let item = HistoryItem::Reasoning(crate::app::Reasoning {
+            text: "I should read the file first.".into(),
+            secs: 65,
+            tokens: 1_500,
+            timestamp: "03:20 PM".into(),
+        });
+        let line = item_line(&item, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "reasoning");
+        assert_eq!(value["payload"]["text"], "I should read the file first.");
+        assert_eq!(value["payload"]["secs"], 65);
+        assert_eq!(value["payload"]["tokens"], 1_500);
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_reasoning_line_without_counts_parses_with_defaults() {
+        // The forward-compatibility contract: a record missing the optional
+        // counts loads with 0s, which simply hides the cell's clauses.
+        let old = r#"{"timestamp":"t","type":"reasoning","payload":{"text":"hm","timestamp":""}}"#;
+        let text = format!("{}\n{old}\n", meta_line(&meta(), "t0"));
+        let (_, parsed) = parse_session(&text).expect("parses");
+        let [HistoryItem::Reasoning(reasoning)] = parsed.as_slice() else {
+            panic!("expected one reasoning item, got {parsed:?}");
+        };
+        assert_eq!(reasoning.text, "hm");
+        assert_eq!(reasoning.secs, 0);
+        assert_eq!(reasoning.tokens, 0);
     }
 
     #[test]

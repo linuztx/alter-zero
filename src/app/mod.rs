@@ -37,6 +37,7 @@ mod login;
 mod model_picker;
 mod permission;
 mod queue;
+mod reasoning;
 mod resume;
 mod status;
 mod tools;
@@ -63,6 +64,7 @@ pub use self::login::{KeyOnboarding, KeyStep, ProviderChoice};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
 pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
+pub use self::reasoning::Reasoning;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tools::{ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, ToolCall, ToolStatus};
@@ -140,6 +142,19 @@ pub struct App {
     /// [`HistoryItem::Compaction`] marker; an interrupt, a backend error, or
     /// a `/clear` drops it — the old context stands. See `docs/compact.md`.
     compact_buffer: Option<String>,
+    /// `Some(buffer)` while a **thinking phase** is open, accumulating the
+    /// model's streamed chain-of-thought: the strip previews its tail live and
+    /// [`finish_reasoning`](App::finish_reasoning) collapses it into the
+    /// committed `Thought for …` cell. `None` between phases — and always,
+    /// when the display is off (`ALTER_ZERO_SHOW_THINKING=0`), because the
+    /// boundary then never opens one. See `docs/thinking-stream.md`.
+    reasoning: Option<String>,
+    /// Where this round's settled [`HistoryItem::Reasoning`] items landed in
+    /// [`history`](Self::history) — the snap targets for the round's usage
+    /// frame, which reports the *real* `reasoning_tokens` the cells were built
+    /// without. Cleared by every [`apply_usage`](App::apply_usage) (one frame
+    /// ends one round) and by every turn start.
+    round_reasoning: Vec<usize>,
     /// Whether the in-flight `/compact` turn was **auto-triggered** (the gauge
     /// crossed the threshold) vs the manual command — recorded onto the marker
     /// so its cell can say `· auto`. Meaningful only while
@@ -685,6 +700,9 @@ impl App {
         self.history_generation += 1;
         self.streaming = None;
         self.compact_buffer = None;
+        // An open thinking phase goes with the rest of the in-flight turn —
+        // the user asked for a blank screen (docs/thinking-stream.md).
+        self.drop_reasoning();
         // A fresh slate — but the system prompt and the standing AGENTS.md
         // instructions still ride the next request, so the gauge re-seats on
         // the estimate rather than hard-zeroing (a bare session still reads

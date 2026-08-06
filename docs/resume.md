@@ -105,9 +105,14 @@ overlay machinery.
     (a running tool is never in `history`, so only finished statuses exist),
   - `"summary"` → `{verb, secs, timestamp}` (`verb` maps back to the
     `DONE_VERBS` static on load, falling back to `"Done"` — `TurnSummary.verb`
-    is `&'static str`).
-  Streaming deltas, thinking, the status line, and token tallies are never
-  recorded — codex's persistence policy.
+    is `&'static str`),
+  - `"reasoning"` → `{text, timestamp, secs, tokens}` — one settled thinking
+    phase, so a resumed session keeps its `Thought for …` cells *and* the
+    chain-of-thought their Ctrl+O expansion shows (`docs/thinking-stream.md`);
+    the counts are `serde(default)`ed, so a record without them loads with 0s.
+  Streaming deltas, the status line, and token tallies are never recorded —
+  codex's persistence policy. (A *settled* thinking phase is an ordinary
+  history item and does get its line; the raw deltas do not.)
 - Serialization is `serde`/`serde_json` on **module-local record types**
   (`SessionMeta`, a tagged line enum) mapped to/from the app types, so the
   on-disk format is decoupled from `app/` and the app types stay

@@ -148,7 +148,8 @@ struct (with the boundary-supplied durations) — unit-tested with explicit valu
   `count_user_input(text)` adds the user message's tokens (`↑`) right after, so
   the pre-stream pause shows the input count uploaded; `push_chunk` adds tokens
   (`↓`, and clears any `retry`); `push_thinking` adds tokens (`↓`, the reply
-  buffer untouched — reasoning text is opaque, and clears any `retry`);
+  buffer untouched — the reasoning text goes to the thinking stream's own
+  buffer instead, `docs/thinking-stream.md` — and clears any `retry`);
   `push_tool_call_progress` adds tokens the same way (`↓`, buffer untouched) as
   the model *generates* a tool call — driven by `StreamEvent::ToolCallDelta`, the
   streamed `name`/`arguments` fragments the real backend surfaces before the
@@ -264,7 +265,8 @@ first text segment (so the demo shows `↓ tokens · Thinking for Ns`), with
 `DUMMY_THINKING` streamed word-by-word as `StreamEvent::ThinkingChunk`s in
 between — one `THINK_CHUNK_DELAY` pause per event, so the timer is visible and
 the token tally keeps ticking through the phase (a real API's reasoning
-deltas; the text is never rendered, only counted via `App::push_thinking`).
+deltas; the text is counted via `App::push_thinking`, which also feeds the
+thinking stream's live block when a phase is open — `docs/thinking-stream.md`).
 The loop maps the pair to `thinking_start = Some(now)` / `None`; the thinking
 *seconds* reach the status only through `set_status_times`.
 

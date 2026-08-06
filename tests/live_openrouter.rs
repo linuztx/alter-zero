@@ -621,6 +621,121 @@ fn live_reasoning_effort_streams_thinking() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_usage_reports_the_reasoning_token_count() {
+    // The thinking stream's token count (docs/thinking-stream.md): the round's
+    // final usage frame carries `completion_tokens_details.reasoning_tokens`,
+    // which is what the committed `✻ Thought for … · … tokens` cell snaps its
+    // tokenizer estimate to. Asserted against the live wire because the field
+    // is a provider detail, not something the unit tests can prove is really
+    // sent.
+    let prompt = "What is 17*23? Think it through.";
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend_for(
+        "openai/gpt-oss-120b".to_string(),
+        Some(ThinkingMode::Effort(alter_zero::llm::ReasoningEffort::Low)),
+    )
+    .spawn(
+        prompt.to_string(),
+        vec![],
+        vec![ContextMessage::new(ContextRole::User, prompt)],
+        tx,
+        CancelToken::new(),
+    );
+    let mut reasoning_tokens = 0;
+    let mut thinking_chunks = 0;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ThinkingChunk(_) => thinking_chunks += 1,
+            StreamEvent::Usage(usage) => reasoning_tokens += usage.reasoning,
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("thinking chunks: {thinking_chunks}, reasoning tokens: {reasoning_tokens}");
+    assert!(thinking_chunks > 0, "the model reasoned");
+    assert!(
+        reasoning_tokens > 0,
+        "the usage frame reported completion_tokens_details.reasoning_tokens"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_thought_cell_snaps_to_the_providers_reasoning_tokens() {
+    // The whole thinking-stream chain over a real stream
+    // (docs/thinking-stream.md): the reasoning deltas fill the live buffer,
+    // `ThinkingEnd` collapses it into a `HistoryItem::Reasoning` carrying the
+    // tokenizer ESTIMATE, and the round's usage frame then snaps that cell to
+    // the provider's own `reasoning_tokens`. Driven by replaying the events
+    // into a real `App` exactly as `tui::stream` does, so nothing about the
+    // wire is mocked.
+    let prompt = "Think hard: what is 4721 times 883? Show your reasoning, then answer.";
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend_for(
+        "openai/gpt-oss-120b".to_string(),
+        Some(ThinkingMode::Effort(
+            alter_zero::llm::ReasoningEffort::Medium,
+        )),
+    )
+    .spawn(
+        prompt.to_string(),
+        vec![],
+        vec![ContextMessage::new(ContextRole::User, prompt)],
+        tx,
+        CancelToken::new(),
+    );
+
+    let mut app = alter_zero::app::App::new();
+    app.record_user_message(prompt);
+    app.begin_stream();
+    let mut estimate = None;
+    let mut reported = 0;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ThinkingStart => app.begin_reasoning(),
+            StreamEvent::ThinkingChunk(chunk) => app.push_thinking(&chunk),
+            StreamEvent::ThinkingEnd => {
+                if let Some(thought) = app.finish_reasoning(7) {
+                    estimate = Some(thought.tokens);
+                }
+            }
+            StreamEvent::Chunk(chunk) => app.push_chunk(&chunk),
+            StreamEvent::Usage(usage) => {
+                reported += usage.reasoning;
+                app.apply_usage(&usage);
+            }
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+
+    let estimate = estimate.expect("the model reasoned and the phase settled");
+    let recorded = app
+        .history
+        .iter()
+        .find_map(|item| match item {
+            HistoryItem::Reasoning(r) => Some(r),
+            _ => None,
+        })
+        .expect("the settled phase is in history");
+    println!("estimate: {estimate}, provider reasoning_tokens: {reported}, cell: {recorded:?}");
+    assert!(reported > 0, "the provider reported reasoning_tokens");
+    assert_eq!(
+        recorded.tokens,
+        usize::try_from(reported).unwrap(),
+        "the cell snapped from its {estimate}-token estimate to the provider's count"
+    );
+    assert!(
+        !recorded.text.is_empty(),
+        "the chain-of-thought is kept for the Ctrl+O expansion"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_thinking_off_suppresses_reasoning() {
     // Off sends `reasoning: {"enabled": false}` — a hybrid reasoner that
     // thinks when enabled (deepseek-v3.2) must stream no reasoning deltas.

@@ -71,6 +71,10 @@ pub enum HistoryItem {
     AgentGroup(AgentGroup),
     /// A background agent's completion notice (`docs/agent-tool.md`).
     AgentNotice(AgentNotice),
+    /// A settled thinking phase — the collapsed `Thought for {n} · {t}
+    /// tokens` cell whose chain-of-thought expands in the Ctrl+O transcript
+    /// (`docs/thinking-stream.md`).
+    Reasoning(Reasoning),
     /// A `/compact` marker (`docs/compact.md`): from here back, the model's
     /// context is the compacted shape — [`crate::context::context_messages`]
     /// derives the budgeted recent user texts + the summary bridge in place of

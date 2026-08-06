@@ -558,7 +558,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - On `ThinkingStart`/`ThinkingEnd`: the loop flips its `thinking_start` `Instant`
   so the status line shows/drops `Thinking for Ns`; nothing is committed (thinking
   is live-only). Each `ThinkingChunk` in between is counted into the token tally
-  (`App::push_thinking` — the text is opaque, never rendered), so the count keeps
+  (`App::push_thinking`, which also accumulates it for the thinking stream's
+  live block when a phase is open — `docs/thinking-stream.md`), so the count keeps
   ticking while the model thinks.
 - On `StreamDone`: clear streaming state and end the turn (record the `Done for Ns`
   summary), then commit the final text segment + spacer + the summary. Because the
@@ -678,7 +679,9 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   ThinkingStart, ThinkingChunk(String), ThinkingEnd, Error(String), StreamDone }`
   (in `stream/event.rs`) — what a backend sends to the loop (`ThinkingStart`/`ThinkingEnd`
   drive the live `Thinking for Ns`; the `ThinkingChunk` reasoning deltas between
-  them are counted into the token tally, never rendered; `ToolEnd`'s `truncated`
+  them are counted into the token tally and shown by the thinking stream, which
+  collapses each phase into a `Thought for …` cell (`docs/thinking-stream.md`);
+  `ToolEnd`'s `truncated`
   flags a `!` output cut at the in-memory cap — a backend tool sends `false`).
 - `ReplySource` (trait, `stream/source.rs`) + `DummyAi` (impl, `stream/dummy/`) +
   `CancelToken` (`stream/cancel.rs`) — the

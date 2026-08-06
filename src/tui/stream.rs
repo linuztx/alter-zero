@@ -227,13 +227,19 @@ impl Session<'_> {
             StreamEvent::ThinkingStart => {
                 // Phase boundary: start the thinking clock so the status line
                 // shows `Thinking for Ns`. No scrollback commit (thinking is
-                // live-only).
+                // live-only) — but with the display on, open the reasoning
+                // buffer too, so the strip previews the chain-of-thought as it
+                // streams (docs/thinking-stream.md).
                 self.clocks.thinking_start = Some(std::time::Instant::now());
+                if self.show_thinking {
+                    self.app.begin_reasoning();
+                }
                 false
             }
             StreamEvent::ThinkingChunk(chunk) => {
-                // Reasoning delta: opaque text, counted into the token tally only
-                // — never rendered, never committed.
+                // Reasoning delta: counted into the token tally, and — while a
+                // phase is open — accumulated for the live block. Never
+                // committed: only the collapsed cell at the phase's end is.
                 self.app.push_thinking(&chunk);
                 false
             }
@@ -245,7 +251,12 @@ impl Session<'_> {
                 false
             }
             StreamEvent::ThinkingEnd => {
-                self.clocks.thinking_start = None;
+                // The phase is over: collapse the live block into the
+                // committed `Thought for … · … tokens` cell. It lands here,
+                // before the round's reply text or tool calls exist, which is
+                // what puts it ahead of them in scrollback and history alike
+                // (docs/thinking-stream.md).
+                self.settle_reasoning();
                 false
             }
             StreamEvent::StreamDone => self.on_stream_done(committing, width),
@@ -265,6 +276,10 @@ impl Session<'_> {
                 false
             }
             StreamEvent::Error(message) => {
+                // A phase still open when the backend died keeps what streamed
+                // — settled first, so its cell sits ahead of the partial reply
+                // and the red notice (docs/thinking-stream.md).
+                self.settle_reasoning();
                 if let Some(failure) = self.app.fail_stream(&message) {
                     // A live agent group died with the turn: its subagent threads
                     // keep running unless killed here (the backend thread that
@@ -367,6 +382,66 @@ impl Session<'_> {
         self.render.reset();
         self.clocks.end_turn();
         true
+    }
+
+    /// Close an open thinking phase: stop the thinking clock, record the phase
+    /// as a [`crate::app::Reasoning`] item, and commit its collapsed
+    /// `Thought for … · … tokens` cell — the live block that was previewing
+    /// it goes with it (`docs/thinking-stream.md`).
+    ///
+    /// The one settle helper, called from all three places a phase can end: its
+    /// own `ThinkingEnd`, an Esc interrupt, and a backend error. Calling it
+    /// *before* those two record anything of their own is what keeps the thought
+    /// ahead of the partial reply it preceded.
+    ///
+    /// A no-op when no phase is open (the display is off, or the phase produced
+    /// no text) — so the sites need no condition of their own.
+    ///
+    /// Two of the module's three shapes apply. **Flush before you interleave**:
+    /// a model can reason *after* it has begun answering, so the run of
+    /// assistant text before the phase is finalised first
+    /// (`App::flush_streaming_segment`, the `ToolStart` dance) — otherwise the
+    /// cell splices itself into the paragraph that was streaming, and `history`
+    /// (where the thought is appended now) disagrees with scrollback (where the
+    /// text came first), so a resize repaint would reorder them (invariant 4).
+    /// And **reseat before you commit**: the strip loses the live block's rows
+    /// as the cell commits, so the box must not rise off the bottom
+    /// (invariant 3).
+    pub(crate) fn settle_reasoning(&mut self) {
+        let secs = self
+            .clocks
+            .thinking_start
+            .map_or(0, |start| start.elapsed().as_secs());
+        self.clocks.thinking_start = None;
+        // Nothing was thought — no phase open (the display is off), or one that
+        // streamed no text. Drop it and leave the reply alone: flushing its
+        // segment would split the paragraph in two for a cell that will never
+        // be recorded.
+        if self
+            .app
+            .reasoning()
+            .is_none_or(|text| text.trim().is_empty())
+        {
+            self.app.finish_reasoning(secs);
+            return;
+        }
+        let width = self.term.screen().width;
+        let committing = self.commits_allowed();
+        // The text before the phase becomes its own history message, so the
+        // thought slots after it in scrollback and history alike. A no-op for
+        // the common case (a model that reasons before it answers).
+        self.flush_segment(committing, width);
+        self.render.reset();
+        let Some(reasoning) = self.app.finish_reasoning(secs) else {
+            return;
+        };
+        if committing {
+            let height = self.live_region_height();
+            self.term.set_view_height(height);
+            self.term
+                .insert_before(ui::reasoning_lines(&reasoning, width));
+            self.term.insert_before(vec![Line::default()]);
+        }
     }
 
     /// Finalise the run of assistant text before an interleaved cell, so it slots

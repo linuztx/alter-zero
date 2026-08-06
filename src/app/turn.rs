@@ -96,6 +96,10 @@ impl App {
         // The usage accumulators are per-turn (docs/prompt-caching.md).
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
+        // No phase of a previous turn survives into this one — an abandoned
+        // buffer would otherwise preview under the new turn's status
+        // (docs/thinking-stream.md).
+        self.drop_reasoning();
         let verb = WORKING_VERBS[self.turn_count % WORKING_VERBS.len()];
         let done_verb = DONE_VERBS[self.turn_count % DONE_VERBS.len()];
         self.turn_count = self.turn_count.wrapping_add(1);
@@ -136,10 +140,11 @@ impl App {
     pub fn begin_shell(&mut self, command: &str) {
         self.record_message(Role::Shell, command);
         self.streaming = Some(String::new());
-        // A shell turn never receives usage, but the per-turn accumulators
-        // reset with every turn machinery start all the same.
+        // A shell turn never receives usage (nor thinks), but the per-turn
+        // accumulators reset with every turn machinery start all the same.
         self.turn_usage_tokens = 0;
         self.turn_usage_cached = 0;
+        self.drop_reasoning();
         self.status = Some(TurnStatus {
             verb: SHELL_VERB,
             // Never rendered: a shell turn ends without a summary (end_turn

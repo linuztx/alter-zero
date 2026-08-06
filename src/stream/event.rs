@@ -64,6 +64,12 @@ pub struct TokenUsage {
     /// explicit caching): `prompt_tokens_details.cache_write_tokens` /
     /// `cache_creation_input_tokens`.
     pub cache_write: u64,
+    /// Output tokens the round spent **thinking** (a subset of `output`):
+    /// `completion_tokens_details.reasoning_tokens`. The committed
+    /// `Thought for …` cell snaps its tokenizer estimate to this
+    /// ([`crate::app::App::apply_usage`]); 0 when the provider reports no such
+    /// detail, which keeps the estimate. See `docs/thinking-stream.md`.
+    pub reasoning: u64,
 }
 
 impl TokenUsage {

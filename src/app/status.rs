@@ -133,11 +133,21 @@ impl App {
         }
     }
     /// Count a streamed reasoning delta into the live token tally (arrow down —
-    /// it is model output, streaming) **without** touching the reply buffer:
-    /// the text itself is opaque and never rendered. This is what keeps the
-    /// count ticking while the status line shows `Thinking for Ns`. No-op when
-    /// no turn is in flight.
+    /// it is model output, streaming) **without** touching the reply buffer.
+    /// This is what keeps the count ticking while the status line shows
+    /// `Thinking for Ns`. No-op when no turn is in flight.
+    ///
+    /// When a thinking phase is **open** ([`begin_reasoning`]) the delta also
+    /// lands in its buffer, so the strip's live block shows the model thinking
+    /// and the phase can settle into a `Thought for …` cell. With the
+    /// display off no phase is ever opened, so this only counts — the
+    /// pre-feature behaviour, unchanged. See `docs/thinking-stream.md`.
+    ///
+    /// [`begin_reasoning`]: App::begin_reasoning
     pub fn push_thinking(&mut self, chunk: &str) {
+        if let Some(buf) = self.reasoning.as_mut() {
+            buf.push_str(chunk);
+        }
         if let Some(status) = self.status.as_mut() {
             status.tokens += count_tokens(chunk);
             status.arrow = TokenArrow::Down;
@@ -173,6 +183,10 @@ impl App {
         if self.status.is_none() {
             return;
         }
+        // One frame ends one round: this is where the round's `Thought for
+        // …` cells trade their tokenizer estimate for the provider's own
+        // `reasoning_tokens` (docs/thinking-stream.md).
+        self.snap_round_reasoning(usage.reasoning);
         self.turn_usage_tokens += usize::try_from(usage.total()).unwrap_or(usize::MAX);
         self.turn_usage_cached += usize::try_from(usage.cached).unwrap_or(usize::MAX);
         if let Some(status) = self.status.as_mut() {

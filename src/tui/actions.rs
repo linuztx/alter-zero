@@ -227,6 +227,13 @@ impl Session<'_> {
     /// dropped receiver and can't reach the next turn. See `docs/interrupt.md`.
     fn interrupt_turn(&mut self) -> std::io::Result<()> {
         self.abandon_inflight();
+        // A thinking phase caught mid-thought settles first, so its
+        // `Thought for …` cell sits ahead of everything the interrupt keeps.
+        // Recording it is also what makes this a *Kept* interrupt: real work
+        // streamed, and codex never retracts what streamed. With nothing
+        // thought (or the display off) it is a no-op and the undo path is
+        // untouched (docs/thinking-stream.md).
+        self.settle_reasoning();
         // Interrupt only arises in the conversation view (overlay Esc returns
         // instead), so nothing here touches the alternate screen.
         match self.app.interrupt_turn() {

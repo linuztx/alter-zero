@@ -9,6 +9,7 @@
 
 use super::agent::agent_view_preview_lines;
 use super::layout::{input_box, live_layout};
+use super::reasoning::live_reasoning_lines;
 use super::theme::*;
 use super::tool::{
     command_display_lines, is_command_tool, live_tool_lines, result_row, running_command_lines,
@@ -80,8 +81,13 @@ pub fn render_live(area: Rect, buf: &mut Buffer, app: &App) {
 /// whole forming table (docs/table-streaming.md) — `stream_preview` is the
 /// boundary's cheap render of it ([`StreamRender::preview`], falling back to
 /// re-rendering the last line from the buffer when absent, for unit tests).
+/// An **open thinking phase** previews its live block — the breathing
+/// `● Thinking…` header over the tail of the chain-of-thought
+/// (`docs/thinking-stream.md`) — after the agent/tool branches (what is
+/// genuinely executing is what the user waits on) and before the reply's,
+/// which cannot be streaming while the model is still thinking.
 /// Empty when there is nothing to preview (the pre-stream pause / idle).
-fn preview_lines(
+pub(super) fn preview_lines(
     app: &App,
     width: u16,
     stream_preview: Option<&[Line<'static>]>,
@@ -90,6 +96,8 @@ fn preview_lines(
         agent_view_preview_lines(run, app.pulse(), width)
     } else if app.agent_group().is_some() || !app.tool_queue().is_empty() {
         preview_tool_lines(app, width)
+    } else if let Some(text) = app.reasoning() {
+        live_reasoning_lines(text, app.pulse(), width)
     } else if let Some(lines) = stream_preview {
         lines.to_vec()
     } else {

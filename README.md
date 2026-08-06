@@ -197,8 +197,8 @@ them in one place to retheme.
 The backend is a `ReplySource` trait in `src/stream/source.rs`. By default the app runs
 the built-in `DummyAi` (canned, offline), but a real **OpenAI-compatible** model
 is built in — the `llm` module (`src/llm/`, see `docs/llm.md`). It streams
-`/chat/completions` over SSE, splits `<think>`/native reasoning into the
-*Thinking* status, and reports its model id in the footer.
+`/chat/completions` over SSE, splits `<think>`/native reasoning out for the
+thinking stream, and reports its model id in the footer.
 
 Point it at a provider with environment variables (or `providers.toml`), and the
 real backend takes over automatically:
@@ -235,13 +235,38 @@ what the model was told and every later turn — and a `/resume` — still carri
 it.
 `ALTER_ZERO_PERMISSIONS=0` turns the gate off.
 
+A reasoning model's **thinking is shown** (`docs/thinking-stream.md`). While a
+phase runs it wears the tool cell's shape — a breathing `●` bullet over the
+chain-of-thought in the `⎿` gutter, tail-following the newest rows:
+
+```
+● Thinking…
+  ⎿  I need to look at the file first. The user asked for a modern
+      landing page, so the structure should be: a hero, three feature…
+```
+
+When the phase ends the whole block collapses into one bullet-less line —
+nothing is happening any more, so what is left is a fact about the turn:
+
+```
+Thought for 1m 5s · 1.5k tokens (ctrl+o to expand)
+```
+
+The thought is not lost — **Ctrl+O** expands it in the transcript, and it
+survives a `/resume`. The token count is the provider's own
+`completion_tokens_details.reasoning_tokens` once the round's usage frame
+lands, a tokenizer estimate until then. `ALTER_ZERO_SHOW_THINKING=0` hides it
+all (that hides thinking; **Shift+Tab** to `off` is what stops the model doing
+it).
+
 Providers live in `providers.toml` (repo root; an Agent-Zero/Venice proxy and
 OpenRouter ship by default). To plug in a *non*-OpenAI-shaped
 backend instead, implement `ReplySource` (with `DummyAi`/`LlmBackend` as
 templates) — `spawn(prompt, images, tx, cancel)` streams `StreamEvent::Chunk(..)`
 per token, polls the `CancelToken`, then sends `StreamDone` (or `Error(msg)`);
 tool calls are a `ToolStart`/`ToolEnd` pair, a thinking phase is
-`ThinkingStart`/`ThinkingEnd` with `ThinkingChunk`s between.
+`ThinkingStart`/`ThinkingEnd` with `ThinkingChunk`s between (whose text drives
+the thinking stream).
 
 ## Known limitations (v1)
 

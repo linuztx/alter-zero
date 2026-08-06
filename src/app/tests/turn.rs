@@ -987,6 +987,7 @@ fn apply_usage_snaps_the_tally_to_the_real_total() {
         output: 20,
         cached: 8063,
         cache_write: 0,
+        ..TokenUsage::default()
     });
     assert_eq!(
         app.status().unwrap().tokens,
@@ -1013,6 +1014,7 @@ fn apply_usage_accumulates_across_agent_rounds() {
         output,
         cached,
         cache_write: 0,
+        ..TokenUsage::default()
     };
     app.apply_usage(&round(1000, 50, 0));
     app.apply_usage(&round(1200, 30, 900));
@@ -1028,6 +1030,7 @@ fn apply_usage_is_a_no_op_when_idle() {
         output: 10,
         cached: 0,
         cache_write: 0,
+        ..TokenUsage::default()
     });
     assert!(app.status().is_none(), "no status conjured up");
     app.begin_stream();
@@ -1051,6 +1054,7 @@ fn the_turn_summary_carries_the_real_usage() {
         output: 123,
         cached: 8063,
         cache_write: 0,
+        ..TokenUsage::default()
     });
     let summary = app.end_turn(12).expect("a turn was active");
     assert_eq!(summary.tokens, 8203);
@@ -1231,6 +1235,7 @@ fn a_completion_pending_at_turn_end_records_above_the_summary() {
             HistoryItem::AgentGroup(_) => "agent_group",
             HistoryItem::AgentNotice(_) => "agent_notice",
             HistoryItem::Compaction(_) => "compaction",
+            HistoryItem::Reasoning(_) => "reasoning",
         })
         .collect();
     assert_eq!(

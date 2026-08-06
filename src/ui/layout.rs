@@ -72,6 +72,15 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
     if app.agent_group().is_some() || !app.tool_queue().is_empty() {
         return u16::try_from(preview_tool_lines(app, width).len()).unwrap_or(u16::MAX);
     }
+    // An open thinking phase previews its live block — the `● Thinking…`
+    // header plus the tail it shows (docs/thinking-stream.md). Sized from the
+    // same walk the strip draws, so the two agree by construction.
+    if let Some(text) = app.reasoning() {
+        return u16::try_from(
+            super::reasoning::live_reasoning_lines(text, app.pulse(), width).len(),
+        )
+        .unwrap_or(u16::MAX);
+    }
     // A streaming reply previews its last row — or, while a table is forming,
     // the whole forming block: only the boundary's `StreamRender` knows that
     // height, so it injects the count each frame via

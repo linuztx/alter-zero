@@ -87,6 +87,7 @@ fn set_clock_stamps_every_recorded_message_and_tool() {
             HistoryItem::AgentGroup(g) => &g.timestamp,
             HistoryItem::AgentNotice(n) => &n.timestamp,
             HistoryItem::Compaction(c) => &c.timestamp,
+            HistoryItem::Reasoning(r) => &r.timestamp,
         };
         assert_eq!(ts, STAMP, "every recorded item carries the clock's stamp");
     }

@@ -32,6 +32,9 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             HistoryItem::AgentGroup(g) => lines.extend(agent_group_lines(g, width)),
             HistoryItem::AgentNotice(n) => lines.extend(agent_notice_lines(n, width)),
             HistoryItem::Compaction(c) => lines.extend(compaction_lines(c, width)),
+            // Collapsed: only the `Thought for …` line reaches scrollback —
+            // the chain-of-thought expands in Ctrl+O (docs/thinking-stream.md).
+            HistoryItem::Reasoning(r) => lines.extend(reasoning_lines(r, width)),
         }
         // Blank spacer after every item — except a shell command's header:
         // its cell stays flush ([`is_shell_header`]).

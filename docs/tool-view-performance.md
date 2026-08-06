@@ -67,7 +67,8 @@ incremental build (the `StreamRender` pattern, applied to the overlay):
   `transcript_cache_rebuilds_when_history_is_replaced_at_the_same_length`
   test).
 - **Refresh = truncate + append.** A refresh drops the volatile tail
-  (in-progress reply, live tool queue, queued backlog) off the end, appends
+  (in-progress reply, the open thinking phase — `docs/thinking-stream.md` —
+  live tool queue, queued backlog) off the end, appends
   any newly committed items to the prefix, and rebuilds just the tail. A
   streamed chunk re-renders only the tail; a scroll (unchanged signature)
   renders nothing at all.
