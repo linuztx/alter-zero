@@ -75,7 +75,7 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         play: Play::Gated(gated::auto_permission_turn),
     },
     …
-    // The default turn: think, then a compact `Read`+`Bash` batch.
+    // The default turn: think, then read/edit/run alter-zero's calling card.
     Scenario {
         selects: |_| true,          // the catch-all — keep it last
         play: Play::Script(turns::tools_turn),
@@ -168,7 +168,7 @@ picked. Same trick `ui::TranscriptCache`'s counters use.
 | `agents` | "agents", not "agents.md" | a two-subagent group, foreground or background (`docs/agent-tool.md`) |
 | `parallel-batch` | "parallel" | three parallel `Bash(ping …)` calls and their `⎿ Waiting…` cells (`docs/parallel-tools.md`) |
 | `files` | "diff"/"edit"/"write", not "agents.md" | a `Write` then an `Edit` of the same file: the numbered file cell and its green/red diff hunk (`docs/tools.md`) |
-| `tools` | anything | the default turn: think, then a compact `Read`+`Bash` batch |
+| `tools` | anything | the default turn: think, then read `about.py`, `Edit` in the credit it forgot, and run it |
 
 Cue order is registry order, so a narrower cue sits above a broader one that
 would also match it. Two cues carry a guard rather than an order: `agents` and
@@ -221,12 +221,42 @@ this costs nothing):
 | `Edit` | `Updated {path} (+A -D)` + `tools::render_numbered_diff` | only the touched hunk, `+` rows on the green tint and `-` rows on the red one (`script::updated_output`) |
 | `Bash` | `Exit code: N` + the body | the frame `ui::command_display_output` reads: dropped on success, rewritten to a red `Error: Exit code N` head on failure, so a red cell says *why* |
 
-Sizing follows from which demo it is. The **default** turn answers anything, so
-it is the footprint everything else is measured against: its read is deliberately
-shorter than the cell's ten-row peek, because a capped one would add a dozen rows
-to every message in the session. The **opt-in** `files` demo is where the tall
-numbered body lives — its `Write` caps, and the `… +N lines (ctrl+o to expand)`
-tail it grows is what teaches the key.
+## The default turn is a story, not a sampler
+
+The turn that answers *anything* used to be two unrelated calls — read
+`src/main.rs`, then ping a host that doesn't resolve. Both cells rendered, and
+neither meant anything: the demo read as a widget sampler.
+
+It is one errand in three steps now, on one file — and the file is chosen so
+the errand has a *point*. `about.py` is alter-zero's calling card, and it
+carries `CREATOR = "linuztx"` and `HOME = "https://github.com/linuztx"` right at
+the top, then prints a card that mentions neither:
+
+1. **`Read(about.py)`** — the file, numbered and highlighted. The two unused
+   constants sit in the visible peek, so the reader sees the omission before
+   the demo fixes it. The file runs a few lines past the cell's ten-row peek on
+   purpose, so the committed cell carries the `… +N lines (ctrl+o to expand)`
+   tail and the transcript has something to expand that the inline cell doesn't
+   show.
+2. **`Edit(about.py)`** — one line rewritten, wiring those constants into what
+   the card prints. A single `+`/`-` pair inside its context: the smallest diff
+   that still shows both tints.
+3. **`Bash(python3 about.py)`** — the run, whose output *is* the credit:
+
+   ```
+   alter-zero — an autonomous AI agent that lives in your terminal
+     created by linuztx · https://github.com/linuztx
+   ```
+
+   The last cell is proof the middle one landed, and the demo has said who
+   wrote the thing you are looking at.
+
+That ordering is what the reply narrates, and what
+`stream::tests::turns::the_default_turn_is_one_errand_in_three_steps` pins:
+three calls, same path, in that order, the command naming the file the edit
+changed. The turn stays green throughout — a gratuitously failing call would
+muddle the story, so the red cell lives in the `parallel` batch, whose third
+ping can't resolve its host.
 
 The `bash` framing has a second half worth keeping straight: the executor
 **streams the raw output lines while the command runs** and frames the result

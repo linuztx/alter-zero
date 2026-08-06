@@ -223,10 +223,12 @@ printf '%s\n' "$overlay"
 # first window shows (the header banner + conversation above push them down) —
 # page towards them until the expanded output's marker scrolls into view
 # (TOOL_VIEW_PAGE < the body height, so consecutive windows overlap and the
-# walk can't skip rows).
+# walk can't skip rows). The marker is the demo script's `__main__` guard:
+# line 14 of 15, past the inline cell's ten-row peek, so finding it proves the
+# transcript expands what the cell collapsed.
 overlay_deep="$overlay"
 for _ in $(seq 1 20); do
-	if printf '%s' "$overlay_deep" | grep -qF "InlineViewport::init"; then
+	if printf '%s' "$overlay_deep" | grep -qF 'if __name__ == "__main__":'; then
 		break
 	fi
 	tmux send-keys -t "$S" NPage
@@ -653,7 +655,7 @@ done
 echo "==== captured pane (world + again queued above the box) ===="
 printf '%s\n' "$queued_band"
 queue_done=""
-for _ in $(seq 1 134); do # up to ~20s: turn 1 then the batched turn 2 finish
+for _ in $(seq 1 300); do # up to ~45s: turn 1 then the batched turn 2 finish
 	queue_done="$(tmux capture-pane -t "$S9" -p -S -80)"
 	if printf '%s' "$queue_done" | grep -qF "Finished for"; then
 		break
@@ -1091,7 +1093,7 @@ done
 echo "==== captured pane (world via Enter + later via Tab queued above the box) ===="
 printf '%s\n' "$tabqueue_band"
 tabqueue=""
-for _ in $(seq 1 160); do # up to ~24s: turns 1, 2, then the SEPARATE turn 3 finish
+for _ in $(seq 1 300); do # up to ~45s: turns 1, 2, then the SEPARATE turn 3 finish
 	tabqueue="$(tmux capture-pane -t "$S18" -p -S -100)"
 	if printf '%s' "$tabqueue" | grep -qF "Completed for"; then
 		break
@@ -1217,7 +1219,7 @@ done
 echo "==== captured pane (text + shell command queued above the box) ===="
 printf '%s\n' "$shellqueue_band"
 shellqueue=""
-for _ in $(seq 1 160); do # up to ~24s: turn 1, turn 2 (world), then the LOCAL shell turn
+for _ in $(seq 1 300); do # up to ~45s: turn 1, turn 2 (world), then the LOCAL shell turn
 	shellqueue="$(tmux capture-pane -t "$S21" -p -S -100)"
 	if printf '%s' "$shellqueue" | grep -qF "⎿  smoke_queue_ok"; then
 		break
@@ -1438,7 +1440,7 @@ tmux kill-session -t "$S25" 2>/dev/null
 # runs to its "Finished for" summary — all without leaving the overlay. The
 # Ctrl+O return then repaints the inline conversation with both turns. ---
 S29="${S}_queueoverlay"
-tmux new-session -d -s "$S29" -x 80 -y 40 "$APP" # 40 rows: two demo turns
+tmux new-session -d -s "$S29" -x 80 -y 60 "$APP" # 60 rows: two demo turns
 sleep 0.4
 tmux send-keys -t "$S29" -l "hello there"
 sleep 0.2
@@ -1467,7 +1469,7 @@ printf '%s\n' "$queued_overlay"
 # Turn 1 ends under the overlay → the queue dispatches right there: "world"
 # becomes a real transcript user entry and turn 2 streams to its summary.
 overlay_advanced=""
-for _ in $(seq 1 150); do # up to ~22s: turn 1 finishes, then turn 2 completes
+for _ in $(seq 1 300); do # up to ~45s: turn 1 finishes, then turn 2 completes
 	overlay_advanced="$(tmux capture-pane -t "$S29" -p)"
 	if printf '%s' "$overlay_advanced" | grep -qF "Finished for"; then
 		break
@@ -1554,7 +1556,7 @@ printf '%s\n' "$backtrack_rewound"
 backtrack_rewound_scroll="$(tmux capture-pane -t "$S30" -p -S -120)"
 tmux send-keys -t "$S30" Enter # resubmit the recalled draft
 backtrack_resent=""
-for _ in $(seq 1 80); do # turn 3 → "Completed for"
+for _ in $(seq 1 200); do # up to ~30s: turn 3 → "Completed for"
 	backtrack_resent="$(tmux capture-pane -t "$S30" -p -S -40)"
 	if printf '%s' "$backtrack_resent" | grep -qF "Completed for"; then
 		break
@@ -1624,7 +1626,9 @@ done
 echo "==== captured pane (follow-up turn on the resumed session) ===="
 printf '%s\n' "$resume_appended"
 resume_files_after_append="$(find "$RESUME_DIR" -type f -name 'rollout-*.jsonl' | wc -l | tr -d ' ')"
-resume_appended_tail="$(tail -c 2000 "$resume_first_file" 2>/dev/null)"
+# 20 KB, not 2: one turn's records now carry a numbered read and a diff, so a
+# small tail no longer reaches back to the user message that opened it.
+resume_appended_tail="$(tail -c 20000 "$resume_first_file" 2>/dev/null)"
 tmux send-keys -t "$S31" -l "/clear"
 sleep 0.3
 tmux send-keys -t "$S31" Enter
@@ -2324,7 +2328,7 @@ if ! printf '%s' "$overlay" | grep -qF "$USER_MSG"; then
 	echo "FAIL: tool-output view did not include the user/AI conversation" >&2
 	status=1
 fi
-if ! printf '%s' "$overlay_deep" | grep -qF "InlineViewport::init"; then
+if ! printf '%s' "$overlay_deep" | grep -qF 'if __name__ == "__main__":'; then
 	echo "FAIL: tool-output view did not show the full (expanded) Read output" >&2
 	status=1
 fi
@@ -3199,7 +3203,7 @@ if ! printf '%s' "$ctxdebug_pane" | grep -qF "hello there"; then
 	echo "FAIL: Phase 36 the context view is missing the user message's raw text" >&2
 	status=1
 fi
-if ! printf '%s' "$ctxdebug_pane" | grep -qF 'read({"path":"src/main.rs"})'; then
+if ! printf '%s' "$ctxdebug_pane" | grep -qF 'read({"path":"about.py"})'; then
 	echo "FAIL: Phase 36 the context view is missing the native tool call (→ read(...))" >&2
 	status=1
 fi
@@ -3470,7 +3474,12 @@ echo "==== Phase 45: captured pane (Ctrl+O overlay — the banner atop a real co
 printf '%s\n' "$header_overlay_conv"
 tmux send-keys -t "$S_HEADER" C-o
 sleep 0.5
-header_roundtrip="$(tmux capture-pane -t "$S_HEADER" -p)"
+# A demo turn is taller than a 24-row screen, so the return's repaint fills
+# the screen with its tail and the banner sits just above it in scrollback —
+# read both (`-S`). What this phase guards is that the banner is still there
+# and still SINGLE; the count assertion below is the real check.
+header_roundtrip="$(tmux capture-pane -t "$S_HEADER" -p -S -80)"
+header_roundtrip_count=$(printf '%s\n' "$header_roundtrip" | grep -cF "$HEADER_MARK")
 echo "==== Phase 45: captured pane (banner + conversation after the Ctrl+O round trip) ===="
 printf '%s\n' "$header_roundtrip"
 tmux kill-session -t "$S_HEADER" 2>/dev/null
@@ -3502,8 +3511,8 @@ if ! printf '%s' "$header_overlay_conv" | grep -qF "$HEADER_MARK"; then
 	echo "FAIL: Phase 45 — the Ctrl+O transcript of a real conversation is missing the banner at its top" >&2
 	status=1
 fi
-if ! printf '%s' "$header_roundtrip" | grep -qF "$HEADER_MARK"; then
-	echo "FAIL: Phase 45 — the header vanished after a Ctrl+O round trip over a real conversation" >&2
+if [ "${header_roundtrip_count:-0}" != "1" ]; then
+	echo "FAIL: Phase 45 — after a Ctrl+O round trip over a real conversation the banner should appear exactly once (saw ${header_roundtrip_count:-0})" >&2
 	status=1
 fi
 if ! printf '%s' "$header_roundtrip" | grep -qF "Happy to help"; then

@@ -149,10 +149,11 @@ fn a_parallel_prompt_triggers_the_vivid_three_call_bash_batch() {
 }
 
 #[test]
-fn the_default_turn_keeps_the_compact_two_call_batch() {
-    // Without "parallel", the turn runs the compact Read+Bash batch (baseline
-    // footprint), not the three-ping demo — so unrelated smoke phases keep
-    // their sizing.
+fn the_default_turn_is_one_errand_in_three_steps() {
+    // The turn that answers anything is a *story*, not a sampler: read the
+    // script, edit it, run it — three calls on the same file, in that order,
+    // where the last one's output is proof the middle one landed. Cells that
+    // don't refer to each other demo the same widgets and teach nothing.
     let events = turn_events("hello there", 0);
     let StreamEvent::ToolBatch(items) = events
         .iter()
@@ -161,8 +162,21 @@ fn the_default_turn_keeps_the_compact_two_call_batch() {
     else {
         unreachable!()
     };
-    assert_eq!(items.len(), 2, "two calls by default: {items:?}");
-    assert_eq!(items[0].name, "Read", "the Read runs first: {items:?}");
+    let names: Vec<&str> = items.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Read", "Edit", "Bash"],
+        "read, edit, run: {items:?}"
+    );
+    let path = &items[0].args;
+    assert_eq!(
+        &items[1].args, path,
+        "the edit changes the file it just read"
+    );
+    assert!(
+        items[2].args.contains(path.as_str()),
+        "the command runs that same file: {items:?}"
+    );
 }
 
 /// Every `(name, args, output)` a turn's tools resolved with, in order.
@@ -203,8 +217,8 @@ fn the_read_cell_carries_the_executor_s_numbered_output() {
     // difference the user sees. See `docs/dummy-backend.md`.
     let (args, output) = resolved_tool(&turn_events("hello there", 0), "Read");
     assert!(
-        args.ends_with(".rs"),
-        "the demo reads a source file: {args}"
+        args.ends_with(".py"),
+        "the demo reads the script it goes on to edit and run: {args}"
     );
     let width = output.lines().count().to_string().len().max(1);
     for (i, line) in output.lines().enumerate() {
@@ -221,13 +235,14 @@ fn the_read_cell_carries_the_executor_s_numbered_output() {
         );
     }
     // `ui::FILE_PEEK_LINES` (private to `ui`) caps a file cell's inline peek
-    // at 10 rows. The default turn answers *anything*, so its cell must fit
-    // inside that peek: a capped read would add a dozen rows to every message
-    // in the demo. Showing a capped body — and the `… +N lines` tail that
-    // teaches ctrl+o — is the opt-in file-change demo's job.
+    // at 10 rows, and the demo's script runs a few lines past it on purpose:
+    // the committed cell then carries the `… +N lines (ctrl+o to expand)`
+    // tail, so the turn that answers anything is also the one that teaches
+    // the key — and the transcript holds rows the inline cell doesn't show,
+    // which is what `smoke.sh` pages to.
     assert!(
-        output.lines().count() <= 10,
-        "the default turn's read must fit the file cell's peek, uncapped"
+        output.lines().count() > 10,
+        "the demo's read caps, so its cell shows the ctrl+o tail"
     );
 }
 
@@ -260,31 +275,38 @@ fn the_demo_s_read_really_renders_as_a_numbered_file_cell() {
     // survive `ui::file_cell_lines`' parse, or the cell silently falls back to
     // the legacy plain-text peek and the demo shows the wrong design.
     let lines = rendered_cell("hello there", "Read");
-    assert_eq!(plain(&lines[0]), "● Read(src/main.rs)");
+    assert_eq!(plain(&lines[0]), "● Read(about.py)");
     assert_eq!(
         plain(&lines[1]),
-        "  ⎿  Read 7 lines",
+        "  ⎿  Read 16 lines",
         "the synthesized file-cell summary, not a text peek"
     );
     // The gutter is dim and the source is syntax-highlighted (Catppuccin
-    // Mocha, via the path's `.rs` extension) — the two styling facts that
+    // Mocha, via the path's `.py` extension) — the two styling facts that
     // separate a file cell from the plain peek this demo used to render.
-    let row = &lines[3]; // source line 2: `async fn tui_main(…)`
-    assert_eq!(row.spans[1].content.trim(), "2", "a dim line number");
+    let row = &lines[11]; // source line 10: `def card() -> str:`
+    assert_eq!(row.spans[1].content.trim(), "10", "a dim line number");
     let keyword = row
         .spans
         .iter()
-        .find(|s| s.content.as_ref() == "fn")
-        .expect("the `fn` keyword is its own segment");
+        .find(|s| s.content.as_ref() == "def")
+        .expect("the `def` keyword is its own segment");
     assert!(keyword.style.fg.is_some(), "the keyword is coloured");
     assert_ne!(
         keyword.style.fg, row.spans[1].style.fg,
         "the keyword and the dim line number are distinct colours"
     );
+    // Capped at the peek, with the tail that teaches ctrl+o: the transcript
+    // holds the rest (the `if __name__` guard the smoke suite pages to).
     assert_eq!(
         lines.len(),
-        2 + 7,
-        "header + summary + one row per source line, uncapped"
+        2 + 10 + 1,
+        "header + summary + the ten-row peek + the more-lines tail"
+    );
+    assert!(
+        plain(lines.last().expect("the tail")).contains("+6 lines (ctrl+o to expand)"),
+        "{:?}",
+        plain(lines.last().unwrap())
     );
 }
 
@@ -548,19 +570,31 @@ fn turn_events_generates_each_tool_call_before_it_starts() {
 }
 
 #[test]
-fn turn_events_shows_both_a_success_and_a_failure() {
-    // The demo exercises green and red: at least one ok tool and one failing.
-    let events = turn_events("x", 0);
-    let oks = events
-        .iter()
-        .filter(|e| matches!(e, StreamEvent::ToolEnd { ok: true, .. }))
-        .count();
-    let fails = events
-        .iter()
-        .filter(|e| matches!(e, StreamEvent::ToolEnd { ok: false, .. }))
-        .count();
-    assert!(oks >= 1, "at least one tool succeeds (green)");
-    assert!(fails >= 1, "at least one tool fails (red)");
+fn the_demo_shows_both_a_success_and_a_failure() {
+    // The demo has to exercise both cell colours, but they belong in
+    // different turns. The default turn is one errand that *works* — a
+    // gratuitously failing call in the middle of read/edit/run would only
+    // muddle the story it tells — so red lives in the parallel batch, whose
+    // third ping can't resolve its host.
+    let outcomes = |prompt: &str| -> (usize, usize) {
+        let events = turn_events(prompt, 0);
+        (
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::ToolEnd { ok: true, .. }))
+                .count(),
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::ToolEnd { ok: false, .. }))
+                .count(),
+        )
+    };
+    let (oks, fails) = outcomes("x");
+    assert!(oks >= 1, "the default turn's steps succeed (green)");
+    assert_eq!(fails, 0, "and none of them fails: the errand works");
+    let (oks, fails) = outcomes("run three pings in parallel");
+    assert!(oks >= 1, "the parallel batch has a green cell");
+    assert!(fails >= 1, "and a red one");
 }
 
 #[test]

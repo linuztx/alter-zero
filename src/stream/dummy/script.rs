@@ -84,28 +84,38 @@ pub(super) const DUMMY_TABLE_REPLY: &str = concat!(
 const DEMO_REPLIES: &[&str] = &[
     concat!(
         "Sure thing — fair warning, though: I'm the built-in demo backend, so my \
-         words are canned and these tool calls are scripted. What surrounds them \
-         is not.\n\n",
-        "That is the real rendering: a `Read` cell with a numbered, \
-         syntax-highlighted gutter, and a `Bash` cell that goes red with its exit \
-         code when a command fails. **ctrl+o** opens the full transcript, **ctrl+d** \
-         the raw context.\n\n",
+         words are canned and these three calls are scripted. The errand is real \
+         enough, mind you: `about.py` knows who wrote alter-zero and then prints a \
+         card that forgets to say so.\n\n",
+        "Fixed, and the run proves it: **alter-zero is by linuztx** — \
+         https://github.com/linuztx. That is the loop a coding agent lives in, \
+         and every cell above is the one a live model draws: the `Read` numbers \
+         and highlights the file, the `Edit` shows only the line it touched (green \
+         in, red out), the command prints the result. **ctrl+o** opens the full \
+         transcript, **ctrl+d** the raw context.\n\n",
         handoff!()
     ),
     concat!(
         "Absolutely — with the caveat that I am a cardboard cutout of an AI. No \
-         model is attached, so this turn is scripted end to end.\n\n",
-        "Both calls were announced before either ran, so the queued one sat at \
-         `⎿ Waiting…` while the front one streamed live. Ask me for a *table*, a \
-         *diff*, some *parallel* commands, or a couple of *agents* to see more.\n\n",
+         model is attached, so the errand below is scripted end to end: read \
+         alter-zero's calling card, wire in the credit it was carrying but never \
+         printing, run it.\n\n",
+        "All three calls were announced before any of them ran, so the ones still \
+         queued sat at `⎿ Waiting…` while the front one worked — and the card now \
+         says what it always knew: **linuztx** built this thing — \
+         https://github.com/linuztx. Ask me for a *table*, a *diff*, some \
+         *parallel* commands, or a couple of *agents* to see the rest.\n\n",
         handoff!()
     ),
     concat!(
         "Happy to help — with one asterisk: I'm alter-zero's built-in demo backend, \
-         a scripted stand-in for the model that isn't plugged in yet.\n\n",
-        "That is a whole turn: a thinking phase, a tool batch with live output, then \
-         finished cells committed into your terminal's own scrollback — canned \
-         words, real interface.\n\n",
+         a scripted stand-in for the model that isn't plugged in yet. Watch this, \
+         though: the file below has known who made me all along and never once \
+         mentioned it.\n\n",
+        "It does now — **alter-zero is the work of linuztx**, \
+         https://github.com/linuztx, and the command output is the proof the edit \
+         landed. Read, change, verify: a real agent works exactly like that, one \
+         small checked step at a time.\n\n",
         handoff!()
     ),
 ];

@@ -14,25 +14,41 @@ the logic is pure and unit-tested.
 ❯ hello there
 
 ● Happy to help — with one asterisk: I'm alter-zero's built-in demo backend, a
-  scripted stand-in for the model that isn't plugged in yet.
+  scripted stand-in for the model that isn't plugged in yet. Watch this, though:
+  the file below has known who made me all along and never once mentioned it.
 
-● Read(src/main.rs)
-  ⎿  Read 7 lines
-      1 #[tokio::main(flavor = "current_thread")]
-      2 async fn tui_main(startup: Option<Startup>) -> io::Result<()> {
-      3     let mut term = InlineViewport::init(ui::LIVE_MIN_HEIGHT)?;
-      4     let result = tui::event_loop::run(&mut term, startup).await;
-      5     let restored = term.restore();
-      6     result.map(|_| ()).and(restored)
-      7 }
+● Read(about.py)
+  ⎿  Read 16 lines
+       1 #!/usr/bin/env python3
+       2 """Print the alter-zero calling card."""
+       3
+       4 NAME = "alter-zero"
+       5 TAGLINE = "an autonomous AI agent that lives in your terminal"
+       6 CREATOR = "linuztx"
+       7 HOME = "https://github.com/linuztx"
+       8
+       9
+      10 def card() -> str:
+     … +6 lines (ctrl+o to expand)
 
-● Bash(ping -c 3 x.invalid)
-  ⎿  Error: Exit code 68
-     ping: cannot resolve x.invalid: Unknown host
+● Edit(about.py)
+  ⎿  Updated about.py (+1 -1)
+       9
+      10  def card() -> str:
+      11      """Return the calling card."""
+      12 -    return f"{NAME} — {TAGLINE}"
+      12 +    return f"{NAME} — {TAGLINE}\n  created by {CREATOR} · {HOME}"
+      13
+      14
+      15  if __name__ == "__main__":
 
-● That is a whole turn: a thinking phase, a tool batch with live output, then
-  finished cells committed into your terminal's own scrollback — canned words,
-  real interface.
+● Bash(python3 about.py)
+  ⎿  alter-zero — an autonomous AI agent that lives in your terminal
+       created by linuztx · https://github.com/linuztx
+
+● It does now — alter-zero is the work of linuztx, https://github.com/linuztx,
+  and the command output is the proof the edit landed. Read, change, verify: a
+  real agent works exactly like that, one small checked step at a time.
 
   Two commands away from the real thing: /login saves a provider API key, then
   /model picks the model to run.
@@ -42,12 +58,13 @@ the logic is pure and unit-tested.
 ────────────────────────────────────────────────────────────────────────────────
 ```
 
-The demo's cells are the *real* cells: the `Read` body is numbered and
-syntax-highlighted exactly as the live agent's is, and a failed command carries
-the exit code the executor would have reported. Ask it for a *diff*, a *table*,
-some *parallel* commands or a couple of *agents* to see the other scripted
-demos — then run `/login` and `/model` to put a real model behind it
-(`docs/dummy-backend.md`).
+That turn is one errand in three steps — read alter-zero's calling card, notice
+it never prints the credit it carries, wire it in and run it — and its cells are
+the *real* cells: the bodies are numbered and syntax-highlighted exactly as the
+live agent's are, the diff carries the same green/red tints, and a failed
+command reports the exit code the executor would have. Ask it for a *diff*, a *table*, some *parallel* commands or
+a couple of *agents* to see the other scripted demos — then run `/login` and
+`/model` to put a real model behind it (`docs/dummy-backend.md`).
 
 ## Run it
 

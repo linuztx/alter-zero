@@ -28,8 +28,11 @@ const DUMMY_THINKING: &str = "Let me look at the code first.";
 /// only feed the token tally so the status ticks while the model *generates*
 /// the call (like [`DUMMY_THINKING`] does for reasoning). See
 /// `docs/status-indicator.md`.
-const DUMMY_READ_CALL: &[&str] = &["read", "{\"path\":", "\"src/main.rs\"}"];
-const DUMMY_BASH_CALL: &[&str] = &["bash", "{\"command\":", "\"ping x.invalid\"}"];
+const DUMMY_READ_CALL: &[&str] = &["read", "{\"path\":", "\"about.py\"}"];
+const DUMMY_ABOUT_EDIT_CALL: &[&str] = &["edit", "{\"path\":", "\"about.py\",", "\"old_string\":"];
+const DUMMY_ABOUT_BASH_CALL: &[&str] = &["bash", "{\"command\":", "\"python3 about.py\"}"];
+const DUMMY_PING_CALL: &[&str] = &["bash", "{\"command\":", "\"ping x.invalid\"}"];
+const DUMMY_FIZZ_BASH_CALL: &[&str] = &["bash", "{\"command\":", "\"python3 fizzbuzz.py\"}"];
 const DUMMY_WRITE_CALL: &[&str] = &[
     "write",
     "{\"path\":",
@@ -45,34 +48,50 @@ const DUMMY_EDIT_CALL: &[&str] = &[
     "…",
 ];
 
-/// What the dummy's `Read` demo reads: the app's own `main.rs`, the file its
-/// canned reasoning says it is looking at.
+/// The **default turn's story**: alter-zero's own calling card, read, fixed,
+/// and run — the loop a real coding agent spends its life in, and the reason
+/// the three cells belong together.
 ///
-/// Deliberately **shorter than the file cell's ten-row peek**. The default turn
-/// answers every prompt no other scenario claims, so it is the footprint the
-/// whole demo — and every `scripts/smoke.sh` phase that uses a turn as filler —
-/// is sized around: a read long enough to cap would add a dozen rows to every
-/// message and push the conversation off a 24-row screen. The tall numbered
-/// body, and the `… +N lines (ctrl+o to expand)` tail that teaches the key, are
-/// what the opt-in [`files_turn`] demo is for.
-const DUMMY_READ_PATH: &str = "src/main.rs";
-const DUMMY_READ_SOURCE: &str = "#[tokio::main(flavor = \"current_thread\")]\n\
-    async fn tui_main(startup: Option<Startup>) -> io::Result<()> {\n    \
-    let mut term = InlineViewport::init(ui::LIVE_MIN_HEIGHT)?;\n    \
-    let result = tui::event_loop::run(&mut term, startup).await;\n    \
-    let restored = term.restore();\n    \
-    result.map(|_| ()).and(restored)\n\
-    }";
-
-/// The dummy's `Bash` command + output for the default batch's second call.
-/// It resolves **red** (an unresolvable host), so the default turn shows both
-/// a green (`Read`) and a red outcome — and, because the failure travels as
-/// the executor's exit code, the cell heads its output with
-/// `Error: Exit code 68` instead of burying the reason in the body.
-const DUMMY_BASH_CMD: &str = "ping -c 3 x.invalid";
-const DUMMY_BASH_OUTPUT: &str = "ping: cannot resolve x.invalid: Unknown host";
-/// `ping`'s "unknown host" exit status — what a real shell reports.
-const DUMMY_BASH_EXIT: u8 = 68;
+/// The bug is the interesting part: `about.py` knows who wrote alter-zero —
+/// it carries `CREATOR` and `HOME` right at the top — and then prints a card
+/// that never mentions either. So the demo isn't editing a line at random: it
+/// spots something the file already meant to say, wires it into the card, and
+/// runs the script to prove it. The last cell is the credit itself, printed by
+/// code the middle cell changed.
+///
+/// The file runs a few lines past the cell's ten-row peek on purpose: the
+/// committed `Read` then carries the `… +N lines (ctrl+o to expand)` tail, so
+/// the turn that answers *anything* is also the one that teaches the key —
+/// and the transcript has something to expand that the inline cell doesn't
+/// show (`scripts/smoke.sh` pages to `__main__` to prove it).
+const DUMMY_ABOUT_PATH: &str = "about.py";
+const DUMMY_ABOUT_V1: &str = "#!/usr/bin/env python3\n\
+    \"\"\"Print the alter-zero calling card.\"\"\"\n\n\
+    NAME = \"alter-zero\"\n\
+    TAGLINE = \"an autonomous AI agent that lives in your terminal\"\n\
+    CREATOR = \"linuztx\"\n\
+    HOME = \"https://github.com/linuztx\"\n\n\n\
+    def card() -> str:\n    \
+    \"\"\"Return the calling card.\"\"\"\n    \
+    return f\"{NAME} — {TAGLINE}\"\n\n\n\
+    if __name__ == \"__main__\":\n    \
+    print(card())";
+/// The same file after the `edit`: one line, wiring the credit the card was
+/// carrying all along into what it actually prints.
+const DUMMY_ABOUT_V2: &str = "#!/usr/bin/env python3\n\
+    \"\"\"Print the alter-zero calling card.\"\"\"\n\n\
+    NAME = \"alter-zero\"\n\
+    TAGLINE = \"an autonomous AI agent that lives in your terminal\"\n\
+    CREATOR = \"linuztx\"\n\
+    HOME = \"https://github.com/linuztx\"\n\n\n\
+    def card() -> str:\n    \
+    \"\"\"Return the calling card.\"\"\"\n    \
+    return f\"{NAME} — {TAGLINE}\\n  created by {CREATOR} · {HOME}\"\n\n\n\
+    if __name__ == \"__main__\":\n    \
+    print(card())";
+/// What the edited script prints — the payoff, and the proof the edit landed.
+const DUMMY_ABOUT_OUTPUT: &str = "alter-zero — an autonomous AI agent that lives in your terminal\n  \
+    created by linuztx · https://github.com/linuztx";
 
 /// One scripted tool call: the two strings its `● name(args)` header shows, the
 /// output **body** it resolves with, the exit code when it is a command, and
@@ -165,15 +184,24 @@ impl ScriptedCall {
     }
 }
 
-/// The **default** turn's batch: a `Read` then a `Bash`, announced up front so
-/// the `Bash` shows `⎿ Waiting…` while the `Read` runs (the visible batch,
-/// offline; see `docs/parallel-tools.md`). Kept to two calls so the committed
-/// scrollback stays compact — a real backend renders however many parallel
-/// calls the model actually requests, and the display scales to N.
+/// The **default** turn's batch — one errand in three steps: read the calling
+/// card, wire in the credit it was carrying but never printing, run it and see
+/// the credit come back. Announced up front, so while the `Read` runs the
+/// `Edit` and the `Bash` show `⎿ Waiting…` (the visible batch, offline; see
+/// `docs/parallel-tools.md`).
+///
+/// Each call earns its place by what it *shows*: the numbered read, the diff's
+/// green and red rows, and a command whose output proves the edit landed. Three
+/// unrelated calls would demo the same widgets and teach nothing.
 fn default_batch() -> Vec<ScriptedCall> {
     vec![
-        ScriptedCall::read(DUMMY_READ_PATH, DUMMY_READ_SOURCE),
-        ScriptedCall::command(DUMMY_BASH_CMD, DUMMY_BASH_OUTPUT, DUMMY_BASH_EXIT),
+        ScriptedCall::read(DUMMY_ABOUT_PATH, DUMMY_ABOUT_V1),
+        ScriptedCall::edit(DUMMY_ABOUT_PATH, DUMMY_ABOUT_V1, DUMMY_ABOUT_V2),
+        ScriptedCall::command(
+            &format!("python3 {DUMMY_ABOUT_PATH}"),
+            DUMMY_ABOUT_OUTPUT,
+            0,
+        ),
     ]
 }
 
@@ -186,7 +214,7 @@ fn parallel_batch() -> Vec<ScriptedCall> {
     vec![
         ScriptedCall::command("ping -c 20 google.com", DUMMY_PING_GOOGLE, 0),
         ScriptedCall::command("ping -c 20 facebook.com", DUMMY_PING_FACEBOOK, 0),
-        ScriptedCall::command("ping -c 20 x.invalid", DUMMY_PING_FAIL, DUMMY_BASH_EXIT),
+        ScriptedCall::command("ping -c 20 x.invalid", DUMMY_PING_FAIL, DUMMY_PING_EXIT),
     ]
 }
 
@@ -201,7 +229,13 @@ const DUMMY_PING_FACEBOOK: &str = "PING facebook.com (157.240.1.35): 56 data byt
     64 bytes from 157.240.1.35: icmp_seq=1 ttl=52 time=39.2 ms\n\
     --- facebook.com ping statistics ---\n\
     2 packets transmitted, 2 packets received, 0.0% packet loss";
+/// The `parallel` demo's failing command: an unresolvable host, so that batch
+/// shows a red cell beside its green ones. Because the failure travels as the
+/// executor's exit code, the cell heads its output with `Error: Exit code 68`
+/// instead of burying the reason in the body.
 const DUMMY_PING_FAIL: &str = "ping: cannot resolve x.invalid: Unknown host";
+/// `ping`'s "unknown host" exit status — what a real shell reports.
+const DUMMY_PING_EXIT: u8 = 68;
 
 /// The **file-change** demo's script (`docs/tools.md`): a fizzbuzz with the
 /// classic bug — `i % 3` tested before `i % 15`, so 15 prints `Fizz` — written,
@@ -419,7 +453,7 @@ pub(in crate::stream) fn agents_turn(cue: &Cue) -> Vec<StreamEvent> {
 
 /// The vivid three-call `Bash(ping …)` batch — the user's example.
 pub(in crate::stream) fn parallel_turn(cue: &Cue) -> Vec<StreamEvent> {
-    tool_turn(cue, PARALLEL_REPLY, &[DUMMY_BASH_CALL], &parallel_batch())
+    tool_turn(cue, PARALLEL_REPLY, &[DUMMY_PING_CALL], &parallel_batch())
 }
 
 /// The **file-change** demo (`docs/tools.md`): write a buggy fizzbuzz, `edit`
@@ -429,7 +463,7 @@ pub(in crate::stream) fn files_turn(cue: &Cue) -> Vec<StreamEvent> {
     tool_turn(
         cue,
         FILES_REPLY,
-        &[DUMMY_WRITE_CALL, DUMMY_EDIT_CALL, DUMMY_BASH_CALL],
+        &[DUMMY_WRITE_CALL, DUMMY_EDIT_CALL, DUMMY_FIZZ_BASH_CALL],
         &files_batch(),
     )
 }
@@ -443,7 +477,11 @@ pub(in crate::stream) fn tools_turn(cue: &Cue) -> Vec<StreamEvent> {
     tool_turn(
         cue,
         &dummy_response(cue.text()),
-        &[DUMMY_READ_CALL, DUMMY_BASH_CALL],
+        &[
+            DUMMY_READ_CALL,
+            DUMMY_ABOUT_EDIT_CALL,
+            DUMMY_ABOUT_BASH_CALL,
+        ],
         &default_batch(),
     )
 }
