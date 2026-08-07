@@ -126,8 +126,11 @@ run_agent(tx, cancel, max_iterations, round, execute, pending_notices):
   (`docs/parallel-tools.md`), so counting rounds let one round overspend the
   ceiling several times over. A round the budget can only partly afford is
   **clamped** — as many of its calls as fit run, in the model's own order, the
-  rest resolve red with `Not run: this turn reached its tool-call limit.` (so
-  every `tool_call` still has a matching `tool` result), and the turn ends.
+  rest resolve red with `Not run: this turn had already spent its tool-call
+  limit.` (so every `tool_call` still has a matching `tool` result), and the
+  turn ends with an error naming the ceiling and pointing at `/settings` — an
+  error the model reads too, as an `[error] …` user entry, which is why the
+  per-call results don't repeat the advice.
 - `pending_notices` takes the background registry's completion notice board
   (`LlmBackend` wires it; empty without a registry) — each note a user-role
   message appended after the prior round's tool results, exactly where the

@@ -57,12 +57,51 @@ reported bug. `run_agent` therefore spends the budget **per call**.
 
 A round the budget can only partly afford is **clamped** rather than refused
 whole: as many of its calls as fit run, in the model's own order, and the rest
-resolve as red cells reading `Not run: this turn reached its tool-call limit.`
+resolve as red cells reading `Not run: this turn had already spent its
+tool-call limit.`
 Refusing the whole round would be simpler, but a model that opens with a batch
 wider than the entire ceiling would then do nothing at all and just error.
 Every refused call is still *answered* with that same text, so the stored
 message list keeps a `tool` result for every `tool_call` — what a strict
 provider requires of the next request, a `/resume`, or an agent continuation.
+
+The turn then ends on a red notice that carries the whole story, because the
+user meets it with nothing else on the row to explain it — no cell above, no
+hint below:
+
+```
+● Stopped after 5 tool calls — this turn hit the "Max tool calls" limit before
+  the model finished. Run /settings to raise it, or set it to 0 for no limit.
+```
+
+What stopped, **why** (a ceiling the user set — not a model or provider
+failure, which is what a bare `stopped after 5 tool calls` read like), and
+**how** to change it, naming the row's own label so it can be found.
+
+**That error is also how the model finds out.** A `Role::Error` notice derives
+into an `[error] …` **user** entry in the context (`crate::context`), so the
+next turn's window already reads:
+
+```
+user:
+  [error] Stopped after 5 tool calls — this turn hit the "Max tool calls"
+  limit before the model finished. Run /settings to raise it, or set it to 0
+  for no limit.
+```
+
+Which is why the refused calls' own results stay one bare sentence. Putting the
+advice there too would say the same thing twice — and a clamped batch refuses
+several calls at once, so it would be several paragraphs of screen *and* of
+context window for one fact:
+
+```
+tool:
+  Not run: this turn had already spent its tool-call limit.
+```
+
+One place for the advice, one place for the fact. Asked "why did that stop?" on
+the next turn, the model reads both and answers with the reason and the
+setting.
 
 ### Why **Max tool calls** defaults to none
 

@@ -34,13 +34,33 @@ use crate::stream::{CancelToken, StreamEvent, ToolCallSummary};
 /// [`LlmBackend::with_max_tool_calls`]: super::LlmBackend::with_max_tool_calls
 pub const MAX_TOOL_ITERATIONS: usize = 20;
 
-/// The tool result a call refused by the **Max tool calls** ceiling carries —
-/// what the model reads, and the red cell's line. See `docs/settings.md`.
-pub const TOOL_LIMIT_OUTPUT: &str = "Not run: this turn reached its tool-call limit.";
+/// What a call refused by the **Max tool calls** ceiling resolves with — the
+/// cell's line and the tool result alike. One sentence, stating the fact.
+///
+/// The advice — raise it in `/settings`, `0` for no limit — is deliberately
+/// *not* here, even though the model reads this. It is already in the turn's
+/// closing error, and that error reaches the model too: a [`crate::app::Role::Error`]
+/// notice derives into an `[error] …` user entry in the context
+/// (`crate::context`). Repeating it per refused call would say the same thing
+/// twice — and a clamped batch refuses several at once, so it would cost
+/// several paragraphs of screen and of context window for one fact. See
+/// `docs/settings.md`.
+pub const TOOL_LIMIT_OUTPUT: &str = "Not run: this turn had already spent its tool-call limit.";
 
 /// The error that ends a turn which spent its tool-call budget.
+///
+/// The user meets this as a bare red notice — no cell above it explaining the
+/// context, no hint row below — so it carries the whole story itself: **what**
+/// stopped the turn, **why** (a ceiling they set, not a model or provider
+/// failure), and **how** to change it. Naming the row's own label and the
+/// command means they can act on it without going looking. See
+/// `docs/settings.md`.
 fn limit_error(max_tool_calls: usize) -> String {
-    format!("stopped after {max_tool_calls} tool calls without a final answer")
+    format!(
+        "Stopped after {max_tool_calls} tool calls — this turn hit the \
+         \"Max tool calls\" limit before the model finished. \
+         Run /settings to raise it, or set it to 0 for no limit."
+    )
 }
 
 /// What one streaming round produced, as [`run_agent`] sees it. The `round`
@@ -298,6 +318,9 @@ pub fn run_agent(
                         args: summarize_call(&call.name, &call.arguments),
                         detail: super::tools::call_description(&call.name, &call.arguments),
                     });
+                    // A plain ToolEnd: the cell text and the tool result are
+                    // the same one line, so there is no second text for
+                    // `ToolRejected` to carry (docs/settings.md).
                     let _ = tx.send(StreamEvent::ToolEnd {
                         output: TOOL_LIMIT_OUTPUT.to_string(),
                         ok: false,
@@ -771,6 +794,49 @@ mod tests {
     }
 
     #[test]
+    fn the_limit_error_explains_itself_and_points_at_the_setting() {
+        // The user meets this as a bare red notice with nothing else on the
+        // row, so it has to carry the whole story: what stopped, why it
+        // stopped, and how to change it (docs/settings.md).
+        let msg = limit_error(5);
+        assert!(
+            msg.contains("5 tool calls"),
+            "names the ceiling it hit: {msg}"
+        );
+        assert!(
+            msg.contains("Max tool calls"),
+            "names the setting row by its label: {msg}"
+        );
+        assert!(msg.contains("/settings"), "names the command: {msg}");
+        assert!(
+            msg.contains('0'),
+            "says how to lift the limit entirely: {msg}"
+        );
+    }
+
+    #[test]
+    fn the_refusal_states_the_fact_and_nothing_else() {
+        // One line, in the cell AND in the context. The advice belongs to the
+        // turn's closing error, which reaches the model too — a `Role::Error`
+        // notice derives into an `[error] …` user entry (`crate::context`) —
+        // so repeating it here would say the same thing twice, once per
+        // refused sibling. A clamped batch of three would spend three
+        // paragraphs of screen and of context window on it (docs/settings.md).
+        assert_eq!(
+            TOOL_LIMIT_OUTPUT,
+            "Not run: this turn had already spent its tool-call limit."
+        );
+        for noise in ["/settings", "Max tool calls", "user"] {
+            assert!(
+                !TOOL_LIMIT_OUTPUT.contains(noise),
+                "the advice lives in the closing error, not here: {noise:?}"
+            );
+        }
+        // …and the closing error is where it does live.
+        assert!(limit_error(5).contains("/settings"));
+    }
+
+    #[test]
     fn the_cap_counts_tool_calls_not_rounds() {
         // The user's report: "Max tool calls 5" still ran more than five.
         // A round can request a whole PARALLEL BATCH (docs/parallel-tools.md),
@@ -808,9 +874,10 @@ mod tests {
         assert_eq!(ran, 5, "a cap of 5 runs exactly 5 tool calls");
         let refused = events
             .iter()
-            .filter(
-                |e| matches!(e, StreamEvent::ToolEnd { ok: false, output, .. } if output == TOOL_LIMIT_OUTPUT),
-            )
+            .filter(|e| {
+                matches!(e, StreamEvent::ToolEnd { ok: false, output, .. }
+                    if output == TOOL_LIMIT_OUTPUT)
+            })
             .count();
         assert_eq!(refused, 1, "the over-budget call shows why it didn't run");
         assert!(
