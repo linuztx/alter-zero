@@ -75,9 +75,22 @@ park until the user decides.
   the turn continues; the model is told to stop and wait). A single-select
   answer auto-advances to the next tab; a lone question resolves immediately;
   a multi-select question confirms via its own unnumbered `Submit` row. The
-  Submit page reviews every answer and only submits when at least one
-  question is answered — pressing it with none jumps to the first unanswered
-  question instead.
+  entry fields (the Other row, the notes line) are real composer fields:
+  **Shift+Enter / Ctrl+J** insert a newline (the wrapped rows render in
+  place, continuations aligned under the text, and the accepted answer keeps
+  the line breaks), and a **bracketed paste** lands exactly as in the
+  composer — over the threshold it collapses to the compact
+  `[Pasted Content N chars]` placeholder (Backspace removes it whole), which
+  the entry's exit splices back to the real text
+  (`paste::expand_pastes_consuming` — consuming only the entry's own pairs,
+  so a placeholder sitting in the stashed composer draft still expands when
+  that draft is eventually sent). The Submit page leads with an amber
+  `⚠ You have not answered all questions` warning whenever the submission
+  would be partial, reviews **only the answered questions** (`● question`
+  over the green `→ answer`; an unanswered one is omitted — its ☐ chip and
+  the warning already say so), and only submits when at least one question is
+  answered — pressing `Submit answers` with none jumps to the first
+  unanswered question instead.
 
 - **`ui::ask_view`** — the renderer, `permission_view`'s sibling: one builder
   (`ask_lines`) produces every row (rule → chip strip → question → options →

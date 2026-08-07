@@ -430,6 +430,105 @@ fn clearing_abandons_the_open_and_queued_asks() {
 }
 
 #[test]
+fn shift_enter_and_ctrl_j_break_lines_in_the_entry_and_the_answer_keeps_them() {
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    app.on_key(key(KeyCode::Char('4')));
+    type_text(&mut app, "first");
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    type_text(&mut app, "second");
+    app.on_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+    type_text(&mut app, "third");
+    let action = app.on_key(key(KeyCode::Enter));
+    let Action::ResolveAsk { decision, .. } = action else {
+        panic!("expected the submission, got {action:?}");
+    };
+    let AskDecision::Submitted(answers) = decision else {
+        panic!("expected answers");
+    };
+    assert_eq!(
+        answers[0].labels,
+        vec!["first\nsecond\nthird".to_string()],
+        "the newlines survive into the answer"
+    );
+}
+
+#[test]
+fn a_large_paste_collapses_to_a_placeholder_and_expands_on_accept() {
+    let big = "y".repeat(1500);
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    app.on_key(key(KeyCode::Char('4')));
+    app.paste_into_ask(&big);
+    assert_eq!(
+        app.input.text(),
+        "[Pasted Content 1500 chars]",
+        "the entry shows the compact placeholder"
+    );
+    let action = app.on_key(key(KeyCode::Enter));
+    let Action::ResolveAsk { decision, .. } = action else {
+        panic!("expected the submission, got {action:?}");
+    };
+    let AskDecision::Submitted(answers) = decision else {
+        panic!("expected answers");
+    };
+    assert_eq!(
+        answers[0].labels,
+        vec![big],
+        "the real text was spliced back"
+    );
+    assert!(app.pasted.is_empty(), "the entry's pair was consumed");
+}
+
+#[test]
+fn an_entry_paste_never_eats_the_stashed_drafts_pairs() {
+    // The composer draft holds its own large paste when the modal lands; the
+    // entry's paste and accept must consume only the ENTRY's pair, so the
+    // draft still expands to its real text when it is eventually sent.
+    let draft_big = "d".repeat(1200);
+    let entry_big = "e".repeat(1500);
+    let mut app = App::new();
+    app.on_paste(&draft_big);
+    assert_eq!(app.input.text(), "[Pasted Content 1200 chars]");
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    app.on_key(key(KeyCode::Char('4')));
+    app.paste_into_ask(&entry_big);
+    let action = app.on_key(key(KeyCode::Enter)); // accept → resolves (lone question)
+    assert!(matches!(action, Action::ResolveAsk { .. }));
+    assert_eq!(
+        app.input.text(),
+        "[Pasted Content 1200 chars]",
+        "the draft came back, placeholder intact"
+    );
+    assert_eq!(app.take_input(), draft_big, "…still backed by its own pair");
+}
+
+#[test]
+fn a_paste_on_the_option_menu_is_swallowed() {
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    app.paste_into_ask("stray paste");
+    assert_eq!(app.input.text(), "", "the hidden composer stays clean");
+    assert!(app.ask().is_some(), "and the modal is untouched");
+}
+
+#[test]
+fn backspace_deletes_a_pasted_placeholder_atomically_in_the_entry() {
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    app.on_key(key(KeyCode::Char('4')));
+    app.paste_into_ask(&"z".repeat(1100));
+    assert!(app.input.text().starts_with("[Pasted Content"));
+    app.on_key(key(KeyCode::Backspace));
+    assert_eq!(
+        app.input.text(),
+        "",
+        "one keystroke removed the whole placeholder"
+    );
+    assert!(app.pasted.is_empty(), "…and dropped its pair");
+}
+
+#[test]
 fn ctrl_c_on_the_modal_declines_like_esc() {
     let mut app = App::new();
     type_text(&mut app, "draft");

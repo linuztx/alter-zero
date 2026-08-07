@@ -217,7 +217,7 @@ fn typed_notes_replace_the_placeholder() {
 }
 
 #[test]
-fn the_submit_page_reviews_answers_and_marks_the_unanswered() {
+fn a_partial_review_warns_and_lists_only_the_answered_questions() {
     let mut app = App::new();
     open(&mut app, vec![coffee_question(), topics_question()]);
     app.on_key(key(KeyCode::Char('2'))); // Latte → advance
@@ -226,12 +226,92 @@ fn the_submit_page_reviews_answers_and_marks_the_unanswered() {
     let lines = ask_lines(&app, 80, 40);
     let text = all_text(&lines);
     assert!(text.contains("Review your answers"), "got:\n{text}");
+    // The partial submission leads with the amber warning…
+    assert!(
+        text.contains("⚠ You have not answered all questions"),
+        "got:\n{text}"
+    );
+    let warning = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.content.contains("⚠"))
+        .expect("the warning span");
+    assert_eq!(
+        warning.style.fg,
+        Some(super::super::theme::ASK_WARNING_COLOR)
+    );
+    // …lists only the ANSWERED question — the open one shows nothing here
+    // (no placeholder row, and its question text stays off the page)…
     assert!(text.contains("● What's your favorite way to drink coffee?"));
     assert!(text.contains("→ Latte"), "got:\n{text}");
-    assert!(text.contains("(not answered)"), "got:\n{text}");
+    assert!(!text.contains("(not answered)"), "got:\n{text}");
+    assert!(
+        !text.contains("Which of these tool features"),
+        "the unanswered question is omitted:\n{text}"
+    );
+    // …and the recorded answer is green.
+    let answer = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.content.contains("Latte"))
+        .expect("the answer span");
+    assert_eq!(answer.style.fg, Some(super::super::theme::ASK_ANSWER_COLOR));
     assert!(text.contains("Ready to submit your answers?"));
     assert!(text.contains("❯ 1. Submit answers"), "got:\n{text}");
     assert!(text.contains("2. Cancel"));
+}
+
+#[test]
+fn a_complete_review_shows_no_warning() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question(), topics_question()]);
+    app.on_key(key(KeyCode::Char('2'))); // Latte → advance
+    app.on_key(key(KeyCode::Char('1'))); // toggle Preview panel
+    app.on_key(key(KeyCode::Right)); // → Submit page
+    let text = all_text(&ask_lines(&app, 80, 40));
+    assert!(
+        !text.contains("⚠"),
+        "every question answered — no warning:\n{text}"
+    );
+    assert!(text.contains("→ Latte"));
+    assert!(text.contains("→ Preview panel"));
+}
+
+#[test]
+fn a_huge_review_answer_previews_capped_with_an_ellipsis() {
+    // An expanded 2k+ paste as the Other answer: the review shows a few rows
+    // and a dim `…`, not the whole payload (the submission still carries it).
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question(), topics_question()]);
+    app.on_key(key(KeyCode::Char('4'))); // the Other entry
+    app.paste_into_ask(&"w".repeat(1400));
+    app.on_key(key(KeyCode::Enter)); // accept → advances to topics
+    app.on_key(key(KeyCode::Right)); // → Submit page
+    assert!(app.ask().unwrap().on_submit_tab());
+    let lines = ask_lines(&app, 80, 60);
+    let answer_rows = lines
+        .iter()
+        .map(plain)
+        .filter(|l| l.trim_start().starts_with('w') || l.contains("→ w"))
+        .count();
+    assert!(
+        answer_rows <= super::super::theme::ASK_REVIEW_ANSWER_MAX_ROWS,
+        "the preview caps at the ceiling, got {answer_rows} rows"
+    );
+    let text = all_text(&lines);
+    assert!(text.contains('…'), "the cap is marked:\n{text}");
+}
+
+#[test]
+fn a_review_with_nothing_answered_is_just_the_warning() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question(), topics_question()]);
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Right)); // straight to Submit, nothing answered
+    let text = all_text(&ask_lines(&app, 80, 40));
+    assert!(text.contains("⚠ You have not answered all questions"));
+    assert!(!text.contains("●"), "no review rows at all:\n{text}");
+    assert!(text.contains("Ready to submit your answers?"));
 }
 
 #[test]
@@ -280,6 +360,86 @@ fn editing_the_other_row_shows_the_entry_and_seats_the_cursor() {
     app.on_key(key(KeyCode::Esc));
     assert!(super::super::ask_view::ask_cursor(&app, 80, 40).is_none());
     assert!(!cursor_visible(&app), "the option menu hides the cursor");
+}
+
+#[test]
+fn a_shift_enter_entry_renders_multi_line_with_the_cursor_on_the_last_row() {
+    // The Other entry is the composer's field: Shift+Enter (here the textarea
+    // newline it maps to) breaks the line, both rows render — the first
+    // behind `❯ 4. `, the continuation aligned under the text — and the
+    // cursor seats on the continuation row (docs/ask.md).
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    app.on_key(key(KeyCode::Char('4')));
+    for c in "line one".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    for c in "line two".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    let lines = ask_lines(&app, 80, 40);
+    let text = all_text(&lines);
+    assert!(text.contains("❯ 4. line one"), "got:\n{text}");
+    let first = lines
+        .iter()
+        .position(|l| plain(l).contains("4. line one"))
+        .unwrap();
+    assert_eq!(
+        plain(&lines[first + 1]),
+        format!(
+            "{}line two",
+            " ".repeat(" ".len() + "❯ ".chars().count() + "4. ".len())
+        ),
+        "the continuation row aligns under the text"
+    );
+    let (x, y) = super::super::ask_view::ask_cursor(&app, 80, 40).expect("editing shows a caret");
+    assert_eq!(usize::from(y), first + 1, "the cursor follows to row two");
+    let content_col = " ".len() + "❯ ".chars().count() + "4. ".len();
+    assert_eq!(usize::from(x), content_col + "line two".len());
+    // The hint offers the newline key while the entry is live.
+    assert!(text.contains("Shift+Enter"), "got:\n{text}");
+}
+
+#[test]
+fn a_pasted_placeholder_renders_in_the_entry_field() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    app.on_key(key(KeyCode::Char('4')));
+    app.paste_into_ask(&"x".repeat(2253));
+    let text = all_text(&ask_lines(&app, 80, 40));
+    assert!(
+        text.contains("[Pasted Content 2253 chars]"),
+        "the entry shows the compact placeholder:\n{text}"
+    );
+}
+
+#[test]
+fn a_multi_line_note_renders_wrapped_under_the_label() {
+    let mut app = App::new();
+    open(&mut app, vec![preview_question()]);
+    app.on_key(key(KeyCode::Char('n')));
+    for c in "top".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+    for c in "bottom".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    let lines = ask_lines(&app, 90, 40);
+    let notes_at = lines
+        .iter()
+        .position(|l| plain(l).contains("Notes: top"))
+        .expect("the notes entry's first row");
+    assert!(
+        plain(&lines[notes_at + 1])
+            .trim_start()
+            .starts_with("bottom"),
+        "the second note row renders: {:?}",
+        plain(&lines[notes_at + 1])
+    );
+    let (_, y) = super::super::ask_view::ask_cursor(&app, 90, 40).expect("a caret while editing");
+    assert_eq!(usize::from(y), notes_at + 1);
 }
 
 #[test]

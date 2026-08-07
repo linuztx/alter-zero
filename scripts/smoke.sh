@@ -5739,6 +5739,16 @@ printf '%s\n' "$ask_prompt"
 # The option page is a menu, not a text field — no hardware cursor (the
 # permission prompt's rule).
 ask_cursor_shown="$(tmux display-message -p -t "$S68" '#{cursor_flag}')"
+# A detour to the Submit page with NOTHING answered: it must lead with the
+# amber warning and list no review rows (answered questions only), then Tab
+# wraps back to the first question.
+tmux send-keys -t "$S68" Right Right Right
+sleep 0.4
+ask_warning="$(tmux capture-pane -t "$S68" -p)"
+echo "==== Phase 68: captured pane (the empty review page warns) ===="
+printf '%s\n' "$ask_warning"
+tmux send-keys -t "$S68" Tab
+sleep 0.3
 # 2 picks Latte and advances to the multi-select page.
 tmux send-keys -t "$S68" -l "2"
 sleep 0.4
@@ -5856,6 +5866,18 @@ if ! printf '%s' "$ask_review" | grep -qF "→ Latte"; then
 fi
 if ! printf '%s' "$ask_review" | grep -qF "❯ 1. Submit answers"; then
 	echo "FAIL: Phase 68 — the Submit answers option is missing" >&2
+	status=1
+fi
+if ! printf '%s' "$ask_warning" | grep -qF "⚠ You have not answered all questions"; then
+	echo "FAIL: Phase 68 — the empty review page did not warn" >&2
+	status=1
+fi
+if printf '%s' "$ask_warning" | grep -qF "● What's your favorite way"; then
+	echo "FAIL: Phase 68 — the empty review page listed an unanswered question" >&2
+	status=1
+fi
+if printf '%s' "$ask_review" | grep -qF "⚠"; then
+	echo "FAIL: Phase 68 — the fully answered review page still warns" >&2
 	status=1
 fi
 if [ -z "$ask_done" ]; then

@@ -75,12 +75,24 @@ impl App {
             self.edit_search_query(|query| query.push_str(&sanitised));
             return;
         }
-        // Terminals such as iTerm2 send CR (or CRLF) for newlines in a paste;
-        // normalise to LF so the char count and stored text match the display.
-        let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
         // An edit may change the active /command or @token, like the Char arm.
         let had_query = command_query(self.input.text()).is_some();
         let had_token = self.in_at_token();
+        self.insert_paste_at_cursor(pasted);
+        self.refresh_command_menu(had_query);
+        self.sync_shell_mode();
+        self.refresh_file_search(had_token);
+    }
+
+    /// The paste insertion itself, shared by the composer and the ask modal's
+    /// entry fields (`docs/ask.md`): normalise the line endings, then either
+    /// collapse an over-threshold paste to its `[Pasted Content N chars]`
+    /// placeholder (the real text recorded in [`pasted`](App::pasted)) or
+    /// insert the text verbatim, control characters sanitised.
+    pub(super) fn insert_paste_at_cursor(&mut self, pasted: &str) {
+        // Terminals such as iTerm2 send CR (or CRLF) for newlines in a paste;
+        // normalise to LF so the char count and stored text match the display.
+        let pasted = pasted.replace("\r\n", "\n").replace('\r', "\n");
         let char_count = pasted.chars().count();
         if char_count > crate::paste::LARGE_PASTE_CHAR_THRESHOLD {
             let placeholder = crate::paste::next_paste_placeholder(char_count, &self.pasted);
@@ -96,9 +108,6 @@ impl App {
             self.input
                 .insert_str(&pasted.replace(|c: char| c.is_control() && c != '\n', " "));
         }
-        self.refresh_command_menu(had_query);
-        self.sync_shell_mode();
-        self.refresh_file_search(had_token);
     }
 
     /// Take the composer draft, splicing every large-paste placeholder back to

@@ -1408,8 +1408,23 @@ pub(super) const ASK_SUBMIT_LABEL: &str = "Submit answers";
 
 pub(super) const ASK_CANCEL_LABEL: &str = "Cancel";
 
-/// The review page's stand-in for a question that has no answer yet.
-pub(super) const ASK_UNANSWERED: &str = "(not answered)";
+/// The review page's warning when any question is still unanswered — the
+/// submission would be partial, and the list below shows only what was
+/// answered.
+pub(super) const ASK_WARNING: &str = "⚠ You have not answered all questions";
+
+/// The warning's colour — the retry/system amber, the one "caution" tone the
+/// theme already speaks.
+pub(super) const ASK_WARNING_COLOR: Color = STATUS_RETRY_COLOR;
+
+/// The review page's `→ {answer}` text — green, so the recorded answer is
+/// the row that carries the eye.
+pub(super) const ASK_ANSWER_COLOR: Color = TOOL_OK_COLOR;
+
+/// The most wrapped rows one review answer shows before capping with a dim
+/// `…` row — an expanded multi-kilobyte paste must not flood the page (the
+/// committed cell and the answers JSON still carry it whole).
+pub(super) const ASK_REVIEW_ANSWER_MAX_ROWS: usize = 4;
 
 /// The review page's `● {question}` bullet and the `→ {answer}` arrow.
 pub(super) const ASK_REVIEW_BULLET: &str = "● ";

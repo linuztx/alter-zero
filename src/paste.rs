@@ -232,6 +232,36 @@ pub fn expand_pastes(text: &str, pastes: &[(String, String)]) -> String {
     out
 }
 
+/// [`expand_pastes`] that also **consumes** the matched pairs: every pair
+/// whose placeholder was actually substituted is removed from `pastes`, and
+/// the rest stay. The `AskUserQuestion` entry fields expand on accept while
+/// the stashed composer draft's pairs must survive the modal untouched
+/// (`docs/ask.md`) — a plain `expand_pastes` + `clear()` would drop them, and
+/// a `text.contains(placeholder)` sweep would eat a base placeholder whose
+/// `… #N` extension (of which it is a prefix) was the one that matched.
+#[must_use]
+pub fn expand_pastes_consuming(text: &str, pastes: &mut Vec<(String, String)>) -> String {
+    if pastes.is_empty() {
+        return text.to_string();
+    }
+    let mut consumed: Vec<String> = Vec::new();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        if let Some((placeholder, content)) = longest_placeholder_at(text, i, pastes) {
+            out.push_str(content);
+            i += placeholder.len();
+            consumed.push(placeholder.clone());
+        } else {
+            let ch = text[i..].chars().next().expect("i < text.len()");
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    pastes.retain(|(placeholder, _)| !consumed.contains(placeholder));
+    out
+}
+
 /// The byte span of the pasted placeholder the cursor is "on", for an **atomic**
 /// Backspace/Delete that removes the whole `[Pasted Content N chars]` placeholder
 /// in one keystroke, or `None` when the cursor isn't on one. With `backward`
@@ -437,6 +467,43 @@ mod tests {
     #[test]
     fn expand_is_a_noop_without_pastes() {
         assert_eq!(expand_pastes("plain text", &[]), "plain text");
+    }
+
+    #[test]
+    fn expand_consuming_removes_only_the_matched_pairs() {
+        // The ask entry's exit (docs/ask.md): the entry's own pair is consumed
+        // while the stashed composer draft's pair — whose placeholder does not
+        // occur in the entry text — survives for the draft's eventual send.
+        let mut pastes = vec![
+            ("[Pasted Content 3 chars]".to_string(), "abc".to_string()),
+            (
+                "[Pasted Content 9 chars]".to_string(),
+                "draft-big".to_string(),
+            ),
+        ];
+        let out = expand_pastes_consuming("say: [Pasted Content 3 chars]!", &mut pastes);
+        assert_eq!(out, "say: abc!");
+        assert_eq!(
+            pastes,
+            vec![(
+                "[Pasted Content 9 chars]".to_string(),
+                "draft-big".to_string()
+            )],
+            "the unmatched pair stays"
+        );
+        // A base placeholder must survive when only its `#2` extension (of
+        // which it is a prefix) matched — the contains() trap.
+        let mut pastes = vec![
+            ("[Pasted Content 3 chars]".to_string(), "one".to_string()),
+            ("[Pasted Content 3 chars #2]".to_string(), "two".to_string()),
+        ];
+        let out = expand_pastes_consuming("x [Pasted Content 3 chars #2] y", &mut pastes);
+        assert_eq!(out, "x two y");
+        assert_eq!(
+            pastes,
+            vec![("[Pasted Content 3 chars]".to_string(), "one".to_string())],
+            "the base pair survives its extension's match"
+        );
     }
 
     #[test]

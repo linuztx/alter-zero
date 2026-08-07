@@ -7,7 +7,7 @@
 //! [`ask_height`] reserves exactly the built rows, so the reserved height, the
 //! painted rows, and the cursor can never drift apart.
 
-use crate::app::{AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
+use crate::app::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
 use crate::ask::{AskOption, AskQuestion};
 
 use super::theme::*;
@@ -151,32 +151,6 @@ fn content_col() -> usize {
     cols(ASK_INDENT) + cols(PERMISSION_MARKER) + cols("1. ")
 }
 
-/// The single-line window of an entry field: flatten newlines, keep the
-/// cursor visible in `room` columns, and return the shown text plus the
-/// cursor's column inside it.
-fn entry_window(text: &str, cursor: usize, room: usize) -> (String, usize) {
-    let flat: String = text
-        .chars()
-        .map(|c| if c == '\n' { ' ' } else { c })
-        .collect();
-    let cursor = cursor.min(flat.len());
-    let before = &flat[..cursor];
-    if cols(before) < room {
-        return (truncate_cols(&flat, room).to_string(), cols(before));
-    }
-    // Scroll the window so the cursor sits on its last column.
-    let mut start = 0;
-    for (i, _) in before.char_indices() {
-        if cols(&before[i..]) < room {
-            start = i;
-            break;
-        }
-    }
-    let shown_before = &flat[start..cursor];
-    let shown = truncate_cols(&flat[start..], room).to_string();
-    (shown, cols(shown_before))
-}
-
 /// One option's label spans: the multi-select checkbox, the label, and the
 /// single-select `✔` on the recorded answer.
 fn option_label_spans(
@@ -247,11 +221,20 @@ fn ask_build(app: &App, width: u16) -> AskBuild {
     AskBuild { lines, cursor }
 }
 
-/// The hint pairs for the modal's current state.
+/// The hint pairs for the modal's current state. The entry fields name the
+/// newline key (Shift+Enter — Ctrl+J is the universal fallback, as in the
+/// composer, `docs/shift-enter.md`).
 fn hints(prompt: &AskPrompt) -> Vec<(&'static str, &'static str)> {
     match prompt.input_mode {
-        AskInput::Other => vec![("Enter", " to accept"), ("Esc", " to go back")],
-        AskInput::Notes => vec![("Enter/Esc", " to save and go back")],
+        AskInput::Other => vec![
+            ("Enter", " to accept"),
+            ("Shift+Enter", " for newline"),
+            ("Esc", " to go back"),
+        ],
+        AskInput::Notes => vec![
+            ("Enter/Esc", " to save and go back"),
+            ("Shift+Enter", " for newline"),
+        ],
         AskInput::Select => {
             let mut out = vec![("Enter", " to select")];
             if prompt.has_submit_tab() {
@@ -317,15 +300,9 @@ fn build_list_page(
                 }
             }
             AskRow::Other => {
-                lines.push(other_row(
-                    app,
-                    prompt,
-                    question,
-                    state,
-                    selected,
-                    room,
-                    lines.len(),
-                    cursor,
+                let at_line = lines.len();
+                lines.extend(other_rows(
+                    app, prompt, question, state, selected, room, at_line, cursor,
                 ));
             }
             AskRow::Confirm => {
@@ -356,11 +333,21 @@ fn build_list_page(
     }
 }
 
-/// The free-text "Other" row in whatever state it is in: the entry field
-/// while it is edited (the cursor seat recorded), the accepted text with its
-/// pick mark, or the `Type something.` label.
+/// A multi-line text flattened for a one-row display (an accepted Other
+/// answer, the saved notes): the entry fields take Shift+Enter newlines, and
+/// a raw `\n` inside a span paints as nothing, gluing the lines together.
+fn flat(text: &str) -> String {
+    text.trim().replace('\n', " ")
+}
+
+/// The free-text "Other" row in whatever state it is in: the **entry field**
+/// while it is edited — the composer's wrapped rows behind the `❯ N. ` lead,
+/// continuations aligned under the text, the cursor seat recorded (Tab's
+/// amend-field shape, so Shift+Enter newlines and `[Pasted Content N chars]`
+/// placeholders render exactly as in the composer) — else the accepted text
+/// with its pick mark, or the `Type something.` label.
 #[allow(clippy::too_many_arguments)] // one row, many facts about it
-fn other_row(
+fn other_rows(
     app: &App,
     prompt: &AskPrompt,
     question: &AskQuestion,
@@ -369,21 +356,35 @@ fn other_row(
     room: usize,
     at_line: usize,
     cursor: &mut Option<(usize, usize)>,
-) -> Line<'static> {
+) -> Vec<Line<'static>> {
     let number = ask_row_number(question, AskRow::Other);
-    let mut spans = row_prefix(selected, number);
     let style = if selected {
         Style::new().fg(PERMISSION_SELECTED_COLOR)
     } else {
         Style::default()
     };
-    let editing = prompt.input_mode == AskInput::Other;
-    if editing {
-        let (shown, col) = entry_window(app.input.text(), app.input.cursor(), room);
-        *cursor = Some((at_line, content_col() + col));
-        spans.push(Span::styled(shown, style));
-        return Line::from(spans);
+    if prompt.input_mode == AskInput::Other {
+        let field = u16::try_from(room).unwrap_or(u16::MAX).max(1);
+        let (crow, ccol) = app.input.cursor_row_col(field);
+        *cursor = Some((at_line + crow, content_col() + ccol));
+        let continuation = " ".repeat(content_col());
+        return app
+            .input
+            .display_rows(field)
+            .into_iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let mut spans = if i == 0 {
+                    row_prefix(selected, number)
+                } else {
+                    vec![Span::raw(continuation.clone())]
+                };
+                spans.push(Span::styled(text, style));
+                Line::from(spans)
+            })
+            .collect();
     }
+    let mut spans = row_prefix(selected, number);
     if question.multi_select {
         let (mark, mark_style) = if state.other_chosen {
             (ASK_CHECKED, Style::new().fg(ASK_PICKED_COLOR))
@@ -392,11 +393,11 @@ fn other_row(
         };
         spans.push(Span::styled(mark.to_string(), mark_style));
     }
-    let text = state.other.trim();
+    let text = flat(&state.other);
     if text.is_empty() {
         spans.push(Span::styled(ASK_OTHER_LABEL.to_string(), style));
     } else {
-        spans.push(Span::styled(truncate_cols(text, room).to_string(), style));
+        spans.push(Span::styled(truncate_cols(&text, room).to_string(), style));
         if !question.multi_select && state.other_chosen {
             spans.push(Span::styled(
                 ASK_PICKED_MARK.to_string(),
@@ -404,7 +405,7 @@ fn other_row(
             ));
         }
     }
-    Line::from(spans)
+    vec![Line::from(spans)]
 }
 
 /// A question page in the **side-by-side** layout (any option carries a
@@ -472,57 +473,68 @@ fn build_preview_page(
         .and_then(|i| question.options[i].preview.as_deref())
         .map(|preview| panel_lines(preview, panel_width))
         .unwrap_or_default();
+    // The left column, one or more **visual** rows per logical row: the Other
+    // entry wraps to the column while it is edited (Shift+Enter newlines, a
+    // pasted placeholder), everything else stays a single row. The cursor is
+    // remembered as a (visual row, col) pending seat and made absolute once
+    // the zip below fixes where the columns start.
     let entry_room = left_width.saturating_sub(content_col()).max(1);
-    let total = left_rows.len().max(panel.len());
+    let mut left: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut pending_cursor: Option<(usize, usize)> = None;
+    for (at, row) in left_rows.iter().enumerate() {
+        let selected = prompt.row == at;
+        match *row {
+            AskRow::Option(idx) => {
+                let picked = state.selected.contains(&idx);
+                let mut spans = row_prefix(selected, ask_row_number(question, *row));
+                spans.extend(option_label_spans(
+                    question,
+                    &question.options[idx],
+                    picked,
+                    selected,
+                ));
+                left.push(spans);
+            }
+            AskRow::Other => {
+                let at_row = left.len();
+                let mut sub = None;
+                for line in other_rows(
+                    app, prompt, question, state, selected, entry_room, at_row, &mut sub,
+                ) {
+                    left.push(line.spans);
+                }
+                if let Some((vrow, col)) = sub {
+                    pending_cursor = Some((vrow, col));
+                }
+            }
+            AskRow::Confirm => {
+                let mut spans = row_prefix(selected, None);
+                spans.push(Span::styled(
+                    ASK_CONFIRM_LABEL.to_string(),
+                    if selected {
+                        Style::new().fg(PERMISSION_SELECTED_COLOR)
+                    } else {
+                        Style::default()
+                    },
+                ));
+                left.push(spans);
+            }
+            AskRow::Chat => {}
+        }
+    }
+    let zip_start = lines.len();
+    if let Some((vrow, col)) = pending_cursor {
+        *cursor = Some((zip_start + vrow, col));
+    }
+    let total = left.len().max(panel.len());
     for i in 0..total {
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        let mut used = 0usize;
-        if let Some(row) = left_rows.get(i) {
-            let selected = prompt.row == i;
-            match *row {
-                AskRow::Option(idx) => {
-                    let picked = state.selected.contains(&idx);
-                    spans.extend(row_prefix(selected, ask_row_number(question, *row)));
-                    spans.extend(option_label_spans(
-                        question,
-                        &question.options[idx],
-                        picked,
-                        selected,
-                    ));
-                }
-                AskRow::Other => {
-                    spans = other_row(
-                        app,
-                        prompt,
-                        question,
-                        state,
-                        selected,
-                        entry_room,
-                        lines.len(),
-                        cursor,
-                    )
-                    .spans;
-                }
-                AskRow::Confirm => {
-                    spans.extend(row_prefix(selected, None));
-                    spans.push(Span::styled(
-                        ASK_CONFIRM_LABEL.to_string(),
-                        if selected {
-                            Style::new().fg(PERMISSION_SELECTED_COLOR)
-                        } else {
-                            Style::default()
-                        },
-                    ));
-                }
-                AskRow::Chat => {}
-            }
-            used = spans.iter().map(|s| cols(&s.content)).sum();
-            // A left row wider than its column clips so the panel stays on
-            // its grid.
-            if used > left_width {
-                clip_spans(&mut spans, left_width);
-                used = left_width;
-            }
+        let mut spans: Vec<Span<'static>> = left.get(i).cloned().unwrap_or_default();
+        let mut used: usize = spans.iter().map(|s| cols(&s.content)).sum();
+        // A left row wider than its column clips so the panel stays on its
+        // grid.
+        if used > left_width {
+            clip_spans(&mut spans, left_width);
+            used = left_width;
         }
         if let Some(panel_row) = panel.get(i) {
             spans.push(Span::raw(" ".repeat(panel_x.saturating_sub(used))));
@@ -530,32 +542,45 @@ fn build_preview_page(
         }
         lines.push(Line::from(spans));
     }
-    // The notes line under the panel, at the panel's column (the reference
-    // layout): the typed notes, the live entry field, or the dim hint.
+    // The notes block under the panel, at the panel's column (the reference
+    // layout): the typed notes, the live entry field — the composer's wrapped
+    // rows, continuations aligned under the text — or the dim hint.
     lines.push(Line::default());
     let notes_pad = " ".repeat(panel_x);
     let notes_room = (width as usize)
         .saturating_sub(panel_x + cols(ASK_NOTES_LABEL))
         .max(1);
-    let mut spans = vec![
-        Span::raw(notes_pad),
-        Span::styled(ASK_NOTES_LABEL.to_string(), Style::new().fg(ASK_DESC_COLOR)),
-    ];
+    let label = || Span::styled(ASK_NOTES_LABEL.to_string(), Style::new().fg(ASK_DESC_COLOR));
     if prompt.input_mode == AskInput::Notes {
-        let (shown, col) = entry_window(app.input.text(), app.input.cursor(), notes_room);
-        *cursor = Some((lines.len(), panel_x + cols(ASK_NOTES_LABEL) + col));
-        spans.push(Span::raw(shown));
+        let field = u16::try_from(notes_room).unwrap_or(u16::MAX).max(1);
+        let (crow, ccol) = app.input.cursor_row_col(field);
+        *cursor = Some((lines.len() + crow, panel_x + cols(ASK_NOTES_LABEL) + ccol));
+        let continuation = " ".repeat(panel_x + cols(ASK_NOTES_LABEL));
+        for (i, text) in app.input.display_rows(field).into_iter().enumerate() {
+            let mut spans = if i == 0 {
+                vec![Span::raw(notes_pad.clone()), label()]
+            } else {
+                vec![Span::raw(continuation.clone())]
+            };
+            spans.push(Span::raw(text));
+            lines.push(Line::from(spans));
+        }
     } else if state.notes.trim().is_empty() {
-        spans.push(Span::styled(
-            ASK_NOTES_PLACEHOLDER.to_string(),
-            Style::new().fg(ASK_DESC_COLOR),
-        ));
+        lines.push(Line::from(vec![
+            Span::raw(notes_pad),
+            label(),
+            Span::styled(
+                ASK_NOTES_PLACEHOLDER.to_string(),
+                Style::new().fg(ASK_DESC_COLOR),
+            ),
+        ]));
     } else {
-        spans.push(Span::raw(
-            truncate_cols(state.notes.trim(), notes_room).to_string(),
-        ));
+        lines.push(Line::from(vec![
+            Span::raw(notes_pad),
+            label(),
+            Span::raw(truncate_cols(&flat(&state.notes), notes_room).to_string()),
+        ]));
     }
-    lines.push(Line::from(spans));
     // The Chat row, full-width below.
     lines.push(Line::default());
     if let Some(at) = rows.iter().position(|row| *row == AskRow::Chat) {
@@ -626,14 +651,31 @@ fn panel_lines(preview: &str, width: usize) -> Vec<Vec<Span<'static>>> {
     rows
 }
 
-/// The Submit page: the review list (`● question` over `→ answer`), the
-/// closing question, and the `Submit answers` / `Cancel` options.
+/// The Submit page: a `⚠` warning when any question is still unanswered,
+/// the review list of the **answered** questions only (`● question` over the
+/// green `→ answer` — an unanswered one is omitted, its ☐ chip and the
+/// warning already say so), the closing question, and the `Submit answers` /
+/// `Cancel` options.
 fn build_review_page(prompt: &AskPrompt, width: u16, lines: &mut Vec<Line<'static>>) {
     lines.extend(text_rows(ASK_REVIEW_TITLE, Color::Reset, width));
     lines.push(Line::default());
+    // The warning leads the page whenever the submission would be partial —
+    // Submit answers sends only what is answered (and with nothing answered
+    // it walks back to the first open question instead).
+    if !prompt.answers.iter().all(AskAnswerState::answered) {
+        lines.extend(text_rows(ASK_WARNING, ASK_WARNING_COLOR, width));
+        lines.push(Line::default());
+    }
     let bullet_indent = cols(ASK_INDENT) + cols(ASK_REVIEW_BULLET);
     let q_room = (width as usize).saturating_sub(bullet_indent).max(1);
+    let mut listed = false;
     for (question, state) in prompt.request.questions.iter().zip(&prompt.answers) {
+        // Only the answered questions are reviewed — an open one shows
+        // nothing here (the warning above and its ☐ chip already say so).
+        if !state.answered() {
+            continue;
+        }
+        listed = true;
         for (i, row) in wrap_output(&question.question, q_room as u16)
             .into_iter()
             .enumerate()
@@ -653,20 +695,23 @@ fn build_review_page(prompt: &AskPrompt, width: u16, lines: &mut Vec<Line<'stati
         let a_room = (width as usize)
             .saturating_sub(bullet_indent + cols(ASK_ANSWER_ARROW))
             .max(1);
-        let (answer, style) = if state.answered() {
-            let mut labels: Vec<String> = state
-                .selected
-                .iter()
-                .filter_map(|&i| question.options.get(i).map(|o| o.label.clone()))
-                .collect();
-            if state.other_chosen {
-                labels.push(state.other.trim().to_string());
-            }
-            (labels.join(", "), Style::default())
-        } else {
-            (ASK_UNANSWERED.to_string(), Style::new().fg(ASK_DESC_COLOR))
-        };
-        for (i, row) in wrap_output(&answer, a_room as u16).into_iter().enumerate() {
+        let mut labels: Vec<String> = state
+            .selected
+            .iter()
+            .filter_map(|&i| question.options.get(i).map(|o| o.label.clone()))
+            .collect();
+        if state.other_chosen {
+            labels.push(flat(&state.other));
+        }
+        let answer = labels.join(", ");
+        // A huge answer (an expanded paste) previews capped — the page must
+        // stay a review, not a pager; the full text rides the submission.
+        let mut rows = wrap_output(&answer, a_room as u16);
+        let capped = rows.len() > ASK_REVIEW_ANSWER_MAX_ROWS;
+        if capped {
+            rows.truncate(ASK_REVIEW_ANSWER_MAX_ROWS);
+        }
+        for (i, row) in rows.into_iter().enumerate() {
             let lead = if i == 0 {
                 Span::styled(
                     ASK_ANSWER_ARROW.to_string(),
@@ -678,11 +723,21 @@ fn build_review_page(prompt: &AskPrompt, width: u16, lines: &mut Vec<Line<'stati
             lines.push(Line::from(vec![
                 Span::raw(answer_indent.clone()),
                 lead,
-                Span::styled(row, style),
+                // Green, so the recorded answer is the row that carries the
+                // eye (the user-requested emphasis).
+                Span::styled(row, Style::new().fg(ASK_ANSWER_COLOR)),
+            ]));
+        }
+        if capped {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(bullet_indent + cols(ASK_ANSWER_ARROW))),
+                Span::styled("…".to_string(), Style::new().fg(ASK_DESC_COLOR)),
             ]));
         }
     }
-    lines.push(Line::default());
+    if listed {
+        lines.push(Line::default());
+    }
     lines.extend(text_rows(ASK_REVIEW_QUESTION, Color::Reset, width));
     lines.push(Line::default());
     for (i, label) in [ASK_SUBMIT_LABEL, ASK_CANCEL_LABEL].iter().enumerate() {

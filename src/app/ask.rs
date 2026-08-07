@@ -466,9 +466,31 @@ impl App {
         }
     }
 
-    /// Keys in the Other/notes entry: the composer edits normally, Enter
-    /// accepts, Esc backs out — both keep the typed text on the state, so
-    /// re-opening the field shows it again.
+    /// A bracketed paste while the modal is open (`docs/ask.md`): the live
+    /// entry field (the Other row, the notes line) takes it exactly like the
+    /// composer — an over-threshold paste collapses to its
+    /// `[Pasted Content N chars]` placeholder, expanded back to the real text
+    /// when the entry closes. On the option pages a paste is not typing, so
+    /// it is swallowed rather than smuggled into the hidden composer.
+    pub fn paste_into_ask(&mut self, pasted: &str) {
+        if self.ask.as_ref().is_some_and(AskPrompt::editing) {
+            self.insert_paste_at_cursor(pasted);
+        }
+    }
+
+    /// Take the entry field's text on exit, splicing every large-paste
+    /// placeholder back to its real content and **consuming** exactly the
+    /// pairs that matched — the stashed composer draft's pairs must survive
+    /// the modal for the draft's own eventual send (`docs/paste.md`).
+    fn take_entry_text(&mut self) -> String {
+        let text = self.input.take();
+        crate::paste::expand_pastes_consuming(&text, &mut self.pasted)
+    }
+
+    /// Keys in the Other/notes entry: the composer edits normally
+    /// (Shift+Enter / Ctrl+J insert a newline, a large paste collapses to its
+    /// placeholder), Enter accepts, Esc backs out — both keep the typed text
+    /// on the state, expanded, so re-opening the field shows it again.
     fn on_key_ask_input(&mut self, key: KeyEvent) -> Action {
         let Some(prompt) = self.ask.as_mut() else {
             return Action::None;
@@ -477,8 +499,7 @@ impl App {
         let mode = prompt.input_mode;
         match key.code {
             KeyCode::Esc => {
-                let text = self.input.text().to_string();
-                self.input.clear();
+                let text = self.take_entry_text();
                 if let Some(prompt) = self.ask.as_mut() {
                     match mode {
                         // Esc keeps the draft (the reference behaviour: the
@@ -492,8 +513,7 @@ impl App {
                 Action::None
             }
             KeyCode::Enter if !key.modifiers.contains(KeyModifiers::SHIFT) => {
-                let text = self.input.text().to_string();
-                self.input.clear();
+                let text = self.take_entry_text();
                 let Some(prompt) = self.ask.as_mut() else {
                     return Action::None;
                 };

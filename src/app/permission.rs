@@ -343,8 +343,20 @@ impl App {
                 self.input.insert_newline();
             }
             KeyCode::Char(c) if !ctrl_or_alt => self.input.insert_char(c),
-            KeyCode::Backspace => self.input.delete_backward(),
-            KeyCode::Delete => self.input.delete_forward(),
+            // A Backspace/Delete on a `[Pasted Content N chars]` placeholder
+            // removes it whole, like the composer (`docs/paste.md`) — the ask
+            // modal's entry fields take pastes, and one keystroke must not
+            // leave a mangled placeholder backed by a live pair.
+            KeyCode::Backspace => {
+                if !self.delete_placeholder(/*backward*/ true) {
+                    self.input.delete_backward();
+                }
+            }
+            KeyCode::Delete => {
+                if !self.delete_placeholder(/*backward*/ false) {
+                    self.input.delete_forward();
+                }
+            }
             KeyCode::Left => self.input.move_left(),
             KeyCode::Right => self.input.move_right(),
             KeyCode::Up => self.input.move_up(),

@@ -404,15 +404,24 @@ tab), numbered options with dim descriptions (digits jump-activate; Enter on
 a single-select records + advances — a lone question resolves at once —
 while multi-select `[✔]` checkboxes toggle and confirm via their own
 unnumbered `Submit` row), an auto-added free-text **`Type something.`** row
-(the entry reuses `App::input` like Tab's amend field; Enter accepts —
+(the entry reuses `App::input` like Tab's amend field — a real composer
+field: **Shift+Enter/Ctrl+J** newlines render as wrapped rows in place and
+survive into the answer, and a large **bracketed paste** collapses to the
+`[Pasted Content N chars]` placeholder (atomic Backspace), spliced back to
+the real text on the entry's exit via `paste::expand_pastes_consuming` — the
+stashed composer draft's own pairs survive the modal; Enter accepts —
 single-select advances with the custom text as the answer, multi-select
 checks it — Esc keeps the draft unchosen), a side-by-side **preview panel**
 when any option carries `preview` content (options left, the focused
 option's bordered panel right, the `Notes: press n to add notes` line
-beneath — `n` opens the notes field, Enter/Esc both keep the text), a
+beneath — `n` opens the notes field, the same multi-line/paste-capable
+entry, Enter/Esc both keep the text), a
 **`Chat about this`** row resolving the whole call as "the user wants to
 talk" (red cell + stop-and-wait result), and — for several questions — a
-closing **review page** (`● question` over `→ answer`/`(not answered)`,
+closing **review page** (an amber `⚠ You have not answered all questions`
+warning whenever the submission would be partial, then `● question` over the
+**green** `→ answer` for the **answered questions only** — an unanswered one
+is omitted; its ☐ chip and the warning already say so —
 `❯ 1. Submit answers / 2. Cancel`) whose empty submission walks to the first
 unanswered question instead of submitting nothing; Esc anywhere **declines**
 (the turn continues: red `User declined to answer questions` cell over the

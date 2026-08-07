@@ -383,6 +383,12 @@ impl Session<'_> {
     /// only the overlays ignore them, like typing there.
     fn on_paste(&mut self, pasted: &str) {
         match self.app.view {
+            // The ask modal owns every key, so it owns pastes too: the live
+            // entry field takes them (placeholder-collapsed over the
+            // threshold), the option pages swallow them (docs/ask.md).
+            View::Conversation if self.app.ask().is_some() => {
+                self.app.paste_into_ask(pasted);
+            }
             View::Conversation if self.app.key_onboarding.is_some() => {
                 self.app.paste_into_key_onboarding(pasted);
             }
