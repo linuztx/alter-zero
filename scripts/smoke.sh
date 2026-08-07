@@ -358,8 +358,9 @@ echo "==== captured pane (slash palette scrolled to /quit) ===="
 printf '%s\n' "$palette_scrolled"
 
 # Back to the top (the window follows the selection up again) so Enter runs
-# /help, not /quit.
-for _ in $(seq 1 8); do
+# /help, not /quit — as many ↑ as the ↓ above, or the highlight lands one row
+# short of the top and Enter runs the wrong command.
+for _ in $(seq 1 9); do
 	tmux send-keys -t "$S" Up
 done
 sleep 0.3
