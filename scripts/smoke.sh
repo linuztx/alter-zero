@@ -5861,7 +5861,9 @@ fi
 if [ -z "$ask_done" ]; then
 	echo "FAIL: Phase 68 — the answered cell never committed (or the draft never came back)" >&2
 	status=1
-elif ! printf '%s' "$ask_done" | grep -qF "→ Preview panel"; then
+# The cell's answer rows word-wrap at this width ("→ Preview / panel"), so
+# join the pane's lines and squeeze the gutter indentation before matching.
+elif ! printf '%s' "$ask_done" | tr '\n' ' ' | tr -s ' ' | grep -qF "→ Preview panel"; then
 	echo "FAIL: Phase 68 — the committed cell is missing the multi-select answer" >&2
 	status=1
 fi
