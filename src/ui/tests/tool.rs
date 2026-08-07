@@ -32,6 +32,67 @@ fn tool_lines_header_omits_the_parens_when_args_are_empty() {
     assert_eq!(plain(&lines[0]), "● echo hi");
 }
 
+// --- the resolved AskUserQuestion cell (docs/ask.md) ---
+
+#[test]
+fn an_answered_ask_cell_promotes_the_headline_to_the_header() {
+    // The reference transcript: `● User answered Claude's questions:` over the
+    // `⎿ · Q → A` rows — the tool name never shows on a resolved cell.
+    let output = "User answered Claude's questions:\n\
+                  · What's your favorite way to drink coffee? → Black\n\
+                  · Pick a snack → Chips, Fruit";
+    let cell = tool("AskUserQuestion", "ignored", ToolStatus::Ok, output);
+    let lines = tool_lines(&cell, 100);
+    assert_eq!(plain(&lines[0]), "● User answered Claude's questions:");
+    let bullet = &lines[0].spans[0];
+    assert_eq!(
+        bullet.style.fg,
+        Some(TOOL_OK_COLOR),
+        "a submission is green"
+    );
+    assert!(
+        plain(&lines[1]).contains("· What's your favorite way to drink coffee? → Black"),
+        "got {:?}",
+        plain(&lines[1])
+    );
+    assert!(
+        !lines
+            .iter()
+            .map(plain)
+            .any(|l| l.contains("AskUserQuestion")),
+        "the headline replaces the tool-name header"
+    );
+    // The Ctrl+O transcript renders the same header with the rows uncapped.
+    let full = tool_full_lines(&cell, 100);
+    assert_eq!(plain(&full[0]), "● User answered Claude's questions:");
+    assert!(plain(&full[2]).contains("· Pick a snack → Chips, Fruit"));
+}
+
+#[test]
+fn a_declined_ask_cell_is_red_and_lists_the_questions() {
+    let output = "User declined to answer questions\n\
+                  · Which code style do you prefer? (Arrow function / One-liner)";
+    let cell = tool("AskUserQuestion", "ignored", ToolStatus::Failed, output);
+    let lines = tool_lines(&cell, 100);
+    assert_eq!(plain(&lines[0]), "● User declined to answer questions");
+    assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_FAIL_COLOR));
+    assert!(plain(&lines[1]).contains("(Arrow function / One-liner)"));
+}
+
+#[test]
+fn a_running_ask_cell_keeps_the_generic_header() {
+    // While the modal is up the call is Running — the ordinary
+    // `● AskUserQuestion(…)` header stands (mostly hidden behind the modal;
+    // the Ctrl+O transcript shows it).
+    let cell = tool("AskUserQuestion", "Pick one?", ToolStatus::Running, "");
+    let lines = tool_lines(&cell, 100);
+    assert!(
+        plain(&lines[0]).starts_with("● AskUserQuestion(Pick one?)"),
+        "got {:?}",
+        plain(&lines[0])
+    );
+}
+
 // --- the auto mode classifier's provenance note (docs/permissions.md) ---
 
 /// [`tool`] with the classifier's allowed note riding it.

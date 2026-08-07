@@ -16,6 +16,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod ask;
 pub mod backend;
 pub mod cache;
 pub mod classifier;

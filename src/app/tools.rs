@@ -154,6 +154,17 @@ impl App {
         self.resolve_front_tool(display, Some(result.to_string()), ToolStatus::Failed)
     }
 
+    /// Resolve the in-flight call as **answered by the user** — the
+    /// `AskUserQuestion` submission (`docs/ask.md`): green, with the
+    /// `User answered Claude's questions:` cell text on `display` and the
+    /// model-facing answers JSON kept beside it as
+    /// [`ToolCall::context_output`], [`reject_tool`](Self::reject_tool)'s
+    /// green twin. The boundary's handler for
+    /// [`crate::stream::StreamEvent::ToolAnswered`].
+    pub fn answer_tool(&mut self, display: &str, result: &str) -> Option<ToolCall> {
+        self.resolve_front_tool(display, Some(result.to_string()), ToolStatus::Ok)
+    }
+
     /// Resolve the in-flight tool call as **moved to the background** (a
     /// `run_in_background` bash call, or Ctrl+B on a running command):
     /// [`ToolStatus::Backgrounded`], with `output` holding the model-facing

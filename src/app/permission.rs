@@ -75,10 +75,11 @@ impl App {
     /// Raise a permission prompt for `request` (the boundary's handler for
     /// [`crate::stream::StreamEvent::Permission`]). The composer's draft and
     /// `!` shell mode are stashed and the field cleared, so Tab's amend
-    /// field starts empty and closing can hand the draft straight back. A request arriving while one is
-    /// already open **queues** instead of replacing it.
+    /// field starts empty and closing can hand the draft straight back. A
+    /// request arriving while any modal is open — another permission prompt
+    /// or the ask modal (`docs/ask.md`) — **queues** instead of replacing it.
     pub fn open_permission(&mut self, request: PermissionRequest) {
-        if self.permission.is_some() {
+        if self.permission.is_some() || self.ask.is_some() {
             self.pending_permissions.push_back(request);
             return;
         }
@@ -104,9 +105,11 @@ impl App {
         });
     }
 
-    /// Close the open prompt, restoring the stashed draft — then open the next
-    /// queued request, if any (which re-stashes the same draft, so a run of
-    /// requests costs the user nothing).
+    /// Close the open prompt, restoring the stashed draft. The resolve paths
+    /// follow with [`open_next_pending`](Self::open_next_pending) — which
+    /// re-stashes the same draft for the next queued modal, so a run of
+    /// requests costs the user nothing; the discard paths don't (everything
+    /// queued is abandoned with the prompt).
     fn close_permission(&mut self) {
         let Some(prompt) = self.permission.take() else {
             return;
@@ -114,9 +117,6 @@ impl App {
         self.input
             .set_text_with_cursor(&prompt.saved_input, prompt.saved_cursor);
         self.shell_mode = prompt.saved_shell_mode;
-        if let Some(next) = self.pending_permissions.pop_front() {
-            self.open_permission(next);
-        }
     }
 
     /// Drop the open prompt and every queued one (Esc, `/clear`, a quit),
@@ -133,6 +133,9 @@ impl App {
             .extend(queued.into_iter().map(|r| r.id));
         if let Some(prompt) = self.permission.as_ref() {
             self.abandoned_permissions.push(prompt.request.id.clone());
+            // Close only — the queue was just abandoned, and a pending ask is
+            // its caller's business (`clear_conversation` discards it too; an
+            // Esc cancel interrupts the whole turn it belongs to).
             self.close_permission();
         }
     }
@@ -168,7 +171,11 @@ impl App {
                 break;
             }
             ids.push(prompt.request.id.clone());
-            self.close_permission(); // …which opens the next queued one, if any
+            self.close_permission();
+            // Open the next queued modal. A pending *ask* ends the loop (the
+            // permission slot is empty then) — every covered permission left
+            // in the queue was already drained above, so nothing re-asks.
+            self.open_next_pending();
         }
         ids
     }
@@ -180,14 +187,16 @@ impl App {
         std::mem::take(&mut self.abandoned_permissions)
     }
 
-    /// Resolve the open prompt with `decision`: close it (restoring the draft)
-    /// and hand the loop the request to post on the gate.
+    /// Resolve the open prompt with `decision`: close it (restoring the
+    /// draft), open the next queued modal, and hand the loop the request to
+    /// post on the gate.
     fn resolve_permission(&mut self, decision: PermissionDecision) -> Action {
         let Some(prompt) = self.permission.as_ref() else {
             return Action::None;
         };
         let request = prompt.request.clone();
         self.close_permission();
+        self.open_next_pending();
         Action::ResolvePermission { request, decision }
     }
 
@@ -283,9 +292,12 @@ impl App {
 
     /// Esc / Ctrl+C on the prompt — **cancel**, not just "no": the call is
     /// abandoned (the loop releases it on the gate) *and* the turn stops, the
-    /// ordinary Esc-interrupt path (`docs/interrupt.md`).
+    /// ordinary Esc-interrupt path (`docs/interrupt.md`). A queued ask
+    /// belongs to the turn being torn down, so it is abandoned with the
+    /// prompts (`docs/ask.md`).
     fn cancel_permission(&mut self) -> Action {
         self.discard_permissions();
+        self.discard_asks();
         Action::Interrupt
     }
 
@@ -318,7 +330,8 @@ impl App {
     /// The amend field's editing keys — the composer's set minus everything
     /// that only makes sense for a *message* (the palette, the `@` picker, the
     /// ↑/↓ history recall, shell mode): free-text feedback, nothing more.
-    fn edit_amend(&mut self, key: KeyEvent) {
+    /// Shared with the ask modal's Other/notes entries (`docs/ask.md`).
+    pub(super) fn edit_amend(&mut self, key: KeyEvent) {
         let ctrl_or_alt = key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);

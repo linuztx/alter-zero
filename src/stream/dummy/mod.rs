@@ -51,11 +51,11 @@ pub use self::turns::AGENT_DELAY;
 #[must_use]
 pub fn turn_events(prompt: &str, image_count: usize) -> Vec<StreamEvent> {
     let cue = Cue::new(prompt, image_count);
-    match scenario::select(&cue, false).play {
+    match scenario::select(&cue, false, false).play {
         Play::Script(script) => script(&cue),
-        // Unreachable: selecting with no gate attached skips every gated
-        // entry. Answering with the default turn beats panicking either way.
-        Play::Gated(_) => turns::tools_turn(&cue),
+        // Unreachable: selecting with no gate attached skips every gated and
+        // asked entry. Answering with the default turn beats panicking.
+        Play::Gated(_) | Play::Asked(_) => turns::tools_turn(&cue),
     }
 }
 
@@ -96,6 +96,10 @@ pub struct DummyAi {
     /// **offline** dummy drive the whole approval round trip for a prompt
     /// mentioning "permission" (`docs/permissions.md`, `smoke.sh` Phase 55).
     permissions: Option<crate::permission::PermissionGate>,
+    /// The shared ask gate, when the app attached one — lets the offline
+    /// dummy drive the whole `AskUserQuestion` round trip for a prompt
+    /// mentioning "ask" + "question" (`docs/ask.md`).
+    ask: Option<crate::ask::AskGate>,
 }
 
 impl Default for DummyAi {
@@ -103,6 +107,7 @@ impl Default for DummyAi {
         Self {
             startup_delay: STARTUP_DELAY,
             permissions: None,
+            ask: None,
         }
     }
 }
@@ -120,7 +125,7 @@ impl DummyAi {
     pub fn with_startup_delay(startup_delay: Duration) -> Self {
         Self {
             startup_delay,
-            permissions: None,
+            ..Self::default()
         }
     }
 
@@ -130,6 +135,15 @@ impl DummyAi {
     #[must_use]
     pub fn with_permissions(mut self, gate: crate::permission::PermissionGate) -> Self {
         self.permissions = Some(gate);
+        self
+    }
+
+    /// Attach the session's ask gate, so a prompt mentioning "ask" and
+    /// "question" plays the scripted `AskUserQuestion` round trip — the
+    /// offline mirror of the real tool (`docs/ask.md`).
+    #[must_use]
+    pub fn with_ask(mut self, gate: crate::ask::AskGate) -> Self {
+        self.ask = Some(gate);
         self
     }
 }
@@ -164,6 +178,7 @@ impl ReplySource for DummyAi {
         // The dummy can't read the files, only acknowledge how many arrived.
         let image_count = images.len();
         let permissions = self.permissions.clone();
+        let ask = self.ask.clone();
         thread::spawn(move || {
             // Pause before streaming so the status indicator is visible first
             // (interruptibly — an Esc during the wait reaps the thread at once).
@@ -172,22 +187,31 @@ impl ReplySource for DummyAi {
                 return;
             }
             let cue = Cue::new(&prompt, image_count);
-            match (
-                scenario::select(&cue, permissions.is_some()).play,
-                &permissions,
-            ) {
-                // A gated demo asks, blocking on the gate exactly as a real
-                // backend's tool thread does, and streams as it resolves.
-                // Selection only offers one when a gate was attached, so this
-                // is the only pair `Play::Gated` is ever reached through.
-                (Play::Gated(play), Some(gate)) => play(&Stage {
-                    gate,
-                    tx: &tx,
-                    cancel: &cancel,
-                }),
-                (Play::Script(script), _) => replay(script(&cue), &tx, &cancel),
-                // Unreachable by construction; a script is the safe answer.
-                (Play::Gated(_), None) => replay(turns::tools_turn(&cue), &tx, &cancel),
+            match scenario::select(&cue, permissions.is_some(), ask.is_some()).play {
+                // A gated demo asks, blocking on the permission gate exactly
+                // as a real backend's tool thread does, and streams as it
+                // resolves. Selection only offers one when the gate was
+                // attached, so the fallback arm is unreachable by
+                // construction; a script is the safe answer.
+                Play::Gated(play) => match &permissions {
+                    Some(gate) => play(&Stage {
+                        gate,
+                        tx: &tx,
+                        cancel: &cancel,
+                    }),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel),
+                },
+                // The ask demo raises the question modal and blocks on the
+                // ask gate the same way (`docs/ask.md`).
+                Play::Asked(play) => match &ask {
+                    Some(gate) => play(&scenario::AskStage {
+                        gate,
+                        tx: &tx,
+                        cancel: &cancel,
+                    }),
+                    None => replay(turns::tools_turn(&cue), &tx, &cancel),
+                },
+                Play::Script(script) => replay(script(&cue), &tx, &cancel),
             }
         })
     }

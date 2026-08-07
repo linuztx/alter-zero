@@ -130,6 +130,11 @@ impl<'t> Session<'t> {
         // the inline prompt and blocks its own thread on the answer.
         let permissions = PermissionStore::open(&cwd);
 
+        // The ask gate (docs/ask.md): the `AskUserQuestion` modal's answers
+        // post here, waking the blocked tool thread. Always built — asking is
+        // not a permission, so it doesn't follow ALTER_ZERO_PERMISSIONS.
+        let ask = alter_zero::ask::AskGate::new();
+
         // The `/settings` knobs (docs/settings.md): the saved `settings.json`
         // with each `ALTER_ZERO_*` override applied on top. Resolved BEFORE the
         // backend, which is built around three of them (tools, retries,
@@ -145,6 +150,7 @@ impl<'t> Session<'t> {
             &registry,
             &agent_registry,
             permissions.gate(),
+            &ask,
             &settings,
         );
 
@@ -229,6 +235,7 @@ impl<'t> Session<'t> {
             registry,
             agent_registry,
             permissions,
+            ask,
             recorder,
             hist_store,
             checkpoints,
@@ -447,6 +454,13 @@ impl<'t> Session<'t> {
         // decision that is never coming — a cancelled turn's reaps itself, but a
         // background agent's has nothing to cancel it (docs/permissions.md).
         self.permissions.release_abandoned(&mut self.app);
+        // …and any ask request dropped the same way, resolved as a decline so
+        // the blocked thread wakes with the stop-and-wait result rather than
+        // parking forever (docs/ask.md).
+        for id in self.app.take_abandoned_asks() {
+            self.ask
+                .resolve(&id, alter_zero::ask::AskDecision::Declined);
+        }
         // Mirror the finished history to the session file (docs/resume.md):
         // append what this iteration added, rewrite on a backtrack truncation,
         // nothing when unchanged — so streaming chunks (which never touch history)

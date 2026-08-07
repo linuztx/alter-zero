@@ -11,6 +11,7 @@ use super::*;
 use crate::app::{FileSearch, Message, ModelFetchError, RetryInfo};
 
 mod agent;
+mod ask_view;
 mod assistant;
 mod background_view;
 mod context_view;

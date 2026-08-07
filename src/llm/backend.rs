@@ -20,6 +20,7 @@ use super::retry::{self, AttemptResult, MAX_RETRIES};
 use super::tools::{self, AgentArgs, ToolCallRequest};
 use super::{ChatMessage, ContentPart, LlmError, ToolCallSpec};
 use crate::agents::{AgentEvent, AgentRegistry};
+use crate::ask::AskGate;
 use crate::context::ContextMessage;
 use crate::permission::PermissionGate;
 use crate::stream::{AgentCallDone, AgentSpec, CancelToken, ReplySource, StreamEvent};
@@ -62,6 +63,11 @@ pub struct LlmBackend {
     /// (`docs/permissions.md`). Without it (an embedder, the live tests,
     /// `ALTER_ZERO_PERMISSIONS` off) tools run unasked, as they always did.
     permissions: Option<PermissionGate>,
+    /// The shared ask gate, when the boundary attached one — **enables the
+    /// `askuserquestion` tool** (`docs/ask.md`): the model can raise the
+    /// inline question modal and block on the answers. Without it the tool
+    /// isn't offered at all (nobody could answer). Subagents never carry it.
+    ask: Option<AskGate>,
     /// The auto mode classifier bound to this backend's provider
     /// (`docs/permissions.md`): consulted by the approve seam for `bash`
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
@@ -129,6 +135,7 @@ impl LlmBackend {
             vision,
             agents: None,
             permissions: None,
+            ask: None,
             classifier,
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
@@ -152,11 +159,8 @@ impl LlmBackend {
     #[must_use]
     pub fn with_agents(mut self, registry: AgentRegistry) -> Self {
         if self.tools_enabled {
-            self.client = self
-                .client
-                .clone()
-                .with_tools(tools::tool_specs_with_agents());
             self.agents = Some(registry);
+            self.sync_tool_specs();
         }
         self
     }
@@ -169,6 +173,36 @@ impl LlmBackend {
     pub fn with_permissions(mut self, gate: PermissionGate) -> Self {
         self.permissions = Some(gate);
         self
+    }
+
+    /// Attach the shared ask gate, **enabling the `askuserquestion` tool**
+    /// (`docs/ask.md`): the client's tool set gains the ask spec (tools must
+    /// already be enabled — a tools-off backend cannot ask). The boundary
+    /// calls this on every main backend it builds; the one-off `/compact`
+    /// backend and subagents themselves never do.
+    #[must_use]
+    pub fn with_ask(mut self, gate: AskGate) -> Self {
+        if self.tools_enabled {
+            self.ask = Some(gate);
+            self.sync_tool_specs();
+        }
+        self
+    }
+
+    /// Rebuild the client's tool set from what is attached — the `agent` spec
+    /// when a subagent registry is, the ask spec when an ask gate is — so
+    /// [`with_agents`](Self::with_agents)/[`with_ask`](Self::with_ask)
+    /// compose in either order.
+    fn sync_tool_specs(&mut self) {
+        let mut specs = if self.agents.is_some() {
+            tools::tool_specs_with_agents()
+        } else {
+            tools::tool_specs()
+        };
+        if self.ask.is_some() {
+            specs.push(tools::ask_spec());
+        }
+        self.client = self.client.clone().with_tools(specs);
     }
 
     /// Set how many times a failed request is retried before the error is
@@ -446,6 +480,7 @@ impl ReplySource for LlmBackend {
         let agents = self.agents.clone();
         let subagent = self.subagent_config();
         let permissions = self.permissions.clone();
+        let ask = self.ask.clone();
         let classifier = self.classifier.clone();
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
@@ -485,7 +520,15 @@ impl ReplySource for LlmBackend {
                 max_tool_calls,
                 &mut messages,
                 |msgs| stream_round(&client, msgs, &tx, &cancel, max_retries),
-                |call, on_output| executor.execute(call, &cancel, on_output),
+                // An `askuserquestion` call takes the ask path — raise the
+                // modal and block this thread on the user's answers
+                // (docs/ask.md); everything else goes to the real executor.
+                |call, on_output| match (&ask, call.name.as_str()) {
+                    (Some(gate), tools::ASK_TOOL_NAME) => {
+                        super::ask::ask_user(gate, &tx, &cancel, call)
+                    }
+                    _ => executor.execute(call, &cancel, on_output),
+                },
                 || match &notices {
                     Some(registry) => registry
                         .take_pending_notices()

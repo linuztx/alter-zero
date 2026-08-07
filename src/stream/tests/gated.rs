@@ -251,3 +251,119 @@ fn a_staggered_permission_demo_asks_a_tall_write_then_a_tiny_one() {
     );
     assert_eq!(body_lines[1], 1, "the second prompt is a single line");
 }
+
+#[test]
+fn the_ask_demo_raises_the_questions_and_resolves_with_the_answers() {
+    // The offline `AskUserQuestion` round trip (`docs/ask.md`): the intro
+    // streams, the call is announced, the AskUser request raises the modal,
+    // and the submitted answers resolve the cell green via ToolAnswered —
+    // the display and the model-facing JSON both built by the real mapping.
+    let gate = crate::ask::AskGate::new();
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_ask(gate.clone());
+    let (tx, mut rx) = unbounded_channel();
+    let handle = dummy.spawn(
+        "ask me some questions".to_string(),
+        vec![],
+        vec![],
+        tx,
+        CancelToken::new(),
+    );
+    let mut saw_batch = false;
+    let mut answered: Option<(String, String)> = None;
+    let mut closing = String::new();
+    let mut asked = false;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolBatch(items) => {
+                saw_batch = true;
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].name, "AskUserQuestion");
+                assert!(
+                    items[0].args.contains("coffee"),
+                    "the header summarizes the first question: {}",
+                    items[0].args
+                );
+            }
+            StreamEvent::AskUser(request) => {
+                asked = true;
+                assert_eq!(request.questions.len(), 3, "the demo's three questions");
+                assert!(request.questions[1].multi_select);
+                assert!(request.questions[2].has_previews());
+                gate.resolve(
+                    &request.id,
+                    crate::ask::AskDecision::Submitted(vec![crate::ask::AskAnswer {
+                        question: request.questions[0].question.clone(),
+                        labels: vec!["Black".to_string()],
+                        notes: None,
+                        preview: None,
+                    }]),
+                );
+            }
+            StreamEvent::ToolStart { name, .. } => assert_eq!(name, "AskUserQuestion"),
+            StreamEvent::ToolAnswered { display, result } => {
+                answered = Some((display, result));
+            }
+            StreamEvent::Chunk(c) => {
+                if answered.is_some() {
+                    closing.push_str(&c);
+                }
+            }
+            StreamEvent::StreamDone => break,
+            other => panic!("unexpected event in the ask demo: {other:?}"),
+        }
+    }
+    handle.join().unwrap();
+    assert!(saw_batch && asked, "the call was announced and asked");
+    let (display, result) = answered.expect("the submission resolved the cell");
+    assert!(
+        display.starts_with(crate::ask::ANSWERED_HEADLINE),
+        "got {display}"
+    );
+    assert!(display.contains("→ Black"), "got {display}");
+    let value: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(
+        value["answers"]["What's your favorite way to drink coffee?"],
+        "Black"
+    );
+    assert!(
+        closing
+            .trim_end()
+            .ends_with(crate::stream::dummy::script::HANDOFF),
+        "the demo closes on the hand-off: {closing}"
+    );
+}
+
+#[test]
+fn declining_the_ask_demo_resolves_red_and_still_closes_the_turn() {
+    let gate = crate::ask::AskGate::new();
+    let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_ask(gate.clone());
+    let (tx, mut rx) = unbounded_channel();
+    let handle = dummy.spawn(
+        "ask me a question".to_string(),
+        vec![],
+        vec![],
+        tx,
+        CancelToken::new(),
+    );
+    let mut rejected = None;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::AskUser(request) => {
+                gate.resolve(&request.id, crate::ask::AskDecision::Declined);
+            }
+            StreamEvent::ToolRejected { display, result } => rejected = Some((display, result)),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().unwrap();
+    let (display, result) = rejected.expect("a decline resolves the cell red");
+    assert!(
+        display.starts_with(crate::ask::DECLINED_HEADLINE),
+        "got {display}"
+    );
+    assert!(
+        result.contains("STOP"),
+        "the model reads stop-and-wait: {result}"
+    );
+}

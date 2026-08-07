@@ -4,6 +4,7 @@
 //! [`ReplySource`](super::ReplySource) and the app — plain data with no I/O, so
 //! a real backend, the offline dummy and the tests all speak the same language.
 
+use crate::ask::AskRequest;
 use crate::permission::PermissionRequest;
 
 /// One call in a [`StreamEvent::ToolBatch`] announcement: the `name` + short
@@ -126,9 +127,22 @@ pub enum StreamEvent {
         ok: bool,
         truncated: bool,
     },
+    /// The in-flight `AskUserQuestion` call resolved with the user's
+    /// **submitted answers** (`docs/ask.md`) — sent **in place of**
+    /// [`StreamEvent::ToolEnd`], the green twin of
+    /// [`StreamEvent::ToolRejected`]: `display` is the committed cell's text
+    /// (`User answered Claude's questions:` over the `· Q → A` rows) while
+    /// `result` is the model-facing answers JSON the tool call returns. The
+    /// loop keeps both on the recorded call
+    /// ([`crate::app::App::answer_tool`]) so the derived context replays what
+    /// the model actually read.
+    ToolAnswered { display: String, result: String },
     /// The in-flight tool call was **refused at the permission prompt** (option
     /// 3, a Tab-amended rejection, or Ctrl+E's explain-instead) — sent **in
-    /// place of** [`StreamEvent::ToolEnd`], since the tool never ran.
+    /// place of** [`StreamEvent::ToolEnd`], since the tool never ran. The
+    /// `AskUserQuestion` tool resolves through here too when the user
+    /// declines (or picks `Chat about this`) — nothing was answered, and the
+    /// model reads the stop-and-wait `result` (`docs/ask.md`).
     ///
     /// The two texts are deliberately different (`docs/permissions.md`):
     /// `display` is the short red cell output the user reads
@@ -233,6 +247,15 @@ pub enum StreamEvent {
     /// while it is up — the call's `ToolStart` follows only if the user says
     /// yes. A backend with no gate attached never sends it.
     Permission(PermissionRequest),
+    /// An `AskUserQuestion` call is **waiting on the user's answers**
+    /// (`docs/ask.md`). Sent by the backend thread just before it blocks on
+    /// the [`crate::ask::AskGate`]; the loop raises the inline question modal
+    /// ([`crate::app::App::open_ask`]) and posts the [`crate::ask::AskDecision`]
+    /// back on the gate under this request's `id`. Unlike a permission
+    /// request the call's `ToolStart` has already fired — the ask *is* the
+    /// tool's execution. A backend with no ask gate attached never offers the
+    /// tool, so it never sends this.
+    AskUser(AskRequest),
     /// The backend failed; carries a human-readable message to show the user.
     Error(String),
     /// The reply is complete.

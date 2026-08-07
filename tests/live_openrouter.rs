@@ -1939,3 +1939,116 @@ fn live_max_tool_calls_bounds_a_parallel_batch() {
         );
     }
 }
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_ask_user_question_round_trip() {
+    // The `AskUserQuestion` tool end to end (docs/ask.md): the backend offers
+    // the tool (an AskGate is attached), the model calls it, the AskUser
+    // request reaches the channel, the test answers on the gate as the modal
+    // would, and the resolution comes back as ToolAnswered — the green cell's
+    // display + the answers JSON — before the model's closing reply uses the
+    // answer.
+    let gate = alter_zero::ask::AskGate::new();
+    let backend = backend().with_ask(gate.clone());
+    let context = vec![ContextMessage::new(
+        ContextRole::User,
+        "Use the askuserquestion tool to ask me ONE question: which greeting \
+         style I prefer, options \"Formal\" and \"Casual\". After I answer, \
+         reply with exactly the label I chose and nothing else.",
+    )];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(
+        "ask away".to_string(),
+        vec![],
+        context,
+        tx,
+        CancelToken::new(),
+    );
+    let mut answered: Option<(String, String)> = None;
+    let mut asked_questions = 0usize;
+    let mut reply = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::AskUser(request) => {
+                asked_questions = request.questions.len();
+                println!("asked: {:?}", request.questions);
+                assert!(!request.questions.is_empty());
+                gate.resolve(
+                    &request.id,
+                    alter_zero::ask::AskDecision::Submitted(vec![alter_zero::ask::AskAnswer {
+                        question: request.questions[0].question.clone(),
+                        labels: vec!["Casual".to_string()],
+                        notes: None,
+                        preview: None,
+                    }]),
+                );
+            }
+            StreamEvent::ToolAnswered { display, result } => {
+                answered = Some((display, result));
+            }
+            StreamEvent::Chunk(chunk) => reply.push_str(&chunk),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    assert!(asked_questions >= 1, "the model used the ask tool");
+    let (display, result) = answered.expect("the submission resolved the call");
+    println!("display:\n{display}\nresult: {result}\nreply: {reply}");
+    assert!(display.starts_with("User answered Claude's questions:"));
+    assert!(display.contains("→ Casual"));
+    let value: serde_json::Value = serde_json::from_str(&result).expect("the answers JSON");
+    assert!(value["answers"].is_object());
+    assert!(
+        reply.to_lowercase().contains("casual"),
+        "the model read the answer: {reply}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_ask_user_question_decline_stops_the_model() {
+    // A decline resolves the call red with the stop-and-wait result — the
+    // model must not re-ask in the same turn; it acknowledges and ends.
+    let gate = alter_zero::ask::AskGate::new();
+    let backend = backend().with_ask(gate.clone());
+    let context = vec![ContextMessage::new(
+        ContextRole::User,
+        "Use the askuserquestion tool to ask me which color I like, options \
+         \"Red\" and \"Blue\".",
+    )];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(
+        "ask away".to_string(),
+        vec![],
+        context,
+        tx,
+        CancelToken::new(),
+    );
+    let mut asks = 0usize;
+    let mut rejected = None;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::AskUser(request) => {
+                asks += 1;
+                gate.resolve(&request.id, alter_zero::ask::AskDecision::Declined);
+            }
+            StreamEvent::ToolRejected { display, result } => {
+                rejected = Some((display, result));
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    assert_eq!(asks, 1, "declining must not trigger an immediate re-ask");
+    let (display, result) = rejected.expect("the decline resolved the call");
+    println!("display:\n{display}\nresult: {result}");
+    assert!(display.starts_with("User declined to answer questions"));
+    assert!(result.contains("STOP"));
+}

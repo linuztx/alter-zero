@@ -72,6 +72,17 @@ pub struct ToolOutcome {
     /// small human/model-readable text (byte-capped, cell-displayed,
     /// token-counted, session-recorded). See `docs/tools.md`.
     pub image: Option<String>,
+    /// `Some(text)` when the **model-facing result differs from the displayed
+    /// cell text** — the `AskUserQuestion` tool's split (`docs/ask.md`):
+    /// `output` is then the committed cell's text (`User answered Claude's
+    /// questions:` over the `· Q → A` rows) while this is what the tool call
+    /// returns to the model (the answers JSON, or the declined/chat
+    /// stop-and-wait instruction). The agent loop surfaces the pair as
+    /// `StreamEvent::ToolAnswered` (ok) / `ToolRejected` (not ok) instead of
+    /// a plain `ToolEnd`, so the recorded call keeps both texts
+    /// ([`crate::app::ToolCall::context_output`]). `None` for every ordinary
+    /// outcome, whose display *is* what the model reads.
+    pub context: Option<String>,
 }
 
 impl ToolOutcome {
@@ -84,6 +95,7 @@ impl ToolOutcome {
             truncated: false,
             background: None,
             image: None,
+            context: None,
         }
     }
 
@@ -97,6 +109,7 @@ impl ToolOutcome {
             truncated: false,
             background: None,
             image: None,
+            context: None,
         }
     }
 
@@ -111,6 +124,7 @@ impl ToolOutcome {
             truncated: false,
             background: Some(id.into()),
             image: None,
+            context: None,
         }
     }
 
@@ -126,6 +140,22 @@ impl ToolOutcome {
     pub fn with_image(mut self, url: impl Into<String>) -> Self {
         self.image = Some(url.into());
         self
+    }
+
+    /// Attach a model-facing result that differs from the displayed `output`
+    /// (the `AskUserQuestion` resolutions — see the field doc).
+    #[must_use]
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context = Some(context.into());
+        self
+    }
+
+    /// What the **model** reads as this call's result — `context` when the
+    /// display diverged from it, else the displayed `output` (the
+    /// [`crate::app::ToolCall::context_text`] twin, on the outcome side).
+    #[must_use]
+    pub fn context_text(&self) -> &str {
+        self.context.as_deref().unwrap_or(&self.output)
     }
 }
 
@@ -168,6 +198,108 @@ pub const TOOL_NAMES: [&str; 4] = ["bash", "read", "write", "edit"];
 
 /// The wire name of the subagent-launching tool (`docs/agent-tool.md`).
 pub const AGENT_TOOL_NAME: &str = "agent";
+
+/// The wire name of the ask-the-user tool (`docs/ask.md`). Lowercase like
+/// every other wire name — which is also what the context replay's
+/// lowercasing fallback reproduces from the display name, so a replayed call
+/// matches the offered spec.
+pub const ASK_TOOL_NAME: &str = "askuserquestion";
+
+/// The display name the ask tool's cell header shows while it runs; the
+/// resolved cell replaces the whole header with the outcome headline
+/// (`docs/ask.md`).
+pub const ASK_TOOL_DISPLAY: &str = "AskUserQuestion";
+
+/// The `AskUserQuestion` tool definition (`docs/ask.md`) — offered only when
+/// an [`crate::ask::AskGate`] is attached (`LlmBackend::with_ask`): without
+/// one nobody could answer, so the tool isn't there to call. Subagents never
+/// get it (they cannot talk to the user). The description and schema follow
+/// Claude Code's tool of the same purpose.
+#[must_use]
+pub fn ask_spec() -> Value {
+    function_spec(
+        ASK_TOOL_NAME,
+        "Ask the user one to four multiple-choice questions and wait for the \
+         answers. Use this when you are blocked on a decision that is genuinely \
+         the user's to make: choosing between approaches, clarifying ambiguous \
+         requirements, or picking an option you cannot resolve yourself. Each \
+         question shows 2-4 options plus an automatic free-text \"Other\" entry \
+         — never add an \"Other\" option yourself. The user can also decline to \
+         answer or ask to chat instead; the result reports what they chose per \
+         question. Do not use this for questions you can answer by exploring \
+         the code, or for permission to proceed with the obvious next step.",
+        json!({
+            "type": "object",
+            "properties": {
+                "questions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 4,
+                    "description": "Questions to ask the user (1-4).",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "The complete question to ask. Clear, \
+                                    specific, ending with a question mark. If \
+                                    multiSelect is true, phrase it accordingly."
+                            },
+                            "header": {
+                                "type": "string",
+                                "description": "Very short label shown as the \
+                                    question's tab chip (max 12 chars), e.g. \
+                                    \"Auth method\", \"Library\"."
+                            },
+                            "options": {
+                                "type": "array",
+                                "minItems": 2,
+                                "maxItems": 4,
+                                "description": "The available choices (2-4). Distinct \
+                                    and mutually exclusive unless multiSelect is \
+                                    true. No 'Other' option — one is added \
+                                    automatically.",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "label": {
+                                            "type": "string",
+                                            "description": "The concise display text \
+                                                (1-5 words) the user picks."
+                                        },
+                                        "description": {
+                                            "type": "string",
+                                            "description": "What this option means or \
+                                                implies — trade-offs, consequences."
+                                        },
+                                        "preview": {
+                                            "type": "string",
+                                            "description": "Optional content rendered \
+                                                in a side panel while the option is \
+                                                focused — a code snippet or mockup \
+                                                that helps compare options."
+                                        }
+                                    },
+                                    "required": ["label", "description"],
+                                    "additionalProperties": false
+                                }
+                            },
+                            "multiSelect": {
+                                "type": "boolean",
+                                "description": "Set to true to let the user select \
+                                    several options. Defaults to false."
+                            }
+                        },
+                        "required": ["question", "header", "options", "multiSelect"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["questions"],
+            "additionalProperties": false
+        }),
+    )
+}
 
 fn agent_spec() -> Value {
     function_spec(
@@ -476,6 +608,7 @@ pub fn display_name(name: &str) -> String {
         "write" => "Write".to_string(),
         "edit" => "Edit".to_string(),
         AGENT_TOOL_NAME => "Agent".to_string(),
+        ASK_TOOL_NAME => ASK_TOOL_DISPLAY.to_string(),
         other => other.to_string(),
     }
 }
@@ -516,6 +649,20 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
         "bash" => field("command"),
         "read" | "write" | "edit" => field("path"),
         AGENT_TOOL_NAME => field("description"),
+        // The ask tool's header summarizes as its first question (+ how many
+        // more ride along) — what the Ctrl+O transcript shows while the call
+        // waits on the user (`docs/ask.md`).
+        ASK_TOOL_NAME => value
+            .as_ref()
+            .and_then(|v| v.get("questions"))
+            .and_then(Value::as_array)
+            .and_then(|qs| {
+                let first = qs.first()?.get("question")?.as_str()?.to_string();
+                Some(match qs.len() {
+                    0 | 1 => first,
+                    n => format!("{first} (+{} more)", n - 1),
+                })
+            }),
         _ => None,
     };
     let summary = summary.unwrap_or_else(|| arguments.trim().to_string());

@@ -419,6 +419,12 @@ impl Session<'_> {
 /// A free function (not a [`Session`] method) because the commit paths call it
 /// while `app` is already borrowed out of `self`.
 fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
+    // The `AskUserQuestion` modal replaces the whole region — checked first,
+    // like its render branch (the two modals queue, so at most one is open;
+    // docs/ask.md).
+    if let Some(height) = ui::ask_height(app, screen.width, screen.height) {
+        return height;
+    }
     // A pending tool-permission request replaces the whole region — the
     // streaming strip included, since the turn is blocked on the answer. It is
     // modal, so it is checked first (docs/permissions.md).

@@ -192,6 +192,10 @@ pub(crate) struct Session<'t> {
     /// The tool-permission gate and this project's saved rules
     /// (`docs/permissions.md`).
     permissions: PermissionStore,
+    /// The `AskUserQuestion` gate the modal's answers post on
+    /// (`docs/ask.md`) — always present (asking is not a permission), shared
+    /// by every backend build.
+    ask: alter_zero::ask::AskGate,
     /// Mirrors history to the `/resume` rollout file (`docs/resume.md`).
     recorder: SessionRecorder,
     /// The cross-session input history (`docs/history-persistence.md`).

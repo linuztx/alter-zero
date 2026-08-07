@@ -217,6 +217,17 @@ pub enum Action {
         request: PermissionRequest,
         decision: PermissionDecision,
     },
+    /// The user resolved the `AskUserQuestion` modal — submitted answers,
+    /// declined, or asked to chat. The modal is already closed (and the
+    /// composer draft restored); the loop posts `decision` on the
+    /// [`crate::ask::AskGate`] under `id`, waking the tool thread blocked on
+    /// it. Unlike a permission Esc this never interrupts the turn: a decline
+    /// resolves the call and the model reads the stop-and-wait result. See
+    /// `docs/ask.md`.
+    ResolveAsk {
+        id: String,
+        decision: crate::ask::AskDecision,
+    },
     /// The user asked to quit.
     Quit,
 }

@@ -297,6 +297,14 @@ pub fn render_live_with_preview(
     app: &App,
     stream_preview: Option<&[Line<'static>]>,
 ) {
+    // The `AskUserQuestion` modal replaces the whole live region — the
+    // streaming strip included, since the turn is blocked on the answers.
+    // Checked first: the two modals queue behind each other, so at most one
+    // is ever open. See `docs/ask.md`.
+    if app.ask().is_some() {
+        render_ask(area, buf, app);
+        return;
+    }
     // A pending tool-permission request replaces the whole live region — the
     // streaming strip included, since the turn is blocked on the answer. It
     // wins over every other inline view (it is modal). See

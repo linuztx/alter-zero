@@ -105,6 +105,16 @@ fn main() {
                     request.target
                 );
             }
+            // …and no ask gate, so the ask tool is not offered (docs/ask.md).
+            StreamEvent::AskUser(request) => {
+                println!(
+                    "\n\x1b[90m[user asked {} question(s)]\x1b[0m",
+                    request.questions.len()
+                );
+            }
+            StreamEvent::ToolAnswered { display, .. } => {
+                println!("\n\x1b[90m[{display}]\x1b[0m");
+            }
             StreamEvent::ToolNote(note) => {
                 println!("\n\x1b[90m[{note}]\x1b[0m");
             }

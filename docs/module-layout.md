@@ -53,6 +53,7 @@ widened for the split.
 | `model_picker.rs` | The inline `/model` picker. |
 | `login.rs` | The inline `/login` onboarding. |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
+| `ask.rs` | The inline `AskUserQuestion` modal: the tab/row state, answers under construction, the Other/notes entries, the queue against the permission prompt (`docs/ask.md`). |
 | `background.rs` | Background shells and the ↓ manager band. |
 | `agent.rs` | The `Agent` tool's roster, groups, and notices. |
 | `reasoning.rs` | The thinking stream: the live reasoning buffer, the `Reasoning` cell it settles into, and the provider's reasoning-token snap (`docs/thinking-stream.md`). |
@@ -82,6 +83,7 @@ widened for the split.
 | `context_view.rs` | The Ctrl+D context-debug overlay. |
 | `resume_view.rs`, `model_view.rs`, `login_view.rs`, `background_view.rs` | The pickers and the manager band. |
 | `permission_view.rs` | The tool-permission modal (`docs/permissions.md`). |
+| `ask_view.rs` | The `AskUserQuestion` modal: the chip strip, option pages, preview panel, review page (`docs/ask.md`). |
 | `reasoning.rs` | The thinking stream's cells: the live `● Thinking…` block, the collapsed `Thought for …` line, and its Ctrl+O expansion (`docs/thinking-stream.md`). |
 | `stream_render.rs` | `StreamRender`, the incremental commit-to-scrollback renderer. |
 
@@ -139,7 +141,7 @@ can drive). Reading the seam meant scrolling past canned `ping` output.
 | `dummy/scenario.rs` | The scenario registry: which demo a prompt selects. |
 | `dummy/script.rs` | Canned replies and the streaming primitives. |
 | `dummy/turns.rs` | The **pure** scripted turns, one `Cue -> Vec<StreamEvent>` each. |
-| `dummy/gated.rs` | The turns that block on the permission gate. |
+| `dummy/gated.rs` | The turns that block on a gate: the permission demos and the `AskUserQuestion` round trip (`docs/ask.md`). |
 
 The dummy is a subtree rather than four sibling files because it is genuinely
 separable: it is the one backend that could be deleted without touching the

@@ -306,11 +306,27 @@ impl AgentRun {
                 self.status = AgentStatus::Failed;
                 return true;
             }
+            // The ToolRejected shape's green twin (the ask tool's submitted
+            // answers, docs/ask.md). Subagents are never offered the ask tool,
+            // so this is unreachable today — handled like the rejection arm
+            // so the mapping stays total and honest if that ever changes.
+            StreamEvent::ToolAnswered { display, result } => {
+                self.tokens += crate::app::count_tokens(result) as u64;
+                if let Some(mut front) = self.tool_queue.pop_front() {
+                    front.status = ToolStatus::Ok;
+                    front.output = display.clone();
+                    front.context_output = Some(result.clone());
+                    self.history.push(HistoryItem::Tool(front));
+                }
+            }
             // A permission request is the *user's* business, not the roster's:
             // the boundary lifts it out of the agent channel and raises the
             // shared inline prompt (docs/permissions.md). Nothing about this
-            // agent's own state changes while it waits.
+            // agent's own state changes while it waits. An ask request would
+            // be too (docs/ask.md) — unreachable, since subagents never get
+            // the tool.
             StreamEvent::Permission(_)
+            | StreamEvent::AskUser(_)
             | StreamEvent::ThinkingStart
             | StreamEvent::ThinkingEnd
             | StreamEvent::Retrying { .. }

@@ -178,6 +178,23 @@ impl Session<'_> {
                 self.clocks.command_start = None;
                 false
             }
+            StreamEvent::ToolAnswered { display, result } => {
+                // The user answered the `AskUserQuestion` call: commit the green
+                // cell with the `· Q → A` display while `result` — the answers
+                // JSON the model read — rides the recorded call, the
+                // ToolRejected dance in green (docs/ask.md).
+                if let Some(tool) = self.app.answer_tool(&display, &result)
+                    && committing
+                {
+                    let height = self.live_region_height();
+                    self.term.set_view_height(height);
+                    self.term.insert_before(ui::tool_lines(&tool, width));
+                    self.term.insert_before(vec![Line::default()]);
+                }
+                self.settle_bg_completions();
+                self.clocks.command_start = None;
+                false
+            }
             StreamEvent::ToolBackgrounded { id: _, output } => {
                 // The call resolved by moving to the background: commit its cell
                 // with the fixed `⎿ Running in the background (↓ to manage)` row
@@ -222,6 +239,14 @@ impl Session<'_> {
                 // Nothing is committed: the prompt is live-only, and no call has
                 // started. See docs/permissions.md.
                 self.app.open_permission(request);
+                false
+            }
+            StreamEvent::AskUser(request) => {
+                // The model is asking the user questions: raise the inline
+                // modal (which stashes the composer draft) — the backend
+                // thread is parked on the ask gate until an
+                // `Action::ResolveAsk` answers it. See docs/ask.md.
+                self.app.open_ask(request);
                 false
             }
             StreamEvent::ThinkingStart => {

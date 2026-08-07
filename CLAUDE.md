@@ -38,7 +38,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -389,7 +389,49 @@ the same way, the pure format in
 in `tui::config`/`tui::permission`), so "don't ask again" and the mode survive a restart in the
 same directory; gated by `ALTER_ZERO_PERMISSIONS` (disabled = no gate, no
 footer segment, Ctrl+A explains via toast)) in
-`docs/permissions.md`; and the **Ctrl+O
+`docs/permissions.md`; and the **`AskUserQuestion` tool** (Claude-Code's
+mid-turn questions, `docs/ask.md`: the model asks 1–4 multiple-choice
+questions — `askuserquestion`, offered only when `LlmBackend::with_ask`
+attached the session's `ask::AskGate` (always, in the app; subagents never
+get it) — and its thread **blocks on the gate** exactly like a permission
+request while an inline modal (the permission prompt's sibling: modal keys
+routed first, composer draft stashed/restored, `ui::region_is_modal` so the
+close purge-rebuilds, the two modals queueing behind each other via
+`App::open_next_pending`) walks the user through a chip strip of question
+tabs (`☐`/`☒`/`✔ Submit`, the **current chip lit on the cyan selection
+background**, ←/→/Tab/Shift+Tab moving, a lone question showing no Submit
+tab), numbered options with dim descriptions (digits jump-activate; Enter on
+a single-select records + advances — a lone question resolves at once —
+while multi-select `[✔]` checkboxes toggle and confirm via their own
+unnumbered `Submit` row), an auto-added free-text **`Type something.`** row
+(the entry reuses `App::input` like Tab's amend field; Enter accepts —
+single-select advances with the custom text as the answer, multi-select
+checks it — Esc keeps the draft unchosen), a side-by-side **preview panel**
+when any option carries `preview` content (options left, the focused
+option's bordered panel right, the `Notes: press n to add notes` line
+beneath — `n` opens the notes field, Enter/Esc both keep the text), a
+**`Chat about this`** row resolving the whole call as "the user wants to
+talk" (red cell + stop-and-wait result), and — for several questions — a
+closing **review page** (`● question` over `→ answer`/`(not answered)`,
+`❯ 1. Submit answers / 2. Cancel`) whose empty submission walks to the first
+unanswered question instead of submitting nothing; Esc anywhere **declines**
+(the turn continues: red `User declined to answer questions` cell over the
+`· question (options)` rows, the model reading the stop-and-wait result and
+reacting in the same turn — never a forced interrupt); a submission resolves
+green via the new `StreamEvent::ToolAnswered { display, result }` (the
+`ToolRejected` twin, from `ToolOutcome::context` — the split the executor
+`llm::ask::ask_user` builds with the pure `ask::answered_display` /
+`answered_result`), the committed cell rendering the headline as its `●`
+header (`ui::tool`'s ask special case) over the `⎿ · Q → A` gutter rows
+while the model reads the schema's `{"answers": {question: labels},
+"annotations": {question: {notes, preview}}}` JSON — kept on
+`ToolCall::context_output`, so the derived context, Ctrl+D, and a `/resume`
+all replay exactly what was sent; abandoned requests (Esc-cancelled
+permission turns, `/clear`) release on the gate as declines at the loop
+bottom so no thread parks; the offline dummy's `Play::Asked` scenario (cue
+"ask" + "question") drives the whole round trip through the real
+`ask_user` mapping — three questions: single-select coffee, multi-select
+demo topics, preview+notes code style) in `docs/ask.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in

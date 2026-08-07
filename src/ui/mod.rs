@@ -36,6 +36,7 @@ use crate::markdown;
 use crate::textarea::TextArea;
 
 mod agent;
+mod ask_view;
 mod assistant;
 mod background_view;
 mod context_view;
@@ -66,6 +67,7 @@ pub use self::agent::{
     agent_group_lines, agent_hint_line, agent_list_lines, agent_list_rows, agent_notice_lines,
     agent_view_status, live_agent_group_lines,
 };
+pub use self::ask_view::{ask_height, ask_lines, render_ask};
 pub use self::background_view::{background_view_lines, render_background_view};
 pub use self::context_view::{context_lines, context_view_max_scroll, render_context_view};
 pub use self::conversation::{

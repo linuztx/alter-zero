@@ -16,6 +16,7 @@ use std::time::Duration;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::agents::{AgentRun, AgentStatus};
+use crate::ask::AskRequest;
 use crate::file_search::{FileMatch, at_token};
 use crate::llm::{ModelEntry, ReasoningSupport, ThinkingMode};
 use crate::permission::{PermissionDecision, PermissionKind, PermissionMode, PermissionRequest};
@@ -25,6 +26,7 @@ use crate::textarea::TextArea;
 
 mod action;
 mod agent;
+mod ask;
 mod background;
 mod backtrack;
 mod commands;
@@ -50,6 +52,7 @@ pub use self::action::Action;
 pub use self::agent::{
     AGENT_STOPPED_OUTPUT, AgentGroup, AgentGroupEntry, AgentGroupLive, AgentNotice,
 };
+pub use self::ask::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
 pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, BgCompletion};
 pub use self::backtrack::{Backtrack, CHECKPOINT_RESTORED_NOTICE, CHECKPOINT_REWOUND_NOTICE};
 pub use self::commands::{
@@ -473,6 +476,19 @@ pub struct App {
     /// whole live region and owns every key while open. Read through
     /// [`permission`](Self::permission).
     permission: Option<PermissionPrompt>,
+    /// The open `AskUserQuestion` modal (`docs/ask.md`): the call whose
+    /// thread is blocked on the user's answers. The permission prompt's
+    /// sibling — modal, composer-stashing, checked **first** in the key
+    /// routing and the renderer. Read through [`ask`](Self::ask).
+    ask: Option<AskPrompt>,
+    /// Ask requests that arrived while another modal was open, oldest first —
+    /// each opens as the one before it resolves (`docs/ask.md`).
+    pending_asks: VecDeque<AskRequest>,
+    /// Ids of ask requests dropped without an answer (`/clear`, a permission
+    /// Esc), drained by the boundary and resolved on the gate as declines so
+    /// no tool thread parks forever — see
+    /// [`take_abandoned_asks`](Self::take_abandoned_asks).
+    abandoned_asks: Vec<String>,
     /// Requests that arrived while one was already open (two agents asking at
     /// once), oldest first — each opens as the one before it resolves.
     pending_permissions: VecDeque<PermissionRequest>,
@@ -755,8 +771,10 @@ impl App {
         // The blocked tool threads are reaped by the loop's Clear arm (their
         // cancel token trips); the prompt they were waiting on goes with them
         // (docs/permissions.md). The composer keeps its draft, as `/clear`
-        // always has — `discard_permissions` restores it first.
+        // always has — the discards restore it first. The ask modal and its
+        // queue go the same way (docs/ask.md).
         self.discard_permissions();
+        self.discard_asks();
     }
 }
 

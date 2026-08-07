@@ -11,6 +11,13 @@ use super::*;
 
 impl App {
     pub fn on_key(&mut self, key: KeyEvent) -> Action {
+        // A pending `AskUserQuestion` modal owns every key, ahead of even the
+        // permission prompt (the two queue behind each other, so at most one
+        // is ever open) — the main turn's thread is blocked on the answers.
+        // See `docs/ask.md`.
+        if self.view == View::Conversation && self.ask.is_some() {
+            return self.on_key_ask(key);
+        }
         // A pending tool-permission request is **modal**: it owns every key,
         // ahead of even the Ctrl+R search and the inline pickers, because a
         // tool thread is blocked on the answer. See `docs/permissions.md`.

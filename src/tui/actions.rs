@@ -145,6 +145,13 @@ impl Session<'_> {
             Action::ResolvePermission { request, decision } => {
                 self.resolve_permission(&request, decision);
             }
+            Action::ResolveAsk { id, decision } => {
+                // Post the user's answers (or decline/chat) on the ask gate,
+                // waking the tool thread parked on it — the modal is already
+                // closed and the composer draft restored (docs/ask.md).
+                self.ask.resolve(&id, decision);
+                self.frame.schedule_frame();
+            }
             Action::SetPermissionMode(mode) => self.set_permission_mode(mode),
             Action::OpenModelPicker => self.open_model_picker(),
             Action::CloseModelPicker => self.close_model_picker(),
@@ -318,8 +325,10 @@ impl Session<'_> {
         self.agent_expiry.clear();
         // …and the permission gate: `clear_conversation` dropped the prompt, the
         // cancelled threads reap themselves, so no unclaimed decision may linger
-        // for the next turn (docs/permissions.md).
+        // for the next turn (docs/permissions.md). The ask gate's board goes
+        // the same way (docs/ask.md).
         self.permissions.clear();
+        self.ask.clear();
         // A cleared conversation starts a fresh session file (codex's /new); the
         // old one keeps what it had (docs/resume.md). Re-seed the checkpoint chain
         // with a pristine snapshot of the current tree so a backtrack in the new

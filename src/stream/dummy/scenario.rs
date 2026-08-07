@@ -22,6 +22,7 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::ask::AskGate;
 use crate::permission::PermissionGate;
 
 use super::super::{CancelToken, StreamEvent};
@@ -81,6 +82,15 @@ pub(in crate::stream) struct Stage<'a> {
     pub(in crate::stream) cancel: &'a CancelToken,
 }
 
+/// What an **asked** scenario streams through — the [`Stage`] twin for the
+/// `AskUserQuestion` demo, blocking on the [`AskGate`] instead
+/// (`docs/ask.md`).
+pub(in crate::stream) struct AskStage<'a> {
+    pub(in crate::stream) gate: &'a AskGate,
+    pub(in crate::stream) tx: &'a UnboundedSender<StreamEvent>,
+    pub(in crate::stream) cancel: &'a CancelToken,
+}
+
 /// How a selected scenario produces its events.
 #[derive(Clone, Copy)]
 pub(in crate::stream) enum Play {
@@ -93,6 +103,10 @@ pub(in crate::stream) enum Play {
     /// backend's tool thread does (`docs/permissions.md`). Only ever selected
     /// when a gate is attached.
     Gated(fn(&Stage<'_>)),
+    /// A turn that **asks the user questions**: it raises the inline modal
+    /// and blocks on the ask gate exactly as the real tool does
+    /// (`docs/ask.md`). Only ever selected when an ask gate is attached.
+    Asked(fn(&AskStage<'_>)),
 }
 
 /// One offline demo the dummy can play.
@@ -113,6 +127,14 @@ pub(in crate::stream) struct Scenario {
 /// cues are the narrowest), then the scripted turns, then the default turn —
 /// which matches anything, so selection never falls off the end.
 pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
+    // The `AskUserQuestion` round trip: three questions through the modal
+    // (docs/ask.md).
+    Scenario {
+        #[cfg(test)]
+        name: "ask-questions",
+        selects: |cue| cue.mentions("ask") && cue.mentions("question"),
+        play: Play::Asked(gated::ask_questions_turn),
+    },
     // Auto mode's classifier deciding a `bash` batch instead of the user.
     Scenario {
         #[cfg(test)]
@@ -193,18 +215,27 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
     },
 ];
 
-/// The scenario `cue` selects. `gate_attached` reports whether the session
-/// handed the dummy a [`PermissionGate`]: without one the gated demos would
-/// block forever on an answer nobody can give, so they are skipped and the
-/// prompt falls through to a scripted turn — which is why `turn_events` can
-/// answer *any* prompt.
+/// The scenario `cue` selects. `gate_attached` / `ask_attached` report which
+/// gates the session handed the dummy: without the matching one a
+/// gated/asked demo would block forever on an answer nobody can give, so it
+/// is skipped and the prompt falls through to a scripted turn — which is why
+/// `turn_events` can answer *any* prompt.
 ///
 /// Total by construction: [`SCENARIOS`]'s last entry matches everything.
-pub(in crate::stream) fn select(cue: &Cue, gate_attached: bool) -> &'static Scenario {
+pub(in crate::stream) fn select(
+    cue: &Cue,
+    gate_attached: bool,
+    ask_attached: bool,
+) -> &'static Scenario {
     SCENARIOS
         .iter()
         .find(|scenario| {
-            (gate_attached || matches!(scenario.play, Play::Script(_))) && (scenario.selects)(cue)
+            let playable = match scenario.play {
+                Play::Script(_) => true,
+                Play::Gated(_) => gate_attached,
+                Play::Asked(_) => ask_attached,
+            };
+            playable && (scenario.selects)(cue)
         })
         .unwrap_or(&SCENARIOS[SCENARIOS.len() - 1])
 }

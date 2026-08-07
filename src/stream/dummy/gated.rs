@@ -1,20 +1,21 @@
 //! The dummy's **gated** turns: the offline permission demos
-//! (`docs/permissions.md`).
+//! (`docs/permissions.md`) and the `AskUserQuestion` demo (`docs/ask.md`).
 //!
 //! Unlike [`super::turns`] these can't be a pure event list — they *ask*, and
 //! then block on the shared [`PermissionGate`](crate::permission::PermissionGate)
-//! exactly as a real backend's tool thread does, so `scripts/smoke.sh` can drive
-//! the whole approval round trip (draft stash, options, Tab's amend, the
-//! restore) with no provider attached.
+//! (or the [`AskGate`](crate::ask::AskGate)) exactly as a real backend's tool
+//! thread does, so `scripts/smoke.sh` can drive the whole round trip (draft
+//! stash, options, Tab's amend, the restore) with no provider attached.
 //!
-//! All four run the same three steps per call — ask, block, resolve — so those
-//! live once on [`Stage`] and each demo is just its own script of calls.
+//! All the permission demos run the same three steps per call — ask, block,
+//! resolve — so those live once on [`Stage`] and each demo is just its own
+//! script of calls.
 
 use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
 
 use super::super::{StreamEvent, ToolCallSummary};
-use super::scenario::Stage;
-use super::script::{chunks, created_output as created};
+use super::scenario::{AskStage, Stage};
+use super::script::{chunks, created_output as created, handoff};
 use super::{CHUNK_DELAY, nap};
 
 /// How a gated call resolved: `Ok(output)` ran, `Err((display, result))` was
@@ -155,6 +156,144 @@ impl Stage<'_> {
             agent: None,
         }
     }
+}
+
+/// The scripted `AskUserQuestion` arguments for the ask demo (`docs/ask.md`):
+/// three questions exercising every surface — a single-select, a multi-select
+/// (checkboxes + its own `Submit` row), and a preview question (the
+/// side-by-side panel, the `n` notes field). The reference transcript's
+/// coffee/demo-topics/code-style trio.
+const DUMMY_ASK_ARGS: &str = r#"{"questions":[
+  {
+    "question": "What's your favorite way to drink coffee?",
+    "header": "Coffee style",
+    "options": [
+      {"label": "Black", "description": "No milk, no sugar — just coffee"},
+      {"label": "Latte", "description": "Espresso with steamed milk"},
+      {"label": "Cold brew", "description": "Slow-steeped, served cold"}
+    ],
+    "multiSelect": false
+  },
+  {
+    "question": "Which of these tool features would you like to see demoed next? (pick any number)",
+    "header": "Demo topics",
+    "options": [
+      {"label": "Preview panel", "description": "Side-by-side layout for comparing code/mockups/configs"},
+      {"label": "Custom 'Other' input", "description": "Every question auto-includes an Other option for free-text answers"},
+      {"label": "4-option question", "description": "Questions can offer up to 4 choices each"}
+    ],
+    "multiSelect": true
+  },
+  {
+    "question": "Which code style do you prefer for a simple greeting function?",
+    "header": "Code style",
+    "options": [
+      {"label": "Arrow function", "description": "Modern and terse", "preview": "const greet = (name) => {\n  return `Hello, ${name}!`;\n};"},
+      {"label": "Function declaration", "description": "Classic and hoisted", "preview": "function greet(name) {\n  return `Hello, ${name}!`;\n}"},
+      {"label": "One-liner", "description": "As short as it gets", "preview": "const greet = (name) => `Hello, ${name}!`;"}
+    ],
+    "multiSelect": false
+  }
+]}"#;
+
+/// Play the offline `AskUserQuestion` round trip (`docs/ask.md`): stream the
+/// intro, announce the call, raise the question modal and **block on the ask
+/// gate** exactly as the real tool thread does, then resolve the cell —
+/// green with the answers, red for a decline or a `Chat about this` — and
+/// close on a reply that reports what happened. The whole resolution mapping
+/// is the real one ([`crate::llm::ask::ask_user`]), so the offline demo and a
+/// live backend produce byte-identical cells.
+pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
+    let intro = "Happy to ask — I'll walk you through the question tool: a single-select, \
+                 a multi-select with checkboxes, and a preview question with notes. \
+                 Tab moves between them; the last page reviews and submits.\n\n";
+    for chunk in chunks(intro) {
+        if stage.cancel.is_cancelled() {
+            return;
+        }
+        if stage.tx.send(StreamEvent::Chunk(chunk)).is_err() {
+            return;
+        }
+        nap(CHUNK_DELAY, stage.cancel);
+    }
+    let call = crate::llm::tools::ToolCallRequest {
+        id: "ask_demo".to_string(),
+        name: crate::llm::tools::ASK_TOOL_NAME.to_string(),
+        arguments: DUMMY_ASK_ARGS.to_string(),
+    };
+    let name = crate::llm::tools::display_name(&call.name);
+    let args = crate::llm::tools::summarize_call(&call.name, &call.arguments);
+    let _ = stage.tx.send(StreamEvent::ToolBatch(vec![ToolCallSummary {
+        name: name.clone(),
+        args: args.clone(),
+    }]));
+    // The real executor path: parse, raise `AskUser`, block on the gate, map
+    // the decision onto the split outcome (docs/ask.md).
+    let outcome = crate::llm::ask::ask_user(stage.gate, stage.tx, stage.cancel, &call);
+    if stage.cancel.is_cancelled() {
+        return;
+    }
+    let _ = stage.tx.send(StreamEvent::ToolStart {
+        name,
+        args,
+        detail: None,
+    });
+    let answered = outcome.ok;
+    let chatting = outcome.output.starts_with(crate::ask::CHAT_HEADLINE);
+    match outcome.context {
+        Some(result) if answered => {
+            let _ = stage.tx.send(StreamEvent::ToolAnswered {
+                display: outcome.output,
+                result,
+            });
+        }
+        Some(result) => {
+            let _ = stage.tx.send(StreamEvent::ToolRejected {
+                display: outcome.output,
+                result,
+            });
+        }
+        // An argument failure can't happen (the script is valid); resolve
+        // plainly so the mapping stays total.
+        None => {
+            let _ = stage.tx.send(StreamEvent::ToolEnd {
+                output: outcome.output,
+                ok: outcome.ok,
+                truncated: false,
+            });
+        }
+    }
+    let closing: &str = if answered {
+        concat!(
+            "Noted — the cell above records each answer exactly the way a real model \
+             would read them (the JSON result carries the same pairs, plus any notes \
+             you typed on the preview question).\n\n",
+            handoff!()
+        )
+    } else if chatting {
+        concat!(
+            "Sure — let's talk it through. I'm only the demo backend, but a real model \
+             would now wait for your message and discuss the options before deciding \
+             anything.\n\n",
+            handoff!()
+        )
+    } else {
+        concat!(
+            "No problem — the questions can wait. A real model would stop here and let \
+             you steer; ask for the ask question demo again anytime.\n\n",
+            handoff!()
+        )
+    };
+    for chunk in chunks(closing) {
+        if stage.cancel.is_cancelled() {
+            return;
+        }
+        if stage.tx.send(StreamEvent::Chunk(chunk)).is_err() {
+            return;
+        }
+        nap(CHUNK_DELAY, stage.cancel);
+    }
+    let _ = stage.tx.send(StreamEvent::StreamDone);
 }
 
 /// The dummy's scripted `write` for the permission demo (`docs/permissions.md`).

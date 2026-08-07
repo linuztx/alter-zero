@@ -8,6 +8,9 @@
 //!   (pure state + boundary registry; see `docs/agent-tool.md`).
 //! - [`app`]         — conversation state and the pure key/stream update logic,
 //!   split one module per area (see `docs/module-layout.md`).
+//! - [`ask`]         — the `AskUserQuestion` tool: the question shapes, the
+//!   user's decision and its result texts, and the gate the tool thread
+//!   blocks on while the modal asks (see `docs/ask.md`).
 //! - [`background`]  — background shell processes: the registry behind
 //!   `run_in_background`, Ctrl+B, and the ↓ manager (boundary; see
 //!   `docs/background.md`).
@@ -65,6 +68,7 @@
 
 pub mod agents;
 pub mod app;
+pub mod ask;
 pub mod background;
 pub mod checkpoint;
 pub mod cli;

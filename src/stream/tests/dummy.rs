@@ -110,11 +110,17 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::Permission(_) => {
                 panic!("no gate attached — the dummy never asks")
             }
+            StreamEvent::AskUser(_) => {
+                panic!("no ask gate attached — the dummy never questions")
+            }
             StreamEvent::ToolBackgrounded { .. } => {
                 panic!("the dummy never backgrounds a tool")
             }
             StreamEvent::ToolRejected { .. } => {
                 panic!("no gate attached — nothing is ever rejected")
+            }
+            StreamEvent::ToolAnswered { .. } => {
+                panic!("no ask gate attached — nothing is ever answered")
             }
             StreamEvent::ToolNote(_) => {
                 panic!("no gate attached — the classifier never speaks")

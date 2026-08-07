@@ -280,15 +280,31 @@ pub fn run_agent(
                     // A backgrounded call resolves via its own event — the
                     // cell shows the fixed backgrounded row while the launch
                     // text still becomes the tool result the model reads
-                    // (docs/background.md).
-                    match &outcome.background {
-                        Some(id) => {
+                    // (docs/background.md). An outcome whose model-facing
+                    // `context` differs from the displayed text (the ask
+                    // tool's resolutions, `docs/ask.md`) rides the two-text
+                    // events instead — `ToolAnswered` green, `ToolRejected`
+                    // red — so the recorded call keeps both.
+                    match (&outcome.background, &outcome.context) {
+                        (Some(id), _) => {
                             let _ = tx.send(StreamEvent::ToolBackgrounded {
                                 id: id.clone(),
                                 output: outcome.output.clone(),
                             });
                         }
-                        None => {
+                        (None, Some(context)) if outcome.ok => {
+                            let _ = tx.send(StreamEvent::ToolAnswered {
+                                display: outcome.output.clone(),
+                                result: context.clone(),
+                            });
+                        }
+                        (None, Some(context)) => {
+                            let _ = tx.send(StreamEvent::ToolRejected {
+                                display: outcome.output.clone(),
+                                result: context.clone(),
+                            });
+                        }
+                        (None, None) => {
                             let _ = tx.send(StreamEvent::ToolEnd {
                                 output: outcome.output.clone(),
                                 ok: outcome.ok,
@@ -296,7 +312,9 @@ pub fn run_agent(
                             });
                         }
                     }
-                    results.push((call.id.clone(), outcome.output.clone()));
+                    // The model reads the context text when the outcome split
+                    // the two (it equals the display for every ordinary call).
+                    results.push((call.id.clone(), outcome.context_text().to_string()));
                     if let Some(url) = outcome.image {
                         let path = summarize_call(&call.name, &call.arguments);
                         attachments.push(ChatMessage::with_parts(
@@ -470,6 +488,90 @@ mod tests {
             2,
             "a second round produced the final answer"
         );
+    }
+
+    #[test]
+    fn a_split_outcome_resolves_answered_or_rejected_and_the_model_reads_the_context() {
+        // The ask tool's resolutions (docs/ask.md): the executor hands back a
+        // display text + a different model-facing context. An ok outcome rides
+        // ToolAnswered (green), a failed one ToolRejected (red) — never a
+        // plain ToolEnd — and the stored tool result is the CONTEXT text.
+        for (ok, expected) in [
+            (
+                true,
+                StreamEvent::ToolAnswered {
+                    display: "User answered Claude's questions:\n· Q → A".to_string(),
+                    result: r#"{"answers":{"Q":"A"}}"#.to_string(),
+                },
+            ),
+            (
+                false,
+                StreamEvent::ToolRejected {
+                    display: "User answered Claude's questions:\n· Q → A".to_string(),
+                    result: r#"{"answers":{"Q":"A"}}"#.to_string(),
+                },
+            ),
+        ] {
+            let (tx, mut rx) = unbounded_channel();
+            let cancel = CancelToken::new();
+            let rounds = RefCell::new(0);
+            let calls = vec![call("c1", "askuserquestion", r#"{"questions":[]}"#)];
+            let mut messages = vec![ChatMessage::user("ask me")];
+            run_agent(
+                &tx,
+                &cancel,
+                MAX_TOOL_ITERATIONS,
+                &mut messages,
+                |_msgs| {
+                    let mut n = rounds.borrow_mut();
+                    *n += 1;
+                    if *n == 1 {
+                        RoundOutcome::ToolCalls {
+                            assistant: assistant_with(&calls),
+                            calls: calls.clone(),
+                        }
+                    } else {
+                        RoundOutcome::Complete
+                    }
+                },
+                |_c, _sink| {
+                    let outcome = ToolOutcome {
+                        output: "User answered Claude's questions:\n· Q → A".to_string(),
+                        ok,
+                        truncated: false,
+                        background: None,
+                        image: None,
+                        context: None,
+                    };
+                    outcome.with_context(r#"{"answers":{"Q":"A"}}"#)
+                },
+                Vec::new,
+                |_calls| Vec::new(),
+                |_call| Approval::Allow,
+            );
+            let events = drain(&mut rx);
+            assert!(
+                events.contains(&expected),
+                "ok={ok}: expected {expected:?} in {events:?}"
+            );
+            assert!(
+                !events
+                    .iter()
+                    .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+                "a split outcome never resolves through ToolEnd: {events:?}"
+            );
+            // The stored tool result is the model-facing context text, not the
+            // cell display — later rounds and the recorded conversation carry
+            // what the model actually read.
+            let result = messages
+                .iter()
+                .find(|m| m.tool_call_id.as_deref() == Some("c1"))
+                .expect("the call was answered");
+            assert_eq!(
+                result.content,
+                crate::llm::MessageContent::Text(r#"{"answers":{"Q":"A"}}"#.to_string())
+            );
+        }
     }
 
     #[test]

@@ -112,6 +112,7 @@ pub(crate) struct ModelSession {
     registry: BackgroundRegistry,
     agents: AgentRegistry,
     permissions: Option<PermissionGate>,
+    ask: alter_zero::ask::AskGate,
     /// The `/model` picker's in-flight fetch, so closing the picker cancels it.
     fetch_cancel: Option<CancelToken>,
     /// Whether the startup capability probe is still outstanding — the gate on
@@ -138,6 +139,7 @@ impl ModelSession {
         registry: &BackgroundRegistry,
         agents: &AgentRegistry,
         permissions: Option<&PermissionGate>,
+        ask: &alter_zero::ask::AskGate,
         settings: &SessionSettings,
     ) -> Self {
         let providers = config::load_providers();
@@ -230,9 +232,11 @@ impl ModelSession {
                 registry,
                 agents,
                 permissions,
+                ask,
             )),
             (None, None) => {
-                let dummy = DummyAi::with_startup_delay(config::startup_delay());
+                let dummy =
+                    DummyAi::with_startup_delay(config::startup_delay()).with_ask(ask.clone());
                 Box::new(match permissions {
                     Some(gate) => dummy.with_permissions(gate.clone()),
                     None => dummy,
@@ -279,6 +283,7 @@ impl ModelSession {
             registry: registry.clone(),
             agents: agents.clone(),
             permissions: permissions.cloned(),
+            ask: ask.clone(),
             fetch_cancel: None,
             probe_pending: probe.is_some(),
             thinking_seed: real_backend.then_some(startup_thinking).flatten(),
@@ -398,6 +403,7 @@ impl ModelSession {
             &self.registry,
             &self.agents,
             self.permissions.as_ref(),
+            &self.ask,
         ));
     }
 
@@ -698,6 +704,7 @@ fn session_backend(
     registry: &BackgroundRegistry,
     agents: &AgentRegistry,
     permissions: Option<&PermissionGate>,
+    ask: &alter_zero::ask::AskGate,
 ) -> LlmBackend {
     // `configure` rather than `with_system_prompt`: the tool toggle is the
     // `/settings` **Tools** knob now (seeded from `ALTER_ZERO_TOOLS`), so it
@@ -707,7 +714,10 @@ fn session_backend(
         .with_max_retries(max_retries)
         .with_max_tool_calls(max_tool_calls)
         .with_background(registry.clone())
-        .with_agents(agents.clone());
+        .with_agents(agents.clone())
+        // The ask gate (docs/ask.md): enables the `askuserquestion` tool —
+        // always attached; asking is not a permission.
+        .with_ask(ask.clone());
     // The tool-permission gate (docs/permissions.md) — absent when
     // `ALTER_ZERO_PERMISSIONS` is falsy, and every tool then runs unasked.
     if let Some(gate) = permissions {

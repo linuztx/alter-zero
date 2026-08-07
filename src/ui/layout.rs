@@ -318,8 +318,9 @@ pub fn restore_cursor_row(view_top: u16, view_height: u16, screen_height: u16) -
 }
 
 /// Whether the live region is an **inline modal** — the tool-permission
-/// prompt, the one inline view that can be as tall as the whole terminal and
-/// whose close needs special care (`docs/permissions.md`).
+/// prompt or the `AskUserQuestion` modal, the inline views that can be as
+/// tall as the whole terminal and whose close needs special care
+/// (`docs/permissions.md`, `docs/ask.md`).
 ///
 /// The prompt grows through the ordinary [`repin`] like every other region —
 /// the chat above it scrolls into the terminal's *real* scrollback, so the
@@ -334,7 +335,7 @@ pub fn restore_cursor_row(view_top: u16, view_height: u16, screen_height: u16) -
 /// the policy here and the I/O there.
 #[must_use]
 pub fn region_is_modal(app: &App) -> bool {
-    app.permission().is_some()
+    app.permission().is_some() || app.ask().is_some()
 }
 
 /// Whether this draw must **purge-rebuild** the conversation instead of
@@ -530,8 +531,15 @@ fn input_scroll(total: usize, cursor_row: usize, height: usize) -> usize {
 /// a `Hide`, so the cursor simply never reappears). [`cursor_position`] still
 /// seats it either way, so a terminal that ignores the hide — and the cursor's
 /// return when the prompt closes — starts from somewhere meaningful.
+///
+/// The ask modal follows the same rule (`docs/ask.md`): its option pages are
+/// menus (no cursor), and the caret comes back for the free-text Other entry
+/// and the notes field.
 #[must_use]
 pub fn cursor_visible(app: &App) -> bool {
+    if let Some(ask) = app.ask() {
+        return ask.editing();
+    }
     app.permission().is_none_or(|prompt| prompt.amend)
 }
 
@@ -542,6 +550,19 @@ pub fn cursor_visible(app: &App) -> bool {
 /// wherever the user has moved it, not just at the end.
 #[must_use]
 pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
+    // The ask modal seats the cursor in whichever entry field is live (the
+    // Other row, the notes line) — the builder computed the seat with the
+    // rows, so the two can never drift (`docs/ask.md`). With no field open
+    // the menu parks it at the region's far corner (the manager band's rule:
+    // it reads as chrome, and `cursor_visible` hides it anyway).
+    if app.ask().is_some() {
+        if let Some((x, y)) = super::ask_view::ask_cursor(app, area.width, area.height) {
+            return (area.x + x, area.y + y);
+        }
+        let x = area.x + area.width.saturating_sub(1);
+        let y = area.y + area.height.saturating_sub(1);
+        return (x, y);
+    }
     // A permission prompt seats the cursor on the row it is asking about: the
     // **highlighted option**, or Tab's amend field when that has replaced the
     // options. Both blocks sit a fixed [`PERMISSION_TAIL_ROWS`] above the

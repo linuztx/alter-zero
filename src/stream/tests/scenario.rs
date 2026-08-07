@@ -12,6 +12,7 @@ use super::*;
 /// check, and an example that lands on an *earlier* entry — the shadowing a
 /// hand-written `if`/`else` chain used to hide — fails it on the name.
 const EXAMPLES: &[&str] = &[
+    "ask me some questions",
     "auto permission demo",
     "parallel permission demo",
     "staggered permission demo",
@@ -24,15 +25,16 @@ const EXAMPLES: &[&str] = &[
     "hello there",
 ];
 
-/// Select for `prompt` as the dummy would with a permission gate attached.
+/// Select for `prompt` as the dummy would with both gates attached (the
+/// permission gate and the ask gate — the app's default posture).
 fn gated(prompt: &str) -> &'static str {
-    select(&Cue::new(prompt, 0), true).name
+    select(&Cue::new(prompt, 0), true, true).name
 }
 
 /// Select for `prompt` as the dummy would with no gate — the `turn_events`
-/// path, where the gated demos are unreachable.
+/// path, where the gated and asked demos are unreachable.
 fn ungated(prompt: &str) -> &'static str {
-    select(&Cue::new(prompt, 0), false).name
+    select(&Cue::new(prompt, 0), false, false).name
 }
 
 #[test]
@@ -124,14 +126,43 @@ fn a_gated_scenario_is_only_selected_when_a_gate_is_attached() {
         "permission demo",
     ] {
         assert!(
-            matches!(select(&Cue::new(prompt, 0), true).play, Play::Gated(_)),
+            matches!(
+                select(&Cue::new(prompt, 0), true, true).play,
+                Play::Gated(_)
+            ),
             "{prompt:?} should reach a gated demo when a gate is attached"
         );
         assert!(
-            matches!(select(&Cue::new(prompt, 0), false).play, Play::Script(_)),
+            matches!(
+                select(&Cue::new(prompt, 0), false, false).play,
+                Play::Script(_)
+            ),
             "{prompt:?} must fall through to a script with no gate attached"
         );
     }
+}
+
+#[test]
+fn the_ask_demo_is_only_selected_when_an_ask_gate_is_attached() {
+    // The ask demo blocks on the ask gate (`docs/ask.md`) — without one it
+    // would park forever, so selection skips it and the prompt falls through
+    // to a scripted turn, exactly like the permission demos above.
+    let prompt = "ask me some questions";
+    assert!(
+        matches!(
+            select(&Cue::new(prompt, 0), false, true).play,
+            Play::Asked(_)
+        ),
+        "{prompt:?} should reach the ask demo when the ask gate is attached \
+         (the permission gate is irrelevant to it)"
+    );
+    assert!(
+        matches!(
+            select(&Cue::new(prompt, 0), true, false).play,
+            Play::Script(_)
+        ),
+        "{prompt:?} must fall through to a script with no ask gate attached"
+    );
 }
 
 #[test]
@@ -222,7 +253,7 @@ fn turn_events_plays_the_scenario_the_registry_selects() {
         crate::context::SUMMARIZATION_PROMPT,
     ] {
         let cue = Cue::new(prompt, 0);
-        let Play::Script(script) = select(&cue, false).play else {
+        let Play::Script(script) = select(&cue, false, false).play else {
             panic!("{prompt:?} selected a gated demo with no gate attached");
         };
         assert_eq!(

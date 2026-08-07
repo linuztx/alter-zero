@@ -1324,3 +1324,94 @@ pub(super) const PERMISSION_OPTION_MAX_ROWS: usize = 4;
 /// to (numbered rows + the `… +N lines` tail). A body naturally shorter
 /// reserves only what it needs.
 pub(super) const PERMISSION_MIN_BODY_ROWS: usize = 10;
+
+// --- the inline AskUserQuestion modal (docs/ask.md) ---
+
+/// One-space inset on every text row — the permission prompt's, so the two
+/// modals read as the same surface (both share [`PERMISSION_RULE`] frames,
+/// [`PERMISSION_MARKER`], and the hint-row colours).
+pub(super) const ASK_INDENT: &str = " ";
+
+/// The chip-strip glyphs: an unanswered question's box, an answered one's
+/// checked box, and the Submit tab's check.
+pub(super) const ASK_CHIP_UNANSWERED: &str = "☐";
+
+pub(super) const ASK_CHIP_ANSWERED: &str = "☒";
+
+pub(super) const ASK_CHIP_SUBMIT: &str = "✔";
+
+/// The dim `←`/`→` bookends of a multi-question chip strip — the reminder
+/// that ←/→ move between the tabs.
+pub(super) const ASK_ARROW_LEFT: &str = "←";
+
+pub(super) const ASK_ARROW_RIGHT: &str = "→";
+
+/// The gap between chips.
+pub(super) const ASK_CHIP_GAP: &str = "  ";
+
+/// The **current** chip lights on the selection background — the cyan block
+/// that says which section the keys act on (the user-requested highlight).
+pub(super) const ASK_CHIP_CURRENT_BG: Color = MENU_SELECTED_COLOR;
+
+pub(super) const ASK_CHIP_CURRENT_FG: Color = FOOTER_FOCUS_FG;
+
+/// The idle chips, dim so the current one carries the eye.
+pub(super) const ASK_CHIP_COLOR: Color = TOOL_DIM_COLOR;
+
+/// A multi-select option's checkbox, checked and not.
+pub(super) const ASK_CHECKED: &str = "[✔] ";
+
+pub(super) const ASK_UNCHECKED: &str = "[ ] ";
+
+/// The green check after a single-select question's chosen label
+/// (`1. Black ✔`).
+pub(super) const ASK_PICKED_MARK: &str = " ✔";
+
+pub(super) const ASK_PICKED_COLOR: Color = TOOL_OK_COLOR;
+
+/// An option's description, dim under its label.
+pub(super) const ASK_DESC_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The auto-added free-text row's label.
+pub(super) const ASK_OTHER_LABEL: &str = "Type something.";
+
+/// A multi-select question's own confirm row (unnumbered, per the reference).
+pub(super) const ASK_CONFIRM_LABEL: &str = "Submit";
+
+/// The row that resolves the whole call as "let's talk instead".
+pub(super) const ASK_CHAT_LABEL: &str = "Chat about this";
+
+/// The notes line under a preview panel: the label, the dim placeholder
+/// before any notes exist, and the hint key that opens the field.
+pub(super) const ASK_NOTES_LABEL: &str = "Notes: ";
+
+pub(super) const ASK_NOTES_PLACEHOLDER: &str = "press n to add notes";
+
+/// The preview panel's box-drawing corners and edges, dim like the body
+/// rules so the content carries the eye.
+pub(super) const ASK_PREVIEW_COLOR: Color = TOOL_DIM_COLOR;
+
+/// The widest the option column may grow in the side-by-side layout, as a
+/// share of the region width — the preview box keeps the rest.
+pub(super) const ASK_LEFT_MAX_SHARE: f32 = 0.45;
+
+/// The most rows the preview box shows of an option's preview content before
+/// clipping (the box is a peek, not a pager).
+pub(super) const ASK_PREVIEW_MAX_ROWS: usize = 12;
+
+/// The Submit page's texts.
+pub(super) const ASK_REVIEW_TITLE: &str = "Review your answers";
+
+pub(super) const ASK_REVIEW_QUESTION: &str = "Ready to submit your answers?";
+
+pub(super) const ASK_SUBMIT_LABEL: &str = "Submit answers";
+
+pub(super) const ASK_CANCEL_LABEL: &str = "Cancel";
+
+/// The review page's stand-in for a question that has no answer yet.
+pub(super) const ASK_UNANSWERED: &str = "(not answered)";
+
+/// The review page's `● {question}` bullet and the `→ {answer}` arrow.
+pub(super) const ASK_REVIEW_BULLET: &str = "● ";
+
+pub(super) const ASK_ANSWER_ARROW: &str = "→ ";

@@ -350,9 +350,73 @@ fn tool_cell_lines(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<
     lines
 }
 
+/// A resolved `AskUserQuestion` cell (`docs/ask.md`): the output's first line
+/// **is** the headline (`User answered Claude's questions:` /
+/// `User declined…` / `User wants to chat…`), promoted to the `●` header —
+/// green or red by outcome — with the `· Q → A` rows in the `⎿` gutter.
+/// `None` while the call runs (the generic header stands) or for any other
+/// tool, so the ordinary branches are untouched. `cap` bounds the gutter rows
+/// (the inline peek); `None` renders them all (the Ctrl+O transcript).
+fn ask_cell_lines(
+    tool: &ToolCall,
+    width: u16,
+    pulse: Option<Duration>,
+    cap: bool,
+) -> Option<Vec<Line<'static>>> {
+    if tool.name != crate::llm::tools::ASK_TOOL_DISPLAY
+        || matches!(tool.status, ToolStatus::Waiting | ToolStatus::Running)
+    {
+        return None;
+    }
+    let out_lines = tool_output_lines(tool);
+    let (headline, rest) = out_lines.split_first()?;
+    let bullet_style = Style::new()
+        .fg(tool_status_color(tool.status, pulse))
+        .add_modifier(Modifier::BOLD);
+    let head_room = (width as usize).saturating_sub(cols(TOOL_BULLET)).max(1);
+    let mut lines = vec![Line::from(vec![
+        Span::styled(TOOL_BULLET.to_string(), bullet_style),
+        Span::styled(
+            truncate_cols(headline, head_room).to_string(),
+            Style::new()
+                .fg(TOOL_NAME_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])];
+    let peek_width = (width as usize)
+        .saturating_sub(cols(TOOL_RESULT_PREFIX))
+        .max(1);
+    if rest.is_empty() {
+        return Some(lines);
+    }
+    if cap {
+        lines.extend(result_peek_block(
+            rest,
+            peek_width,
+            wrap_output,
+            |i, text, _| output_row(i, text),
+        ));
+    } else {
+        let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
+        let mut i = 0usize;
+        for line in rest {
+            for row in wrap_output(line, wrap_width) {
+                lines.push(output_row(i, row));
+                i += 1;
+            }
+        }
+    }
+    Some(lines)
+}
+
 /// [`tool_cell_lines`] minus the trailing provenance note, so every branch's
 /// early return stays as it was and the note lands exactly once.
 fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<Line<'static>> {
+    // The resolved ask cell replaces the whole header with its outcome
+    // headline (`docs/ask.md`).
+    if let Some(lines) = ask_cell_lines(tool, width, pulse, /*cap=*/ true) {
+        return lines;
+    }
     let peek_width = (width as usize)
         .saturating_sub(cols(TOOL_RESULT_PREFIX))
         .max(1);
@@ -543,6 +607,11 @@ fn tool_full_body(tool: &ToolCall, width: u16) -> Vec<Line<'static>> {
     // move or cost a full-tail re-render every 32 ms, for a bullet nobody is
     // watching breathe. See `docs/tool-pulse.md`.
     let pulse: Option<Duration> = None;
+    // The resolved ask cell keeps its headline header in the transcript too,
+    // with the answer rows uncapped (`docs/ask.md`).
+    if let Some(lines) = ask_cell_lines(tool, width, pulse, /*cap=*/ false) {
+        return lines;
+    }
     // A backgrounded call shows its fixed row in the transcript too — the
     // live output belongs to the ↓ manager, and the final output arrives as
     // the completion notice (docs/background.md).

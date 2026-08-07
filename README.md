@@ -62,9 +62,11 @@ That turn is one errand in three steps — read alter-zero's calling card, notic
 it never prints the credit it carries, wire it in and run it — and its cells are
 the *real* cells: the bodies are numbered and syntax-highlighted exactly as the
 live agent's are, the diff carries the same green/red tints, and a failed
-command reports the exit code the executor would have. Ask it for a *diff*, a *table*, some *parallel* commands or
-a couple of *agents* to see the other scripted demos — then run `/login` and
-`/model` to put a real model behind it (`docs/dummy-backend.md`).
+command reports the exit code the executor would have. Ask it for a *diff*, a *table*, some *parallel* commands,
+a couple of *agents*, or to *ask you some questions* (the Claude-Code-style
+`AskUserQuestion` modal, `docs/ask.md`) to see the other scripted demos — then
+run `/login` and `/model` to put a real model behind it
+(`docs/dummy-backend.md`).
 
 ## Run it
 
