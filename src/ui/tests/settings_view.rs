@@ -196,9 +196,10 @@ fn a_long_list_keeps_the_selection_centered() {
     let visible: Vec<String> = (0..settings_height(&app, 200).unwrap())
         .map(|y| row(&buf, y, 78))
         .collect();
+    let last = SettingKey::ALL.last().unwrap().label();
     assert!(
-        visible.iter().any(|l| l.starts_with("→ Temperature")),
-        "the last row is visible and marked: {visible:?}"
+        visible.iter().any(|l| l.starts_with(&format!("→ {last}"))),
+        "the last row ({last}) is visible and marked: {visible:?}"
     );
 }
 

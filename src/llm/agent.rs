@@ -8,7 +8,7 @@
 //! knows how to render, runs each call through the `execute` closure, appends
 //! the results to the running message list, and loops — until the model answers
 //! with plain text (`StreamDone`), fails (`Error`), is cancelled (silent), or
-//! the iteration cap trips.
+//! the tool-call cap trips.
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -19,10 +19,29 @@ use super::{ChatMessage, ContentPart, LlmError};
 use crate::permission::Approval;
 use crate::stream::{CancelToken, StreamEvent, ToolCallSummary};
 
-/// The most rounds of tool calls one turn will run before giving up — a
-/// backstop against a model that loops forever. Generous enough for real
-/// multi-step tasks.
+/// The most tool **calls** one turn will run before giving up — a backstop
+/// against a model that loops forever. Generous enough for real multi-step
+/// tasks. Counted per call, not per round: a round can request a whole
+/// parallel batch (`docs/parallel-tools.md`), and counting rounds let one
+/// round overspend the ceiling several times over.
+///
+/// This is the **library's** default ([`LlmBackend::with_max_tool_calls`]
+/// overrides it, and `0` means no limit at all). The app ships uncapped: the
+/// `/settings` **Max tool calls** row defaults to `0`, because cutting a long
+/// agentic task off part-way leaves its work half-done, and Esc is already the
+/// stop button. See `docs/settings.md`.
+///
+/// [`LlmBackend::with_max_tool_calls`]: super::LlmBackend::with_max_tool_calls
 pub const MAX_TOOL_ITERATIONS: usize = 20;
+
+/// The tool result a call refused by the **Max tool calls** ceiling carries —
+/// what the model reads, and the red cell's line. See `docs/settings.md`.
+pub const TOOL_LIMIT_OUTPUT: &str = "Not run: this turn reached its tool-call limit.";
+
+/// The error that ends a turn which spent its tool-call budget.
+fn limit_error(max_tool_calls: usize) -> String {
+    format!("stopped after {max_tool_calls} tool calls without a final answer")
+}
 
 /// What one streaming round produced, as [`run_agent`] sees it. The `round`
 /// closure emits the `Chunk`/`Thinking*` events itself; this only reports the
@@ -74,7 +93,7 @@ pub enum RoundOutcome {
 pub fn run_agent(
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
-    max_iterations: usize,
+    max_tool_calls: usize,
     messages: &mut Vec<ChatMessage>,
     mut round: impl FnMut(&[ChatMessage]) -> RoundOutcome,
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(&str)) -> ToolOutcome,
@@ -82,7 +101,7 @@ pub fn run_agent(
     mut run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
     mut approve: impl FnMut(&ToolCallRequest) -> Approval,
 ) {
-    let mut iterations = 0usize;
+    let mut used_calls = 0usize;
     loop {
         if cancel.is_cancelled() {
             return;
@@ -101,20 +120,44 @@ pub fn run_agent(
                 return;
             }
             RoundOutcome::ToolCalls { assistant, calls } => {
-                // The cap bounds TOOL ROUNDS, not the final answer: after the
-                // max-th round the model still gets one more request, and a
+                // The cap bounds TOOL CALLS, not the final answer: once the
+                // budget is spent the model still gets one more request, and a
                 // plain-text reply there completes the turn — only a further
                 // tool request trips the error (docs/tools.md). Checking here,
-                // before the round's tools run, also keeps the max+1-th
-                // round's side-effecting calls from executing just to have
-                // their results discarded.
-                if iterations >= max_iterations {
-                    let _ = tx.send(StreamEvent::Error(format!(
-                        "stopped after {max_iterations} tool iterations without a final answer"
-                    )));
+                // before the round's tools run, also keeps a call the budget
+                // can no longer afford from executing just to have its result
+                // discarded.
+                //
+                // **Zero lifts the backstop entirely** — the `/settings`
+                // **Max tool calls** default (docs/settings.md): a long
+                // agentic task runs to its own end rather than being cut off
+                // part-way with its work half-done. The user's Esc is the
+                // stop button; the cap is for those who want a hard ceiling.
+                if max_tool_calls > 0 && used_calls >= max_tool_calls {
+                    let _ = tx.send(StreamEvent::Error(limit_error(max_tool_calls)));
                     return;
                 }
                 messages.push(assistant);
+                // **The budget is spent per CALL, not per round.** A round can
+                // request a whole parallel batch (docs/parallel-tools.md), so
+                // counting rounds let one round overspend the ceiling several
+                // times over — a `Max tool calls` of 5 running 15 calls, the
+                // reported bug. Take as many of this round's calls as the
+                // budget still allows, **in the model's own order**; the rest
+                // are refused below, answered so the stored message list stays
+                // well-formed, and the turn then ends.
+                //
+                // Clamping rather than refusing the whole round matters: a
+                // model that opens with a batch wider than the entire ceiling
+                // would otherwise do nothing at all and just error.
+                let budget = if max_tool_calls == 0 {
+                    calls.len()
+                } else {
+                    max_tool_calls.saturating_sub(used_calls)
+                };
+                let allowed_n = calls.len().min(budget);
+                let (allowed, refused) = calls.split_at(allowed_n);
+                used_calls += allowed_n;
                 // The round's `agent` calls take their own path
                 // (`docs/agent-tool.md`): the `run_agents` closure launches
                 // them all **concurrently**, emits the AgentBatch /
@@ -123,9 +166,15 @@ pub fn run_agent(
                 // result. The ordinary calls run sequentially exactly as
                 // before; every result then appends in the model's original
                 // call order (strict providers pair results by contiguity).
-                let (agent_calls, rest): (Vec<&ToolCallRequest>, Vec<&ToolCallRequest>) = calls
+                let (agent_calls, rest): (Vec<&ToolCallRequest>, Vec<&ToolCallRequest>) = allowed
                     .iter()
                     .partition(|call| call.name == super::tools::AGENT_TOOL_NAME);
+                // The over-budget ordinary calls: shown and resolved red below
+                // rather than dropped, so the cell says why nothing ran.
+                let refused_rest: Vec<&ToolCallRequest> = refused
+                    .iter()
+                    .filter(|call| call.name != super::tools::AGENT_TOOL_NAME)
+                    .collect();
                 let mut results: Vec<(String, String)> = Vec::with_capacity(calls.len());
                 if !agent_calls.is_empty() {
                     let owned: Vec<ToolCallRequest> = agent_calls.into_iter().cloned().collect();
@@ -135,10 +184,12 @@ pub fn run_agent(
                 // — so the UI shows every requested call at once, the ones not
                 // yet executing as `⎿ Waiting…`. Each entry's (name, args)
                 // equals the matching ToolStart's; execution below is still
-                // sequential. See `docs/parallel-tools.md`.
-                if !rest.is_empty() {
+                // sequential. The refused tail rides the same announcement, so
+                // a clamped batch still shows whole. See `docs/parallel-tools.md`.
+                if !rest.is_empty() || !refused_rest.is_empty() {
                     let _ = tx.send(StreamEvent::ToolBatch(
                         rest.iter()
+                            .chain(refused_rest.iter())
                             .map(|call| ToolCallSummary {
                                 name: display_name(&call.name),
                                 args: summarize_call(&call.name, &call.arguments),
@@ -237,6 +288,27 @@ pub fn run_agent(
                         ));
                     }
                 }
+                // The calls the ceiling refused: each shows as its own red
+                // cell (a batch sibling that never got to run) and is answered
+                // with the same text the model reads, so the stored message
+                // list stays well-formed for a `/resume` or a continuation.
+                for call in &refused_rest {
+                    let _ = tx.send(StreamEvent::ToolStart {
+                        name: display_name(&call.name),
+                        args: summarize_call(&call.name, &call.arguments),
+                        detail: super::tools::call_description(&call.name, &call.arguments),
+                    });
+                    let _ = tx.send(StreamEvent::ToolEnd {
+                        output: TOOL_LIMIT_OUTPUT.to_string(),
+                        ok: false,
+                        truncated: false,
+                    });
+                }
+                // A refused `agent` call never launched, so it has no cell —
+                // only the answer the model needs.
+                for call in refused {
+                    results.push((call.id.clone(), TOOL_LIMIT_OUTPUT.to_string()));
+                }
                 // Results append in the model's original call order (an
                 // unexecuted call — a cancel landed first — is answered so
                 // the stored list stays well-formed for a continuation).
@@ -253,7 +325,13 @@ pub fn run_agent(
                 if cancelled_mid_tools || cancel.is_cancelled() {
                     return;
                 }
-                iterations += 1;
+                // The ceiling clamped this round: what fitted has run and
+                // every call is answered, so end the turn here rather than
+                // asking for a round whose budget is already spent.
+                if !refused.is_empty() {
+                    let _ = tx.send(StreamEvent::Error(limit_error(max_tool_calls)));
+                    return;
+                }
             }
         }
     }
@@ -658,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn the_iteration_cap_stops_a_runaway_loop() {
+    fn the_call_cap_stops_a_runaway_loop() {
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();
         let calls = vec![call("c", "bash", r#"{"command":"loop"}"#)];
@@ -683,7 +761,7 @@ mod tests {
             .filter(|e| matches!(e, StreamEvent::Error(_)))
             .collect();
         assert_eq!(errors.len(), 1);
-        assert!(matches!(&errors[0], StreamEvent::Error(m) if m.contains("3 tool iterations")));
+        assert!(matches!(&errors[0], StreamEvent::Error(m) if m.contains("3 tool calls")));
         // Exactly 3 tool rounds ran.
         let ends = events
             .iter()
@@ -693,10 +771,116 @@ mod tests {
     }
 
     #[test]
-    fn a_final_answer_after_exactly_max_tool_rounds_completes() {
-        // The cap bounds TOOL ROUNDS, not the final answer (docs/tools.md):
-        // after the max-th round the model still gets one more request, and a
-        // plain-text reply there finishes the turn — only a further tool
+    fn the_cap_counts_tool_calls_not_rounds() {
+        // The user's report: "Max tool calls 5" still ran more than five.
+        // A round can request a whole PARALLEL BATCH (docs/parallel-tools.md),
+        // so counting rounds lets one round spend the whole budget several
+        // times over. The cap must bound the calls themselves.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let calls = vec![
+            call("a", "bash", r#"{"command":"one"}"#),
+            call("b", "bash", r#"{"command":"two"}"#),
+            call("c", "bash", r#"{"command":"three"}"#),
+        ];
+        let mut messages = vec![ChatMessage::user("x")];
+        run_agent(
+            &tx,
+            &cancel,
+            5,
+            &mut messages,
+            |_msgs| RoundOutcome::ToolCalls {
+                assistant: assistant_with(&calls),
+                calls: calls.clone(),
+            },
+            |_c, _sink| ToolOutcome::ok("again"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call| Approval::Allow,
+        );
+        let events = drain(&mut rx);
+        let ran = events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::ToolEnd { ok: true, .. }))
+            .count();
+        // Round 1 spends 3 of the 5; round 2 can afford 2 of its 3, so the
+        // third is refused and the turn ends. Exactly the budget, never more.
+        assert_eq!(ran, 5, "a cap of 5 runs exactly 5 tool calls");
+        let refused = events
+            .iter()
+            .filter(
+                |e| matches!(e, StreamEvent::ToolEnd { ok: false, output, .. } if output == TOOL_LIMIT_OUTPUT),
+            )
+            .count();
+        assert_eq!(refused, 1, "the over-budget call shows why it didn't run");
+        assert!(
+            matches!(events.last(), Some(StreamEvent::Error(m)) if m.contains("5 tool calls")),
+            "the turn ends on the limit error: {:?}",
+            events.last()
+        );
+        // Every requested call is answered, so the stored list stays valid for
+        // a `/resume` or an agent continuation (strict providers reject an
+        // assistant `tool_calls` message with a missing `tool` result).
+        let requested: usize = messages.iter().map(|m| m.tool_calls.len()).sum();
+        let answered = messages.iter().filter(|m| m.role == "tool").count();
+        assert_eq!(
+            requested, answered,
+            "every tool_call has a matching tool result"
+        );
+    }
+
+    #[test]
+    fn a_zero_cap_means_no_limit() {
+        // The `/settings` **Max tool calls** knob's default (docs/settings.md):
+        // 0 lifts the backstop entirely, so a long agentic task is never cut
+        // off mid-way. Run more rounds than any cap we offer, then finish.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c", "bash", r#"{"command":"step"}"#)];
+        run_agent(
+            &tx,
+            &cancel,
+            0,
+            &mut vec![ChatMessage::user("x")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n <= 25 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |_c, _sink| ToolOutcome::ok("done"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call| Approval::Allow,
+        );
+        let events = drain(&mut rx);
+        assert!(
+            !events.iter().any(|e| matches!(e, StreamEvent::Error(_))),
+            "an uncapped run never trips the backstop"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::ToolEnd { .. }))
+                .count(),
+            25,
+            "every round it asked for ran"
+        );
+        assert!(events.iter().any(|e| matches!(e, StreamEvent::StreamDone)));
+    }
+
+    #[test]
+    fn a_final_answer_after_exactly_max_tool_calls_completes() {
+        // The cap bounds TOOL CALLS, not the final answer (docs/tools.md):
+        // once the budget is spent the model still gets one more request, and
+        // a plain-text reply there finishes the turn — only a further tool
         // request trips the error.
         let (tx, mut rx) = unbounded_channel();
         let cancel = CancelToken::new();

@@ -284,7 +284,8 @@ mid-session in the same inline frame `/model` uses:
   Auto compact      true
   Project docs      true
   Temperature       default
-  (1/8)
+  Max tool calls    0
+  (1/9)
 
   Hide the model's chain-of-thought instead of streaming it above the composer
 
@@ -297,7 +298,9 @@ close. There is no text field anywhere: every value cycles, so one key means
 one thing on every row. **Permission mode** is the same posture **Ctrl+A**
 cycles — one state, two doors. A knob this machine can't serve (checkpoints
 with no `git`, say) shows `false (unavailable)` and says so rather than
-offering a toggle that does nothing. Changes take effect at once — the ones
+offering a toggle that does nothing. **Max tool calls** defaults to `0` — no
+limit: a cap that trips mid-task abandons the work half-done, and **Esc** is
+already the stop button. Changes take effect at once — the ones
 that reshape a request rebind the *next* turn, so `/settings` is safe to open
 mid-turn — and persist to `~/.alter-zero/settings.json` as a diff from the
 defaults; an `ALTER_ZERO_*` override still wins for the run it was set in, but

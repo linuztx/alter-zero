@@ -409,11 +409,17 @@ gauge (usage-frame fed, tokenizer-estimated offline) and the loop **auto-runs** 
 same turn past codex's 90% threshold (`App::should_auto_compact`, one
 attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`; and
 the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
-`ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`
-and an always-on auto-compaction — made *visible and changeable mid-session*
+`ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`,
+a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
+made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-eight rows (**Hide thinking**, **Error retry**, **Tools**, **Permission
-mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Temperature**)
+nine rows (**Hide thinking**, **Error retry**, **Tools**, **Permission
+mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Temperature**,
+**Max tool calls** — whose `0` default means *no limit*, since a cap that
+trips mid-task abandons the work half-done and Esc is already the stop
+button; it counts the **calls**, not the rounds, because a round can be a
+whole parallel batch, and a round the budget can only partly afford is
+clamped rather than refused whole)
 of `{label}  {value}` in an aligned column over a `(n/total)` counter, the
 highlighted row's description, and a `Type to search · Enter/Space to change ·
 Esc to cancel` hint; every value **cycles** — there is no free-text field, so
@@ -429,11 +435,12 @@ the host can't serve is **unavailable** — `SettingAvailability`, injected at
 the boundary like the clock: it renders `false (unavailable)`, refuses to
 cycle with an explanatory toast, and is never persisted. Everything else
 returns `Action::SettingChanged(key)` and `tui::settings::Session::apply_setting`
-does the work: **Tools**/**Error retry**/**Temperature** rebuild the backend
-(`ModelSession::set_tools`/`set_max_retries`/`set_temperature` — the `/model`
-switch's full-attachment rebuild, carrying the active thinking mode forward;
-the retry budget rides `LlmBackend::with_max_retries` into every round, a
-subagent's included), **Checkpoints** flips `CheckpointStore::set_enabled`
+does the work: **Tools**/**Error retry**/**Temperature**/**Max tool calls**
+rebuild the backend (`ModelSession::set_tools`/`set_max_retries`/
+`set_temperature`/`set_max_tool_calls` — the `/model` switch's full-attachment
+rebuild, carrying the active thinking mode forward; the retry budget and the
+tool-round ceiling ride `LlmBackend::with_max_retries`/`with_max_tool_calls`
+into every round, a subagent's included), **Checkpoints** flips `CheckpointStore::set_enabled`
 (which can only ever turn a *capable* store on or off), **Project docs**
 reloads or drops `App::user_instructions` at once, and **Hide thinking** /
 **Auto compact** need nothing — they are read where they are used

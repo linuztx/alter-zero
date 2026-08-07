@@ -51,6 +51,10 @@ fn the_defaults_match_the_pre_feature_behaviour() {
     assert!(s.auto_compact);
     assert!(s.project_docs);
     assert_eq!(s.temperature, None, "no temperature is sent by default");
+    // The one deliberate divergence: the app now ships UNCAPPED where the
+    // library's backstop was 20 rounds — see the dedicated test below and
+    // `docs/settings.md`.
+    assert_eq!(s.max_tool_calls, 0);
 }
 
 #[test]
@@ -70,6 +74,38 @@ fn booleans_cycle_between_true_and_false() {
             "{key:?} shows a boolean: {seen:?}"
         );
     }
+}
+
+#[test]
+fn max_tool_calls_defaults_to_no_limit_and_cycles_the_offered_ceilings() {
+    // 0 is the default *and* the "no limit" value: cutting a long agentic
+    // task off part-way leaves its work half-done, and Esc is already the
+    // stop button. The offered ceilings are for those who want a hard one.
+    let s = SessionSettings::default();
+    assert_eq!(s.max_tool_calls, 0, "uncapped by default");
+    assert_eq!(s.value_text(SettingKey::MaxToolCalls, MANUAL), "0");
+
+    let seen = cycle_values(
+        SessionSettings::default(),
+        SettingKey::MaxToolCalls,
+        TOOL_CALL_CHOICES.len(),
+    );
+    assert_eq!(seen.first().unwrap(), "0");
+    assert_eq!(
+        seen.last().unwrap(),
+        "0",
+        "the cycle wraps back to no limit"
+    );
+    for choice in TOOL_CALL_CHOICES {
+        assert!(
+            seen.contains(&choice.to_string()),
+            "{choice} never appeared in {seen:?}"
+        );
+    }
+    assert!(
+        TOOL_CALL_CHOICES.contains(&crate::llm::agent::MAX_TOOL_ITERATIONS),
+        "the library's own backstop is one of the offered ceilings"
+    );
 }
 
 #[test]

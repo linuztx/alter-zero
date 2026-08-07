@@ -77,6 +77,9 @@ pub(crate) struct ModelSession {
     /// The retry budget every round carries — the `/settings` **Error retry**
     /// knob (`docs/settings.md`).
     max_retries: u32,
+    /// The tool-round ceiling every turn carries — the `/settings` **Max tool
+    /// calls** knob, `0` (the default) being no limit at all.
+    max_tool_calls: usize,
     /// The persona + environment system prompt every rebuild inherits.
     system_prompt: Option<String>,
     /// `ALTER_ZERO_STALL_MS` — the test-only wedged backend (`docs/interrupt.md`).
@@ -153,6 +156,7 @@ impl ModelSession {
         let temperature = settings.temperature;
         let tools = settings.tools;
         let max_retries = settings.error_retry;
+        let max_tool_calls = settings.max_tool_calls;
         let system_prompt = config::system_prompt(cwd);
         // The provider the /model picker lists from and switches within: env,
         // else the saved selection, else the file's default.
@@ -222,6 +226,7 @@ impl ModelSession {
                 system_prompt.clone(),
                 tools,
                 max_retries,
+                max_tool_calls,
                 registry,
                 agents,
                 permissions,
@@ -260,6 +265,7 @@ impl ModelSession {
             temperature,
             tools,
             max_retries,
+            max_tool_calls,
             system_prompt,
             stall_ms,
             env_context_window: config::context_window_override(),
@@ -388,6 +394,7 @@ impl ModelSession {
             self.system_prompt.clone(),
             self.tools,
             self.max_retries,
+            self.max_tool_calls,
             &self.registry,
             &self.agents,
             self.permissions.as_ref(),
@@ -434,6 +441,13 @@ impl ModelSession {
     /// all and leaves it to the provider.
     pub(crate) fn set_temperature(&mut self, temperature: Option<f32>) {
         self.temperature = temperature;
+        self.rebuild_current();
+    }
+
+    /// The `/settings` **Max tool calls** knob: how many tool rounds a turn may
+    /// run, `0` being no limit.
+    pub(crate) fn set_max_tool_calls(&mut self, max_tool_calls: usize) {
+        self.max_tool_calls = max_tool_calls;
         self.rebuild_current();
     }
 
@@ -674,11 +688,13 @@ impl ModelSession {
 /// Shift+Tab thinking change, the startup probe) alike — a rebuild that
 /// attached only part of the set silently lost the `agent` tool and stopped
 /// asking permission for the rest of the session (the bug this helper fixes).
+#[allow(clippy::too_many_arguments)] // a flat list of the knobs a build needs
 fn session_backend(
     cfg: ModelConfig,
     system_prompt: Option<String>,
     tools: bool,
     max_retries: u32,
+    max_tool_calls: usize,
     registry: &BackgroundRegistry,
     agents: &AgentRegistry,
     permissions: Option<&PermissionGate>,
@@ -689,6 +705,7 @@ fn session_backend(
     // (`docs/settings.md`).
     let mut backend = LlmBackend::configure(cfg, system_prompt, tools)
         .with_max_retries(max_retries)
+        .with_max_tool_calls(max_tool_calls)
         .with_background(registry.clone())
         .with_agents(agents.clone());
     // The tool-permission gate (docs/permissions.md) — absent when

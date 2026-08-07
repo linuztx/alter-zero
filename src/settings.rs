@@ -16,6 +16,13 @@ use crate::permission::PermissionMode;
 /// in the middle.
 pub const RETRY_CHOICES: &[u32] = &[0, 1, 2, 3, 5, 10];
 
+/// The tool-round ceilings **Max tool calls** cycles through. **`0` is no
+/// limit** — and the default: a cap that trips mid-task leaves the model's
+/// work half-done, and Esc already stops a turn. The rest are for those who
+/// want a hard ceiling; [`crate::llm::agent::MAX_TOOL_ITERATIONS`] (the
+/// library's own backstop) is among them.
+pub const TOOL_CALL_CHOICES: &[usize] = &[0, 5, 10, 20, 50, 100];
+
 /// The sampling temperatures **Temperature** cycles through. `None` is
 /// `default` — send no `temperature` at all and leave it to the provider.
 pub const TEMPERATURE_CHOICES: &[Option<f32>] =
@@ -51,6 +58,8 @@ pub enum SettingKey {
     ProjectDocs,
     /// The sampling temperature every request carries.
     Temperature,
+    /// How many rounds of tool calls one turn may run (`0` = no limit).
+    MaxToolCalls,
 }
 
 impl SettingKey {
@@ -64,6 +73,7 @@ impl SettingKey {
         Self::AutoCompact,
         Self::ProjectDocs,
         Self::Temperature,
+        Self::MaxToolCalls,
     ];
 
     /// The name shown in the menu's left column.
@@ -78,6 +88,7 @@ impl SettingKey {
             Self::AutoCompact => "Auto compact",
             Self::ProjectDocs => "Project docs",
             Self::Temperature => "Temperature",
+            Self::MaxToolCalls => "Max tool calls",
         }
     }
 
@@ -103,6 +114,9 @@ impl SettingKey {
             }
             Self::ProjectDocs => "Load the project's AGENTS.md instructions into every request",
             Self::Temperature => "The sampling temperature sent with every request",
+            Self::MaxToolCalls => {
+                "How many rounds of tool calls one turn may run before it gives up — 0 is no limit"
+            }
         }
     }
 }
@@ -165,6 +179,9 @@ pub struct SessionSettings {
     /// The sampling temperature, or `None` for the provider's default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    /// Tool rounds allowed per turn; `0` (the default) is no limit.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub max_tool_calls: usize,
     /// What this host can actually run — never persisted, never cycled.
     #[serde(skip)]
     pub availability: SettingAvailability,
@@ -180,6 +197,7 @@ impl Default for SessionSettings {
             auto_compact: true,
             project_docs: true,
             temperature: None,
+            max_tool_calls: 0,
             availability: SettingAvailability::default(),
         }
     }
@@ -231,6 +249,7 @@ impl SessionSettings {
             SettingKey::AutoCompact => bool_text(self.auto_compact),
             SettingKey::ProjectDocs => bool_text(self.project_docs),
             SettingKey::Temperature => temperature_text(self.temperature),
+            SettingKey::MaxToolCalls => self.max_tool_calls.to_string(),
         };
         if self.is_available(key, mode) {
             text
@@ -258,6 +277,9 @@ impl SessionSettings {
             SettingKey::Temperature => {
                 self.temperature = next_temperature(self.temperature);
             }
+            SettingKey::MaxToolCalls => {
+                self.max_tool_calls = next_in(TOOL_CALL_CHOICES, &self.max_tool_calls);
+            }
         }
         true
     }
@@ -280,6 +302,7 @@ impl SessionSettings {
             SettingKey::AutoCompact => self.auto_compact = live.auto_compact,
             SettingKey::ProjectDocs => self.project_docs = live.project_docs,
             SettingKey::Temperature => self.temperature = live.temperature,
+            SettingKey::MaxToolCalls => self.max_tool_calls = live.max_tool_calls,
             // Not ours — the posture persists per project in permissions.json.
             SettingKey::PermissionMode => {}
         }
@@ -315,6 +338,11 @@ fn is_true(v: &bool) -> bool {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_default_retry(v: &u32) -> bool {
     *v == crate::llm::retry::MAX_RETRIES
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(v: &usize) -> bool {
+    *v == 0
 }
 
 /// `true`/`false`, the value column's boolean spelling.

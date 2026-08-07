@@ -5610,7 +5610,7 @@ settings_open="$(tmux capture-pane -t "$S67" -p)"
 echo "==== Phase 67: the settings menu open ===="
 printf '%s\n' "$settings_open"
 for expect in "Hide thinking" "Error retry" "Permission mode" "Temperature" \
-	"Type to search · Enter/Space to change · Esc to cancel"; do
+	"Max tool calls" "Type to search · Enter/Space to change · Esc to cancel"; do
 	if ! printf '%s' "$settings_open" | grep -qF "$expect"; then
 		echo "FAIL: Phase 67 — the settings menu is missing '$expect'" >&2
 		status=1
@@ -5620,7 +5620,7 @@ if ! printf '%s' "$settings_open" | grep -qE "→ Hide thinking +false"; then
 	echo "FAIL: Phase 67 — the first row is not marked with its value in the value column" >&2
 	status=1
 fi
-if ! printf '%s' "$settings_open" | grep -qF "(1/8)"; then
+if ! printf '%s' "$settings_open" | grep -qF "(1/9)"; then
 	echo "FAIL: Phase 67 — the (n/total) counter never showed" >&2
 	status=1
 fi

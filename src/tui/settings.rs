@@ -53,6 +53,8 @@ impl Session<'_> {
             // one's and a subagent's.
             SettingKey::ErrorRetry => self.models.set_max_retries(settings.error_retry),
             SettingKey::Temperature => self.models.set_temperature(settings.temperature),
+            // The tool-round ceiling a turn runs under (0 = none).
+            SettingKey::MaxToolCalls => self.models.set_max_tool_calls(settings.max_tool_calls),
             // The store keeps its own enabled flag (it can only ever turn a
             // *capable* store on or off — docs/checkpoint.md).
             SettingKey::Checkpoints => {

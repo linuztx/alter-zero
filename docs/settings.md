@@ -3,8 +3,8 @@
 Every knob this app has was, until now, an environment variable you had to know
 about before launch: `ALTER_ZERO_SHOW_THINKING`, `ALTER_ZERO_TOOLS`,
 `ALTER_ZERO_CHECKPOINTS`, `ALTER_ZERO_TEMPERATURE`,
-`ALTER_ZERO_PROJECT_DOC_MAX_BYTES`, plus a hard-coded `retry::MAX_RETRIES` and an
-always-on auto-compaction. `/settings` makes that inventory **visible and
+`ALTER_ZERO_PROJECT_DOC_MAX_BYTES`, plus a hard-coded `retry::MAX_RETRIES`, a
+hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction. `/settings` makes that inventory **visible and
 changeable mid-session**, in the shape `/model` and `/login` already established:
 an inline picker that replaces the composer, type-to-search, and one keystroke
 per change.
@@ -19,7 +19,8 @@ per change.
   Tools                   true
   Permission mode         manual
   ...
-  (1/8)
+  Max tool calls          0
+  (1/9)
 
   Hide the model's chain-of-thought…
 
@@ -30,7 +31,7 @@ per change.
 
 ## The settings
 
-Eight rows, each one a knob the running session actually reads. Every value
+Nine rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
@@ -44,6 +45,35 @@ same thing on every row and the menu never needs an edit mode.
 | **Auto compact** | `true` / `false` | Whether the loop runs the summarization turn on its own past 90 % of the context window (`docs/compact.md`). `/compact` by hand is unaffected. |
 | **Project docs** | `true` / `false` | Whether the project's `AGENTS.md` files are re-read each turn into the context's leading user entry (`docs/project-doc.md`). Seeded from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0`. |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
+| **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
+
+### The ceiling counts calls, not rounds
+
+It has to. A round can request a whole **parallel batch**
+(`docs/parallel-tools.md`) — ask a model to run six commands and it answers
+with six `tool_calls` in one round — so a per-round counter let a single round
+overspend the ceiling several times over: `Max tool calls 5` really ran 15, the
+reported bug. `run_agent` therefore spends the budget **per call**.
+
+A round the budget can only partly afford is **clamped** rather than refused
+whole: as many of its calls as fit run, in the model's own order, and the rest
+resolve as red cells reading `Not run: this turn reached its tool-call limit.`
+Refusing the whole round would be simpler, but a model that opens with a batch
+wider than the entire ceiling would then do nothing at all and just error.
+Every refused call is still *answered* with that same text, so the stored
+message list keeps a `tool` result for every `tool_call` — what a strict
+provider requires of the next request, a `/resume`, or an agent continuation.
+
+### Why **Max tool calls** defaults to none
+
+The library keeps `agent::MAX_TOOL_ITERATIONS = 20` as a backstop against a
+model that loops forever, and that is the right default for an embedder with no
+one watching. It is the wrong one for this app: a cap that trips mid-task
+abandons the work half-done — files half-written, a migration half-applied —
+and the user is sitting right there with **Esc**, which stops a turn instantly
+and keeps everything that streamed. So the app ships uncapped (`0`), and the
+ceilings are there for anyone who wants a hard one. `0` renders in the dim
+"off" colour, like `false`: the limiter is switched off.
 
 ### Unavailable settings
 
@@ -102,10 +132,11 @@ docs`.
   requests the new mode now covers, and persists this project's entry.
 - Everything else returns `Action::SettingChanged(key)`, and
   `tui::settings::Session::apply_setting` does the work:
-  - **Tools**, **Error retry**, **Temperature** rebuild the backend
-    (`ModelSession::set_tools` / `set_max_retries` / `set_temperature` — the
-    `/model` switch's rebuild, so the whole shared attachment set is
-    re-attached).
+  - **Tools**, **Error retry**, **Temperature** and **Max tool calls** rebuild
+    the backend (`ModelSession::set_tools` / `set_max_retries` /
+    `set_temperature` / `set_max_tool_calls` — the `/model` switch's rebuild, so
+    the whole shared attachment set is re-attached, and a subagent inherits the
+    same budgets).
   - **Checkpoints** flips `CheckpointStore::set_enabled`, which can only ever
     turn a *capable* store on or off.
   - **Project docs** reloads (or drops) `App::user_instructions` at once, so

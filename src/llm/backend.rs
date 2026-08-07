@@ -73,6 +73,11 @@ pub struct LlmBackend {
     /// Rides every round, the main turn's and a subagent's alike. See
     /// `docs/settings.md`.
     max_retries: u32,
+    /// How many rounds of tool calls one turn may run before giving up —
+    /// [`agent::MAX_TOOL_ITERATIONS`] unless the `/settings` **Max tool
+    /// calls** knob says otherwise, and **`0` means no limit** (the app's own
+    /// default). See `docs/settings.md`.
+    max_tool_calls: usize,
 }
 
 impl LlmBackend {
@@ -126,6 +131,7 @@ impl LlmBackend {
             permissions: None,
             classifier,
             max_retries: MAX_RETRIES,
+            max_tool_calls: agent::MAX_TOOL_ITERATIONS,
         }
     }
 
@@ -174,10 +180,25 @@ impl LlmBackend {
         self
     }
 
+    /// Set how many rounds of tool calls one turn may run — the `/settings`
+    /// **Max tool calls** knob (`docs/settings.md`). **`0` is no limit**;
+    /// defaults to [`agent::MAX_TOOL_ITERATIONS`].
+    #[must_use]
+    pub const fn with_max_tool_calls(mut self, max_tool_calls: usize) -> Self {
+        self.max_tool_calls = max_tool_calls;
+        self
+    }
+
     /// Whether the `bash`/`read`/`write`/`edit` tools are offered to the model.
     #[must_use]
     pub fn tools_enabled(&self) -> bool {
         self.tools_enabled
+    }
+
+    /// The tool-round ceiling every turn of this backend carries (`0` = none).
+    #[must_use]
+    pub const fn max_tool_calls(&self) -> usize {
+        self.max_tool_calls
     }
 
     /// The retry budget every round of this backend's turns carries.
@@ -427,6 +448,7 @@ impl ReplySource for LlmBackend {
         let permissions = self.permissions.clone();
         let classifier = self.classifier.clone();
         let max_retries = self.max_retries;
+        let max_tool_calls = self.max_tool_calls;
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
@@ -460,7 +482,7 @@ impl ReplySource for LlmBackend {
             agent::run_agent(
                 &tx,
                 &cancel,
-                agent::MAX_TOOL_ITERATIONS,
+                max_tool_calls,
                 &mut messages,
                 |msgs| stream_round(&client, msgs, &tx, &cancel, max_retries),
                 |call, on_output| executor.execute(call, &cancel, on_output),
@@ -584,6 +606,9 @@ struct SubagentConfig {
     /// The session's retry budget, so a subagent's rounds retry exactly as
     /// the main turn's do (`docs/settings.md`).
     max_retries: u32,
+    /// The session's tool-round ceiling, so a subagent runs under the same one
+    /// (`0` = none — `docs/settings.md`).
+    max_tool_calls: usize,
 }
 
 impl LlmBackend {
@@ -606,6 +631,7 @@ impl LlmBackend {
             permissions: self.permissions.clone(),
             classifier: self.classifier.clone(),
             max_retries: self.max_retries,
+            max_tool_calls: self.max_tool_calls,
         }
     }
 }
@@ -834,6 +860,7 @@ fn spawn_subagent_run(
     let permissions = config.permissions.clone();
     let classifier = config.classifier.clone();
     let max_retries = config.max_retries;
+    let max_tool_calls = config.max_tool_calls;
     thread::spawn(move || {
         // The forwarder tags every event with the agent id and tracks the
         // final reply text + terminal outcome (the last uninterrupted text
@@ -882,7 +909,7 @@ fn spawn_subagent_run(
         agent::run_agent(
             &tx2,
             &cancel,
-            agent::MAX_TOOL_ITERATIONS,
+            max_tool_calls,
             &mut messages,
             |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
             |call, on_output| executor.execute(call, &cancel, on_output),
@@ -1328,6 +1355,26 @@ mod tests {
         assert!(prompt.starts_with("be nice"));
         assert!(prompt.contains("bash"), "the tools are named in the prompt");
         assert!(prompt.contains("edit"));
+    }
+
+    #[test]
+    fn the_settings_budgets_ride_the_backend_and_default_to_the_library_backstops() {
+        // The `/settings` **Error retry** and **Max tool calls** knobs reach
+        // every round through these two builders (docs/settings.md). Left
+        // alone, a backend keeps the library's own backstops — an embedder
+        // with nobody watching still gets them.
+        let plain = LlmBackend::configure(ModelConfig::fallback(), None, false);
+        assert_eq!(plain.max_retries, MAX_RETRIES);
+        assert_eq!(plain.max_tool_calls(), agent::MAX_TOOL_ITERATIONS);
+
+        let tuned = plain.with_max_retries(0).with_max_tool_calls(0);
+        assert_eq!(tuned.max_retries, 0, "never retry");
+        assert_eq!(tuned.max_tool_calls(), 0, "no tool-round limit");
+        // …and a subagent runs under the same budgets, so a long side-task
+        // isn't cut off by a ceiling the main turn doesn't have.
+        let sub = tuned.subagent_config();
+        assert_eq!(sub.max_retries, 0);
+        assert_eq!(sub.max_tool_calls, 0);
     }
 
     #[test]

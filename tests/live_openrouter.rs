@@ -1862,3 +1862,80 @@ fn live_temperature_setting_rides_the_request() {
         );
     }
 }
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_max_tool_calls_bounds_a_parallel_batch() {
+    // The reported bug (docs/settings.md): the ceiling counted tool *rounds*,
+    // and a real model answers a "run these five commands" prompt with one
+    // PARALLEL BATCH of five calls — so a cap of 3 ran all five. Ask a live
+    // model for more calls than the budget and assert it never exceeds it.
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let cfg = ModelConfig {
+        provider_id: "openrouter".to_string(),
+        provider_name: "OpenRouter".to_string(),
+        model,
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_model_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: None,
+        extra_headers: Vec::new(),
+        extra_body: serde_json::Map::new(),
+    };
+    const CAP: usize = 3;
+    let backend = LlmBackend::configure(cfg, None, true).with_max_tool_calls(CAP);
+    assert_eq!(backend.max_tool_calls(), CAP);
+
+    let prompt = "Use the bash tool to run each of these six commands, one tool call per \
+                  command: `echo a`, `echo b`, `echo c`, `echo d`, `echo e`, `echo f`. \
+                  Then report every output.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut started = 0usize;
+    let mut succeeded = 0usize;
+    let mut refused = 0usize;
+    let mut error = None;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::ToolStart { .. } => started += 1,
+            StreamEvent::ToolEnd { ok, output, .. } => {
+                if ok {
+                    succeeded += 1;
+                } else if output.contains("tool-call limit") {
+                    refused += 1;
+                }
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => {
+                error = Some(e);
+                break;
+            }
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    println!("started={started} ran={succeeded} refused={refused} error={error:?}");
+    assert!(
+        succeeded <= CAP,
+        "a cap of {CAP} must never RUN more than {CAP} commands, but {succeeded} ran"
+    );
+    // The model was asked for six, so the budget must actually have bitten.
+    assert!(
+        refused > 0 || error.is_some(),
+        "the turn should have hit the ceiling — got {started} starts with no refusal or error"
+    );
+    if let Some(e) = error {
+        assert!(
+            e.contains(&format!("{CAP} tool calls")),
+            "the limit error names the ceiling: {e}"
+        );
+    }
+}
