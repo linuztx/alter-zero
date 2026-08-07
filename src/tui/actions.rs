@@ -166,6 +166,12 @@ impl Session<'_> {
                 env_var,
                 key,
             } => self.save_api_key(&provider, &env_var, &key),
+            Action::OpenSettings => self.open_settings(),
+            Action::CloseSettings => {
+                // Esc/Ctrl+C dismissed the menu: nothing to reap; the region
+                // collapses back to the composer on the next draw.
+            }
+            Action::SettingChanged(key) => self.apply_setting(key),
             Action::Notice(text) => {
                 // A slash command's one-off system notice. The helper finalises
                 // any mid-flight reply segment first (same ordering trick as a
@@ -374,6 +380,10 @@ impl Session<'_> {
             View::Conversation if self.app.model_picker.is_some() => {
                 self.app.paste_into_model_filter(pasted);
             }
+            // The `/settings` menu has a search field too, but nothing anyone
+            // pastes is a setting name — swallow it rather than letting it
+            // reach the composer draft underneath (docs/settings.md).
+            View::Conversation if self.app.settings_picker.is_some() => {}
             View::Conversation => {
                 self.app.on_paste(pasted);
                 // The paste may have changed the active `@token`.

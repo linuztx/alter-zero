@@ -67,6 +67,12 @@ pub struct LlmBackend {
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
     /// other mode, and moot without a gate.
     classifier: SafetyClassifier,
+    /// How many times a failed request is retried before the error surfaces —
+    /// [`retry::MAX_RETRIES`] unless the `/settings` **Error retry** knob
+    /// says otherwise ([`with_max_retries`](LlmBackend::with_max_retries)).
+    /// Rides every round, the main turn's and a subagent's alike. See
+    /// `docs/settings.md`.
+    max_retries: u32,
 }
 
 impl LlmBackend {
@@ -119,6 +125,7 @@ impl LlmBackend {
             agents: None,
             permissions: None,
             classifier,
+            max_retries: MAX_RETRIES,
         }
     }
 
@@ -158,10 +165,25 @@ impl LlmBackend {
         self
     }
 
+    /// Set how many times a failed request is retried before the error is
+    /// surfaced — the `/settings` **Error retry** knob (`docs/settings.md`).
+    /// `0` never retries. Defaults to [`retry::MAX_RETRIES`].
+    #[must_use]
+    pub const fn with_max_retries(mut self, max_retries: u32) -> Self {
+        self.max_retries = max_retries;
+        self
+    }
+
     /// Whether the `bash`/`read`/`write`/`edit` tools are offered to the model.
     #[must_use]
     pub fn tools_enabled(&self) -> bool {
         self.tools_enabled
+    }
+
+    /// The retry budget every round of this backend's turns carries.
+    #[must_use]
+    pub const fn max_retries(&self) -> u32 {
+        self.max_retries
     }
 }
 
@@ -404,6 +426,7 @@ impl ReplySource for LlmBackend {
         let subagent = self.subagent_config();
         let permissions = self.permissions.clone();
         let classifier = self.classifier.clone();
+        let max_retries = self.max_retries;
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
@@ -439,7 +462,7 @@ impl ReplySource for LlmBackend {
                 &cancel,
                 agent::MAX_TOOL_ITERATIONS,
                 &mut messages,
-                |msgs| stream_round(&client, msgs, &tx, &cancel),
+                |msgs| stream_round(&client, msgs, &tx, &cancel, max_retries),
                 |call, on_output| executor.execute(call, &cancel, on_output),
                 || match &notices {
                     Some(registry) => registry
@@ -558,6 +581,9 @@ struct SubagentConfig {
     /// The auto mode classifier, so a subagent's `bash` calls are reviewed
     /// in auto mode exactly like the main turn's (`docs/permissions.md`).
     classifier: SafetyClassifier,
+    /// The session's retry budget, so a subagent's rounds retry exactly as
+    /// the main turn's do (`docs/settings.md`).
+    max_retries: u32,
 }
 
 impl LlmBackend {
@@ -579,6 +605,7 @@ impl LlmBackend {
             background: self.background.clone(),
             permissions: self.permissions.clone(),
             classifier: self.classifier.clone(),
+            max_retries: self.max_retries,
         }
     }
 }
@@ -806,6 +833,7 @@ fn spawn_subagent_run(
     let background = config.background.clone();
     let permissions = config.permissions.clone();
     let classifier = config.classifier.clone();
+    let max_retries = config.max_retries;
     thread::spawn(move || {
         // The forwarder tags every event with the agent id and tracks the
         // final reply text + terminal outcome (the last uninterrupted text
@@ -856,7 +884,7 @@ fn spawn_subagent_run(
             &cancel,
             agent::MAX_TOOL_ITERATIONS,
             &mut messages,
-            |msgs| stream_round(&client, msgs, &tx2, &cancel),
+            |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
             |call, on_output| executor.execute(call, &cancel, on_output),
             // The chat seam: user messages sent into this agent's session
             // arrive at its next round boundary (docs/agent-tool.md).
@@ -922,6 +950,7 @@ fn stream_round(
     messages: &[ChatMessage],
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
+    max_retries: u32,
 ) -> RoundOutcome {
     // The successful attempt's outcome (text + tool calls) is stashed here so
     // it survives the retry driver, which only reports the disposition.
@@ -983,7 +1012,7 @@ fn stream_round(
             Err(e) => (AttemptResult::Failed(e), emitted),
         }
     };
-    match retry::run_attempts(tx, cancel, MAX_RETRIES, attempt, retry::sleep_cancellable) {
+    match retry::run_attempts(tx, cancel, max_retries, attempt, retry::sleep_cancellable) {
         AttemptResult::Ok => {
             let outcome = captured.unwrap_or_default();
             // The round's real usage frame (stream_options.include_usage):

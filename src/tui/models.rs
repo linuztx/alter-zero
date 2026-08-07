@@ -36,6 +36,7 @@ use alter_zero::llm::{
     ThinkingMode,
 };
 use alter_zero::permission::PermissionGate;
+use alter_zero::settings::SessionSettings;
 use alter_zero::stream::{self, CancelToken, DummyAi, ReplySource};
 use alter_zero::ui;
 
@@ -65,8 +66,17 @@ pub(crate) struct ModelSession {
     /// The (provider, model) pair `config.json` currently records. Thinking /
     /// vision / context writes attach to **this** pair only.
     persisted_selection: Option<(String, String)>,
-    /// `ALTER_ZERO_TEMPERATURE`, riding every request.
+    /// The sampling temperature riding every request — seeded from
+    /// `ALTER_ZERO_TEMPERATURE`, then owned by the `/settings` **Temperature**
+    /// knob (`docs/settings.md`).
     temperature: Option<f32>,
+    /// Whether the `bash`/`read`/`write`/`edit`/`agent` tools are offered —
+    /// seeded from `ALTER_ZERO_TOOLS`, then owned by the `/settings` **Tools**
+    /// knob. Every rebuild reads it, so a switch mid-session sticks.
+    tools: bool,
+    /// The retry budget every round carries — the `/settings` **Error retry**
+    /// knob (`docs/settings.md`).
+    max_retries: u32,
     /// The persona + environment system prompt every rebuild inherits.
     system_prompt: Option<String>,
     /// `ALTER_ZERO_STALL_MS` — the test-only wedged backend (`docs/interrupt.md`).
@@ -78,6 +88,10 @@ pub(crate) struct ModelSession {
     active_model: String,
     active_vision: Option<bool>,
     active_context: Option<u64>,
+    /// The thinking mode the live backend was built with, so a rebuild the
+    /// user didn't ask for (a `/settings` knob) carries it forward instead of
+    /// silently dropping the Shift+Tab choice (`docs/reasoning.md`).
+    active_thinking: Option<ThinkingMode>,
     /// The backend itself — the dummy unless a real provider/model/key resolved.
     backend: Box<dyn ReplySource>,
     /// Whether [`Self::backend`] is a **real** model rather than the dummy (or
@@ -121,6 +135,7 @@ impl ModelSession {
         registry: &BackgroundRegistry,
         agents: &AgentRegistry,
         permissions: Option<&PermissionGate>,
+        settings: &SessionSettings,
     ) -> Self {
         let providers = config::load_providers();
         // The persistent API-key store: `.env` in the config home (or
@@ -132,7 +147,12 @@ impl ModelSession {
         // provider + model chosen last run, so it survives a restart.
         let settings_path = config::settings_file_path();
         let saved = config::load_settings(settings_path.as_deref());
-        let temperature = config::temperature();
+        // The `/settings` knobs the backend is built around — already merged
+        // with their `ALTER_ZERO_*` overrides by the caller
+        // (`config::apply_setting_overrides`, docs/settings.md).
+        let temperature = settings.temperature;
+        let tools = settings.tools;
+        let max_retries = settings.error_retry;
         let system_prompt = config::system_prompt(cwd);
         // The provider the /model picker lists from and switches within: env,
         // else the saved selection, else the file's default.
@@ -200,6 +220,8 @@ impl ModelSession {
             (None, Some(cfg)) => Box::new(session_backend(
                 cfg,
                 system_prompt.clone(),
+                tools,
+                max_retries,
                 registry,
                 agents,
                 permissions,
@@ -236,6 +258,8 @@ impl ModelSession {
             settings_path,
             persisted_selection: saved.provider.clone().zip(saved.model.clone()),
             temperature,
+            tools,
+            max_retries,
             system_prompt,
             stall_ms,
             env_context_window: config::context_window_override(),
@@ -243,6 +267,7 @@ impl ModelSession {
             active_model,
             active_vision: real_backend.then_some(saved_vision).flatten(),
             active_context: real_backend.then_some(saved_context).flatten(),
+            active_thinking: startup_thinking.as_ref().map(|(_, mode)| *mode),
             backend,
             real_backend,
             registry: registry.clone(),
@@ -361,10 +386,55 @@ impl ModelSession {
         self.backend = Box::new(session_backend(
             cfg,
             self.system_prompt.clone(),
+            self.tools,
+            self.max_retries,
             &self.registry,
             &self.agents,
             self.permissions.as_ref(),
         ));
+    }
+
+    /// Rebuild the *current* selection's backend — what every `/settings` knob
+    /// that changes the request's shape needs. A no-op on the dummy (there is
+    /// no request to reshape) and on a selection whose config isn't usable.
+    /// See `docs/settings.md`.
+    fn rebuild_current(&mut self) {
+        if !self.real_backend {
+            return;
+        }
+        if let Some(provider) = self.active_provider.clone()
+            && let Some(cfg) = self
+                .config_for(
+                    &provider,
+                    &self.active_model.clone(),
+                    self.active_thinking,
+                    self.active_vision,
+                )
+                .filter(ModelConfig::is_usable)
+        {
+            self.rebuild(cfg);
+        }
+    }
+
+    /// The `/settings` **Tools** knob: offer (or withhold) the tool set from
+    /// here on. See `docs/settings.md`.
+    pub(crate) fn set_tools(&mut self, tools: bool) {
+        self.tools = tools;
+        self.rebuild_current();
+    }
+
+    /// The `/settings` **Error retry** knob: how many times a failed request
+    /// is retried from here on.
+    pub(crate) fn set_max_retries(&mut self, max_retries: u32) {
+        self.max_retries = max_retries;
+        self.rebuild_current();
+    }
+
+    /// The `/settings` **Temperature** knob: `None` sends no `temperature` at
+    /// all and leaves it to the provider.
+    pub(crate) fn set_temperature(&mut self, temperature: Option<f32>) {
+        self.temperature = temperature;
+        self.rebuild_current();
     }
 
     /// Switch to a `/model` picker row: rebuild the backend for the chosen
@@ -394,6 +464,7 @@ impl ModelSession {
         self.active_model = id.to_string();
         self.active_vision = vision;
         self.active_context = context;
+        self.active_thinking = mode;
         // The switch knows its support first-hand — a still-in-flight startup
         // probe is stale.
         self.probe_pending = false;
@@ -416,6 +487,7 @@ impl ModelSession {
         if !self.real_backend {
             return; // nothing to rebind: the dummy has no request to carry a mode
         }
+        self.active_thinking = Some(mode);
         if let Some(provider) = self.active_provider.clone()
             && let Some(cfg) = self
                 .config_for(
@@ -493,6 +565,7 @@ impl ModelSession {
         }
         self.active_vision = vision;
         self.active_context = entry.and_then(|entry| entry.context);
+        self.active_thinking = thinking.as_ref().map(|(_, mode)| *mode);
         self.persist(thinking.as_ref());
         Some(thinking)
     }
@@ -604,11 +677,18 @@ impl ModelSession {
 fn session_backend(
     cfg: ModelConfig,
     system_prompt: Option<String>,
+    tools: bool,
+    max_retries: u32,
     registry: &BackgroundRegistry,
     agents: &AgentRegistry,
     permissions: Option<&PermissionGate>,
 ) -> LlmBackend {
-    let mut backend = LlmBackend::with_system_prompt(cfg, system_prompt)
+    // `configure` rather than `with_system_prompt`: the tool toggle is the
+    // `/settings` **Tools** knob now (seeded from `ALTER_ZERO_TOOLS`), so it
+    // is passed in rather than re-read from the environment per build
+    // (`docs/settings.md`).
+    let mut backend = LlmBackend::configure(cfg, system_prompt, tools)
+        .with_max_retries(max_retries)
         .with_background(registry.clone())
         .with_agents(agents.clone());
     // The tool-permission gate (docs/permissions.md) — absent when

@@ -1685,3 +1685,180 @@ fn live_auto_mode_turn_runs_a_safe_command_with_the_note() {
     assert!(ok, "the echo succeeded: {output}");
     assert!(output.contains("live_auto_marker"), "got {output}");
 }
+
+// ===== the `/settings` knobs, against a live provider (docs/settings.md) =====
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_tools_setting_decides_whether_the_model_is_offered_any() {
+    // The **Tools** knob is the `tools_enabled` flag every backend build now
+    // carries (`ModelSession::set_tools` rebuilds around it). Prove it reaches
+    // the wire both ways: with tools on, a prompt that begs for `bash` gets a
+    // real tool call; with them off, the same prompt can only be answered in
+    // words — the request carries no tool specs at all, so the provider has
+    // nothing to call.
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let cfg = ModelConfig {
+        provider_id: "openrouter".to_string(),
+        provider_name: "OpenRouter".to_string(),
+        model,
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_model_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: None,
+        extra_headers: Vec::new(),
+        extra_body: serde_json::Map::new(),
+    };
+    let prompt = "Use the bash tool exactly once to run exactly: echo tools_marker \
+                  Then reply with just the marker it printed.";
+
+    let starts = |tools_enabled: bool| {
+        let backend = LlmBackend::configure(cfg.clone(), None, tools_enabled);
+        assert_eq!(backend.tools_enabled(), tools_enabled);
+        let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+        let mut names = Vec::new();
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                StreamEvent::ToolStart { name, .. } => names.push(name),
+                StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+                StreamEvent::Error(e) => panic!("backend error: {e}"),
+                StreamEvent::StreamDone => break,
+                _ => {}
+            }
+        }
+        handle.join().expect("backend thread joins");
+        names
+    };
+
+    let with_tools = starts(true);
+    println!("tools on → {with_tools:?}");
+    assert!(
+        // The event carries the cell's display name (`Bash`), not the raw id.
+        with_tools.iter().any(|n| n.eq_ignore_ascii_case("bash")),
+        "tools on: the model ran the command, got {with_tools:?}"
+    );
+    let without_tools = starts(false);
+    println!("tools off → {without_tools:?}");
+    assert!(
+        without_tools.is_empty(),
+        "tools off: the request offers none, so none can run — got {without_tools:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_error_retry_setting_bounds_the_attempts() {
+    // The **Error retry** knob is `LlmBackend::with_max_retries`, threaded
+    // into every round's `retry::run_attempts`. Point a backend at a real host
+    // that will refuse us (a bad key is a 401 — never retried) and then at one
+    // whose transport fails, and count the `Retrying` announcements: the
+    // budget the knob set is exactly what the driver spends.
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let unreachable = ModelConfig {
+        provider_id: "openrouter".to_string(),
+        provider_name: "OpenRouter".to_string(),
+        model,
+        // A host that resolves to nothing: the send fails, which IS retryable.
+        api_base: "https://127.0.0.1:9/v1".to_string(),
+        api_model_base: "https://127.0.0.1:9/v1".to_string(),
+        api_key: Some("sk-does-not-matter".to_string()),
+        temperature: None,
+        thinking: None,
+        vision: None,
+        cache_key: None,
+        extra_headers: Vec::new(),
+        extra_body: serde_json::Map::new(),
+    };
+    let retries_for = |max: u32| {
+        let backend = LlmBackend::configure(unreachable.clone(), None, false).with_max_retries(max);
+        assert_eq!(backend.max_retries(), max);
+        let context = vec![ContextMessage::new(ContextRole::User, "hi")];
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = backend.spawn("hi".to_string(), vec![], context, tx, CancelToken::new());
+        let mut retries = 0;
+        let mut errored = false;
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                StreamEvent::Retrying { attempt, max } => {
+                    println!("retrying {attempt}/{max}…");
+                    retries += 1;
+                }
+                StreamEvent::Error(_) => errored = true,
+                StreamEvent::StreamDone => break,
+                _ => {}
+            }
+        }
+        handle.join().expect("backend thread joins");
+        assert!(errored, "an unreachable host surfaces the error");
+        retries
+    };
+    assert_eq!(
+        retries_for(0),
+        0,
+        "0 never retries — the error is immediate"
+    );
+    assert_eq!(
+        retries_for(2),
+        2,
+        "the knob's budget is exactly what is spent"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_temperature_setting_rides_the_request() {
+    // The **Temperature** knob rides `ModelConfig::temperature` into the
+    // payload. A provider that rejected the parameter would fail the turn, so
+    // a completed turn at each offered value is the proof it is accepted — and
+    // `default` (None) sends none at all.
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    for temperature in [None, Some(0.0), Some(1.0)] {
+        let cfg = ModelConfig {
+            provider_id: "openrouter".to_string(),
+            provider_name: "OpenRouter".to_string(),
+            model: model.clone(),
+            api_base: "https://openrouter.ai/api/v1".to_string(),
+            api_model_base: "https://openrouter.ai/api/v1".to_string(),
+            api_key: Some(key.clone()),
+            temperature,
+            thinking: None,
+            vision: None,
+            cache_key: None,
+            extra_headers: Vec::new(),
+            extra_body: serde_json::Map::new(),
+        };
+        let backend = LlmBackend::configure(cfg, None, false);
+        let prompt = "Reply with exactly: OK";
+        let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+        let mut reply = String::new();
+        while let Some(event) = rx.blocking_recv() {
+            match event {
+                StreamEvent::Chunk(c) => reply.push_str(&c),
+                StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+                StreamEvent::Error(e) => panic!("temperature {temperature:?} was rejected: {e}"),
+                StreamEvent::StreamDone => break,
+                _ => {}
+            }
+        }
+        handle.join().expect("backend thread joins");
+        println!("temperature {temperature:?} → {reply:?}");
+        assert!(
+            !reply.trim().is_empty(),
+            "temperature {temperature:?} produced a reply"
+        );
+    }
+}

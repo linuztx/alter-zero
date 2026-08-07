@@ -174,12 +174,18 @@ impl App {
     }
 
     /// Whether the loop should start an **auto-compact** turn at the next idle
-    /// boundary: the window is known, the gauge is past codex's 90% threshold,
-    /// no turn is in flight, the last compact attempt isn't still blocking
-    /// (one per user turn), and the conversation derives a non-empty context
-    /// to summarize. See `docs/compact.md`.
+    /// boundary: the `/settings` **Auto compact** knob is on, the window is
+    /// known, the gauge is past codex's 90% threshold, no turn is in flight,
+    /// the last compact attempt isn't still blocking (one per user turn), and
+    /// the conversation derives a non-empty context to summarize. See
+    /// `docs/compact.md` / `docs/settings.md`.
     #[must_use]
     pub fn should_auto_compact(&self) -> bool {
+        // The `/settings` knob (docs/settings.md): off means the loop never
+        // starts one on its own — `/compact` by hand still works.
+        if !self.settings.auto_compact {
+            return false;
+        }
         let Some(window) = self.context_window else {
             return false;
         };

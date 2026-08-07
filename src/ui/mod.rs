@@ -53,6 +53,7 @@ mod model_view;
 mod permission_view;
 mod reasoning;
 mod resume_view;
+mod settings_view;
 mod status;
 mod stream_render;
 mod table;
@@ -91,6 +92,7 @@ pub use self::model_view::render_model_picker;
 pub use self::permission_view::{permission_lines, permission_remember_label, render_permission};
 pub use self::reasoning::reasoning_lines;
 pub use self::resume_view::render_resume_picker;
+pub use self::settings_view::{render_settings, settings_height};
 pub use self::status::{
     background_notice_lines, format_elapsed, format_token_count, status_line, summary_lines,
 };

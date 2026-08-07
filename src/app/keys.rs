@@ -38,6 +38,10 @@ impl App {
         if self.view == View::Conversation && self.key_onboarding.is_some() {
             return self.on_key_key_onboarding(key);
         }
+        // …and so does the inline `/settings` menu. See `docs/settings.md`.
+        if self.view == View::Conversation && self.settings_picker.is_some() {
+            return self.on_key_settings(key);
+        }
         // The ↓ background manager band owns every key while open, the same
         // way the pickers do. See `docs/background.md`.
         if self.view == View::Conversation && self.background_view.is_some() {

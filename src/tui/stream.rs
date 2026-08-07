@@ -231,7 +231,10 @@ impl Session<'_> {
                 // buffer too, so the strip previews the chain-of-thought as it
                 // streams (docs/thinking-stream.md).
                 self.clocks.thinking_start = Some(std::time::Instant::now());
-                if self.show_thinking {
+                // The `/settings` **Hide thinking** knob, read per phase — so
+                // flipping it mid-session takes effect on the very next one
+                // (docs/settings.md).
+                if self.app.settings().show_thinking() {
                     self.app.begin_reasoning();
                 }
                 false

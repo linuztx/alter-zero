@@ -686,6 +686,48 @@ pub(super) const LOGIN_KEY_ROWS: u16 = 9;
 /// input(4).
 pub(super) const LOGIN_KEY_INPUT_ROW: u16 = 4;
 
+// --- The inline `/settings` menu (docs/settings.md). The `/model` picker's
+// framed shape with one extra row — the key hint under the description — and a
+// value column instead of a `[provider]` tag. Every colour is borrowed from the
+// `MODEL_*` set so the three inline pickers read as one family. ---
+
+/// The most setting rows shown at once; a longer (or unfiltered) list scrolls
+/// to keep the selection **centered**, like the `/model` list.
+pub(super) const SETTINGS_MENU_MAX_ROWS: u16 = 10;
+
+/// Columns between the longest visible label and the value column, so the
+/// values line up in a block (the palette's `MENU_DESC_COL` idea, sized to the
+/// visible rows rather than pinned).
+pub(super) const SETTINGS_VALUE_GAP: usize = 3;
+
+/// Light grey — a value that is *on* (`true`, a retry count, a temperature):
+/// readable, and the same weight an unselected model id carries.
+pub(super) const SETTINGS_VALUE_COLOR: Color = MODEL_ID_COLOR;
+
+/// Dim — a value that is *off* (`false`, `default`) or unavailable, so a
+/// glance down the column shows what is actually doing something.
+pub(super) const SETTINGS_VALUE_OFF_COLOR: Color = MODEL_META_COLOR;
+
+/// The values rendered in the dim "off" colour.
+pub(super) const SETTINGS_OFF_VALUES: &[&str] = &["false", "default", "0", "disabled"];
+
+/// The key hint pinned under the description — the menu's whole grammar.
+pub(super) const SETTINGS_HINT: &str = "Type to search · Enter/Space to change · Esc to cancel";
+
+/// The list placeholder when the search matches no setting.
+pub(super) const SETTINGS_NO_MATCH: &str = "No matching settings";
+
+/// The fixed rows framing the menu: top rule, gap, search, gap (4 above the
+/// list), then counter, gap, description, gap, hint, gap, bottom rule (7
+/// below). Unlike the `/model` picker's these never collapse — there is always
+/// a description row and always a hint. See [`settings_height`].
+pub(super) const SETTINGS_CHROME_ROWS: u16 = 11;
+
+/// The row (within the menu's framed area) the `❯` search line sits on — top
+/// rule (0), gap (1), search (2). Shared by [`render_settings`] and
+/// [`cursor_position`] so the cursor lands on the query.
+pub(super) const SETTINGS_SEARCH_ROW: u16 = 2;
+
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
 // its wall-clock stamp: dim, right-aligned on its own line below the message
 // (`hh:mm AM/PM`). AI replies, tools, and turn summaries record a stamp too but

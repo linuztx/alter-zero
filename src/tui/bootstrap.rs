@@ -130,6 +130,14 @@ impl<'t> Session<'t> {
         // the inline prompt and blocks its own thread on the answer.
         let permissions = PermissionStore::open(&cwd);
 
+        // The `/settings` knobs (docs/settings.md): the saved `settings.json`
+        // with each `ALTER_ZERO_*` override applied on top. Resolved BEFORE the
+        // backend, which is built around three of them (tools, retries,
+        // temperature).
+        let settings_path = config::settings_json_path();
+        let saved_settings = config::load_saved_settings(settings_path.as_deref());
+        let settings = config::apply_setting_overrides(saved_settings);
+
         // The reply backend and everything that selects it (docs/llm.md).
         let mut models = ModelSession::resolve(
             &cwd,
@@ -137,6 +145,7 @@ impl<'t> Session<'t> {
             &registry,
             &agent_registry,
             permissions.gate(),
+            &settings,
         );
 
         // The `@` file-search pipeline (docs/file-search.md): a background worker
@@ -166,21 +175,23 @@ impl<'t> Session<'t> {
         // The filesystem checkpoint store (docs/checkpoint.md): an isolated git
         // object store — never the user's real .git — that snapshots the whole cwd
         // per turn so a /resume or Esc-Esc backtrack can reset the code, not just
-        // the transcript. Gated by `ALTER_ZERO_CHECKPOINTS`, a `git` binary being
-        // present, and the cwd being project-scoped (`cwd_allows_checkpoints` —
-        // never the home dir itself, an ancestor of it, or a filesystem root: the
-        // session-start snapshot below runs before the first frame, and a `git add
-        // -A` over a whole home directory blocks the raw-mode terminal for minutes
-        // while duplicating it into the store — the "hangs in `~`" bug).
-        let checkpoints_enabled =
-            checkpoint::enabled_by_env(std::env::var("ALTER_ZERO_CHECKPOINTS").ok().as_deref())
-                && checkpoint::cwd_allows_checkpoints(&cwd, home.as_deref())
-                && checkpoint::git_available();
-        let checkpoints = CheckpointStore::new(
+        // the transcript. Whether this host *can* snapshot at all is a `git`
+        // binary being present and the cwd being project-scoped
+        // (`cwd_allows_checkpoints` — never the home dir itself, an ancestor of
+        // it, or a filesystem root: the session-start snapshot below runs before
+        // the first frame, and a `git add -A` over a whole home directory blocks
+        // the raw-mode terminal for minutes while duplicating it into the store
+        // — the "hangs in `~`" bug). Whether it *does* is the `/settings`
+        // **Checkpoints** knob, which `ALTER_ZERO_CHECKPOINTS` seeds
+        // (docs/settings.md) — applied right after, and flippable mid-session.
+        let checkpoints_capable = checkpoint::cwd_allows_checkpoints(&cwd, home.as_deref())
+            && checkpoint::git_available();
+        let mut checkpoints = CheckpointStore::new(
             config::checkpoints_root().as_deref(),
             &cwd,
-            checkpoints_enabled,
+            checkpoints_capable,
         );
+        checkpoints.set_enabled(settings.checkpoints_active());
 
         let cwd_display = ui::display_cwd(&cwd, home.as_deref());
         let mut session = Self {
@@ -191,7 +202,6 @@ impl<'t> Session<'t> {
             agent_render: ui::StreamRender::new(),
             transcript: ui::TranscriptCache::new(),
             burst: PasteBurst::new(),
-            show_thinking: config::show_thinking(),
             clocks: StatusClocks::started_now(),
             toast_deadline: None,
             bg_clocks: HashMap::new(),
@@ -222,6 +232,8 @@ impl<'t> Session<'t> {
             recorder,
             hist_store,
             checkpoints,
+            settings_path,
+            saved_settings,
             inflight: None,
             reaping: Vec::new(),
             clipboard_lease: None,
@@ -229,7 +241,7 @@ impl<'t> Session<'t> {
             cwd,
             cwd_display,
         };
-        session.seed_app();
+        session.seed_app(settings);
         session.seed_checkpoints();
         let picker = session.apply_startup(startup);
         session.paint_first_frame(picker)?;
@@ -241,7 +253,11 @@ impl<'t> Session<'t> {
     /// frame: the footer's session context and permission mode, the context-window
     /// gauge, the system prompts the Ctrl+D view shows, and the project's
     /// AGENTS.md instructions.
-    fn seed_app(&mut self) {
+    fn seed_app(&mut self, settings: alter_zero::settings::SessionSettings) {
+        // The `/settings` knobs (docs/settings.md), plus what this host can
+        // actually run — so an unavailable row says so from the first frame.
+        *self.app.settings_mut() = settings;
+        self.sync_setting_availability();
         // The footer's model name + cwd, formatted here at the boundary (the
         // set_clock pattern: the pure core never reads the environment) —
         // docs/footer.md — together with the system prompts and the gauge.
@@ -261,7 +277,14 @@ impl<'t> Session<'t> {
         // prompt — the context derivation prepends them, the Ctrl+D view and the
         // token estimate carry them from the first frame. Refreshed at every turn
         // start, so this seed mostly serves the pre-first-turn Ctrl+D.
-        let instructions = project_doc::load_user_instructions(&self.cwd);
+        // The **Project docs** knob can withhold them entirely
+        // (docs/settings.md).
+        let instructions = self
+            .app
+            .settings()
+            .project_docs
+            .then(|| project_doc::load_user_instructions(&self.cwd))
+            .flatten();
         self.app.set_user_instructions(instructions);
     }
 

@@ -44,6 +44,7 @@
 //! | [`startup`] | The `--continue`/`--resume` argument resolution (`docs/cli.md`). |
 //! | [`recorder`] | Mirroring history to a rollout file (`docs/resume.md`). |
 //! | [`resume`] | Finding recorded sessions on disk. |
+//! | [`settings`] | Applying a `/settings` knob the menu cycled (`docs/settings.md`). |
 //! | [`history_store`] | The cross-session input history (`docs/history-persistence.md`). |
 //! | [`shell`] | The `!` command runner (`docs/shell-command.md`). |
 //! | [`workers`] | The off-thread file-search / clipboard / model-list jobs. |
@@ -86,6 +87,7 @@ pub(crate) mod models;
 pub(crate) mod permission;
 pub(crate) mod recorder;
 pub(crate) mod resume;
+pub(crate) mod settings;
 pub(crate) mod shell;
 pub(crate) mod startup;
 pub(crate) mod stream;
@@ -123,11 +125,6 @@ pub(crate) struct Session<'t> {
     transcript: ui::TranscriptCache,
     /// Detects a paste / fast-type burst so its redraws coalesce.
     burst: PasteBurst,
-    /// Whether the model's thinking is **shown** — `ALTER_ZERO_SHOW_THINKING`,
-    /// read once at bootstrap. The feature's whole gate: with it off the
-    /// `Thinking*` arms never open a reasoning buffer, so `App` has nothing to
-    /// preview and nothing to record (`docs/thinking-stream.md`).
-    show_thinking: bool,
 
     // ----- the boundary's clocks and deadlines (the set_status_times pattern) -----
     /// The live status indicator's clocks.
@@ -201,6 +198,15 @@ pub(crate) struct Session<'t> {
     hist_store: InputHistoryStore,
     /// Per-turn working-directory snapshots (`docs/checkpoint.md`).
     checkpoints: CheckpointStore,
+    /// Where the `/settings` knobs persist (`settings.json`); `None` disables
+    /// persistence, like `config.json`'s path (`docs/settings.md`). The live
+    /// values themselves live on `App` — one copy, read where they are used.
+    settings_path: Option<PathBuf>,
+    /// The blob `settings.json` holds, **before** the `ALTER_ZERO_*` overrides
+    /// were merged over it. A save is a read-modify-write onto this — only the
+    /// key the user actually cycled moves across — so an override set for one
+    /// run never becomes the saved default (`docs/settings.md`).
+    saved_settings: alter_zero::settings::SessionSettings,
 
     // ----- the in-flight turn -----
     /// The streaming reply's cancel token + thread handle; `None` when idle.

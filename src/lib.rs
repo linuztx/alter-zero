@@ -43,6 +43,9 @@
 //!   context fragment (see `docs/project-doc.md`).
 //! - [`session`]     — the `/resume` rollout-file format: serialize/parse the
 //!   JSONL session record, the picker preview + humanized age.
+//! - [`settings`]    — the `/settings` menu's pure model: the knob inventory,
+//!   each one's value cycle, and the `settings.json` format they persist in
+//!   (see `docs/settings.md`).
 //! - [`stream`]      — the backend seam: the `StreamEvent` reply protocol, the
 //!   `ReplySource` trait the event loop depends on, and the built-in offline
 //!   `DummyAi` whose scripted turns drive the smoke suite (see
@@ -77,6 +80,7 @@ pub mod paste;
 pub mod permission;
 pub mod project_doc;
 pub mod session;
+pub mod settings;
 pub mod stream;
 pub mod subprocess;
 pub mod term;

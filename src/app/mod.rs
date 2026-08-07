@@ -39,6 +39,7 @@ mod permission;
 mod queue;
 mod reasoning;
 mod resume;
+mod settings;
 mod status;
 mod tools;
 mod turn;
@@ -66,6 +67,7 @@ pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
 pub use self::reasoning::Reasoning;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
+pub use self::settings::{SettingRow, SettingsPicker};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tools::{ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, ToolCall, ToolStatus};
 pub use self::turn::{
@@ -280,6 +282,17 @@ pub struct App {
     /// every key while open. Mutually exclusive with the picker. See
     /// `docs/llm.md`.
     pub key_onboarding: Option<KeyOnboarding>,
+    /// The open inline `/settings` menu; `None` when closed. The third
+    /// composer-replacing picker, alongside
+    /// [`model_picker`](Self::model_picker) and
+    /// [`key_onboarding`](Self::key_onboarding). See `docs/settings.md`.
+    pub settings_picker: Option<SettingsPicker>,
+    /// The session's togglable knobs — what `/settings` shows and what the
+    /// boundary reads before it streams thinking, offers tools, snapshots the
+    /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the
+    /// `ALTER_ZERO_*` overrides; read through [`settings`](App::settings). See
+    /// `docs/settings.md`.
+    settings: crate::settings::SessionSettings,
     /// The live status of the turn in flight (verb, token tally, arrow, and the
     /// boundary-supplied seconds), shown in the strip above the box. `Some` from
     /// [`begin_stream`] until the turn ends; `None` when idle. See

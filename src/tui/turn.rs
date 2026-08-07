@@ -102,8 +102,13 @@ impl Session<'_> {
         // derives (docs/project-doc.md): the turn that just ended may have
         // written the guide (`/init`'s whole point), and this turn must already
         // carry it. The TUI process never chdirs, so this is the loop's cwd; on
-        // the odd read failure the startup seed stands.
-        if let Ok(cwd) = std::env::current_dir() {
+        // the odd read failure the startup seed stands. The `/settings`
+        // **Project docs** knob can withhold them entirely — `apply_setting`
+        // already cleared them, so there is simply nothing to refresh
+        // (docs/settings.md).
+        if self.app.settings().project_docs
+            && let Ok(cwd) = std::env::current_dir()
+        {
             self.app
                 .set_user_instructions(project_doc::load_user_instructions(&cwd));
         }

@@ -317,6 +317,11 @@ pub fn render_live_with_preview(
         render_key_onboarding(area, buf, onboarding);
         return;
     }
+    // …and so does the inline `/settings` menu. See `docs/settings.md`.
+    if app.settings_picker.is_some() {
+        render_settings(area, buf, app);
+        return;
+    }
     // The ↓ background manager band replaces the composer (and the band/footer
     // slots below it) — but **not** the streaming strip: a running tool's live
     // cell, the status line, the queued messages and the toast keep their rows

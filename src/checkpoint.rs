@@ -192,22 +192,36 @@ pub struct CheckpointStore {
     git_dir: PathBuf,
     /// The directory whose contents are snapshot/restored (the process cwd).
     work_tree: PathBuf,
-    /// Whether operations do anything (root present, git available, env on).
+    /// Whether operations do anything (capable **and** switched on).
     enabled: bool,
+    /// Whether this host could snapshot at all — root present, git available,
+    /// cwd project-scoped. Fixed at construction: [`set_enabled`] can only
+    /// ever turn a *capable* store on or off, so the `/settings` knob can't
+    /// conjure checkpoints where they were never possible
+    /// (`docs/settings.md`).
+    ///
+    /// [`set_enabled`]: CheckpointStore::set_enabled
+    capable: bool,
 }
 
 impl CheckpointStore {
     /// Build a store snapshotting `cwd`. `root` is the checkpoints root
-    /// (`~/.alter-zero/checkpoints`, or `ALTER_ZERO_CHECKPOINTS_DIR`); `None`
-    /// (no HOME/override) or `enabled == false` (git missing, env off) yields a
-    /// disabled store. Construction is pure — [`init`] does the first I/O.
+    /// (`~/.alter-zero/checkpoints`, or `ALTER_ZERO_CHECKPOINTS_DIR`) and
+    /// `capable` is whether this host can snapshot at all (a `git` binary is
+    /// on PATH and the cwd is project-scoped). A `None` root or
+    /// `capable == false` yields a permanently disabled store; otherwise it
+    /// starts enabled and the `/settings` knob can flip it with
+    /// [`set_enabled`]. Construction is pure — [`init`] does the first I/O.
     ///
     /// [`init`]: CheckpointStore::init
+    /// [`set_enabled`]: CheckpointStore::set_enabled
     #[must_use]
-    pub fn new(root: Option<&Path>, cwd: &Path, enabled: bool) -> Self {
+    pub fn new(root: Option<&Path>, cwd: &Path, capable: bool) -> Self {
         let git_dir = root.map(|r| store_git_dir(r, cwd)).unwrap_or_default();
+        let capable = capable && root.is_some();
         Self {
-            enabled: enabled && root.is_some(),
+            enabled: capable,
+            capable,
             git_dir,
             work_tree: cwd.to_path_buf(),
         }
@@ -217,6 +231,22 @@ impl CheckpointStore {
     #[must_use]
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Whether this host *could* snapshot — what the `/settings` menu reports
+    /// as the **Checkpoints** row's availability (`docs/settings.md`). Note
+    /// this only covers what `new` was given; the boundary ANDs in the `git`
+    /// probe and the cwd check before constructing.
+    #[must_use]
+    pub fn is_capable(&self) -> bool {
+        self.capable
+    }
+
+    /// Turn snapshotting on or off mid-session — the `/settings` **Checkpoints**
+    /// knob. A store that was never capable stays off whatever is asked
+    /// (`docs/settings.md`).
+    pub fn set_enabled(&mut self, on: bool) {
+        self.enabled = on && self.capable;
     }
 
     /// A `git` [`Command`] wired to the isolated store: the private `GIT_DIR`,

@@ -593,6 +593,14 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let y = area.y + MODEL_SEARCH_ROW.min(area.height.saturating_sub(1));
         return (x, y);
     }
+    // The inline `/settings` menu parks the cursor at the end of its `❯`
+    // search line, exactly like the `/model` picker (docs/settings.md).
+    if let Some(picker) = &app.settings_picker {
+        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
+        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
+        let y = area.y + SETTINGS_SEARCH_ROW.min(area.height.saturating_sub(1));
+        return (x, y);
+    }
     // The ↓ background manager band has no text entry at all — park the
     // (shown-once-per-frame) cursor in the band's far corner where it reads
     // as chrome, not input.

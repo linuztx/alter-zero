@@ -38,24 +38,24 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`, `permission`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `shell`, `workers`, `host`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `background`,
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -407,7 +407,45 @@ via `ModelEntry::context`, persisted in `config.json`, overridable via
 `ALTER_ZERO_CONTEXT_WINDOW` — the footer shows a `{used}/{window} ({pct}%)`
 gauge (usage-frame fed, tokenizer-estimated offline) and the loop **auto-runs** the
 same turn past codex's 90% threshold (`App::should_auto_compact`, one
-attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`.
+attempt per user turn, the cell tagged `· auto`)) in `docs/compact.md`; and
+the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
+`ALTER_ZERO_*` environment variables — plus a hard-coded `retry::MAX_RETRIES`
+and an always-on auto-compaction — made *visible and changeable mid-session*
+in the `/model` picker's inline frame, the third composer-replacing picker:
+eight rows (**Hide thinking**, **Error retry**, **Tools**, **Permission
+mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Temperature**)
+of `{label}  {value}` in an aligned column over a `(n/total)` counter, the
+highlighted row's description, and a `Type to search · Enter/Space to change ·
+Esc to cancel` hint; every value **cycles** — there is no free-text field, so
+Enter and Space mean the same thing on every row and Space never reaches the
+type-to-search (which matches the label *and* the description, so `agents.md`
+finds **Project docs**). The pure model is `settings::SessionSettings` +
+`SettingKey`; the rows are **derived, never stored** (`App::setting_rows`),
+so the value column can't drift from what the session is doing, and
+**Permission mode** is a second door onto `App::permission_mode` — cycling it
+returns the existing `Action::SetPermissionMode` so Ctrl+A's whole path (the
+gate, the covered-request sweep, the per-project persist) still runs. A knob
+the host can't serve is **unavailable** — `SettingAvailability`, injected at
+the boundary like the clock: it renders `false (unavailable)`, refuses to
+cycle with an explanatory toast, and is never persisted. Everything else
+returns `Action::SettingChanged(key)` and `tui::settings::Session::apply_setting`
+does the work: **Tools**/**Error retry**/**Temperature** rebuild the backend
+(`ModelSession::set_tools`/`set_max_retries`/`set_temperature` — the `/model`
+switch's full-attachment rebuild, carrying the active thinking mode forward;
+the retry budget rides `LlmBackend::with_max_retries` into every round, a
+subagent's included), **Checkpoints** flips `CheckpointStore::set_enabled`
+(which can only ever turn a *capable* store on or off), **Project docs**
+reloads or drops `App::user_instructions` at once, and **Hide thinking** /
+**Auto compact** need nothing — they are read where they are used
+(`tui::stream`'s `ThinkingStart` arm and `App::should_auto_compact`), so
+there is no second copy to drift. It persists to its own
+`~/.alter-zero/settings.json` — beside `config.json` and `permissions.json`,
+one file per feature that owns it — as a **diff from the defaults** (only
+what the user changed reaches the wire), written as a **read-modify-write**
+over the blob the file itself holds (`Session::saved_settings` +
+`SessionSettings::copy_value`) so an `ALTER_ZERO_*` override merged in at
+startup can never *stick*: the environment wins for the run, per setting,
+and only the row the user actually cycled is saved).
 
 ### The runtime model and its invariants
 
@@ -855,7 +893,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
@@ -1004,7 +1042,15 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   placeholder rows; `file_menu_rows`/`file_menu_lines`/`file_menu_row` mirror the
   palette helpers — see `docs/file-search.md`), the `?` shortcuts
   band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
-  key / dim label colours), the queued entries (the `QUEUED_INDENT` two-space
+  key / dim label colours), the inline `/settings` menu (`SETTINGS_*` — it
+  reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker and cyan
+  selection, adding only the value column's geometry (`SETTINGS_VALUE_GAP`,
+  sized off the widest visible label) and its two-tone colouring
+  (`SETTINGS_VALUE_COLOR` for a live value, `SETTINGS_VALUE_OFF_COLOR` for the
+  `SETTINGS_OFF_VALUES` — `false`/`default`/`0`/`disabled` — and anything
+  unavailable), the `SETTINGS_HINT` key line, `SETTINGS_NO_MATCH`,
+  `SETTINGS_MENU_MAX_ROWS`, and the `SETTINGS_CHROME_ROWS`/`SETTINGS_SEARCH_ROW`
+  geometry `settings_height`/`cursor_position` share — see `docs/settings.md`), the queued entries (the `QUEUED_INDENT` two-space
   inset, `queued_rows`/`queued_lines` — uncapped; a text `Messages` batch
   rendered by `message_lines(Role::User…)` and a standalone `Shell` command by
   `message_lines(Role::Shell…)` (the red `! ` header), so they reuse the

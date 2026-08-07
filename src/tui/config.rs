@@ -26,6 +26,7 @@ use alter_zero::llm::{
     ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
 };
 use alter_zero::permission::{PermissionRules, PermissionsFile};
+use alter_zero::settings::SessionSettings;
 use alter_zero::stream;
 
 use super::host::{local_date, os_context};
@@ -336,19 +337,6 @@ pub(crate) fn permissions_enabled() -> bool {
     env_flag("ALTER_ZERO_PERMISSIONS")
 }
 
-/// Does this session **show** the model's thinking? On by default; disabled by
-/// a falsy `ALTER_ZERO_SHOW_THINKING`, which restores the pre-feature
-/// behaviour exactly — the chain-of-thought is counted into the token tally
-/// and dropped, with only the status line's `Thinking for Ns` clause to show
-/// for it.
-///
-/// It does not change what is *asked of* the model: the Shift+Tab thinking
-/// mode (`docs/reasoning.md`) still rides every request. See
-/// `docs/thinking-stream.md`.
-pub(crate) fn show_thinking() -> bool {
-    env_flag("ALTER_ZERO_SHOW_THINKING")
-}
-
 /// A feature toggle read from the environment: **on** unless `name` is set to
 /// one of `0`/`false`/`no`/`off` (case- and whitespace-insensitive). The one
 /// grammar every `ALTER_ZERO_*` on/off flag uses.
@@ -360,6 +348,85 @@ fn env_flag(name: &str) -> bool {
         ),
         Err(_) => true,
     }
+}
+
+/// An **explicitly set** `ALTER_ZERO_*` on/off flag, or `None` when the
+/// variable is absent. The `/settings` seed needs the distinction [`env_flag`]
+/// erases: an unset variable must leave the saved value alone, where a set one
+/// overrides it for this run. See `docs/settings.md`.
+fn env_flag_set(name: &str) -> Option<bool> {
+    std::env::var(name).ok().map(|v| {
+        !matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "0" | "false" | "no" | "off"
+        )
+    })
+}
+
+// ===== the `/settings` menu's persisted knobs (docs/settings.md) =====
+
+/// The `/settings` file path (`{config_home}/settings.json`) — its own file
+/// beside `config.json` (the `/model` selection) and `permissions.json` (the
+/// per-project rules), so one feature's write can never clobber another's.
+/// `None` when there's no config home; persistence is then disabled.
+pub(crate) fn settings_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("settings.json"))
+}
+
+/// The `/settings` knobs **as the file holds them** — no environment merged
+/// in. Kept beside the live values so a save can be a read-modify-write that
+/// never persists an override (`Session::saved_settings`, `docs/settings.md`).
+/// An absent, unreadable or corrupt file yields the defaults
+/// (`load_settings`'s posture — never block startup).
+pub(crate) fn load_saved_settings(path: Option<&Path>) -> SessionSettings {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| SessionSettings::parse(&text))
+        .unwrap_or_default()
+}
+
+/// The saved knobs with the `ALTER_ZERO_*` overrides applied on top — the
+/// app's standing precedence rule: **the environment wins**, per setting, and
+/// only when it is actually set. This is what the session *runs* with;
+/// [`load_saved_settings`]'s blob is what it *writes back* to.
+pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionSettings {
+    // `ALTER_ZERO_SHOW_THINKING` names the *shown* side; the row is its
+    // inverse (docs/thinking-stream.md).
+    if let Some(show) = env_flag_set("ALTER_ZERO_SHOW_THINKING") {
+        settings.hide_thinking = !show;
+    }
+    if let Some(on) = env_flag_set("ALTER_ZERO_TOOLS") {
+        settings.tools = on;
+    }
+    // Checkpoints keep their own (identical) pure predicate, so the one
+    // grammar stays in the module that owns the feature.
+    if let Ok(value) = std::env::var("ALTER_ZERO_CHECKPOINTS") {
+        settings.checkpoints = alter_zero::checkpoint::enabled_by_env(Some(&value));
+    }
+    // The project-doc knob's env form is a byte budget, whose documented off
+    // switch is `0` (docs/project-doc.md).
+    if let Some(budget) = std::env::var("ALTER_ZERO_PROJECT_DOC_MAX_BYTES")
+        .ok()
+        .and_then(|v| v.trim().parse::<usize>().ok())
+    {
+        settings.project_docs = budget > 0;
+    }
+    if let Some(t) = temperature() {
+        settings.temperature = Some(t);
+    }
+    settings
+}
+
+/// Persist the `/settings` knobs. Best-effort like [`save_settings`] — a
+/// read-only home must never kill the TUI — and a `None` path (no config home)
+/// no-ops. See `docs/settings.md`.
+pub(crate) fn save_session_settings(path: Option<&Path>, settings: &SessionSettings) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, settings.to_json());
 }
 
 /// The dummy's pre-stream pause, so the status indicator is visibly working

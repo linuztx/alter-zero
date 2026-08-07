@@ -233,7 +233,8 @@ An amended rejection is kept, not just delivered: the instructions show on the
 red cell and the model-facing denial rides the conversation, so Ctrl+D shows
 what the model was told and every later turn — and a `/resume` — still carries
 it.
-`ALTER_ZERO_PERMISSIONS=0` turns the gate off.
+`/settings` → **Permission mode** (or **Ctrl+A**) picks the posture;
+`ALTER_ZERO_PERMISSIONS=0` turns the gate off entirely.
 
 A reasoning model's **thinking is shown** (`docs/thinking-stream.md`). While a
 phase runs it wears the tool cell's shape — a breathing `●` bullet over the
@@ -263,9 +264,44 @@ thought under the same line, minus the hint.
 The thought is not lost — **Ctrl+O** expands it in the transcript, and it
 survives a `/resume`. The token count is the provider's own
 `completion_tokens_details.reasoning_tokens` once the round's usage frame
-lands, a tokenizer estimate until then. `ALTER_ZERO_SHOW_THINKING=0` hides it
-all (that hides thinking; **Shift+Tab** to `off` is what stops the model doing
-it).
+lands, a tokenizer estimate until then. `/settings` → **Hide thinking** (or
+`ALTER_ZERO_SHOW_THINKING=0`) hides it all — that hides *showing* the
+thinking; **Shift+Tab** to `off` is what stops the model doing it.
+
+Everything the session can be tuned with lives behind **`/settings`**
+(`docs/settings.md`) — the knobs that used to be `ALTER_ZERO_*` environment
+variables you had to know about before launch, now visible and changeable
+mid-session in the same inline frame `/model` uses:
+
+```
+  ❯
+
+→ Hide thinking     false
+  Error retry       3
+  Tools             true
+  Permission mode   manual
+  Checkpoints       true
+  Auto compact      true
+  Project docs      true
+  Temperature       default
+  (1/8)
+
+  Hide the model's chain-of-thought instead of streaming it above the composer
+
+  Type to search · Enter/Space to change · Esc to cancel
+```
+
+Type to search (the label *and* the description — `agents.md` finds **Project
+docs**), **Enter** or **Space** to cycle the highlighted value, **Esc** to
+close. There is no text field anywhere: every value cycles, so one key means
+one thing on every row. **Permission mode** is the same posture **Ctrl+A**
+cycles — one state, two doors. A knob this machine can't serve (checkpoints
+with no `git`, say) shows `false (unavailable)` and says so rather than
+offering a toggle that does nothing. Changes take effect at once — the ones
+that reshape a request rebind the *next* turn, so `/settings` is safe to open
+mid-turn — and persist to `~/.alter-zero/settings.json` as a diff from the
+defaults; an `ALTER_ZERO_*` override still wins for the run it was set in, but
+never gets saved on top of your choice.
 
 Providers live in `providers.toml` (repo root; an Agent-Zero/Venice proxy and
 OpenRouter ship by default). To plug in a *non*-OpenAI-shaped

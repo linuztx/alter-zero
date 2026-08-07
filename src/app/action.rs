@@ -123,6 +123,23 @@ pub enum Action {
     /// its expiry — why this isn't a direct `show_toast`). See
     /// `docs/reasoning.md`.
     SetThinking(ThinkingMode),
+    /// `/settings`: open the inline settings menu. Like `/model` it works
+    /// mid-turn — it only replaces the composer. The loop has nothing to fetch;
+    /// it just repaints (the rows derive from state it already has). See
+    /// `docs/settings.md`.
+    OpenSettings,
+    /// The settings menu was dismissed (Esc on an empty query, or Ctrl+C):
+    /// [`App::settings_picker`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseSettings,
+    /// Enter/Space cycled a setting — [`App::settings`] already holds the new
+    /// value. The loop **applies** it (`tui::settings`): rebuild the backend
+    /// for `Tools`/`ErrorRetry`/`Temperature`, flip the checkpoint store,
+    /// reload the project doc, then persist `settings.json` and toast the new
+    /// value. The two knobs that need nothing — `HideThinking` and
+    /// `AutoCompact` — are read straight off `App` where they are used. See
+    /// `docs/settings.md`.
+    SettingChanged(crate::settings::SettingKey),
     /// `/login` from an idle composer: open the inline API-key onboarding flow.
     /// The *loop* builds the provider choices (which need boundary key
     /// resolution to mark the already-configured ones) and hands them to
