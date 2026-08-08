@@ -430,6 +430,12 @@ pub(super) const TASK_COMPLETED_COLOR: Color = TOOL_OK_COLOR;
 /// `figures.pointerSmall`).
 pub(super) const TASK_BLOCKED_MARKER: &str = "›";
 
+/// The inset the **idle** task block sits at — the count line and its rows
+/// (`docs/task-tools.md`). Two spaces, the same inset the footer and the
+/// queued messages use, so the resting screen reads as one column; in a turn
+/// the rows take [`TOOL_RESULT_PREFIX`]'s `⎿` gutter instead.
+pub(super) const TASK_IDLE_INDENT: &str = "  ";
+
 /// The most checklist rows shown in the strip before the tail folds into a
 /// dim `… +N pending` summary row (Claude Code caps at ten and prioritises
 /// what is actionable — see `ui::tasks`).

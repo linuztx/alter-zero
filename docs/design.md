@@ -476,9 +476,12 @@ unit-tested must be unit-tested.
   **live checklist** under the status line (`⎿ ◻ subject` rows, `◼` in
   progress, `✔` done, dim `› blocked by #1` suffixes) instead of tool cells:
   the calls render nothing inline (Claude Code hides them too), the spinner
-  wears the active task's `activeForm`, Ctrl+O keeps the full per-call
-  record, and the list survives `/resume`, the Esc-Esc backtrack, and
-  `/clear` via per-record snapshots.
+  wears the active task's `activeForm`, and at rest a plan with work left
+  keeps a standalone `1 tasks (0 done, 1 open)` block above the composer —
+  while a plan whose tasks are all done **retires** at the turn boundary, so
+  the next one starts fresh. Ctrl+O keeps the full per-call record, and the
+  list survives `/resume`, the Esc-Esc backtrack, and `/clear` via
+  per-record snapshots.
 
 ## Architecture
 

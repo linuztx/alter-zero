@@ -181,6 +181,25 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// the composer (`docs/background.md`). `preview`/`preview_n` are the
 /// already-built [`preview_lines`] and their [`preview_rows`] count (they must
 /// agree — the caller asserts it).
+/// Paint the checklist's already-built `lines` into the strip, `offset` rows
+/// down from its top — the one place the block's geometry lives, shared by
+/// the in-turn dress (under the status line) and the idle one (at the strip
+/// top). Clipped to the strip, which a short terminal can squeeze.
+fn paint_tasks(strip: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>, rows: u16, offset: u16) {
+    let y = strip.y + offset;
+    let bottom = strip.y + strip.height;
+    if y >= bottom {
+        return;
+    }
+    let area = Rect {
+        x: strip.x,
+        y,
+        width: strip.width,
+        height: rows.min(bottom - y),
+    };
+    Paragraph::new(lines).render(area, buf);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_strip(
     strip: Rect,
@@ -207,6 +226,8 @@ fn render_strip(
     };
     let status_rows = if has_status {
         STATUS_ROWS + tasks_n + STATUS_GAP_ROWS
+    } else if tasks_n > 0 {
+        tasks_n + STATUS_GAP_ROWS
     } else {
         0
     };
@@ -253,18 +274,14 @@ fn render_strip(
         // The checklist's `⎿` rows hang directly off the status line —
         // Claude Code's live task list (docs/task-tools.md).
         if tasks_n > 0 {
-            let t_y = strip.y + preview_slot + STATUS_ROWS;
-            let strip_bottom = strip.y + strip.height;
-            if t_y < strip_bottom {
-                let t_area = Rect {
-                    x: strip.x,
-                    y: t_y,
-                    width: strip.width,
-                    height: tasks_n.min(strip_bottom - t_y),
-                };
-                Paragraph::new(tasks).render(t_area, buf);
-            }
+            paint_tasks(strip, buf, tasks, tasks_n, preview_slot + STATUS_ROWS);
         }
+    } else if tasks_n > 0 {
+        // No status line to hang from (the turn is over, or a `!` shell run
+        // owns the strip): the standalone block — its count line over the
+        // rows — sits at the strip top instead, so a plan with work left
+        // stays visible while the user reads and types (docs/task-tools.md).
+        paint_tasks(strip, buf, tasks, tasks_n, preview_slot);
     }
 
     // The queued messages, styled like sent user messages (❯ bullet, dark

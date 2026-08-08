@@ -263,6 +263,15 @@ impl Session<'_> {
         // (docs/checkpoint.md).
         self.checkpoint_turn_end();
         self.settle_bg_completions();
+        // A plan whose every task is completed retires here — the turn that
+        // finished it showed the all-green rows, and from now on the list is
+        // gone rather than hidden, so the model's next `taskcreate` starts a
+        // genuinely new plan instead of appending to the old ticks. The
+        // shared registry follows, so its next `tasklist` agrees with the
+        // strip (docs/task-tools.md).
+        if self.app.retire_finished_tasks() {
+            self.sync_task_registry();
+        }
         let unheard = self.registry.take_pending_notices();
         // The finished turn's handle is spent; whatever dispatches below takes
         // its place (and nothing dispatching leaves the loop idle).

@@ -87,6 +87,43 @@ fn a_turn_with_a_task_call_interrupts_kept_not_undone() {
 }
 
 #[test]
+fn a_resumed_or_rewound_finished_plan_stays_retired() {
+    // A rewind lands between turns, so a snapshot that was already finished
+    // there is finished now — restoring its ticks would put back exactly
+    // what the turn-boundary retirement removed (docs/task-tools.md).
+    let mut app = App::new();
+    let mut done = store_of(&["a", "b"]);
+    for id in 1..=2 {
+        done.run_update(&format!(r#"{{"taskId":"{id}","status":"completed"}}"#))
+            .unwrap();
+    }
+    app.load_session(vec![HistoryItem::TaskCall(TaskCallRecord {
+        name: "TaskUpdate".into(),
+        args: "#2 → completed".into(),
+        output: "Updated task #2 status".into(),
+        ok: true,
+        timestamp: String::new(),
+        tasks: done,
+    })]);
+    assert!(app.tasks().is_empty(), "a finished plan does not come back");
+    assert_eq!(
+        app.tasks().high_water(),
+        2,
+        "…but its ids are still spent, so the next plan continues at #3"
+    );
+    // An OPEN plan resumes whole.
+    app.load_session(vec![HistoryItem::TaskCall(TaskCallRecord {
+        name: "TaskCreate".into(),
+        args: "b".into(),
+        output: "Task #2 created successfully: b".into(),
+        ok: true,
+        timestamp: String::new(),
+        tasks: store_of(&["a", "b"]),
+    })]);
+    assert_eq!(app.tasks().tasks().len(), 2);
+}
+
+#[test]
 fn task_verb_is_the_running_forms_label_while_a_task_is_in_progress() {
     let mut app = App::new();
     let mut store = store_of(&["Write tests"]);

@@ -43,8 +43,14 @@ pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, task_rows: u
     } else {
         0
     };
+    // The status slot carries the checklist under the spinner; with no
+    // status line the same slot holds the **idle** block alone (its count
+    // line + rows), keeping its trailing gap so the box never sits flush
+    // against it. Both collapse to nothing when there is neither.
     let status = if has_status {
         STATUS_ROWS + task_rows + STATUS_GAP_ROWS
+    } else if task_rows > 0 {
+        task_rows + STATUS_GAP_ROWS
     } else {
         0
     };

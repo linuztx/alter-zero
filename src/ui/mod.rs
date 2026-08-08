@@ -101,7 +101,7 @@ pub use self::status::{
     status_line_with_verb, summary_lines,
 };
 pub use self::stream_render::StreamRender;
-pub use self::tasks::{checklist_lines, task_rows};
+pub use self::tasks::{checklist_lines, idle_task_lines, task_rows};
 pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
 pub use self::tool::tool_lines;
 pub use self::transcript::{

@@ -70,8 +70,33 @@ matters:
   Subjects truncate to one row (ellipsis) like the footer; past
   [`TASK_MAX_ROWS`] the list prioritises in-progress → unblocked pending →
   blocked → completed and folds the rest into a dim `… +N pending, M done`
-  tail row. Idle, the strip collapses as always — the checklist is a
-  turn-time display.
+  tail row.
+- **At rest: the standalone block.** A plan with work left doesn't vanish
+  when the turn ends — the same rows sit above the composer under Claude
+  Code's dim count line, so what remains is in view while the user reads
+  and types:
+
+  ```
+    1 tasks (0 done, 1 open)
+    ◻ Review demo output with user
+  ```
+
+  Same glyphs, same truncation, same fold (`task_rows_lines` builds both);
+  only the prefix differs — the `⎿` gutter hangs off a spinner, and at rest
+  there is none, so the rows take the composer's own two-space inset. The
+  count line adds an `N in progress` clause when any task is running.
+- **A finished plan retires.** Once every task is completed the list has
+  done its job: the turn that finished it keeps showing the all-green rows
+  (the payoff), and at that turn's end it is **dropped whole**
+  (`App::retire_finished_tasks` → `TaskStore::retire_if_finished`, called
+  from the loop's `dispatch_after_turn`, which re-syncs the shared registry
+  so the model's next `tasklist` agrees). So it is *gone*, not hidden: no
+  resting block, nothing on later turns, and — the reason this matters —
+  the next `taskcreate` starts a genuinely new plan instead of appending a
+  row to three old ticks. The **id high-water mark survives**, so that new
+  plan opens at `#4`: the same proof of continuity deletion gives. A rewind
+  (`/resume`, the Esc-Esc backtrack) applies the rule to the snapshot it
+  restores, since a rewind lands between turns too.
 - **The spinner wears the active task.** While some task is `in_progress`,
   the status verb is the **first** such task's `activeForm` (falling back to
   its `subject`) instead of the turn's whimsical verb —

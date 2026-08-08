@@ -463,6 +463,17 @@ suffix naming only **open** blockers, one-row truncated subjects, and past
 spinner **wears the active task's `activeForm`** (`App::task_verb` →
 `ui::status_line_with_verb`, Claude Code's `currentTodo.activeForm ??
 randomVerb`, derived per frame so completing the task snaps the verb back);
+**at rest** the same rows sit above the composer under Claude Code's dim
+`1 tasks (0 done, 1 open)` count line (`ui::idle_task_lines` — the same
+glyphs/fold, the `⎿` gutter swapped for the composer's inset, since there is
+no spinner to hang from), so work left over stays in view between turns;
+and a **finished** plan *retires* — the turn that ticked the last task keeps
+its all-green rows, then `dispatch_after_turn` drops the list whole
+(`App::retire_finished_tasks` → `TaskStore::retire_if_finished`, re-syncing
+the registry), so it is gone rather than hidden and the next `taskcreate`
+opens a new plan at `#4` instead of appending to the old ticks (the id
+high-water mark survives; a `/resume`/backtrack applies the same rule to the
+snapshot it restores);
 the record keeps everything the cell-less display doesn't: Ctrl+O expands
 each call as an ordinary tool cell (`TaskCallRecord::as_tool_call`), the
 derived context replays the native `tool_calls`+result pair (args `{}` like

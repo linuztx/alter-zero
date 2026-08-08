@@ -86,6 +86,23 @@ impl App {
         self.tasks = tasks;
     }
 
+    /// **Retire a finished plan** at the turn boundary: once every task is
+    /// completed the list has done its job, so it is dropped whole — the
+    /// checklist stops showing *and stays gone*, and the next plan the model
+    /// starts is genuinely new rather than the old ticks with a fresh row
+    /// appended (the user-reported reappearance). The all-green moment is
+    /// still seen: the sweep runs at the **end** of the turn that completed
+    /// it, so those rows stand under the spinner until then.
+    ///
+    /// A plan with any work left is untouched — it rides every later turn,
+    /// the reference transcript's "continue" flow. Returns whether anything
+    /// was retired, so the boundary knows to re-sync the shared registry
+    /// (the model's next `tasklist` must agree with the strip). See
+    /// `docs/task-tools.md`.
+    pub fn retire_finished_tasks(&mut self) -> bool {
+        self.tasks.retire_if_finished()
+    }
+
     /// The live task list — what the checklist under the status line renders
     /// and the boundary syncs the shared registry from after a rewind.
     #[must_use]
@@ -108,6 +125,12 @@ impl App {
     /// still in history carries the state the conversation had there; none
     /// means no tasks. `/clear` passes through here too via its empty
     /// history.
+    ///
+    /// The restored snapshot is retired by the same rule as a live one
+    /// ([`retire_finished_tasks`](Self::retire_finished_tasks)): a rewind
+    /// lands *between* turns, so a plan that was already finished there is
+    /// finished now — restoring its ticks would put back exactly what the
+    /// retirement removed.
     pub(super) fn reset_tasks_from_history(&mut self) {
         self.tasks = self
             .history
@@ -118,5 +141,6 @@ impl App {
                 _ => None,
             })
             .unwrap_or_default();
+        self.tasks.retire_if_finished();
     }
 }

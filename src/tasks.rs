@@ -140,6 +140,17 @@ pub struct UpdateArgs {
     pub add_blocked_by: Option<Vec<String>>,
 }
 
+/// The tallies the idle summary row shows (`TaskStore::counts`): how many
+/// tasks there are, how many are done, how many are running, and how many
+/// are still open (everything not completed).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TaskCounts {
+    pub total: usize,
+    pub completed: usize,
+    pub in_progress: usize,
+    pub open: usize,
+}
+
 /// The task list itself — and, cloned, the **snapshot** that rides
 /// [`crate::stream::StreamEvent::TaskCall`], sits on `App::tasks` for the
 /// strip's checklist, and is recorded on every task-call history item so
@@ -224,6 +235,55 @@ impl TaskStore {
             .filter(|t| t.blocked_by.contains(&id))
             .map(|t| t.id)
             .collect()
+    }
+
+    /// Is the plan **finished** — non-empty with every task completed?
+    /// Empty is not "finished" (there was never a plan). What
+    /// [`retire_if_finished`](Self::retire_if_finished) acts on.
+    #[must_use]
+    pub fn all_completed(&self) -> bool {
+        !self.tasks.is_empty() && self.tasks.iter().all(|t| t.status == TaskStatus::Completed)
+    }
+
+    /// **Retire a finished plan**: once every task is completed the list has
+    /// served its purpose, so it is dropped whole at the next turn boundary —
+    /// the checklist stops showing *and stays gone*, and the plan the model
+    /// starts next is genuinely new rather than the old ticks with a fresh
+    /// row appended (`docs/task-tools.md`). A plan with any work left is
+    /// untouched.
+    ///
+    /// The id **high-water mark survives** ([`high_water`](Self::high_water)),
+    /// so the next task is `#4` after a retired `#1–3` — the same proof of
+    /// continuity deletion gives. Returns whether anything was retired, so
+    /// the boundary knows to re-sync the shared registry.
+    pub fn retire_if_finished(&mut self) -> bool {
+        if !self.all_completed() {
+            return false;
+        }
+        self.tasks.clear();
+        true
+    }
+
+    /// How many tasks are completed / still open — the idle summary row's
+    /// counts (`{total} tasks ({done} done, {open} open)`).
+    #[must_use]
+    pub fn counts(&self) -> TaskCounts {
+        let completed = self
+            .tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::Completed)
+            .count();
+        let in_progress = self
+            .tasks
+            .iter()
+            .filter(|t| t.status == TaskStatus::InProgress)
+            .count();
+        TaskCounts {
+            total: self.tasks.len(),
+            completed,
+            in_progress,
+            open: self.tasks.len() - completed,
+        }
     }
 
     /// The spinner verb the list currently wants: the **first** in-progress
@@ -826,6 +886,102 @@ mod tests {
             .unwrap();
         let task = store.get(3).unwrap().clone();
         assert_eq!(store.open_blockers(&task), vec![2]);
+    }
+
+    #[test]
+    fn a_finished_plan_retires_whole_and_never_renumbers() {
+        // The user's report: after every task was ticked, creating a new task
+        // brought the old ✔ rows back. A finished plan is dropped at the turn
+        // boundary, so the next plan is genuinely new — but the ids keep
+        // counting, the proof the old ones are gone rather than reused.
+        let mut store = TaskStore::new();
+        create(&mut store, "a");
+        create(&mut store, "b");
+        assert!(!store.retire_if_finished(), "an open plan is untouched");
+        assert_eq!(store.tasks().len(), 2);
+        store
+            .run_update(r#"{"taskId":"1","status":"completed"}"#)
+            .unwrap();
+        assert!(
+            !store.retire_if_finished(),
+            "one open task keeps the whole plan"
+        );
+        store
+            .run_update(r#"{"taskId":"2","status":"completed"}"#)
+            .unwrap();
+        assert!(store.retire_if_finished(), "a finished plan retires");
+        assert!(store.is_empty(), "and it is gone, not merely hidden");
+        assert!(!store.retire_if_finished(), "an empty list retires nothing");
+        assert_eq!(
+            create(&mut store, "fresh"),
+            "Task #3 created successfully: fresh",
+            "the next plan continues the numbering"
+        );
+        assert_eq!(store.tasks().len(), 1, "the new plan stands alone");
+    }
+
+    #[test]
+    fn counts_tally_the_summary_rows_numbers() {
+        let mut store = store_of_three();
+        assert_eq!(
+            store.counts(),
+            TaskCounts {
+                total: 3,
+                completed: 0,
+                in_progress: 0,
+                open: 3
+            }
+        );
+        store
+            .run_update(r#"{"taskId":"1","status":"completed"}"#)
+            .unwrap();
+        store
+            .run_update(r#"{"taskId":"2","status":"in_progress"}"#)
+            .unwrap();
+        assert_eq!(
+            store.counts(),
+            TaskCounts {
+                total: 3,
+                completed: 1,
+                in_progress: 1,
+                // Open counts everything not completed — the in-progress one
+                // included, like Claude Code's standalone header.
+                open: 2
+            }
+        );
+    }
+
+    /// Three plain pending tasks.
+    fn store_of_three() -> TaskStore {
+        let mut store = TaskStore::new();
+        for subject in ["a", "b", "c"] {
+            create(&mut store, subject);
+        }
+        store
+    }
+
+    #[test]
+    fn all_completed_means_a_non_empty_fully_ticked_plan() {
+        let mut store = TaskStore::new();
+        assert!(!store.all_completed(), "no plan is not a finished plan");
+        create(&mut store, "a");
+        create(&mut store, "b");
+        assert!(!store.all_completed());
+        store
+            .run_update(r#"{"taskId":"1","status":"completed"}"#)
+            .unwrap();
+        assert!(!store.all_completed(), "one open task keeps the plan open");
+        store
+            .run_update(r#"{"taskId":"2","status":"completed"}"#)
+            .unwrap();
+        assert!(store.all_completed());
+        // Deleting the last open task can finish a plan too.
+        create(&mut store, "c");
+        assert!(!store.all_completed());
+        store
+            .run_update(r#"{"taskId":"3","status":"deleted"}"#)
+            .unwrap();
+        assert!(store.all_completed());
     }
 
     #[test]
