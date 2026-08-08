@@ -5920,12 +5920,25 @@ for _ in $(seq 1 200); do # up to ~20s
 	fi
 	sleep 0.1
 done
-# Let the turn settle, then capture the committed conversation with scrollback.
+# Let the turn actually SETTLE before reading the resting screen. The
+# hand-off text alone is not that signal — it streams while the turn is
+# still running, so polling for it lands on a mid-turn frame whose strip
+# still shows the in-turn checklist. Wait for the status line to be gone
+# from the VISIBLE screen (the turn is over) with the hand-off already in
+# scrollback.
 tasks_done=""
-for _ in $(seq 1 200); do
+tasks_rest=""
+for _ in $(seq 1 300); do # up to ~30s
 	pane="$(tmux capture-pane -t "${S}_tasks" -p -S -120)"
-	if printf '%s' "$pane" | grep -qF "$SETTLED_REPLY"; then
+	screen="$(tmux capture-pane -t "${S}_tasks" -p)"
+	if printf '%s' "$pane" | grep -qF "$SETTLED_REPLY" &&
+		! printf '%s' "$screen" | grep -qF "esc to interrupt"; then
+		# The committed conversation (with scrollback) for the
+		# no-cells assertions; the visible screen alone for the resting
+		# block — scrollback still holds the mid-turn frames' rows,
+		# which are exactly what the resting assertions must not see.
 		tasks_done="$pane"
+		tasks_rest="$screen"
 		break
 	fi
 	sleep 0.1
@@ -5938,6 +5951,8 @@ tmux send-keys -t "${S}_tasks" C-o
 sleep 0.3
 echo "==== Phase 69: captured pane (mid-turn checklist) ===="
 printf '%s\n' "$tasks_checklist" | grep -v "^$" | tail -12
+echo "==== Phase 69: captured pane (at rest — the standalone block) ===="
+printf '%s\n' "$tasks_rest" | grep -v "^$" | tail -8
 tmux kill-session -t "${S}_tasks" 2>/dev/null
 echo "==== Phase 69: the task tools' live checklist ===="
 if [ -z "$tasks_checklist" ]; then
@@ -5967,18 +5982,29 @@ else
 		echo "FAIL: Phase 69 — the narration bullets did not commit around the hidden calls" >&2
 		status=1
 	fi
-	# The demo ends with work left (#2 in progress, #3 pending), so the
-	# STANDALONE block takes over at rest: the dim count line over the
-	# remaining rows, above the composer (docs/task-tools.md).
-	if ! printf '%s' "$tasks_done" | grep -qE "3 tasks \(1 done, 1 in progress, 2 open\)"; then
+fi
+# The demo ends with work left (#1 done, #2 in progress, #3 pending), so the
+# STANDALONE block takes over at rest: the dim count line over the remaining
+# rows, above the composer, gutter-less — there is no spinner left to hang
+# from (docs/task-tools.md). Asserted against the VISIBLE screen: scrollback
+# still holds the mid-turn frames, whose rows do wear the gutter.
+if [ -z "$tasks_rest" ]; then
+	echo "FAIL: Phase 69 — the turn never settled, so the resting screen was never read" >&2
+	status=1
+else
+	if ! printf '%s' "$tasks_rest" | grep -qF "3 tasks (1 done, 1 in progress, 2 open)"; then
 		echo "FAIL: Phase 69 — the resting screen is missing the standalone task count line" >&2
 		status=1
 	fi
-	if ! printf '%s' "$tasks_done" | grep -qF "◼ Write the core logic"; then
+	if ! printf '%s' "$tasks_rest" | grep -qF "◼ Write the core logic"; then
 		echo "FAIL: Phase 69 — the resting block is missing the remaining task rows" >&2
 		status=1
 	fi
-	if printf '%s' "$tasks_done" | grep -qF "⎿  ✔ Set up the project structure"; then
+	if ! printf '%s' "$tasks_rest" | grep -qF "◻ Add tests › blocked by #2"; then
+		echo "FAIL: Phase 69 — the resting block dropped the blocked-by suffix" >&2
+		status=1
+	fi
+	if printf '%s' "$tasks_rest" | grep -qF "⎿  ✔ Set up the project structure"; then
 		echo "FAIL: Phase 69 — the resting block still wears the in-turn ⎿ gutter" >&2
 		status=1
 	fi
