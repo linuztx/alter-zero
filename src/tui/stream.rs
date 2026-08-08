@@ -274,15 +274,31 @@ impl Session<'_> {
             }
             StreamEvent::ThinkingStart => {
                 // Phase boundary: start the thinking clock so the status line
-                // shows `Thinking for Ns`. No scrollback commit (thinking is
-                // live-only) — but with the display on, open the reasoning
-                // buffer too, so the strip previews the chain-of-thought as it
-                // streams (docs/thinking-stream.md).
+                // shows `Thinking for Ns`. The thought itself never commits
+                // (it is live-only) — but with the display on, open the
+                // reasoning buffer so the strip previews the chain-of-thought
+                // as it streams (docs/thinking-stream.md).
                 self.clocks.thinking_start = Some(std::time::Instant::now());
                 // The `/settings` **Hide thinking** knob, read per phase — so
                 // flipping it mid-session takes effect on the very next one
                 // (docs/settings.md).
                 if self.app.settings().show_thinking() {
+                    // Flush before you interleave (the module's first rule):
+                    // the live block is a cell like a tool's, so the run of
+                    // assistant text before it is finalised **here**, as the
+                    // block goes up. That spacer is the blank row the
+                    // `● Thinking…` header sits under — without it the header
+                    // butted against the paragraph that was still streaming
+                    // (the reported bug) and then jolted down a row when the
+                    // phase collapsed and `settle_reasoning` flushed instead.
+                    // Gated on the display: a hidden phase shows nothing, so
+                    // it must not split the reply. A shown phase that ends up
+                    // with no text still leaves the split — but the header was
+                    // on screen, so the break is honest, and the real backend
+                    // only ever opens a phase holding a reasoning delta
+                    // (`llm::backend`).
+                    self.flush_segment(committing, width);
+                    self.render.reset();
                     self.app.begin_reasoning();
                 }
                 false
@@ -479,8 +495,12 @@ impl Session<'_> {
         let width = self.term.screen().width;
         let committing = self.commits_allowed();
         // The text before the phase becomes its own history message, so the
-        // thought slots after it in scrollback and history alike. A no-op for
-        // the common case (a model that reasons before it answers).
+        // thought slots after it in scrollback and history alike. Normally
+        // already done — the `ThinkingStart` arm flushes as the live block
+        // goes up, so the header and the settled cell share one spacer — and
+        // a no-op anyway for the common case (a model that reasons before it
+        // answers). It stays because this is also the settle point for an
+        // Esc/error mid-phase, and for a phase whose block never showed.
         self.flush_segment(committing, width);
         self.render.reset();
         let Some(reasoning) = self.app.finish_reasoning(secs) else {

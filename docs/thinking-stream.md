@@ -139,13 +139,29 @@ the same string a capped tool peek ends with.
 **Ordering is invariant 4's business, not free.** The item is appended the
 moment thinking ends — which is usually before the round's reply text exists,
 but a model can reason *after* it has begun answering (the dummy's default turn
-is exactly that shape). So `settle_reasoning` **flushes the run of assistant
-text before the phase** first (`App::flush_streaming_segment`, the `ToolStart`
-dance): without it the cell splices itself into the paragraph that was
-streaming, and `history` — where the thought was just appended — disagrees with
-scrollback, so a resize repaint reorders them. An *empty* phase skips the flush
-entirely: it records no cell, and splitting the paragraph for nothing would
-show a stray second `●` bullet.
+is exactly that shape). So the run of assistant text before the phase is
+**flushed** (`App::flush_streaming_segment`, the `ToolStart` dance): without it
+the cell splices itself into the paragraph that was streaming, and `history` —
+where the thought was just appended — disagrees with scrollback, so a resize
+repaint reorders them.
+
+**The flush happens at `ThinkingStart`, as the live block goes up** (updated
+2026-08-08) — not at the phase's end. The block is a cell like a tool's, and a
+cell needs the spacer above it *while it is live*, not once it settles: the
+`● Thinking…` header used to butt straight against the paragraph that was
+still streaming (the reported bug) and then jolt down a row when the phase
+collapsed and the flush finally ran. Flushing at the start also releases the
+paragraph's **last line** — `StreamRender::commit` withholds a still-growing
+line, `finish` doesn't — so the text the model just wrote is whole on screen
+while it thinks about what to do next. The gate is the display: a hidden
+phase (`show_thinking()` false) shows no block, so it must not split the
+reply, and nothing about that path changes. A *shown* phase that ends up with
+no text still leaves the split — but its header was on screen, so the break
+is honest, and the real backend only ever opens a phase holding a reasoning
+delta (`llm::backend` sends `ThinkingStart` from inside
+`if !delta.reasoning.is_empty()`). `settle_reasoning` keeps its own flush:
+it is a no-op after the start's, and it is still the one that runs for an
+Esc/error mid-phase.
 
 `ui::reasoning_full_lines` is the Ctrl+O expansion — the same dim line
 **without** the `(ctrl+o to expand)` hint (this *is* the expansion) over the

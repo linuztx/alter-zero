@@ -5543,6 +5543,14 @@ if ! printf '%s' "$think_live" | grep -qF "Let me read the file first."; then
 	echo "FAIL: Phase 66 — the chain-of-thought did not stream into the live block" >&2
 	status=1
 fi
+# Invariant 4, LIVE: the block goes up over a finalised segment, so the header
+# sits under a blank row instead of butting against the paragraph that was
+# streaming (the reported bug — the flush used to wait for the phase's end, so
+# the spacer only appeared when the cell collapsed, jolting it down a row).
+if ! printf '%s' "$think_live" | grep -B 1 -F "● Thinking…" | head -1 | grep -qE "^[[:space:]]*$"; then
+	echo "FAIL: Phase 66 — the live '● Thinking…' header is not preceded by a blank row: the segment before it was not finalised (invariant 4)" >&2
+	status=1
+fi
 # …then the collapsed cell, once the phase ends.
 think_done=""
 for _ in $(seq 1 200); do # up to ~20s

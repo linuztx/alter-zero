@@ -140,7 +140,12 @@ the expansion has none to make room for; `HistoryItem::Reasoning` records it, th
 across a `/resume`, `context::context_messages` **skips** it (a Chat
 Completions request has nowhere to put a previous round's chain-of-thought,
 so Ctrl+D shows no trace either), the settle points are `ThinkingEnd`/Esc/a
-backend error via the one `tui::stream::Session::settle_reasoning`, and the
+backend error via the one `tui::stream::Session::settle_reasoning`, the
+**block goes up over a finalised segment** — `ThinkingStart` flushes the run
+of assistant text before it (invariant 4's "flush before you interleave",
+gated on the display), so the header sits under the same blank spacer the
+settled cell will instead of butting against the paragraph that was
+streaming, and the paragraph's withheld last line lands with it — and the
 cell's tokenizer estimate is **snapped** to the provider's own
 `completion_tokens_details.reasoning_tokens` — `TokenUsage::reasoning` — when
 the round's usage frame lands, split by weight across a round's several
