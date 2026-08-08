@@ -192,6 +192,12 @@ fn render_strip(
     queued: u16,
     toast: u16,
 ) {
+    // The task checklist directly under the status line (inside the status
+    // slot, above its trailing gap — docs/task-tools.md). Built from the same
+    // (app, width) as `task_rows`, so the reserved rows and the painted ones
+    // agree by construction.
+    let tasks = super::tasks::task_lines(app, strip.width);
+    let tasks_n = u16::try_from(tasks.len()).unwrap_or(u16::MAX);
     // Rows the preview slot (content + its trailing gap) / status each occupy at
     // the strip's top (0 when absent).
     let preview_slot = if preview_n > 0 {
@@ -200,7 +206,7 @@ fn render_strip(
         0
     };
     let status_rows = if has_status {
-        STATUS_ROWS + STATUS_GAP_ROWS
+        STATUS_ROWS + tasks_n + STATUS_GAP_ROWS
     } else {
         0
     };
@@ -227,7 +233,10 @@ fn render_strip(
         let line = if let Some(run) = app.viewed_agent() {
             Some(status_line(&agent_view_status(run)))
         } else {
-            app.status().map(status_line)
+            // While some task is in progress the spinner wears its
+            // activeForm instead of the turn's verb (docs/task-tools.md).
+            app.status()
+                .map(|status| status_line_with_verb(status, app.task_verb()))
         };
         if let Some(line) = line {
             let status_y = strip.y + preview_slot;
@@ -239,6 +248,21 @@ fn render_strip(
                     height: STATUS_ROWS,
                 };
                 Paragraph::new(line).render(status_area, buf);
+            }
+        }
+        // The checklist's `⎿` rows hang directly off the status line —
+        // Claude Code's live task list (docs/task-tools.md).
+        if tasks_n > 0 {
+            let t_y = strip.y + preview_slot + STATUS_ROWS;
+            let strip_bottom = strip.y + strip.height;
+            if t_y < strip_bottom {
+                let t_area = Rect {
+                    x: strip.x,
+                    y: t_y,
+                    width: strip.width,
+                    height: tasks_n.min(strip_bottom - t_y),
+                };
+                Paragraph::new(tasks).render(t_area, buf);
             }
         }
     }
@@ -392,8 +416,9 @@ pub fn render_live_with_preview(
         "preview_rows() must equal the drawn preview_lines()"
     );
     let has_status = strip_has_status(app);
+    let tasks_n = super::tasks::task_rows(app, area.width);
     let [strip, _, band_area, footer_area, agent_area] = live_layout(
-        area, has_status, preview_n, queued, toast, band, footer, agent_rows,
+        area, has_status, preview_n, tasks_n, queued, toast, band, footer, agent_rows,
     );
     render_strip(
         strip, buf, app, preview, preview_n, has_status, queued, toast,
@@ -403,7 +428,7 @@ pub fn render_live_with_preview(
     // agent session view carries the agent's description as a right-aligned
     // label on the top rule (docs/agent-tool.md).
     let bx = input_box(
-        area, &app.input, has_status, preview_n, queued, toast, band, footer, agent_rows,
+        area, &app.input, has_status, preview_n, tasks_n, queued, toast, band, footer, agent_rows,
     );
     let mut block = Block::new()
         .borders(Borders::TOP | Borders::BOTTOM)

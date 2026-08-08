@@ -43,6 +43,7 @@ mod reasoning;
 mod resume;
 mod settings;
 mod status;
+mod tasks;
 mod tools;
 mod turn;
 mod types;
@@ -72,6 +73,7 @@ pub use self::reasoning::Reasoning;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
 pub use self::settings::{SettingRow, SettingsPicker};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
+pub use self::tasks::TaskCallRecord;
 pub use self::tools::{ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, ToolCall, ToolStatus};
 pub use self::turn::{
     DONE_VERBS, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, StreamError, WORKING_VERBS,
@@ -212,6 +214,12 @@ pub struct App {
     /// Every finished message and tool call, oldest first — used to repaint after
     /// a resize or on returning from the tool-output view.
     pub history: Vec<HistoryItem>,
+    /// The live task list — the model's `taskcreate`/`taskupdate` state,
+    /// rendered as the checklist under the status line while a turn runs and
+    /// re-derived from history on every rewind
+    /// ([`reset_tasks_from_history`](Self::reset_tasks_from_history)). See
+    /// `docs/task-tools.md`.
+    tasks: crate::tasks::TaskStore,
     /// Bumped by every **non-append** [`history`](Self::history) mutation — a
     /// `/clear`, a `/resume` load, a backtrack truncation, an interrupt-undo
     /// pop. Committed items are immutable and otherwise only ever appended, so
@@ -727,6 +735,9 @@ impl App {
     fn clear_conversation(&mut self) {
         self.history.clear();
         self.history_generation += 1;
+        // A cleared slate holds no tasks — the boundary resets the shared
+        // registry beside this (docs/task-tools.md).
+        self.tasks = crate::tasks::TaskStore::default();
         self.streaming = None;
         self.compact_buffer = None;
         // An open thinking phase goes with the rest of the in-flight turn —

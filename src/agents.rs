@@ -319,6 +319,37 @@ impl AgentRun {
                     self.history.push(HistoryItem::Tool(front));
                 }
             }
+            // Subagents are never offered the task tools (the lead agent
+            // plans, subagents execute — docs/task-tools.md), so this is
+            // unreachable today: recorded as an ordinary resolved tool cell
+            // on the agent's own transcript so the mapping stays total and
+            // honest if that ever changes. The snapshot is ignored — the
+            // checklist is the main session's.
+            StreamEvent::TaskCall {
+                name,
+                args,
+                output,
+                ok,
+                ..
+            } => {
+                self.tokens += crate::app::count_tokens(output) as u64;
+                self.tool_uses += 1;
+                self.history.push(HistoryItem::Tool(ToolCall {
+                    name: name.clone(),
+                    args: args.clone(),
+                    status: if *ok {
+                        ToolStatus::Ok
+                    } else {
+                        ToolStatus::Failed
+                    },
+                    output: output.clone(),
+                    timestamp: String::new(),
+                    shell: false,
+                    truncated: false,
+                    context_output: None,
+                    approval_note: None,
+                }));
+            }
             // A permission request is the *user's* business, not the roster's:
             // the boundary lifts it out of the agent channel and raises the
             // shared inline prompt (docs/permissions.md). Nothing about this

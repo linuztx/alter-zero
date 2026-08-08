@@ -149,10 +149,22 @@ pub fn format_token_count(tokens: usize) -> String {
 /// boundary-stamped) [`TurnStatus`], so it is unit-tested with explicit values.
 #[must_use]
 pub fn status_line(status: &TurnStatus) -> Line<'static> {
+    status_line_with_verb(status, None)
+}
+
+/// [`status_line`] with the verb **overridden** — the task checklist's
+/// spinner rule (`docs/task-tools.md`): while some task is in progress the
+/// line wears its `activeForm` (`Setting up project structure…`) instead of
+/// the turn's whimsical verb, Claude Code's
+/// `currentTodo.activeForm ?? randomVerb`. `None` keeps the turn's own verb;
+/// the caller derives the override per frame ([`crate::app::App::task_verb`])
+/// so completing the task snaps it back mid-turn.
+#[must_use]
+pub fn status_line_with_verb(status: &TurnStatus, verb: Option<&str>) -> Line<'static> {
     let dim = Style::new().fg(STATUS_DETAIL_COLOR);
     let mut spans = spinner_spans(status.elapsed);
     spans.extend(shimmer_spans(
-        &format!("{}{STATUS_ELLIPSIS}", status.verb),
+        &format!("{}{STATUS_ELLIPSIS}", verb.unwrap_or(status.verb)),
         status.elapsed,
     ));
     // The parenthesised metrics are dim, except the retry clause, which carries

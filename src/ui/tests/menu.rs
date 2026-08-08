@@ -171,7 +171,7 @@ fn command_menu_shows_a_placeholder_when_nothing_matches() {
 fn render_live_draws_the_command_menu_below_the_box() {
     let app = palette("/", 0);
     let menu = menu_rows(&app);
-    let h = live_height(&app.input, 40, 24, false, 0, 0, 0, menu, 0, 0);
+    let h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, menu, 0, 0);
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
     let all: String = (0..h)
@@ -198,7 +198,19 @@ fn cursor_stays_in_the_box_when_the_palette_opens() {
         0,
         0,
         40,
-        live_height(&TextArea::from_text("/"), 40, 24, false, 0, 0, 0, 0, 0, 0),
+        live_height(
+            &TextArea::from_text("/"),
+            40,
+            24,
+            false,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ),
     );
     let closed = cursor_position(closed_area, &app);
     app.command_menu = Some(crate::app::CommandMenu { selected: 0 });
@@ -212,6 +224,7 @@ fn cursor_stays_in_the_box_when_the_palette_opens() {
             40,
             24,
             false,
+            0,
             0,
             0,
             0,
@@ -381,12 +394,13 @@ fn shortcuts_lines_style_keys_cyan_and_labels_dim() {
 fn live_height_adds_the_shortcuts_band() {
     let mut app = App::new();
     app.shortcuts_open = true;
-    let closed = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 0);
+    let closed = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 0, 0);
     let open = live_height(
         &app.input,
         40,
         24,
         false,
+        0,
         0,
         0,
         0,
@@ -406,6 +420,7 @@ fn render_live_draws_the_shortcuts_band_below_the_box() {
         60,
         24,
         false,
+        0,
         0,
         0,
         0,
@@ -433,7 +448,7 @@ fn cursor_stays_in_the_box_when_the_shortcuts_band_opens() {
         0,
         0,
         40,
-        live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 0),
+        live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 0, 0),
     );
     let closed = cursor_position(closed_area, &app);
     app.shortcuts_open = true;
@@ -446,6 +461,7 @@ fn cursor_stays_in_the_box_when_the_shortcuts_band_opens() {
             40,
             24,
             false,
+            0,
             0,
             0,
             0,
@@ -473,6 +489,7 @@ fn the_queue_and_the_shortcuts_band_show_in_their_own_slots() {
         24,
         true,
         1,
+        0,
         q,
         0,
         shortcuts_rows(&app),
@@ -508,6 +525,7 @@ fn the_palette_replaces_the_footer() {
         60,
         24,
         false,
+        0,
         0,
         0,
         0,
@@ -711,7 +729,7 @@ fn file_menu_bolds_matched_characters_in_both_columns() {
 fn render_live_draws_the_file_picker_below_the_box() {
     let app = file_picker("ma", vec![fmatch("src/main.rs")], 0);
     let band = file_menu_rows(&app);
-    let h = live_height(&app.input, 40, 24, false, 0, 0, 0, band, 0, 0);
+    let h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, band, 0, 0);
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
     let all: String = (0..h)

@@ -1214,7 +1214,7 @@ fn render_live_grows_the_preview_to_fit_a_long_running_command() {
         pv > 2,
         "a wrapped header + ⎿ Running… is more than two rows: {pv}"
     );
-    let h = live_height(&app.input, width, 24, true, pv, 0, 0, 0, 0, 0);
+    let h = live_height(&app.input, width, 24, true, pv, 0, 0, 0, 0, 0, 0);
     let mut buf = buffer(width, h);
     render_live(buf.area, &mut buf, &app);
     let rows: Vec<String> = (0..h).map(|y| row(&buf, y, width)).collect();

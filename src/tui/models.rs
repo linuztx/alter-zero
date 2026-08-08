@@ -113,6 +113,9 @@ pub(crate) struct ModelSession {
     agents: AgentRegistry,
     permissions: Option<PermissionGate>,
     ask: alter_zero::ask::AskGate,
+    /// The shared task list (docs/task-tools.md) — enables the four task
+    /// tools on every rebuild.
+    tasks: alter_zero::tasks::TaskRegistry,
     /// The `/model` picker's in-flight fetch, so closing the picker cancels it.
     fetch_cancel: Option<CancelToken>,
     /// Whether the startup capability probe is still outstanding — the gate on
@@ -133,6 +136,7 @@ impl ModelSession {
     /// selection and the provider table, and build the backend it names. The
     /// precedence is dotenv's: a real env var beats `config.json`, which beats
     /// the provider file's default.
+    #[allow(clippy::too_many_arguments)] // the loop's full shared-attachment set
     pub(crate) fn resolve(
         cwd: &Path,
         home: Option<&Path>,
@@ -140,6 +144,7 @@ impl ModelSession {
         agents: &AgentRegistry,
         permissions: Option<&PermissionGate>,
         ask: &alter_zero::ask::AskGate,
+        tasks: &alter_zero::tasks::TaskRegistry,
         settings: &SessionSettings,
     ) -> Self {
         let providers = config::load_providers();
@@ -233,6 +238,7 @@ impl ModelSession {
                 agents,
                 permissions,
                 ask,
+                tasks,
             )),
             (None, None) => {
                 let dummy =
@@ -284,6 +290,7 @@ impl ModelSession {
             agents: agents.clone(),
             permissions: permissions.cloned(),
             ask: ask.clone(),
+            tasks: tasks.clone(),
             fetch_cancel: None,
             probe_pending: probe.is_some(),
             thinking_seed: real_backend.then_some(startup_thinking).flatten(),
@@ -404,6 +411,7 @@ impl ModelSession {
             &self.agents,
             self.permissions.as_ref(),
             &self.ask,
+            &self.tasks,
         ));
     }
 
@@ -705,6 +713,7 @@ fn session_backend(
     agents: &AgentRegistry,
     permissions: Option<&PermissionGate>,
     ask: &alter_zero::ask::AskGate,
+    tasks: &alter_zero::tasks::TaskRegistry,
 ) -> LlmBackend {
     // `configure` rather than `with_system_prompt`: the tool toggle is the
     // `/settings` **Tools** knob now (seeded from `ALTER_ZERO_TOOLS`), so it
@@ -717,7 +726,11 @@ fn session_backend(
         .with_agents(agents.clone())
         // The ask gate (docs/ask.md): enables the `askuserquestion` tool —
         // always attached; asking is not a permission.
-        .with_ask(ask.clone());
+        .with_ask(ask.clone())
+        // The shared task list (docs/task-tools.md): enables the four task
+        // tools — always attached, like the ask gate; the checklist is the
+        // session's, so every rebuild re-binds the same registry.
+        .with_tasks(tasks.clone());
     // The tool-permission gate (docs/permissions.md) — absent when
     // `ALTER_ZERO_PERMISSIONS` is falsy, and every tool then runs unasked.
     if let Some(gate) = permissions {

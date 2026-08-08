@@ -131,6 +131,10 @@ impl App {
         }
         self.history.truncate(position);
         self.history_generation += 1;
+        // The checklist rewinds with the conversation: the last task record
+        // before the cut holds the state it had there (docs/task-tools.md);
+        // the boundary syncs the shared registry after the rewind.
+        self.reset_tasks_from_history();
         // The rewound history's tail can be an older batch-sibling user
         // message — fence it off from the interrupt-undo like a resumed tail.
         self.undo_floor = self.history.len();

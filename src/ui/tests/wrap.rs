@@ -623,7 +623,7 @@ fn cursor_sits_on_the_last_wrapped_input_row() {
         0,
         0,
         20,
-        live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 0, 0),
+        live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 0, 0, 0),
     );
     assert_eq!(cursor_position(area, &app), (4, 2));
 }

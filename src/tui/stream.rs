@@ -216,6 +216,27 @@ impl Session<'_> {
                 self.clocks.command_start = None;
                 false
             }
+            StreamEvent::TaskCall {
+                name,
+                args,
+                output,
+                ok,
+                tasks,
+            } => {
+                // A task tool call resolved (docs/task-tools.md): finalise
+                // the text before it — each round's narration becomes its own
+                // `●` bullet, the ToolBatch dance — and settle held
+                // completions at the safe boundary. Then record: the hidden
+                // history record appends, the checklist snapshot installs,
+                // and the strip re-renders on the scheduled frame. **No
+                // scrollback commit** — the call has no cell; the checklist
+                // under the status line is its whole display.
+                self.flush_segment(committing, width);
+                self.render.reset();
+                self.settle_bg_completions();
+                self.app.record_task_call(&name, &args, &output, ok, tasks);
+                false
+            }
             StreamEvent::ToolOutput(chunk) => {
                 // Live tool output: append it to the running call so the live cell
                 // tails it (docs/tool-streaming.md). No scrollback commit — the

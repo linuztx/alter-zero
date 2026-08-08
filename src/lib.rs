@@ -53,6 +53,10 @@
 //!   `ReplySource` trait the event loop depends on, and the built-in offline
 //!   `DummyAi` whose scripted turns drive the smoke suite (see
 //!   `docs/dummy-backend.md`).
+//! - [`tasks`]       — the task tools' pure model: the `taskcreate` /
+//!   `taskget` / `tasklist` / `taskupdate` store, every result string, and
+//!   the shared registry the executor and the loop hold together (see
+//!   `docs/task-tools.md`).
 //! - [`subprocess`]  — the shared detached `sh -c` spawn (setsid binary →
 //!   helper re-exec → attached): every shell runner's child is severed from
 //!   the controlling terminal so a `/dev/tty` password prompt (`sudo`) fails
@@ -87,6 +91,7 @@ pub mod session;
 pub mod settings;
 pub mod stream;
 pub mod subprocess;
+pub mod tasks;
 pub mod term;
 pub mod textarea;
 pub mod tokenizer;

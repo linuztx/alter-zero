@@ -6,6 +6,7 @@
 
 use crate::ask::AskRequest;
 use crate::permission::PermissionRequest;
+use crate::tasks::TaskStore;
 
 /// One call in a [`StreamEvent::ToolBatch`] announcement: the `name` + short
 /// `args` summary the `● name(args)` header shows — the *same* two strings the
@@ -182,6 +183,25 @@ pub enum StreamEvent {
     /// Only the real `bash` executor emits this today; a backend that never
     /// streams simply omits it.
     ToolOutput(String),
+    /// One **task tool** call resolved (`taskcreate`/`taskget`/`tasklist`/
+    /// `taskupdate` — `docs/task-tools.md`), carried whole in a single event
+    /// **instead of** the `ToolBatch`/`ToolStart`/`ToolEnd` trio: a task call
+    /// is instant, needs no permission, and streams no output, and — Claude
+    /// Code's rule — it renders **no tool cell** anywhere inline. `name`/`args`
+    /// are the display header (`TaskCreate` + its one-line summary) the Ctrl+O
+    /// transcript shows, `output` the model-facing result text (`Task #1
+    /// created successfully: …`), `ok` the outcome, and `tasks` the
+    /// **post-call snapshot** the live checklist under the status line renders
+    /// ([`crate::app::App::record_task_call`]). Emitted by
+    /// `llm::agent::run_agent` in the model's call order; the dummy scripts it
+    /// for the offline demo.
+    TaskCall {
+        name: String,
+        args: String,
+        output: String,
+        ok: bool,
+        tasks: TaskStore,
+    },
     /// The model launched a **group of subagents** this round (its `agent`
     /// tool calls), announced up front like a [`StreamEvent::ToolBatch`]: the
     /// loop seeds the roster (one [`crate::agents::AgentRun`] per spec) and

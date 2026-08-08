@@ -35,6 +35,7 @@ fn live_layout_splits_the_area_into_the_strip_box_band_and_footer() {
                             preview_rows,
                             0,
                             0,
+                            0,
                             band_rows,
                             footer_rows,
                             0,
@@ -44,7 +45,7 @@ fn live_layout_splits_the_area_into_the_strip_box_band_and_footer() {
                             h,
                             "sub-areas tile the area"
                         );
-                        assert_eq!(strip.height, strip_rows(streaming, preview_rows));
+                        assert_eq!(strip.height, strip_rows(streaming, preview_rows, 0));
                         assert_eq!(band.height, band_rows);
                         assert_eq!(footer.height, footer_rows);
                     }
@@ -439,7 +440,7 @@ fn the_footer_stays_while_a_turn_streams() {
     let mut app = with_session();
     app.begin_stream();
     app.push_chunk("hello");
-    let h = live_height(&app.input, 60, 24, true, 1, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 60, 24, true, 1, 0, 0, 0, 0, 1, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     assert!(
@@ -488,10 +489,10 @@ fn the_cursor_stays_put_when_the_footer_shows() {
     // must not move the cursor.
     let mut app = App::new();
     app.input = TextArea::from_text("hi");
-    let bare_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 0);
+    let bare_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 0, 0);
     let bare = cursor_position(Rect::new(0, 0, 40, bare_h), &app);
     app.set_session_info("dummy_model_name", "~/alter-zero");
-    let footer_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 1, 0);
+    let footer_h = live_height(&app.input, 40, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let with_footer = cursor_position(Rect::new(0, 0, 40, footer_h), &app);
     assert_eq!(with_footer, bare, "cursor unchanged by the footer row");
 }
@@ -510,7 +511,7 @@ fn search_rows_take_the_footer_slot_even_without_session_info() {
 fn the_search_line_displaces_the_session_footer() {
     let mut app = searching(&["git status"], "git");
     app.set_session_info("dummy_model_name", "~/alter-zero");
-    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     let last = row(&buf, h - 1, 60);
@@ -575,7 +576,7 @@ fn the_search_line_is_bare_while_idle() {
 #[test]
 fn the_cursor_sits_at_the_end_of_the_query_in_the_search_line() {
     let app = searching(&["git status"], "git");
-    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let area = Rect::new(0, 0, 60, h);
     let (x, y) = cursor_position(area, &app);
     assert_eq!(y, h - 1, "on the footer row, not in the textarea");
@@ -597,7 +598,7 @@ fn shell_mode_takes_the_footer_slot_even_without_session_info() {
 fn the_shell_mode_line_displaces_the_session_footer() {
     let mut app = shelling("ls -la");
     app.set_session_info("dummy_model_name", "~/alter-zero");
-    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     let last = row(&buf, h - 1, 60);
@@ -621,7 +622,7 @@ fn the_shell_mode_line_is_red() {
 fn shell_mode_swaps_the_composer_prompt_for_a_red_bang() {
     // The absorbed `!` renders back as the prompt: `! pwd`, not `❯ pwd`.
     let app = shelling("pwd");
-    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     assert_eq!(row(&buf, 1, 60).trim_end(), "! pwd");
@@ -637,7 +638,7 @@ fn the_cursor_stays_in_the_box_in_shell_mode() {
     // Unlike the Ctrl+R search (which owns the footer cursor), shell mode
     // keeps the cursor on the composer's command line.
     let app = shelling("ls");
-    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let area = Rect::new(0, 0, 60, h);
     let (_, y) = cursor_position(area, &app);
     assert!(y < h - 1, "cursor is in the box, not on the footer row");

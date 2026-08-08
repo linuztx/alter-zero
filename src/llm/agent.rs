@@ -190,10 +190,16 @@ pub fn run_agent(
                     .iter()
                     .partition(|call| call.name == super::tools::AGENT_TOOL_NAME);
                 // The over-budget ordinary calls: shown and resolved red below
-                // rather than dropped, so the cell says why nothing ran.
+                // rather than dropped, so the cell says why nothing ran. A
+                // refused *task* call is answered but — like a refused agent
+                // call — shows no cell: it never had one to begin with
+                // (docs/task-tools.md).
                 let refused_rest: Vec<&ToolCallRequest> = refused
                     .iter()
-                    .filter(|call| call.name != super::tools::AGENT_TOOL_NAME)
+                    .filter(|call| {
+                        call.name != super::tools::AGENT_TOOL_NAME
+                            && !crate::tasks::is_task_tool(&call.name)
+                    })
                     .collect();
                 let mut results: Vec<(String, String)> = Vec::with_capacity(calls.len());
                 if !agent_calls.is_empty() {
@@ -206,10 +212,18 @@ pub fn run_agent(
                 // equals the matching ToolStart's; execution below is still
                 // sequential. The refused tail rides the same announcement, so
                 // a clamped batch still shows whole. See `docs/parallel-tools.md`.
-                if !rest.is_empty() || !refused_rest.is_empty() {
+                // Task calls are left out: they render no cell anywhere — the
+                // live checklist is their display (docs/task-tools.md).
+                let announced: Vec<&ToolCallRequest> = rest
+                    .iter()
+                    .copied()
+                    .filter(|call| !crate::tasks::is_task_tool(&call.name))
+                    .chain(refused_rest.iter().copied())
+                    .collect();
+                if !announced.is_empty() {
                     let _ = tx.send(StreamEvent::ToolBatch(
-                        rest.iter()
-                            .chain(refused_rest.iter())
+                        announced
+                            .iter()
                             .map(|call| ToolCallSummary {
                                 name: display_name(&call.name),
                                 args: summarize_call(&call.name, &call.arguments),
@@ -232,6 +246,26 @@ pub fn run_agent(
                     if cancel.is_cancelled() {
                         cancelled_mid_tools = true;
                         break;
+                    }
+                    // A task tool call (docs/task-tools.md): permission-free,
+                    // instant, and cell-less — resolved through the single
+                    // TaskCall event instead of the announce/Start/End trio,
+                    // the post-call snapshot riding the outcome so the live
+                    // checklist updates exactly when the op ran, between the
+                    // round's visible calls, in the model's own order. The
+                    // result still feeds back like any tool's.
+                    if crate::tasks::is_task_tool(&call.name) {
+                        let mut sink = |_: &str| {};
+                        let outcome = execute(call, &mut sink);
+                        let _ = tx.send(StreamEvent::TaskCall {
+                            name: display_name(&call.name),
+                            args: summarize_call(&call.name, &call.arguments),
+                            output: outcome.output.clone(),
+                            ok: outcome.ok,
+                            tasks: outcome.tasks.clone().unwrap_or_default(),
+                        });
+                        results.push((call.id.clone(), outcome.context_text().to_string()));
+                        continue;
                     }
                     // The permission gate (docs/permissions.md), asked BEFORE
                     // the ToolStart so nothing has run — and nothing has been
@@ -541,6 +575,7 @@ mod tests {
                         truncated: false,
                         background: None,
                         image: None,
+                        tasks: None,
                         context: None,
                     };
                     outcome.with_context(r#"{"answers":{"Q":"A"}}"#)
@@ -1561,6 +1596,220 @@ mod tests {
         );
         drain(&mut rx);
         assert_eq!(*log.borrow(), vec!["approve", "execute"]);
+    }
+
+    #[test]
+    fn a_task_call_resolves_through_one_taskcall_event_and_no_cells() {
+        // The task tools render no tool cell anywhere (docs/task-tools.md):
+        // no batch announcement, no Start/End pair — one TaskCall event
+        // carrying the display header, the result text, and the post-call
+        // snapshot. The result still feeds back as the tool message.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call(
+            "c1",
+            "taskcreate",
+            r#"{"subject":"Set up project structure","description":"d"}"#,
+        )];
+        let mut messages = vec![ChatMessage::user("plan it")];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |c, _sink| {
+                let mut store = crate::tasks::TaskStore::new();
+                let text = store.run_tool(&c.name, &c.arguments).unwrap();
+                ToolOutcome::ok(text).with_tasks(store)
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call| panic!("task calls never consult the permission gate"),
+        );
+        let events = drain(&mut rx);
+        assert!(
+            !events.iter().any(|e| matches!(
+                e,
+                StreamEvent::ToolBatch(_)
+                    | StreamEvent::ToolStart { .. }
+                    | StreamEvent::ToolEnd { .. }
+            )),
+            "no cell events for a task call: {events:?}"
+        );
+        let task_call = events
+            .iter()
+            .find(|e| matches!(e, StreamEvent::TaskCall { .. }))
+            .expect("one TaskCall event");
+        let StreamEvent::TaskCall {
+            name,
+            args,
+            output,
+            ok,
+            tasks,
+        } = task_call
+        else {
+            unreachable!()
+        };
+        assert_eq!(name, "TaskCreate");
+        assert_eq!(args, "Set up project structure");
+        assert_eq!(
+            output,
+            "Task #1 created successfully: Set up project structure"
+        );
+        assert!(ok);
+        assert_eq!(tasks.tasks().len(), 1, "the post-call snapshot rides along");
+        // The model still reads the result like any tool's.
+        let result = messages
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("c1"))
+            .expect("the call was answered");
+        assert_eq!(
+            result.content,
+            crate::llm::MessageContent::Text(
+                "Task #1 created successfully: Set up project structure".to_string()
+            )
+        );
+        assert!(events.iter().any(|e| matches!(e, StreamEvent::StreamDone)));
+    }
+
+    #[test]
+    fn a_mixed_round_announces_only_the_visible_calls() {
+        // [taskupdate, bash] in one round: the batch announcement carries the
+        // bash call alone (a Waiting cell must never be created for an
+        // invisible call), and the TaskCall resolves before the bash starts —
+        // the model's own order.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![
+            call("c1", "taskupdate", r#"{"taskId":"1","status":"completed"}"#),
+            call("c2", "bash", r#"{"command":"ls"}"#),
+        ];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut vec![ChatMessage::user("go")],
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |c, _sink| {
+                if crate::tasks::is_task_tool(&c.name) {
+                    ToolOutcome::error("Task #1 not found")
+                        .with_tasks(crate::tasks::TaskStore::new())
+                } else {
+                    ToolOutcome::ok("Exit code: 0")
+                }
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call| Approval::Allow,
+        );
+        let events = drain(&mut rx);
+        let batch = events
+            .iter()
+            .find_map(|e| match e {
+                StreamEvent::ToolBatch(items) => Some(items.clone()),
+                _ => None,
+            })
+            .expect("the visible call is announced");
+        assert_eq!(batch.len(), 1, "only bash is announced: {batch:?}");
+        assert_eq!(batch[0].name, "Bash");
+        let task_pos = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::TaskCall { .. }))
+            .expect("the task call resolves");
+        let start_pos = events
+            .iter()
+            .position(|e| matches!(e, StreamEvent::ToolStart { .. }))
+            .expect("bash runs");
+        assert!(
+            task_pos < start_pos,
+            "the task op lands before bash, the model's order: {events:?}"
+        );
+        // A failed op is still a TaskCall (red text for the model), never a
+        // ToolEnd cell.
+        assert!(matches!(
+            &events[task_pos],
+            StreamEvent::TaskCall { ok: false, .. }
+        ));
+    }
+
+    #[test]
+    fn a_task_call_past_the_budget_is_answered_without_any_event() {
+        // Task calls spend the Max-tool-calls budget like every call; past it
+        // they are answered with the limit text but — having no cell — emit
+        // nothing (the refused-agent-call rule).
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let calls = vec![
+            call("c1", "taskcreate", r#"{"subject":"a","description":"d"}"#),
+            call("c2", "taskcreate", r#"{"subject":"b","description":"d"}"#),
+        ];
+        let mut messages = vec![ChatMessage::user("plan")];
+        run_agent(
+            &tx,
+            &cancel,
+            1,
+            &mut messages,
+            |_msgs| RoundOutcome::ToolCalls {
+                assistant: assistant_with(&calls),
+                calls: calls.clone(),
+            },
+            |c, _sink| {
+                let mut store = crate::tasks::TaskStore::new();
+                let text = store.run_tool(&c.name, &c.arguments).unwrap();
+                ToolOutcome::ok(text).with_tasks(store)
+            },
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call| Approval::Allow,
+        );
+        let events = drain(&mut rx);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::TaskCall { .. }))
+                .count(),
+            1,
+            "only the affordable call ran: {events:?}"
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolStart { .. })),
+            "the refused task call shows no cell: {events:?}"
+        );
+        let refused = messages
+            .iter()
+            .find(|m| m.tool_call_id.as_deref() == Some("c2"))
+            .expect("the refused call is still answered");
+        assert_eq!(
+            refused.content,
+            crate::llm::MessageContent::Text(TOOL_LIMIT_OUTPUT.to_string())
+        );
     }
 
     #[test]

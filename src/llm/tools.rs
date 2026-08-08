@@ -72,6 +72,13 @@ pub struct ToolOutcome {
     /// small human/model-readable text (byte-capped, cell-displayed,
     /// token-counted, session-recorded). See `docs/tools.md`.
     pub image: Option<String>,
+    /// `Some(snapshot)` when the call was a **task tool** op
+    /// (`docs/task-tools.md`): the post-call state of the shared task list,
+    /// which `run_agent` surfaces as `StreamEvent::TaskCall` — the single
+    /// event that replaces the `ToolStart`/`ToolEnd` pair for these calls —
+    /// so the live checklist under the status line tracks every change.
+    /// `None` for every other tool.
+    pub tasks: Option<crate::tasks::TaskStore>,
     /// `Some(text)` when the **model-facing result differs from the displayed
     /// cell text** — the `AskUserQuestion` tool's split (`docs/ask.md`):
     /// `output` is then the committed cell's text (`User answered Claude's
@@ -95,6 +102,7 @@ impl ToolOutcome {
             truncated: false,
             background: None,
             image: None,
+            tasks: None,
             context: None,
         }
     }
@@ -109,6 +117,7 @@ impl ToolOutcome {
             truncated: false,
             background: None,
             image: None,
+            tasks: None,
             context: None,
         }
     }
@@ -124,6 +133,7 @@ impl ToolOutcome {
             truncated: false,
             background: Some(id.into()),
             image: None,
+            tasks: None,
             context: None,
         }
     }
@@ -147,6 +157,14 @@ impl ToolOutcome {
     #[must_use]
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
         self.context = Some(context.into());
+        self
+    }
+
+    /// Attach a task tool op's post-call snapshot (the `tasks` field doc —
+    /// `docs/task-tools.md`).
+    #[must_use]
+    pub fn with_tasks(mut self, tasks: crate::tasks::TaskStore) -> Self {
+        self.tasks = Some(tasks);
         self
     }
 
@@ -296,6 +314,153 @@ pub fn ask_spec() -> Value {
                 }
             },
             "required": ["questions"],
+            "additionalProperties": false
+        }),
+    )
+}
+
+/// The four task-list tool definitions (`docs/task-tools.md`) — offered only
+/// when a [`crate::tasks::TaskRegistry`] is attached
+/// (`LlmBackend::with_tasks`): without one nobody holds the list. Subagents
+/// never get them (the lead agent plans; subagents execute). The
+/// descriptions and schemas follow Claude Code's tools of the same names,
+/// **minus** the `owner` and `metadata` parameters — multi-agent-swarm and
+/// arbitrary-blob concepts this single-agent TUI doesn't support.
+#[must_use]
+pub fn task_specs() -> Vec<Value> {
+    vec![
+        task_create_spec(),
+        task_get_spec(),
+        task_list_spec(),
+        task_update_spec(),
+    ]
+}
+
+fn task_create_spec() -> Value {
+    function_spec(
+        crate::tasks::TASK_CREATE_TOOL,
+        "Create a task in the structured task list for this coding session — \
+         the list the user watches update live as you work. Use it \
+         proactively for complex multi-step work (3+ distinct steps), when \
+         the user asks for a todo list or gives several tasks, and to capture \
+         follow-ups discovered mid-implementation. Skip it for a single \
+         trivial task — just do that directly. Every task is created \
+         pending; use taskupdate to mark it in_progress BEFORE starting the \
+         work and completed when done, and to wire dependencies \
+         (blocks/blockedBy). Keep subjects short and actionable, in \
+         imperative form (\"Fix authentication bug\").",
+        json!({
+            "type": "object",
+            "properties": {
+                "subject": {
+                    "type": "string",
+                    "description": "A brief title for the task, imperative \
+                        form (e.g. \"Run tests\")."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What needs to be done."
+                },
+                "activeForm": {
+                    "type": "string",
+                    "description": "Present continuous form shown in the \
+                        spinner while the task is in_progress (e.g. \
+                        \"Running tests\"). If omitted, the spinner shows \
+                        the subject instead."
+                }
+            },
+            "required": ["subject", "description"],
+            "additionalProperties": false
+        }),
+    )
+}
+
+fn task_get_spec() -> Value {
+    function_spec(
+        crate::tasks::TASK_GET_TOOL,
+        "Retrieve a task by ID from the task list: its subject, description, \
+         status, what it blocks, and what blocks it. Use it to read the full \
+         requirements before starting work on a task. Verify its blocked-by \
+         list is empty before beginning.",
+        json!({
+            "type": "object",
+            "properties": {
+                "taskId": {
+                    "type": "string",
+                    "description": "The ID of the task to retrieve."
+                }
+            },
+            "required": ["taskId"],
+            "additionalProperties": false
+        }),
+    )
+}
+
+fn task_list_spec() -> Value {
+    function_spec(
+        crate::tasks::TASK_LIST_TOOL,
+        "List all tasks in the task list: each task's ID, status, subject, \
+         and the open tasks blocking it. Use it to check overall progress, \
+         find the next available task (pending and unblocked), or spot \
+         blocked work. Prefer working on tasks in ID order. Use taskget for \
+         one task's full details.",
+        json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": false
+        }),
+    )
+}
+
+fn task_update_spec() -> Value {
+    function_spec(
+        crate::tasks::TASK_UPDATE_TOOL,
+        "Update a task in the task list. Mark a task in_progress before you \
+         start its work and completed IMMEDIATELY after finishing it — only \
+         when fully accomplished (tests failing or a partial implementation \
+         stay in_progress). Set status to \"deleted\" to remove a task that \
+         is no longer relevant. You can also rewrite the subject, \
+         description, or activeForm, and wire dependencies: addBlocks marks \
+         tasks that cannot start until this one completes, addBlockedBy \
+         marks tasks that must complete first.",
+        json!({
+            "type": "object",
+            "properties": {
+                "taskId": {
+                    "type": "string",
+                    "description": "The ID of the task to update."
+                },
+                "subject": {
+                    "type": "string",
+                    "description": "New subject for the task."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "New description for the task."
+                },
+                "activeForm": {
+                    "type": "string",
+                    "description": "Present continuous form shown in the \
+                        spinner while the task is in_progress."
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "completed", "deleted"],
+                    "description": "New status for the task; \"deleted\" \
+                        permanently removes it."
+                },
+                "addBlocks": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Task IDs that this task blocks."
+                },
+                "addBlockedBy": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Task IDs that block this task."
+                }
+            },
+            "required": ["taskId"],
             "additionalProperties": false
         }),
     )
@@ -602,6 +767,9 @@ pub fn parse_args<T: for<'de> Deserialize<'de>>(arguments: &str) -> Result<T, St
 /// (title-cased), falling back to the raw name for anything unrecognised.
 #[must_use]
 pub fn display_name(name: &str) -> String {
+    if let Some(display) = crate::tasks::task_display_name(name) {
+        return display.to_string();
+    }
     match name {
         "bash" => "Bash".to_string(),
         "read" => "Read".to_string(),
@@ -649,6 +817,22 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
         "bash" => field("command"),
         "read" | "write" | "edit" => field("path"),
         AGENT_TOOL_NAME => field("description"),
+        // The task tools' headers (Ctrl+O only — inline they render nothing,
+        // docs/task-tools.md): a create shows its subject, a get/update the
+        // `#id` (an update's status change appended — `#1 → completed`), a
+        // list nothing.
+        crate::tasks::TASK_CREATE_TOOL => field("subject"),
+        crate::tasks::TASK_LIST_TOOL => Some(String::new()),
+        crate::tasks::TASK_GET_TOOL => {
+            field("taskId").map(|id| format!("#{}", id.trim_start_matches('#')))
+        }
+        crate::tasks::TASK_UPDATE_TOOL => field("taskId").map(|id| {
+            let id = format!("#{}", id.trim_start_matches('#'));
+            match field("status") {
+                Some(status) => format!("{id} → {status}"),
+                None => id,
+            }
+        }),
         // The ask tool's header summarizes as its first question (+ how many
         // more ride along) — what the Ctrl+O transcript shows while the call
         // waits on the user (`docs/ask.md`).

@@ -30,6 +30,7 @@ mod settings_view;
 mod status;
 mod stream_render;
 mod table;
+mod tasks;
 mod tool;
 mod transcript;
 mod wrap;

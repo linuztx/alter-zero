@@ -398,6 +398,7 @@ fn run_bash(
         truncated,
         background: None,
         image: None,
+        tasks: None,
         context: None,
     }
 }

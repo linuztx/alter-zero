@@ -388,6 +388,100 @@ fn say(text: &str) -> Vec<StreamEvent> {
     chunks(text).into_iter().map(StreamEvent::Chunk).collect()
 }
 
+/// The task-tools demo's narration, one segment per round of task calls —
+/// each finalises as its own `●` bullet when the calls after it flush the
+/// buffer (invariant 4), Claude Code's rhythm. The last closes on the
+/// hand-off like every user-facing script.
+const TASKS_SEGMENTS: [&str; 4] = [
+    "Happy to demo the task tools. I'll plan a tiny feature as a structured \
+     task list — watch the checklist that appears under the status line as I \
+     create the tasks.",
+    "Three tasks created, all pending. Now the dependencies: the core logic \
+     waits on the setup, and the tests wait on the core logic — the blocked \
+     rows name their blockers.",
+    "Time to work through it: setup first (the spinner is wearing that \
+     task's label now), then complete it and pick up the core logic — \
+     watch the tick turn green and the next row unblock.",
+    concat!(
+        "That's the whole lifecycle — create, link, work, complete — and not \
+         one of those calls printed a tool cell: the checklist is the \
+         display. The full record of every call is in **ctrl+o**, and the \
+         list survives a `/resume`.\n\n",
+        handoff!()
+    ),
+];
+
+/// Run one task tool call against the demo's live [`crate::tasks::TaskStore`]
+/// and emit it exactly as the real agent loop would: the display name, the
+/// header summary, the **real executor's result text**, and the post-call
+/// snapshot (`docs/task-tools.md`, the dummy-backend rule — offline cells are
+/// byte-for-byte what the live path produces).
+fn task_call(store: &mut crate::tasks::TaskStore, wire: &str, args: &str) -> StreamEvent {
+    let (output, ok) = match store.run_tool(wire, args) {
+        Ok(text) => (text, true),
+        Err(text) => (text, false),
+    };
+    StreamEvent::TaskCall {
+        name: crate::tasks::task_display_name(wire)
+            .expect("the demo only scripts task tools")
+            .to_string(),
+        args: crate::llm::tools::summarize_call(wire, args),
+        output,
+        ok,
+        tasks: store.clone(),
+    }
+}
+
+/// The **task-tools** demo (`docs/task-tools.md`): create three tasks, wire
+/// the dependency chain, then work the first one to completion — the live
+/// checklist under the status line, the `› blocked by #n` suffixes, the
+/// spinner wearing the active task's label, and the green tick all show,
+/// which no other offline demo covers. The calls resolve through a real
+/// [`crate::tasks::TaskStore`], so every result string and snapshot is
+/// exactly what the live executor would produce.
+pub(in crate::stream) fn tasks_turn(cue: &Cue) -> Vec<StreamEvent> {
+    use crate::tasks::{TASK_CREATE_TOOL, TASK_UPDATE_TOOL, TaskStore};
+    let mut store = TaskStore::new();
+    let mut events = opening(cue);
+    let rounds: [&[(&str, &str)]; 3] = [
+        &[
+            (
+                TASK_CREATE_TOOL,
+                r#"{"subject":"Set up the project structure","description":"Create the crate layout and wire the CI config.","activeForm":"Setting up the project structure"}"#,
+            ),
+            (
+                TASK_CREATE_TOOL,
+                r#"{"subject":"Write the core logic","description":"Implement the feature and its error handling.","activeForm":"Writing the core logic"}"#,
+            ),
+            (
+                TASK_CREATE_TOOL,
+                r#"{"subject":"Add tests","description":"Unit tests over the new module.","activeForm":"Adding tests"}"#,
+            ),
+        ],
+        &[
+            (TASK_UPDATE_TOOL, r#"{"taskId":"2","addBlockedBy":["1"]}"#),
+            (TASK_UPDATE_TOOL, r#"{"taskId":"3","addBlockedBy":["2"]}"#),
+        ],
+        &[
+            (TASK_UPDATE_TOOL, r#"{"taskId":"1","status":"in_progress"}"#),
+            (TASK_UPDATE_TOOL, r#"{"taskId":"1","status":"completed"}"#),
+            (TASK_UPDATE_TOOL, r#"{"taskId":"2","status":"in_progress"}"#),
+        ],
+    ];
+    for (segment, calls) in TASKS_SEGMENTS.iter().zip(rounds.iter()) {
+        events.extend(say(segment));
+        for (wire, args) in *calls {
+            // The model "generating" the call ticks the tally, like every
+            // other scripted round (docs/status-indicator.md).
+            events.push(StreamEvent::ToolCallDelta(format!("{wire}(…)")));
+            events.push(task_call(&mut store, wire, args));
+        }
+    }
+    events.extend(say(TASKS_SEGMENTS[TASKS_SEGMENTS.len() - 1]));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
 /// `/compact`'s summarization request plays a **text-only** canned summary —
 /// no thinking phase, no tool batch (codex sends the summarize request with no
 /// tools) — so the offline dummy path (and `smoke.sh`) can drive the whole

@@ -256,6 +256,10 @@ fn pace(event: &StreamEvent) -> Option<Duration> {
         // Each streamed output line pauses like a word so the live
         // cell visibly tails (docs/tool-streaming.md).
         StreamEvent::ToolOutput(_) => Some(CHUNK_DELAY),
+        // Each task-tool call pauses like a running tool so the checklist
+        // under the status line visibly grows row by row
+        // (docs/task-tools.md).
+        StreamEvent::TaskCall { .. } => Some(TOOL_DELAY),
         StreamEvent::ThinkingStart
         | StreamEvent::ThinkingChunk(_)
         | StreamEvent::ToolCallDelta(_) => Some(THINK_CHUNK_DELAY),

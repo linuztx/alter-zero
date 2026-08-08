@@ -135,6 +135,10 @@ impl<'t> Session<'t> {
         // not a permission, so it doesn't follow ALTER_ZERO_PERMISSIONS.
         let ask = alter_zero::ask::AskGate::new();
 
+        // The shared task list (docs/task-tools.md): the executor mutates it
+        // on the tool thread, the loop reads and — on a rewind — replaces it.
+        let task_registry = alter_zero::tasks::TaskRegistry::new();
+
         // The `/settings` knobs (docs/settings.md): the saved `settings.json`
         // with each `ALTER_ZERO_*` override applied on top. Resolved BEFORE the
         // backend, which is built around three of them (tools, retries,
@@ -151,6 +155,7 @@ impl<'t> Session<'t> {
             &agent_registry,
             permissions.gate(),
             &ask,
+            &task_registry,
             &settings,
         );
 
@@ -236,6 +241,7 @@ impl<'t> Session<'t> {
             agent_registry,
             permissions,
             ask,
+            task_registry,
             recorder,
             hist_store,
             checkpoints,
@@ -332,6 +338,10 @@ impl<'t> Session<'t> {
                 let restored = self.restore_final_checkpoint(&session_checkpoints);
                 let count = items.len();
                 self.app.load_session(items);
+                // The checklist came back with the conversation — the shared
+                // registry follows, exactly like the `/resume` picker's load
+                // (docs/task-tools.md).
+                self.sync_task_registry();
                 let torn = !text.is_empty() && !text.ends_with('\n');
                 self.recorder
                     .adopt(path, meta, count, torn, session_checkpoints);

@@ -22,6 +22,7 @@ const EXAMPLES: &[&str] = &[
     "call agents for weather",
     "run three pings in parallel",
     "show me a diff",
+    "demo the todo tool i want to see how it works",
     "hello there",
 ];
 
@@ -228,6 +229,68 @@ fn every_user_facing_script_hands_the_user_off_to_a_real_model() {
             scenario.name,
         );
     }
+}
+
+#[test]
+fn the_tasks_demo_drives_a_real_store_through_the_whole_lifecycle() {
+    // The dummy-backend rule (docs/dummy-backend.md): scripted calls resolve
+    // with the real executor's output. The tasks demo drives a live
+    // `TaskStore`, so its result strings and snapshots are byte-for-byte the
+    // live path's (docs/task-tools.md).
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "tasks")
+        .expect("the tasks demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the tasks demo is a script");
+    };
+    let events = script(&Cue::new("demo the todo tool", 0));
+    let calls: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::TaskCall {
+                name,
+                output,
+                ok,
+                tasks,
+                ..
+            } => Some((name.clone(), output.clone(), *ok, tasks.clone())),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        calls.len() >= 6,
+        "creates + links + status flips: {calls:?}"
+    );
+    assert!(calls.iter().all(|(_, _, ok, _)| *ok), "a demo never errs");
+    assert_eq!(calls[0].0, "TaskCreate");
+    assert_eq!(
+        calls[0].1,
+        "Task #1 created successfully: Set up the project structure"
+    );
+    assert_eq!(calls[0].3.tasks().len(), 1, "snapshots grow call by call");
+    // No visible tool cells anywhere in the script — the checklist is the
+    // whole display.
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            StreamEvent::ToolBatch(_) | StreamEvent::ToolStart { .. } | StreamEvent::ToolEnd { .. }
+        )),
+        "task calls script no cell events"
+    );
+    // The final snapshot: #1 completed, #2 in progress (blocked only by the
+    // completed #1, so effectively unblocked), #3 pending blocked by #2.
+    let last = &calls.last().unwrap().3;
+    use crate::tasks::TaskStatus;
+    assert_eq!(last.get(1).unwrap().status, TaskStatus::Completed);
+    assert_eq!(last.get(2).unwrap().status, TaskStatus::InProgress);
+    assert_eq!(last.get(3).unwrap().status, TaskStatus::Pending);
+    assert_eq!(last.open_blockers(last.get(3).unwrap()), vec![2]);
+    assert_eq!(
+        last.running_form(),
+        Some("Writing the core logic"),
+        "the spinner override ends the demo on the active task's label"
+    );
 }
 
 #[test]

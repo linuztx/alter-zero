@@ -29,17 +29,22 @@ use super::*;
 /// So a normal streaming turn is preview + gap + status + gap; the pre-stream
 /// pause is status + gap only (no empty preview line, codex parity); a shell run
 /// is one preview row + gap only (no status); and idle it collapses to nothing.
-/// The **queued messages** (`queued_rows`) stack below this, between the strip
-/// and the box's top rule — added separately by [`live_height`]/[`live_layout`]
-/// since their height depends on the queue.
-pub(super) const fn strip_rows(has_status: bool, preview_rows: u16) -> u16 {
+/// The **task checklist** (`task_rows` — `docs/task-tools.md`) sits inside the
+/// status slot, directly under the status line and above its trailing gap, so
+/// its `⎿` rows visually hang off the spinner the way tool output hangs off
+/// its header (0 when no turn is active or the list is empty — [`task_rows`]
+/// gates on the same `has_status`). The **queued messages** (`queued_rows`)
+/// stack below all of this, between the strip and the box's top rule — added
+/// separately by [`live_height`]/[`live_layout`] since their height depends on
+/// the queue.
+pub(super) const fn strip_rows(has_status: bool, preview_rows: u16, task_rows: u16) -> u16 {
     let preview = if preview_rows > 0 {
         preview_rows + GAP_ROWS
     } else {
         0
     };
     let status = if has_status {
-        STATUS_ROWS + STATUS_GAP_ROWS
+        STATUS_ROWS + task_rows + STATUS_GAP_ROWS
     } else {
         0
     };
@@ -151,6 +156,7 @@ pub fn live_height(
     term_height: u16,
     has_status: bool,
     preview_rows: u16,
+    task_rows: u16,
     queued_rows: u16,
     toast_rows: u16,
     band_rows: u16,
@@ -162,7 +168,7 @@ pub fn live_height(
     // is deliberately uncapped), so a u16 sum can overflow-panic long before
     // the clamp. The result is ≤ term_height, so the final cast is exact.
     let rows = input.row_count(field_width(width));
-    (usize::from(strip_rows(has_status, preview_rows))
+    (usize::from(strip_rows(has_status, preview_rows, task_rows))
         + usize::from(queued_rows)
         + usize::from(toast_rows)
         + usize::from(INPUT_CHROME_ROWS)
@@ -253,8 +259,11 @@ pub fn permission_height(app: &App, width: u16, term_height: u16) -> Option<u16>
 pub fn background_view_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.background_view.as_ref()?;
     // Summed in usize like `live_height`: `queued_rows` is uncapped.
-    let rows = usize::from(strip_rows(strip_has_status(app), preview_rows(app, width)))
-        + usize::from(queued_rows(app, width))
+    let rows = usize::from(strip_rows(
+        strip_has_status(app),
+        preview_rows(app, width),
+        super::tasks::task_rows(app, width),
+    )) + usize::from(queued_rows(app, width))
         + usize::from(toast_rows(app))
         + background_view_lines(app, width).len();
     Some(rows.min(usize::from(term_height.max(1))) as u16)
@@ -421,6 +430,7 @@ pub(super) fn live_layout(
     area: Rect,
     has_status: bool,
     preview_rows: u16,
+    task_rows: u16,
     queued_rows: u16,
     toast_rows: u16,
     band_rows: u16,
@@ -431,7 +441,7 @@ pub(super) fn live_layout(
         // Saturating: `queued_rows` is uncapped, and the layout clamp below
         // (not this sum) is what bounds it to the area.
         Constraint::Length(
-            strip_rows(has_status, preview_rows)
+            strip_rows(has_status, preview_rows, task_rows)
                 .saturating_add(queued_rows)
                 .saturating_add(toast_rows),
         ),
@@ -470,6 +480,7 @@ pub(super) fn input_box(
     input: &TextArea,
     has_status: bool,
     preview_rows: u16,
+    task_rows: u16,
     queued_rows: u16,
     toast_rows: u16,
     band_rows: u16,
@@ -480,6 +491,7 @@ pub(super) fn input_box(
         area,
         has_status,
         preview_rows,
+        task_rows,
         queued_rows,
         toast_rows,
         band_rows,
@@ -652,6 +664,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     let preview = preview_rows(app, area.width);
     let has_status = strip_has_status(app);
     let toast = toast_rows(app);
+    let tasks = super::tasks::task_rows(app, area.width);
     // While a Ctrl+R search is open the hardware cursor tracks the end of the
     // *footer query*, not the textarea preview — the shell reverse-i-search
     // feel (codex's history_search_cursor_pos), clamped inside the row.
@@ -661,6 +674,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
             area,
             has_status,
             preview,
+            tasks,
             queued_rows(app, area.width),
             toast,
             band,
@@ -678,6 +692,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         &app.input,
         has_status,
         preview,
+        tasks,
         queued_rows(app, area.width),
         toast,
         band,

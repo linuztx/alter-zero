@@ -409,6 +409,32 @@ pub(super) const TOOL_OUTPUT_COLOR: Color = AI_COLOR;
 /// placeholders and the `… +N lines` hint.
 pub(super) const TOOL_DIM_COLOR: Color = Color::Rgb(0x8A, 0x8A, 0x8A);
 
+// ===== The task tools' live checklist (docs/task-tools.md) =====
+
+/// The checklist's status glyphs — Claude Code's `figures` trio: pending's
+/// empty square, in-progress's filled square, completed's tick.
+pub(super) const TASK_PENDING_GLYPH: &str = "◻";
+pub(super) const TASK_IN_PROGRESS_GLYPH: &str = "◼";
+pub(super) const TASK_COMPLETED_GLYPH: &str = "✔";
+
+/// The in-progress glyph's colour — the system cyan (Claude Code paints its
+/// filled square in the brand colour; cyan is this TUI's accent). The
+/// subject beside it renders bold in the normal reply colour.
+pub(super) const TASK_IN_PROGRESS_COLOR: Color = SYSTEM_COLOR;
+
+/// The completed glyph's green ([`TOOL_OK_COLOR`]); the subject beside it is
+/// dim and struck through — Claude Code's done row.
+pub(super) const TASK_COMPLETED_COLOR: Color = TOOL_OK_COLOR;
+
+/// The dim `› blocked by #1, #2` suffix's marker (Claude Code's
+/// `figures.pointerSmall`).
+pub(super) const TASK_BLOCKED_MARKER: &str = "›";
+
+/// The most checklist rows shown in the strip before the tail folds into a
+/// dim `… +N pending` summary row (Claude Code caps at ten and prioritises
+/// what is actionable — see `ui::tasks`).
+pub(super) const TASK_MAX_ROWS: usize = 10;
+
 /// Green — an added (`+`) line in an `edit`/`write` diff cell (codex's diff
 /// look, adapted to the `⎿` gutter; see `docs/tools.md`).
 pub(super) const TOOL_DIFF_ADD_COLOR: Color = TOOL_OK_COLOR;

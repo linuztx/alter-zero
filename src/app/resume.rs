@@ -138,6 +138,9 @@ impl App {
     pub fn load_session(&mut self, items: Vec<HistoryItem>) {
         self.clear_conversation();
         self.history = items;
+        // The task list comes back with the conversation: the last task
+        // record's snapshot is the state it had (docs/task-tools.md).
+        self.reset_tasks_from_history();
         // A rollout cut short mid-turn ends with its user message; that tail
         // belongs to the resumed conversation, not to any new turn — fence it
         // off from the interrupt-undo (docs/interrupt.md).

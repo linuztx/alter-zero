@@ -58,6 +58,7 @@ mod settings_view;
 mod status;
 mod stream_render;
 mod table;
+mod tasks;
 mod theme;
 mod tool;
 mod transcript;
@@ -96,9 +97,11 @@ pub use self::reasoning::reasoning_lines;
 pub use self::resume_view::render_resume_picker;
 pub use self::settings_view::{render_settings, settings_height};
 pub use self::status::{
-    background_notice_lines, format_elapsed, format_token_count, status_line, summary_lines,
+    background_notice_lines, format_elapsed, format_token_count, status_line,
+    status_line_with_verb, summary_lines,
 };
 pub use self::stream_render::StreamRender;
+pub use self::tasks::{checklist_lines, task_rows};
 pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
 pub use self::tool::tool_lines;
 pub use self::transcript::{

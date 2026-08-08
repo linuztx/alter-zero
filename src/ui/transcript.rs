@@ -79,6 +79,10 @@ fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>,
             }
         }
         HistoryItem::Tool(t) => lines.extend(tool_full_lines(t, width)),
+        // A task call is invisible inline but the transcript is the full
+        // record: expand it as an ordinary tool cell —
+        // `● TaskCreate(subject)` over its `⎿` result (docs/task-tools.md).
+        HistoryItem::TaskCall(t) => lines.extend(tool_full_lines(&t.as_tool_call(), width)),
         HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),
         HistoryItem::Background(n) => lines.extend(background_notice_lines(n, width)),
         // The transcript expands the group into one `● Agent({description})`

@@ -58,11 +58,23 @@ fn live_height_is_minimal_for_short_input() {
     // (no preview strip) = LIVE_MIN_HEIGHT (3).
     assert_eq!(LIVE_MIN_HEIGHT, 3);
     assert_eq!(
-        live_height(&TextArea::from_text(""), 40, 24, false, 0, 0, 0, 0, 0, 0),
+        live_height(&TextArea::from_text(""), 40, 24, false, 0, 0, 0, 0, 0, 0, 0),
         LIVE_MIN_HEIGHT
     );
     assert_eq!(
-        live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0, 0, 0, 0, 0),
+        live_height(
+            &TextArea::from_text("hi"),
+            40,
+            24,
+            false,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+        ),
         LIVE_MIN_HEIGHT
     );
 }
@@ -75,8 +87,8 @@ fn live_height_adds_the_streaming_strip_above_the_box() {
     for input in ["", "hi", "a\nb\nc"] {
         let ta = TextArea::from_text(input);
         assert_eq!(
-            live_height(&ta, 40, 24, true, 1, 0, 0, 0, 0, 0),
-            live_height(&ta, 40, 24, false, 0, 0, 0, 0, 0, 0) + 4,
+            live_height(&ta, 40, 24, true, 1, 0, 0, 0, 0, 0, 0),
+            live_height(&ta, 40, 24, false, 0, 0, 0, 0, 0, 0, 0) + 4,
             "streaming adds the preview + gap + status + gap rows for {input:?}"
         );
     }
@@ -92,6 +104,7 @@ fn live_height_grows_one_row_per_wrapped_input_line() {
             40,
             24,
             false,
+            0,
             0,
             0,
             0,
@@ -120,6 +133,7 @@ fn live_height_grows_when_a_long_line_soft_wraps() {
             0,
             0,
             0,
+            0,
             0
         ),
         5
@@ -130,7 +144,7 @@ fn live_height_grows_when_a_long_line_soft_wraps() {
 fn live_height_is_clamped_to_the_terminal_height() {
     let many = TextArea::from_text(&"a\n".repeat(50));
     assert_eq!(
-        live_height(&many, 40, 10, false, 0, 0, 0, 0, 0, 0),
+        live_height(&many, 40, 10, false, 0, 0, 0, 0, 0, 0, 0),
         10,
         "never taller than the screen"
     );
@@ -293,7 +307,7 @@ fn cursor_row_sits_on_the_prompt_row_while_a_turn_streams() {
     app.queued.push_back(batch(&["world"]));
     app.input = TextArea::from_text("x");
     let q = queued_rows(&app, 40);
-    let h = live_height(&app.input, 40, 24, true, 1, q, 0, 0, 0, 0);
+    let h = live_height(&app.input, 40, 24, true, 1, 0, q, 0, 0, 0, 0);
     let area = Rect::new(0, 0, 40, h);
     let mut buf = buffer(40, h);
     render_live(area, &mut buf, &app);
@@ -308,12 +322,25 @@ fn cursor_row_sits_on_the_prompt_row_while_a_turn_streams() {
 
 #[test]
 fn live_height_adds_the_command_menu_band() {
-    let closed = live_height(&TextArea::from_text("hi"), 40, 24, false, 0, 0, 0, 0, 0, 0);
+    let closed = live_height(
+        &TextArea::from_text("hi"),
+        40,
+        24,
+        false,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+    );
     let open = live_height(
         &TextArea::from_text("/"),
         40,
         24,
         false,
+        0,
         0,
         0,
         0,
@@ -328,10 +355,10 @@ fn live_height_adds_the_command_menu_band() {
 fn live_height_grows_with_the_queue() {
     let mut app = App::new();
     app.begin_stream();
-    let without = live_height(&app.input, 40, 24, true, 1, 0, 0, 0, 0, 0);
+    let without = live_height(&app.input, 40, 24, true, 1, 0, 0, 0, 0, 0, 0);
     app.queued.push_back(batch(&["world"]));
     let q = queued_rows(&app, 40);
-    let with = live_height(&app.input, 40, 24, true, 1, q, 0, 0, 0, 0);
+    let with = live_height(&app.input, 40, 24, true, 1, 0, q, 0, 0, 0, 0);
     assert_eq!(with, without + q, "the queue grows the region by its rows");
     assert_eq!(q, 1, "one short queued message is one row");
 }
@@ -340,8 +367,8 @@ fn live_height_grows_with_the_queue() {
 fn live_height_adds_the_footer_row() {
     let ta = TextArea::from_text("hi");
     assert_eq!(
-        live_height(&ta, 40, 24, false, 0, 0, 0, 0, 1, 0),
-        live_height(&ta, 40, 24, false, 0, 0, 0, 0, 0, 0) + 1,
+        live_height(&ta, 40, 24, false, 0, 0, 0, 0, 0, 1, 0),
+        live_height(&ta, 40, 24, false, 0, 0, 0, 0, 0, 0, 0) + 1,
         "the footer adds its row at the very bottom"
     );
 }
@@ -349,9 +376,21 @@ fn live_height_adds_the_footer_row() {
 #[test]
 fn live_height_reserves_exactly_one_row_for_the_toast() {
     let mut app = App::new();
-    let without = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 0);
+    let without = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 0, 0);
     app.show_toast("hi", ToastKind::Info);
-    let with = live_height(&app.input, 60, 24, false, 0, 0, toast_rows(&app), 0, 0, 0);
+    let with = live_height(
+        &app.input,
+        60,
+        24,
+        false,
+        0,
+        0,
+        0,
+        toast_rows(&app),
+        0,
+        0,
+        0,
+    );
     assert_eq!(with, without + 1, "the toast adds exactly one row");
 }
 
@@ -377,6 +416,7 @@ fn render_pipeline_survives_extreme_terminal_sizes() {
                         h,
                         strip_has_status(app),
                         preview_rows(app, w),
+                        0,
                         queued_rows(app, w),
                         0,
                         band,
@@ -414,7 +454,7 @@ fn render_pipeline_survives_extreme_terminal_sizes() {
 #[test]
 fn the_search_cursor_clamps_inside_a_narrow_terminal() {
     let app = searching(&["git status"], "a very very long query indeed");
-    let h = live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let area = Rect::new(0, 0, 20, h);
     let (x, _) = cursor_position(area, &app);
     assert!(x < 20, "clamped inside the width (codex clamps the same)");
@@ -470,7 +510,7 @@ fn live_height_saturates_instead_of_overflowing_u16() {
     // plus the same text queued mid-turn used to overflow the u16 row sum
     // and panic in dev builds (overflow checks on).
     let input = TextArea::from_text(&"x".repeat(170_000));
-    let h = live_height(&input, 10, 24, true, 0, 60_000, 0, 0, 1, 0);
+    let h = live_height(&input, 10, 24, true, 0, 0, 60_000, 0, 0, 1, 0);
     assert_eq!(h, 24, "clamped to the terminal height");
 }
 

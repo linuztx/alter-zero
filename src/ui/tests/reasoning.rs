@@ -278,7 +278,7 @@ fn a_live_phase_previews_in_the_strip() {
     let width = 60;
     let pv = preview_rows(&app, width);
     assert_eq!(pv, 3, "header + two rows");
-    let h = live_height(&app.input, width, 24, true, pv, 0, 0, 0, 0, 0);
+    let h = live_height(&app.input, width, 24, true, pv, 0, 0, 0, 0, 0, 0);
     let mut buf = buffer(width, h);
     render_live(buf.area, &mut buf, &app);
     assert!(row(&buf, 0, width).starts_with("● Thinking…"));

@@ -329,6 +329,10 @@ impl Session<'_> {
         // the same way (docs/ask.md).
         self.permissions.clear();
         self.ask.clear();
+        // …and the task list: `clear_conversation` wiped App's snapshot; the
+        // shared registry follows so the model's next `tasklist` agrees
+        // (docs/task-tools.md).
+        self.sync_task_registry();
         // A cleared conversation starts a fresh session file (codex's /new); the
         // old one keeps what it had (docs/resume.md). Re-seed the checkpoint chain
         // with a pristine snapshot of the current tree so a backtrack in the new
@@ -421,6 +425,10 @@ impl Session<'_> {
     /// the file, dropping the rewound-away checkpoints in lockstep.
     fn confirm_backtrack(&mut self) -> std::io::Result<()> {
         let restored = self.restore_checkpoint_at(self.app.history.len());
+        // `App::confirm_backtrack` already rewound the checklist to the
+        // snapshot at the cut; the shared registry follows
+        // (docs/task-tools.md).
+        self.sync_task_registry();
         // Consume the overlay-resized flag (a resize under the overlay must not
         // leak to the next return); we purge unconditionally below anyway.
         let _ = self.overlay_return_clear();
@@ -438,5 +446,15 @@ impl Session<'_> {
             self.toast(CHECKPOINT_REWOUND_NOTICE, ToastKind::Info);
         }
         Ok(())
+    }
+
+    /// Sync the shared task registry to `App`'s checklist — after any history
+    /// rewind (`/clear`, a `/resume` load, a backtrack truncation), so the
+    /// model's next `tasklist` call agrees with what the strip shows
+    /// (`docs/task-tools.md`). The forward direction never needs this: a task
+    /// call *starts* at the registry and reaches `App` on its `TaskCall`
+    /// event.
+    pub(crate) fn sync_task_registry(&self) {
+        self.task_registry.replace(self.app.tasks().clone());
     }
 }

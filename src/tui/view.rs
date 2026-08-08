@@ -454,6 +454,7 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
         screen.height,
         ui::strip_has_status(app),
         ui::preview_rows(app, screen.width),
+        ui::task_rows(app, screen.width),
         ui::queued_rows(app, screen.width),
         ui::toast_rows(app),
         band,

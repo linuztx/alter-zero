@@ -310,6 +310,10 @@ impl Session<'_> {
         let session_checkpoints = session::parse_checkpoints(&text);
         let restored = self.restore_final_checkpoint(&session_checkpoints);
         self.app.load_session(items);
+        // The checklist came back with the conversation (the last task
+        // record's snapshot) — the shared registry follows, so the model's
+        // next `tasklist` sees the resumed tasks (docs/task-tools.md).
+        self.sync_task_registry();
         // A file whose last line lost its newline (a torn write) must not have
         // the next append glued onto it — the recorder prefixes the repair. The
         // parsed checkpoints are adopted too so later turns extend the same chain

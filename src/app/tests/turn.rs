@@ -1236,6 +1236,7 @@ fn a_completion_pending_at_turn_end_records_above_the_summary() {
             HistoryItem::AgentNotice(_) => "agent_notice",
             HistoryItem::Compaction(_) => "compaction",
             HistoryItem::Reasoning(_) => "reasoning",
+            HistoryItem::TaskCall(_) => "task_call",
         })
         .collect();
     assert_eq!(

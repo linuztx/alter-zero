@@ -101,6 +101,9 @@ fn dummy_ai_emits_all_chunks_and_tool_calls_then_done() {
             StreamEvent::ThinkingChunk(_) => think_chunks += 1,
             StreamEvent::ThinkingEnd => think_ends += 1,
             StreamEvent::ToolCallDelta(_) => tool_call_deltas += 1,
+            // The default demo never touches the task list; the tasks demo
+            // has its own suite coverage (docs/task-tools.md).
+            StreamEvent::TaskCall { .. } => {}
             StreamEvent::StreamDone => {
                 saw_done = true;
                 break;

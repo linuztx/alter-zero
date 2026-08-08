@@ -205,6 +205,14 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         },
         play: Play::Script(turns::files_turn),
     },
+    // The task-tools lifecycle: the live checklist, dependencies, the
+    // spinner override (docs/task-tools.md).
+    Scenario {
+        #[cfg(test)]
+        name: "tasks",
+        selects: |cue| cue.mentions("todo") || cue.mentions("task"),
+        play: Play::Script(turns::tasks_turn),
+    },
     // The default turn: think, then a compact `Read`+`Bash` batch.
     Scenario {
         #[cfg(test)]

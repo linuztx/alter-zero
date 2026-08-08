@@ -68,6 +68,12 @@ pub struct LlmBackend {
     /// inline question modal and block on the answers. Without it the tool
     /// isn't offered at all (nobody could answer). Subagents never carry it.
     ask: Option<AskGate>,
+    /// The shared task list, when the boundary attached one — **enables the
+    /// four task tools** (`docs/task-tools.md`): the model can plan and track
+    /// structured tasks, the live checklist rendering under the status line.
+    /// Without it the tools aren't offered (nobody holds the list). Subagents
+    /// never carry it — the lead agent plans, subagents execute.
+    tasks: Option<crate::tasks::TaskRegistry>,
     /// The auto mode classifier bound to this backend's provider
     /// (`docs/permissions.md`): consulted by the approve seam for `bash`
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
@@ -136,6 +142,7 @@ impl LlmBackend {
             agents: None,
             permissions: None,
             ask: None,
+            tasks: None,
             classifier,
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
@@ -189,10 +196,25 @@ impl LlmBackend {
         self
     }
 
+    /// Attach the shared task list, **enabling the task tools**
+    /// (`docs/task-tools.md`): the client's tool set gains the four task
+    /// specs (tools must already be enabled). The boundary calls this on
+    /// every main backend it builds; the one-off `/compact` backend and
+    /// subagents themselves never do.
+    #[must_use]
+    pub fn with_tasks(mut self, registry: crate::tasks::TaskRegistry) -> Self {
+        if self.tools_enabled {
+            self.tasks = Some(registry);
+            self.sync_tool_specs();
+        }
+        self
+    }
+
     /// Rebuild the client's tool set from what is attached — the `agent` spec
-    /// when a subagent registry is, the ask spec when an ask gate is — so
-    /// [`with_agents`](Self::with_agents)/[`with_ask`](Self::with_ask)
-    /// compose in either order.
+    /// when a subagent registry is, the ask spec when an ask gate is, the
+    /// task specs when a task registry is — so
+    /// [`with_agents`](Self::with_agents)/[`with_ask`](Self::with_ask)/
+    /// [`with_tasks`](Self::with_tasks) compose in any order.
     fn sync_tool_specs(&mut self) {
         let mut specs = if self.agents.is_some() {
             tools::tool_specs_with_agents()
@@ -201,6 +223,9 @@ impl LlmBackend {
         };
         if self.ask.is_some() {
             specs.push(tools::ask_spec());
+        }
+        if self.tasks.is_some() {
+            specs.extend(tools::task_specs());
         }
         self.client = self.client.clone().with_tools(specs);
     }
@@ -481,6 +506,7 @@ impl ReplySource for LlmBackend {
         let subagent = self.subagent_config();
         let permissions = self.permissions.clone();
         let ask = self.ask.clone();
+        let task_list = self.tasks.clone();
         let classifier = self.classifier.clone();
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
@@ -522,12 +548,22 @@ impl ReplySource for LlmBackend {
                 |msgs| stream_round(&client, msgs, &tx, &cancel, max_retries),
                 // An `askuserquestion` call takes the ask path — raise the
                 // modal and block this thread on the user's answers
-                // (docs/ask.md); everything else goes to the real executor.
-                |call, on_output| match (&ask, call.name.as_str()) {
-                    (Some(gate), tools::ASK_TOOL_NAME) => {
-                        super::ask::ask_user(gate, &tx, &cancel, call)
+                // (docs/ask.md); a task tool call runs against the shared
+                // list (docs/task-tools.md); everything else goes to the
+                // real executor.
+                |call, on_output| {
+                    if let Some(registry) = task_list
+                        .as_ref()
+                        .filter(|_| crate::tasks::is_task_tool(&call.name))
+                    {
+                        return super::task::run_task_tool(registry, call);
                     }
-                    _ => executor.execute(call, &cancel, on_output),
+                    match (&ask, call.name.as_str()) {
+                        (Some(gate), tools::ASK_TOOL_NAME) => {
+                            super::ask::ask_user(gate, &tx, &cancel, call)
+                        }
+                        _ => executor.execute(call, &cancel, on_output),
+                    }
                 },
                 || match &notices {
                     Some(registry) => registry

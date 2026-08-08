@@ -38,7 +38,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `tasks`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -440,7 +440,43 @@ permission turns, `/clear`) release on the gate as declines at the loop
 bottom so no thread parks; the offline dummy's `Play::Asked` scenario (cue
 "ask" + "question") drives the whole round trip through the real
 `ask_user` mapping — three questions: single-select coffee, multi-select
-demo topics, preview+notes code style) in `docs/ask.md`; and the **Ctrl+O
+demo topics, preview+notes code style) in `docs/ask.md`; and the **task
+tools** (Claude-Code's structured task list, `docs/task-tools.md`: the model
+plans multi-step work with `taskcreate`/`taskget`/`tasklist`/`taskupdate` —
+Claude Code's schemas minus the `owner`/`metadata` parameters this
+single-agent TUI has no use for — over a shared `tasks::TaskRegistry`
+(`LlmBackend::with_tasks`, the ask-gate pattern; subagents and the `/compact`
+backend never get it), and the calls render **no tool cells anywhere
+inline** (Claude Code hides them): each resolves through the single
+`StreamEvent::TaskCall` — `run_agent` skips the batch announcement, the
+permission seam, and the Start/End pair for task calls, the post-call
+snapshot riding `ToolOutcome::tasks` — whose loop arm flushes the streamed
+segment (each round's narration stays its own `●` bullet) and records a
+cell-less `HistoryItem::TaskCall`; what the user sees instead is the **live
+checklist under the status line** (`ui::task_rows`/`checklist_lines`, its
+rows threaded through `live_height`/`live_layout`/`cursor_position` beside
+the queued rows, inside the status slot so the `⎿ ◻ subject` rows hang off
+the spinner): `◻` pending, `◼` in progress (cyan glyph, bold subject), `✔`
+completed (green glyph, dim struck-through subject), a dim `› blocked by #1`
+suffix naming only **open** blockers, one-row truncated subjects, and past
+`TASK_MAX_ROWS` a prioritised fold into a dim `… +N pending` row — while the
+spinner **wears the active task's `activeForm`** (`App::task_verb` →
+`ui::status_line_with_verb`, Claude Code's `currentTodo.activeForm ??
+randomVerb`, derived per frame so completing the task snaps the verb back);
+the record keeps everything the cell-less display doesn't: Ctrl+O expands
+each call as an ordinary tool cell (`TaskCallRecord::as_tool_call`), the
+derived context replays the native `tool_calls`+result pair (args `{}` like
+the ask tool — the result text is what the model reasons from), the rollout
+round-trips the call **with its post-call snapshot** (`session`'s
+`task_call` record, ids on a high-water mark that survives deletion), and
+all three history rewinds restore the list exactly — `/resume` and the
+Esc-Esc backtrack from the last record('s snapshot) before the cut
+(`App::reset_tasks_from_history`), `/clear` to empty — with the boundary
+syncing the shared registry after each (`Session::sync_task_registry`) so
+the model's next `tasklist` agrees with the strip; the offline dummy's
+`tasks` scenario (cue `todo`/`task`) drives a real `TaskStore` through the
+whole lifecycle so every scripted result string and snapshot is
+byte-for-byte the live executor's) in `docs/task-tools.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in

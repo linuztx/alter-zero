@@ -196,6 +196,10 @@ pub(crate) struct Session<'t> {
     /// (`docs/ask.md`) — always present (asking is not a permission), shared
     /// by every backend build.
     ask: alter_zero::ask::AskGate,
+    /// The shared task list the task tools operate on
+    /// (`docs/task-tools.md`) — the loop syncs it to `App::tasks` after every
+    /// history rewind so the model's next `tasklist` agrees with the strip.
+    task_registry: alter_zero::tasks::TaskRegistry,
     /// Mirrors history to the `/resume` rollout file (`docs/resume.md`).
     recorder: SessionRecorder,
     /// The cross-session input history (`docs/history-persistence.md`).

@@ -63,6 +63,12 @@ pub struct Message {
 pub enum HistoryItem {
     Message(Message),
     Tool(ToolCall),
+    /// A resolved task tool call (`docs/task-tools.md`) — **cell-less
+    /// inline** (the live checklist is its display; `conversation_lines`
+    /// skips it entirely) but recorded for the Ctrl+O transcript, the
+    /// context replay, the rollout, and the snapshot the rewinds restore
+    /// the list from.
+    TaskCall(TaskCallRecord),
     Summary(TurnSummary),
     /// A background shell's completion notice (`docs/background.md`).
     Background(BackgroundNotice),

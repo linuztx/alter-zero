@@ -118,6 +118,45 @@ enum ItemRecord {
     /// back. Old builds skip the unknown record type (the forward-compatibility
     /// contract).
     Reasoning(ReasoningRecord),
+    /// A resolved task tool call (`docs/task-tools.md`) — persists so a
+    /// `/resume` restores the checklist from the last record's snapshot. Old
+    /// builds skip the unknown record type (the forward-compatibility
+    /// contract).
+    TaskCall(TaskToolRecord),
+}
+
+/// A [`TaskCallRecord`] on disk (`docs/task-tools.md`): the call's texts plus
+/// the **post-call snapshot** — every task and the id high-water mark — that
+/// a `/resume` rebuilds the live list from.
+///
+/// [`TaskCallRecord`]: crate::app::TaskCallRecord
+#[derive(Serialize, Deserialize)]
+struct TaskToolRecord {
+    name: String,
+    args: String,
+    ok: bool,
+    output: String,
+    timestamp: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tasks: Vec<TaskEntryRecord>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    next_id: u64,
+}
+
+/// One task of a snapshot on disk. `status` is the wire name
+/// (`pending`/`in_progress`/`completed`); an unknown one parses as `pending`
+/// (the conservative open state).
+#[derive(Serialize, Deserialize)]
+struct TaskEntryRecord {
+    id: u64,
+    subject: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_form: Option<String>,
+    status: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    blocked_by: Vec<u64>,
 }
 
 /// A [`Reasoning`] on disk (`docs/thinking-stream.md`). `tokens` is whatever
@@ -478,6 +517,27 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             secs: reasoning.secs,
             tokens: reasoning.tokens,
         }),
+        HistoryItem::TaskCall(record) => ItemRecord::TaskCall(TaskToolRecord {
+            name: record.name.clone(),
+            args: record.args.clone(),
+            ok: record.ok,
+            output: record.output.clone(),
+            timestamp: record.timestamp.clone(),
+            tasks: record
+                .tasks
+                .tasks()
+                .iter()
+                .map(|task| TaskEntryRecord {
+                    id: task.id,
+                    subject: task.subject.clone(),
+                    description: task.description.clone(),
+                    active_form: task.active_form.clone(),
+                    status: task.status.wire().to_string(),
+                    blocked_by: task.blocked_by.clone(),
+                })
+                .collect(),
+            next_id: record.tasks.high_water(),
+        }),
     };
     line(stamp, record)
 }
@@ -635,6 +695,31 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     secs: reasoning.secs,
                     tokens: reasoning.tokens,
                     timestamp: reasoning.timestamp,
+                }));
+            }
+            ItemRecord::TaskCall(record) => {
+                let tasks: Vec<crate::tasks::Task> = record
+                    .tasks
+                    .into_iter()
+                    .map(|task| crate::tasks::Task {
+                        id: task.id,
+                        subject: task.subject,
+                        description: task.description,
+                        active_form: task.active_form,
+                        // An unknown status name reads as pending — the
+                        // conservative open state.
+                        status: crate::tasks::TaskStatus::from_wire(&task.status)
+                            .unwrap_or_default(),
+                        blocked_by: task.blocked_by,
+                    })
+                    .collect();
+                items.push(HistoryItem::TaskCall(crate::app::TaskCallRecord {
+                    name: record.name,
+                    args: record.args,
+                    output: record.output,
+                    ok: record.ok,
+                    timestamp: record.timestamp,
+                    tasks: crate::tasks::TaskStore::from_parts(tasks, record.next_id),
                 }));
             }
             // Checkpoints ride the same file but aren't transcript items —
@@ -858,6 +943,73 @@ mod tests {
         assert_eq!(value["payload"]["tokens"], 1_500);
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_task_call_line_round_trips_the_call_and_its_snapshot() {
+        // The record carries the post-call snapshot — the tasks and the id
+        // high-water mark — so `/resume` restores the checklist exactly
+        // (docs/task-tools.md).
+        let mut store = crate::tasks::TaskStore::new();
+        store
+            .run_create(
+                r#"{"subject":"Write tests","description":"cover the store","activeForm":"Writing tests"}"#,
+            )
+            .unwrap();
+        store
+            .run_create(r#"{"subject":"Ship it","description":"d"}"#)
+            .unwrap();
+        store
+            .run_update(r#"{"taskId":"2","addBlockedBy":["1"],"status":"in_progress"}"#)
+            .unwrap();
+        let item = HistoryItem::TaskCall(crate::app::TaskCallRecord {
+            name: "TaskUpdate".into(),
+            args: "#2 → in_progress".into(),
+            output: "Updated task #2 status, blockedBy".into(),
+            ok: true,
+            timestamp: "03:20 PM".into(),
+            tasks: store,
+        });
+        let line = item_line(&item, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "task_call");
+        assert_eq!(value["payload"]["name"], "TaskUpdate");
+        assert_eq!(value["payload"]["next_id"], 2);
+        assert_eq!(value["payload"]["tasks"][0]["subject"], "Write tests");
+        assert_eq!(value["payload"]["tasks"][0]["active_form"], "Writing tests");
+        assert_eq!(value["payload"]["tasks"][1]["status"], "in_progress");
+        assert_eq!(value["payload"]["tasks"][1]["blocked_by"][0], 1);
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_task_call_snapshot_keeps_its_high_water_mark_past_deletions() {
+        // A store whose surviving ids sit below the mark (the last tasks were
+        // deleted) must resume without reusing ids.
+        let mut store = crate::tasks::TaskStore::new();
+        store
+            .run_create(r#"{"subject":"a","description":"d"}"#)
+            .unwrap();
+        store
+            .run_create(r#"{"subject":"b","description":"d"}"#)
+            .unwrap();
+        store
+            .run_update(r#"{"taskId":"2","status":"deleted"}"#)
+            .unwrap();
+        let item = HistoryItem::TaskCall(crate::app::TaskCallRecord {
+            name: "TaskUpdate".into(),
+            args: "#2 → deleted".into(),
+            output: "Updated task #2 deleted".into(),
+            ok: true,
+            timestamp: String::new(),
+            tasks: store,
+        });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        let [HistoryItem::TaskCall(record)] = parsed.as_slice() else {
+            panic!("one task call parses, got {parsed:?}");
+        };
+        assert_eq!(record.tasks.high_water(), 2, "the mark survives the trip");
     }
 
     #[test]

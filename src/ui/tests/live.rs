@@ -22,7 +22,7 @@ fn render_live_tails_a_running_bash_tool_with_its_streamed_output() {
     }
     app.set_status_times(Duration::from_secs(9), None);
     let pv = preview_rows(&app, 60);
-    let h = live_height(&app.input, 60, 24, true, pv, 0, 0, 0, 0, 0);
+    let h = live_height(&app.input, 60, 24, true, pv, 0, 0, 0, 0, 0, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     let all: String = (0..h)
@@ -40,7 +40,7 @@ fn render_live_draws_the_status_row_while_streaming() {
     app.begin_stream();
     app.push_chunk("hi");
     app.set_status_times(Duration::from_secs(3), None);
-    let h = live_height(&app.input, 40, 24, true, 1, 0, 0, 0, 0, 0);
+    let h = live_height(&app.input, 40, 24, true, 1, 0, 0, 0, 0, 0, 0);
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
     let all: String = (0..h)
@@ -64,7 +64,7 @@ fn the_pre_stream_pause_shows_up_tokens_and_no_preview_bullet() {
     // No preview content yet → the strip is status + gap only (no preview
     // row, no preview gap): exactly the box + status + the two gaps.
     assert_eq!(preview_rows(&app, 60), 0);
-    let h = live_height(&app.input, 60, 24, true, 0, 0, 0, 0, 0, 0);
+    let h = live_height(&app.input, 60, 24, true, 0, 0, 0, 0, 0, 0, 0);
     assert_eq!(
         h,
         STATUS_ROWS + STATUS_GAP_ROWS + INPUT_CHROME_ROWS + 1,
@@ -94,7 +94,7 @@ fn the_pre_stream_pause_shows_up_tokens_and_no_preview_bullet() {
 fn render_live_grows_the_box_and_wraps_input_across_rows() {
     let mut app = App::new();
     app.input = TextArea::from_text("first\nsecond");
-    let h = live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 0, 0);
+    let h = live_height(&app.input, 20, 24, false, 0, 0, 0, 0, 0, 0, 0);
     assert_eq!(h, 4, "two rules + two input rows (no strip when idle)");
     let mut buf = buffer(20, h);
     render_live(buf.area, &mut buf, &app);
@@ -125,7 +125,7 @@ fn render_live_scrolls_input_to_keep_the_end_visible() {
     );
     let term_h = 6; // live clamps to 6 → text rows = 6 - 2 = 4
     assert_eq!(
-        live_height(&app.input, 20, term_h, false, 0, 0, 0, 0, 0, 0),
+        live_height(&app.input, 20, term_h, false, 0, 0, 0, 0, 0, 0, 0),
         6
     );
     let mut buf = buffer(20, 6);
@@ -271,7 +271,7 @@ fn preview_shows_the_whole_parallel_batch_running_plus_waiting() {
         "the whole batch (3 cells + 2 gaps + the running cell's hint) is previewed"
     );
     let pv = preview_rows(&app, 40);
-    let h = live_height(&app.input, 40, 30, true, pv, 0, 0, 0, 0, 0);
+    let h = live_height(&app.input, 40, 30, true, pv, 0, 0, 0, 0, 0, 0);
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
     let all: String = (0..h)
@@ -311,6 +311,7 @@ fn render_live_previews_a_running_tool_with_its_running_row() {
         0,
         0,
         0,
+        0,
     );
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
@@ -335,7 +336,7 @@ fn render_live_draws_the_queue_above_the_box_as_a_user_message() {
     app.begin_stream();
     app.queued.push_back(batch(&["world"]));
     let q = queued_rows(&app, 40);
-    let h = live_height(&app.input, 40, 24, true, 1, q, 0, 0, 0, 0);
+    let h = live_height(&app.input, 40, 24, true, 1, 0, q, 0, 0, 0, 0);
     let mut buf = buffer(40, h);
     render_live(buf.area, &mut buf, &app);
     let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 40)).collect();
@@ -362,7 +363,7 @@ fn render_live_draws_the_queue_above_the_box_as_a_user_message() {
 #[test]
 fn render_live_paints_the_footer_on_the_last_row() {
     let app = with_session();
-    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     let last = row(&buf, h - 1, 60);
@@ -378,7 +379,19 @@ fn render_live_paints_the_footer_on_the_last_row() {
 fn render_live_paints_the_toast_directly_above_the_box_when_idle() {
     let mut app = App::new();
     app.show_toast("Copied last message to clipboard", ToastKind::Info);
-    let h = live_height(&app.input, 60, 24, false, 0, 0, toast_rows(&app), 0, 0, 0);
+    let h = live_height(
+        &app.input,
+        60,
+        24,
+        false,
+        0,
+        0,
+        0,
+        toast_rows(&app),
+        0,
+        0,
+        0,
+    );
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     assert!(
@@ -404,7 +417,7 @@ fn render_live_paints_the_toast_below_the_status_while_streaming() {
         "/resume is disabled while a task is in progress",
         ToastKind::Info,
     );
-    let h = live_height(&app.input, 60, 24, true, 1, 0, toast_rows(&app), 0, 0, 0);
+    let h = live_height(&app.input, 60, 24, true, 1, 0, 0, toast_rows(&app), 0, 0, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     // The toast sits on the strip's last row — directly above the box's top
@@ -426,7 +439,7 @@ fn render_live_paints_the_toast_below_the_status_while_streaming() {
 fn the_previewed_match_highlights_the_query_reversed() {
     let app = searching(&["git status"], "stat");
     assert_eq!(app.input.text(), "git status", "the match previews");
-    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     // The input row is "❯ git status" on the row inside the box frame:
@@ -491,6 +504,7 @@ fn the_running_shell_preview_is_the_flush_running_peek() {
         24,
         strip_has_status(&app),
         preview_rows(&app, 60),
+        0,
         q,
         0,
         0,
@@ -513,7 +527,7 @@ fn render_live_paints_the_hint_in_the_footer_slot() {
     app.set_session_info("model", "~/repo");
     app.backtrack.primed = true;
     let footer = footer_rows(&app, 0);
-    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, footer, 0);
+    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, footer, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     let last = row(&buf, h - 1, 60);
@@ -676,7 +690,7 @@ fn render_live_paints_the_focused_count_on_the_footer_row() {
     app.set_session_info("kimi-k2", "~/repo");
     app.bg_started("bash_1", "ping x.com", None, true, None);
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 1, 0);
+    let h = live_height(&app.input, 60, 24, false, 0, 0, 0, 0, 0, 1, 0);
     let mut buf = buffer(60, h);
     render_live(buf.area, &mut buf, &app);
     let last = row(&buf, h - 1, 60);

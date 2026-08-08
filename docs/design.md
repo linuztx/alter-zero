@@ -470,6 +470,15 @@ unit-tested must be unit-tested.
   an agent's own inline session view the user can chat in, `x` stops),
   background completions noticing + auto-following-up like background shells,
   and per-agent `● Agent(…)` expansions in the Ctrl+O transcript.
+- **Task tools** (`docs/task-tools.md`): Claude Code's structured task list —
+  the model plans multi-step work with
+  `taskcreate`/`taskget`/`tasklist`/`taskupdate` and the user watches a
+  **live checklist** under the status line (`⎿ ◻ subject` rows, `◼` in
+  progress, `✔` done, dim `› blocked by #1` suffixes) instead of tool cells:
+  the calls render nothing inline (Claude Code hides them too), the spinner
+  wears the active task's `activeForm`, Ctrl+O keeps the full per-call
+  record, and the list survives `/resume`, the Esc-Esc backtrack, and
+  `/clear` via per-record snapshots.
 
 ## Architecture
 

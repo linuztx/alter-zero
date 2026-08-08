@@ -96,6 +96,12 @@ fn main() {
             StreamEvent::ToolBackgrounded { id, output } => {
                 println!("\n\x1b[90m[backgrounded as {id}]\x1b[0m\n{output}");
             }
+            // A task tool call: cell-less in the TUI; the harness just logs it.
+            StreamEvent::TaskCall {
+                name, args, output, ..
+            } => {
+                println!("\n\x1b[90m[{name}({args})]\x1b[0m {output}");
+            }
             // This harness builds its backend with no permission gate, so a
             // request — or the auto mode classifier's note — can never
             // arrive (docs/permissions.md).

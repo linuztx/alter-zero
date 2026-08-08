@@ -29,6 +29,7 @@ mod queue;
 mod reasoning;
 mod resume;
 mod settings;
+mod tasks;
 mod tools;
 mod turn;
 mod types;

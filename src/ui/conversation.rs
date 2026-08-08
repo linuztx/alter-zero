@@ -25,6 +25,10 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
     let mut lines = Vec::new();
     for item in history {
         match item {
+            // A task tool call renders NOTHING inline — no cell, no spacer:
+            // the live checklist is its display, and the record expands only
+            // in the Ctrl+O transcript (docs/task-tools.md).
+            HistoryItem::TaskCall(_) => continue,
             HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),

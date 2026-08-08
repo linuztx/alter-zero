@@ -60,6 +60,7 @@ use alter_zero::app::{
     SettingsPicker,
     SlashCommand,
     StreamError,
+    TaskCallRecord,
     ThinkingState,
     Toast,
     ToastKind,
@@ -122,6 +123,26 @@ use alter_zero::stream::{
     dummy_response,
     image_ack,
     turn_events,
+};
+
+// --- `tasks` — the task tools' pure model (docs/task-tools.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::tasks::{
+    CreateArgs,
+    GetArgs,
+    Task,
+    TaskRegistry,
+    TaskStatus,
+    TaskStore,
+    UpdateArgs,
+    TASK_CREATE_TOOL,
+    TASK_GET_TOOL,
+    TASK_LIST_TOOL,
+    TASK_TOOL_NAMES,
+    TASK_UPDATE_TOOL,
+    is_task_tool,
+    task_display_name,
 };
 
 // --- `ui` — rendering ---
@@ -199,12 +220,15 @@ use alter_zero::ui::{
     search_line,
     settings_height,
     shell_mode_line,
+    checklist_lines,
     shortcuts_lines,
     shortcuts_rows,
     status_line,
+    status_line_with_verb,
     stream_preview_max_rows,
     strip_has_status,
     summary_lines,
+    task_rows,
     toast_line,
     toast_rows,
     tool_lines,
