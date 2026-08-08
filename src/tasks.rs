@@ -104,12 +104,25 @@ pub struct Task {
 
 /// Parsed `taskcreate` arguments (`docs/task-tools.md` — Claude Code's
 /// schema minus `metadata`).
+///
+/// The dependency fields are **not** in the offered schema — `taskupdate`
+/// owns them — but a live model folds them into the create anyway (observed
+/// with gpt-4o-mini), in either the `addBlockedBy` spelling it just read
+/// there or the bare `blockedBy`, so both are honoured rather than silently
+/// dropped: dropping them is neither an error the model can see nor an
+/// effect the user gets.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct CreateArgs {
     pub subject: String,
     pub description: String,
     #[serde(default, rename = "activeForm")]
     pub active_form: Option<String>,
+    /// Tasks that cannot start until the new one completes.
+    #[serde(default, alias = "addBlocks")]
+    pub blocks: Option<Vec<String>>,
+    /// Tasks that must complete before the new one can start.
+    #[serde(default, rename = "blockedBy", alias = "addBlockedBy")]
+    pub blocked_by: Option<Vec<String>>,
 }
 
 /// Parsed `taskget` arguments.
@@ -142,7 +155,14 @@ pub struct UpdateArgs {
 
 /// The tallies the idle summary row shows (`TaskStore::counts`): how many
 /// tasks there are, how many are done, how many are running, and how many
-/// are still open (everything not completed).
+/// are still **open**.
+///
+/// The three states are a partition, not overlapping sets: `open` counts
+/// *pending* tasks only, so `completed + in_progress + open == total`. That
+/// is Claude Code's header (`pendingCount` is what it prints before `open)`),
+/// and it is the only reading that makes the line add up — counting the
+/// running task in both `in progress` and `open` reports four tasks' worth of
+/// work on a list of three.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TaskCounts {
     pub total: usize,
@@ -264,25 +284,17 @@ impl TaskStore {
         true
     }
 
-    /// How many tasks are completed / still open — the idle summary row's
-    /// counts (`{total} tasks ({done} done, {open} open)`).
+    /// How many tasks are done / running / not started — the idle summary
+    /// row's counts (`{total} tasks ({done} done[, {n} in progress], {open}
+    /// open)`). The three partition the list ([`TaskCounts`]).
     #[must_use]
     pub fn counts(&self) -> TaskCounts {
-        let completed = self
-            .tasks
-            .iter()
-            .filter(|t| t.status == TaskStatus::Completed)
-            .count();
-        let in_progress = self
-            .tasks
-            .iter()
-            .filter(|t| t.status == TaskStatus::InProgress)
-            .count();
+        let tally = |status: TaskStatus| self.tasks.iter().filter(|t| t.status == status).count();
         TaskCounts {
             total: self.tasks.len(),
-            completed,
-            in_progress,
-            open: self.tasks.len() - completed,
+            completed: tally(TaskStatus::Completed),
+            in_progress: tally(TaskStatus::InProgress),
+            open: tally(TaskStatus::Pending),
         }
     }
 
@@ -316,16 +328,24 @@ impl TaskStore {
         }
     }
 
-    /// `taskcreate`: append a pending task under the next id. Result:
+    /// `taskcreate`: append a pending task under the next id, wiring any
+    /// dependencies the model folded into the call ([`CreateArgs`]). Result:
     /// `Task #3 created successfully: {subject}` (Claude Code's exact text).
     ///
     /// # Errors
-    /// Unparseable arguments or a blank subject.
+    /// Unparseable arguments, a blank subject, or a dependency naming a task
+    /// that doesn't exist.
     pub fn run_create(&mut self, arguments: &str) -> Result<String, String> {
         let args: CreateArgs = parse_args(arguments)?;
         if args.subject.trim().is_empty() {
             return Err("subject must not be empty".to_string());
         }
+        // Validated BEFORE the create, so a bad id leaves nothing behind. The
+        // new task has no id yet and so cannot be its own blocker: the
+        // self-check runs against ids that already exist (`0` is never one).
+        let blocks = parse_dependency_ids(self, 0, args.blocks.as_deref())?;
+        let blocked_by = parse_dependency_ids(self, 0, args.blocked_by.as_deref())?;
+
         let id = self.next_id + 1;
         self.next_id = id;
         self.tasks.push(Task {
@@ -334,8 +354,19 @@ impl TaskStore {
             description: args.description,
             active_form: args.active_form.filter(|f| !f.trim().is_empty()),
             status: TaskStatus::Pending,
-            blocked_by: Vec::new(),
+            blocked_by,
         });
+        // The new task blocks each named target → that target is blocked by us.
+        for target in blocks {
+            let target = self
+                .tasks
+                .iter_mut()
+                .find(|t| t.id == target)
+                .expect("validated above");
+            if !target.blocked_by.contains(&id) {
+                target.blocked_by.push(id);
+            }
+        }
         Ok(format!("Task #{id} created successfully: {}", args.subject))
     }
 
@@ -921,6 +952,31 @@ mod tests {
     }
 
     #[test]
+    fn create_honours_the_dependency_fields_a_model_folds_in() {
+        // The schema routes dependencies through `taskupdate`, but live
+        // models wire them straight into the create — observed with
+        // gpt-4o-mini on its first run. Serde drops unknown fields silently,
+        // which is the worst outcome: no error AND no dependency. Both
+        // spellings are honoured instead, with update's validation
+        // (docs/task-tools.md).
+        let mut store = store_of_three();
+        let out = store
+            .run_create(
+                r#"{"subject":"Ship it","description":"d","addBlockedBy":["2"],"blocks":["3"]}"#,
+            )
+            .unwrap();
+        assert_eq!(out, "Task #4 created successfully: Ship it");
+        assert_eq!(store.get(4).unwrap().blocked_by, vec![2]);
+        assert_eq!(store.blocks_of(4), vec![3], "the reverse side reads back");
+        // A bad dependency fails the whole call — nothing half-created.
+        let err = store
+            .run_create(r#"{"subject":"X","description":"d","blockedBy":["9"]}"#)
+            .unwrap_err();
+        assert_eq!(err, "Task #9 not found");
+        assert!(store.get(5).is_none(), "nothing was created");
+    }
+
+    #[test]
     fn counts_tally_the_summary_rows_numbers() {
         let mut store = store_of_three();
         assert_eq!(
@@ -944,9 +1000,10 @@ mod tests {
                 total: 3,
                 completed: 1,
                 in_progress: 1,
-                // Open counts everything not completed — the in-progress one
-                // included, like Claude Code's standalone header.
-                open: 2
+                // The three partition the list: `open` is the not-yet-started
+                // tasks alone (Claude Code prints `pendingCount` there), so
+                // the running task is reported once, not twice.
+                open: 1
             }
         );
     }

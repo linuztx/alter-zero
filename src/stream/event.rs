@@ -189,7 +189,10 @@ pub enum StreamEvent {
     /// is instant, needs no permission, and streams no output, and — Claude
     /// Code's rule — it renders **no tool cell** anywhere inline. `name`/`args`
     /// are the display header (`TaskCreate` + its one-line summary) the Ctrl+O
-    /// transcript shows, `output` the model-facing result text (`Task #1
+    /// transcript shows, `arguments` the **raw JSON the model sent** (kept
+    /// beside the summary so the derived context can replay the call as it
+    /// was made — the summary is lossy by design, being a header), `output`
+    /// the model-facing result text (`Task #1
     /// created successfully: …`), `ok` the outcome, and `tasks` the
     /// **post-call snapshot** the live checklist under the status line renders
     /// ([`crate::app::App::record_task_call`]). Emitted by
@@ -198,6 +201,7 @@ pub enum StreamEvent {
     TaskCall {
         name: String,
         args: String,
+        arguments: String,
         output: String,
         ok: bool,
         tasks: TaskStore,

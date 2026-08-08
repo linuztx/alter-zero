@@ -32,6 +32,14 @@ the schema honest — what the model can send is what the feature does.
 - `taskcreate` — `subject` (required), `description` (required), `activeForm`
   (optional; the present-continuous label the spinner wears while the task is
   in progress). Result: `Task #3 created successfully: {subject}`.
+  Dependencies are `taskupdate`'s job and stay out of this schema, but a live
+  model folds them into the create anyway (seen with gpt-4o-mini), in either
+  the `addBlocks`/`addBlockedBy` spelling it just read there or the bare
+  `blocks`/`blockedBy` — so the parser **honours all four** rather than
+  silently dropping them, wiring the edges as `taskupdate` would. They are
+  validated before the task is created, so a dependency on a missing task
+  fails the call whole (`Task #9 not found`, nothing created) instead of
+  leaving a half-linked row.
 - `taskget` — `taskId`. Result: `Task #3: {subject}` / `Status: …` /
   `Description: …` (+ `Blocked by: #2` / `Blocks: #4` when linked).
 - `tasklist` — no parameters. Result: one `#3 [pending] {subject}` line per
@@ -84,7 +92,12 @@ matters:
   Same glyphs, same truncation, same fold (`task_rows_lines` builds both);
   only the prefix differs — the `⎿` gutter hangs off a spinner, and at rest
   there is none, so the rows take the composer's own two-space inset. The
-  count line adds an `N in progress` clause when any task is running.
+  count line adds an `N in progress` clause when any task is running, and
+  its three numbers **partition** the list — `open` is the not-yet-started
+  tasks alone, the `pendingCount` Claude Code prints there, so a running
+  task is reported once rather than counted as both in progress *and* open
+  (`3 tasks (1 done, 1 in progress, 1 open)` on a list of three, never
+  `2 open`).
 - **A finished plan retires.** Once every task is completed the list has
   done its job: the turn that finished it keeps showing the all-green rows
   (the payoff), and at that turn's end it is **dropped whole**
@@ -175,7 +188,17 @@ The dummy plays a `todo`/`task` prompt as a scripted lifecycle
 dependency wiring, `in_progress` → `completed` — so the offline checklist,
 spinner override, and Ctrl+O cells are byte-for-byte what the live executor
 produces, and it closes on the shared `handoff!()` sentence like every other
-scenario.
+scenario. It ends with **work outstanding** (#1 done, #2 running, #3 pending),
+which is what makes the resting block and the cross-turn list drivable
+offline — and `smoke.sh` Phase 69 asserts exactly that.
+
+The other ending has its own scenario: a todo prompt that also says **finish**
+(`tasks_finished_turn`) walks two tasks to all-✔ and stops there, so the
+retirement is drivable too — the closure shows to its own turn's end, nothing
+shows at rest, and the next turn's spinner comes up clean (`smoke.sh` Phase 70,
+the reported stale-list bug). Splitting it in two rather than extending the
+first demo keeps each one's ending unambiguous: a single script can only
+demonstrate one of them.
 
 [`TaskRegistry`]: ../src/tasks.rs
 [`crate::tasks`]: ../src/tasks.rs

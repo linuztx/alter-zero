@@ -143,6 +143,7 @@ fn task_rows_gates_on_an_active_main_turn() {
     app.record_task_call(
         "TaskCreate",
         "a",
+        "{}",
         "Task #1 created successfully: a",
         true,
         store_of(&["a"]),
@@ -161,6 +162,7 @@ fn task_rows_gates_on_an_active_main_turn() {
     app.record_task_call(
         "TaskUpdate",
         "#1 → completed",
+        "{}",
         "Updated task #1 status",
         true,
         done,
@@ -189,6 +191,7 @@ fn a_finished_plan_shows_through_its_turn_then_is_gone_for_good() {
     app.record_task_call(
         "TaskUpdate",
         "#2 → completed",
+        "{}",
         "Updated task #2 status",
         true,
         store,
@@ -214,6 +217,7 @@ fn a_finished_plan_shows_through_its_turn_then_is_gone_for_good() {
     app.record_task_call(
         "TaskCreate",
         "Review demo output with user",
+        "{}",
         "Task #3 created successfully: Review demo output with user",
         true,
         fresh,
@@ -237,6 +241,7 @@ fn an_open_plan_keeps_showing_at_rest_and_on_later_turns() {
     app.record_task_call(
         "TaskCreate",
         "Review demo output with user",
+        "{}",
         "Task #1 created successfully: Review demo output with user",
         true,
         store_of(&["Review demo output with user"]),
@@ -276,9 +281,12 @@ fn the_idle_count_line_names_in_progress_work_too() {
     store
         .run_update(r#"{"taskId":"2","status":"in_progress"}"#)
         .unwrap();
+    // The three numbers partition the list — the running task is reported as
+    // in progress, not *also* as open (Claude Code prints `pendingCount`
+    // there, and 1+1+2 would claim four tasks' work on a list of three).
     assert_eq!(
         plain(&idle_task_lines(&store, 60)[0]),
-        "  3 tasks (1 done, 1 in progress, 2 open)"
+        "  3 tasks (1 done, 1 in progress, 1 open)"
     );
     // With nothing running the clause is dropped entirely.
     store
@@ -298,6 +306,7 @@ fn render_live_paints_the_idle_block_above_the_box() {
     app.record_task_call(
         "TaskCreate",
         "Review demo output with user",
+        "{}",
         "Task #1 created successfully: Review demo output with user",
         true,
         store_of(&["Review demo output with user"]),
@@ -330,6 +339,7 @@ fn render_live_stacks_the_checklist_directly_under_the_status() {
     app.record_task_call(
         "TaskUpdate",
         "#1 → in_progress",
+        "{}",
         "Updated task #1 status",
         true,
         store,
@@ -384,6 +394,7 @@ fn the_status_verb_prefers_the_active_form_and_reverts_when_done() {
     app.record_task_call(
         "TaskUpdate",
         "#1 → in_progress",
+        "{}",
         "Updated task #1 status",
         true,
         store,
@@ -401,6 +412,7 @@ fn the_status_verb_prefers_the_active_form_and_reverts_when_done() {
     app.record_task_call(
         "TaskUpdate",
         "#1 → completed",
+        "{}",
         "Updated task #1 status",
         true,
         done,

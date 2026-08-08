@@ -444,7 +444,11 @@ demo topics, preview+notes code style) in `docs/ask.md`; and the **task
 tools** (Claude-Code's structured task list, `docs/task-tools.md`: the model
 plans multi-step work with `taskcreate`/`taskget`/`tasklist`/`taskupdate` —
 Claude Code's schemas minus the `owner`/`metadata` parameters this
-single-agent TUI has no use for — over a shared `tasks::TaskRegistry`
+single-agent TUI has no use for, the create additionally *honouring* the
+dependency fields a live model folds into it (`blocks`/`blockedBy` and their
+`add…` spellings, validated before the task exists so a bad id creates
+nothing) rather than dropping them for neither an error nor an effect — over
+a shared `tasks::TaskRegistry`
 (`LlmBackend::with_tasks`, the ask-gate pattern; subagents and the `/compact`
 backend never get it), and the calls render **no tool cells anywhere
 inline** (Claude Code hides them): each resolves through the single
@@ -466,7 +470,11 @@ randomVerb`, derived per frame so completing the task snaps the verb back);
 **at rest** the same rows sit above the composer under Claude Code's dim
 `1 tasks (0 done, 1 open)` count line (`ui::idle_task_lines` — the same
 glyphs/fold, the `⎿` gutter swapped for the composer's inset, since there is
-no spinner to hang from), so work left over stays in view between turns;
+no spinner to hang from), whose three numbers **partition** the list —
+`open` is the not-yet-started tasks alone, the reference's `pendingCount`, so
+a running task is reported once instead of counted as both in progress *and*
+open (`3 tasks (1 done, 1 in progress, 1 open)`, never `2 open`) — so work
+left over stays in view between turns;
 and a **finished** plan *retires* — the turn that ticked the last task keeps
 its all-green rows, then `dispatch_after_turn` drops the list whole
 (`App::retire_finished_tasks` → `TaskStore::retire_if_finished`, re-syncing
@@ -476,8 +484,12 @@ high-water mark survives; a `/resume`/backtrack applies the same rule to the
 snapshot it restores);
 the record keeps everything the cell-less display doesn't: Ctrl+O expands
 each call as an ordinary tool cell (`TaskCallRecord::as_tool_call`), the
-derived context replays the native `tool_calls`+result pair (args `{}` like
-the ask tool — the result text is what the model reasons from), the rollout
+derived context replays the native `tool_calls`+result pair **with the
+model's own arguments verbatim** (`TaskCallRecord::arguments`, recorded
+beside the header summary and round-tripped through the rollout, so a later
+round re-reads the `{"taskId":"1","status":"completed"}` it actually sent
+rather than a placeholder `{}` a validating provider would reject), the
+rollout
 round-trips the call **with its post-call snapshot** (`session`'s
 `task_call` record, ids on a high-water mark that survives deletion), and
 all three history rewinds restore the list exactly — `/resume` and the
@@ -487,7 +499,11 @@ syncing the shared registry after each (`Session::sync_task_registry`) so
 the model's next `tasklist` agrees with the strip; the offline dummy's
 `tasks` scenario (cue `todo`/`task`) drives a real `TaskStore` through the
 whole lifecycle so every scripted result string and snapshot is
-byte-for-byte the live executor's) in `docs/task-tools.md`; and the **Ctrl+O
+byte-for-byte the live executor's, ending with work outstanding so the
+resting panel and the cross-turn list show, while its `tasks-finished` twin
+(the same cue plus `finish`) walks a two-task list to all-✔ so the
+retirement is drivable too — `smoke.sh` Phases 69 and 70) in
+`docs/task-tools.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in

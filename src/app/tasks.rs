@@ -20,8 +20,17 @@ pub struct TaskCallRecord {
     /// back to the wire name.
     pub name: String,
     /// The one-line args summary the Ctrl+O header shows
-    /// (`llm::tools::summarize_call`).
+    /// (`llm::tools::summarize_call`) — `#1 → completed`, a create's
+    /// subject. Lossy by design: it is a header.
     pub args: String,
+    /// The **raw JSON arguments** the model sent, kept beside the summary so
+    /// [`crate::context::context_messages`] can replay the call as it was
+    /// made. Without it a later turn sees `taskupdate {}` over a result line
+    /// and has lost *which* change it asked for — its own subjects,
+    /// descriptions and dependency wiring drop out of the conversation.
+    /// Empty only for a record written before the field existed (an old
+    /// rollout), which replays as `{}` exactly as it used to.
+    pub arguments: String,
     /// The model-facing result text (`Task #1 created successfully: …`).
     pub output: String,
     /// Whether the op succeeded (an unknown id, a bad value → red in Ctrl+O).
@@ -67,6 +76,7 @@ impl App {
         &mut self,
         name: &str,
         args: &str,
+        arguments: &str,
         output: &str,
         ok: bool,
         tasks: crate::tasks::TaskStore,
@@ -78,6 +88,7 @@ impl App {
         self.history.push(HistoryItem::TaskCall(TaskCallRecord {
             name: name.to_string(),
             args: args.to_string(),
+            arguments: arguments.to_string(),
             output: output.to_string(),
             ok,
             timestamp: self.now_stamp(),

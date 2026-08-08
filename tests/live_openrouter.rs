@@ -2052,3 +2052,82 @@ fn live_ask_user_question_decline_stops_the_model() {
     assert!(display.starts_with("User declined to answer questions"));
     assert!(result.contains("STOP"));
 }
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_model_plans_through_the_task_tools() {
+    // The whole task-tool path against a real model (docs/task-tools.md): the
+    // four specs are offered because a registry is attached, `run_agent`
+    // resolves each call as a `TaskCall` (never the visible ToolStart/ToolEnd
+    // pair), the shared store ends up holding the plan the model made, and
+    // every snapshot rides its own event so the strip's checklist can follow.
+    let registry = alter_zero::tasks::TaskRegistry::new();
+    let backend = backend().with_tasks(registry.clone());
+    let prompt = "Plan a three-step release checklist with the task tools: \
+                  create three tasks, then mark the first one in_progress. \
+                  Use only the task tools — no shell commands, no file edits.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut calls: Vec<(String, String, String, bool)> = Vec::new();
+    let mut last_snapshot = None;
+    let mut visible_task_cells = 0usize;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::TaskCall {
+                name,
+                arguments,
+                output,
+                ok,
+                tasks,
+                ..
+            } => {
+                calls.push((name, arguments, output, ok));
+                last_snapshot = Some(tasks);
+            }
+            // A task call must never surface as an ordinary tool cell.
+            StreamEvent::ToolStart { name, .. } if name.to_lowercase().starts_with("task") => {
+                visible_task_cells += 1;
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    for (name, arguments, output, ok) in &calls {
+        println!("{name}({arguments}) -> ok={ok} {output}");
+    }
+    assert_eq!(visible_task_cells, 0, "task calls render no tool cell");
+    assert!(
+        calls.iter().filter(|(n, ..)| n == "TaskCreate").count() >= 3,
+        "the model planned with taskcreate: {calls:?}"
+    );
+    assert!(
+        calls.iter().all(|(.., ok)| *ok),
+        "a live call hit an error the executor should have prevented: {calls:?}"
+    );
+    // Every argument blob the model sent parses — and, because the create
+    // schema's dependency fields are honoured rather than dropped, a model
+    // that folds `addBlockedBy` into a create gets the edge it asked for.
+    for (name, arguments, ..) in &calls {
+        serde_json::from_str::<serde_json::Value>(arguments)
+            .unwrap_or_else(|e| panic!("{name} sent unparseable arguments {arguments}: {e}"));
+    }
+    let snapshot = last_snapshot.expect("at least one call carried a snapshot");
+    assert!(snapshot.tasks().len() >= 3, "the plan is in the snapshot");
+    assert_eq!(
+        registry.snapshot().tasks().len(),
+        snapshot.tasks().len(),
+        "the shared store the model's next tasklist reads agrees with the strip"
+    );
+    println!(
+        "final list: {:?}",
+        snapshot
+            .tasks()
+            .iter()
+            .map(|t| format!("#{} [{}] {}", t.id, t.status.wire(), t.subject))
+            .collect::<Vec<_>>()
+    );
+}

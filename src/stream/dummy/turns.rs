@@ -407,6 +407,26 @@ const TASKS_SEGMENTS: [&str; 4] = [
          one of those calls printed a tool cell: the checklist is the \
          display. The full record of every call is in **ctrl+o**, and the \
          list survives a `/resume`.\n\n",
+        "Two of them still have work left, so the list stays with you: it \
+         sits above the composer while you read, and rides the next turn's \
+         spinner. Ask me to *finish every task* to see the other ending.\n\n",
+        handoff!()
+    ),
+];
+
+/// The finished twin's narration (the [`tasks_finished_turn`] demo), in the
+/// same segment shape: the text before the calls, then the closing after
+/// them. Two rounds, so two segments.
+const TASKS_FINISHED_SEGMENTS: [&str; 2] = [
+    "A short one, taken all the way to done: two tasks, both walked from \
+     pending through in progress to completed. Watch the checklist under \
+     the spinner.",
+    concat!(
+        "Everything's ✔. That list is yours only until this turn ends — with \
+         nothing outstanding there's no panel above your composer, and your \
+         next message starts clean: a finished checklist is swept for good \
+         rather than following you around. The ids don't come back either, \
+         so a new plan opens at **#3**.\n\n",
         handoff!()
     ),
 ];
@@ -426,6 +446,7 @@ fn task_call(store: &mut crate::tasks::TaskStore, wire: &str, args: &str) -> Str
             .expect("the demo only scripts task tools")
             .to_string(),
         args: crate::llm::tools::summarize_call(wire, args),
+        arguments: args.to_string(),
         output,
         ok,
         tasks: store.clone(),
@@ -478,6 +499,39 @@ pub(in crate::stream) fn tasks_turn(cue: &Cue) -> Vec<StreamEvent> {
         }
     }
     events.extend(say(TASKS_SEGMENTS[TASKS_SEGMENTS.len() - 1]));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
+/// The task demo's **finished** twin (cue: a todo prompt that also says
+/// "finish"): a two-task list walked to all-✔. It exists for the end state
+/// the [`tasks_turn`] demo deliberately never reaches — the checklist takes
+/// its bow inside this turn, shows nothing at rest, and is swept for good at
+/// the next turn's start — so both the offline suite and `smoke.sh` can drive
+/// the stale-list rule (`docs/task-tools.md`).
+pub(in crate::stream) fn tasks_finished_turn(cue: &Cue) -> Vec<StreamEvent> {
+    use crate::tasks::{TASK_CREATE_TOOL, TASK_UPDATE_TOOL, TaskStore};
+    let mut store = TaskStore::new();
+    let mut events = opening(cue);
+    events.extend(say(TASKS_FINISHED_SEGMENTS[0]));
+    for (wire, args) in [
+        (
+            TASK_CREATE_TOOL,
+            r#"{"subject":"Create the demo workspace","description":"Make a scratch dir for the demo.","activeForm":"Creating the demo workspace"}"#,
+        ),
+        (
+            TASK_CREATE_TOOL,
+            r#"{"subject":"Run the demo script","description":"Execute it and check the output.","activeForm":"Running the demo script"}"#,
+        ),
+        (TASK_UPDATE_TOOL, r#"{"taskId":"1","status":"in_progress"}"#),
+        (TASK_UPDATE_TOOL, r#"{"taskId":"1","status":"completed"}"#),
+        (TASK_UPDATE_TOOL, r#"{"taskId":"2","status":"in_progress"}"#),
+        (TASK_UPDATE_TOOL, r#"{"taskId":"2","status":"completed"}"#),
+    ] {
+        events.push(StreamEvent::ToolCallDelta(format!("{wire}(…)")));
+        events.push(task_call(&mut store, wire, args));
+    }
+    events.extend(say(TASKS_FINISHED_SEGMENTS[1]));
     events.push(StreamEvent::StreamDone);
     events
 }

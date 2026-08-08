@@ -260,6 +260,7 @@ pub fn run_agent(
                         let _ = tx.send(StreamEvent::TaskCall {
                             name: display_name(&call.name),
                             args: summarize_call(&call.name, &call.arguments),
+                            arguments: call.arguments.clone(),
                             output: outcome.output.clone(),
                             ok: outcome.ok,
                             tasks: outcome.tasks.clone().unwrap_or_default(),
@@ -1654,6 +1655,7 @@ mod tests {
             .find(|e| matches!(e, StreamEvent::TaskCall { .. }))
             .expect("one TaskCall event");
         let StreamEvent::TaskCall {
+            arguments,
             name,
             args,
             output,
@@ -1665,6 +1667,10 @@ mod tests {
         };
         assert_eq!(name, "TaskCreate");
         assert_eq!(args, "Set up project structure");
+        assert_eq!(
+            arguments, r#"{"subject":"Set up project structure","description":"d"}"#,
+            "the raw arguments ride along so the context can replay the call"
+        );
         assert_eq!(
             output,
             "Task #1 created successfully: Set up project structure"

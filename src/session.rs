@@ -134,6 +134,11 @@ enum ItemRecord {
 struct TaskToolRecord {
     name: String,
     args: String,
+    /// The raw JSON arguments the call was made with — omitted when absent
+    /// so a rollout written before the field existed still parses (and
+    /// replays as `{}`, exactly as it did then).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    arguments: String,
     ok: bool,
     output: String,
     timestamp: String,
@@ -520,6 +525,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
         HistoryItem::TaskCall(record) => ItemRecord::TaskCall(TaskToolRecord {
             name: record.name.clone(),
             args: record.args.clone(),
+            arguments: record.arguments.clone(),
             ok: record.ok,
             output: record.output.clone(),
             timestamp: record.timestamp.clone(),
@@ -716,6 +722,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 items.push(HistoryItem::TaskCall(crate::app::TaskCallRecord {
                     name: record.name,
                     args: record.args,
+                    arguments: record.arguments,
                     output: record.output,
                     ok: record.ok,
                     timestamp: record.timestamp,
@@ -963,6 +970,7 @@ mod tests {
             .run_update(r#"{"taskId":"2","addBlockedBy":["1"],"status":"in_progress"}"#)
             .unwrap();
         let item = HistoryItem::TaskCall(crate::app::TaskCallRecord {
+            arguments: r#"{"taskId":"1","status":"completed"}"#.to_string(),
             name: "TaskUpdate".into(),
             args: "#2 → in_progress".into(),
             output: "Updated task #2 status, blockedBy".into(),
@@ -979,8 +987,48 @@ mod tests {
         assert_eq!(value["payload"]["tasks"][0]["active_form"], "Writing tests");
         assert_eq!(value["payload"]["tasks"][1]["status"], "in_progress");
         assert_eq!(value["payload"]["tasks"][1]["blocked_by"][0], 1);
+        // The raw arguments ride the record too, so a resumed session's
+        // derived context replays the call as the model made it
+        // (docs/task-tools.md).
+        assert_eq!(
+            value["payload"]["arguments"],
+            r#"{"taskId":"1","status":"completed"}"#
+        );
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_task_call_written_before_the_arguments_field_still_parses() {
+        // Old rollouts have no `arguments` — they must load (replaying as
+        // `{}`, exactly as they did then) rather than fail the whole file.
+        let line = serde_json::json!({
+            "type": "task_call",
+            "timestamp": "t",
+            "payload": {
+                "name": "TaskCreate",
+                "args": "Write tests",
+                "ok": true,
+                "output": "Task #1 created successfully: Write tests",
+                "timestamp": "03:20 PM",
+                "tasks": [{
+                    "id": 1,
+                    "subject": "Write tests",
+                    "description": "d",
+                    "status": "pending",
+                    "blocked_by": [],
+                }],
+                "next_id": 1,
+            }
+        })
+        .to_string();
+        let text = format!("{}\n{line}\n", meta_line(&meta(), "t0"));
+        let (_, parsed) = parse_session(&text).expect("an old rollout still parses");
+        let [HistoryItem::TaskCall(record)] = parsed.as_slice() else {
+            panic!("one task call, got {parsed:?}");
+        };
+        assert!(record.arguments.is_empty(), "absent, not invented");
+        assert_eq!(record.tasks.tasks().len(), 1, "the snapshot still loads");
     }
 
     #[test]
@@ -998,6 +1046,7 @@ mod tests {
             .run_update(r#"{"taskId":"2","status":"deleted"}"#)
             .unwrap();
         let item = HistoryItem::TaskCall(crate::app::TaskCallRecord {
+            arguments: r#"{"taskId":"1","status":"completed"}"#.to_string(),
             name: "TaskUpdate".into(),
             args: "#2 → deleted".into(),
             output: "Updated task #2 deleted".into(),

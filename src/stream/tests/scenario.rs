@@ -22,6 +22,7 @@ const EXAMPLES: &[&str] = &[
     "call agents for weather",
     "run three pings in parallel",
     "show me a diff",
+    "demo the todo tool and finish every task",
     "demo the todo tool i want to see how it works",
     "hello there",
 ];
@@ -290,6 +291,46 @@ fn the_tasks_demo_drives_a_real_store_through_the_whole_lifecycle() {
         last.running_form(),
         Some("Writing the core logic"),
         "the spinner override ends the demo on the active task's label"
+    );
+}
+
+#[test]
+fn the_finished_twin_ends_with_every_task_ticked() {
+    // The end state the `tasks` demo deliberately doesn't reach: a list with
+    // nothing left. Its turn shows the all-green checklist to the very end
+    // (the payoff), and the loop sweeps it at the *next* turn's start — so
+    // the offline suite can drive the reported stale-list bug
+    // (`docs/task-tools.md`).
+    let scenario = SCENARIOS
+        .iter()
+        .find(|s| s.name == "tasks-finished")
+        .expect("the finished-tasks demo is registered");
+    let Play::Script(script) = scenario.play else {
+        panic!("the finished-tasks demo is a script");
+    };
+    let events = script(&Cue::new("demo the todo tool and finish every task", 0));
+    let snapshots: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::TaskCall { ok, tasks, .. } => Some((*ok, tasks.clone())),
+            _ => None,
+        })
+        .collect();
+    assert!(snapshots.iter().all(|(ok, _)| *ok), "a demo never errs");
+    let last = &snapshots.last().expect("the demo runs task calls").1;
+    use crate::tasks::TaskStatus;
+    assert!(!last.tasks().is_empty(), "the demo plans real work");
+    assert!(
+        last.tasks()
+            .iter()
+            .all(|t| t.status == TaskStatus::Completed),
+        "the turn ends all-✔: {:?}",
+        last.tasks()
+    );
+    assert_eq!(
+        last.running_form(),
+        None,
+        "nothing is in progress, so the spinner keeps the turn's own verb"
     );
 }
 

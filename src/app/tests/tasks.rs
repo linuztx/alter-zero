@@ -23,6 +23,7 @@ fn record(app: &mut App, ok: bool, store: &TaskStore) {
     app.record_task_call(
         "TaskCreate",
         "a subject",
+        "{}",
         "Task #1 created successfully: a",
         ok,
         store.clone(),
@@ -99,6 +100,7 @@ fn a_resumed_or_rewound_finished_plan_stays_retired() {
     }
     app.load_session(vec![HistoryItem::TaskCall(TaskCallRecord {
         name: "TaskUpdate".into(),
+        arguments: "{}".to_string(),
         args: "#2 → completed".into(),
         output: "Updated task #2 status".into(),
         ok: true,
@@ -114,6 +116,7 @@ fn a_resumed_or_rewound_finished_plan_stays_retired() {
     // An OPEN plan resumes whole.
     app.load_session(vec![HistoryItem::TaskCall(TaskCallRecord {
         name: "TaskCreate".into(),
+        arguments: "{}".to_string(),
         args: "b".into(),
         output: "Task #2 created successfully: b".into(),
         ok: true,
@@ -135,6 +138,7 @@ fn task_verb_is_the_running_forms_label_while_a_task_is_in_progress() {
     app.record_task_call(
         "TaskUpdate",
         "#1 → in_progress",
+        "{}",
         "Updated task #1 status",
         true,
         store,
@@ -147,6 +151,7 @@ fn task_verb_is_the_running_forms_label_while_a_task_is_in_progress() {
     app.record_task_call(
         "TaskUpdate",
         "#1 → completed",
+        "{}",
         "Updated task #1 status",
         true,
         done,
@@ -170,6 +175,7 @@ fn load_session_restores_the_last_records_snapshot() {
     let items = vec![
         HistoryItem::TaskCall(TaskCallRecord {
             name: "TaskCreate".into(),
+            arguments: "{}".to_string(),
             args: "a".into(),
             output: "Task #1 created successfully: a".into(),
             ok: true,
@@ -178,6 +184,7 @@ fn load_session_restores_the_last_records_snapshot() {
         }),
         HistoryItem::TaskCall(TaskCallRecord {
             name: "TaskCreate".into(),
+            arguments: "{}".to_string(),
             args: "b".into(),
             output: "Task #2 created successfully: b".into(),
             ok: true,
@@ -221,6 +228,7 @@ fn a_backtrack_rewind_resets_the_list_to_the_snapshot_at_the_cut() {
     app.record_task_call(
         "TaskCreate",
         "b",
+        "{}",
         "Task #2 created successfully: b",
         true,
         store_of(&["a", "b"]),

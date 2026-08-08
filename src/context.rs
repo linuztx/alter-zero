@@ -495,7 +495,16 @@ fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
             HistoryItem::TaskCall(record) => {
                 let id = format!("call_{tool_seq}");
                 tool_seq += 1;
-                let call = ContextToolCall::new(id.clone(), wire_tool_name(&record.name), "{}");
+                // The arguments the model actually sent, so its own plan
+                // stays in the conversation rather than only in the result
+                // line (docs/task-tools.md). A record written before the
+                // field existed — or one whose arguments didn't parse —
+                // replays as `{}`, which is what it always did.
+                let arguments = Some(record.arguments.trim())
+                    .filter(|a| serde_json::from_str::<serde_json::Value>(a).is_ok())
+                    .unwrap_or("{}");
+                let call =
+                    ContextToolCall::new(id.clone(), wire_tool_name(&record.name), arguments);
                 match out.last_mut() {
                     Some(last) if last.role == ContextRole::Assistant => {
                         last.tool_calls.push(call);
@@ -709,20 +718,21 @@ mod tests {
     fn a_task_call_replays_as_the_native_pair_the_model_keeps() {
         // A task tool call is invisible inline (docs/task-tools.md) but the
         // model made the call and read the result — the derived context
-        // replays the same native pair every other tool gets, `{}` args like
-        // the ask tool (history keeps only the summary; the RESULT text is
-        // what the model reasons from). Interleaved with text, it folds onto
-        // the open assistant segment like any tool call.
+        // replays the same native pair every other tool gets, carrying the
+        // **arguments it actually sent** so its own plan (subjects,
+        // descriptions, the dependency it wired) stays in the conversation
+        // rather than only in a result line. Interleaved with text, it folds
+        // onto the open assistant segment like any tool call.
         let mut store = crate::tasks::TaskStore::new();
-        let output = store
-            .run_create(r#"{"subject":"Add tests","description":"d"}"#)
-            .unwrap();
+        let arguments = r#"{"subject":"Add tests","description":"d"}"#;
+        let output = store.run_create(arguments).unwrap();
         let history = vec![
             message(Role::User, "plan it"),
             message(Role::Assistant, "On it."),
             HistoryItem::TaskCall(crate::app::TaskCallRecord {
                 name: "TaskCreate".to_string(),
                 args: "Add tests".to_string(),
+                arguments: arguments.to_string(),
                 output: output.clone(),
                 ok: true,
                 timestamp: String::new(),
@@ -733,8 +743,8 @@ mod tests {
         assert_eq!(ctx[1].role, ContextRole::Assistant);
         assert_eq!(
             ctx[1].tool_calls,
-            vec![ContextToolCall::new("call_0", "taskcreate", "{}")],
-            "the call folds onto the assistant segment, wire-named"
+            vec![ContextToolCall::new("call_0", "taskcreate", arguments)],
+            "the call replays with the arguments the model sent"
         );
         assert_eq!(
             ctx[2],

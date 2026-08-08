@@ -219,6 +219,7 @@ impl Session<'_> {
             StreamEvent::TaskCall {
                 name,
                 args,
+                arguments,
                 output,
                 ok,
                 tasks,
@@ -234,7 +235,8 @@ impl Session<'_> {
                 self.flush_segment(committing, width);
                 self.render.reset();
                 self.settle_bg_completions();
-                self.app.record_task_call(&name, &args, &output, ok, tasks);
+                self.app
+                    .record_task_call(&name, &args, &arguments, &output, ok, tasks);
                 false
             }
             StreamEvent::ToolOutput(chunk) => {

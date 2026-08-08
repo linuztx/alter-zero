@@ -205,6 +205,15 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         },
         play: Play::Script(turns::files_turn),
     },
+    // The todo demo taken all the way to done — the end state: the checklist
+    // bows out with the turn and is swept for good (docs/task-tools.md).
+    // Ahead of the broader todo cue, which it also matches.
+    Scenario {
+        #[cfg(test)]
+        name: "tasks-finished",
+        selects: |cue| (cue.mentions("todo") || cue.mentions("task")) && cue.mentions("finish"),
+        play: Play::Script(turns::tasks_finished_turn),
+    },
     // The task-tools lifecycle: the live checklist, dependencies, the
     // spinner override (docs/task-tools.md).
     Scenario {
