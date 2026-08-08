@@ -120,11 +120,15 @@ matters:
 - **Ctrl+O: the full record.** The transcript view lists every task call as
   an ordinary tool cell (`● TaskCreate(Set up project structure)` over its
   `⎿` result gutter) — the debugging surface hides nothing.
-- **Ctrl+D / the model's context: native replay.** Each record replays as a
-  provider-native `tool_calls` + `tool` result pair
-  (`context::context_messages`), args `{}` like the ask tool (history keeps
-  the one-line summary, and the **result** text carries what the model
-  reasons from), so later turns remember every call and answer.
+- **Ctrl+D / the model's context: native replay, verbatim.** Each record
+  replays as a provider-native `tool_calls` + `tool` result pair
+  (`context::context_messages`) carrying the **raw arguments the model
+  sent** — `TaskCallRecord::arguments`, kept beside the header summary
+  precisely so the replay can. The summary is lossy by design (`#1 →
+  completed` is a header, not a payload), and replaying *that* would leave a
+  later turn reading `taskupdate {}` over a result line, its own subjects,
+  descriptions and dependency wiring gone from the conversation. A record
+  written before the field existed replays as `{}`, exactly as it used to.
 
 ## How it flows
 
@@ -133,8 +137,12 @@ permission, and streams no output, so the `ToolBatch`/`ToolStart`/`ToolEnd`
 trio would only exist to be filtered back out:
 
 ```
-StreamEvent::TaskCall { name, args, output, ok, tasks }
+StreamEvent::TaskCall { name, args, arguments, output, ok, tasks }
 ```
+
+`args` is the one-line header summary the Ctrl+O cell shows; `arguments` is
+the raw JSON the model sent, which the record keeps for the context replay
+(see above).
 
 `llm::agent::run_agent` routes task calls the way it routes `agent` calls:
 they are excluded from the `ToolBatch` announcement (a round of only task
