@@ -219,7 +219,12 @@ region, so the manager hid exactly the foreground command it sat next to).
 line count, and `render_live_with_preview`'s band branch paints the same
 strip the composer path does (the shared `render_strip` helper) with the
 band pinned at the bottom — on a terminal too short for both, the band keeps
-its full height and the strip is squeezed first. Tool cells still commit
+its full height and the strip is squeezed first. The **three inline pickers**
+(`/model`, `/login`, `/settings`) had the same bug and now share this exact
+geometry (updated 2026-08-08): the reservation is `ui::layout`'s
+`strip_above_rows`, the split `view_split`, the paint `render_strip_above` —
+all four views go through them, so none can drift (`docs/llm.md`).
+Tool cells still commit
 beneath the region as they resolve (commits stay allowed while the band is
 open), so the transition running-cell → committed-cell reads exactly like it
 does over the composer. One consequence of the band owning every key: the

@@ -475,6 +475,26 @@ fn the_open_manager_band_suppresses_the_ctrl_b_hint_clock() {
 }
 
 #[test]
+fn an_open_inline_picker_suppresses_the_ctrl_b_hint_clock() {
+    // The `/model`, `/login` and `/settings` pickers own every key while open
+    // too (`on_key`'s dispatch), so the running cell they now keep visible
+    // above themselves must not advertise a Ctrl+B they would swallow — the
+    // band's rule (docs/background.md).
+    let hint_clock_off = |open: fn(&mut App)| {
+        let mut app = App::new();
+        app.begin_stream();
+        app.start_tool("Bash", "sleep 100");
+        app.set_command_elapsed(Some(Duration::from_secs(5)));
+        assert!(app.command_elapsed().is_some());
+        open(&mut app);
+        assert_eq!(app.command_elapsed(), None, "the picker swallows Ctrl+B");
+    };
+    hint_clock_off(|app| app.open_model_picker("a"));
+    hint_clock_off(|app| app.open_key_onboarding(Vec::new(), "~/.alter-zero/.env"));
+    hint_clock_off(App::open_settings);
+}
+
+#[test]
 fn clear_conversation_wipes_the_background_state() {
     let mut app = app_with_shells(&["a"]);
     let completion = app.bg_exited("bash_1", Some(0), false).unwrap();

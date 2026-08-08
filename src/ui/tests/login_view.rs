@@ -158,7 +158,9 @@ fn render_login_key_step_shows_a_placeholder_when_empty() {
 #[test]
 fn render_live_shows_the_onboarding_when_open() {
     let app = login_app_provider();
-    let mut buf = buffer(60, 12);
+    // Its natural height, like the boundary paints it (the flow is pinned at
+    // the region's bottom — the strip above it owns any slack).
+    let mut buf = buffer(60, key_onboarding_height(&app, 60, 40).unwrap());
     render_live(buf.area, &mut buf, &app);
     // The onboarding stands in for the composer: top rule, `❯` filter, and
     // the provider list (headerless — no banner on row 1).
@@ -171,7 +173,7 @@ fn render_live_shows_the_onboarding_when_open() {
 fn cursor_tracks_the_login_filter_then_the_masked_key() {
     let mut app = login_app_provider();
     app.key_onboarding.as_mut().unwrap().query = "tog".into();
-    let area = Rect::new(0, 0, 60, 12);
+    let area = Rect::new(0, 0, 60, key_onboarding_height(&app, 60, 40).unwrap());
     let (x, y) = cursor_position(area, &app);
     // indent(2) + "❯ "(2) + "tog"(3) = 7 on the filter row.
     assert_eq!((x, y), (7, LOGIN_SEARCH_ROW));
@@ -182,6 +184,7 @@ fn cursor_tracks_the_login_filter_then_the_masked_key() {
         onboarding.chosen = Some(0);
         onboarding.key_input = "abcd".into();
     }
+    let area = Rect::new(0, 0, 60, key_onboarding_height(&app, 60, 40).unwrap());
     let (x, y) = cursor_position(area, &app);
     // indent(2) + "❯ "(2) + 4 mask glyphs = 8 on the key row.
     assert_eq!((x, y), (8, LOGIN_KEY_INPUT_ROW));

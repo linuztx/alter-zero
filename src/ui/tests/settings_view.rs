@@ -6,8 +6,8 @@ use super::*;
 use crate::permission::PermissionMode;
 use crate::settings::{SettingAvailability, SettingKey};
 use crate::ui::theme::{
-    MODEL_SELECTED_COLOR, SETTINGS_CHROME_ROWS, SETTINGS_HINT, SETTINGS_SEARCH_ROW,
-    SETTINGS_VALUE_COLOR, SETTINGS_VALUE_OFF_COLOR,
+    GAP_ROWS, MODEL_SELECTED_COLOR, SETTINGS_CHROME_ROWS, SETTINGS_HINT, SETTINGS_SEARCH_ROW,
+    SETTINGS_VALUE_COLOR, SETTINGS_VALUE_OFF_COLOR, STATUS_GAP_ROWS, STATUS_ROWS,
 };
 
 /// An app with the menu open and a gate present (the ordinary session shape).
@@ -21,7 +21,7 @@ fn settings_app() -> App {
 /// Render the menu at its natural height, like the boundary does — otherwise
 /// the list's `Min(0)` would expand and push the rows below it down.
 fn render(app: &App, width: u16) -> Buffer {
-    let height = settings_height(app, 200).expect("the menu is open");
+    let height = settings_height(app, 78, 200).expect("the menu is open");
     let mut buf = buffer(width, height);
     render_settings(buf.area, &mut buf, app);
     buf
@@ -51,18 +51,51 @@ fn the_menu_is_framed_like_the_model_picker_with_a_hint_row() {
 fn the_height_is_the_chrome_plus_the_listed_rows() {
     let mut app = settings_app();
     let all = u16::try_from(SettingKey::ALL.len()).unwrap();
-    assert_eq!(settings_height(&app, 200), Some(SETTINGS_CHROME_ROWS + all));
+    assert_eq!(
+        settings_height(&app, 78, 200),
+        Some(SETTINGS_CHROME_ROWS + all)
+    );
     // A narrowed search shrinks the list — and so the region.
     for c in "retry".chars() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    assert_eq!(settings_height(&app, 200), Some(SETTINGS_CHROME_ROWS + 1));
+    assert_eq!(
+        settings_height(&app, 78, 200),
+        Some(SETTINGS_CHROME_ROWS + 1)
+    );
     // …and it is clamped to the terminal.
-    assert_eq!(settings_height(&app, 5), Some(5));
+    assert_eq!(settings_height(&app, 78, 5), Some(5));
     // Closed, there is no menu height at all (the caller falls back to the
     // composer's).
     app.close_settings();
-    assert_eq!(settings_height(&app, 200), None);
+    assert_eq!(settings_height(&app, 78, 200), None);
+}
+
+#[test]
+fn the_menu_reserves_the_running_turn_strip_above_it() {
+    // `/settings` opens mid-turn like `/model` and `/login`, and replaces the
+    // composer only: the streaming strip (here a running tool's live cell over
+    // the spinner status line) keeps its rows above the menu's frame — the ↓
+    // manager band's rule (docs/background.md, docs/settings.md).
+    let mut app = settings_app();
+    app.begin_stream();
+    app.start_tool("Bash", "cargo test");
+    let all = u16::try_from(SettingKey::ALL.len()).unwrap();
+    let preview = preview_rows(&app, 78);
+    assert!(preview > 0, "the running tool previews mid-turn");
+    let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
+    assert_eq!(
+        settings_height(&app, 78, 200),
+        Some(strip + SETTINGS_CHROME_ROWS + all)
+    );
+    // Idle again, the menu is alone — the old geometry.
+    app.end_tool("ok", true);
+    app.finish_stream();
+    app.end_turn(1);
+    assert_eq!(
+        settings_height(&app, 78, 200),
+        Some(SETTINGS_CHROME_ROWS + all)
+    );
 }
 
 #[test]
@@ -193,7 +226,7 @@ fn a_long_list_keeps_the_selection_centered() {
     let mut app = settings_app();
     app.on_key(KeyEvent::new(KeyCode::End, KeyModifiers::NONE));
     let buf = render(&app, 78);
-    let visible: Vec<String> = (0..settings_height(&app, 200).unwrap())
+    let visible: Vec<String> = (0..settings_height(&app, 78, 200).unwrap())
         .map(|y| row(&buf, y, 78))
         .collect();
     let last = SettingKey::ALL.last().unwrap().label();
@@ -209,7 +242,7 @@ fn the_cursor_sits_at_the_end_of_the_search_query() {
     for c in "tools".chars() {
         app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
     }
-    let height = settings_height(&app, 200).unwrap();
+    let height = settings_height(&app, 78, 200).unwrap();
     let area = Rect::new(0, 3, 78, height);
     let (x, y) = cursor_position(area, &app);
     assert_eq!(y, 3 + SETTINGS_SEARCH_ROW, "on the search row");

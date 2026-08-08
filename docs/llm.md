@@ -211,8 +211,28 @@ the bottom rule — the shape of the user's mock):
   switch rebinds only the *next* turn's backend, so there's nothing to race. The
   switch confirmation is a transient toast (`Switched model to {id}` /
   `Can't switch to {id}: …`), not a committed message — a mid-turn switch must
-  not split the streaming reply. While the picker is open the status strip is
-  hidden (it owns the whole region), reappearing on close. See `docs/toast.md`.
+  not split the streaming reply. See `docs/toast.md`.
+- **The streaming strip stays above it** (updated 2026-08-08). "Replaces the
+  composer" is meant literally: the picker's framed body takes the composer's
+  rows plus the band's and the footer's, and *nothing else*. The running tool's
+  live cell (its streamed tail included), the `● Thinking…` block, the spinner
+  status line, the queued follow-ups and the toast keep their rows **above**
+  it. It used to take the whole live region, which hid exactly the turn the
+  user opened the picker beside — the reported bug: pressing `/model` while the
+  agent was generating blanked the status indicator until the picker closed.
+  The fix is the ↓ manager band's, which had the same bug first
+  (`docs/background.md`): `ui::layout`'s `strip_above_rows` reserves the strip
+  over the picker's own `model_picker_rows`, `view_split` splits the region
+  between them (the picker is a `Length` pinned at the bottom, so a terminal
+  too short for both squeezes the strip first), and `render_live_with_preview`
+  paints the same `render_strip_above` the composer path paints. The cursor
+  seat comes from that same split, so it can never drift off the `❯` search
+  row. One consequence of the picker owning every key: the running cell's
+  delayed `(ctrl+b to run in background)` hint is suppressed while it is open
+  (`App::command_elapsed` reads `None` — the permission-prompt rule), since
+  Ctrl+B would not reach the runner from inside the picker. The `/login` flow
+  and the `/settings` menu are the same view family and behave identically
+  (`docs/settings.md`).
 - **A configured provider is required.** If no provider has a resolvable key, the
   boundary skips the fetch and the list area shows a cyan
   `No API key yet — run /login to add one` (`ModelLoad::NeedsLogin`) instead of
@@ -315,7 +335,9 @@ in place; unlike it, it is a **two-step** flow.
 ```
 
 - Opened by `/login` (`Action::OpenKeyOnboarding`). **Works mid-turn** like
-  `/model` (updated 2026-07-08): saving a key never touches the running turn. The
+  `/model` (updated 2026-07-08) — and, like it, replaces the composer *only*,
+  keeping the streaming strip above itself (updated 2026-08-08; see the
+  picker's own bullet): saving a key never touches the running turn. The
   boundary builds the provider rows so the ✓ reflects real env / `.env` key
   resolution (`provider_choices`) and injects the `~`-relative `.env` path the
   provider-step hint names. The save confirmation is a transient toast

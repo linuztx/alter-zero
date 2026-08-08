@@ -205,6 +205,24 @@ when there is no preview, so the status is the strip's top row) *only when*
 (the preview content-row count), fed by `strip_has_status`/`preview_rows` from the
 `App`-having callers (`render_live`, `cursor_position`, `main.rs`).
 
+### The strip outlives the composer
+
+Only the two **modals** — the tool-permission prompt (`docs/permissions.md`)
+and the `AskUserQuestion` prompt (`docs/ask.md`) — replace the strip along
+with the composer, and they earn it: the turn is *blocked* on the answer, so
+there is nothing for the spinner to report. Every other inline view replaces
+the **composer alone** and keeps the strip above itself — the `/model`
+picker, the `/login` flow, the `/settings` menu (`docs/llm.md`,
+`docs/settings.md`) and the ↓ background manager band (`docs/background.md`).
+They share one geometry: `ui::layout`'s `strip_above_rows` reserves the rows
+(this same `strip_rows` sum plus the queued messages and the toast),
+`view_split` splits the region between the strip and the view's own frame —
+which is a `Length` pinned at the bottom, so a terminal too short for both
+squeezes the strip, never the view the user is typing into — and
+`render_strip_above` paints exactly what the composer path paints. Anything
+opened *beside* a running turn must not hide it: that was the reported bug in
+all four (the band first, then the pickers).
+
 ## The shimmer wave (ported from openai/codex)
 
 The verb (`Working…`) renders one **bold span per char**, colours from

@@ -543,7 +543,9 @@ fn render_live_shows_the_model_picker_when_open() {
     let mut app = App::new();
     app.open_model_picker("anthropic/claude-3-haiku");
     app.set_models(three_models());
-    let mut buf = buffer(60, 14);
+    // At its natural height, like the boundary paints it — the picker is
+    // pinned at the region's bottom (the strip above it owns any slack).
+    let mut buf = buffer(60, model_picker_height(&app, 60, 40).unwrap());
     render_live(buf.area, &mut buf, &app);
     // The picker stands in for the composer: top rule, then the `❯` search
     // line (headerless), then the model rows.
@@ -552,6 +554,79 @@ fn render_live_shows_the_model_picker_when_open() {
     assert!(
         row(&buf, 4, 60).contains("anthropic/claude-3-haiku"),
         "a model row"
+    );
+}
+
+#[test]
+fn the_model_picker_keeps_the_running_turn_strip_above_it() {
+    // The user report: `/model` opened mid-turn swallowed the status
+    // indicator and the running tool's live cell. Like the ↓ manager band, the
+    // picker replaces the composer only — the strip stays above it
+    // (docs/llm.md, docs/background.md).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "seq 1 100");
+    app.push_tool_output("35\n36\n");
+    app.open_model_picker("anthropic/claude-3-haiku");
+    app.set_models(three_models());
+    let h = model_picker_height(&app, 60, 40).unwrap();
+    let mut buf = buffer(60, h);
+    render_live(buf.area, &mut buf, &app);
+    let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 60)).collect();
+    let all = rows.join("\n");
+    assert!(
+        all.contains("● Bash(seq 1 100)"),
+        "the running cell stays visible: {all}"
+    );
+    assert!(all.contains("36"), "…tailing its streamed output: {all}");
+    assert!(
+        all.contains("esc to interrupt"),
+        "the status indicator stays: {all}"
+    );
+    assert!(
+        all.contains("anthropic/claude-3-haiku"),
+        "the picker renders too: {all}"
+    );
+    let cell = rows.iter().position(|r| r.contains("● Bash")).unwrap();
+    let picker = rows.iter().position(|r| r.contains('❯')).unwrap();
+    assert!(cell < picker, "the strip sits above the picker: {all}");
+    // The cursor lands on the picker's painted search row, wherever the strip
+    // has pushed it (the seat and the paint share one split).
+    let (_, y) = cursor_position(buf.area, &app);
+    assert_eq!(y as usize, picker, "the cursor sits on the search row");
+}
+
+#[test]
+fn the_login_flow_keeps_the_running_turn_strip_above_it() {
+    // `/login` opens mid-turn for the same reason and keeps the same strip.
+    let mut app = login_app_provider();
+    app.begin_stream();
+    app.push_chunk("checking that for you");
+    let h = key_onboarding_height(&app, 60, 40).unwrap();
+    let mut buf = buffer(60, h);
+    render_live(buf.area, &mut buf, &app);
+    let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 60)).collect();
+    let all = rows.join("\n");
+    assert!(
+        all.contains("esc to interrupt"),
+        "the status indicator stays: {all}"
+    );
+    assert!(
+        all.contains("checking that for you"),
+        "…over the streaming reply's preview: {all}"
+    );
+    assert!(all.contains("OpenRouter"), "the flow renders too: {all}");
+    let status = rows
+        .iter()
+        .position(|r| r.contains("esc to interrupt"))
+        .unwrap();
+    let flow = rows.iter().position(|r| r.contains("OpenRouter")).unwrap();
+    assert!(status < flow, "the strip sits above the flow: {all}");
+    let (_, y) = cursor_position(buf.area, &app);
+    assert!(
+        rows[y as usize].contains('❯'),
+        "the cursor sits on the painted filter row: {:?}",
+        rows[y as usize]
     );
 }
 

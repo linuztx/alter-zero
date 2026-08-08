@@ -188,7 +188,14 @@ Every change confirms with a transient toast (`{label}: {value}`) and persists.
 
 Like `/model` and `/login`, `/settings` is **available mid-turn** — it only
 replaces the composer, and a rebuild rebinds the *next* turn's backend while the
-running one streams on its own thread, untouched.
+running one streams on its own thread, untouched. "Only the composer" is
+literal (updated 2026-08-08): the streaming strip — the running tool's live
+cell, the status line, the queued messages, the toast — keeps its rows above
+the menu's frame, so opening `/settings` mid-turn never hides the turn it was
+opened beside. `settings_height` reserves `ui::layout`'s `strip_above_rows`
+over the menu's own `settings_rows`, and `render_live` paints the strip above
+it through the shared `view_split`. See `docs/llm.md` (the reported bug, first
+fixed for the ↓ manager band in `docs/background.md`).
 
 ## Persistence
 

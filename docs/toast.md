@@ -57,11 +57,16 @@ rejections are gone). Two consequences:
   into its own channel. Selecting a model rebuilds `main.rs`'s
   `Box<dyn ReplySource>`, which only changes the backend used for the *next*
   turn — the in-flight thread keeps going.
-- **The status line is hidden while the picker is open.** The `/model` and
-  `/login` pickers own the entire live region (`render_live` returns early for
-  them), so the streaming strip — preview, spinner, timer — is not drawn while
-  you browse. It reappears the moment the picker closes. This is the deliberate
-  trade the user asked for ("it only modifies the inside of the textarea").
+- **The status line stays visible while the picker is open** (updated
+  2026-08-08). "Only replace the composer" is literal: the `/model` and
+  `/login` pickers (and `/settings`) reserve the streaming strip's rows above
+  their own frame, so the running tool's live cell, the spinner, the timer —
+  and any queued messages and the toast itself — keep their place while you
+  browse. They used to own the entire live region (`render_live` returned
+  early for them), which blanked the indicator for exactly as long as the
+  picker was open: the reported bug, fixed the way the ↓ manager band's same
+  bug was (`docs/llm.md`, `docs/background.md`,
+  `docs/status-indicator.md`).
 
 Because a mid-turn model switch or key save must not split the streaming reply
 in scrollback, their confirmations are **toasts**, not committed notices — the

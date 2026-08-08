@@ -185,6 +185,63 @@ pub fn live_height(
     .min(usize::from(term_height.max(1))) as u16
 }
 
+/// The rows a **composer-replacing inline view** keeps *above* itself: the
+/// streaming strip ([`strip_rows`] — the preview, the status line and the task
+/// checklist with their gaps), the queued messages, and the toast row.
+///
+/// The `/model` picker, the `/login` flow, the `/settings` menu and the ↓
+/// background manager band all replace the **composer** — never the running
+/// turn (they open mid-turn precisely because the turn streams on its own
+/// thread, `docs/llm.md`). So what is executing stays on screen above them:
+/// the running tool's live cell, the spinner status line, the queued
+/// follow-ups, the toast. Taking the whole region instead hid exactly the turn
+/// the user opened the view beside — the reported bug, first for the band
+/// (`docs/background.md`) and then for the pickers.
+///
+/// Saturating: the queue is uncapped, and the callers clamp the sum to the
+/// terminal height anyway.
+pub(super) fn strip_above_rows(app: &App, width: u16) -> u16 {
+    strip_rows(
+        strip_has_status(app),
+        preview_rows(app, width),
+        super::tasks::task_rows(app, width),
+    )
+    .saturating_add(queued_rows(app, width))
+    .saturating_add(toast_rows(app))
+}
+
+/// A composer-replacing view's live-region height: its own `body` rows under
+/// the [`strip_above_rows`] strip, clamped to the terminal. Shared by the four
+/// `*_height` helpers so they agree by construction.
+pub(super) fn view_height(app: &App, width: u16, body: u16, term_height: u16) -> u16 {
+    strip_above_rows(app, width)
+        .saturating_add(body)
+        .min(term_height.max(1))
+}
+
+/// Split the live region into `[strip, body]` — the streaming strip above a
+/// composer-replacing view's own `body_rows`-tall frame below it (the sum is
+/// what [`view_height`] reserved). The body is a `Length`, so a region the
+/// terminal squeezed keeps the view whole and drops strip rows first; the
+/// paint ([`render_live_with_preview`]) and the cursor seat
+/// ([`cursor_position`]) share this split, so they can never drift.
+pub(super) fn view_split(area: Rect, body_rows: u16) -> [Rect; 2] {
+    Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(body_rows.min(area.height)),
+    ])
+    .areas(area)
+}
+
+/// Seat the hardware cursor `row` rows into a composer-replacing view's own
+/// frame, clamped inside the live region (a short terminal can squeeze the
+/// view's top rows off, and a collapsed body has no rows at all).
+fn view_cursor_y(area: Rect, body: Rect, row: u16) -> u16 {
+    body.y
+        .saturating_add(row)
+        .min(area.y + area.height.saturating_sub(1))
+}
+
 /// Whether the picker shows its counter + model-name detail rows below the
 /// list — only when a real model is listed (Ready with at least one match).
 /// The placeholder states have a blank counter and name, so those rows collapse
@@ -226,16 +283,30 @@ fn model_list_rows(picker: &ModelPicker) -> u16 {
     }
 }
 
+/// The rows the `/model` picker's own frame occupies: its chrome plus the
+/// (possibly scrolled) list. What [`model_picker_height`] reserves under the
+/// strip, and what [`render_live`] hands [`render_model_picker`].
+pub(super) fn model_picker_rows(picker: &ModelPicker) -> u16 {
+    model_chrome_rows(picker) + model_list_rows(picker)
+}
+
 /// The inline live-region height when the `/model` picker is open, or `None`
 /// when it isn't (the caller then falls back to [`live_height`]). The picker
-/// **replaces** the composer, so this is the whole region — the chrome plus the
-/// (possibly scrolled) list — clamped to the terminal height. Shared by
-/// `main.rs`'s `live_region_height`, [`render_live`], and [`cursor_position`]
-/// so all three agree.
+/// **replaces** the composer — and *only* the composer: the streaming strip
+/// keeps its rows above it (`strip_above_rows`), so opening `/model`
+/// mid-turn never hides the running turn's status line or its live tool cell.
+/// Clamped to the terminal height. Shared by `tui::view`'s
+/// `live_region_height`, [`render_live`], and [`cursor_position`] so all three
+/// agree.
 #[must_use]
-pub fn model_picker_height(app: &App, term_height: u16) -> Option<u16> {
+pub fn model_picker_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     let picker = app.model_picker.as_ref()?;
-    Some((model_chrome_rows(picker) + model_list_rows(picker)).min(term_height.max(1)))
+    Some(view_height(
+        app,
+        width,
+        model_picker_rows(picker),
+        term_height,
+    ))
 }
 
 /// The inline live-region height when a tool-permission prompt is open, or
@@ -264,15 +335,8 @@ pub fn permission_height(app: &App, width: u16, term_height: u16) -> Option<u16>
 #[must_use]
 pub fn background_view_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.background_view.as_ref()?;
-    // Summed in usize like `live_height`: `queued_rows` is uncapped.
-    let rows = usize::from(strip_rows(
-        strip_has_status(app),
-        preview_rows(app, width),
-        super::tasks::task_rows(app, width),
-    )) + usize::from(queued_rows(app, width))
-        + usize::from(toast_rows(app))
-        + background_view_lines(app, width).len();
-    Some(rows.min(usize::from(term_height.max(1))) as u16)
+    let band = u16::try_from(background_view_lines(app, width).len()).unwrap_or(u16::MAX);
+    Some(view_height(app, width, band, term_height))
 }
 
 /// How many rows the `/login` provider list occupies: the match count capped at
@@ -288,19 +352,31 @@ fn login_provider_list_rows(onboarding: &KeyOnboarding) -> u16 {
     }
 }
 
-/// The inline live-region height when the `/login` flow is open, or `None` when
-/// it isn't (the caller falls back to [`live_height`]). Like the `/model`
-/// picker it **replaces** the composer; the provider step grows with its list,
-/// the key step is a fixed height. Shared by `main.rs`'s `live_region_height`,
-/// [`render_live`], and [`cursor_position`].
-#[must_use]
-pub fn key_onboarding_height(app: &App, term_height: u16) -> Option<u16> {
-    let onboarding = app.key_onboarding.as_ref()?;
-    let rows = match onboarding.step {
+/// The rows the `/login` flow's own frame occupies: the provider step grows
+/// with its list, the key step is a fixed height. What
+/// [`key_onboarding_height`] reserves under the strip, and what [`render_live`]
+/// hands [`render_key_onboarding`].
+pub(super) fn key_onboarding_rows(onboarding: &KeyOnboarding) -> u16 {
+    match onboarding.step {
         KeyStep::Provider => LOGIN_PROVIDER_CHROME_ROWS + login_provider_list_rows(onboarding),
         KeyStep::Key => LOGIN_KEY_ROWS,
-    };
-    Some(rows.min(term_height.max(1)))
+    }
+}
+
+/// The inline live-region height when the `/login` flow is open, or `None` when
+/// it isn't (the caller falls back to [`live_height`]). Like the `/model`
+/// picker it **replaces** the composer only, the streaming strip keeping its
+/// rows above it (`strip_above_rows`). Shared by `tui::view`'s
+/// `live_region_height`, [`render_live`], and [`cursor_position`].
+#[must_use]
+pub fn key_onboarding_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
+    let onboarding = app.key_onboarding.as_ref()?;
+    Some(view_height(
+        app,
+        width,
+        key_onboarding_rows(onboarding),
+        term_height,
+    ))
 }
 
 /// How to re-pin the live region when its height changes between draws, keeping
@@ -625,20 +701,22 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return (x, y);
     }
     // The inline `/model` picker parks the cursor at the end of its `>` search
-    // line (see `render_model_picker`'s layout: top rule, header, gap, search).
+    // line (see `render_model_picker`'s layout: top rule, header, gap, search)
+    // — inside the picker's own frame, which the streaming strip above it has
+    // pushed down ([`view_split`], the same split the paint uses).
     if let Some(picker) = &app.model_picker {
+        let [_, body] = view_split(area, model_picker_rows(picker));
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let y = area.y + MODEL_SEARCH_ROW.min(area.height.saturating_sub(1));
-        return (x, y);
+        return (x, view_cursor_y(area, body, MODEL_SEARCH_ROW));
     }
     // The inline `/settings` menu parks the cursor at the end of its `❯`
     // search line, exactly like the `/model` picker (docs/settings.md).
     if let Some(picker) = &app.settings_picker {
+        let [_, body] = view_split(area, super::settings_view::settings_rows(app));
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let y = area.y + SETTINGS_SEARCH_ROW.min(area.height.saturating_sub(1));
-        return (x, y);
+        return (x, view_cursor_y(area, body, SETTINGS_SEARCH_ROW));
     }
     // The ↓ background manager band has no text entry at all — park the
     // (shown-once-per-frame) cursor in the band's far corner where it reads
@@ -649,17 +727,18 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return (x, y);
     }
     // The inline `/login` flow parks the cursor at the end of its active `>`
-    // line: the provider filter (step 1) or the masked key field (step 2).
+    // line: the provider filter (step 1) or the masked key field (step 2) —
+    // again inside its own frame, below the strip.
     if let Some(onboarding) = &app.key_onboarding {
         let (query_cols, row) = match onboarding.step {
             KeyStep::Provider => (cols(&onboarding.query), LOGIN_SEARCH_ROW),
             // One mask glyph per key character sits after the prompt.
             KeyStep::Key => (onboarding.key_input.chars().count(), LOGIN_KEY_INPUT_ROW),
         };
+        let [_, body] = view_split(area, key_onboarding_rows(onboarding));
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + query_cols;
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        let y = area.y + row.min(area.height.saturating_sub(1));
-        return (x, y);
+        return (x, view_cursor_y(area, body, row));
     }
     // Laid out exactly as render_live lays the box out — the streaming strip
     // and queued rows above, the band and footer below — so the cursor sits on

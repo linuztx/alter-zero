@@ -108,17 +108,30 @@ fn settings_list_rows(rows: usize) -> u16 {
     }
 }
 
+/// The rows the menu's own frame occupies: the fixed chrome plus the (possibly
+/// scrolled) list. What [`settings_height`] reserves under the strip, and what
+/// [`render_live`] hands [`render_settings`].
+pub(super) fn settings_rows(app: &App) -> u16 {
+    SETTINGS_CHROME_ROWS + settings_list_rows(app.setting_rows().len())
+}
+
 /// The inline live-region height when the `/settings` menu is open, or `None`
 /// when it isn't (the caller then falls back to [`live_height`]). Like the
-/// `/model` picker the menu **replaces** the composer, so this is the whole
-/// region — the fixed chrome plus the (possibly scrolled) list — clamped to the
-/// terminal height. Shared by `tui::view`'s `live_region_height`,
-/// [`render_live`], and [`cursor_position`] so all three agree.
+/// `/model` picker the menu **replaces** the composer — and only the composer:
+/// the streaming strip keeps its rows above it (`ui::layout`'s
+/// `strip_above_rows`), so opening `/settings` mid-turn never hides the
+/// running turn. Clamped to the terminal height. Shared by `tui::view`'s
+/// `live_region_height`, [`render_live`], and [`cursor_position`] so all three
+/// agree.
 #[must_use]
-pub fn settings_height(app: &App, term_height: u16) -> Option<u16> {
+pub fn settings_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.settings_picker.as_ref()?;
-    let list = settings_list_rows(app.setting_rows().len());
-    Some((SETTINGS_CHROME_ROWS + list).min(term_height.max(1)))
+    Some(super::layout::view_height(
+        app,
+        width,
+        settings_rows(app),
+        term_height,
+    ))
 }
 
 /// Render the **inline** `/settings` menu into the live region, in place of the

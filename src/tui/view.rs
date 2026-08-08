@@ -431,17 +431,20 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::permission_height(app, screen.width, screen.height) {
         return height;
     }
-    // The inline `/model` picker, `/login` flow, and ↓ background manager each
-    // replace the whole region with their own framed body (see docs/llm.md /
-    // docs/background.md); the open one's height stands in for the composer's.
-    if let Some(height) = ui::model_picker_height(app, screen.height) {
+    // The inline `/model` picker, `/login` flow, `/settings` menu and ↓
+    // background manager each replace the **composer** with their own framed
+    // body — never the streaming strip, whose rows they reserve above
+    // themselves so opening one mid-turn can't hide the running turn (see
+    // docs/llm.md / docs/settings.md / docs/background.md); the open one's
+    // height stands in for the composer's.
+    if let Some(height) = ui::model_picker_height(app, screen.width, screen.height) {
         return height;
     }
-    if let Some(height) = ui::key_onboarding_height(app, screen.height) {
+    if let Some(height) = ui::key_onboarding_height(app, screen.width, screen.height) {
         return height;
     }
     // The inline `/settings` menu, likewise (docs/settings.md).
-    if let Some(height) = ui::settings_height(app, screen.height) {
+    if let Some(height) = ui::settings_height(app, screen.width, screen.height) {
         return height;
     }
     if let Some(height) = ui::background_view_height(app, screen.width, screen.height) {

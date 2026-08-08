@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::ui::theme::{
-    GAP_ROWS, LOGIN_KEY_ROWS, MENU_MAX_ROWS, STATUS_GAP_ROWS, STATUS_ROWS, STREAM_PREVIEW_MIN_ROWS,
-    STREAM_PREVIEW_RESERVED_ROWS,
+    GAP_ROWS, LOGIN_KEY_ROWS, MENU_MAX_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS,
+    STREAM_PREVIEW_MIN_ROWS, STREAM_PREVIEW_RESERVED_ROWS,
 };
 
 #[test]
@@ -468,7 +468,7 @@ fn all_failed_picker_height_covers_each_error_row() {
     app.add_model_error("OpenRouter", "HTTP 500");
     app.add_model_error("Agent Zero API", "HTTP 401");
     // Collapsed chrome (6) + 2 error rows = 8.
-    assert_eq!(model_picker_height(&app, 40), Some(8));
+    assert_eq!(model_picker_height(&app, 74, 40), Some(8));
 }
 
 #[test]
@@ -477,31 +477,134 @@ fn model_picker_height_covers_the_chrome_plus_list() {
     app.open_model_picker("a");
     app.set_models(three_models());
     // 9 chrome rows + 3 list rows.
-    assert_eq!(model_picker_height(&app, 40), Some(12));
+    assert_eq!(model_picker_height(&app, 74, 40), Some(12));
     // Clamped to the terminal height.
-    assert_eq!(model_picker_height(&app, 8), Some(8));
+    assert_eq!(model_picker_height(&app, 74, 8), Some(8));
     // A placeholder state (still loading — no models) drops the counter +
     // name detail rows: 6 collapsed chrome + 1 placeholder row = 7.
     app.open_model_picker("a");
-    assert_eq!(model_picker_height(&app, 40), Some(7));
+    assert_eq!(model_picker_height(&app, 74, 40), Some(7));
     // None when the picker is closed.
     app.close_model_picker();
-    assert_eq!(model_picker_height(&app, 40), None);
+    assert_eq!(model_picker_height(&app, 74, 40), None);
 }
 
 #[test]
 fn key_onboarding_height_covers_both_steps() {
     let mut app = login_app_provider();
     // Provider step: 9 chrome + 2 provider rows.
-    assert_eq!(key_onboarding_height(&app, 40), Some(11));
+    assert_eq!(key_onboarding_height(&app, 74, 40), Some(11));
     // Clamped to the terminal height.
-    assert_eq!(key_onboarding_height(&app, 6), Some(6));
+    assert_eq!(key_onboarding_height(&app, 74, 6), Some(6));
     // Key step: a fixed height.
     app.key_onboarding.as_mut().unwrap().step = KeyStep::Key;
-    assert_eq!(key_onboarding_height(&app, 40), Some(LOGIN_KEY_ROWS));
+    assert_eq!(key_onboarding_height(&app, 74, 40), Some(LOGIN_KEY_ROWS));
     // None when closed.
     app.close_key_onboarding();
-    assert_eq!(key_onboarding_height(&app, 40), None);
+    assert_eq!(key_onboarding_height(&app, 74, 40), None);
+}
+
+#[test]
+fn the_model_picker_reserves_the_running_tool_strip_above_it() {
+    // The user report: opening `/model` mid-turn hid the spinner status line
+    // and the running tool's live cell — the picker took the *whole* region,
+    // though it only ever replaces the composer. It now follows the ↓ manager
+    // band's rule (docs/background.md): the strip keeps its rows above the
+    // picker's own frame.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "for i in $(seq 1 100); do echo $i; sleep 1; done");
+    app.open_model_picker("a");
+    app.set_models(three_models());
+    let preview = preview_rows(&app, 74);
+    assert!(preview > 0, "the running tool previews mid-turn");
+    let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
+    // 9 chrome rows + 3 list rows, over the strip.
+    assert_eq!(
+        model_picker_height(&app, 74, 40),
+        Some(strip + 12),
+        "the picker keeps the streaming strip above its own frame"
+    );
+    // A queued follow-up and a toast ride the strip too — the same rows the
+    // composer path reserves.
+    app.queued.push_back(batch(&["and then this"]));
+    app.show_toast("Switched model to kimi-k3", ToastKind::Info);
+    let extra = queued_rows(&app, 74) + toast_rows(&app);
+    assert!(extra > 0);
+    assert_eq!(model_picker_height(&app, 74, 40), Some(strip + extra + 12));
+    // Clamped to the terminal height like every region.
+    assert_eq!(model_picker_height(&app, 74, 8), Some(8));
+    // Idle again (turn over, tool resolved, toast/queue gone), the picker is
+    // alone — the old geometry, no stray strip rows.
+    app.queued.clear();
+    app.clear_toast();
+    app.end_tool("done", true);
+    app.finish_stream();
+    app.end_turn(1);
+    assert_eq!(model_picker_height(&app, 74, 40), Some(12));
+}
+
+#[test]
+fn the_login_flow_reserves_the_strip_above_it() {
+    // `/login` opens mid-turn for the same reason `/model` does, so it keeps
+    // the same strip above itself — here a streaming reply's preview row.
+    let mut app = login_app_provider();
+    app.begin_stream();
+    app.push_chunk("let me look that up");
+    let preview = preview_rows(&app, 74);
+    assert_eq!(preview, 1, "a streaming reply previews its last row");
+    let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
+    // Provider step: 9 chrome + 2 provider rows, over the strip.
+    assert_eq!(key_onboarding_height(&app, 74, 40), Some(strip + 11));
+    // The key step is a fixed height — over the same strip.
+    app.key_onboarding.as_mut().unwrap().step = KeyStep::Key;
+    assert_eq!(
+        key_onboarding_height(&app, 74, 40),
+        Some(strip + LOGIN_KEY_ROWS)
+    );
+    // Clamped to the terminal height like every region.
+    assert_eq!(key_onboarding_height(&app, 74, 6), Some(6));
+    // Idle, the flow is alone.
+    app.finish_stream();
+    app.end_turn(1);
+    assert_eq!(key_onboarding_height(&app, 74, 40), Some(LOGIN_KEY_ROWS));
+}
+
+#[test]
+fn a_squeezed_region_keeps_the_picker_whole_and_drops_strip_rows() {
+    // The band's rule for a terminal too short to fit both: the view the user
+    // is typing into keeps its full height and the strip above it is squeezed
+    // (the `Length`/`Min(0)` split in `view_split`) — never the other way
+    // round, which would cut the picker's search line off the bottom.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_tool("Bash", "sleep 100");
+    app.open_model_picker("a");
+    app.set_models(three_models());
+    let picker = 12; // 9 chrome + 3 list rows
+    let term = 16; // shorter than the strip (4) + picker (12) would want…
+    app.queued.push_back(batch(&["a queued follow-up"]));
+    assert!(
+        model_picker_height(&app, 60, 40).unwrap() > term,
+        "the unclamped region really is taller than this terminal"
+    );
+    let h = model_picker_height(&app, 60, term).unwrap();
+    assert_eq!(h, term, "clamped to the terminal");
+    let mut buf = buffer(60, h);
+    render_live(buf.area, &mut buf, &app);
+    let rows: Vec<String> = (0..h).map(|y| row(&buf, y, 60)).collect();
+    assert!(
+        rows[usize::from(h - picker)].starts_with('─'),
+        "the picker's top rule sits {picker} rows up from the bottom: {rows:?}"
+    );
+    assert!(
+        rows[usize::from(h - picker) + usize::from(MODEL_SEARCH_ROW)].contains('❯'),
+        "…so its search line is on screen: {rows:?}"
+    );
+    assert!(
+        rows.last().unwrap().starts_with('─'),
+        "…and its bottom rule is the region's last row: {rows:?}"
+    );
 }
 
 #[test]

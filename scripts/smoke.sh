@@ -1763,6 +1763,9 @@ printf '%s\n' "$toast_help"
 # Still mid-turn (same active turn): /model OPENS its inline picker rather than
 # being blocked. No provider key is configured in the smoke env, so the picker
 # opens on its needs-login hint — proof it opened rather than being rejected.
+# And it replaces the COMPOSER ONLY: the spinner status line stays above it
+# (the reported bug was the picker taking the whole region and hiding the
+# running turn — docs/llm.md, the ↓ manager band's rule).
 tmux send-keys -t "$S33" -l "/model"
 sleep 0.3
 tmux send-keys -t "$S33" Enter
@@ -1776,6 +1779,22 @@ for _ in $(seq 1 15); do # up to ~1.5s
 done
 echo "==== Phase 33: pane with /model opened mid-turn ===="
 printf '%s\n' "$toast_model"
+# Esc closes the picker; /login opens the same way over the same live turn.
+tmux send-keys -t "$S33" Escape
+sleep 0.3
+tmux send-keys -t "$S33" -l "/login"
+sleep 0.3
+tmux send-keys -t "$S33" Enter
+toast_login=""
+for _ in $(seq 1 15); do # up to ~1.5s (still inside the 2s pause)
+	toast_login="$(tmux capture-pane -t "$S33" -p)"
+	if printf '%s' "$toast_login" | grep -qF "Keys are saved to"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 33: pane with /login opened mid-turn ===="
+printf '%s\n' "$toast_login"
 tmux kill-session -t "$S33" 2>/dev/null
 
 # --- Phase 34: the hardware cursor is HIDDEN for the whole of a redraw so a
@@ -3153,6 +3172,22 @@ fi
 # Phase 33: /model OPENS its inline picker mid-turn (no rejection).
 if ! printf '%s' "$toast_model" | grep -qF "run /login to add one"; then
 	echo "FAIL: Phase 33 mid-turn /model did not open the inline picker (it should no longer be blocked while a task runs)" >&2
+	status=1
+fi
+# Phase 33: …and it replaces the COMPOSER only — the streaming strip's status
+# line stays above it, so the picker never hides the turn it was opened beside
+# (the reported bug; the ↓ manager band's rule — docs/llm.md).
+if ! printf '%s' "$toast_model" | grep -qF "esc to interrupt"; then
+	echo "FAIL: Phase 33 the mid-turn /model picker hid the status indicator — it must replace the composer only, keeping the streaming strip above it" >&2
+	status=1
+fi
+# Phase 33: /login opens mid-turn under the same live status line.
+if ! printf '%s' "$toast_login" | grep -qF "Keys are saved to"; then
+	echo "FAIL: Phase 33 mid-turn /login did not open the inline onboarding flow" >&2
+	status=1
+fi
+if ! printf '%s' "$toast_login" | grep -qF "esc to interrupt"; then
+	echo "FAIL: Phase 33 the mid-turn /login flow hid the status indicator — it must replace the composer only" >&2
 	status=1
 fi
 

@@ -294,15 +294,19 @@ unit-tested must be unit-tested.
   `Enter` rebuilds the backend for the chosen model, updates the footer, and
   **persists the choice** to `~/.alter-zero/config.json` (`llm::settings::Settings`)
   so it's the default next run. With no provider configured it shows a cyan
-  `run /login` hint instead of a list. Rejected mid-turn like `/resume`.
+  `run /login` hint instead of a list. **Opens mid-turn** (unlike `/resume`) —
+  and replaces the composer *only*: the streaming strip keeps its rows above
+  the picker, so the running turn's status line and live tool cell stay
+  visible while you browse (the ↓ manager band's geometry —
+  `ui::layout`'s `strip_above_rows`/`view_split`; `docs/llm.md`).
 - **`/login` API-key onboarding** (`docs/llm.md`). A second **inline** flow,
   two-step: pick a provider (headerless list), then paste its API key (masked,
   under a periwinkle `Enter your … API key` prompt). On save the key is written to
   `~/.alter-zero/.env` (`llm::keystore::EnvFile`, a pure `.env` reader/writer) so
   it **persists across runs** — key resolution consults the real process env
   first, then this file. Because `std::env::set_var` is `unsafe` (forbidden here),
-  the loaded keys live in an in-memory map, never the process env. Rejected
-  mid-turn like `/model`.
+  the loaded keys live in an in-memory map, never the process env. Opens
+  mid-turn — over the same kept streaming strip — like `/model`.
 - **Esc interrupts a streaming turn** (ported from openai/codex — see
   `docs/interrupt.md`): a single Esc while a turn is in flight cancels + detaches
   the backend (never `join()`ing it on the loop — joining couples the UI to the

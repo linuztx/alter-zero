@@ -8,7 +8,7 @@
 //! `docs/tool-streaming.md`.
 
 use super::agent::agent_view_preview_lines;
-use super::layout::{input_box, live_layout};
+use super::layout::{input_box, key_onboarding_rows, live_layout, model_picker_rows, view_split};
 use super::reasoning::live_reasoning_lines;
 use super::theme::*;
 use super::tool::{
@@ -323,6 +323,39 @@ fn render_strip(
     }
 }
 
+/// Paint the streaming strip above a **composer-replacing** inline view — the
+/// `/model` picker, the `/login` flow, the `/settings` menu, the ↓ background
+/// manager band. They stand in for the composer only, so what is executing
+/// stays on screen above them: the running tool's live cell, the spinner
+/// status line, the queued follow-ups, the toast (`docs/llm.md`,
+/// `docs/background.md`). `strip` is the top half of [`view_split`], whose
+/// bottom half is the view's own frame; `layout::strip_above_rows` reserves
+/// exactly these rows.
+fn render_strip_above(
+    strip: Rect,
+    buf: &mut Buffer,
+    app: &App,
+    stream_preview: Option<&[Line<'static>]>,
+) {
+    let preview = preview_lines(app, strip.width, stream_preview);
+    let preview_n = preview_rows(app, strip.width);
+    debug_assert_eq!(
+        usize::from(preview_n),
+        preview.len(),
+        "preview_rows() must equal the drawn preview_lines()"
+    );
+    render_strip(
+        strip,
+        buf,
+        app,
+        preview,
+        preview_n,
+        strip_has_status(app),
+        queued_rows(app, strip.width),
+        toast_rows(app),
+    );
+}
+
 /// [`render_live`], but with the streaming strip's assistant-preview line(s)
 /// supplied by the caller (the boundary's cheap [`StreamRender::preview`] —
 /// O(one line), or the forming table's rows) instead of re-rendering the whole
@@ -354,21 +387,31 @@ pub fn render_live_with_preview(
         render_permission(area, buf, app);
         return;
     }
-    // The inline `/model` picker replaces the whole live region — the composer,
-    // strip, band, and footer all give way to its own framed body. See
-    // `docs/llm.md`.
+    // The inline `/model` picker replaces the **composer** — its own framed
+    // body takes the composer's rows plus the band's and the footer's — but
+    // never the streaming strip: a running tool's live cell, the status line,
+    // the queued messages and the toast keep their rows above it, so opening
+    // `/model` mid-turn never hides the turn it was opened beside (the
+    // reported bug; the ↓ manager band's rule — `docs/llm.md`,
+    // `docs/background.md`). `model_picker_height` reserves the same sum.
     if let Some(picker) = &app.model_picker {
-        render_model_picker(area, buf, picker);
+        let [strip, body] = view_split(area, model_picker_rows(picker));
+        render_strip_above(strip, buf, app, stream_preview);
+        render_model_picker(body, buf, picker);
         return;
     }
-    // The inline `/login` onboarding flow likewise replaces the whole region.
+    // The inline `/login` onboarding flow sits under the same strip.
     if let Some(onboarding) = &app.key_onboarding {
-        render_key_onboarding(area, buf, onboarding);
+        let [strip, body] = view_split(area, key_onboarding_rows(onboarding));
+        render_strip_above(strip, buf, app, stream_preview);
+        render_key_onboarding(body, buf, onboarding);
         return;
     }
     // …and so does the inline `/settings` menu. See `docs/settings.md`.
     if app.settings_picker.is_some() {
-        render_settings(area, buf, app);
+        let [strip, body] = view_split(area, super::settings_view::settings_rows(app));
+        render_strip_above(strip, buf, app, stream_preview);
+        render_settings(body, buf, app);
         return;
     }
     // The ↓ background manager band replaces the composer (and the band/footer
@@ -380,26 +423,10 @@ pub fn render_live_with_preview(
     // the strip first); `background_view_height` reserves the same sum. See
     // `docs/background.md`.
     if app.background_view.is_some() {
-        let preview = preview_lines(app, area.width, stream_preview);
-        let preview_n = preview_rows(app, area.width);
-        debug_assert_eq!(
-            usize::from(preview_n),
-            preview.len(),
-            "preview_rows() must equal the drawn preview_lines()"
-        );
-        let band_h = (background_view_lines(app, area.width).len() as u16).min(area.height);
-        let [strip, band] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(band_h)]).areas(area);
-        render_strip(
-            strip,
-            buf,
-            app,
-            preview,
-            preview_n,
-            strip_has_status(app),
-            queued_rows(app, area.width),
-            toast_rows(app),
-        );
+        let band_h =
+            u16::try_from(background_view_lines(app, area.width).len()).unwrap_or(u16::MAX);
+        let [strip, band] = view_split(area, band_h);
+        render_strip_above(strip, buf, app, stream_preview);
         render_background_view(band, buf, app);
         return;
     }

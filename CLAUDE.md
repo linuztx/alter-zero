@@ -1044,7 +1044,20 @@ transient `Toast` (was a red `ErrorNotice`; `docs/toast.md`) like codex; see
 `docs/resume.md`, `smoke.sh` Phase 31. **`/model` and `/login` (the inline
 pickers, `docs/llm.md`) now open *mid-turn* too** — they only replace the
 composer, never the running turn, so their old busy rejections are gone; their
-confirmations are toasts (`smoke.sh` Phase 33).
+confirmations are toasts (`smoke.sh` Phase 33). **And "only the composer" is
+literal**: the three composer-replacing pickers (`/model`, `/login`,
+`/settings`) keep the **streaming strip above themselves** — the running
+tool's live cell, the `● Thinking…` block, the spinner status line, the
+queued messages, the toast — exactly as the ↓ manager band does, sharing its
+geometry (`ui::layout`'s `strip_above_rows` reserves the rows, `view_split`
+splits the region with the view a bottom-pinned `Length` so a short terminal
+squeezes the strip and not the view, `ui::live`'s `render_strip_above`
+paints it, and the cursor seat comes from that same split); taking the whole
+region hid exactly the turn the picker was opened beside — the reported bug,
+which the band had first (`docs/llm.md`, `docs/background.md`,
+`docs/status-indicator.md`; the running cell's Ctrl+B hint is suppressed
+while a picker is open, the permission-prompt rule, since the picker owns
+every key).
 **`/init`→`Submit(INIT_PROMPT.trim_end())`** — codex's `/init`
 (`docs/init.md`): the canned `prompts/init.md` prompt (generate
 an `AGENTS.md` contributor guide, never overwriting an existing one) submitted as

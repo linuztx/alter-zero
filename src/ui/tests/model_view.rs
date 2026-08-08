@@ -149,7 +149,7 @@ fn cursor_sits_at_the_end_of_the_model_search_query() {
     app.open_model_picker("x");
     app.set_models(three_models());
     app.model_picker.as_mut().unwrap().query = "hai".into();
-    let area = Rect::new(0, 0, 60, 14);
+    let area = Rect::new(0, 0, 60, model_picker_height(&app, 60, 40).unwrap());
     let (x, y) = cursor_position(area, &app);
     // indent(2) + prompt("❯ " = 2) + "hai"(3) = 7.
     assert_eq!((x, y), (7, MODEL_SEARCH_ROW));
