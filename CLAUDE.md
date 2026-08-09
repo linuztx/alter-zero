@@ -190,10 +190,38 @@ the pure mapping/format is `checkpoint` + `session::parse_checkpoints`, the git
 I/O is `checkpoint::CheckpointStore`, turn-end snapshots ride
 `dispatch_after_turn`, and restores hang off the `ResumeSession` /
 `ConfirmBacktrack` arms; gated by `ALTER_ZERO_CHECKPOINTS` **and by the cwd
-being project-scoped** — `checkpoint::cwd_allows_checkpoints` refuses the home
-dir itself, its ancestors, and filesystem roots, since the session-start
-snapshot's whole-cwd `git add -A` over `~` blocked the raw-mode terminal for
-minutes before the first frame, the "hangs in `~`" bug) in
+being worth snapshotting at all** — because the session-start snapshot's
+whole-cwd `git add -A` runs *before the first frame paints*, in raw mode where
+Ctrl+C is an unread key event, and hashing is O(bytes): a 235 MB cwd measured
+**9.7 s** to first frame and a 260 MB store. Two guards decide, both pure with
+the paths injected at the boundary. The **categorical**
+`checkpoint::cwd_scope` refuses a filesystem root, the home dir or an ancestor
+of it (the original "hangs in `~`" bug), **alter-zero's own state dir in both
+directions** — a cwd at or under `~/.alter-zero`, *or* a cwd containing the
+store, since the store's `GIT_DIR` lives in the state dir and snapshotting it
+hashes each snapshot's objects back in (tracked files 59→130→269→528 over four
+turns, 41 MB→165 MB — the reported 2 GB `.alter-zero`; `CHECKPOINT_EXCLUDES`
+can't catch it, its `.alter-zero/` pattern matching a *nested* dir and never
+the work tree's own root), every `SYSTEM_TREES` entry **and its subtree**
+(`/usr`, `/etc`, `/proc`, …), and each `SHARED_PARENTS` entry (plus `$TMPDIR`)
+**itself only** — so `/tmp` is refused as every program's scratch space while
+`/tmp/my-project` checkpoints exactly as before, which is what the smoke
+suite's `mktemp -d` work dirs rely on. The **general**
+`checkpoint::SnapshotBudget` then catches the huge directory no denylist can
+name: `CheckpointStore::probe` asks `git ls-files --others --exclude-standard`
+for precisely the paths `git add -A` would stage — honouring `.gitignore`, so
+a repo whose bulk is ignored is never falsely refused — sums their `stat`
+sizes, and bails the moment a cap trips (26 ms against the 20 s it predicts,
+because git walks and stats but never reads content; a warm store reports only
+what is new, which is exactly what it will hash). Past the default 20 000
+files / 128 MiB — a claim about what a project *is*, not a time, since hashing
+throughput varies ~20× across disks; overridable via
+`ALTER_ZERO_CHECKPOINT_MAX_FILES`/`_MAX_BYTES`, `0` = no limit — the store is
+retired with `disable()` (capability, not just the flag, so `/settings` reports
+the row unavailable). Every refusal raises a one-row `Checkpoints off —
+{reason}` toast, suppressed only when the user had already turned checkpoints
+off: going quiet is what made "alter0 takes seconds to boot in `/tmp`" and
+"checkpoints do nothing here" read as two unrelated bugs) in
 `docs/checkpoint.md`; the **parallel tool-call batch** (the model's several tool
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in

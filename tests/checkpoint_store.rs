@@ -10,7 +10,9 @@
 use std::fs;
 use std::path::Path;
 
-use alter_zero::checkpoint::{CheckpointStore, git_available};
+use std::time::Duration;
+
+use alter_zero::checkpoint::{CheckpointRefusal, CheckpointStore, SnapshotBudget, git_available};
 
 /// A store snapshotting `work`, keeping its object db under `root` — the
 /// production wiring (`CheckpointStore::new` + `init`).
@@ -138,4 +140,155 @@ fn a_disabled_store_is_inert() {
     assert!(store.init().is_ok());
     assert_eq!(store.snapshot("x"), None);
     assert_eq!(store.restore("deadbeef").ok(), Some(false));
+}
+
+// ===== the pre-flight cost probe (docs/checkpoint.md) =====
+//
+// The session-start snapshot runs before the first frame paints, and `git add
+// -A` is O(bytes): a 235 MB working directory measured 9.7 s to first frame.
+// `probe` answers "what would that cost?" without paying it.
+
+#[test]
+fn probe_counts_the_files_a_snapshot_would_stage() {
+    if !git_available() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let work = work.path();
+    let store = store(root.path(), work);
+
+    write(work, "a.txt", "0123456789"); // 10 bytes
+    write(work, "src/b.rs", "0123456789"); // 10 bytes
+
+    let cost = store.probe(&SnapshotBudget::default());
+    assert_eq!(cost.files, 2, "both files would be staged");
+    assert_eq!(cost.bytes, 20, "and their bytes measured");
+    assert!(!cost.exceeded, "a two-file tree fits any sane budget");
+    assert_eq!(cost.refusal(), None);
+}
+
+#[test]
+fn probe_honours_gitignore_and_the_stores_own_excludes() {
+    if !git_available() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let work = work.path();
+    let store = store(root.path(), work);
+
+    // The whole point of enumerating with git rather than walking ourselves:
+    // a repo whose bulk is gitignored (a `dist/`, a data dir) must not be
+    // refused for weight `git add -A` would never carry.
+    write(work, ".gitignore", "dist/\n");
+    write(work, "keep.txt", "x");
+    for i in 0..50 {
+        write(work, &format!("dist/blob-{i}.bin"), &"y".repeat(4096));
+    }
+    // And `info/exclude`'s backstop list (node_modules/, target/, …) too.
+    for i in 0..50 {
+        write(
+            work,
+            &format!("node_modules/pkg/f{i}.js"),
+            &"z".repeat(4096),
+        );
+    }
+
+    let cost = store.probe(&SnapshotBudget::default());
+    assert_eq!(
+        cost.files, 2,
+        "only .gitignore and keep.txt — the ignored trees are invisible"
+    );
+    assert!(cost.bytes < 100, "and their bytes are not counted either");
+}
+
+#[test]
+fn probe_stops_early_and_refuses_a_tree_past_the_cap() {
+    if !git_available() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let work = work.path();
+    let store = store(root.path(), work);
+
+    for i in 0..200 {
+        write(work, &format!("d{}/f{i}.txt", i % 8), "content");
+    }
+    let budget = SnapshotBudget {
+        max_files: 10,
+        max_bytes: 0, // no byte cap — this is the file cap's test
+        max_time: Duration::from_secs(5),
+    };
+    let cost = store.probe(&budget);
+    assert!(cost.exceeded, "200 files blows a 10-file cap");
+    assert!(
+        cost.files <= 20,
+        "the probe stops at the cap instead of walking all 200 (counted {})",
+        cost.files
+    );
+    assert_eq!(
+        cost.refusal(),
+        Some(CheckpointRefusal::TooLarge {
+            files: cost.files,
+            bytes: cost.bytes,
+        }),
+    );
+}
+
+#[test]
+fn probe_refuses_a_few_enormous_files_the_file_cap_would_miss() {
+    if !git_available() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let work = work.path();
+    let store = store(root.path(), work);
+
+    // Three files, 64 KiB each — a file cap alone would wave a media tree
+    // through, so the byte cap has to be the one that trips.
+    for i in 0..3 {
+        write(work, &format!("video-{i}.bin"), &"v".repeat(64 * 1024));
+    }
+    let budget = SnapshotBudget {
+        max_files: 0, // no file cap
+        max_bytes: 100 * 1024,
+        max_time: Duration::from_secs(5),
+    };
+    assert!(store.probe(&budget).exceeded, "192 KiB blows a 100 KiB cap");
+}
+
+#[test]
+fn probe_shrinks_once_the_store_is_warm() {
+    if !git_available() {
+        return;
+    }
+    let root = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let work = work.path();
+    let store = store(root.path(), work);
+
+    for i in 0..30 {
+        write(work, &format!("f{i}.txt",), "content");
+    }
+    assert_eq!(store.probe(&SnapshotBudget::default()).files, 30);
+    store.snapshot("cold").expect("first snapshot");
+
+    // A warm store's snapshot only hashes what is new — and that is exactly
+    // what the probe now reports, so a big-but-already-captured tree keeps
+    // its checkpoints across sessions.
+    assert_eq!(store.probe(&SnapshotBudget::default()).files, 0);
+    write(work, "new.txt", "x");
+    assert_eq!(store.probe(&SnapshotBudget::default()).files, 1);
+}
+
+#[test]
+fn a_disabled_stores_probe_is_inert() {
+    let work = tempfile::tempdir().unwrap();
+    let store = CheckpointStore::new(None, work.path(), true);
+    let cost = store.probe(&SnapshotBudget::default());
+    assert_eq!(cost, alter_zero::checkpoint::SnapshotCost::default());
+    assert_eq!(cost.refusal(), None);
 }

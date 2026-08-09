@@ -30,7 +30,7 @@ use ratatui::text::Line;
 use alter_zero::agents::AgentRegistry;
 use alter_zero::app::{App, CHECKPOINT_RESTORED_NOTICE, ToastKind};
 use alter_zero::background::{self, BackgroundRegistry, BgEvent};
-use alter_zero::checkpoint::{self, CheckpointStore};
+use alter_zero::checkpoint::{self, CheckpointRefusal, CheckpointStore};
 use alter_zero::frame;
 use alter_zero::paste::PasteBurst;
 use alter_zero::project_doc;
@@ -187,22 +187,37 @@ impl<'t> Session<'t> {
         // object store — never the user's real .git — that snapshots the whole cwd
         // per turn so a /resume or Esc-Esc backtrack can reset the code, not just
         // the transcript. Whether this host *can* snapshot at all is a `git`
-        // binary being present and the cwd being project-scoped
-        // (`cwd_allows_checkpoints` — never the home dir itself, an ancestor of
-        // it, or a filesystem root: the session-start snapshot below runs before
-        // the first frame, and a `git add -A` over a whole home directory blocks
-        // the raw-mode terminal for minutes while duplicating it into the store
-        // — the "hangs in `~`" bug). Whether it *does* is the `/settings`
-        // **Checkpoints** knob, which `ALTER_ZERO_CHECKPOINTS` seeds
+        // binary being present and the cwd being a project in the first place
+        // (`cwd_scope` — never a filesystem root, the home dir or an ancestor of
+        // it, alter-zero's own state dir, a system tree, or a shared scratch
+        // parent like `/tmp`): the session-start snapshot below runs before the
+        // first frame paints, and `git add -A` is O(bytes), so an oversized cwd
+        // blocks the raw-mode terminal for seconds while duplicating itself into
+        // the store. `seed_checkpoints` then puts a cost *ceiling* on whatever
+        // survives the scope check. Whether it *does* snapshot is the
+        // `/settings` **Checkpoints** knob, which `ALTER_ZERO_CHECKPOINTS` seeds
         // (docs/settings.md) — applied right after, and flippable mid-session.
-        let checkpoints_capable = checkpoint::cwd_allows_checkpoints(&cwd, home.as_deref())
-            && checkpoint::git_available();
-        let mut checkpoints = CheckpointStore::new(
-            config::checkpoints_root().as_deref(),
+        let store_root = config::checkpoints_root();
+        let state_dir = config::config_home();
+        let tmp_dir = config::tmp_dir();
+        let refusal = checkpoint::cwd_scope(
             &cwd,
-            checkpoints_capable,
-        );
+            &checkpoint::CheckpointEnv {
+                home: home.as_deref(),
+                state_dir: state_dir.as_deref(),
+                store_root: store_root.as_deref(),
+                tmp_dir: tmp_dir.as_deref(),
+            },
+        )
+        .err();
+        let checkpoints_capable = refusal.is_none() && checkpoint::git_available();
+        let mut checkpoints =
+            CheckpointStore::new(store_root.as_deref(), &cwd, checkpoints_capable);
         checkpoints.set_enabled(settings.checkpoints_active());
+        // Whether the *user* asked for checkpoints, kept before `settings` moves
+        // into `seed_app` — a refusal is only worth a toast when it took
+        // something away.
+        let checkpoints_wanted = settings.checkpoints;
 
         let cwd_display = ui::display_cwd(&cwd, home.as_deref());
         let mut session = Self {
@@ -255,7 +270,7 @@ impl<'t> Session<'t> {
             cwd_display,
         };
         session.seed_app(settings);
-        session.seed_checkpoints();
+        session.seed_checkpoints(refusal, checkpoints_wanted);
         let picker = session.apply_startup(startup);
         session.paint_first_frame(picker)?;
 
@@ -305,10 +320,37 @@ impl<'t> Session<'t> {
     /// first message restores it. A store that won't initialize (odd perms, disk
     /// full) simply yields no checkpoints for the session rather than killing the
     /// TUI — like recording.
-    fn seed_checkpoints(&mut self) {
-        if self.checkpoints.init().is_ok()
-            && let Some(commit) = self.checkpoints.snapshot("session start")
-        {
+    ///
+    /// This snapshot runs **before the first frame paints**, so it is also the
+    /// last chance to decide it shouldn't run at all. `scoped_out` carries the
+    /// categorical verdict (`checkpoint::cwd_scope`, already applied to the
+    /// store); on top of it a **pre-flight probe** measures what the snapshot
+    /// would actually cost — enumerating with `git ls-files` instead of hashing,
+    /// ~800× cheaper — and retires the store when a tree is past the budget.
+    /// Either way the reason is toasted once, so the feature never goes quiet
+    /// without saying why. See `docs/checkpoint.md`.
+    fn seed_checkpoints(&mut self, scoped_out: Option<CheckpointRefusal>, wanted: bool) {
+        if self.checkpoints.init().is_err() {
+            return;
+        }
+        let refusal = scoped_out.or_else(|| {
+            self.checkpoints
+                .probe(&config::checkpoint_budget())
+                .refusal()
+                .inspect(|_| self.checkpoints.disable())
+        });
+        if let Some(reason) = refusal {
+            // The `/settings` **Checkpoints** row was seeded from the store's
+            // capability a moment ago; a probe refusal changes that answer.
+            self.sync_setting_availability();
+            // Silent when the user had already turned checkpoints off — a
+            // refusal is only news when it took something away.
+            if wanted {
+                self.toast(reason.to_string(), ToastKind::Info);
+            }
+            return;
+        }
+        if let Some(commit) = self.checkpoints.snapshot("session start") {
             self.recorder
                 .record_checkpoint(checkpoint::Checkpoint { after: 0, commit });
         }

@@ -117,7 +117,10 @@ ceilings are there for anyone who wants a hard one. `0` renders in the dim
 ### Unavailable settings
 
 A knob can be **unavailable** rather than merely off: checkpoints need a `git`
-binary, a config home, and a project-scoped cwd, and none of that changes
+binary, a config home, a cwd the feature will snapshot (`checkpoint::cwd_scope`
+— not `/tmp`, `~`, `~/.alter-zero`, or a system tree), and a working tree small
+enough for the per-turn cost budget (the pre-flight probe, which retires the
+store with `CheckpointStore::disable` when it isn't). None of that changes
 mid-session. Such a row renders its value dim as `false (unavailable)`, cycling
 it raises an explanatory toast, and it is never written to the settings file —
 so a session in `~` doesn't persist "checkpoints off" into every later project.

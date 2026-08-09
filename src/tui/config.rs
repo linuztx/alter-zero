@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use alter_zero::app::ProviderChoice;
+use alter_zero::checkpoint;
 use alter_zero::llm::{
     self, EnvFile, ModelConfig, ProvidersFile, ReasoningSupport, Selection, Settings, ThinkingMode,
     ThinkingSettings, backend::DEFAULT_SYSTEM_PROMPT,
@@ -275,6 +276,36 @@ pub(crate) fn checkpoints_root() -> Option<PathBuf> {
         return Some(PathBuf::from(dir));
     }
     config_home().map(|dir| dir.join("checkpoints"))
+}
+
+/// The platform temp directory (`$TMPDIR`) — `/tmp` under another name, and
+/// on macOS a per-user path (`/var/folders/xx/yyy/T`) no fixed list can
+/// predict. Fed to [`checkpoint::cwd_scope`] so launching *in* it is refused
+/// while a `mktemp -d` project inside it still checkpoints.
+pub(crate) fn tmp_dir() -> Option<PathBuf> {
+    std::env::var_os("TMPDIR").map(PathBuf::from)
+}
+
+/// What one checkpoint snapshot may cost before the feature switches itself
+/// off for the session — `ALTER_ZERO_CHECKPOINT_MAX_FILES` /
+/// `ALTER_ZERO_CHECKPOINT_MAX_BYTES` over the defaults, each accepting a
+/// plain count or a `k`/`m`/`g` suffix and each taking `0` as *no limit*.
+/// See `docs/checkpoint.md`.
+pub(crate) fn checkpoint_budget() -> checkpoint::SnapshotBudget {
+    let limit = |name: &str, default: u64| {
+        checkpoint::parse_size_limit(std::env::var(name).ok().as_deref(), default)
+    };
+    checkpoint::SnapshotBudget {
+        max_files: limit(
+            "ALTER_ZERO_CHECKPOINT_MAX_FILES",
+            checkpoint::DEFAULT_MAX_FILES,
+        ),
+        max_bytes: limit(
+            "ALTER_ZERO_CHECKPOINT_MAX_BYTES",
+            checkpoint::DEFAULT_MAX_BYTES,
+        ),
+        max_time: checkpoint::DEFAULT_PROBE_TIME,
+    }
 }
 
 /// Load the persisted `/model` selection; an absent, unreadable, or corrupt
