@@ -11,8 +11,10 @@
 //!   ([`exclude_file_contents`]), the env gate ([`enabled_by_env`]), and the
 //!   two halves of the "is this worth snapshotting?" guard — the categorical
 //!   [`cwd_scope`] (never a filesystem root, the home dir, alter-zero's own
-//!   state dir, a system tree, or a shared scratch parent like `/tmp`) and
-//!   the [`SnapshotBudget`] cost ceiling;
+//!   state dir, a pseudo-filesystem, or a shared scratch parent like `/tmp`)
+//!   and the [`SnapshotBudget`] cost ceiling — plus [`store_exclude_line`],
+//!   which keeps a store that lands inside its own work tree out of its own
+//!   snapshots;
 //! - a **boundary** — [`CheckpointStore`]: an *isolated* git object store with
 //!   its own `GIT_DIR` (never the user's `.git`, never their branches/index)
 //!   whose commits capture the whole cwd, restores the cwd to any of those
@@ -144,15 +146,18 @@ pub enum CheckpointRefusal {
     FilesystemRoot,
     /// The home directory itself, or an ancestor of it (`/home`).
     HomeDirectory,
-    /// alter-zero's own state directory (`~/.alter-zero`) — or any cwd that
-    /// *contains* the checkpoint store, which would make each snapshot hash
-    /// the previous snapshots back into the store.
+    /// alter-zero's own state directory (`~/.alter-zero`) or anything under
+    /// it: the rollouts, the input history, and every project's checkpoint
+    /// store live there. A cwd that merely *contains* this session's store is
+    /// not refused — [`store_exclude_line`] handles that direction.
     StateDirectory,
     /// A shared scratch or mount parent (`/tmp`, `/var/tmp`, `/mnt`, `$TMPDIR`
     /// …). Not a project: it holds other programs' files, which a restore's
     /// `git clean -fd` would delete.
     SharedDirectory,
-    /// A system tree (`/usr`, `/etc`, `/proc`, `/dev` …) or anything under one.
+    /// A pseudo-filesystem ([`SYSTEM_TREES`] — `/proc`, `/sys`, `/dev`,
+    /// `/run`) or anything under one, or a system root ([`SYSTEM_ROOTS`] —
+    /// `/usr`, `/etc`, `/root` …) itself.
     SystemDirectory,
     /// The tree is simply too big to snapshot every turn — the pre-flight
     /// probe's verdict ([`SnapshotBudget`]).
@@ -163,6 +168,11 @@ pub enum CheckpointRefusal {
         /// Bytes those files hold.
         bytes: u64,
     },
+    /// The probe ran out of time before it could finish counting
+    /// ([`SnapshotBudget::max_time`]). Its own reason, because a deadline says
+    /// nothing about the tree's size — reporting the handful counted so far as
+    /// "too big" would be a lie.
+    TooSlow,
 }
 
 impl std::fmt::Display for CheckpointRefusal {
@@ -184,6 +194,7 @@ impl std::fmt::Display for CheckpointRefusal {
                 if *files == 1 { "" } else { "s" },
                 human_bytes(*bytes)
             ),
+            Self::TooSlow => f.write_str("this directory is too slow to scan, let alone snapshot"),
         }
     }
 }
@@ -207,21 +218,29 @@ fn human_bytes(bytes: u64) -> String {
     "0 B".to_string()
 }
 
-/// System trees whose **whole subtree** is refused: nothing under one is ever
-/// a project, and `/proc`/`/sys`/`/dev` are not even ordinary filesystems.
-pub const SYSTEM_TREES: &[&str] = &[
+/// Pseudo-filesystems and runtime scratch, refused **with their whole
+/// subtree**. These are not ordinary filesystems — snapshotting one is
+/// nonsense whatever the depth — and `/dev/shm` and `/run/user/N` hold files
+/// belonging to other *live* processes, which a restore's `git clean -fd`
+/// would delete. Subtree matching is what separates this list from
+/// [`SYSTEM_ROOTS`]: `/dev/shm` is as wrong as `/dev`, where `/etc/nginx` is
+/// nothing like `/etc`.
+pub const SYSTEM_TREES: &[&str] = &["/dev", "/proc", "/run", "/sys"];
+
+/// System roots refused as *directories* only, like [`SHARED_PARENTS`] — the
+/// whole of `/usr` is nobody's project, but `/usr/local/src/thing` and
+/// `/etc/nginx` are places people really do keep work, and refusing a
+/// legitimate project is a worse default than allowing an odd one.
+pub const SYSTEM_ROOTS: &[&str] = &[
     "/bin",
     "/boot",
-    "/dev",
     "/etc",
     "/lib",
     "/lib32",
     "/lib64",
     "/libx32",
-    "/proc",
-    "/run",
+    "/root",
     "/sbin",
-    "/sys",
     "/usr",
     // macOS
     "/Applications",
@@ -235,10 +254,61 @@ pub const SYSTEM_TREES: &[&str] = &[
 /// checkpoints as before. This is the list that answers "alter0 lags in
 /// `/tmp`".
 pub const SHARED_PARENTS: &[&str] = &[
-    "/export", "/home", "/media", "/mnt", "/net", "/opt", "/srv", "/tmp", "/var", "/var/tmp",
-    // macOS
-    "/Users", "/Volumes",
+    "/export",
+    "/home",
+    "/media",
+    "/mnt",
+    "/net",
+    "/opt",
+    "/srv",
+    "/tmp",
+    "/var",
+    "/var/tmp",
+    // macOS, where `/tmp` and `/var` are symlinks into `/private`
+    "/Users",
+    "/Volumes",
+    "/private/tmp",
+    "/private/var",
+    "/private/var/tmp",
 ];
+
+/// The `info/exclude` line that keeps a checkpoint store out of its **own**
+/// snapshots, or `None` when the store lives outside the work tree (the
+/// ordinary layout, nothing to exclude).
+///
+/// A `checkpoints_root` *inside* the cwd is the mechanism behind the reported
+/// 2 GB `~/.alter-zero`: without this, every `git add -A` re-stages the
+/// previous snapshots' object files, so the tracked set doubles each turn
+/// (measured 59 → 130 → 269 → 528 over four snapshots) and the store
+/// compounds into itself. [`CHECKPOINT_EXCLUDES`] cannot cover it — those are
+/// *name* patterns, and the root can be any path the user points
+/// `ALTER_ZERO_CHECKPOINTS_DIR` at.
+///
+/// The line is **anchored** with a leading `/` so it matches that directory at
+/// the work tree's root and not a same-named one deeper in the project, and
+/// the four gitignore metacharacters are escaped so a literal path stays
+/// literal (a store in `ck[1]` must exclude `ck[1]`, not `ck1`).
+#[must_use]
+pub fn store_exclude_line(work_tree: &Path, checkpoints_root: &Path) -> Option<String> {
+    let relative = checkpoints_root.strip_prefix(work_tree).ok()?;
+    if relative.as_os_str().is_empty() {
+        return None;
+    }
+    let mut line = String::from("/");
+    for ch in relative.to_string_lossy().chars() {
+        match ch {
+            // Windows separators become the one gitignore understands.
+            '\\' => line.push('/'),
+            '*' | '?' | '[' | ']' => {
+                line.push('\\');
+                line.push(ch);
+            }
+            _ => line.push(ch),
+        }
+    }
+    line.push_str("/\n");
+    Some(line)
+}
 
 /// The paths the scope guard measures a cwd against — injected by the
 /// boundary the way the clock is, so [`cwd_scope`] stays pure. Every field is
@@ -249,8 +319,6 @@ pub struct CheckpointEnv<'a> {
     pub home: Option<&'a Path>,
     /// alter-zero's config/state directory (`~/.alter-zero`).
     pub state_dir: Option<&'a Path>,
-    /// The checkpoints root ([`crate::checkpoint::store_git_dir`]'s `root`).
-    pub store_root: Option<&'a Path>,
     /// `$TMPDIR` — `/tmp` under another name, and on macOS a per-user path
     /// (`/var/folders/xx/yyy/T`) no fixed list can predict.
     pub tmp_dir: Option<&'a Path>,
@@ -269,15 +337,14 @@ pub struct CheckpointEnv<'a> {
 ///   whole disk;
 /// - the **home directory** or an ancestor of it — the user's entire tree (the
 ///   original "alter0 hangs in `~`" bug);
-/// - **alter-zero's own state directory**, in either direction: a cwd at or
-///   under `~/.alter-zero`, or a cwd that *contains* the checkpoint store. The
-///   store's `GIT_DIR` lives under the state dir, so snapshotting it makes
-///   every commit hash the previous commits' objects back in — the tracked
-///   file count doubles per turn and the store grows without bound (the
-///   reported 2 GB `.alter-zero`). [`CHECKPOINT_EXCLUDES`] cannot catch this:
-///   its `.alter-zero/` pattern matches a *nested* directory, never the work
-///   tree's own root;
-/// - a **system tree** ([`SYSTEM_TREES`]) or anything under one;
+/// - **alter-zero's own state directory** and everything under it: it holds
+///   the rollouts, the input history, and every project's checkpoint store, so
+///   a restore's `git clean -fd` there deletes other sessions' records. (A cwd
+///   that merely *contains* this session's store is **not** refused — see
+///   [`store_exclude_line`], which keeps the store out of its own snapshots
+///   so that project checkpoints normally);
+/// - a **pseudo-filesystem** ([`SYSTEM_TREES`]) or anything under one, and a
+///   **system root** ([`SYSTEM_ROOTS`]) itself;
 /// - a **shared scratch parent** ([`SHARED_PARENTS`], plus `$TMPDIR`) — the
 ///   directory itself only, so `/tmp/my-scratch-project` still checkpoints.
 ///
@@ -301,7 +368,9 @@ pub fn cwd_scope(cwd: &Path, env: &CheckpointEnv<'_>) -> Result<(), CheckpointRe
     if known(env.home).is_some_and(|home| home.starts_with(cwd)) {
         return Err(CheckpointRefusal::HomeDirectory);
     }
-    if SYSTEM_TREES.iter().any(|tree| cwd.starts_with(tree)) {
+    if SYSTEM_TREES.iter().any(|tree| cwd.starts_with(tree))
+        || SYSTEM_ROOTS.iter().any(|root| cwd == Path::new(root))
+    {
         return Err(CheckpointRefusal::SystemDirectory);
     }
     // Before the state-dir rule, because both can be true at once and this is
@@ -312,10 +381,10 @@ pub fn cwd_scope(cwd: &Path, env: &CheckpointEnv<'_>) -> Result<(), CheckpointRe
     {
         return Err(CheckpointRefusal::SharedDirectory);
     }
-    // The state dir, both directions — the cwd inside it, or it inside the cwd.
-    if known(env.state_dir).is_some_and(|state| cwd.starts_with(state))
-        || known(env.store_root).is_some_and(|store| store.starts_with(cwd))
-    {
+    // The state dir and everything under it. The *other* direction — a store
+    // root inside the cwd — is not a refusal: `store_exclude_line` keeps the
+    // store out of its own snapshots, so that project checkpoints normally.
+    if known(env.state_dir).is_some_and(|state| cwd.starts_with(state)) {
         return Err(CheckpointRefusal::StateDirectory);
     }
     Ok(())
@@ -338,7 +407,7 @@ pub const DEFAULT_MAX_FILES: u64 = 20_000;
 /// every turn are the wrong tool for one however fast the disk. The
 /// side-effect is a cold snapshot bounded to well under a second on ordinary
 /// hardware and a few seconds on the slowest.
-pub const DEFAULT_MAX_BYTES: u64 = 128 << 20; // 128 MiB
+pub const DEFAULT_MAX_BYTES: u64 = 256 << 20; // 256 MiB
 
 /// How long [`CheckpointStore::probe`] may spend counting. A tree it cannot
 /// finish counting in this long is, by that very fact, one the snapshot
@@ -378,28 +447,46 @@ impl SnapshotBudget {
     }
 }
 
+/// How [`CheckpointStore::probe`] finished — which is not the same question as
+/// how big the tree is, since the deadline can trip before the counting does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProbeOutcome {
+    /// Counting finished inside every cap.
+    #[default]
+    WithinBudget,
+    /// A file or byte cap was blown; the counts are lower bounds.
+    OverBudget,
+    /// [`SnapshotBudget::max_time`] elapsed first, so the tree was never
+    /// measured at all.
+    OutOfTime,
+}
+
 /// What the next snapshot would cost — [`CheckpointStore::probe`]'s verdict.
-/// The counts are lower bounds when `exceeded` is set: the probe stops as
-/// soon as a cap is blown rather than finishing a walk whose answer is
-/// already known.
+/// The counts are lower bounds unless the outcome is
+/// [`WithinBudget`](ProbeOutcome::WithinBudget): the probe stops as soon as a
+/// cap is blown rather than finishing a walk whose answer is already known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SnapshotCost {
     /// Files the snapshot would hash.
     pub files: usize,
     /// Bytes those files hold.
     pub bytes: u64,
-    /// Whether a [`SnapshotBudget`] cap was blown.
-    pub exceeded: bool,
+    /// How the probe ended.
+    pub outcome: ProbeOutcome,
 }
 
 impl SnapshotCost {
     /// The refusal this cost implies, or `None` when it fits.
     #[must_use]
     pub fn refusal(&self) -> Option<CheckpointRefusal> {
-        self.exceeded.then_some(CheckpointRefusal::TooLarge {
-            files: self.files,
-            bytes: self.bytes,
-        })
+        match self.outcome {
+            ProbeOutcome::WithinBudget => None,
+            ProbeOutcome::OverBudget => Some(CheckpointRefusal::TooLarge {
+                files: self.files,
+                bytes: self.bytes,
+            }),
+            ProbeOutcome::OutOfTime => Some(CheckpointRefusal::TooSlow),
+        }
     }
 }
 
@@ -476,6 +563,10 @@ pub struct CheckpointStore {
     ///
     /// [`set_enabled`]: CheckpointStore::set_enabled
     capable: bool,
+    /// The [`store_exclude_line`] keeping the store out of its own snapshots
+    /// when the checkpoints root lands inside the work tree; `None` for the
+    /// ordinary layout, where the store is elsewhere.
+    self_exclude: Option<String>,
 }
 
 impl CheckpointStore {
@@ -492,12 +583,16 @@ impl CheckpointStore {
     #[must_use]
     pub fn new(root: Option<&Path>, cwd: &Path, capable: bool) -> Self {
         let git_dir = root.map(|r| store_git_dir(r, cwd)).unwrap_or_default();
+        // A root under the work tree would otherwise be re-staged by every
+        // snapshot, compounding the store into itself (docs/checkpoint.md).
+        let self_exclude = root.and_then(|r| store_exclude_line(cwd, r));
         let capable = capable && root.is_some();
         Self {
             enabled: capable,
             capable,
             git_dir,
             work_tree: cwd.to_path_buf(),
+            self_exclude,
         }
     }
 
@@ -604,7 +699,11 @@ impl CheckpointStore {
     fn write_excludes(&self) -> std::io::Result<()> {
         let info = self.git_dir.join("info");
         std::fs::create_dir_all(&info)?;
-        std::fs::write(info.join("exclude"), exclude_file_contents())
+        let mut body = exclude_file_contents();
+        if let Some(line) = &self.self_exclude {
+            body.push_str(line);
+        }
+        std::fs::write(info.join("exclude"), body)
     }
 
     /// What the next snapshot would have to hash, measured *without* hashing
@@ -663,8 +762,12 @@ impl CheckpointStore {
                 let path: Vec<u8> = pending.drain(..=nul).take(nul).collect();
                 cost.files += 1;
                 cost.bytes += self.entry_size(&path);
-                if budget.exceeded(cost.files, cost.bytes) || started.elapsed() > budget.max_time {
-                    cost.exceeded = true;
+                if budget.exceeded(cost.files, cost.bytes) {
+                    cost.outcome = ProbeOutcome::OverBudget;
+                    break 'read;
+                }
+                if started.elapsed() > budget.max_time {
+                    cost.outcome = ProbeOutcome::OutOfTime;
                     break 'read;
                 }
             }
@@ -866,7 +969,6 @@ mod tests {
         CheckpointEnv {
             home: Some(Path::new("/home/user")),
             state_dir: Some(Path::new("/home/user/.alter-zero")),
-            store_root: Some(Path::new("/home/user/.alter-zero/checkpoints")),
             tmp_dir: None,
         }
     }
@@ -953,33 +1055,82 @@ mod tests {
     }
 
     #[test]
-    fn cwd_scope_refuses_a_cwd_that_would_contain_the_checkpoint_store() {
-        // The other direction of the same self-inclusion bug: a custom
-        // ALTER_ZERO_CHECKPOINTS_DIR *inside* the working directory.
-        let inside = CheckpointEnv {
-            store_root: Some(Path::new("/home/user/proj/.checkpoints")),
-            ..env()
-        };
-        assert_eq!(
-            cwd_scope(Path::new("/home/user/proj"), &inside),
-            Err(CheckpointRefusal::StateDirectory)
-        );
-        // A store root elsewhere leaves the same project alone.
+    fn a_cwd_that_contains_the_store_still_checkpoints() {
+        // The other direction of the self-inclusion bug is answered by
+        // `store_exclude_line`, not by refusal: a custom
+        // ALTER_ZERO_CHECKPOINTS_DIR *inside* the project is a configuration
+        // choice, and taking the whole feature away over it is a worse answer
+        // than simply not staging the store.
         allowed("/home/user/proj");
+        // …and the store keeps itself out of the snapshot instead.
+        assert_eq!(
+            store_exclude_line(
+                Path::new("/home/user/proj"),
+                Path::new("/home/user/proj/.checkpoints")
+            ),
+            Some("/.checkpoints/\n".to_string())
+        );
+    }
+
+    // ===== store_exclude_line (the store never stages itself) =====
+
+    #[test]
+    fn store_exclude_line_anchors_a_root_inside_the_work_tree() {
+        // Anchored with a leading `/` so it matches *that* directory at the
+        // work tree's root and not a same-named one deeper in the project.
+        assert_eq!(
+            store_exclude_line(
+                Path::new("/home/user/proj"),
+                Path::new("/home/user/proj/.ck")
+            ),
+            Some("/.ck/\n".to_string())
+        );
+        assert_eq!(
+            store_exclude_line(
+                Path::new("/home/user/proj"),
+                Path::new("/home/user/proj/build/snapshots")
+            ),
+            Some("/build/snapshots/\n".to_string())
+        );
     }
 
     #[test]
-    fn a_shared_parent_reports_being_shared_even_when_it_holds_the_store() {
-        // Both rules are true when the store root lives under `/tmp` (the
-        // smoke suite's `mktemp -d` layout, and `TMPDIR`-based setups). The
-        // shared-directory reason is the one that explains anything.
-        let store_in_tmp = CheckpointEnv {
-            store_root: Some(Path::new("/tmp/alter-zero-ck")),
-            ..env()
-        };
+    fn store_exclude_line_is_none_when_the_store_is_outside_the_work_tree() {
+        // The ordinary layout — nothing to exclude.
         assert_eq!(
-            cwd_scope(Path::new("/tmp"), &store_in_tmp),
-            Err(CheckpointRefusal::SharedDirectory)
+            store_exclude_line(
+                Path::new("/home/user/proj"),
+                Path::new("/home/user/.alter-zero/checkpoints")
+            ),
+            None
+        );
+        // A sibling whose name merely shares a prefix is not inside it.
+        assert_eq!(
+            store_exclude_line(
+                Path::new("/home/user/proj"),
+                Path::new("/home/user/project-ck")
+            ),
+            None
+        );
+        // The work tree itself is not a path *within* the work tree.
+        assert_eq!(
+            store_exclude_line(Path::new("/home/user/proj"), Path::new("/home/user/proj")),
+            None
+        );
+    }
+
+    #[test]
+    fn store_exclude_line_escapes_gitignore_metacharacters() {
+        // A literal path must stay literal: `[`, `]`, `*` and `?` are glob
+        // syntax in an exclude file, so a project dir called `ck[1]` would
+        // otherwise exclude `ck1` and not itself.
+        assert_eq!(
+            store_exclude_line(Path::new("/p"), Path::new("/p/ck[1]")),
+            Some("/ck\\[1\\]/\n".to_string())
+        );
+        assert_eq!(
+            store_exclude_line(Path::new("/p"), Path::new("/p/a*b?c")),
+            Some("/a\\*b\\?c/\n".to_string())
         );
     }
 
@@ -1026,29 +1177,44 @@ mod tests {
     }
 
     #[test]
-    fn cwd_scope_refuses_system_trees_and_everything_under_them() {
-        for system in [
-            "/usr",
-            "/usr/local/src",
-            "/etc",
-            "/etc/nginx",
+    fn cwd_scope_refuses_pseudo_filesystems_and_everything_under_them() {
+        // These are not ordinary filesystems at all: snapshotting one is
+        // nonsense, and `/dev/shm` and `/run` are shared scratch space whose
+        // files belong to other live processes. Subtree matching, because
+        // `/dev/shm` and `/proc/1` are as wrong as their roots.
+        for tree in [
             "/proc",
             "/proc/1",
+            "/sys",
             "/sys/kernel",
             "/dev",
             "/dev/shm",
+            "/run",
             "/run/user/1000",
-            "/boot",
-            "/bin",
-            "/sbin",
-            "/lib64",
         ] {
             assert_eq!(
-                refusal(system),
+                refusal(tree),
                 CheckpointRefusal::SystemDirectory,
-                "{system} must be refused"
+                "{tree} must be refused"
             );
         }
+    }
+
+    #[test]
+    fn cwd_scope_refuses_system_roots_but_not_projects_inside_them() {
+        // `/usr`, `/etc` and friends are refused as *directories* — nobody's
+        // project is the whole of `/usr` — but people really do keep work in
+        // `/usr/local/src` and version `/etc/nginx`, so the subtree is theirs.
+        for root in ["/usr", "/etc", "/boot", "/bin", "/sbin", "/lib64", "/root"] {
+            assert_eq!(
+                refusal(root),
+                CheckpointRefusal::SystemDirectory,
+                "{root} must be refused"
+            );
+        }
+        allowed("/usr/local/src/myproject");
+        allowed("/etc/nginx");
+        allowed("/root/proj");
     }
 
     #[test]
@@ -1057,7 +1223,6 @@ mod tests {
         let degenerate = CheckpointEnv {
             home: Some(Path::new("")),
             state_dir: None,
-            store_root: None,
             tmp_dir: None,
         };
         assert_eq!(cwd_scope(Path::new("/data/x"), &degenerate), Ok(()));
@@ -1101,6 +1266,27 @@ mod tests {
     }
 
     // ===== the pre-flight cost budget =====
+
+    #[test]
+    fn a_probe_that_ran_out_of_time_says_so_instead_of_guessing_a_size() {
+        // The deadline trips on a tree too slow to *count*, which says nothing
+        // about how big it is — reporting the handful of files counted so far
+        // as the reason ("31 files is too big") would be a lie.
+        let timed_out = SnapshotCost {
+            files: 31,
+            bytes: 2048,
+            outcome: ProbeOutcome::OutOfTime,
+        };
+        assert_eq!(
+            timed_out.refusal(),
+            Some(CheckpointRefusal::TooSlow),
+            "a deadline is its own reason"
+        );
+        assert_eq!(
+            CheckpointRefusal::TooSlow.to_string(),
+            "Checkpoints off — this directory is too slow to scan, let alone snapshot",
+        );
+    }
 
     #[test]
     fn the_budget_flags_a_tree_past_either_cap() {

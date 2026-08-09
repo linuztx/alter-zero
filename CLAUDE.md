@@ -196,29 +196,40 @@ Ctrl+C is an unread key event, and hashing is O(bytes): a 235 MB cwd measured
 **9.7 s** to first frame and a 260 MB store. Two guards decide, both pure with
 the paths injected at the boundary. The **categorical**
 `checkpoint::cwd_scope` refuses a filesystem root, the home dir or an ancestor
-of it (the original "hangs in `~`" bug), **alter-zero's own state dir in both
-directions** — a cwd at or under `~/.alter-zero`, *or* a cwd containing the
-store, since the store's `GIT_DIR` lives in the state dir and snapshotting it
-hashes each snapshot's objects back in (tracked files 59→130→269→528 over four
-turns, 41 MB→165 MB — the reported 2 GB `.alter-zero`; `CHECKPOINT_EXCLUDES`
-can't catch it, its `.alter-zero/` pattern matching a *nested* dir and never
-the work tree's own root), every `SYSTEM_TREES` entry **and its subtree**
-(`/usr`, `/etc`, `/proc`, …), and each `SHARED_PARENTS` entry (plus `$TMPDIR`)
-**itself only** — so `/tmp` is refused as every program's scratch space while
-`/tmp/my-project` checkpoints exactly as before, which is what the smoke
-suite's `mktemp -d` work dirs rely on. The **general**
+of it (the original "hangs in `~`" bug), **alter-zero's own state dir and
+everything under it** (it holds the rollouts, the input history and every
+project's store, so a restore's `git clean -fd` there deletes other sessions'
+records), every `SYSTEM_TREES` entry **and its subtree** (`/proc`, `/sys`,
+`/dev`, `/run` — not ordinary filesystems at all, and `/dev/shm` holds other
+*live* processes' files), and each `SYSTEM_ROOTS` (`/usr`, `/etc`, `/root`, …)
+and `SHARED_PARENTS` (plus `$TMPDIR`) entry **itself only** — so `/tmp` is
+refused as every program's scratch space while `/tmp/my-project`,
+`/usr/local/src/thing` and `/etc/nginx` checkpoint exactly as before, which is
+also what the smoke suite's `mktemp -d` work dirs rely on. The *other*
+direction of the self-inclusion bug — a store root **inside** the cwd — is
+not a refusal but a fix: `checkpoint::store_exclude_line` appends an anchored,
+metacharacter-escaped `info/exclude` line so the store never re-stages its own
+objects (without it the tracked set compounds 59→130→269→528 over four turns,
+41 MB→165 MB — the reported 2 GB `.alter-zero`; `CHECKPOINT_EXCLUDES` can't
+cover it, being *name* patterns against a root the user chooses), which also
+means an `ALTER_ZERO_CHECKPOINTS_DIR` pointed into a project costs that
+project nothing. The **general**
 `checkpoint::SnapshotBudget` then catches the huge directory no denylist can
 name: `CheckpointStore::probe` asks `git ls-files --others --exclude-standard`
 for precisely the paths `git add -A` would stage — honouring `.gitignore`, so
-a repo whose bulk is ignored is never falsely refused — sums their `stat`
-sizes, and bails the moment a cap trips (26 ms against the 20 s it predicts,
-because git walks and stats but never reads content; a warm store reports only
-what is new, which is exactly what it will hash). Past the default 20 000
-files / 128 MiB — a claim about what a project *is*, not a time, since hashing
-throughput varies ~20× across disks; overridable via
+a repo whose bulk is ignored is never falsely refused (a walk of our own would
+refuse a Next.js `.next/` or a gitignored `dist/` for weight git never carries)
+— sums their `stat` sizes, and bails the moment a cap trips (26 ms against the
+20 s it predicts, because git walks and stats but never reads content; a warm
+store reports only what is new, which is exactly what it will hash, so a
+project that grew past the cap over months keeps checkpointing). Past the
+default 20 000 files / 256 MiB — a claim about what a project *is*, not a time,
+since hashing throughput varies ~20× across disks; overridable via
 `ALTER_ZERO_CHECKPOINT_MAX_FILES`/`_MAX_BYTES`, `0` = no limit — the store is
 retired with `disable()` (capability, not just the flag, so `/settings` reports
-the row unavailable). Every refusal raises a one-row `Checkpoints off —
+the row unavailable). Running out of *time* is its own verdict
+(`ProbeOutcome::OutOfTime` → `TooSlow`), never folded into "too big": a probe
+that timed out learned nothing about the size. Every refusal raises a one-row `Checkpoints off —
 {reason}` toast, suppressed only when the user had already turned checkpoints
 off: going quiet is what made "alter0 takes seconds to boot in `/tmp`" and
 "checkpoints do nothing here" read as two unrelated bugs) in

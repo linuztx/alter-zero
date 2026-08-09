@@ -122,20 +122,24 @@ that were never this session's to touch. Refused, each with its own
 - **`FilesystemRoot`** — `/`, a drive root, or an empty unknowable cwd.
 - **`HomeDirectory`** — the home directory itself or an ancestor of it
   (`/home`): the user's entire tree (the original "alter0 hangs in `~`" bug).
-- **`StateDirectory`** — alter-zero's own `~/.alter-zero`, in **both**
-  directions: a cwd at or under the state dir, *and* a cwd that **contains**
-  the checkpoint store. The store's `GIT_DIR` lives under the state dir, so
-  snapshotting it makes every commit hash the previous commits' objects back
-  in. Measured over four turns on a 40 MB state dir: tracked files
-  59 → 130 → 269 → 528, store 41 MB → 165 MB. That is how a `.alter-zero`
-  reaches 2 GB. `CHECKPOINT_EXCLUDES` cannot catch it — its `.alter-zero/`
-  pattern matches a *nested* directory, never the work tree's own root.
-- **`SystemDirectory`** — a `SYSTEM_TREES` entry (`/usr`, `/etc`, `/proc`,
-  `/sys`, `/dev`, `/run`, `/bin`, `/boot`, `/lib*`, `/sbin`, and macOS's
-  `/System`, `/Library`, `/Applications`) **or anything under one**.
+- **`StateDirectory`** — alter-zero's own `~/.alter-zero` **and everything
+  under it**: it holds the rollouts, the input history, and every project's
+  checkpoint store, so a restore's `git clean -fd` there deletes other
+  sessions' records. A cwd that merely *contains* this session's store is
+  **not** refused — see [the self-exclude](#the-store-never-snapshots-itself),
+  which is the better answer to that direction.
+- **`SystemDirectory`** — a `SYSTEM_TREES` entry (`/proc`, `/sys`, `/dev`,
+  `/run`) **or anything under one**, since these are not ordinary filesystems
+  at all and `/dev/shm` and `/run/user/N` hold other *live* processes' files;
+  or a `SYSTEM_ROOTS` entry (`/usr`, `/etc`, `/root`, `/bin`, `/boot`,
+  `/lib*`, `/sbin`, and macOS's `/System`, `/Library`, `/Applications`)
+  **itself only** — the whole of `/usr` is nobody's project, but people really
+  do keep work in `/usr/local/src` and version `/etc/nginx`, and refusing a
+  legitimate project is the worse default.
 - **`SharedDirectory`** — a `SHARED_PARENTS` entry (`/tmp`, `/var/tmp`, `/var`,
   `/opt`, `/srv`, `/mnt`, `/media`, `/home`, `/net`, `/export`, `/Users`,
-  `/Volumes`) or `$TMPDIR`, and **only the directory itself**: `/tmp` holds
+  `/Volumes`, and macOS's `/private/tmp`, `/private/var`) or `$TMPDIR`, and
+  **only the directory itself**: `/tmp` holds
   every program on the box's scratch files, while `/tmp/my-project` is an
   ordinary project and checkpoints exactly as before (the smoke suite's
   `mktemp -d` work dirs depend on this). `$TMPDIR` is injected because macOS
@@ -143,9 +147,30 @@ that were never this session's to touch. Refused, each with its own
 
 Matching is component-wise throughout, so a `/home/username` sibling of
 `/home/user` still checkpoints and a trailing slash never matters; an empty
-injected path counts as unknown rather than as a prefix of everything. A
-shared parent that *also* holds the store reports `SharedDirectory` — both are
-true and that one explains something.
+injected path counts as unknown rather than as a prefix of everything.
+
+### The store never snapshots itself
+
+The other half of the 2 GB `~/.alter-zero`, and the one that is a *bug* rather
+than a scope question. When the checkpoints root lands **inside** the work
+tree, every `git add -A` re-stages the previous snapshots' object files, so
+the tracked set compounds turn after turn — measured on a 40 MB state dir:
+59 → 130 → 269 → 528 tracked files over four snapshots, store 41 MB → 165 MB.
+
+`CHECKPOINT_EXCLUDES` cannot cover it: those are *name* patterns, and the root
+is whatever path `ALTER_ZERO_CHECKPOINTS_DIR` points at. So
+`store_exclude_line(work_tree, root)` derives an extra `info/exclude` line
+whenever the root strips as a prefix of the work tree — **anchored** with a
+leading `/` so it matches that directory at the work tree's root and not a
+same-named one deeper in the project, with the four gitignore metacharacters
+escaped so a literal path stays literal (a store in `ck[1]` must exclude
+`ck[1]`, not `ck1`). `CheckpointStore::new` computes it once and
+`write_excludes` appends it.
+
+This is why a cwd containing the store is *not* refused: taking the whole
+feature away over a configuration choice is a worse answer than simply not
+staging the store. It is also defence in depth — even if a scope rule is ever
+missed, the store can no longer compound into itself.
 
 ### The general half — `SnapshotBudget` and the pre-flight probe
 
@@ -171,13 +196,19 @@ Past the budget the store is retired for the session (`CheckpointStore::disable`
 — capability, not just the enabled flag, so `/settings` reports the row
 unavailable instead of offering a toggle that would re-arm a measured stall).
 
-The defaults are **20 000 files** and **128 MiB**, with a 500 ms probe
+The defaults are **20 000 files** and **256 MiB**, with a 500 ms probe
 deadline. The byte cap is deliberately *not* calibrated as a time — hashing
 throughput varies ~20× across disks. It is a statement about what a project
 is: a working tree holding more than that much non-ignored content is a data,
 media, or scratch directory, and whole-tree snapshots every turn are the wrong
-tool for one however fast the disk. The side effect is a cold snapshot well
-under a second on ordinary hardware and a few seconds on the slowest.
+tool for one however fast the disk. The side effect is a cold snapshot around
+a second on ordinary hardware and several on the slowest — the price of not
+refusing real projects, which is the worse of the two failures.
+
+Running out of *time* is its own verdict (`ProbeOutcome::OutOfTime` →
+`CheckpointRefusal::TooSlow`), never folded into "too big": a probe that timed
+out has learned nothing about the tree's size, so reporting the handful of
+files it managed to count as the reason would be a lie.
 
 Both caps are overridable, each accepting a plain count or a `k`/`m`/`g`
 suffix, and each taking **`0` as no limit** (the `/settings` **Max tool calls**
@@ -314,16 +345,28 @@ backtrack behave exactly as they did before this feature — transcript only.
   including files you edited by hand — this is the "git reset" semantic the
   feature is named for. The pre-restore backup + `git reflog` are the safety net.
   Surgical, agent-touched-only restores are future work.
-- **Synchronous git.** The session-start snapshot still runs on the loop's
-  thread before the first frame, and turn-end snapshots at idle boundaries, so
-  a pause is possible on a large-but-in-budget tree — this repo measures
-  368 ms cold, 24 ms warm. Only the *first* run in a directory pays it: a warm
-  store's `git add -A` stats rather than hashes. Offloading to a worker thread
-  (like the Ctrl+V image pipeline) is still future work, and is the one thing
-  that would remove the pause rather than bound it; it needs care, since a
-  background `git add -A` must never overlap a restore's `git reset --hard`.
-  The *pathological* cases are refused outright by `cwd_scope` and the
-  `SnapshotBudget` probe rather than paused for.
+- **Synchronous git — one slow first snapshot per directory.** The
+  session-start snapshot runs on the loop's thread before the first frame, and
+  turn-end snapshots at idle boundaries. Only the **first** run in a directory
+  pays real time; a warm store's `git add -A` stats rather than hashes.
+  Measured on this repo's hardware (a VM whose git hashes at ~23 MB/s, roughly
+  a tenth of an SSD):
+
+  | working tree | launch 1 | launch 2 | launch 3 |
+  | --- | --- | --- | --- |
+  | this repo (5.3 MB) | 368 ms | ~80 ms | ~80 ms |
+  | a 201 MB project | 10 134 ms | 71 ms | 81 ms |
+
+  So the byte cap is the knob that decides how bad that one launch may get,
+  and it cannot be calibrated as a time: at 256 MiB this machine spends ten
+  seconds where an SSD spends under one. Lower
+  `ALTER_ZERO_CHECKPOINT_MAX_BYTES` on slow storage. The only thing that would
+  *remove* the pause rather than bound it is moving the cold snapshot to a
+  worker thread (the Ctrl+V image pipeline's shape) — still future work, and
+  it needs care: a background `git add -A` must never overlap a restore's
+  `git reset --hard`. The *pathological* cases are refused outright by
+  `cwd_scope` and the probe rather than paused for, and those refusals do not
+  depend on the cap.
 - **No pruning.** `gc.auto=0` keeps every snapshot restorable across the fork a
   restore creates, so the store grows slowly and unbounded. A retention policy is
   future work.

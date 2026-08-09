@@ -189,8 +189,8 @@ impl<'t> Session<'t> {
         // the transcript. Whether this host *can* snapshot at all is a `git`
         // binary being present and the cwd being a project in the first place
         // (`cwd_scope` — never a filesystem root, the home dir or an ancestor of
-        // it, alter-zero's own state dir, a system tree, or a shared scratch
-        // parent like `/tmp`): the session-start snapshot below runs before the
+        // it, alter-zero's own state dir, a pseudo-filesystem, or a shared
+        // scratch parent like `/tmp`): the session-start snapshot below runs before the
         // first frame paints, and `git add -A` is O(bytes), so an oversized cwd
         // blocks the raw-mode terminal for seconds while duplicating itself into
         // the store. `seed_checkpoints` then puts a cost *ceiling* on whatever
@@ -205,7 +205,6 @@ impl<'t> Session<'t> {
             &checkpoint::CheckpointEnv {
                 home: home.as_deref(),
                 state_dir: state_dir.as_deref(),
-                store_root: store_root.as_deref(),
                 tmp_dir: tmp_dir.as_deref(),
             },
         )

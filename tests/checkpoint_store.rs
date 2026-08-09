@@ -12,7 +12,9 @@ use std::path::Path;
 
 use std::time::Duration;
 
-use alter_zero::checkpoint::{CheckpointRefusal, CheckpointStore, SnapshotBudget, git_available};
+use alter_zero::checkpoint::{
+    CheckpointRefusal, CheckpointStore, ProbeOutcome, SnapshotBudget, git_available, store_git_dir,
+};
 
 /// A store snapshotting `work`, keeping its object db under `root` — the
 /// production wiring (`CheckpointStore::new` + `init`).
@@ -164,7 +166,7 @@ fn probe_counts_the_files_a_snapshot_would_stage() {
     let cost = store.probe(&SnapshotBudget::default());
     assert_eq!(cost.files, 2, "both files would be staged");
     assert_eq!(cost.bytes, 20, "and their bytes measured");
-    assert!(!cost.exceeded, "a two-file tree fits any sane budget");
+    assert_eq!(cost.outcome, ProbeOutcome::WithinBudget);
     assert_eq!(cost.refusal(), None);
 }
 
@@ -222,7 +224,11 @@ fn probe_stops_early_and_refuses_a_tree_past_the_cap() {
         max_time: Duration::from_secs(5),
     };
     let cost = store.probe(&budget);
-    assert!(cost.exceeded, "200 files blows a 10-file cap");
+    assert_eq!(
+        cost.outcome,
+        ProbeOutcome::OverBudget,
+        "200 files blows a 10-file cap"
+    );
     assert!(
         cost.files <= 20,
         "the probe stops at the cap instead of walking all 200 (counted {})",
@@ -257,7 +263,11 @@ fn probe_refuses_a_few_enormous_files_the_file_cap_would_miss() {
         max_bytes: 100 * 1024,
         max_time: Duration::from_secs(5),
     };
-    assert!(store.probe(&budget).exceeded, "192 KiB blows a 100 KiB cap");
+    assert_eq!(
+        store.probe(&budget).outcome,
+        ProbeOutcome::OverBudget,
+        "192 KiB blows a 100 KiB cap"
+    );
 }
 
 #[test]
@@ -291,4 +301,104 @@ fn a_disabled_stores_probe_is_inert() {
     let cost = store.probe(&SnapshotBudget::default());
     assert_eq!(cost, alter_zero::checkpoint::SnapshotCost::default());
     assert_eq!(cost.refusal(), None);
+}
+
+// ===== the store never snapshots itself (docs/checkpoint.md) =====
+
+/// The paths the store has staged, read back through the same isolated
+/// `GIT_DIR`/work-tree wiring the store itself uses.
+fn tracked_paths(root: &Path, work: &Path) -> Vec<String> {
+    let git_dir = store_git_dir(root, work);
+    let out = std::process::Command::new("git")
+        .args(["ls-files"])
+        .env("GIT_DIR", &git_dir)
+        .env("GIT_WORK_TREE", work)
+        .env("GIT_INDEX_FILE", git_dir.join("index"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", git_dir.join("config.global"))
+        .current_dir(work)
+        .output()
+        .expect("list the store's tracked paths");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
+#[test]
+fn a_store_inside_its_own_work_tree_never_stages_itself() {
+    if !git_available() {
+        return;
+    }
+    // The mechanism behind the reported 2 GB `~/.alter-zero`: with the
+    // checkpoints root *under* the cwd, every `git add -A` re-stages the
+    // previous snapshots' object files and the tracked set compounds turn
+    // after turn. The root deliberately avoids the names CHECKPOINT_EXCLUDES
+    // already covers — this has to hold for any ALTER_ZERO_CHECKPOINTS_DIR a
+    // user points into their project.
+    let work = tempfile::tempdir().unwrap();
+    let work = work.path();
+    let root = work.join("build/snapshots");
+    let store = store(&root, work);
+
+    write(work, "app.py", "print(1)\n");
+    store.snapshot("first").expect("first snapshot");
+    write(work, "app.py", "print(2)\n");
+    store.snapshot("second").expect("second snapshot");
+    store.snapshot("third").expect("third snapshot");
+
+    let tracked = tracked_paths(&root, work);
+    assert!(
+        tracked.iter().any(|p| p == "app.py"),
+        "the project file is still captured: {tracked:?}"
+    );
+    assert!(
+        !tracked.iter().any(|p| p.starts_with("build/")),
+        "the store must never stage its own objects: {tracked:?}"
+    );
+    // And the probe agrees — it must not count the store's own growth as the
+    // project's, or a busy store would eventually refuse its own project.
+    assert_eq!(store.probe(&SnapshotBudget::default()).files, 0);
+}
+
+#[test]
+fn a_store_outside_the_work_tree_needs_no_self_exclude() {
+    if !git_available() {
+        return;
+    }
+    // The ordinary layout: nothing extra is written, and the project is
+    // captured exactly as before.
+    let root = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let work = work.path();
+    let store = store(root.path(), work);
+    write(work, "app.py", "print(1)\n");
+    store.snapshot("only").expect("snapshot");
+    assert_eq!(tracked_paths(root.path(), work), vec!["app.py".to_string()]);
+}
+
+#[test]
+fn probe_reports_running_out_of_time_as_its_own_verdict() {
+    if !git_available() {
+        return;
+    }
+    // A zero deadline trips on the first entry, so the path is exercised
+    // deterministically rather than by racing a real clock. The distinction
+    // matters: a probe that timed out has learned nothing about the tree's
+    // size, so reporting the two files it happened to count as "too big"
+    // would be a lie — `TooSlow` is its own reason.
+    let root = tempfile::tempdir().unwrap();
+    let work = tempfile::tempdir().unwrap();
+    let work = work.path();
+    let store = store(root.path(), work);
+    write(work, "a.txt", "x");
+    write(work, "b.txt", "y");
+
+    let cost = store.probe(&SnapshotBudget {
+        max_files: 0, // no size cap can trip — only the clock
+        max_bytes: 0,
+        max_time: Duration::ZERO,
+    });
+    assert_eq!(cost.outcome, ProbeOutcome::OutOfTime);
+    assert_eq!(cost.refusal(), Some(CheckpointRefusal::TooSlow));
 }
