@@ -117,7 +117,9 @@ impl SettingKey {
                 "Summarize the conversation on its own once the context window fills up"
             }
             Self::ProjectDocs => "Load the project's AGENTS.md instructions into every request",
-            Self::Hooks => "Run the lifecycle hooks in ~/.alter-zero/hooks.json around tool calls",
+            Self::Hooks => {
+                "Run the lifecycle hooks in ~/.alter-zero/hooks.json around tool calls and turns"
+            }
             Self::Temperature => "The sampling temperature sent with every request",
             Self::MaxToolCalls => {
                 "How many rounds of tool calls one turn may run before it gives up — 0 is no limit"
