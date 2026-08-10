@@ -5655,7 +5655,7 @@ settings_open="$(tmux capture-pane -t "$S67" -p)"
 echo "==== Phase 67: the settings menu open ===="
 printf '%s\n' "$settings_open"
 for expect in "Hide thinking" "Error retry" "Permission mode" "Temperature" \
-	"Max tool calls" "Type to search · Enter/Space to change · Esc to cancel"; do
+	"Max tool calls" "Hooks" "Type to search · Enter/Space to change · Esc to cancel"; do
 	if ! printf '%s' "$settings_open" | grep -qF "$expect"; then
 		echo "FAIL: Phase 67 — the settings menu is missing '$expect'" >&2
 		status=1
@@ -5665,7 +5665,10 @@ if ! printf '%s' "$settings_open" | grep -qE "→ Hide thinking +false"; then
 	echo "FAIL: Phase 67 — the first row is not marked with its value in the value column" >&2
 	status=1
 fi
-if ! printf '%s' "$settings_open" | grep -qF "(1/9)"; then
+# The counter's SHAPE, not a hard-coded total: this phase is about the menu
+# chrome, and pinning the row count made every later feature that adds a knob
+# fail here instead of in its own phase (the Hooks row did exactly that).
+if ! printf '%s' "$settings_open" | grep -qE "\(1/[0-9]+\)"; then
 	echo "FAIL: Phase 67 — the (n/total) counter never showed" >&2
 	status=1
 fi
