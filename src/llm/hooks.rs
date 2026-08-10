@@ -129,12 +129,36 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
 
     /// A subagent was launched; the returned strings are extra context for
     /// **that** agent's own conversation.
-    fn subagent_start(&self, _agent_id: &str, _agent_type: &str) -> Vec<String> {
+    ///
+    /// Takes the agent's own [`CancelToken`], like every other blocking method
+    /// here: an Esc while a subagent is starting must reap its hook rather
+    /// than wait the handler's timeout out.
+    fn subagent_start(
+        &self,
+        _agent_id: &str,
+        _agent_type: &str,
+        _cancel: &CancelToken,
+    ) -> Vec<String> {
         Vec::new()
     }
 
     /// A subagent finished.
-    fn subagent_stop(&self, _agent_id: &str, _agent_type: &str, _ok: bool, _last_message: &str) {}
+    ///
+    /// The token here is deliberately **not** the agent's: this fires after
+    /// the run ended, including when the user *killed* it, and a cleanup hook
+    /// that refused to run precisely when the agent was stopped would be
+    /// useless. The handler's own timeout is the bound. The parameter stays so
+    /// the trait says one thing about blocking, and so a caller holding a
+    /// session-level token can pass it.
+    fn subagent_stop(
+        &self,
+        _agent_id: &str,
+        _agent_type: &str,
+        _ok: bool,
+        _last_message: &str,
+        _cancel: &CancelToken,
+    ) {
+    }
 
     /// A view of this sink that reports its calls as coming from a subagent,
     /// so `agent_id` / `agent_type` reach every payload it builds. `None` —
@@ -450,31 +474,36 @@ impl HookSink for CommandHooks {
         }
     }
 
-    fn subagent_start(&self, agent_id: &str, agent_type: &str) -> Vec<String> {
+    fn subagent_start(
+        &self,
+        agent_id: &str,
+        agent_type: &str,
+        cancel: &CancelToken,
+    ) -> Vec<String> {
         let tagged = self.tagged(agent_id, agent_type);
         let payload = crate::hooks::subagent_start_payload(&tagged.context, agent_id, agent_type);
-        let cancel = CancelToken::new();
         tagged
-            .dispatch(
-                HookEvent::SubagentStart,
-                Some(agent_type),
-                &payload,
-                &cancel,
-            )
+            .dispatch(HookEvent::SubagentStart, Some(agent_type), &payload, cancel)
             .additional_context
     }
 
-    fn subagent_stop(&self, agent_id: &str, agent_type: &str, ok: bool, last_message: &str) {
+    fn subagent_stop(
+        &self,
+        agent_id: &str,
+        agent_type: &str,
+        ok: bool,
+        last_message: &str,
+        cancel: &CancelToken,
+    ) {
         let tagged = self.tagged(agent_id, agent_type);
         let payload = crate::hooks::subagent_stop_payload(
             &tagged.context,
             agent_id,
             agent_type,
             last_message,
-            !ok,
+            ok,
         );
-        let cancel = CancelToken::new();
-        tagged.dispatch(HookEvent::SubagentStop, Some(agent_type), &payload, &cancel);
+        tagged.dispatch(HookEvent::SubagentStop, Some(agent_type), &payload, cancel);
     }
 
     fn for_subagent(&self, agent_id: &str, agent_type: &str) -> Option<Arc<dyn HookSink>> {
@@ -549,7 +578,7 @@ mod tests {
         let c = call("bash", "{}");
         assert_eq!(NoHooks.pre_tool_use(&c, &cancel), PreToolVerdict::default());
         assert!(NoHooks.permission_request(&c, &cancel).is_none());
-        assert!(NoHooks.subagent_start("a", "explore").is_empty());
+        assert!(NoHooks.subagent_start("a", "explore", &cancel).is_empty());
     }
 
     #[test]
@@ -692,6 +721,53 @@ mod tests {
             allow.permission_request(&call("bash", "{}"), &CancelToken::new()),
             Some(HookPermissionVerdict::Allow { .. })
         ));
+    }
+
+    #[test]
+    fn a_subagent_start_hooks_plain_output_becomes_that_agents_context() {
+        // SubagentStart is one of the events whose plain stdout *is* the
+        // answer — a hook that just prints is briefing the agent.
+        let hooks = hooks_for(
+            r#"{"hooks":{"SubagentStart":[{"matcher":"explore","hooks":[{"type":"command",
+              "command":"echo 'the repo root is /srv/app'"}]}]}}"#,
+        );
+        assert_eq!(
+            hooks.subagent_start("a1", "explore", &CancelToken::new()),
+            vec!["the repo root is /srv/app".to_string()]
+        );
+        // A different agent type is not this hook's business.
+        assert!(
+            hooks
+                .subagent_start("a2", "reviewer", &CancelToken::new())
+                .is_empty(),
+            "the matcher gates on agent_type"
+        );
+    }
+
+    #[test]
+    fn subagent_stop_runs_and_is_told_how_the_agent_ended() {
+        let probe = std::env::temp_dir().join("alter-zero-hook-stop-probe.json");
+        let _ = std::fs::remove_file(&probe);
+        let hooks = hooks_for(&format!(
+            r#"{{"hooks":{{"SubagentStop":[{{"hooks":[{{"type":"command",
+              "command":"cat > {}"}}]}}]}}}}"#,
+            probe.display()
+        ));
+        hooks.subagent_stop("a1", "explore", false, "it broke", &CancelToken::new());
+        let written = std::fs::read_to_string(&probe).expect("the stop hook ran");
+        let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+        assert_eq!(value["hook_event_name"], serde_json::json!("SubagentStop"));
+        assert_eq!(value["agent_id"], serde_json::json!("a1"));
+        assert_eq!(value["agent_type"], serde_json::json!("explore"));
+        assert_eq!(
+            value["last_assistant_message"],
+            serde_json::json!("it broke")
+        );
+        assert_eq!(value["success"], serde_json::json!(false));
+        // Not repurposed to carry the failure: it means the run was started by
+        // a Stop hook's block, which nothing here does yet.
+        assert_eq!(value["stop_hook_active"], serde_json::json!(false));
+        let _ = std::fs::remove_file(&probe);
     }
 
     #[test]

@@ -279,18 +279,11 @@ pub fn run_agent(
                         results.push((call.id.clone(), outcome.context_text().to_string()));
                         continue;
                     }
-                    // The permission gate (docs/permissions.md), asked BEFORE
-                    // the ToolStart so nothing has run — and nothing has been
-                    // announced as running — while the user (or auto mode's
-                    // classifier) decides. A rejection still emits the
-                    // Start/End pair, so the call lands in history and the
-                    // transcript as a red cell, while the *model* reads the
-                    // longer instruction.
                     // `PreToolUse` (docs/hooks.md), ahead of the gate for the
                     // same reason the gate is ahead of the ToolStart: nothing
                     // has run and nothing shows as running while the user's
-                    // own command decides. A hook may refuse it, rewrite its
-                    // arguments, or answer the gate's question itself.
+                    // own command decides. A hook may refuse the call, rewrite
+                    // its arguments, or answer the gate's question itself.
                     let hook = hooks.pre_tool_use(call, cancel);
                     if let Some(reason) = &hook.blocked {
                         let (display, result) = hook_block_texts(reason);
@@ -323,9 +316,18 @@ pub fn run_agent(
                             arguments: arguments.clone(),
                         });
                     let call = rewritten.as_ref().unwrap_or(call);
+                    // The permission gate (docs/permissions.md), asked BEFORE
+                    // the ToolStart so nothing has run — and nothing has been
+                    // announced as running — while the user (or auto mode's
+                    // classifier) decides. A rejection still emits the
+                    // Start/End pair, so the call lands in history and the
+                    // transcript as a red cell, while the *model* reads the
+                    // longer instruction.
                     let approval = if hook.pre_approved {
-                        // `permissionDecision: "allow"` — the classifier's
-                        // provenance row, with a hook's name on it.
+                        // `permissionDecision: "allow"` skips the gate wholesale
+                        // — and with it the `PermissionRequest` hook, which asks
+                        // "may this run without the user?" and has been answered.
+                        // The classifier's provenance row, with a hook's name on it.
                         Approval::AllowNoted {
                             note: hook.note.clone().map_or_else(
                                 || "Allowed by hook".to_string(),

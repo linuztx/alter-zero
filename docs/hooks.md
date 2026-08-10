@@ -71,6 +71,16 @@ silent allow.
 **first** reason is kept, the contexts **concatenate** in handler order, and
 for `PreToolUse` a `deny` outranks an `ask`, which outranks an `allow`.
 
+Two payload fields are **extensions**, since the contract has no slot for
+facts this app has: `tool_response` is `{"output": …, "success": …}` (our tools
+return text, not a structured result, and a stable shape beats
+sometimes-a-string), and `SubagentStop` carries `success`. That second one
+exists because the obvious shortcut is wrong: `stop_hook_active` means *this
+run was started by a `Stop` hook's block* — the loop guard — so reporting a
+failed agent through it would hand a hook author the wrong fact under a
+documented name. It is always `false` here, because nothing yet continues an
+agent from a hook. codex extends these payloads the same way, with `turn_id`.
+
 ## Matchers
 
 Both references share one implementation, and so do we
@@ -111,6 +121,15 @@ tools, not a contract difference, and `Bash|bash` covers both.
 | `Stop`              | `tui/turn.rs` — `dispatch_after_turn`            | no  |
 | `PreCompact`        | `tui/turn.rs` — `start_compact_turn`             | no  |
 | `PostCompact`       | `app/compact.rs` — `finish_compact`              | no  |
+
+`PermissionRequest` sits exactly where the auto-mode classifier does — after
+the standing allowlist, before the user — because it answers the same
+question: *may this run without asking?* Two consequences worth stating: a
+call a standing rule already covers never reaches it (nothing is being asked),
+and neither does any call when the permission gate is off entirely
+(`ALTER_ZERO_PERMISSIONS=0`), since there is no permission decision to make.
+`PreToolUse` still fires in both cases — it is about the call, not about
+asking.
 
 ### Two execution contexts, and why v1 stops where it does
 
@@ -193,8 +212,8 @@ needing no `history_generation` bump.
 
 ## A worked config
 
-`~/.alter-zero/hooks.json`, doing the three things people actually ask for —
-guard a command, lint after an edit, and feed the model a fact it can't see:
+`~/.alter-zero/hooks.json`, doing the two things people ask for most — guard a
+command, and lint after a file change:
 
 ```json
 {
@@ -274,7 +293,7 @@ Following the pure-core / boundary split the rest of the crate uses:
 | ------------------- | -------------------------------------------------------------------- | ---------- |
 | `src/hooks/` (pure) | config parse · matcher · payload builders · verdict parse · merge      | unit, TDD  |
 | `src/subprocess.rs` | `spawn_shell_with` — the tier walk with caller-chosen stdio            | unit + real-`sh` |
-| `src/llm/hooks.rs`  | the runner and the `HookSink` glue: payload → spawn → parse → merge    | `smoke.sh` |
+| `src/llm/hooks.rs`  | the runner and the `HookSink` glue: payload → spawn → parse → merge    | real-`sh` unit tests + `smoke.sh` |
 | `src/tui/config.rs` | locating and loading `hooks.json`                                      | existing   |
 
 The pure half takes a hook's captured stdout **as a string**, so every verdict
@@ -290,17 +309,24 @@ this feature rots into eleven hand-wired call sites and an unreviewable
 signature. Instead there is one trait object with defaulted no-op methods:
 
 ```rust
-pub trait HookSink: Send + Sync {
+pub trait HookSink: Send + Sync + Debug {
     fn pre_tool_use(&self, _call: &ToolCallRequest, _cancel: &CancelToken) -> PreToolVerdict {
         PreToolVerdict::default()
     }
     fn post_tool_use(&self, _call: &ToolCallRequest, _out: &ToolOutcome, _cancel: &CancelToken)
         -> PostToolVerdict { PostToolVerdict::default() }
-    fn permission_request(&self, …) -> Option<HookPermission> { None }
-    fn subagent_start(&self, _id: &str, _agent_type: &str) -> Vec<String> { Vec::new() }
+    fn permission_request(&self, …) -> Option<HookPermissionVerdict> { None }
+    fn subagent_start(&self, _id: &str, _type: &str, _cancel: &CancelToken) -> Vec<String> {
+        Vec::new()
+    }
     fn subagent_stop(&self, …) {}
+    fn for_subagent(&self, …) -> Option<Arc<dyn HookSink>> { None }
 }
 ```
+
+Every blocking method takes the turn's `CancelToken` — the trait says one
+thing about blocking, and the one exception (`subagent_stop`, which is cleanup
+that must survive the kill it is reporting) says so at the method.
 
 Every method defaults, so `NoHooks` costs nothing and every existing test
 compiles untouched. **Adding event number six is one defaulted method plus one

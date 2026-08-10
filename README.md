@@ -145,6 +145,7 @@ without a real terminal.
 | `src/ui/`    | Pure rendering, one module per area (`docs/module-layout.md`): display-width word-wrap, styled message/tool lines, the live-region geometry, the status line, the bands + footer, commit bookkeeping. All styling lives in `ui/theme.rs`. | ✅ |
 | `src/stream/` | The backend seam, one module per area (`docs/module-layout.md`): the `StreamEvent` protocol, the `ReplySource` trait, a `CancelToken` — and the offline `DummyAi` in its own `dummy/` subtree, whose scenario registry decides which canned demo a prompt plays (`docs/dummy-backend.md`). | ✅ (pure parts, token & dummy) |
 | `src/llm/` | The real OpenAI-compatible backend: `providers.toml` config, the streaming SSE client, the reasoning splitter, the `/v1/models` listing, the `.env` key store (`/login`), the `config.json` model store (`/model`), and the `ReplySource` bridge. | ✅ (pure cores) |
+| `src/hooks/` | Lifecycle hooks (`docs/hooks.md`): the `hooks.json` format, which handlers an event selects, the JSON payload each writes to a handler's stdin and the verdict its stdout is parsed back into. The spawn lives in `src/llm/hooks.rs`. | ✅ |
 | `src/file_search.rs` | The pure core of the `@` file picker: token detection, fuzzy matching, ranking. | ✅ |
 | `src/frame.rs` | The frame scheduler: coalesces redraw requests into ticks, rate-limited to 120 fps. | ✅ (pure parts) |
 | `src/paste.rs` | Paste handling: burst detection + the `[Pasted Content N chars]` / `[Image #N]` placeholders. | ✅ |
@@ -237,6 +238,35 @@ what the model was told and every later turn — and a `/resume` — still carri
 it.
 `/settings` → **Permission mode** (or **Ctrl+A**) picks the posture;
 `ALTER_ZERO_PERMISSIONS=0` turns the gate off entirely.
+
+You can also wedge **your own commands** into the tool loop
+(`docs/hooks.md`) — Claude Code's `hooks.json` contract, so a script written
+for either tool works here unchanged. Put one at `~/.alter-zero/hooks.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      { "matcher": "bash",
+        "hooks": [{ "type": "command", "command": "./guard.sh" }] }
+    ]
+  }
+}
+```
+
+Each handler is fed its event as JSON on **stdin** and answers on **stdout**
+(or just exits `2` with a reason on stderr to refuse):
+
+```
+● Bash(rm -rf build/)
+  ⎿  Blocked by hook: no destructive deletes outside ./tmp
+```
+
+A hook can refuse a call, rewrite its arguments, approve it without asking
+you, or hand the model extra context after it ran. `PreToolUse`,
+`PostToolUse`, `PermissionRequest`, `SubagentStart` and `SubagentStop` fire
+today; the session-level events are modelled but not yet wired.
+`/settings` → **Hooks** toggles them, `ALTER_ZERO_HOOKS=0` turns them off.
 
 A reasoning model's **thinking is shown** (`docs/thinking-stream.md`). While a
 phase runs it wears the tool cell's shape — a breathing `●` bullet over the

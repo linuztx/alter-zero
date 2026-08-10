@@ -982,7 +982,7 @@ fn spawn_subagent_run(
         // parent launching a batch of agents must not block on each one's
         // hook in turn, and whatever the hook returns is context for *this*
         // agent — so it has to land before the first round, which is here.
-        for note in hooks.subagent_start(&id, &agent_type) {
+        for note in hooks.subagent_start(&id, &agent_type, &cancel) {
             messages.push(ChatMessage::user(&note));
         }
         // The forwarder tags every event with the agent id and tracks the
@@ -1096,7 +1096,9 @@ fn spawn_subagent_run(
             Ok(text) => (true, text.clone()),
             Err(error) => (false, error.clone()),
         };
-        hooks.subagent_stop(&id, &agent_type, ok, &last_message);
+        // A fresh token, not the agent's: a killed agent's cleanup hook must
+        // still run (see `HookSink::subagent_stop`).
+        hooks.subagent_stop(&id, &agent_type, ok, &last_message, &CancelToken::new());
         registry.finish(&id, outcome, messages);
     });
 }
