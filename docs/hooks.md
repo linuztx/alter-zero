@@ -207,7 +207,12 @@ never existed:
 - **`SessionEnd`** fires on `/clear` (`clear`) and at quit
   (`prompt_input_exit`), under a **2 s whole-event budget** — Claude Code
   caps this event at 1.5 s and codex clamps it to 3 s, because quitting must
-  never hang on a hook. Output is ignored, as in both references.
+  never hang on a hook. Output is ignored, as in both references. It fires
+  **only when a real backend is active**, keeping the pair honest: a
+  dummy-only session drains no `SessionStart` (the queue drains at a real
+  spawn's top), so it fires no `SessionEnd` either — a session-logging hook
+  never sees an end without its start. A `/login` mid-session makes the
+  pair real: the next turn drains `startup`, and the end fires at quit.
 
 **A blocking hook must poll the `CancelToken`.** The reason the existing
 `Condvar` park is safe is that `PermissionGate::wait` takes a cancellation

@@ -68,6 +68,14 @@ pub(crate) struct SessionRecorder {
     /// file this conversation is actually recorded to — `None` while no file
     /// exists (deferred create), exactly the contract's nullable field.
     transcript: alter_zero::llm::hooks::TranscriptCell,
+    /// The `App::history_generation` this recorder last mirrored. The length
+    /// watermark alone cannot see a **replacement** — a blocked prompt's
+    /// rollback removes the submission *and* records the notice, so
+    /// `history.len()` holds still while the content changed, and the file
+    /// used to keep the censored prompt and lose the notice (the resume-leak
+    /// bug an independent review caught). Any generation change forces a
+    /// full rewrite.
+    generation: u64,
 }
 
 impl SessionRecorder {
@@ -82,6 +90,7 @@ impl SessionRecorder {
             cwd: cwd.display().to_string(),
             model: model.to_string(),
             transcript: alter_zero::llm::hooks::TranscriptCell::default(),
+            generation: 0,
         }
     }
 
@@ -143,7 +152,25 @@ impl SessionRecorder {
     /// history shrank (the backtrack rewind), no-op when unchanged. History is
     /// append-or-truncate only, so the watermark compare is sound. A checkpoint
     /// alone never creates a file (deferred create).
-    pub(crate) fn sync(&mut self, history: &[HistoryItem]) {
+    pub(crate) fn sync(&mut self, history: &[HistoryItem], generation: u64) {
+        // A non-append mutation happened (a backtrack, an interrupt-undo, a
+        // blocked prompt's pop-and-notice, a `/clear`): re-serialize the
+        // whole file. The length compare below cannot see a replacement —
+        // `block_prompt` removes the submission and records the notice in
+        // one mutation, leaving `history.len()` unchanged — which is exactly
+        // why `App::history_generation` exists, and why the recorder keys on
+        // it (docs/hooks.md).
+        if generation != self.generation {
+            self.generation = generation;
+            if self.active.is_some() {
+                self.rewrite(history);
+                return;
+            }
+            // No file yet (deferred create, or a `/clear`'s fresh session):
+            // nothing to rewrite — `recorded` is 0 whenever `active` is
+            // `None`, so the append below records whatever the mutation
+            // left, creating the file only when there is an item to write.
+        }
         if history.len() < self.recorded {
             self.rewrite(history);
             return;
@@ -195,12 +222,17 @@ impl SessionRecorder {
         recorded: usize,
         torn: bool,
         checkpoints: Vec<checkpoint::Checkpoint>,
+        generation: u64,
     ) {
         self.active = Some((path, meta));
         self.recorded = recorded;
         self.repair_newline = torn;
         self.checkpoints_written = checkpoints.len();
         self.checkpoints = checkpoints;
+        // The load that adopted this file bumped the generation; swallowing
+        // it here keeps the next sync on the append path instead of
+        // pointlessly rewriting the file that was just read.
+        self.generation = generation;
         self.publish_transcript();
     }
 

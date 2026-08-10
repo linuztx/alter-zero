@@ -1038,6 +1038,28 @@ mod tests {
     }
 
     #[test]
+    fn a_payload_bigger_than_the_pipe_buffer_never_defeats_the_timeout() {
+        // The Esc twin above proves the cancel path; this one proves the
+        // *deadline* arms even while the payload write is still parked — the
+        // original bug never started the clock, so a 2 s timeout ran for the
+        // child's whole lifetime (an independent review measured 60 s on a
+        // 3 s timeout).
+        let json = r#"{"hooks":{"PostToolUse":[{"hooks":[
+            {"type":"command","command":"sleep 8","timeout":2}]}]}}"#;
+        let hooks = hooks_for(json);
+        let outcome = ToolOutcome::ok("x".repeat(HOOK_OUTPUT_MAX_BYTES));
+        let started = Instant::now();
+        let verdict = hooks.post_tool_use(&call("bash", "{}"), &outcome, &CancelToken::new());
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed >= Duration::from_secs(2) && elapsed < Duration::from_secs(5),
+            "the timeout must fire at ~2s, not the child's 8s lifetime: {elapsed:?}"
+        );
+        let note = verdict.note.expect("the timeout is surfaced");
+        assert!(note.contains("timed out"), "{note}");
+    }
+
+    #[test]
     fn a_cancelled_turn_reaps_a_running_hook_promptly() {
         let json = r#"{"hooks":{"PreToolUse":[{"hooks":[
             {"type":"command","command":"sleep 30","timeout":600}]}]}}"#;

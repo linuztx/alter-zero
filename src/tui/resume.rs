@@ -319,8 +319,14 @@ impl Session<'_> {
         // parsed checkpoints are adopted too so later turns extend the same chain
         // and a backtrack restores against them.
         let torn = !text.is_empty() && !text.ends_with('\n');
-        self.recorder
-            .adopt(path, meta, count, torn, session_checkpoints);
+        self.recorder.adopt(
+            path,
+            meta,
+            count,
+            torn,
+            session_checkpoints,
+            self.app.history_generation(),
+        );
         // The session boundary for the hooks: SessionStart(resume) fires at
         // the next turn's top (docs/hooks.md).
         self.models.queue_session_source("resume");

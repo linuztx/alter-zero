@@ -433,8 +433,14 @@ impl<'t> Session<'t> {
                 // (docs/task-tools.md).
                 self.sync_task_registry();
                 let torn = !text.is_empty() && !text.ends_with('\n');
-                self.recorder
-                    .adopt(path, meta, count, torn, session_checkpoints);
+                self.recorder.adopt(
+                    path,
+                    meta,
+                    count,
+                    torn,
+                    session_checkpoints,
+                    self.app.history_generation(),
+                );
                 // A --continue/--resume boot is a *resume* boundary, not a
                 // startup one: swap the seeded source so the SessionStart
                 // hooks hear what actually happened (docs/hooks.md).
@@ -490,7 +496,8 @@ impl<'t> Session<'t> {
     pub(crate) fn shutdown(mut self) -> Option<String> {
         // The quit arms break before the loop-bottom sync — catch the last
         // change.
-        self.recorder.sync(&self.app.history);
+        self.recorder
+            .sync(&self.app.history, self.app.history_generation());
         // SessionEnd (docs/hooks.md): fired before the teardown below, under
         // the sink's own 2 s budget, so a quit never hangs on a hook. Claude
         // Code's closest reason for an interactive quit is
@@ -574,7 +581,8 @@ impl<'t> Session<'t> {
         // append what this iteration added, rewrite on a backtrack truncation,
         // nothing when unchanged — so streaming chunks (which never touch history)
         // cost no I/O.
-        self.recorder.sync(&self.app.history);
+        self.recorder
+            .sync(&self.app.history, self.app.history_generation());
         // Flush any inputs recorded this iteration to the persistent history file
         // (docs/history-persistence.md) — the drain is empty on iterations that
         // recorded nothing, so streaming ticks cost no I/O.
