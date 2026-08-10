@@ -31,7 +31,7 @@ per change.
 
 ## The settings
 
-Nine rows, each one a knob the running session actually reads. Every value
+Ten rows, each one a knob the running session actually reads. Every value
 **cycles** — there is no free-text field anywhere, so Enter and Space mean the
 same thing on every row and the menu never needs an edit mode.
 
@@ -44,6 +44,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Checkpoints** | `true` / `false` | Per-turn working-directory snapshots (`docs/checkpoint.md`). Seeded from `ALTER_ZERO_CHECKPOINTS`; forced to `false`, unchangeably, when the store can't run at all (no git, no config home, or a cwd the feature refuses — see *Unavailable settings*). |
 | **Auto compact** | `true` / `false` | Whether the loop runs the summarization turn on its own past 90 % of the context window (`docs/compact.md`). `/compact` by hand is unaffected. |
 | **Project docs** | `true` / `false` | Whether the project's `AGENTS.md` files are re-read each turn into the context's leading user entry (`docs/project-doc.md`). Seeded from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0`. |
+| **Hooks** | `true` / `false` | Whether the user's `~/.alter-zero/hooks.json` lifecycle hooks run around tool calls (`docs/hooks.md`). Seeded from `ALTER_ZERO_HOOKS`; **unavailable** when no hooks file resolved or it had nothing runnable in it. |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
 | **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
 
@@ -181,6 +182,10 @@ docs`.
     same budgets).
   - **Checkpoints** flips `CheckpointStore::set_enabled`, which can only ever
     turn a *capable* store on or off.
+  - **Hooks** rebuilds too: the sink is attached per backend build, so
+    flipping the row genuinely stops (or starts) the next turn consulting the
+    user's commands rather than leaving a second flag to drift
+    (`docs/hooks.md`).
   - **Project docs** reloads (or drops) `App::user_instructions` at once, so
     Ctrl+D shows the change before the next turn.
   - **Hide thinking** and **Auto compact** need nothing beyond the pure flag:

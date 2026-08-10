@@ -56,6 +56,8 @@ pub enum SettingKey {
     AutoCompact,
     /// Re-read the project's `AGENTS.md` each turn (`docs/project-doc.md`).
     ProjectDocs,
+    /// Run the user's `hooks.json` lifecycle hooks (`docs/hooks.md`).
+    Hooks,
     /// The sampling temperature every request carries.
     Temperature,
     /// How many rounds of tool calls one turn may run (`0` = no limit).
@@ -72,6 +74,7 @@ impl SettingKey {
         Self::Checkpoints,
         Self::AutoCompact,
         Self::ProjectDocs,
+        Self::Hooks,
         Self::Temperature,
         Self::MaxToolCalls,
     ];
@@ -87,6 +90,7 @@ impl SettingKey {
             Self::Checkpoints => "Checkpoints",
             Self::AutoCompact => "Auto compact",
             Self::ProjectDocs => "Project docs",
+            Self::Hooks => "Hooks",
             Self::Temperature => "Temperature",
             Self::MaxToolCalls => "Max tool calls",
         }
@@ -113,6 +117,7 @@ impl SettingKey {
                 "Summarize the conversation on its own once the context window fills up"
             }
             Self::ProjectDocs => "Load the project's AGENTS.md instructions into every request",
+            Self::Hooks => "Run the lifecycle hooks in ~/.alter-zero/hooks.json around tool calls",
             Self::Temperature => "The sampling temperature sent with every request",
             Self::MaxToolCalls => {
                 "How many rounds of tool calls one turn may run before it gives up — 0 is no limit"
@@ -132,12 +137,19 @@ pub struct SettingAvailability {
     /// cwd project-scoped — `checkpoint::CheckpointStore::is_enabled` at
     /// construction).
     pub checkpoints: bool,
+    /// Whether a `hooks.json` resolved **and** had something runnable in it
+    /// (`docs/hooks.md`). Without one the row reports `false (unavailable)`
+    /// rather than offering a toggle that can never do anything.
+    pub hooks: bool,
 }
 
 impl Default for SettingAvailability {
     /// Everything available — the unit-test and pre-bootstrap default.
     fn default() -> Self {
-        Self { checkpoints: true }
+        Self {
+            checkpoints: true,
+            hooks: true,
+        }
     }
 }
 
@@ -176,6 +188,11 @@ pub struct SessionSettings {
     /// Load `AGENTS.md` into the context (default `true`).
     #[serde(skip_serializing_if = "is_true")]
     pub project_docs: bool,
+    /// Run the user's lifecycle hooks (default `true` — a session with no
+    /// `hooks.json` has nothing to run anyway, and the row reports itself
+    /// unavailable there).
+    #[serde(skip_serializing_if = "is_true")]
+    pub hooks: bool,
     /// The sampling temperature, or `None` for the provider's default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
@@ -196,6 +213,7 @@ impl Default for SessionSettings {
             checkpoints: true,
             auto_compact: true,
             project_docs: true,
+            hooks: true,
             temperature: None,
             max_tool_calls: 0,
             availability: SettingAvailability::default(),
@@ -218,6 +236,14 @@ impl SessionSettings {
         self.checkpoints && self.availability.checkpoints
     }
 
+    /// Whether lifecycle hooks actually run: the knob **and** whether there is
+    /// a `hooks.json` with anything in it. The one place the two are combined
+    /// ([`checkpoints_active`](Self::checkpoints_active)'s twin).
+    #[must_use]
+    pub const fn hooks_active(&self) -> bool {
+        self.hooks && self.availability.hooks
+    }
+
     /// Whether `key` can be cycled at all in this session: the host's verdict
     /// ([`SettingAvailability`]) plus, for the permission row, whether there is
     /// a gate to cycle.
@@ -225,6 +251,7 @@ impl SessionSettings {
     pub const fn is_available(&self, key: SettingKey, mode: Mode) -> bool {
         match key {
             SettingKey::Checkpoints => self.availability.checkpoints,
+            SettingKey::Hooks => self.availability.hooks,
             SettingKey::PermissionMode => mode.is_some(),
             _ => true,
         }
@@ -248,6 +275,7 @@ impl SessionSettings {
             SettingKey::Checkpoints => bool_text(self.checkpoints_active()),
             SettingKey::AutoCompact => bool_text(self.auto_compact),
             SettingKey::ProjectDocs => bool_text(self.project_docs),
+            SettingKey::Hooks => bool_text(self.hooks_active()),
             SettingKey::Temperature => temperature_text(self.temperature),
             SettingKey::MaxToolCalls => self.max_tool_calls.to_string(),
         };
@@ -274,6 +302,7 @@ impl SessionSettings {
             SettingKey::Checkpoints => self.checkpoints = !self.checkpoints,
             SettingKey::AutoCompact => self.auto_compact = !self.auto_compact,
             SettingKey::ProjectDocs => self.project_docs = !self.project_docs,
+            SettingKey::Hooks => self.hooks = !self.hooks,
             SettingKey::Temperature => {
                 self.temperature = next_temperature(self.temperature);
             }
@@ -301,6 +330,7 @@ impl SessionSettings {
             SettingKey::Checkpoints => self.checkpoints = live.checkpoints,
             SettingKey::AutoCompact => self.auto_compact = live.auto_compact,
             SettingKey::ProjectDocs => self.project_docs = live.project_docs,
+            SettingKey::Hooks => self.hooks = live.hooks,
             SettingKey::Temperature => self.temperature = live.temperature,
             SettingKey::MaxToolCalls => self.max_tool_calls = live.max_tool_calls,
             // Not ours — the posture persists per project in permissions.json.

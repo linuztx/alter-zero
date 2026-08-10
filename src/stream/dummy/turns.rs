@@ -383,6 +383,77 @@ const FILES_REPLY: &str = concat!(
     handoff!()
 );
 
+const HOOKS_REPLY: &str = concat!(
+    "Sure — lifecycle hooks are your own commands wedged into my tool loop. \
+     You configure them in `~/.alter-zero/hooks.json`; I'll try two `bash` \
+     calls so you can see both halves.\n\n",
+    "That's the pair. The first call never ran: a **PreToolUse** hook exited \
+     `2`, so its stderr became the refusal — red cell for you, a stop-and-wait \
+     instruction for me. The second ran, and a **PostToolUse** hook attached a \
+     note; the dim `⎿` row is the record, and the text itself rides into my \
+     context rather than onto the cell. Hooks can also rewrite a call's \
+     arguments or answer the permission prompt in your place.\n\n",
+    handoff!()
+);
+
+/// The **lifecycle-hooks** demo (`docs/hooks.md`): a `PreToolUse` hook
+/// blocking a destructive command, then a `PostToolUse` hook annotating one
+/// that ran.
+///
+/// The refusal texts come from [`crate::llm::hooks::block_texts`] — the very
+/// function the live runner calls — so the offline cell is byte-for-byte the
+/// one a real `hooks.json` produces, the same rule every other scripted demo
+/// follows with the real executor's formatters.
+pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
+    const BLOCKED: &str = "rm -rf build/";
+    const ALLOWED: &str = "ls -la src";
+    const HOOK_REASON: &str = "no destructive deletes outside ./tmp";
+    const HOOK_NOTE: &str = "Context added by hook";
+
+    let (first, second) = reply_parts(HOOKS_REPLY);
+    let ran = ScriptedCall::command(ALLOWED, "total 8\ndrwxr-xr-x  app\ndrwxr-xr-x  ui\n", 0);
+    let batch = [
+        ToolCallSummary {
+            name: "Bash".to_string(),
+            args: BLOCKED.to_string(),
+        },
+        ran.summary(),
+    ];
+
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    events.push(StreamEvent::ToolBatch(batch.to_vec()));
+
+    // The blocked call: a Start/Rejected pair and no ToolEnd — nothing ran.
+    events.push(StreamEvent::ToolStart {
+        name: "Bash".to_string(),
+        args: BLOCKED.to_string(),
+        detail: None,
+    });
+    // Both texts, as the live runner sends them: the short one is the red
+    // cell, the long one is what the model reads — and what the rollout keeps
+    // on `ToolCall::context_output`, so Ctrl+D and a `/resume` show it too.
+    let (display, result) = crate::llm::hooks::block_texts(HOOK_REASON);
+    events.push(StreamEvent::ToolRejected { display, result });
+
+    // The allowed call, with the hook's provenance row on its resolved cell.
+    events.push(StreamEvent::ToolStart {
+        name: ran.name.to_string(),
+        args: ran.args.clone(),
+        detail: None,
+    });
+    events.push(StreamEvent::ToolNote(HOOK_NOTE.to_string()));
+    events.push(StreamEvent::ToolEnd {
+        output: ran.result(),
+        ok: true,
+        truncated: false,
+    });
+
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}
+
 /// Stream `text` word-by-word as reply chunks.
 fn say(text: &str) -> Vec<StreamEvent> {
     chunks(text).into_iter().map(StreamEvent::Chunk).collect()

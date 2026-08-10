@@ -9,7 +9,6 @@
 
 use std::io::Read;
 use std::path::Path;
-use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -289,7 +288,7 @@ fn run_bash(
             );
         }
         if cancel.is_cancelled() {
-            kill_process_group(&mut child);
+            crate::subprocess::kill_process_group(&mut child);
             // The interrupt path owns the UI; return a terse outcome (the loop
             // discards it — the channel is already swapped). The group kill has
             // reaped any straggler, so the detached readers finish on their own.
@@ -321,7 +320,7 @@ fn run_bash(
             return ToolOutcome::backgrounded(task.id.clone(), background_handoff_text(&task));
         }
         if start.elapsed() >= timeout {
-            kill_process_group(&mut child);
+            crate::subprocess::kill_process_group(&mut child);
             timed_out = true;
             break None;
         }
@@ -347,14 +346,14 @@ fn run_bash(
                 }
             },
             Err(err) => {
-                kill_process_group(&mut child);
+                crate::subprocess::kill_process_group(&mut child);
                 return ToolOutcome::error(format!("error waiting on command: {err}"));
             }
         }
     };
     // Even on a clean exit, reap any process the command backgrounded — it holds
     // the pipe open, so joining the readers below would otherwise block on it.
-    kill_process_group(&mut child);
+    crate::subprocess::kill_process_group(&mut child);
     let _ = out_reader.join();
     let _ = err_reader.join();
     // Drain any output buffered after the last poll, then stream the trailing
@@ -636,36 +635,6 @@ fn create_parents(path: &Path) -> std::io::Result<()> {
         Some(parent) if !parent.as_os_str().is_empty() => std::fs::create_dir_all(parent),
         _ => Ok(()),
     }
-}
-
-/// Kill `child`'s entire process group and reap it. Because `run_bash` spawns
-/// through [`crate::subprocess::spawn_detached_shell`], the child leads its
-/// own group (pgid == pid — via `setsid` in the detached tiers or
-/// `process_group(0)` in the attached one), so a **negative pid** targets the
-/// whole tree — reaping any process the command forked or backgrounded, which
-/// would otherwise keep the stdout/stderr pipe open and hang a reader-thread
-/// join (defeating the timeout). Best-effort; errors are ignored.
-///
-/// This crate `forbid`s `unsafe`, so it can't call `libc::kill(-pid, …)`
-/// directly; instead it uses the shell's POSIX `kill` builtin, which treats a
-/// negative operand as a process group (`sh -c "kill -KILL -<pgid>"`). The
-/// helper `sh` starts in its own group, so it never signals itself.
-#[cfg(unix)]
-fn kill_process_group(child: &mut std::process::Child) {
-    let pgid = child.id();
-    let _ = Command::new("sh")
-        .arg("-c")
-        .arg(format!("kill -KILL -{pgid} 2>/dev/null"))
-        .status();
-    let _ = child.kill(); // reap the direct child too (no-op if already gone)
-    let _ = child.wait();
-}
-
-/// Non-unix fallback: no process groups — just kill and reap the direct child.
-#[cfg(not(unix))]
-fn kill_process_group(child: &mut std::process::Child) {
-    let _ = child.kill();
-    let _ = child.wait();
 }
 
 /// A unique temp path under the system temp dir for a test file.

@@ -18,6 +18,7 @@ const EXAMPLES: &[&str] = &[
     "staggered permission demo",
     "permission demo",
     crate::context::SUMMARIZATION_PROMPT,
+    "show me the hooks demo",
     "show me a table",
     "call agents for weather",
     "run three pings in parallel",

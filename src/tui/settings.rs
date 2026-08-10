@@ -34,6 +34,7 @@ impl Session<'_> {
     pub(crate) fn sync_setting_availability(&mut self) {
         self.app.set_setting_availability(SettingAvailability {
             checkpoints: self.checkpoints.is_capable(),
+            hooks: self.models.hooks_available(),
         });
     }
 
@@ -69,6 +70,10 @@ impl Session<'_> {
                     .flatten();
                 self.app.set_user_instructions(instructions);
             }
+            // The hook sink is attached per backend build, so flipping the
+            // row rebuilds — the next turn genuinely stops (or starts)
+            // consulting them (docs/hooks.md).
+            SettingKey::Hooks => self.models.set_hooks(settings.hooks_active()),
             // Read where they are used — nothing to rebuild.
             SettingKey::HideThinking | SettingKey::AutoCompact => {}
             // Ctrl+A's path owns this one; the menu never routes it here.

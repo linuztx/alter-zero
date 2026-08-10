@@ -40,7 +40,7 @@ use alter_zero::term::InlineViewport;
 use alter_zero::ui;
 
 use super::history_store::InputHistoryStore;
-use super::models::ModelSession;
+use super::models::{HookSetup, ModelSession};
 use super::permission::PermissionStore;
 use super::recorder::SessionRecorder;
 use super::shell::{SHELL_POLL_INTERVAL, SHELL_QUIT_KILL_WINDOW};
@@ -147,6 +147,22 @@ impl<'t> Session<'t> {
         let saved_settings = config::load_saved_settings(settings_path.as_deref());
         let settings = config::apply_setting_overrides(saved_settings);
 
+        // The user's lifecycle hooks (docs/hooks.md): `~/.alter-zero/hooks.json`
+        // (or `ALTER_ZERO_HOOKS_FILE`), read once here and re-attached to every
+        // backend rebuild through `HookSetup`. A malformed file is deliberately
+        // loud — it becomes the startup toast below rather than a silent "no
+        // hooks", which is how a user comes to trust a guard that isn't there.
+        let hooks_path = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref());
+        let (hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
+        let hook_setup = (!hooks_file.is_empty()).then(|| HookSetup {
+            file: std::sync::Arc::new(hooks_file),
+            session_id: host::session_id(),
+            cwd: cwd.clone(),
+            // The same tty-detach helper every other shell child gets.
+            detach_helper: std::env::current_exe().ok(),
+            enabled: config::hooks_enabled() && settings.hooks,
+        });
+
         // The reply backend and everything that selects it (docs/llm.md).
         let mut models = ModelSession::resolve(
             &cwd,
@@ -157,6 +173,7 @@ impl<'t> Session<'t> {
             &ask,
             &task_registry,
             &settings,
+            hook_setup,
         );
 
         // The `@` file-search pipeline (docs/file-search.md): a background worker
@@ -270,6 +287,9 @@ impl<'t> Session<'t> {
         };
         session.seed_app(settings);
         session.seed_checkpoints(refusal, checkpoints_wanted);
+        // After the checkpoint toast, so a session with both problems ends up
+        // showing the hooks one — the actionable typo beats the size refusal.
+        session.report_hooks_error(hooks_error);
         let picker = session.apply_startup(startup);
         session.paint_first_frame(picker)?;
 
@@ -352,6 +372,16 @@ impl<'t> Session<'t> {
         if let Some(commit) = self.checkpoints.snapshot("session start") {
             self.recorder
                 .record_checkpoint(checkpoint::Checkpoint { after: 0, commit });
+        }
+    }
+
+    /// Say once, at startup, that the `hooks.json` could not be read — the
+    /// checkpoint refusal's rule: a feature that switches itself off must
+    /// never do it quietly, because "my hook stopped firing" and "I typo'd the
+    /// config" otherwise read as two unrelated problems (`docs/hooks.md`).
+    fn report_hooks_error(&mut self, error: Option<String>) {
+        if let Some(error) = error {
+            self.toast(error, ToastKind::Error);
         }
     }
 

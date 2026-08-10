@@ -12,6 +12,7 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::hooks::{HookSink, block_texts as hook_block_texts};
 use super::tools::{
     ToolCallRequest, ToolOutcome, display_name, image_attachment_note, summarize_call,
 };
@@ -108,7 +109,16 @@ pub enum RoundOutcome {
 /// [`Approval::Reject`] resolves the call without executing it: the
 /// Start/End pair still goes out (with the short `display` output, red) so
 /// the cell lands in history and the transcript, while the longer `result`
-/// becomes the tool result the model reads.
+/// becomes the tool result the model reads. Its `bool` argument is a
+/// `PreToolUse` hook's `permissionDecision: "ask"` — *put this to the user
+/// even if a standing rule would have allowed it* (`docs/hooks.md`).
+///
+/// `hooks` is the lifecycle-hook seam (`docs/hooks.md`), consulted twice per
+/// call: `PreToolUse` **before** `approve` (so a hook can refuse, rewrite the
+/// arguments, or pre-approve without the user) and `PostToolUse` on the
+/// outcome (so a hook can feed the model something about what just happened).
+/// [`NoHooks`](super::hooks::NoHooks) is the do-nothing default and costs
+/// one vtable dispatch.
 #[allow(clippy::too_many_arguments)] // the loop's full seam set (docs/agent-tool.md)
 pub fn run_agent(
     tx: &UnboundedSender<StreamEvent>,
@@ -119,7 +129,8 @@ pub fn run_agent(
     mut execute: impl FnMut(&ToolCallRequest, &mut dyn FnMut(&str)) -> ToolOutcome,
     mut pending_notices: impl FnMut() -> Vec<String>,
     mut run_agents: impl FnMut(&[ToolCallRequest]) -> Vec<(String, String)>,
-    mut approve: impl FnMut(&ToolCallRequest) -> Approval,
+    mut approve: impl FnMut(&ToolCallRequest, bool) -> Approval,
+    hooks: &dyn HookSink,
 ) {
     let mut used_calls = 0usize;
     loop {
@@ -275,7 +286,53 @@ pub fn run_agent(
                     // Start/End pair, so the call lands in history and the
                     // transcript as a red cell, while the *model* reads the
                     // longer instruction.
-                    let approval = approve(call);
+                    // `PreToolUse` (docs/hooks.md), ahead of the gate for the
+                    // same reason the gate is ahead of the ToolStart: nothing
+                    // has run and nothing shows as running while the user's
+                    // own command decides. A hook may refuse it, rewrite its
+                    // arguments, or answer the gate's question itself.
+                    let hook = hooks.pre_tool_use(call, cancel);
+                    if let Some(reason) = &hook.blocked {
+                        let (display, result) = hook_block_texts(reason);
+                        let _ = tx.send(StreamEvent::ToolStart {
+                            name: display_name(&call.name),
+                            args: summarize_call(&call.name, &call.arguments),
+                            detail: super::tools::call_description(&call.name, &call.arguments),
+                        });
+                        // The permission gate's own rejection event, reused
+                        // whole: red cell, model-facing text on
+                        // `context_output`, and a `/resume` that replays both.
+                        let _ = tx.send(StreamEvent::ToolRejected {
+                            display,
+                            result: result.clone(),
+                        });
+                        results.push((call.id.clone(), result));
+                        continue;
+                    }
+                    // A hook's `updatedInput` replaces the arguments for
+                    // everything downstream — the gate's prompt, the executor,
+                    // and the recorded cell all see what will actually run.
+                    let rewritten = hook
+                        .updated_input
+                        .as_ref()
+                        .map(|arguments| ToolCallRequest {
+                            id: call.id.clone(),
+                            name: call.name.clone(),
+                            arguments: arguments.clone(),
+                        });
+                    let call = rewritten.as_ref().unwrap_or(call);
+                    let approval = if hook.pre_approved {
+                        // `permissionDecision: "allow"` — the classifier's
+                        // provenance row, with a hook's name on it.
+                        Approval::AllowNoted {
+                            note: hook
+                                .note
+                                .clone()
+                                .unwrap_or_else(|| "Allowed by hook".to_string()),
+                        }
+                    } else {
+                        approve(call, hook.force_ask)
+                    };
                     if let Approval::Reject { display, result } = approval {
                         let _ = tx.send(StreamEvent::ToolStart {
                             name: display_name(&call.name),
@@ -303,6 +360,12 @@ pub fn run_agent(
                     // provenance row (docs/permissions.md).
                     if let Approval::AllowNoted { note } = approval {
                         let _ = tx.send(StreamEvent::ToolNote(note));
+                    } else if let Some(note) = &hook.note {
+                        // A hook that added context, warned, or spoke to the
+                        // user without deciding the call still leaves its dim
+                        // `⎿` row — the same provenance channel, so the
+                        // record and the `/resume` come for free.
+                        let _ = tx.send(StreamEvent::ToolNote(note.clone()));
                     }
                     // Forward the tool's live output to the UI as it is produced,
                     // so the running cell tails it (docs/tool-streaming.md). The
@@ -311,7 +374,30 @@ pub fn run_agent(
                     let mut on_output = |chunk: &str| {
                         let _ = tx.send(StreamEvent::ToolOutput(chunk.to_string()));
                     };
-                    let outcome = execute(call, &mut on_output);
+                    let mut outcome = execute(call, &mut on_output);
+                    // `PostToolUse` (docs/hooks.md): the call ran, so there is
+                    // nothing left to refuse — only things to say. Whatever a
+                    // hook adds goes onto the **model-facing** text via the
+                    // outcome's existing two-text split, so the cell keeps
+                    // showing the tool's own output while `context_output`
+                    // carries what the model actually read (and a `/resume`
+                    // replays it). A backgrounded call has produced no output
+                    // yet, so it is left alone.
+                    if outcome.background.is_none() {
+                        let post = hooks.post_tool_use(call, &outcome, cancel);
+                        if let Some(note) = post.note {
+                            let _ = tx.send(StreamEvent::ToolNote(note));
+                        }
+                        let added: Vec<String> =
+                            hook.context.into_iter().chain(post.context).collect();
+                        if !added.is_empty() {
+                            outcome.context = Some(format!(
+                                "{}\n\n{}",
+                                outcome.context_text(),
+                                added.join("\n\n")
+                            ));
+                        }
+                    }
                     // A backgrounded call resolves via its own event — the
                     // cell shows the fixed backgrounded row while the launch
                     // text still becomes the tool result the model reads
@@ -415,6 +501,7 @@ pub fn run_agent(
 
 #[cfg(test)]
 mod tests {
+    use super::super::hooks::{HookSink, NoHooks, PostToolVerdict, PreToolVerdict};
     use super::*;
     use crate::llm::ToolCallSpec;
     use std::cell::RefCell;
@@ -460,9 +547,225 @@ mod tests {
             |_call, _sink| panic!("no tools should run"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         assert_eq!(drain(&mut rx), vec![StreamEvent::StreamDone]);
+    }
+
+    /// A `HookSink` that answers from fixtures — the pure half of the hook
+    /// wiring, with no process anywhere (`docs/hooks.md`).
+    #[derive(Debug, Default)]
+    struct FakeHooks {
+        pre: PreToolVerdict,
+        post: PostToolVerdict,
+        /// Every call the sink was asked about, in order, with the arguments
+        /// it was shown — so a test can prove `updatedInput` reached the gate
+        /// and the executor and not just the cell.
+        ///
+        /// A `Mutex`, not a `RefCell`: [`HookSink`] is `Sync` because real
+        /// sinks are shared across a subagent's threads, and this crate
+        /// forbids the `unsafe impl` that would paper over it.
+        seen: std::sync::Mutex<Vec<(String, String)>>,
+    }
+
+    impl FakeHooks {
+        fn seen(&self) -> Vec<(String, String)> {
+            self.seen.lock().expect("not poisoned").clone()
+        }
+    }
+
+    impl HookSink for FakeHooks {
+        fn pre_tool_use(&self, call: &ToolCallRequest, _cancel: &CancelToken) -> PreToolVerdict {
+            self.seen
+                .lock()
+                .expect("not poisoned")
+                .push((call.name.clone(), call.arguments.clone()));
+            self.pre.clone()
+        }
+
+        fn post_tool_use(
+            &self,
+            _call: &ToolCallRequest,
+            _outcome: &ToolOutcome,
+            _cancel: &CancelToken,
+        ) -> PostToolVerdict {
+            self.post.clone()
+        }
+    }
+
+    /// Drive one `bash` round through `hooks` and hand back the events plus
+    /// the tool result the model was given.
+    fn round_with_hooks(hooks: &dyn HookSink) -> (Vec<StreamEvent>, String) {
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        let mut messages = vec![ChatMessage::user("run ls")];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            hooks,
+        );
+        let result = messages
+            .iter()
+            .rev()
+            .find_map(|m| match (&m.role[..], &m.content) {
+                ("tool", crate::llm::MessageContent::Text(text)) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        (drain(&mut rx), result)
+    }
+
+    #[test]
+    fn a_pre_tool_use_block_refuses_the_call_through_the_rejection_path() {
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                blocked: Some("no destructive deletes".to_string()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (events, result) = round_with_hooks(&hooks);
+        // The cell still lands — Start then the two-text rejection, never a
+        // ToolEnd — so history, the transcript and a /resume all have it.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolStart { .. })),
+            "the refused call still shows: {events:?}"
+        );
+        let Some(StreamEvent::ToolRejected { display, .. }) = events
+            .iter()
+            .find(|e| matches!(e, StreamEvent::ToolRejected { .. }))
+        else {
+            panic!("a hook block resolves as a rejection: {events:?}");
+        };
+        assert!(display.contains("no destructive deletes"), "{display}");
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+            "a blocked call never runs: {events:?}"
+        );
+        assert!(
+            result.contains("no destructive deletes"),
+            "the model is told why: {result}"
+        );
+    }
+
+    #[test]
+    fn an_updated_input_is_what_actually_runs() {
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                updated_input: Some(r#"{"command":"ls -la"}"#.to_string()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (_events, result) = round_with_hooks(&hooks);
+        assert!(
+            result.contains("ls -la"),
+            "the executor saw the rewritten arguments: {result}"
+        );
+    }
+
+    #[test]
+    fn a_pre_tool_use_context_reaches_the_model_but_not_the_cell() {
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                context: Some("reviewed by policy".to_string()),
+                note: Some("Context added by hook".to_string()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (events, result) = round_with_hooks(&hooks);
+        assert!(
+            result.contains("reviewed by policy"),
+            "the model reads it: {result}"
+        );
+        // The cell keeps the tool's own output; the note is the visible trace.
+        let Some(StreamEvent::ToolAnswered { display, .. }) = events
+            .iter()
+            .find(|e| matches!(e, StreamEvent::ToolAnswered { .. }))
+        else {
+            panic!("the two-text split carries the context: {events:?}");
+        };
+        assert!(
+            !display.contains("reviewed by policy"),
+            "the cell stays the tool's own output: {display}"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolNote(n) if n.contains("hook"))),
+            "the user sees a provenance row: {events:?}"
+        );
+    }
+
+    #[test]
+    fn a_post_tool_use_note_appends_after_the_tool_ran() {
+        let hooks = FakeHooks {
+            post: PostToolVerdict {
+                context: Some("the linter reformatted it".to_string()),
+                note: Some("Context added by hook".to_string()),
+            },
+            ..FakeHooks::default()
+        };
+        let (_events, result) = round_with_hooks(&hooks);
+        assert!(
+            result.starts_with("ran "),
+            "the tool's own output leads: {result}"
+        );
+        assert!(
+            result.contains("the linter reformatted it"),
+            "the hook's note follows: {result}"
+        );
+    }
+
+    #[test]
+    fn a_silent_sink_changes_nothing_at_all() {
+        let (with_hooks, result_hooked) = round_with_hooks(&FakeHooks::default());
+        let (without, result_plain) = round_with_hooks(&NoHooks);
+        assert_eq!(with_hooks, without);
+        assert_eq!(result_hooked, result_plain);
+        // And the plain path is still a ToolEnd, not the two-text split.
+        assert!(
+            without
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolEnd { .. })),
+            "{without:?}"
+        );
+    }
+
+    #[test]
+    fn the_hook_sees_the_call_before_anything_has_run() {
+        let hooks = FakeHooks::default();
+        let _ = round_with_hooks(&hooks);
+        assert_eq!(
+            hooks.seen(),
+            vec![("bash".to_string(), r#"{"command":"ls"}"#.to_string())]
+        );
     }
 
     #[test]
@@ -491,7 +794,8 @@ mod tests {
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.name)),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -583,7 +887,8 @@ mod tests {
                 },
                 Vec::new,
                 |_calls| Vec::new(),
-                |_call| Approval::Allow,
+                |_call, _force| Approval::Allow,
+                &NoHooks,
             );
             let events = drain(&mut rx);
             assert!(
@@ -643,7 +948,8 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         let start = events
@@ -709,7 +1015,8 @@ mod tests {
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         // The very first event announces the batch, carrying all three calls in
@@ -789,7 +1096,8 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("file contents"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         drain(&mut rx);
         // Round 1 saw [user]; round 2 saw [user, assistant(tool_calls), tool].
@@ -809,7 +1117,8 @@ mod tests {
             |_c, _sink| panic!("no tools"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         assert_eq!(events.len(), 1);
@@ -829,7 +1138,8 @@ mod tests {
             |_c, _sink| panic!("no tools"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         assert!(drain(&mut rx).is_empty(), "a cancel is a silent stop");
     }
@@ -848,7 +1158,8 @@ mod tests {
             |_c, _sink| panic!("no tools"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -879,7 +1190,8 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         assert_eq!(
             *ran.borrow(),
@@ -914,7 +1226,8 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("again"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         let errors: Vec<_> = events
@@ -1000,7 +1313,8 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("again"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         let ran = events
@@ -1063,7 +1377,8 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("done"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         assert!(
@@ -1111,7 +1426,8 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("done"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         assert!(
@@ -1178,7 +1494,8 @@ mod tests {
                 }
             },
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -1218,7 +1535,8 @@ mod tests {
             |_c, _sink| panic!("no tools requested"),
             || pending.borrow_mut().take().into_iter().collect(),
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         drain(&mut rx);
         assert_eq!(
@@ -1247,7 +1565,8 @@ mod tests {
             |_c, _sink| panic!("no tools"),
             || panic!("no notice take once cancelled"),
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         assert!(drain(&mut rx).is_empty());
     }
@@ -1301,7 +1620,8 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         drain(&mut rx);
         let seen = seen_round2.borrow();
@@ -1363,7 +1683,8 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("1 alpha"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         drain(&mut rx);
         let roles: Vec<String> = seen_round2
@@ -1410,7 +1731,8 @@ mod tests {
             |_c, _sink| ToolOutcome::backgrounded("bash_1", "Command running with ID: bash_1"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         assert!(
@@ -1462,10 +1784,11 @@ mod tests {
             |_c, _sink| panic!("a rejected call must never execute"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Reject {
+            |_call, _force| Approval::Reject {
                 display: "User rejected write to hello.py".to_string(),
                 result: "The user doesn't want to proceed…".to_string(),
             },
+            &NoHooks,
         );
         let events = drain(&mut rx);
         assert!(
@@ -1535,9 +1858,10 @@ mod tests {
             |_c, _sink| ToolOutcome::ok("Exit code: 0\ntotal 40"),
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::AllowNoted {
+            |_call, _force| Approval::AllowNoted {
                 note: "Allowed by auto mode classifier".to_string(),
             },
+            &NoHooks,
         );
         let events = drain(&mut rx);
         let start = events
@@ -1590,10 +1914,11 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
-            |_call| {
+            |_call, _force| {
                 log.borrow_mut().push("approve");
                 Approval::Allow
             },
+            &NoHooks,
         );
         drain(&mut rx);
         assert_eq!(*log.borrow(), vec!["approve", "execute"]);
@@ -1638,7 +1963,8 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
-            |_call| panic!("task calls never consult the permission gate"),
+            |_call, _force| panic!("task calls never consult the permission gate"),
+            &NoHooks,
         );
         let events = drain(&mut rx);
         assert!(
@@ -1731,7 +2057,8 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         let batch = events
@@ -1791,7 +2118,8 @@ mod tests {
             },
             Vec::new,
             |_calls| Vec::new(),
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         assert_eq!(
@@ -1855,7 +2183,8 @@ mod tests {
                 assert_eq!(agent_calls[0].id, "c1");
                 vec![("c1".to_string(), "agent result".to_string())]
             },
-            |_call| Approval::Allow,
+            |_call, _force| Approval::Allow,
+            &NoHooks,
         );
         let events = drain(&mut rx);
         // The ordinary batch announces only the bash call.

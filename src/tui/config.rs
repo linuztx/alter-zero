@@ -266,6 +266,44 @@ pub(crate) fn save_permissions(path: Option<&Path>, project: &str, rules: &Permi
     let _ = std::fs::write(path, file.to_json());
 }
 
+/// Load the user's `hooks.json` (`docs/hooks.md`).
+///
+/// Returns the parsed file and, when something was wrong with it, the message
+/// to raise. Deliberately **not** the `load_permissions` best-effort posture:
+/// silently reading a typo'd hooks file as "no hooks" is how a user comes to
+/// believe a guard is running when it is not, so a parse failure yields the
+/// empty config *and* an error the boundary shows.
+///
+/// An absent file is not an error — most sessions have none.
+pub(crate) fn load_hooks(path: Option<&Path>) -> (alter_zero::hooks::HooksFile, Option<String>) {
+    let empty = alter_zero::hooks::HooksFile::default;
+    let Some(path) = path else {
+        return (empty(), None);
+    };
+    match std::fs::read_to_string(path) {
+        Ok(text) => match alter_zero::hooks::HooksFile::parse(&text) {
+            Ok(file) => (file, None),
+            Err(err) => (
+                empty(),
+                Some(format!("hooks.json: {err} — hooks are off this session")),
+            ),
+        },
+        // Missing is the normal case; unreadable is worth saying out loud.
+        Err(err) if err.kind() == io::ErrorKind::NotFound => (empty(), None),
+        Err(err) => (
+            empty(),
+            Some(format!("hooks.json: {err} — hooks are off this session")),
+        ),
+    }
+}
+
+/// Whether lifecycle hooks run at all this session — `ALTER_ZERO_HOOKS`, the
+/// `ALTER_ZERO_PERMISSIONS` pattern: any falsy spelling turns the feature off
+/// before a file is even read.
+pub(crate) fn hooks_enabled() -> bool {
+    env_flag("ALTER_ZERO_HOOKS")
+}
+
 /// The checkpoints root — `ALTER_ZERO_CHECKPOINTS_DIR` (the smoke test points
 /// it at a temp dir, the `ALTER_ZERO_SESSIONS_DIR` pattern), else
 /// `~/.alter-zero/checkpoints`. `None` (no HOME and no override) disables

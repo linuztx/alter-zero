@@ -32,6 +32,7 @@ dependencies = [
  "crossterm",
  "image",
  "ratatui",
+ "regex",
  "reqwest",
  "rustix",
  "serde",

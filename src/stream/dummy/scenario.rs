@@ -171,6 +171,14 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.starts_with(turns::COMPACT_PROMPT_MARKER),
         play: Play::Script(turns::compact_turn),
     },
+    // Lifecycle hooks (docs/hooks.md): a PreToolUse block, then a PostToolUse
+    // note on a call that ran.
+    Scenario {
+        #[cfg(test)]
+        name: "hooks",
+        selects: |cue| cue.mentions("hook"),
+        play: Play::Script(turns::hooks_turn),
+    },
     // A streaming GFM table with wide emoji: the strip-collapse geometry.
     Scenario {
         #[cfg(test)]

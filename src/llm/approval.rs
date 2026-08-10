@@ -10,6 +10,7 @@
 
 use tokio::sync::mpsc::UnboundedSender;
 
+use super::hooks::{HookPermissionVerdict, HookSink};
 use super::tools::{
     self, BashArgs, EditArgs, ToolCallRequest, WriteArgs, render_numbered_content,
     render_numbered_diff,
@@ -120,9 +121,12 @@ pub fn permission_request(
 /// With no `gate` — `ALTER_ZERO_PERMISSIONS` off, or an embedder that built the
 /// backend directly — every call is allowed, exactly as before the feature.
 #[must_use]
+#[allow(clippy::too_many_arguments)] // the gate's full seam set (docs/hooks.md)
 pub fn approve_call(
     gate: Option<&PermissionGate>,
     classify: Option<&ClassifyCommand<'_>>,
+    hooks: &dyn HookSink,
+    force_ask: bool,
     tx: &UnboundedSender<StreamEvent>,
     cancel: &CancelToken,
     agent: Option<&str>,
@@ -134,8 +138,22 @@ pub fn approve_call(
     let Some(mut request) = permission_request(call, agent) else {
         return Approval::Allow;
     };
-    if gate.allows(&request) {
+    // A `PreToolUse` hook's `permissionDecision: "ask"` means *put this to the
+    // user* — so the standing allowlist is skipped for this call, which is the
+    // whole point of a hook saying it (`docs/hooks.md`).
+    if !force_ask && gate.allows(&request) {
         return Approval::Allow;
+    }
+    // `PermissionRequest` (docs/hooks.md) sits exactly where the auto-mode
+    // classifier does — after the standing rules, before the user — because it
+    // answers the same question: *may this run without asking?* A hook that
+    // abstains falls through to the classifier and then the prompt, unchanged.
+    match hooks.permission_request(call, cancel) {
+        Some(HookPermissionVerdict::Allow { note }) => return Approval::AllowNoted { note },
+        Some(HookPermissionVerdict::Deny { display, result }) => {
+            return Approval::Reject { display, result };
+        }
+        None => {}
     }
     if gate.mode() == PermissionMode::Auto
         && request.kind == PermissionKind::Bash
@@ -199,6 +217,7 @@ pub fn approve_call(
 
 #[cfg(test)]
 mod tests {
+    use super::super::hooks::NoHooks;
     use super::*;
 
     fn call(name: &str, args: &str) -> ToolCallRequest {
@@ -324,6 +343,8 @@ mod tests {
         let approval = approve_call(
             None,
             None,
+            &NoHooks,
+            false,
             &tx,
             &CancelToken::new(),
             None,
@@ -340,7 +361,16 @@ mod tests {
         let call = call("bash", r#"{"command":"cargo test"}"#);
         gate.remember(&permission_request(&call, None).unwrap());
         assert_eq!(
-            approve_call(Some(&gate), None, &tx, &CancelToken::new(), None, &call),
+            approve_call(
+                Some(&gate),
+                None,
+                &NoHooks,
+                false,
+                &tx,
+                &CancelToken::new(),
+                None,
+                &call
+            ),
             Approval::Allow
         );
         assert!(rx.try_recv().is_err(), "no request was raised");
@@ -354,7 +384,18 @@ mod tests {
         let call = call("bash", r#"{"command":"python3 script.py"}"#);
         let waiter = {
             let (gate, tx, cancel, call) = (gate.clone(), tx.clone(), cancel.clone(), call.clone());
-            std::thread::spawn(move || approve_call(Some(&gate), None, &tx, &cancel, None, &call))
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    None,
+                    &NoHooks,
+                    false,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call,
+                )
+            })
         };
         // The event names the request; answering it under that id unblocks.
         let event = loop {
@@ -371,7 +412,16 @@ mod tests {
         assert_eq!(waiter.join().unwrap(), Approval::Allow);
         // …and option 2 remembered the scope, so the next identical call is silent.
         assert_eq!(
-            approve_call(Some(&gate), None, &tx, &cancel, None, &call),
+            approve_call(
+                Some(&gate),
+                None,
+                &NoHooks,
+                false,
+                &tx,
+                &cancel,
+                None,
+                &call
+            ),
             Approval::Allow
         );
     }
@@ -387,7 +437,18 @@ mod tests {
         let call = call("write", &args.to_string());
         let waiter = {
             let (gate, tx, cancel, call) = (gate.clone(), tx.clone(), cancel.clone(), call.clone());
-            std::thread::spawn(move || approve_call(Some(&gate), None, &tx, &cancel, None, &call))
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    None,
+                    &NoHooks,
+                    false,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call,
+                )
+            })
         };
         let request = loop {
             if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
@@ -435,6 +496,8 @@ mod tests {
         let approval = approve_call(
             Some(&gate),
             Some(&classify),
+            &NoHooks,
+            false,
             &tx,
             &CancelToken::new(),
             None,
@@ -462,6 +525,8 @@ mod tests {
         let approval = approve_call(
             Some(&gate),
             Some(&classify),
+            &NoHooks,
+            false,
             &tx,
             &CancelToken::new(),
             None,
@@ -500,6 +565,8 @@ mod tests {
             approve_call(
                 Some(&gate),
                 Some(&classify),
+                &NoHooks,
+                false,
                 &tx,
                 &CancelToken::new(),
                 None,
@@ -513,6 +580,8 @@ mod tests {
             approve_call(
                 Some(&gate),
                 Some(&classify),
+                &NoHooks,
+                false,
                 &tx,
                 &CancelToken::new(),
                 None,
@@ -542,6 +611,8 @@ mod tests {
                     approve_call(
                         Some(&gate),
                         Some(&classify),
+                        &NoHooks,
+                        false,
                         &tx,
                         &cancel,
                         None,
@@ -580,6 +651,8 @@ mod tests {
                 approve_call(
                     Some(&gate),
                     Some(&classify),
+                    &NoHooks,
+                    false,
                     &tx,
                     &CancelToken::new(),
                     None,
@@ -605,6 +678,8 @@ mod tests {
                 approve_call(
                     Some(&gate),
                     Some(&classify),
+                    &NoHooks,
+                    false,
                     &tx,
                     &cancel,
                     None,
@@ -635,6 +710,8 @@ mod tests {
         let approval = approve_call(
             Some(&gate),
             Some(&classify),
+            &NoHooks,
+            false,
             &tx,
             &cancel,
             None,
@@ -660,6 +737,8 @@ mod tests {
                 approve_call(
                     Some(&gate),
                     None,
+                    &NoHooks,
+                    false,
                     &tx,
                     &cancel,
                     None,
@@ -685,7 +764,18 @@ mod tests {
         let call = call("bash", r#"{"command":"sleep 100"}"#);
         let waiter = {
             let (gate, tx, cancel, call) = (gate.clone(), tx.clone(), cancel.clone(), call.clone());
-            std::thread::spawn(move || approve_call(Some(&gate), None, &tx, &cancel, None, &call))
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    None,
+                    &NoHooks,
+                    false,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call,
+                )
+            })
         };
         std::thread::sleep(std::time::Duration::from_millis(30));
         cancel.cancel();

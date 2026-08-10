@@ -22,6 +22,7 @@ pub mod cache;
 pub mod classifier;
 pub mod config;
 pub mod exec;
+pub mod hooks;
 pub mod keystore;
 pub mod models;
 pub mod openai;

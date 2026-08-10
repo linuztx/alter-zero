@@ -547,7 +547,53 @@ byte-for-byte the live executor's, ending with work outstanding so the
 resting panel and the cross-turn list show, while its `tasks-finished` twin
 (the same cue plus `finish`) walks a two-task list to all-✔ so the
 retirement is drivable too — `smoke.sh` Phases 69 and 70) in
-`docs/task-tools.md`; and the **Ctrl+O
+`docs/task-tools.md`; and the **lifecycle hooks** (Claude Code's
+`hooks.json`, ported whole — `docs/hooks.md`: the user's own commands wedged
+into the tool loop, `~/.alter-zero/hooks.json` mapping event → matcher groups
+→ `{"type":"command"}` handlers, each fed its event as **`snake_case` JSON on
+stdin** and answering with **`camelCase` JSON on stdout** — the asymmetry is
+the contract, and both references agree on it, so a script written for either
+tool works here unchanged; exit `2` blocks with **stderr** as the reason,
+`0` + `{…}` is a verdict, any other non-zero is a non-blocking error, and a
+handler that could not be spawned or timed out **fails open** with a warning
+(a broken guard must not wedge the agent); several matching handlers merge —
+any block wins, the first reason is kept, contexts concatenate, `deny` >
+`ask` > `allow`. The pure half is **`src/hooks/`** (`config` — the file
+format + `select`, which dedups by command and warns rather than failing on a
+handler type or event name we don't model; `matcher` — both references'
+non-regex fast path for `bash|write`, exact-equality so `bash` never matches
+`bashoutput`, else a real regex (free: `tiktoken-rs` already puts `regex` in
+every build, so warn-and-skipping `^Bash$` would have been a footgun with no
+saving); `event`; `payload`; `verdict`), taking a handler's stdout **as a
+string** so every rule is unit-testable with no process anywhere. The boundary
+is **`src/llm/hooks.rs`**: the `HookSink` trait — *one trait object with
+defaulted no-op methods*, not a closure per event, so adding event number six
+is one defaulted method plus one call site rather than a wider `run_agent`
+signature — plus the runner, which spawns through
+`subprocess::spawn_shell_with` (the tty-detach tier walk with **piped stdin**,
+so a hook that opens `/dev/tty` fails fast like every other shell child) and
+waits on `llm::exec`'s 20 ms poll cadence, **re-checking the turn's
+`CancelToken`** and group-killing on cancel or timeout — a blocking wait that
+skipped that would silently break Esc. v1 fires the five **tool-path** events
+(they run on the backend's own thread, where blocking is already correct);
+the six **loop-path** ones are modelled but unattached, because
+`dispatch_after_turn` over-fires for `/compact` and `!` turns and sits above
+`checkpoint_turn_end()`. **No new `StreamEvent` variant was needed**: a block
+*is* `Approval::Reject`'s two-text split (red cell, model-facing instruction,
+`ToolCall::context_output`, `/resume`-safe), a `PreToolUse` allow *is*
+`Approval::AllowNoted`, and `additionalContext` rides `ToolNote` for the dim
+`⎿` row plus the `ToolAnswered` split so the cell keeps the tool's own output
+while the model reads the augmented text — appended **at the frontier**, never
+in front of `user_instructions`, which is rewritten per turn and would
+invalidate the prompt cache. `PreToolUse` may also **rewrite** the call
+(`updatedInput` replaces the arguments for the gate, the executor and the
+cell), and `PermissionRequest` sits exactly where the auto-mode classifier
+does. User-level config only — a project layer needs a trust model, and layers
+would union, so it stays purely additive; a malformed file is a red startup
+toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
+when no file resolved; `ALTER_ZERO_HOOKS` / `ALTER_ZERO_HOOKS_FILE` gate and
+locate it; the offline `hook` scenario drives the whole shape,
+`smoke.sh` Phase 72) in `docs/hooks.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in
@@ -1311,6 +1357,13 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   textarea wraps faithfully (preserving spaces) into byte ranges — distinct from
   `ui::wrap_text`, which is for **messages** and collapses whitespace. See
   `docs/textarea.md`.
+- **Adding a lifecycle-hook event** (`docs/hooks.md`) is *one defaulted method
+  on `llm::hooks::HookSink` plus one call site*. That property is the design;
+  a change that makes it untrue — a closure per event on `run_agent`, a new
+  `StreamEvent` variant for a verdict that `Approval::Reject` already
+  expresses — is the wrong change. Anything a hook must **block** on runs on
+  the backend's own thread and **must poll the turn's `CancelToken`** on the
+  20 ms cadence, or Esc silently stops working for as long as the hook takes.
 - **Swapping in a real AI** means implementing `stream::ReplySource` (use `DummyAi`
   as a template) and changing the single `let backend = …;` line in
   `tui::event_loop::run`. `spawn(prompt, images, tx, cancel)` hands you the text prompt

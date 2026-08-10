@@ -6,6 +6,7 @@
 //! `docs/llm.md`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 
 use tokio::sync::mpsc::UnboundedSender;
@@ -15,6 +16,7 @@ use super::approval;
 use super::classifier::SafetyClassifier;
 use super::config::ModelConfig;
 use super::exec::{RealToolExecutor, ToolExecutor};
+use super::hooks::{HookSink, NoHooks};
 use super::openai::{Delta, OpenAiClient};
 use super::retry::{self, AttemptResult, MAX_RETRIES};
 use super::tools::{self, AgentArgs, ToolCallRequest};
@@ -90,6 +92,12 @@ pub struct LlmBackend {
     /// calls** knob says otherwise, and **`0` means no limit** (the app's own
     /// default). See `docs/settings.md`.
     max_tool_calls: usize,
+    /// The user's lifecycle hooks (`docs/hooks.md`): consulted before and
+    /// after every tool call, and in the user's stead at the permission gate.
+    /// [`NoHooks`] until the boundary attaches a loaded `hooks.json`, so a
+    /// session without one pays a vtable dispatch and nothing else. Subagents
+    /// carry it too — re-tagged with their own id, so a hook can tell.
+    hooks: Arc<dyn HookSink>,
 }
 
 impl LlmBackend {
@@ -146,6 +154,7 @@ impl LlmBackend {
             classifier,
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
+            hooks: Arc::new(NoHooks),
         }
     }
 
@@ -179,6 +188,16 @@ impl LlmBackend {
     #[must_use]
     pub fn with_permissions(mut self, gate: PermissionGate) -> Self {
         self.permissions = Some(gate);
+        self
+    }
+
+    /// Attach the user's lifecycle hooks (`docs/hooks.md`). The boundary
+    /// calls this on every backend it builds when a `hooks.json` resolved and
+    /// had something runnable in it; without it the backend keeps [`NoHooks`]
+    /// and behaves exactly as it did before the feature.
+    #[must_use]
+    pub fn with_hooks(mut self, hooks: Arc<dyn HookSink>) -> Self {
+        self.hooks = hooks;
         self
     }
 
@@ -510,6 +529,7 @@ impl ReplySource for LlmBackend {
         let classifier = self.classifier.clone();
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
+        let hooks = Arc::clone(&self.hooks);
         thread::spawn(move || {
             // Encoding the attachments reads files — done here on the backend
             // thread so a large image never stalls the event loop. A known
@@ -599,19 +619,22 @@ impl ReplySource for LlmBackend {
                 // standing approval already covers it — or, in auto mode, the
                 // classifier reviews the command in the user's stead
                 // (docs/permissions.md).
-                |call| {
+                |call, force_ask| {
                     let classify = |request: &crate::permission::PermissionRequest| {
                         classifier.classify(request, &cancel)
                     };
                     approval::approve_call(
                         permissions.as_ref(),
                         Some(&classify),
+                        hooks.as_ref(),
+                        force_ask,
                         &tx,
                         &cancel,
                         None,
                         call,
                     )
                 },
+                hooks.as_ref(),
             );
         })
     }
@@ -688,6 +711,11 @@ struct SubagentConfig {
     /// The session's tool-round ceiling, so a subagent runs under the same one
     /// (`0` = none — `docs/settings.md`).
     max_tool_calls: usize,
+    /// The session's lifecycle hooks, re-tagged per agent inside
+    /// [`spawn_subagent_run`] so `PreToolUse` payloads carry `agent_id` /
+    /// `agent_type` and a hook can tell a subagent's call from the lead's
+    /// (`docs/hooks.md`).
+    hooks: Arc<dyn HookSink>,
 }
 
 impl LlmBackend {
@@ -711,6 +739,7 @@ impl LlmBackend {
             classifier: self.classifier.clone(),
             max_retries: self.max_retries,
             max_tool_calls: self.max_tool_calls,
+            hooks: Arc::clone(&self.hooks),
         }
     }
 }
@@ -940,7 +969,22 @@ fn spawn_subagent_run(
     let classifier = config.classifier.clone();
     let max_retries = config.max_retries;
     let max_tool_calls = config.max_tool_calls;
+    // The subagent's own view of the hooks: every payload it produces names
+    // the agent, so a hook can tell a subagent's call from the lead's
+    // (`docs/hooks.md`).
+    let hooks = config
+        .hooks
+        .for_subagent(&id, &agent_type)
+        .unwrap_or_else(|| Arc::clone(&config.hooks));
     thread::spawn(move || {
+        // `SubagentStart` (docs/hooks.md) runs here, on the agent's **own**
+        // thread rather than at `registry.register`, for two reasons: the
+        // parent launching a batch of agents must not block on each one's
+        // hook in turn, and whatever the hook returns is context for *this*
+        // agent — so it has to land before the first round, which is here.
+        for note in hooks.subagent_start(&id, &agent_type) {
+            messages.push(ChatMessage::user(&note));
+        }
         // The forwarder tags every event with the agent id and tracks the
         // final reply text + terminal outcome (the last uninterrupted text
         // run is the agent's final message — a new tool round resets it).
@@ -1012,19 +1056,22 @@ fn spawn_subagent_run(
             // is asking (docs/permissions.md). The event rides tx2, so the
             // forwarder tags it with this agent's id like every other; in
             // auto mode its commands go to the same classifier.
-            |call| {
+            |call, force_ask| {
                 let classify = |request: &crate::permission::PermissionRequest| {
                     classifier.classify(request, &cancel)
                 };
                 approval::approve_call(
                     permissions.as_ref(),
                     Some(&classify),
+                    hooks.as_ref(),
+                    force_ask,
                     &tx2,
                     &cancel,
                     Some(&agent_type),
                     call,
                 )
             },
+            hooks.as_ref(),
         );
         drop(tx2);
         let (final_text, outcome) = forwarder.join().unwrap_or_default();
@@ -1041,6 +1088,15 @@ fn spawn_subagent_run(
             // Cancelled (killed) — the registry's kill outcome stands.
             None => Err("stopped by the user".to_string()),
         };
+        // `SubagentStop` (docs/hooks.md). `registry.finish` is the single
+        // point every subagent settles through — a foreground agent's group
+        // resolution and a background one's notice board both read the
+        // registry afterwards — so one call site covers all of them.
+        let (ok, last_message) = match &outcome {
+            Ok(text) => (true, text.clone()),
+            Err(error) => (false, error.clone()),
+        };
+        hooks.subagent_stop(&id, &agent_type, ok, &last_message);
         registry.finish(&id, outcome, messages);
     });
 }

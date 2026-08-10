@@ -205,7 +205,10 @@ fn a_search_matching_nothing_shows_a_placeholder_and_a_blank_counter() {
 #[test]
 fn an_unavailable_row_is_labelled_and_dimmed() {
     let mut app = settings_app();
-    app.set_setting_availability(SettingAvailability { checkpoints: false });
+    app.set_setting_availability(SettingAvailability {
+        checkpoints: false,
+        hooks: true,
+    });
     let buf = render(&app, 78);
     let all = SettingKey::ALL.len();
     let checkpoints = (0..all)

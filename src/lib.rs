@@ -34,6 +34,10 @@
 //! - [`llm`]         — the real OpenAI-compatible backend: provider config, the
 //!   streaming client, the `/v1/models` listing, and the `ReplySource` bridge
 //!   (the I/O boundary for a real model; pure cores unit-tested).
+//! - [`hooks`]       — lifecycle hooks: the `hooks.json` format, which
+//!   handlers an event selects, the JSON payload each writes to a handler's
+//!   stdin and the verdict its stdout is parsed back into (pure; the spawn is
+//!   [`llm::hooks`] — see `docs/hooks.md`).
 //! - [`markdown`]    — the pure block parser for assistant replies: split prose
 //!   from fenced code blocks and detect ATX headings (see `docs/markdown.md`).
 //! - [`paste`]       — paste-burst detection and the large-paste/image
@@ -82,6 +86,7 @@ pub mod file_search;
 pub mod frame;
 pub mod highlight;
 pub mod history;
+pub mod hooks;
 pub mod llm;
 pub mod markdown;
 pub mod paste;

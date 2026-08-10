@@ -75,6 +75,13 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Parse `providers.toml` (docs/llm.md) into the `llm::config` provider table.
 toml = "0.8"
+# Hook matchers (docs/hooks.md). Both Claude Code and codex take a non-regex
+# fast path for `Bash`-style names and compile anything else as a regex; we
+# match that contract. This costs **nothing** to build: `tiktoken-rs` above
+# already pulls `regex` into every build, so the crate is compiled either way —
+# which is why warn-and-skipping real regexes (the original plan, to avoid a
+# dependency) would have been a footgun with no offsetting saving.
+regex = "1"
 # The detached-exec helper mode (src/subprocess.rs): the safe `setsid()`
 # wrapper that severs a shell child from the TUI's controlling terminal, so a
 # command that prompts on /dev/tty (`sudo`, `ssh`) fails fast instead of

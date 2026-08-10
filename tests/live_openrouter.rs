@@ -2131,3 +2131,175 @@ fn live_model_plans_through_the_task_tools() {
             .collect::<Vec<_>>()
     );
 }
+
+// ===== lifecycle hooks (docs/hooks.md) =====
+
+/// A backend with a real `hooks.json` attached, running handlers in `dir`.
+fn backend_with_hooks(hooks_json: &str, dir: &std::path::Path) -> LlmBackend {
+    let file = alter_zero::hooks::HooksFile::parse(hooks_json).expect("the fixture parses");
+    let context = alter_zero::hooks::HookContext {
+        session_id: "live-test".to_string(),
+        transcript_path: None,
+        cwd: dir.display().to_string(),
+        model: "live".to_string(),
+        permission_mode: Some("master".to_string()),
+        agent_id: None,
+        agent_type: None,
+    };
+    let sink = alter_zero::llm::hooks::CommandHooks::new(
+        std::sync::Arc::new(file),
+        context,
+        None,
+        dir.to_path_buf(),
+    )
+    .expect("the fixture has a runnable handler");
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    backend_for(model, None).with_hooks(std::sync::Arc::new(sink))
+}
+
+/// Drive one live turn through `backend`, returning every streamed event.
+fn events_from(backend: &LlmBackend, prompt: &str) -> Vec<StreamEvent> {
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut events = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        let done = matches!(event, StreamEvent::StreamDone);
+        if let StreamEvent::Error(e) = &event {
+            panic!("backend error: {e}");
+        }
+        events.push(event);
+        if done {
+            break;
+        }
+    }
+    handle.join().expect("backend thread joins");
+    events
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_a_pre_tool_use_hook_blocks_a_real_models_bash_call() {
+    // The whole contract end to end against a real model: the hook reads the
+    // payload on stdin, finds the command it objects to in `tool_input`, and
+    // exits 2 with the reason on stderr. The call must never run, and the
+    // model must be told why.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let marker = dir.path().join("should-not-exist.txt");
+    let hooks = r#"{"hooks":{"PreToolUse":[{"matcher":"bash","hooks":[{"type":"command",
+        "command":"grep -q should-not-exist && { echo 'writing that file is forbidden' >&2; exit 2; }; exit 0",
+        "timeout":30}]}]}}"#;
+    let backend = backend_with_hooks(hooks, dir.path());
+    let events = events_from(
+        &backend,
+        &format!(
+            "Use your bash tool, in one call, to run exactly: touch {}",
+            marker.display()
+        ),
+    );
+
+    let rejected: Vec<&StreamEvent> = events
+        .iter()
+        .filter(|e| matches!(e, StreamEvent::ToolRejected { .. }))
+        .collect();
+    assert!(
+        !rejected.is_empty(),
+        "the hook refused the call: {events:#?}"
+    );
+    let StreamEvent::ToolRejected { display, result } = rejected[0] else {
+        unreachable!()
+    };
+    println!("cell: {display}\nmodel: {result}");
+    assert!(
+        display.contains("writing that file is forbidden"),
+        "the cell carries the hook's stderr: {display}"
+    );
+    assert!(
+        result.contains("writing that file is forbidden"),
+        "and so does what the model reads: {result}"
+    );
+    assert!(
+        !marker.exists(),
+        "a blocked call must never have run the command"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_a_post_tool_use_hook_feeds_the_model_extra_context() {
+    // The hook reads the finished call's `tool_response.output` and hands the
+    // model a fact it could not otherwise know — which the model then repeats,
+    // proving the context genuinely reached the next round.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let hooks = r#"{"hooks":{"PostToolUse":[{"matcher":"bash","hooks":[{"type":"command",
+        "command":"printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"NOTE: the build id is ZX-4417.\"}}'",
+        "timeout":30}]}]}}"#;
+    let backend = backend_with_hooks(hooks, dir.path());
+    let events = events_from(
+        &backend,
+        "Run `echo ok` with your bash tool, then tell me the build id.",
+    );
+
+    let answered = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolAnswered { display, result } => Some((display, result)),
+            _ => None,
+        })
+        .expect("the hook's context rides the two-text split");
+    assert!(
+        answered.1.contains("ZX-4417"),
+        "the model-facing text carries the hook's context: {}",
+        answered.1
+    );
+    assert!(
+        !answered.0.contains("ZX-4417"),
+        "the cell stays the command's own output: {}",
+        answered.0
+    );
+
+    let reply: String = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Chunk(c) => Some(c.as_str()),
+            _ => None,
+        })
+        .collect();
+    println!("reply: {reply}");
+    assert!(
+        reply.contains("ZX-4417"),
+        "the model read the injected context and used it: {reply}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_a_pre_tool_use_hook_rewrites_the_command_that_runs() {
+    // `updatedInput` replaces the arguments for everything downstream, so what
+    // executes is the hook's command, not the model's.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let hooks = r#"{"hooks":{"PreToolUse":[{"matcher":"bash","hooks":[{"type":"command",
+        "command":"printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{\"command\":\"echo REWRITTEN-BY-HOOK\"}}}'",
+        "timeout":30}]}]}}"#;
+    let backend = backend_with_hooks(hooks, dir.path());
+    let events = events_from(&backend, "Run `echo original` with your bash tool.");
+
+    let outputs: String = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::ToolEnd { output, .. } => Some(output.clone()),
+            StreamEvent::ToolAnswered { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .collect();
+    println!("tool output: {outputs}");
+    assert!(
+        outputs.contains("REWRITTEN-BY-HOOK"),
+        "the rewritten command is what ran: {outputs}"
+    );
+    assert!(
+        !outputs.contains("original"),
+        "the model's own command did not run: {outputs}"
+    );
+}

@@ -116,6 +116,12 @@ pub(crate) struct ModelSession {
     /// The shared task list (docs/task-tools.md) — enables the four task
     /// tools on every rebuild.
     tasks: alter_zero::tasks::TaskRegistry,
+    /// The user's lifecycle hooks (`docs/hooks.md`), re-attached on every
+    /// rebuild like the registries above. Held as the *setup* rather than a
+    /// built sink because a payload names the model, and a `/model` switch
+    /// must not leave a stale name on the wire — `session_backend` builds the
+    /// sink from the config it is handed.
+    hooks: Option<HookSetup>,
     /// The `/model` picker's in-flight fetch, so closing the picker cancels it.
     fetch_cancel: Option<CancelToken>,
     /// Whether the startup capability probe is still outstanding — the gate on
@@ -146,6 +152,7 @@ impl ModelSession {
         ask: &alter_zero::ask::AskGate,
         tasks: &alter_zero::tasks::TaskRegistry,
         settings: &SessionSettings,
+        hooks: Option<HookSetup>,
     ) -> Self {
         let providers = config::load_providers();
         // The persistent API-key store: `.env` in the config home (or
@@ -239,6 +246,7 @@ impl ModelSession {
                 permissions,
                 ask,
                 tasks,
+                hooks.as_ref(),
             )),
             (None, None) => {
                 let dummy =
@@ -291,6 +299,7 @@ impl ModelSession {
             permissions: permissions.cloned(),
             ask: ask.clone(),
             tasks: tasks.clone(),
+            hooks,
             fetch_cancel: None,
             probe_pending: probe.is_some(),
             thinking_seed: real_backend.then_some(startup_thinking).flatten(),
@@ -412,6 +421,7 @@ impl ModelSession {
             self.permissions.as_ref(),
             &self.ask,
             &self.tasks,
+            self.hooks.as_ref(),
         ));
     }
 
@@ -441,6 +451,22 @@ impl ModelSession {
     /// here on. See `docs/settings.md`.
     pub(crate) fn set_tools(&mut self, tools: bool) {
         self.tools = tools;
+        self.rebuild_current();
+    }
+
+    /// Whether a `hooks.json` resolved with anything runnable in it — the
+    /// `/settings` **Hooks** row's availability (`docs/hooks.md`).
+    pub(crate) const fn hooks_available(&self) -> bool {
+        self.hooks.is_some()
+    }
+
+    /// The `/settings` **Hooks** knob: run the user's lifecycle hooks, or
+    /// don't. The backend is rebuilt so the next turn genuinely stops (or
+    /// starts) consulting them — there is no second copy of the flag to drift.
+    pub(crate) fn set_hooks(&mut self, enabled: bool) {
+        if let Some(setup) = self.hooks.as_mut() {
+            setup.enabled = enabled;
+        }
         self.rebuild_current();
     }
 
@@ -696,6 +722,61 @@ impl ModelSession {
 }
 
 /// Build a session [`LlmBackend`] with the **full shared attachment set** —
+/// Everything the boundary knows about the user's lifecycle hooks
+/// (`docs/hooks.md`), held so that **every** backend rebuild re-attaches them —
+/// the registries' pattern, and for the same reason: a rebuild that dropped
+/// them would silently stop guarding for the rest of the session.
+///
+/// The *sink* is built per rebuild rather than stored, because a payload
+/// carries the model name and a `/model` switch must not leave a stale one on
+/// the wire.
+#[derive(Debug, Clone)]
+pub(crate) struct HookSetup {
+    /// The parsed `hooks.json`.
+    pub(crate) file: std::sync::Arc<alter_zero::hooks::HooksFile>,
+    /// This run's id, the payload's `session_id`.
+    pub(crate) session_id: String,
+    /// Where handlers run, and what `*_PROJECT_DIR` points at.
+    pub(crate) cwd: std::path::PathBuf,
+    /// The tty-detach helper, so a hook child is severed from the terminal
+    /// like every other shell child (`docs/tty-detach.md`).
+    pub(crate) detach_helper: Option<std::path::PathBuf>,
+    /// The `/settings` **Hooks** row. `false` attaches nothing, so toggling it
+    /// off mid-session genuinely stops running them.
+    pub(crate) enabled: bool,
+}
+
+impl HookSetup {
+    /// The sink for a backend answering as `model`, or `None` when hooks are
+    /// switched off (or the file had nothing runnable).
+    fn sink(&self, model: &str) -> Option<std::sync::Arc<dyn alter_zero::llm::hooks::HookSink>> {
+        if !self.enabled {
+            return None;
+        }
+        let context = alter_zero::hooks::HookContext {
+            session_id: self.session_id.clone(),
+            // The rollout file is created lazily on the first recorded item,
+            // so there is no path to promise here — `null`, which the contract
+            // spells out (codex's `NullableString`).
+            transcript_path: None,
+            cwd: self.cwd.display().to_string(),
+            model: model.to_string(),
+            permission_mode: None,
+            agent_id: None,
+            agent_type: None,
+        };
+        alter_zero::llm::hooks::CommandHooks::new(
+            std::sync::Arc::clone(&self.file),
+            context,
+            self.detach_helper.clone(),
+            self.cwd.clone(),
+        )
+        .map(|hooks| {
+            std::sync::Arc::new(hooks) as std::sync::Arc<dyn alter_zero::llm::hooks::HookSink>
+        })
+    }
+}
+
 /// the background-shell registry, the subagent registry (enabling the `agent`
 /// tool), and the permission gate. Every backend (re)build in the session goes
 /// through this: the initial pick and each rebind (a `/model` switch, a
@@ -714,7 +795,11 @@ fn session_backend(
     permissions: Option<&PermissionGate>,
     ask: &alter_zero::ask::AskGate,
     tasks: &alter_zero::tasks::TaskRegistry,
+    hooks: Option<&HookSetup>,
 ) -> LlmBackend {
+    // Captured before `configure` consumes the config: the hooks payload
+    // names the model that is about to answer (docs/hooks.md).
+    let model = cfg.model.clone();
     // `configure` rather than `with_system_prompt`: the tool toggle is the
     // `/settings` **Tools** knob now (seeded from `ALTER_ZERO_TOOLS`), so it
     // is passed in rather than re-read from the environment per build
@@ -735,6 +820,14 @@ fn session_backend(
     // `ALTER_ZERO_PERMISSIONS` is falsy, and every tool then runs unasked.
     if let Some(gate) = permissions {
         backend = backend.with_permissions(gate.clone());
+    }
+    // The user's lifecycle hooks (docs/hooks.md). Built here, per rebuild, so
+    // the payload's `model` is whatever is about to answer — a `/model` switch
+    // cannot leave a stale name on the wire. `None` (no file, nothing runnable
+    // in it, or the `/settings` **Hooks** row off) leaves the backend's no-op
+    // sink in place and costs nothing.
+    if let Some(sink) = hooks.and_then(|setup| setup.sink(&model)) {
+        backend = backend.with_hooks(sink);
     }
     backend
 }

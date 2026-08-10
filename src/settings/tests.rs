@@ -194,7 +194,10 @@ fn an_unavailable_checkpoint_row_shows_its_effective_value_not_the_stored_one() 
     // The stored preference stays `true` (it applies again in a project the
     // feature can serve), but this session's *effective* value is false.
     let s = SessionSettings {
-        availability: SettingAvailability { checkpoints: false },
+        availability: SettingAvailability {
+            checkpoints: false,
+            hooks: true,
+        },
         ..SessionSettings::default()
     };
     assert!(s.checkpoints, "the preference survives");
@@ -209,7 +212,10 @@ fn an_unavailable_setting_says_so_and_refuses_to_cycle() {
     // No git / no config home / a cwd checkpoints refuse: the row is honest
     // about it rather than pretending the toggle does something.
     let mut s = SessionSettings {
-        availability: SettingAvailability { checkpoints: false },
+        availability: SettingAvailability {
+            checkpoints: false,
+            hooks: true,
+        },
         ..SessionSettings::default()
     };
     assert!(!s.is_available(SettingKey::Checkpoints, MANUAL));
@@ -320,7 +326,10 @@ fn availability_is_never_persisted() {
     // It is a fact about the host, re-derived every run — writing it would let
     // one bad session teach the file a lie.
     let s = SessionSettings {
-        availability: SettingAvailability { checkpoints: false },
+        availability: SettingAvailability {
+            checkpoints: false,
+            hooks: true,
+        },
         ..SessionSettings::default()
     };
     assert!(!s.to_json().contains("availability"), "{}", s.to_json());

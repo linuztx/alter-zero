@@ -155,16 +155,80 @@ pub fn command_for(tier: &DetachTier<'_>, command: &str) -> Command {
 /// # Errors
 /// The underlying spawn error when even the last tier can't start.
 pub fn spawn_detached_shell(detach_helper: Option<&Path>, command: &str) -> io::Result<Child> {
+    spawn_shell_with(detach_helper, command, |_| {})
+}
+
+/// [`spawn_detached_shell`] with the caller adjusting each tier's `Command`
+/// first — the same tier walk, the same fall-through rule, the same
+/// `pgid == child.id()` invariant, but a stdio (or cwd, or environment) of the
+/// caller's choosing.
+///
+/// This exists for the **lifecycle hooks** runner (`docs/hooks.md`), which
+/// needs `stdin` *piped* rather than `/dev/null` — it writes the event payload
+/// there — plus the session's cwd and the `*_PROJECT_DIR` variables. A hook is
+/// a shell command like any other, so it must not be the one child that keeps
+/// a controlling terminal and can hijack the TUI with a `sudo` prompt; going
+/// through the tier walk is what prevents that.
+///
+/// `configure` runs on each tier's `Command` **after** the shared stdio is
+/// applied, so it can override any of it, and before the spawn.
+///
+/// # Errors
+/// The underlying spawn error when even the last tier can't start.
+pub fn spawn_shell_with(
+    detach_helper: Option<&Path>,
+    command: &str,
+    configure: impl Fn(&mut Command),
+) -> io::Result<Child> {
     let order = tiers(detach_helper);
     let (last, rest) = order.split_last().expect("tiers is never empty");
+    let build = |tier: &DetachTier<'_>| {
+        let mut cmd = command_for(tier, command);
+        configure(&mut cmd);
+        cmd
+    };
     for tier in rest {
-        match command_for(tier, command).spawn() {
+        match build(tier).spawn() {
             Ok(child) => return Ok(child),
             Err(err) if err.kind() == io::ErrorKind::NotFound => {} // tier absent — fall through
             Err(err) => return Err(err),
         }
     }
-    command_for(last, command).spawn()
+    build(last).spawn()
+}
+
+/// Kill `child`'s entire process group and reap it. Because every child here
+/// is spawned through [`spawn_detached_shell`] / [`spawn_shell_with`], it
+/// leads its own group (pgid == pid — via `setsid` in the detached tiers or
+/// `process_group(0)` in the attached one), so a **negative pid** targets the
+/// whole tree — reaping any process the command forked or backgrounded, which
+/// would otherwise keep the stdout/stderr pipe open and hang a reader-thread
+/// join (defeating the timeout). Best-effort; errors are ignored.
+///
+/// This crate `forbid`s `unsafe`, so it can't call `libc::kill(-pid, …)`
+/// directly; instead it uses the shell's POSIX `kill` builtin, which treats a
+/// negative operand as a process group (`sh -c "kill -KILL -<pgid>"`). The
+/// helper `sh` starts in its own group, so it never signals itself.
+///
+/// Shared by the `bash` tool's timeout/cancel path ([`crate::llm::exec`]) and
+/// the hooks runner's ([`crate::llm::hooks`]) — the same invariant, so the
+/// same reaper rather than two copies that can drift.
+#[cfg(unix)]
+pub fn kill_process_group(child: &mut Child) {
+    let pgid = child.id();
+    let _ = Command::new("sh")
+        .arg("-c")
+        .arg(format!("kill -KILL -{pgid} 2>/dev/null"))
+        .status();
+    let _ = child.kill(); // reap the direct child too (no-op if already gone)
+    let _ = child.wait();
+}
+
+/// Non-unix fallback: no process groups — just kill and reap the direct child.
+#[cfg(not(unix))]
+pub fn kill_process_group(child: &mut Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 /// The `main()` hook for the helper mode: when the process was invoked as
@@ -270,6 +334,68 @@ mod tests {
         let (prog, args) = argv(&command_for(&DetachTier::Attached, "echo hi"));
         assert_eq!(prog, "sh");
         assert_eq!(args, ["-c", "echo hi"].map(OsString::from));
+    }
+
+    #[test]
+    fn spawn_shell_with_hands_the_caller_a_stdin_pipe_to_write_on() {
+        // The hooks runner's whole requirement: the shared stdio is `/dev/null`
+        // on stdin, and `configure` must be able to replace it — the payload
+        // goes there. Round-trip a line through `cat` to prove the pipe is
+        // real and reaches the command.
+        use std::io::Write;
+        let mut child = spawn_shell_with(None, "cat", |cmd| {
+            cmd.stdin(Stdio::piped());
+        })
+        .expect("spawns");
+        child
+            .stdin
+            .take()
+            .expect("configure asked for a stdin pipe")
+            .write_all(b"{\"hook_event_name\":\"PreToolUse\"}")
+            .expect("writes");
+        let out = child.wait_with_output().expect("waits");
+        assert!(out.status.success());
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            "{\"hook_event_name\":\"PreToolUse\"}"
+        );
+    }
+
+    #[test]
+    fn spawn_shell_with_can_set_the_working_directory_and_environment() {
+        let dir = std::env::temp_dir();
+        let mut child = spawn_shell_with(None, "pwd; printf '%s' \"$HOOK_PROBE\"", |cmd| {
+            cmd.current_dir(&dir).env("HOOK_PROBE", "seen");
+        })
+        .expect("spawns");
+        let mut out = String::new();
+        child
+            .stdout
+            .take()
+            .expect("piped")
+            .read_to_string(&mut out)
+            .expect("reads");
+        let _ = child.wait();
+        assert!(
+            out.contains("seen"),
+            "the env var reached the child: {out:?}"
+        );
+    }
+
+    #[test]
+    fn spawn_detached_shell_still_gets_the_default_null_stdin() {
+        // The other children must not have changed: a read on stdin sees EOF
+        // rather than blocking.
+        let mut child = spawn_detached_shell(None, "cat; echo done").expect("spawns");
+        let mut out = String::new();
+        child
+            .stdout
+            .take()
+            .expect("piped")
+            .read_to_string(&mut out)
+            .expect("reads");
+        let _ = child.wait();
+        assert_eq!(out.trim(), "done");
     }
 
     #[test]

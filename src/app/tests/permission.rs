@@ -442,7 +442,18 @@ fn amended_rejection(feedback: &str) -> (String, ToolCall) {
     // The backend thread blocks on the gate, exactly as `run_agent` does.
     let waiter = {
         let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
-        std::thread::spawn(move || approve_call(Some(&gate), None, &tx, &cancel, None, &call))
+        std::thread::spawn(move || {
+            approve_call(
+                Some(&gate),
+                None,
+                &crate::llm::hooks::NoHooks,
+                false,
+                &tx,
+                &cancel,
+                None,
+                &call,
+            )
+        })
     };
     let request = loop {
         if let Ok(StreamEvent::Permission(request)) = rx.try_recv() {
