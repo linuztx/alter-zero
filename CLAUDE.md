@@ -574,26 +574,57 @@ signature — plus the runner, which spawns through
 so a hook that opens `/dev/tty` fails fast like every other shell child) and
 waits on `llm::exec`'s 20 ms poll cadence, **re-checking the turn's
 `CancelToken`** and group-killing on cancel or timeout — a blocking wait that
-skipped that would silently break Esc. v1 fires the five **tool-path** events
-(they run on the backend's own thread, where blocking is already correct);
-the six **loop-path** ones are modelled but unattached, because
-`dispatch_after_turn` over-fires for `/compact` and `!` turns and sits above
-`checkpoint_turn_end()`. **No new `StreamEvent` variant was needed**: a block
+skipped that would silently break Esc — the payload write included, on its
+own thread, since a pipe-buffer-filling `PostToolUse` payload fed to a
+handler that never reads stdin used to park an inline `write_all` past both
+Esc and the timeout. **All eleven events fire, every one on a backend
+thread** — verifying the references dissolved the old loop-path premise
+(Claude Code runs its stop hooks *inside the query loop*, and neither
+reference runs SessionStart at startup — both block only the next request):
+the tool-path five gate/annotate/rewrite calls (**`agent` launches
+included** — `Task` aliases to `agent`, and each tool name answers to its
+Claude Code spelling as a second exact name; `PostToolUse` fires only for a
+call that **succeeded**, both references' behaviour), `Stop`/`SubagentStop`
+fire in `run_agent`'s Complete arm where a block is a **same-turn
+continuation** (the reply-so-far becomes an assistant message, the feedback
+the next user message, `stop_hook_active` flips true and is the hook's own
+guard — the engine never refuses a re-block, the reference's posture, and an
+interrupt never fires Stop so Esc always breaks a chain; the turn-end
+checkpoint lands after every continuation, so a formatter hook's writes are
+inside the snapshot), `SessionStart` drains queued sources
+(`startup`/`resume`/`clear`) at the next spawn's top, `UserPromptSubmit` can
+refuse the prompt — `StreamEvent::PromptBlocked`, the submission rolled back
+out of history *and* the rollout (the recorder's shrink-rewrite), the text
+returned to the composer under a red reason-only notice — or inject context,
+a loop-initiated background follow-up turn being marked synthetic and
+skipped; `PreCompact`/`PostCompact` ride the summarization spawn via the
+`CompactHooks` wrapper (PreCompact stdout/context = extra compact
+instructions, **no block — neither reference honours one**), and
+`SessionEnd` runs under a 2 s whole-event budget at `/clear`/quit. A block
 *is* `Approval::Reject`'s two-text split (red cell, model-facing instruction,
 `ToolCall::context_output`, `/resume`-safe), a `PreToolUse` allow *is*
-`Approval::AllowNoted`, and `additionalContext` rides `ToolNote` for the dim
-`⎿` row plus the `ToolAnswered` split so the cell keeps the tool's own output
-while the model reads the augmented text — appended **at the frontier**, never
-in front of `user_instructions`, which is rewritten per turn and would
-invalidate the prompt cache. `PreToolUse` may also **rewrite** the call
-(`updatedInput` replaces the arguments for the gate, the executor and the
-cell), and `PermissionRequest` sits exactly where the auto-mode classifier
-does. User-level config only — a project layer needs a trust model, and layers
+`Approval::AllowNoted` (`permissionDecision: "ask"` skips the allowlist
+**and** the auto-mode classifier — ask means a human), and
+`additionalContext` rides `ToolNote` for the dim `⎿` row plus the
+`ToolAnswered` split so the cell keeps the tool's own output while the model
+reads the augmented text — appended **at the frontier**, never in front of
+`user_instructions`, which is rewritten per turn and would invalidate the
+prompt cache. The two conversation-level additions that *were* needed:
+`StreamEvent::HookNote` → the cell-less `HistoryItem::HookNote` (invisible
+inline, expanded in Ctrl+O, replayed verbatim by `context_messages`,
+rollout-round-tripped) and the terminal `PromptBlocked`. `PreToolUse` may
+also **rewrite** the call (`updatedInput` replaces the arguments for the
+gate, the executor and the cell), `PermissionRequest` sits exactly where the
+auto-mode classifier does, and payloads resolve `permission_mode` and
+`transcript_path` **live at dispatch** (the gate's current mode; the rollout
+path the recorder publishes into a shared cell). User-level config only — a
+project layer needs a trust model, and layers
 would union, so it stays purely additive; a malformed file is a red startup
 toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
 when no file resolved; `ALTER_ZERO_HOOKS` / `ALTER_ZERO_HOOKS_FILE` gate and
-locate it; the offline `hook` scenario drives the whole shape,
-`smoke.sh` Phase 72) in `docs/hooks.md`; and the **Ctrl+O
+locate it; the offline `hook` scenario drives the tool-path shape and the
+`prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73) in
+`docs/hooks.md`; and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in

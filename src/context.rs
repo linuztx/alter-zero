@@ -396,6 +396,12 @@ fn derive_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
     let mut tool_seq = 0usize;
     for (position, item) in history.iter().enumerate() {
         match item {
+            // Hook-injected conversation text (docs/hooks.md): the model read
+            // it as a user message mid-turn, so every later turn replays it
+            // verbatim in place.
+            HistoryItem::HookNote(note) => {
+                push_text(out, ContextRole::User, note.text.clone(), vec![]);
+            }
             HistoryItem::Message(message) => match message.role {
                 Role::User => push_text(
                     out,
@@ -629,6 +635,35 @@ mod tests {
     #[test]
     fn empty_history_derives_an_empty_context() {
         assert!(context_messages(&[]).is_empty());
+    }
+
+    #[test]
+    fn a_hook_note_replays_verbatim_as_a_user_message() {
+        // The model read it as a user message mid-turn (docs/hooks.md), so
+        // every later turn replays exactly that — no prefix, no wrapper: the
+        // producer already formatted the wire text.
+        let history = vec![
+            message(Role::User, "fix it"),
+            message(Role::Assistant, "done"),
+            HistoryItem::HookNote(crate::app::HookNote {
+                label: "Stop hook".into(),
+                text: "Stop hook feedback:\ntests are red".into(),
+                timestamp: String::new(),
+            }),
+            message(Role::Assistant, "fixed for real"),
+        ];
+        let context = context_messages(&history);
+        let roles_texts: Vec<(ContextRole, &str)> =
+            context.iter().map(|m| (m.role, m.text.as_str())).collect();
+        assert_eq!(
+            roles_texts,
+            vec![
+                (ContextRole::User, "fix it"),
+                (ContextRole::Assistant, "done"),
+                (ContextRole::User, "Stop hook feedback:\ntests are red"),
+                (ContextRole::Assistant, "fixed for real"),
+            ]
+        );
     }
 
     #[test]

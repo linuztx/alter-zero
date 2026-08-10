@@ -87,6 +87,28 @@ pub enum HistoryItem {
     /// the earlier items. Appended (never a rewrite), so the transcript, the
     /// recorder, and the checkpoint keys are untouched.
     Compaction(Compaction),
+    /// Conversation text a **lifecycle hook** injected mid-turn
+    /// (`docs/hooks.md`) — a `Stop` block's continuation feedback, a
+    /// `UserPromptSubmit`/`SessionStart` hook's additional context.
+    /// **Cell-less inline** (Claude Code hides these from the normal view
+    /// too): `conversation_lines` skips it, the Ctrl+O transcript shows it
+    /// under its `label`, and [`crate::context::context_messages`] replays
+    /// `text` verbatim as the user-role message the model actually read.
+    HookNote(HookNote),
+}
+
+/// One hook-injected conversation entry — see
+/// [`HistoryItem::HookNote`] and `docs/hooks.md`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookNote {
+    /// The short transcript heading (`Stop hook`, `UserPromptSubmit hook`).
+    pub label: String,
+    /// Verbatim what the model reads as a user-role message — formatted by
+    /// the producer (`Stop hook feedback:\n…`, the system-reminder-wrapped
+    /// additional context), so the replay is exactly the wire text.
+    pub text: String,
+    /// Wall-clock stamp (recorded like every item's; never displayed).
+    pub timestamp: String,
 }
 
 /// The number of tokens in `text`, via the real `tiktoken` `o200k_base`

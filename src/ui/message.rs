@@ -129,6 +129,27 @@ pub(super) fn compaction_full_lines(
     lines
 }
 
+/// A hook-injected conversation entry's transcript cell (`docs/hooks.md`):
+/// a dim `● {label}` heading over the wire text, wrapped + indented — what
+/// the model read, readable in place. **Transcript-only**: the inline view
+/// skips the item entirely (Claude Code hides these from its normal view
+/// too), so this renders nowhere else.
+pub(super) fn hook_note_lines(note: &crate::app::HookNote, width: u16) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let mut lines = vec![Line::from(Span::styled(
+        format!("{SYSTEM_BULLET}{}", note.label),
+        dim,
+    ))];
+    let body_width = width.saturating_sub(BULLET_WIDTH).max(1);
+    for row in wrap_text(&note.text, body_width) {
+        lines.push(Line::from(vec![
+            Span::raw(INDENT.to_string()),
+            Span::styled(row, dim),
+        ]));
+    }
+    lines
+}
+
 /// The stamp footer under a **user** message in the transcript: a blank row,
 /// then the dim timestamp right-aligned flush to `width`. Empty for an empty
 /// timestamp (no clock injected). Only user messages get this — the other item

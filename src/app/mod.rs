@@ -80,7 +80,7 @@ pub use self::turn::{
     format_elapsed,
 };
 pub(crate) use self::types::count_tokens;
-pub use self::types::{HistoryItem, Message, Role, SessionInfo, Toast, ToastKind, View};
+pub use self::types::{HistoryItem, HookNote, Message, Role, SessionInfo, Toast, ToastKind, View};
 
 /// All mutable conversation state: the editable input line, the reply currently
 /// being streamed, the tool (if any) currently executing, and the finished

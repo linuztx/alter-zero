@@ -2155,8 +2155,7 @@ fn backend_with_hooks(hooks_json: &str, dir: &std::path::Path) -> LlmBackend {
         context,
         None,
         dir.to_path_buf(),
-        None,
-        alter_zero::llm::hooks::TranscriptCell::default(),
+        alter_zero::llm::hooks::HookHandles::default(),
     )
     .expect("the fixture has a runnable handler");
     let model =
@@ -2312,5 +2311,83 @@ fn live_a_pre_tool_use_hook_rewrites_the_command_that_runs() {
     assert!(
         !outputs.contains("original"),
         "the model's own command did not run: {outputs}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_a_user_prompt_submit_hook_blocks_the_turn_before_the_model() {
+    // The prompt never reaches the wire: the hook reads it on stdin, refuses
+    // with exit 2, and the backend resolves with the single PromptBlocked
+    // event — no chunks, no StreamDone, no request.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let hooks = r#"{"hooks":{"UserPromptSubmit":[{"hooks":[{"type":"command",
+        "command":"grep -q FORBIDDEN && { echo 'that word is banned' >&2; exit 2; }; exit 0",
+        "timeout":30}]}]}}"#;
+    let backend = backend_with_hooks(hooks, dir.path());
+    let prompt = "Please repeat the word FORBIDDEN back to me.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut events = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        events.push(event);
+    }
+    handle.join().expect("backend thread joins");
+    println!("events: {events:#?}");
+    assert!(
+        matches!(
+            events.last(),
+            Some(StreamEvent::PromptBlocked { reason }) if reason == "that word is banned"
+        ),
+        "the block is the terminal event: {events:?}"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::Chunk(_) | StreamEvent::StreamDone)),
+        "nothing streamed and nothing completed: {events:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_a_stop_hook_block_makes_the_model_keep_going() {
+    // The whole continuation loop against a real model: the first Stop
+    // firing (stop_hook_active=false) blocks with an instruction, the model
+    // runs another round and obeys it, the second firing (the flag now true)
+    // lets go, and the turn ends with exactly one StreamDone.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let hooks = r#"{"hooks":{"Stop":[{"hooks":[{"type":"command",
+        "command":"grep -q '\"stop_hook_active\":true' && exit 0; echo 'Now reply with exactly the word BANANA.' >&2; exit 2",
+        "timeout":30}]}]}}"#;
+    let backend = backend_with_hooks(hooks, dir.path());
+    let events = events_from(&backend, "Say hello in one short sentence.");
+    let reply: String = events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Chunk(c) => Some(c.as_str()),
+            _ => None,
+        })
+        .collect();
+    println!("reply: {reply}");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::HookNote { text, .. }
+                if text.contains("Now reply with exactly the word BANANA."))),
+        "the feedback is recorded for the transcript: {events:?}"
+    );
+    assert!(
+        reply.contains("BANANA"),
+        "the continuation obeyed the hook's feedback: {reply}"
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, StreamEvent::StreamDone))
+            .count(),
+        1,
+        "one turn, one StreamDone"
     );
 }

@@ -261,6 +261,33 @@ impl Session<'_> {
                 self.app.push_tool_output(&chunk);
                 false
             }
+            StreamEvent::HookNote { label, text } => {
+                // A lifecycle hook injected conversation text mid-turn
+                // (docs/hooks.md): finalise the assistant run before it —
+                // invariant 4's flush-before-you-interleave, so the
+                // continuation that may follow streams as its own message —
+                // and record the cell-less item the transcript shows and the
+                // derived context replays. The flush leaves the buffer empty:
+                // a safe boundary for held background completions too. A
+                // compact turn's notes (PreCompact's instructions) are
+                // ephemeral like its chunks: they reached the summarization
+                // request, and must not enter the conversation's own record.
+                if !self.app.is_compacting() {
+                    self.flush_segment(committing, width);
+                    self.render.reset();
+                    self.settle_bg_completions();
+                    self.app.record_hook_note(&label, &text);
+                }
+                false
+            }
+            StreamEvent::PromptBlocked { reason } => {
+                // A UserPromptSubmit hook refused the prompt before the first
+                // request (docs/hooks.md): the turn is over. Tear it down and
+                // roll the submission back out of history with a red notice —
+                // Claude Code's "erased from context, shown to the user".
+                self.prompt_blocked(&reason);
+                true
+            }
             StreamEvent::ToolNote(note) => {
                 // The auto mode classifier allowed the running call: keep the
                 // provenance note on it so the resolved cell appends the dim
@@ -596,5 +623,24 @@ impl Session<'_> {
             self.dispatch_after_turn();
         }
         self.frame.schedule_frame();
+    }
+}
+
+impl Session<'_> {
+    /// A `UserPromptSubmit` hook blocked the prompt (`docs/hooks.md`): roll
+    /// the submission back ([`alter_zero::app::App::block_prompt`] — the
+    /// message out of history and back into the composer, the red
+    /// reason-only notice recorded) and purge-repaint so the echoed `❯`
+    /// message leaves the screen and the scrollback alike; the loop-bottom
+    /// `recorder.sync` sees history shrink and rewrites the rollout without
+    /// it. The caller returns `true` from the event arm, so
+    /// `dispatch_after_turn` still snapshots and drains the queue.
+    fn prompt_blocked(&mut self, reason: &str) {
+        self.app.block_prompt(reason);
+        self.render.reset();
+        self.clocks.command_start = None;
+        // Best-effort like every mid-event repaint: a failed write means the
+        // terminal is gone, and the next draw tick repaints anyway.
+        let _ = self.repaint_conversation(alter_zero::term::ReflowClear::Purge);
     }
 }

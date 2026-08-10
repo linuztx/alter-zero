@@ -82,6 +82,22 @@ impl App {
         Some(text)
     }
 
+    /// Record a hook-injected conversation entry (`docs/hooks.md`): the
+    /// cell-less [`HistoryItem::HookNote`] the Ctrl+O transcript shows and
+    /// the derived context replays verbatim. The caller flushes the
+    /// streaming segment first (the loop's ToolBatch dance), so the note
+    /// slots between the finalised text and whatever streams next. Appended,
+    /// never a rewrite — no `history_generation` bump.
+    pub fn record_hook_note(&mut self, label: &str, text: &str) {
+        let timestamp = self.now_stamp();
+        self.history
+            .push(HistoryItem::HookNote(crate::app::HookNote {
+                label: label.to_string(),
+                text: text.to_string(),
+                timestamp,
+            }));
+    }
+
     /// Begin a reply: open an empty streaming buffer so the live region can
     /// show the assistant is responding even before the first chunk arrives, and
     /// start the live turn status (pick this turn's verbs, reset the tally).
@@ -486,6 +502,60 @@ impl App {
             texts.push(message.text);
         }
         (texts.join("\n"), pairs)
+    }
+}
+
+impl App {
+    /// A `UserPromptSubmit` hook refused the prompt before the first request
+    /// (`docs/hooks.md`): end the turn and roll the submission back —
+    /// Claude Code's "erased from context". The just-recorded user
+    /// message(s) leave history (the recorder's shrink-rewrite erases them
+    /// from the rollout too), the text returns to the composer exactly like
+    /// the interrupt-undo (so nothing typed is lost, and nothing the hook
+    /// censored ever reaches a later turn's context), and a red notice
+    /// carrying only the *reason* is the visible record. Trailing
+    /// `HookNote`s survive the pop — a SessionStart hook's context persists
+    /// even when the prompt is refused, both references' rule. Returns
+    /// whether a submission was rolled back (a stale event rolls nothing).
+    pub fn block_prompt(&mut self, reason: &str) -> bool {
+        if self.streaming.take().is_none() {
+            return false;
+        }
+        self.status = None;
+        // The session-start notes recorded after the submission stay: lift
+        // them off, take the user messages beneath, put them back.
+        let mut kept: Vec<HistoryItem> = Vec::new();
+        while matches!(self.history.last(), Some(HistoryItem::HookNote(_))) {
+            kept.extend(self.history.pop());
+        }
+        let rolled =
+            matches!(self.history.last(), Some(HistoryItem::Message(m)) if m.role == Role::User);
+        let restored = rolled.then(|| self.take_trailing_user_messages());
+        kept.reverse();
+        self.history.append(&mut kept);
+        if let Some((text, pairs)) = restored {
+            // The /init special case, the interrupt-undo's rule: the user
+            // typed "/init", not the canned prompt (docs/init.md).
+            let text = if text == INIT_PROMPT.trim_end() {
+                "/init".to_string()
+            } else {
+                text
+            };
+            self.recall_input(&text);
+            let stale = std::mem::take(&mut self.images);
+            self.discarded_images
+                .extend(stale.into_iter().map(|(_, path)| path));
+            self.images = pairs;
+        }
+        self.record_message(
+            Role::Error,
+            format!("UserPromptSubmit hook blocked the prompt\nReason: {reason}"),
+        );
+        // The pop was a non-append mutation even when the take bumped
+        // already — cheap insurance for the transcript cache's frozen
+        // prefix (docs/tool-view-performance.md).
+        self.history_generation += 1;
+        rolled
     }
 }
 

@@ -455,8 +455,27 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     });
 
     events.extend(say(&second));
+    // A Stop hook's continuation feedback, recorded but cell-less inline —
+    // built by the very function the live loop calls
+    // (`llm::hooks::stop_feedback_texts`), so the Ctrl+O row is
+    // byte-for-byte the live one (docs/hooks.md).
+    let (label, text) =
+        crate::llm::hooks::stop_feedback_texts("demo only — the transcript keeps this note");
+    events.push(StreamEvent::HookNote { label, text });
     events.push(StreamEvent::StreamDone);
     events
+}
+
+/// The **prompt-block** demo (`docs/hooks.md`): a `UserPromptSubmit` hook
+/// refusing the submission. The single scripted event is the whole
+/// contract — sent instead of `StreamDone`, nothing follows it — and the
+/// loop's arm does the rest: the echoed `❯` message rolls back out of
+/// history and scrollback, the text returns to the composer, and the red
+/// reason-only notice is the record.
+pub(in crate::stream) fn prompt_block_turn(_cue: &Cue) -> Vec<StreamEvent> {
+    vec![StreamEvent::PromptBlocked {
+        reason: "no prompts about hooks while the hooks demo is running".to_string(),
+    }]
 }
 
 /// Stream `text` word-by-word as reply chunks.

@@ -29,6 +29,9 @@ pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'stat
             // the live checklist is its display, and the record expands only
             // in the Ctrl+O transcript (docs/task-tools.md).
             HistoryItem::TaskCall(_) => continue,
+            // Hook-injected conversation text is cell-less inline too — the
+            // Ctrl+O transcript is its record (docs/hooks.md).
+            HistoryItem::HookNote(_) => continue,
             HistoryItem::Message(m) => lines.extend(message_lines(m.role, &m.text, width)),
             HistoryItem::Tool(t) => lines.extend(tool_lines(t, width)),
             HistoryItem::Summary(s) => lines.extend(summary_lines(s, width)),

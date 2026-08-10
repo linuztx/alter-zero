@@ -127,12 +127,16 @@ pub fn truncate_output(text: &str) -> String {
 const UNEXPLAINED: &str = "blocked by a hook (no reason given)";
 
 /// The events whose plain-text stdout becomes context. Claude Code's rule:
-/// for these, a handler that just prints is feeding the model; everywhere else
-/// printing is chatter and only a JSON verdict carries meaning.
+/// for these, a handler that just prints is feeding the model — for
+/// `PreCompact` specifically, printing appends **compact instructions**
+/// (`hooks.ts` merges successful stdout into the summarization prompt);
+/// everywhere else printing is chatter and only a JSON verdict carries
+/// meaning.
 const PLAIN_STDOUT_IS_CONTEXT: &[HookEvent] = &[
     HookEvent::UserPromptSubmit,
     HookEvent::SessionStart,
     HookEvent::SubagentStart,
+    HookEvent::PreCompact,
 ];
 
 /// Read one handler's run.
@@ -443,6 +447,14 @@ mod tests {
         );
         assert_eq!(
             parse_run(&run, HookEvent::SessionStart)
+                .additional_context
+                .as_deref(),
+            Some("remember: the API moved")
+        );
+        // PreCompact's stdout is Claude Code's "custom compact
+        // instructions" channel — context too.
+        assert_eq!(
+            parse_run(&run, HookEvent::PreCompact)
                 .additional_context
                 .as_deref(),
             Some("remember: the API moved")

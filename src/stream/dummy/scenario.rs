@@ -171,6 +171,14 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.starts_with(turns::COMPACT_PROMPT_MARKER),
         play: Play::Script(turns::compact_turn),
     },
+    // A UserPromptSubmit hook refusing the submission (docs/hooks.md) — the
+    // more specific cue, so it outranks the general hooks demo below.
+    Scenario {
+        #[cfg(test)]
+        name: "prompt-block",
+        selects: |cue| cue.mentions("hook") && cue.mentions("block my prompt"),
+        play: Play::Script(turns::prompt_block_turn),
+    },
     // Lifecycle hooks (docs/hooks.md): a PreToolUse block, then a PostToolUse
     // note on a call that ran.
     Scenario {

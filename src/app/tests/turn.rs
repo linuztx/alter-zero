@@ -1237,6 +1237,7 @@ fn a_completion_pending_at_turn_end_records_above_the_summary() {
             HistoryItem::Compaction(_) => "compaction",
             HistoryItem::Reasoning(_) => "reasoning",
             HistoryItem::TaskCall(_) => "task_call",
+            HistoryItem::HookNote(_) => "hook_note",
         })
         .collect();
     assert_eq!(
@@ -1557,4 +1558,82 @@ fn end_turn_snapshots_the_running_shell_count() {
     let mut idle = App::new();
     idle.begin_stream();
     assert_eq!(idle.end_turn(2).unwrap().shells, 0);
+}
+
+#[test]
+fn record_hook_note_slots_after_the_flushed_segment() {
+    // The Stop-continuation dance (docs/hooks.md): the loop flushes the
+    // streamed text, records the note, and the next round streams a fresh
+    // segment — three history items, in order, and the buffer stays open.
+    let mut app = App::new();
+    app.record_user_message("fix it");
+    app.begin_stream();
+    app.push_chunk("first answer");
+    app.flush_streaming_segment();
+    app.record_hook_note("Stop hook", "Stop hook feedback:\ntests are red");
+    app.push_chunk("second answer");
+    app.finish_stream();
+    let kinds: Vec<String> = app
+        .history
+        .iter()
+        .map(|item| match item {
+            HistoryItem::Message(m) => format!("{:?}:{}", m.role, m.text),
+            HistoryItem::HookNote(n) => format!("hook:{}", n.label),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "User:fix it",
+            "Assistant:first answer",
+            "hook:Stop hook",
+            "Assistant:second answer",
+        ]
+    );
+}
+
+#[test]
+fn block_prompt_rolls_the_submission_back_and_keeps_hook_notes() {
+    // A UserPromptSubmit block (docs/hooks.md): the prompt leaves history
+    // (nothing the hook censored reaches a later context), the text returns
+    // to the composer, a SessionStart hook's note recorded after it
+    // survives, and the red notice carries the reason alone.
+    let mut app = App::new();
+    app.record_user_message("here is my secret");
+    app.begin_stream();
+    app.record_hook_note("SessionStart hook", "the build id is ZX-4417");
+    let generation = app.history_generation();
+    assert!(app.block_prompt("no secrets in prompts"));
+    assert_eq!(
+        app.input.text(),
+        "here is my secret",
+        "back in the composer"
+    );
+    let kinds: Vec<String> = app
+        .history
+        .iter()
+        .map(|item| match item {
+            HistoryItem::Message(m) => format!("{:?}:{}", m.role, m.text),
+            HistoryItem::HookNote(n) => format!("hook:{}", n.label),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "hook:SessionStart hook".to_string(),
+            "Error:UserPromptSubmit hook blocked the prompt\nReason: no secrets in prompts"
+                .to_string(),
+        ],
+        "the prompt is gone, the note and the reason-only notice remain"
+    );
+    assert!(
+        app.history_generation() > generation,
+        "a non-append mutation bumps the transcript cache's generation"
+    );
+    assert!(!app.is_streaming(), "the turn is over");
+    assert!(app.status.is_none(), "no summary will be recorded");
+    // A stale event (no turn open) rolls nothing.
+    assert!(!app.block_prompt("again"));
 }

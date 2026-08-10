@@ -452,7 +452,9 @@ mod tests {
                 m = serde_json::to_string(matcher).unwrap()
             ));
             assert_eq!(
-                file.select(HookEvent::PreToolUse, Some(query)).handlers.len(),
+                file.select(HookEvent::PreToolUse, Some(query))
+                    .handlers
+                    .len(),
                 1,
                 "{matcher:?} must select {query:?}"
             );
@@ -500,7 +502,11 @@ mod tests {
         assert_eq!(selection.handlers.len(), 1);
         assert_eq!(selection.handlers[0].command, "./ok.sh");
         assert_eq!(selection.warnings.len(), 1);
-        assert!(selection.warnings[0].contains("\"if\""), "{:?}", selection.warnings);
+        assert!(
+            selection.warnings[0].contains("\"if\""),
+            "{:?}",
+            selection.warnings
+        );
     }
 
     #[test]

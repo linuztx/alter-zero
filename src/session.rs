@@ -123,6 +123,21 @@ enum ItemRecord {
     /// builds skip the unknown record type (the forward-compatibility
     /// contract).
     TaskCall(TaskToolRecord),
+    /// Hook-injected conversation text (`docs/hooks.md`) — persists so a
+    /// `/resume`'s derived context still carries what the model read
+    /// mid-turn. Old builds skip the unknown record type (the
+    /// forward-compatibility contract).
+    HookNote(HookNoteRecord),
+}
+
+/// A [`crate::app::HookNote`] on disk: the transcript heading and the
+/// verbatim wire text (`docs/hooks.md`).
+#[derive(Serialize, Deserialize)]
+struct HookNoteRecord {
+    label: String,
+    text: String,
+    #[serde(default)]
+    timestamp: String,
 }
 
 /// A [`TaskCallRecord`] on disk (`docs/task-tools.md`): the call's texts plus
@@ -474,6 +489,11 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             origin: notice.origin.clone(),
             timestamp: notice.timestamp.clone(),
         }),
+        HistoryItem::HookNote(note) => ItemRecord::HookNote(HookNoteRecord {
+            label: note.label.clone(),
+            text: note.text.clone(),
+            timestamp: note.timestamp.clone(),
+        }),
         HistoryItem::Compaction(compaction) => ItemRecord::Compaction(CompactionRecord {
             summary: compaction.summary.clone(),
             timestamp: compaction.timestamp.clone(),
@@ -683,6 +703,13 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                     secs: notice.secs,
                     result: notice.result,
                     timestamp: notice.timestamp,
+                }));
+            }
+            ItemRecord::HookNote(note) => {
+                items.push(HistoryItem::HookNote(crate::app::HookNote {
+                    label: note.label,
+                    text: note.text,
+                    timestamp: note.timestamp,
                 }));
             }
             ItemRecord::Compaction(compaction) => {
@@ -905,6 +932,23 @@ mod tests {
             timestamp: "03:20 PM".into(),
             images: vec![PathBuf::from("/tmp/alter-zero-clipboard-a.png")],
         });
+        let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
+        assert_eq!(parsed, vec![item]);
+    }
+
+    #[test]
+    fn a_hook_note_round_trips() {
+        // Hook-injected conversation text persists so a /resume's derived
+        // context still carries what the model read mid-turn (docs/hooks.md).
+        let item = HistoryItem::HookNote(crate::app::HookNote {
+            label: "Stop hook".into(),
+            text: "Stop hook feedback:\ntests are red".into(),
+            timestamp: "03:20 PM".into(),
+        });
+        let line = item_line(&item, "t");
+        let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
+        assert_eq!(value["type"], "hook_note");
+        assert_eq!(value["payload"]["label"], "Stop hook");
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&item))).expect("parses");
         assert_eq!(parsed, vec![item]);
     }

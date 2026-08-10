@@ -167,6 +167,10 @@ impl Session<'_> {
     /// reports the result, exactly like the user's example transcript. See
     /// `docs/background.md`.
     fn start_background_turn(&mut self, notices: &[PendingNotice]) {
+        // A loop-initiated turn: its prompt is synthesized from the notice
+        // board, so the UserPromptSubmit hook must not fire for it
+        // (docs/hooks.md).
+        self.models.mark_synthetic_turn();
         self.app.begin_stream();
         let prompt = notices
             .iter()
@@ -196,7 +200,7 @@ impl Session<'_> {
     pub(crate) fn start_compact_turn(&mut self, auto: bool) {
         let compact_backend = self
             .models
-            .compact_backend(self.app.thinking.as_ref().map(|t| t.mode));
+            .compact_backend(self.app.thinking.as_ref().map(|t| t.mode), auto);
         self.app.begin_compact(auto);
         self.app.count_user_input(context::SUMMARIZATION_PROMPT);
         self.render.reset();

@@ -147,6 +147,39 @@ fn repaint_budget_is_the_screen_minus_the_live_region() {
 }
 
 #[test]
+fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
+    // Claude Code hides these from the normal view too (docs/hooks.md): the
+    // inline repaint skips the item entirely, the Ctrl+O transcript shows
+    // the label over the wire text.
+    let note = HistoryItem::HookNote(crate::app::HookNote {
+        label: "Stop hook".to_string(),
+        text: "Stop hook feedback:\ntests are red".to_string(),
+        timestamp: String::new(),
+    });
+    let history = [msg(Role::User, "hi"), note.clone()];
+    let inline: String = conversation_lines(&history, 80)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !inline.contains("Stop hook"),
+        "cell-less inline: {inline:?}"
+    );
+    let mut app = crate::app::App::new();
+    app.history.extend(history);
+    let transcript: String = transcript_lines(&app, 80)
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        transcript.contains("● Stop hook") && transcript.contains("tests are red"),
+        "the transcript is the record: {transcript:?}"
+    );
+}
+
+#[test]
 fn conversation_lines_lays_out_a_turn_with_a_trailing_blank() {
     let history = [msg(Role::User, "hi"), msg(Role::Assistant, "hello")];
     let texts: Vec<String> = conversation_lines(&history, 80)

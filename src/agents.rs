@@ -179,6 +179,24 @@ impl AgentRun {
                     .push_str(chunk);
                 self.tokens += crate::app::count_tokens(chunk) as u64;
             }
+            // A SubagentStop block's continuation feedback on this agent's
+            // own loop (docs/hooks.md): the reply so far becomes its own
+            // message — the continuation streams a fresh one — and the note
+            // stays on the agent's transcript, exactly like the main turn's.
+            StreamEvent::HookNote { label, text } => {
+                self.flush_segment();
+                self.history
+                    .push(HistoryItem::HookNote(crate::app::HookNote {
+                        label: label.clone(),
+                        text: text.clone(),
+                        timestamp: String::new(),
+                    }));
+                self.tokens += crate::app::count_tokens(text) as u64;
+            }
+            // Never sent on an agent's channel — the prompt-submit hook fires
+            // only at the main session's spawn top (docs/hooks.md); mapped so
+            // the match stays total and honest if that ever changes.
+            StreamEvent::PromptBlocked { .. } => {}
             // Opaque progress — counted so the footer tally ticks while the
             // agent thinks / generates a call (the status-line pattern).
             StreamEvent::ThinkingChunk(text) | StreamEvent::ToolCallDelta(text) => {

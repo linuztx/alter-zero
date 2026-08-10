@@ -18,6 +18,7 @@ const EXAMPLES: &[&str] = &[
     "staggered permission demo",
     "permission demo",
     crate::context::SUMMARIZATION_PROMPT,
+    "hook demo: block my prompt",
     "show me the hooks demo",
     "show me a table",
     "call agents for weather",
@@ -195,8 +196,8 @@ fn every_user_facing_script_acknowledges_attached_images() {
         let Play::Script(script) = scenario.play else {
             continue; // a gated demo streams live; it has no script to inspect
         };
-        if scenario.name == "compact" {
-            continue;
+        if scenario.name == "compact" || scenario.name == "prompt-block" {
+            continue; // prompt-block streams nothing: the loop's notice IS the demo
         }
         let events = script(&Cue::new(example, 2));
         assert!(
@@ -221,8 +222,8 @@ fn every_user_facing_script_hands_the_user_off_to_a_real_model() {
         let Play::Script(script) = scenario.play else {
             continue; // a gated demo streams live; it has no script to inspect
         };
-        if scenario.name == "compact" {
-            continue;
+        if scenario.name == "compact" || scenario.name == "prompt-block" {
+            continue; // prompt-block streams nothing: the loop's notice IS the demo
         }
         let text = chunk_text(&script(&Cue::new(example, 0)));
         assert!(

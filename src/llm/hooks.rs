@@ -43,6 +43,11 @@ use super::tools::{ToolCallRequest, ToolOutcome};
 /// short enough that Esc reaps promptly, long enough not to spin.
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
+/// The whole `SessionEnd` event's hard time budget: quitting (or `/clear`)
+/// must never hang on a hook — Claude Code defaults this event to 1.5 s and
+/// codex clamps it to 3 s, against the 600 s every other event gets.
+const SESSION_END_BUDGET: Duration = Duration::from_secs(2);
+
 /// The project-root variable a hook script reads. The `CLAUDE_PROJECT_DIR`
 /// alias is set beside it deliberately: the point of implementing Claude
 /// Code's contract is that a script written for it works here unchanged, and
@@ -84,6 +89,18 @@ impl PostToolVerdict {
     pub fn is_quiet(&self) -> bool {
         self.context.is_none() && self.note.is_none()
     }
+}
+
+/// What a `UserPromptSubmit` hook said about the prompt (`docs/hooks.md`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PromptVerdict {
+    /// Refuse the prompt: the turn never reaches the model, the submission
+    /// rolls back, the reason is the red notice. (`continue: false` maps
+    /// here too — codex's reading; the prompt is never recorded.)
+    pub blocked: Option<String>,
+    /// `additionalContext` entries, in handler order — injected **even on a
+    /// block**, both references' rule.
+    pub contexts: Vec<String>,
 }
 
 /// What a `PermissionRequest` hook decided in the user's stead, if anything.
@@ -142,22 +159,43 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
         Vec::new()
     }
 
-    /// A subagent finished.
+    /// The model finished answering — `Stop` for the lead sink,
+    /// `SubagentStop` for a [`for_subagent`](Self::for_subagent)-tagged one
+    /// (Claude Code chooses the event the same way, by the presence of an
+    /// agent id). Fired by `run_agent` at the point the turn would complete
+    /// — never on a cancel, an error, a compact turn or a `!` shell.
     ///
-    /// The token here is deliberately **not** the agent's: this fires after
-    /// the run ended, including when the user *killed* it, and a cleanup hook
-    /// that refused to run precisely when the agent was stopped would be
-    /// useless. The handler's own timeout is the bound. The parameter stays so
-    /// the trait says one thing about blocking, and so a caller holding a
-    /// session-level token can pass it.
-    fn subagent_stop(
+    /// `Some(feedback)` is a **block**: the agent keeps going, the feedback
+    /// its next user message. `stop_hook_active` is true on the second and
+    /// later firings within one turn — the loop guard's flag, which the hook
+    /// itself checks to avoid looping forever (the engine never refuses a
+    /// re-block; that is Claude Code's exact posture, and Esc stays the stop
+    /// button).
+    fn stop(
         &self,
-        _agent_id: &str,
-        _agent_type: &str,
-        _ok: bool,
+        _stop_hook_active: bool,
         _last_message: &str,
         _cancel: &CancelToken,
-    ) {
+    ) -> Option<String> {
+        None
+    }
+
+    /// A queued session boundary was crossed (`startup` / `resume` /
+    /// `clear`), drained codex-style at the **next turn's** top on the
+    /// backend thread — never at bootstrap, where seconds of silence read as
+    /// a hang (the checkpoint probe's lesson). Returns the hooks'
+    /// `additionalContext` strings; the matcher gates on the source.
+    fn session_start(&self, _cancel: &CancelToken) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// The user submitted `prompt` — fired right after the SessionStart
+    /// drain, before the first request. Never fired for a loop-initiated
+    /// turn (a background completion's follow-up), a `/compact`
+    /// summarization, a subagent's prompt, or a `!` command — none of those
+    /// is a user prompt (Claude Code's bash-mode skips it too).
+    fn user_prompt_submit(&self, _prompt: &str, _cancel: &CancelToken) -> PromptVerdict {
+        PromptVerdict::default()
     }
 
     /// A view of this sink that reports its calls as coming from a subagent,
@@ -167,6 +205,21 @@ pub trait HookSink: Send + Sync + std::fmt::Debug {
     /// `Arc<dyn HookSink>` and must be able to call this through it.
     fn for_subagent(&self, _agent_id: &str, _agent_type: &str) -> Option<Arc<dyn HookSink>> {
         None
+    }
+
+    /// The session is closing (`reason`: `clear` — a `/clear` starting a
+    /// fresh conversation — or `prompt_input_exit`, a quit). Envelope-only,
+    /// output ignored, and **bounded**: quitting must never hang on a hook,
+    /// so the whole event runs under a hard budget (Claude Code caps it at
+    /// 1.5 s, codex clamps to 3 s; ours is `SESSION_END_BUDGET`, 2 s). No
+    /// cancel token — the session is past cancellation.
+    fn session_end(&self, _reason: &str) {}
+
+    /// The event name [`turn_start`] stamps on this sink's prompt-time
+    /// context — `UserPromptSubmit` everywhere except the compact wrapper,
+    /// whose "prompt" hook is really `PreCompact` (`docs/hooks.md`).
+    fn prompt_hook_label(&self) -> &'static str {
+        "UserPromptSubmit"
     }
 }
 
@@ -178,11 +231,84 @@ pub struct NoHooks;
 
 impl HookSink for NoHooks {}
 
+/// The compact turn's sink (`docs/hooks.md`): the summarization spawn maps
+/// the turn lifecycle onto the compact events — its "prompt" hook is
+/// `PreCompact` (whose context strings become extra summarization
+/// instructions) and its completion is `PostCompact`. Everything else stays
+/// quiet: the compact backend is tools-free, drains no session sources, and
+/// never fires `Stop` (the wrapper's `stop` **is** PostCompact and never
+/// blocks — a summarization must not be continued by a hook).
+#[derive(Debug)]
+pub struct CompactHooks {
+    inner: CommandHooks,
+    /// `manual` or `auto` — the payload's `trigger`, and its matcher.
+    trigger: &'static str,
+}
+
+impl CompactHooks {
+    #[must_use]
+    pub fn new(inner: CommandHooks, auto: bool) -> Self {
+        Self {
+            inner,
+            trigger: if auto { "auto" } else { "manual" },
+        }
+    }
+}
+
+impl HookSink for CompactHooks {
+    fn user_prompt_submit(&self, _prompt: &str, cancel: &CancelToken) -> PromptVerdict {
+        PromptVerdict {
+            blocked: None,
+            contexts: self.inner.pre_compact(self.trigger, "", cancel),
+        }
+    }
+
+    fn stop(
+        &self,
+        _stop_hook_active: bool,
+        last_message: &str,
+        cancel: &CancelToken,
+    ) -> Option<String> {
+        self.inner.post_compact(self.trigger, last_message, cancel);
+        None
+    }
+
+    fn prompt_hook_label(&self) -> &'static str {
+        "PreCompact"
+    }
+}
+
 /// The rollout path the recorder publishes for hook payloads: `None` until
 /// anything was recorded (the file is created lazily on the first item), the
 /// path from then on. Shared because the sink outlives — and predates — the
 /// file (`docs/hooks.md` *Known gaps*, now closed).
 pub type TranscriptCell = Arc<std::sync::RwLock<Option<String>>>;
+
+/// The pending `SessionStart` sources (`startup` / `resume` / `clear`),
+/// queued by the boundary and drained at the next turn's top — codex's
+/// pending-source model, so nothing ever blocks the first paint.
+pub type SessionSources = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// The live handles a [`CommandHooks`] resolves per dispatch — shared with
+/// the boundary so the payloads report the session as it **is**, not as it
+/// was when the sink was built (a `/model` switch rebuilds sinks; these
+/// survive the rebuild).
+#[derive(Debug, Clone, Default)]
+pub struct HookHandles {
+    /// The permission gate, read per payload so a Ctrl+A cycle reaches the
+    /// very next call. `None` (gate off, an embedder) keeps the context's
+    /// own value.
+    pub gate: Option<crate::permission::PermissionGate>,
+    /// The rollout path the recorder publishes.
+    pub transcript: TranscriptCell,
+    /// The queued `SessionStart` sources.
+    pub sources: SessionSources,
+    /// Set by the boundary just before it dispatches a **loop-initiated**
+    /// turn (a background completion's follow-up): the next
+    /// `user_prompt_submit` is skipped — that prompt is synthesized, not the
+    /// user's. Cleared by the skip.
+    pub synthetic_turn: Arc<std::sync::atomic::AtomicBool>,
+}
 
 /// The real sink: a loaded `hooks.json` plus everything a payload needs.
 #[derive(Debug, Clone)]
@@ -193,13 +319,10 @@ pub struct CommandHooks {
     detach_helper: Option<PathBuf>,
     /// Where handlers run, and what `*_PROJECT_DIR` is set to.
     cwd: PathBuf,
-    /// The session's permission gate, read at **dispatch** time so a payload
-    /// reports the mode the session is actually in — a Ctrl+A cycle between
-    /// two calls reaches the second call's payload. `None` (gate off, or an
-    /// embedder without one) keeps the context's own value.
-    gate: Option<crate::permission::PermissionGate>,
-    /// The rollout path, read at dispatch time for the same reason.
-    transcript: TranscriptCell,
+    /// The live handles — gate, transcript path, pending session sources —
+    /// resolved at **dispatch** time, so a payload reports the session as it
+    /// is when the hook fires.
+    handles: HookHandles,
 }
 
 impl CommandHooks {
@@ -211,8 +334,7 @@ impl CommandHooks {
         context: HookContext,
         detach_helper: Option<PathBuf>,
         cwd: PathBuf,
-        gate: Option<crate::permission::PermissionGate>,
-        transcript: TranscriptCell,
+        handles: HookHandles,
     ) -> Option<Self> {
         if file.is_empty() {
             return None;
@@ -222,8 +344,7 @@ impl CommandHooks {
             context,
             detach_helper,
             cwd,
-            gate,
-            transcript,
+            handles,
         })
     }
 
@@ -233,10 +354,11 @@ impl CommandHooks {
     /// snapshot.
     fn live_context(&self) -> HookContext {
         let mut context = self.context.clone();
-        if let Some(gate) = &self.gate {
+        if let Some(gate) = &self.handles.gate {
             context.permission_mode = Some(gate.mode().label().to_string());
         }
         if let Some(path) = self
+            .handles
             .transcript
             .read()
             .ok()
@@ -383,6 +505,26 @@ impl CommandHooks {
         run
     }
 
+    /// `PreCompact` (`docs/hooks.md`): fired by the compact wrapper on the
+    /// summarization spawn's thread. It cannot block — **in either
+    /// reference** (Claude Code's own in-app docs claim exit 2 blocks
+    /// compaction, but the `blocked` field is never read at any call site;
+    /// codex has no exit-2 arm for it) — its real contract is that stdout /
+    /// `additionalContext` become extra instructions for the summarization
+    /// prompt, which is what the returned strings are.
+    fn pre_compact(&self, trigger: &str, custom: &str, cancel: &CancelToken) -> Vec<String> {
+        let payload = crate::hooks::pre_compact_payload(&self.live_context(), trigger, custom);
+        self.dispatch(HookEvent::PreCompact, Some(trigger), &payload, cancel)
+            .additional_context
+    }
+
+    /// `PostCompact` (`docs/hooks.md`): the summary that replaced the
+    /// conversation, envelope-only — nothing to return.
+    fn post_compact(&self, trigger: &str, summary: &str, cancel: &CancelToken) {
+        let payload = crate::hooks::post_compact_payload(&self.live_context(), trigger, summary);
+        let _ = self.dispatch(HookEvent::PostCompact, Some(trigger), &payload, cancel);
+    }
+
     /// A `HookContext` naming the subagent that is acting.
     fn tagged(&self, agent_id: &str, agent_type: &str) -> Self {
         let mut clone = self.clone();
@@ -429,6 +571,69 @@ pub fn block_texts(reason: &str) -> (String, String) {
              Do not retry the same call. Address the reason, or explain to the user why the \
              call is needed and wait for their instruction."
         ),
+    )
+}
+
+/// What the turn's opening hooks decided (`docs/hooks.md`): the notes to
+/// record + inject (SessionStart's first, then UserPromptSubmit's — each a
+/// `(label, wire text)` pair), and the block reason when the prompt was
+/// refused. The notes come back even on a block, both references' rule. The
+/// glue in `LlmBackend::spawn` sends each note as a
+/// [`crate::stream::StreamEvent::HookNote`] and appends it as a user message
+/// after the prompt; a block sends `PromptBlocked` and returns.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TurnStart {
+    pub notes: Vec<(String, String)>,
+    pub blocked: Option<String>,
+}
+
+/// Run the turn's opening hooks — the SessionStart drain, then
+/// UserPromptSubmit — and fold their answers into one [`TurnStart`]. Pure
+/// over the sink, so the whole spawn-top dance is testable with a fake.
+#[must_use]
+pub fn turn_start(hooks: &dyn HookSink, prompt: &str, cancel: &CancelToken) -> TurnStart {
+    let mut notes = Vec::new();
+    if let Some(note) = context_note_texts("SessionStart", &hooks.session_start(cancel)) {
+        notes.push(note);
+    }
+    let verdict = hooks.user_prompt_submit(prompt, cancel);
+    if let Some(note) = context_note_texts(hooks.prompt_hook_label(), &verdict.contexts) {
+        notes.push(note);
+    }
+    TurnStart {
+        notes,
+        blocked: verdict.blocked,
+    }
+}
+
+/// A hook's `additionalContext` as the transcript label + the user-role wire
+/// text the model reads — Claude Code's exact `{hookName} hook additional
+/// context:` wording inside its system-reminder wrapper, so a script's
+/// injected facts land in the shape models already know.
+#[must_use]
+pub fn context_note_texts(event: &str, contexts: &[String]) -> Option<(String, String)> {
+    if contexts.is_empty() {
+        return None;
+    }
+    Some((
+        format!("{event} hook"),
+        format!(
+            "<system-reminder>\n{event} hook additional context: {}\n</system-reminder>",
+            contexts.join("\n")
+        ),
+    ))
+}
+
+/// A `Stop`/`SubagentStop` block's continuation feedback, as the transcript
+/// label + the verbatim user-role message the model reads — Claude Code's
+/// exact `Stop hook feedback:` wording, so a hook written against it drives
+/// the same conversation here. The dummy scenario calls this too, keeping the
+/// offline cell byte-for-byte the live one.
+#[must_use]
+pub fn stop_feedback_texts(reason: &str) -> (String, String) {
+    (
+        "Stop hook".to_string(),
+        format!("Stop hook feedback:\n{reason}"),
     )
 }
 
@@ -565,23 +770,103 @@ impl HookSink for CommandHooks {
             .additional_context
     }
 
-    fn subagent_stop(
+    fn stop(
         &self,
-        agent_id: &str,
-        agent_type: &str,
-        ok: bool,
+        stop_hook_active: bool,
         last_message: &str,
         cancel: &CancelToken,
-    ) {
-        let tagged = self.tagged(agent_id, agent_type);
-        let payload = crate::hooks::subagent_stop_payload(
-            &tagged.live_context(),
-            agent_id,
-            agent_type,
-            last_message,
-            ok,
-        );
-        tagged.dispatch(HookEvent::SubagentStop, Some(agent_type), &payload, cancel);
+    ) -> Option<String> {
+        // The sink's tag picks the event — Claude Code's own rule (`Stop`
+        // for the lead, `SubagentStop` when an agent id is present); the
+        // subagent event matches on its agent type, the lead's on nothing.
+        let context = self.live_context();
+        let (event, query, payload) = match (&context.agent_id, &context.agent_type) {
+            (Some(id), Some(kind)) => (
+                HookEvent::SubagentStop,
+                Some(kind.clone()),
+                crate::hooks::subagent_stop_payload(
+                    &context,
+                    id,
+                    kind,
+                    stop_hook_active,
+                    last_message,
+                ),
+            ),
+            _ => (
+                HookEvent::Stop,
+                None,
+                crate::hooks::stop_payload(&context, stop_hook_active, last_message),
+            ),
+        };
+        let outcome = self.dispatch(event, query.as_deref(), &payload, cancel);
+        // `continue: false` outranks a block (codex's aggregate rule): a
+        // hook that says *stop everything* is not asking for another round.
+        if outcome.stopped {
+            return None;
+        }
+        outcome.block_reason
+    }
+
+    fn session_start(&self, cancel: &CancelToken) -> Vec<String> {
+        let sources: Vec<String> = match self.handles.sources.lock() {
+            Ok(mut queue) => queue.drain(..).collect(),
+            Err(_) => Vec::new(),
+        };
+        let mut contexts = Vec::new();
+        for source in sources {
+            let payload = crate::hooks::session_start_payload(&self.live_context(), &source);
+            let outcome = self.dispatch(HookEvent::SessionStart, Some(&source), &payload, cancel);
+            contexts.extend(outcome.additional_context);
+        }
+        contexts
+    }
+
+    fn user_prompt_submit(&self, prompt: &str, cancel: &CancelToken) -> PromptVerdict {
+        // A loop-initiated turn's prompt is synthesized, not the user's —
+        // the boundary marked it, and the mark clears with the skip.
+        if self
+            .handles
+            .synthetic_turn
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return PromptVerdict::default();
+        }
+        let payload = crate::hooks::user_prompt_submit_payload(&self.live_context(), prompt);
+        // Matcher-less, both references' rule: every configured group fires.
+        let outcome = self.dispatch(HookEvent::UserPromptSubmit, None, &payload, cancel);
+        let blocked = outcome.block_reason.clone().or_else(|| {
+            outcome.stopped.then(|| {
+                outcome
+                    .stop_reason
+                    .clone()
+                    .unwrap_or_else(|| "stopped by a hook".to_string())
+            })
+        });
+        PromptVerdict {
+            blocked,
+            contexts: outcome.additional_context,
+        }
+    }
+
+    fn session_end(&self, reason: &str) {
+        let payload = crate::hooks::session_end_payload(&self.live_context(), reason);
+        let selection = self.file.select(HookEvent::SessionEnd, Some(reason));
+        let started = Instant::now();
+        let cancel = CancelToken::new();
+        for handler in &selection.handlers {
+            let remaining = SESSION_END_BUDGET.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                break;
+            }
+            // Each handler gets what is left of the event budget, never more
+            // than its own timeout (and at least the 1 s floor a zero would
+            // defeat).
+            let capped = CommandHook {
+                timeout_secs: handler.timeout_secs.min(remaining.as_secs().max(1)),
+                ..handler.clone()
+            };
+            let _ = self.run_handler(&capped, &payload, &cancel);
+        }
     }
 
     fn for_subagent(&self, agent_id: &str, agent_type: &str) -> Option<Arc<dyn HookSink>> {
@@ -616,8 +901,7 @@ mod tests {
             },
             None,
             std::env::temp_dir(),
-            None,
-            TranscriptCell::default(),
+            HookHandles::default(),
         )
         .expect("the fixture has a runnable handler")
     }
@@ -647,8 +931,7 @@ mod tests {
                 HookContext::default(),
                 None,
                 std::env::temp_dir(),
-                None,
-                TranscriptCell::default(),
+                HookHandles::default(),
             )
             .is_none()
         );
@@ -878,29 +1161,75 @@ mod tests {
     }
 
     #[test]
-    fn subagent_stop_runs_and_is_told_how_the_agent_ended() {
+    fn a_lead_sinks_stop_fires_the_stop_event_and_a_block_is_the_feedback() {
         let probe = std::env::temp_dir().join("alter-zero-hook-stop-probe.json");
         let _ = std::fs::remove_file(&probe);
         let hooks = hooks_for(&format!(
-            r#"{{"hooks":{{"SubagentStop":[{{"hooks":[{{"type":"command",
+            r#"{{"hooks":{{"Stop":[{{"hooks":[{{"type":"command",
+              "command":"tee {} | grep -q '\"stop_hook_active\":false' && {{ echo 'tests are red' >&2; exit 2; }} || exit 0"}}]}}]}}}}"#,
+            probe.display()
+        ));
+        // First firing: the flag is false, the hook blocks — the reason is
+        // the continuation feedback.
+        let feedback = hooks.stop(false, "the answer", &CancelToken::new());
+        assert_eq!(feedback.as_deref(), Some("tests are red"));
+        let written = std::fs::read_to_string(&probe).expect("the stop hook ran");
+        let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+        assert_eq!(value["hook_event_name"], serde_json::json!("Stop"));
+        assert_eq!(value["stop_hook_active"], serde_json::json!(false));
+        assert_eq!(
+            value["last_assistant_message"],
+            serde_json::json!("the answer")
+        );
+        // Second firing: the flag is true, the hook lets go.
+        assert_eq!(hooks.stop(true, "fixed it", &CancelToken::new()), None);
+        let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn a_tagged_sinks_stop_fires_subagent_stop_and_matches_the_agent_type() {
+        let probe = std::env::temp_dir().join("alter-zero-hook-substop-probe.json");
+        let _ = std::fs::remove_file(&probe);
+        let hooks = hooks_for(&format!(
+            r#"{{"hooks":{{"SubagentStop":[{{"matcher":"explore","hooks":[{{"type":"command",
               "command":"cat > {}"}}]}}]}}}}"#,
             probe.display()
         ));
-        hooks.subagent_stop("a1", "explore", false, "it broke", &CancelToken::new());
+        let sink = hooks
+            .for_subagent("a1", "explore")
+            .expect("a real sink re-tags itself");
+        assert_eq!(sink.stop(false, "found it", &CancelToken::new()), None);
         let written = std::fs::read_to_string(&probe).expect("the stop hook ran");
         let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
         assert_eq!(value["hook_event_name"], serde_json::json!("SubagentStop"));
         assert_eq!(value["agent_id"], serde_json::json!("a1"));
         assert_eq!(value["agent_type"], serde_json::json!("explore"));
+        assert_eq!(value["stop_hook_active"], serde_json::json!(false));
         assert_eq!(
             value["last_assistant_message"],
-            serde_json::json!("it broke")
+            serde_json::json!("found it")
         );
-        assert_eq!(value["success"], serde_json::json!(false));
-        // Not repurposed to carry the failure: it means the run was started by
-        // a Stop hook's block, which nothing here does yet.
-        assert_eq!(value["stop_hook_active"], serde_json::json!(false));
+        // The old `success` extension is gone — the event fires only on a
+        // natural completion now.
+        assert!(!value.as_object().unwrap().contains_key("success"));
         let _ = std::fs::remove_file(&probe);
+
+        // A different agent type is not this hook's business.
+        let other = hooks.for_subagent("a2", "reviewer").expect("re-tags");
+        let _ = std::fs::remove_file(&probe);
+        assert_eq!(other.stop(false, "done", &CancelToken::new()), None);
+        assert!(!probe.exists(), "the matcher gates on agent_type");
+    }
+
+    #[test]
+    fn a_stop_hooks_continue_false_outranks_its_own_block() {
+        // codex's aggregate rule: a hook that says *stop everything* is not
+        // asking for another round, even when it also spelled a block.
+        let hooks = hooks_for(
+            r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":
+              "printf '%s' '{\"continue\":false,\"decision\":\"block\",\"reason\":\"keep going\"}'"}]}]}}"#,
+        );
+        assert_eq!(hooks.stop(false, "answer", &CancelToken::new()), None);
     }
 
     #[test]
@@ -944,8 +1273,11 @@ mod tests {
             },
             None,
             std::env::temp_dir(),
-            Some(gate.clone()),
-            Arc::clone(&transcript),
+            HookHandles {
+                gate: Some(gate.clone()),
+                transcript: Arc::clone(&transcript),
+                ..HookHandles::default()
+            },
         )
         .expect("runnable");
 
@@ -969,6 +1301,214 @@ mod tests {
             value["transcript_path"],
             serde_json::json!("/r/sess.jsonl"),
             "the recorder's published rollout path reaches the payload"
+        );
+        let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn session_start_drains_the_queued_sources_once_and_matches_on_them() {
+        // codex's pending-source model: bootstrap/`/clear`/`/resume` queue a
+        // source, the next turn's top drains them all, and the matcher gates
+        // on the source string. A second drain finds nothing.
+        let file = HooksFile::parse(
+            r#"{"hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command",
+              "command":"echo 'the build id is ZX-4417'"}]}]}}"#,
+        )
+        .unwrap();
+        let handles = HookHandles::default();
+        handles
+            .sources
+            .lock()
+            .unwrap()
+            .extend(["startup".to_string(), "clear".to_string()]);
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            handles,
+        )
+        .expect("runnable");
+        assert_eq!(
+            hooks.session_start(&CancelToken::new()),
+            vec!["the build id is ZX-4417".to_string()],
+            "plain stdout is the context; the clear source matched nothing"
+        );
+        assert_eq!(
+            hooks.session_start(&CancelToken::new()),
+            Vec::<String>::new(),
+            "the queue drained"
+        );
+    }
+
+    #[test]
+    fn user_prompt_submit_blocks_adds_context_and_skips_synthetic_turns() {
+        let file = HooksFile::parse(
+            r#"{"hooks":{"UserPromptSubmit":[{"matcher":"ignored-for-this-event","hooks":[{"type":"command",
+              "command":"grep -q secret && { echo 'no secrets in prompts' >&2; exit 2; }; echo 'shipped today: v2'"}]}]}}"#,
+        )
+        .unwrap();
+        let handles = HookHandles::default();
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            handles.clone(),
+        )
+        .expect("runnable");
+
+        // Matcher-less event: the group fires despite its matcher text.
+        let blocked = hooks.user_prompt_submit("here is my secret", &CancelToken::new());
+        assert_eq!(blocked.blocked.as_deref(), Some("no secrets in prompts"));
+
+        let clean = hooks.user_prompt_submit("hello", &CancelToken::new());
+        assert_eq!(clean.blocked, None);
+        assert_eq!(
+            clean.contexts,
+            vec!["shipped today: v2".to_string()],
+            "plain stdout is context for this event"
+        );
+
+        // A loop-initiated turn is marked synthetic: the hook never fires and
+        // the mark clears with the skip.
+        handles
+            .synthetic_turn
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(
+            hooks.user_prompt_submit("here is my secret", &CancelToken::new()),
+            PromptVerdict::default()
+        );
+        assert_eq!(
+            hooks
+                .user_prompt_submit("here is my secret", &CancelToken::new())
+                .blocked
+                .as_deref(),
+            Some("no secrets in prompts"),
+            "the mark cleared: the next real prompt is gated again"
+        );
+    }
+
+    #[test]
+    fn turn_start_folds_the_opening_hooks_into_notes_and_a_verdict() {
+        // The spawn-top glue in one call: SessionStart's context first, then
+        // UserPromptSubmit's, each already formatted as the wire text the
+        // model reads — and the notes come back even when the prompt is
+        // blocked (both references inject on block).
+        #[derive(Debug)]
+        struct Fake;
+        impl HookSink for Fake {
+            fn session_start(&self, _cancel: &CancelToken) -> Vec<String> {
+                vec!["the repo root is /srv/app".to_string()]
+            }
+            fn user_prompt_submit(&self, prompt: &str, _cancel: &CancelToken) -> PromptVerdict {
+                PromptVerdict {
+                    blocked: prompt.contains("secret").then(|| "no secrets".to_string()),
+                    contexts: vec!["shipped today: v2".to_string()],
+                }
+            }
+        }
+        let opening = turn_start(&Fake, "hello", &CancelToken::new());
+        assert_eq!(opening.blocked, None);
+        assert_eq!(opening.notes.len(), 2);
+        assert_eq!(opening.notes[0].0, "SessionStart hook");
+        assert!(
+            opening.notes[0].1.starts_with("<system-reminder>\n")
+                && opening.notes[0]
+                    .1
+                    .contains("SessionStart hook additional context: the repo root is /srv/app"),
+            "{:?}",
+            opening.notes[0].1
+        );
+        assert_eq!(opening.notes[1].0, "UserPromptSubmit hook");
+
+        let blocked = turn_start(&Fake, "my secret", &CancelToken::new());
+        assert_eq!(blocked.blocked.as_deref(), Some("no secrets"));
+        assert_eq!(blocked.notes.len(), 2, "context injects even on a block");
+    }
+
+    #[test]
+    fn session_end_runs_under_a_hard_budget_and_matches_on_the_reason() {
+        // Quitting must never hang on a hook: the whole event is capped at
+        // ~2 s whatever the handler's own timeout says. The matcher gates on
+        // the reason, Claude Code's rule.
+        let probe = std::env::temp_dir().join("alter-zero-hook-end-probe.json");
+        let _ = std::fs::remove_file(&probe);
+        let hooks = hooks_for(&format!(
+            r#"{{"hooks":{{"SessionEnd":[
+              {{"matcher":"clear","hooks":[{{"type":"command","command":"cat > {}"}}]}},
+              {{"matcher":"prompt_input_exit","hooks":[{{"type":"command","command":"sleep 30","timeout":600}}]}}]}}}}"#,
+            probe.display()
+        ));
+        let started = Instant::now();
+        hooks.session_end("prompt_input_exit");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the budget reaps a slow shutdown hook: {:?}",
+            started.elapsed()
+        );
+        assert!(!probe.exists(), "the clear-matched handler never fired");
+
+        hooks.session_end("clear");
+        let written = std::fs::read_to_string(&probe).expect("the clear hook ran");
+        let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
+        assert_eq!(value["hook_event_name"], serde_json::json!("SessionEnd"));
+        assert_eq!(value["reason"], serde_json::json!("clear"));
+        let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn the_compact_wrapper_maps_the_turn_onto_the_compact_events() {
+        // PreCompact rides the wrapper's prompt hook (context = extra
+        // summarization instructions; it can never block — neither reference
+        // honours a block for it) and PostCompact rides its stop (which
+        // never continues a summarization).
+        let probe = std::env::temp_dir().join("alter-zero-hook-compact-probe.jsonl");
+        let _ = std::fs::remove_file(&probe);
+        let file = HooksFile::parse(&format!(
+            r#"{{"hooks":{{
+              "PreCompact":[{{"matcher":"auto","hooks":[{{"type":"command",
+                "command":"tee -a {p} >/dev/null; echo >> {p}; echo 'keep the API notes'"}}]}}],
+              "PostCompact":[{{"hooks":[{{"type":"command","command":"tee -a {p} >/dev/null; echo >> {p}"}}]}}]}}}}"#,
+            p = probe.display()
+        ))
+        .unwrap();
+        let inner = CommandHooks::new(
+            Arc::new(file),
+            HookContext::default(),
+            None,
+            std::env::temp_dir(),
+            HookHandles::default(),
+        )
+        .expect("runnable");
+        let wrapper = CompactHooks::new(inner, true);
+
+        let verdict =
+            wrapper.user_prompt_submit("summarize this conversation", &CancelToken::new());
+        assert_eq!(verdict.blocked, None, "PreCompact can never block");
+        assert_eq!(verdict.contexts, vec!["keep the API notes".to_string()]);
+        assert_eq!(wrapper.prompt_hook_label(), "PreCompact");
+
+        assert_eq!(
+            wrapper.stop(false, "the handoff summary", &CancelToken::new()),
+            None,
+            "a summarization is never continued by a hook"
+        );
+        let lines: Vec<serde_json::Value> = std::fs::read_to_string(&probe)
+            .expect("both hooks ran")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("valid JSON"))
+            .collect();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["hook_event_name"], serde_json::json!("PreCompact"));
+        assert_eq!(lines[0]["trigger"], serde_json::json!("auto"));
+        assert_eq!(
+            lines[1]["hook_event_name"],
+            serde_json::json!("PostCompact")
+        );
+        assert_eq!(
+            lines[1]["compact_summary"],
+            serde_json::json!("the handoff summary")
         );
         let _ = std::fs::remove_file(&probe);
     }

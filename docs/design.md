@@ -487,17 +487,27 @@ unit-tested must be unit-tested.
   list survives `/resume`, the Esc-Esc backtrack, and `/clear` via
   per-record snapshots.
 - **Lifecycle hooks** (`docs/hooks.md`): Claude Code's `hooks.json` contract —
-  the user's own shell commands wedged into the tool loop, fed their event as
-  `snake_case` JSON on stdin and answering with `camelCase` JSON on stdout (or
-  exit `2` with a reason on stderr). A hook can refuse a call, rewrite its
-  arguments, approve it without the user, or hand the model context after it
-  ran. `PreToolUse`, `PostToolUse`, `PermissionRequest`, `SubagentStart` and
-  `SubagentStop` fire; the six session-level events are modelled but not yet
-  attached, because they would run on the loop thread. The pure half is
-  `hooks/`; the runner is `llm/hooks.rs`, behind the one-trait-object
-  `HookSink` seam. Verdicts reuse the permission gate's existing rendering and
-  recording wholesale, so a block is a red cell with a model-facing text on
-  `context_output` that a `/resume` replays.
+  the user's own shell commands wedged into the agent's lifecycle, fed their
+  event as `snake_case` JSON on stdin and answering with `camelCase` JSON on
+  stdout (or exit `2` with a reason on stderr). **All eleven modelled events
+  fire**, every one on a backend thread (the references' own placement — no
+  loop-thread blocking anywhere): the tool-path five gate/annotate/rewrite
+  calls (`agent` launches included), `Stop`/`SubagentStop` fire inside
+  `run_agent` where a block is a same-turn continuation
+  (`stop_hook_active` the hook's own guard, Esc the stop button),
+  `SessionStart` drains a queued source (`startup`/`resume`/`clear`) at the
+  next spawn's top, `UserPromptSubmit` can refuse the prompt (the submission
+  rolls back out of history, rollout included, the text returned to the
+  composer under a red reason-only notice) or inject context,
+  `PreCompact`/`PostCompact` ride the summarization spawn via the
+  `CompactHooks` wrapper (PreCompact context = extra compact instructions;
+  no block, matching both references' real behaviour), and `SessionEnd`
+  runs under a 2 s budget at `/clear`/quit. The pure half is `hooks/`; the
+  runner is `llm/hooks.rs`, behind the one-trait-object `HookSink` seam.
+  Verdicts reuse the permission gate's rendering and recording wholesale;
+  the two conversation-level additions are `StreamEvent::HookNote` → the
+  cell-less `HistoryItem::HookNote` (transcript-visible, context-replayed
+  verbatim, `/resume`-safe) and the terminal `StreamEvent::PromptBlocked`.
 
 ## Architecture
 

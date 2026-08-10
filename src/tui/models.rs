@@ -460,6 +460,54 @@ impl ModelSession {
         self.hooks.is_some()
     }
 
+    /// Queue a `SessionStart` source (`startup` / `resume` / `clear`) for the
+    /// next turn's drain (`docs/hooks.md`). A no-op without hooks.
+    pub(crate) fn queue_session_source(&self, source: &str) {
+        if let Some(setup) = &self.hooks
+            && let Ok(mut sources) = setup.handles.sources.lock()
+        {
+            sources.push(source.to_string());
+        }
+    }
+
+    /// Fire the `SessionEnd` hooks (`docs/hooks.md`) — a `/clear`'s `clear`,
+    /// a quit's `prompt_input_exit`. Bounded inside the sink (2 s for the
+    /// whole event), so neither path can hang on a hook. A no-op without
+    /// hooks.
+    pub(crate) fn fire_session_end(&self, reason: &str) {
+        if let Some(sink) = self
+            .hooks
+            .as_ref()
+            .and_then(|setup| setup.sink(&self.model_name()))
+        {
+            sink.session_end(reason);
+        }
+    }
+
+    /// Replace every pending source with `source` — the boot path's variant:
+    /// a `--continue`/`--resume` boot crossed a *resume* boundary, not the
+    /// startup one bootstrap seeded before it knew (`docs/hooks.md`).
+    pub(crate) fn set_session_source(&self, source: &str) {
+        if let Some(setup) = &self.hooks
+            && let Ok(mut sources) = setup.handles.sources.lock()
+        {
+            sources.clear();
+            sources.push(source.to_string());
+        }
+    }
+
+    /// Mark the next spawned turn as **loop-initiated** (a background
+    /// completion's follow-up): its prompt is synthesized, so the
+    /// `UserPromptSubmit` hook must not fire for it (`docs/hooks.md`).
+    pub(crate) fn mark_synthetic_turn(&self) {
+        if let Some(setup) = &self.hooks {
+            setup
+                .handles
+                .synthetic_turn
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
     /// The `/settings` **Hooks** knob: run the user's lifecycle hooks, or
     /// don't. The backend is rebuilt so the next turn genuinely stops (or
     /// starts) consulting them — there is no second copy of the flag to drift.
@@ -635,7 +683,11 @@ impl ModelSession {
     /// gating on a *usable config* instead only proved a key had resolved, so a
     /// configured provider with no model selected summarized against
     /// `dummy_model_name` and failed the turn with an HTTP error.
-    pub(crate) fn compact_backend(&self, thinking: Option<ThinkingMode>) -> Option<LlmBackend> {
+    pub(crate) fn compact_backend(
+        &self,
+        thinking: Option<ThinkingMode>,
+        auto: bool,
+    ) -> Option<LlmBackend> {
         if !self.real_backend {
             return None;
         }
@@ -646,11 +698,40 @@ impl ModelSession {
             })
             .filter(ModelConfig::is_usable)
             .map(|cfg| {
-                LlmBackend::configure(
+                let model = cfg.model.clone();
+                let mut backend = LlmBackend::configure(
                     cfg,
                     self.system_prompt.clone(),
                     /*tools_enabled=*/ false,
-                )
+                );
+                // The compact events (docs/hooks.md): PreCompact's context
+                // becomes extra summarization instructions, PostCompact hears
+                // the summary — via the wrapper, so the ordinary session
+                // events (UserPromptSubmit, Stop, the source drain) can never
+                // fire for a summarization turn.
+                if let Some(setup) = self.hooks.as_ref().filter(|setup| setup.enabled) {
+                    let context = alter_zero::hooks::HookContext {
+                        session_id: setup.session_id.clone(),
+                        transcript_path: None,
+                        cwd: setup.cwd.display().to_string(),
+                        model,
+                        permission_mode: None,
+                        agent_id: None,
+                        agent_type: None,
+                    };
+                    if let Some(inner) = alter_zero::llm::hooks::CommandHooks::new(
+                        std::sync::Arc::clone(&setup.file),
+                        context,
+                        setup.detach_helper.clone(),
+                        setup.cwd.clone(),
+                        setup.handles.clone(),
+                    ) {
+                        backend = backend.with_hooks(std::sync::Arc::new(
+                            alter_zero::llm::hooks::CompactHooks::new(inner, auto),
+                        ));
+                    }
+                }
+                backend
             })
     }
 
@@ -744,13 +825,11 @@ pub(crate) struct HookSetup {
     /// The `/settings` **Hooks** row. `false` attaches nothing, so toggling it
     /// off mid-session genuinely stops running them.
     pub(crate) enabled: bool,
-    /// The permission gate, read at **dispatch** time so a payload's
-    /// `permission_mode` is the mode the session is in when the hook fires —
-    /// a Ctrl+A cycle reaches the very next call. `None` when the gate is off.
-    pub(crate) gate: Option<alter_zero::permission::PermissionGate>,
-    /// The rollout path the recorder publishes (`docs/hooks.md`), read per
-    /// payload for the same reason.
-    pub(crate) transcript: alter_zero::llm::hooks::TranscriptCell,
+    /// The live handles — the gate (a Ctrl+A cycle reaches the very next
+    /// payload), the rollout path the recorder publishes, the queued
+    /// SessionStart sources, and the synthetic-turn mark — shared into every
+    /// sink built, surviving each rebuild (`docs/hooks.md`).
+    pub(crate) handles: alter_zero::llm::hooks::HookHandles,
 }
 
 impl HookSetup {
@@ -776,8 +855,7 @@ impl HookSetup {
             context,
             self.detach_helper.clone(),
             self.cwd.clone(),
-            self.gate.clone(),
-            self.transcript.clone(),
+            self.handles.clone(),
         )
         .map(|hooks| {
             std::sync::Arc::new(hooks) as std::sync::Arc<dyn alter_zero::llm::hooks::HookSink>

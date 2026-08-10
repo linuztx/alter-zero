@@ -156,8 +156,19 @@ impl<'t> Session<'t> {
         let (hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
         // The rollout path is created lazily on the first recorded item, so
         // the payloads' `transcript_path` rides a shared cell the recorder
-        // publishes into (below) and the sink reads at dispatch time.
-        let hook_transcript = alter_zero::llm::hooks::TranscriptCell::default();
+        // publishes into (below) and the sink reads at dispatch time. The
+        // rest of the live handles ride beside it: the gate (a Ctrl+A cycle
+        // reaches the very next payload), the SessionStart source queue —
+        // seeded with `startup`, drained codex-style at the first turn's top
+        // so nothing blocks the first paint — and the synthetic-turn mark.
+        let hook_handles = alter_zero::llm::hooks::HookHandles {
+            gate: permissions.gate().cloned(),
+            ..alter_zero::llm::hooks::HookHandles::default()
+        };
+        if let Ok(mut sources) = hook_handles.sources.lock() {
+            sources.push("startup".to_string());
+        }
+        let hook_transcript = hook_handles.transcript.clone();
         let hook_setup = (!hooks_file.is_empty()).then(|| HookSetup {
             file: std::sync::Arc::new(hooks_file),
             session_id: host::session_id(),
@@ -165,9 +176,7 @@ impl<'t> Session<'t> {
             // The same tty-detach helper every other shell child gets.
             detach_helper: std::env::current_exe().ok(),
             enabled: config::hooks_enabled() && settings.hooks,
-            // Read live per payload, so a Ctrl+A cycle reaches the next call.
-            gate: permissions.gate().cloned(),
-            transcript: hook_transcript.clone(),
+            handles: hook_handles,
         });
 
         // The reply backend and everything that selects it (docs/llm.md).
@@ -426,6 +435,10 @@ impl<'t> Session<'t> {
                 let torn = !text.is_empty() && !text.ends_with('\n');
                 self.recorder
                     .adopt(path, meta, count, torn, session_checkpoints);
+                // A --continue/--resume boot is a *resume* boundary, not a
+                // startup one: swap the seeded source so the SessionStart
+                // hooks hear what actually happened (docs/hooks.md).
+                self.models.set_session_source("resume");
                 if restored {
                     self.toast(CHECKPOINT_RESTORED_NOTICE, ToastKind::Info);
                 }
@@ -478,6 +491,11 @@ impl<'t> Session<'t> {
         // The quit arms break before the loop-bottom sync — catch the last
         // change.
         self.recorder.sync(&self.app.history);
+        // SessionEnd (docs/hooks.md): fired before the teardown below, under
+        // the sink's own 2 s budget, so a quit never hangs on a hook. Claude
+        // Code's closest reason for an interactive quit is
+        // `prompt_input_exit`.
+        self.models.fire_session_end("prompt_input_exit");
         let inputs = self.app.take_unpersisted_inputs();
         self.hist_store.append(&inputs);
         // Stop any in-flight reply on the way out, but don't `join()` it: joining

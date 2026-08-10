@@ -225,6 +225,26 @@ pub enum StreamEvent {
         ok: bool,
         tasks: TaskStore,
     },
+    /// A lifecycle hook injected **conversation text** mid-turn
+    /// (`docs/hooks.md`): a `Stop`/`SubagentStop` block's continuation
+    /// feedback, or a `UserPromptSubmit`/`SessionStart` hook's additional
+    /// context. `text` is verbatim what the model reads as a user-role
+    /// message — the loop finalises the assistant run before it (invariant
+    /// 4's flush-before-you-interleave) and records the cell-less
+    /// [`crate::app::HistoryItem::HookNote`], so the Ctrl+O transcript shows
+    /// why the turn kept going, the derived context replays it on every
+    /// later turn, and a `/resume` restores it. `label` is the short
+    /// transcript heading (`Stop hook`, `UserPromptSubmit hook`).
+    HookNote { label: String, text: String },
+    /// A `UserPromptSubmit` hook **blocked the prompt** (`docs/hooks.md`):
+    /// the turn is over before the first request. The loop rolls the
+    /// just-recorded user message back out of history (the recorder's
+    /// shrink-rewrite erases it from the rollout — Claude Code's "erased
+    /// from context"), purge-repaints, and commits a red notice carrying
+    /// `reason` and the original prompt so the user sees exactly what was
+    /// refused and why. Sent **instead of** [`StreamEvent::StreamDone`] —
+    /// nothing else follows it.
+    PromptBlocked { reason: String },
     /// The model launched a **group of subagents** this round (its `agent`
     /// tool calls), announced up front like a [`StreamEvent::ToolBatch`]: the
     /// loop seeds the roster (one [`crate::agents::AgentRun`] per spec) and

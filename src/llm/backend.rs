@@ -537,6 +537,29 @@ impl ReplySource for LlmBackend {
             // (docs/tools.md).
             let mut messages =
                 build_messages_for(vision, system.as_deref(), &prompt, &context, image_data_url);
+            // The turn's opening hooks (docs/hooks.md): the SessionStart
+            // drain, then UserPromptSubmit — here on the backend thread, the
+            // codex placement, so nothing ever blocks the loop or the first
+            // paint and Esc reaps a slow hook through the runner's cancel
+            // polling. Each note is recorded (HookNote → the transcript, the
+            // rollout, every later context) and appended after the prompt at
+            // the frontier — never in front, which would invalidate the
+            // prompt cache. A blocked prompt sends PromptBlocked instead of
+            // ever reaching the model: the loop rolls the submission back.
+            let opening = super::hooks::turn_start(hooks.as_ref(), &prompt, &cancel);
+            for (label, text) in &opening.notes {
+                let _ = tx.send(StreamEvent::HookNote {
+                    label: label.clone(),
+                    text: text.clone(),
+                });
+                messages.push(ChatMessage::user(text));
+            }
+            if let Some(reason) = opening.blocked {
+                if !cancel.is_cancelled() {
+                    let _ = tx.send(StreamEvent::PromptBlocked { reason });
+                }
+                return;
+            }
             let mut executor = RealToolExecutor::new().with_vision(vision);
             let notices = background.clone();
             if let Some(registry) = background.clone() {
@@ -999,7 +1022,8 @@ fn spawn_subagent_run(
                     StreamEvent::Chunk(chunk) => final_text.push_str(chunk),
                     StreamEvent::ToolBatch(_)
                     | StreamEvent::ToolStart { .. }
-                    | StreamEvent::AgentBatch { .. } => final_text.clear(),
+                    | StreamEvent::AgentBatch { .. }
+                    | StreamEvent::HookNote { .. } => final_text.clear(),
                     StreamEvent::StreamDone => outcome = Some(Ok(())),
                     StreamEvent::Error(e) => outcome = Some(Err(e.clone())),
                     _ => {}
@@ -1088,17 +1112,12 @@ fn spawn_subagent_run(
             // Cancelled (killed) — the registry's kill outcome stands.
             None => Err("stopped by the user".to_string()),
         };
-        // `SubagentStop` (docs/hooks.md). `registry.finish` is the single
-        // point every subagent settles through — a foreground agent's group
-        // resolution and a background one's notice board both read the
-        // registry afterwards — so one call site covers all of them.
-        let (ok, last_message) = match &outcome {
-            Ok(text) => (true, text.clone()),
-            Err(error) => (false, error.clone()),
-        };
-        // A fresh token, not the agent's: a killed agent's cleanup hook must
-        // still run (see `HookSink::subagent_stop`).
-        hooks.subagent_stop(&id, &agent_type, ok, &last_message, &CancelToken::new());
+        // `SubagentStop` fires inside the agent's own loop now — the same
+        // `HookSink::stop` seam as the lead's `Stop`, routed by the tagged
+        // sink — so a natural completion can be blocked into a continuation
+        // while a killed or errored agent fires nothing (Claude Code's
+        // posture), and the registry settles the moment the run ends rather
+        // than after a cleanup hook's timeout.
         registry.finish(&id, outcome, messages);
     });
 }
@@ -1187,7 +1206,9 @@ fn stream_round(
                 let _ = tx.send(StreamEvent::Usage(usage));
             }
             if outcome.tool_calls.is_empty() {
-                RoundOutcome::Complete
+                RoundOutcome::Complete {
+                    text: outcome.text.response,
+                }
             } else {
                 let assistant = ChatMessage::assistant_tool_calls(
                     outcome.text.response,

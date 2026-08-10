@@ -6,7 +6,7 @@
 
 use super::agent::{AgentCellView, agent_cell_lines, agent_group_full_lines};
 use super::conversation::is_shell_header;
-use super::message::{compaction_full_lines, user_stamp_lines};
+use super::message::{compaction_full_lines, hook_note_lines, user_stamp_lines};
 use super::reasoning::{reasoning_full_lines, reasoning_live_full_lines};
 use super::theme::*;
 use super::tool::tool_full_lines;
@@ -97,6 +97,9 @@ fn transcript_item_lines(item: &HistoryItem, width: u16) -> (Vec<Line<'static>>,
         // The transcript is where a thought's whole chain-of-thought lives —
         // inline it is the one collapsed line (docs/thinking-stream.md).
         HistoryItem::Reasoning(r) => lines.extend(reasoning_full_lines(r, width)),
+        // Hook-injected conversation text (docs/hooks.md): invisible inline,
+        // the transcript is its record.
+        HistoryItem::HookNote(n) => lines.extend(hook_note_lines(n, width)),
     }
     if !is_shell_header(item) {
         lines.push(Line::default());

@@ -321,6 +321,9 @@ impl Session<'_> {
         let torn = !text.is_empty() && !text.ends_with('\n');
         self.recorder
             .adopt(path, meta, count, torn, session_checkpoints);
+        // The session boundary for the hooks: SessionStart(resume) fires at
+        // the next turn's top (docs/hooks.md).
+        self.models.queue_session_source("resume");
         self.term.exit_overlay()?;
         // A resumed session REPLACES the whole conversation: purge-rebuild (like
         // /clear) so the loaded history fills scrollback — an in-place repaint

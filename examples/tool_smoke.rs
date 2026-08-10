@@ -111,6 +111,14 @@ fn main() {
                     request.target
                 );
             }
+            // A hook-injected conversation entry / a blocked prompt
+            // (docs/hooks.md): the harness just logs them.
+            StreamEvent::HookNote { label, text } => {
+                println!("\n\x1b[90m[{label}] {text}\x1b[0m");
+            }
+            StreamEvent::PromptBlocked { reason } => {
+                println!("\n\x1b[90m[prompt blocked by hook: {reason}]\x1b[0m");
+            }
             // …and no ask gate, so the ask tool is not offered (docs/ask.md).
             StreamEvent::AskUser(request) => {
                 println!(

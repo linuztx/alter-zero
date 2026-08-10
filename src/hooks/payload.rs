@@ -177,28 +177,25 @@ pub fn subagent_start_payload(ctx: &HookContext, agent_id: &str, agent_type: &st
     finish(map)
 }
 
-/// `SubagentStop` — a subagent finished.
-///
-/// `stop_hook_active` is always `false`: it means *this run was started by a
-/// `Stop` hook's block*, the loop guard, and nothing here can do that yet.
-/// Reporting a failed agent through it — the obvious-looking shortcut — would
-/// hand a hook author the wrong fact under a documented name, so success rides
-/// its own `success` field instead (an extension, like the `tool_response`
-/// object's; codex extends these payloads the same way with `turn_id`).
+/// `SubagentStop` — a subagent finished answering. Like [`stop_payload`],
+/// `stop_hook_active` is true when this firing follows a `SubagentStop`
+/// block's own continuation — the loop guard's flag, which the hook checks
+/// to avoid looping forever. Fired only on a **natural** completion (both
+/// references skip it for interrupts and API errors), so the old `success`
+/// extension carried no information and is gone.
 #[must_use]
 pub fn subagent_stop_payload(
     ctx: &HookContext,
     agent_id: &str,
     agent_type: &str,
+    stop_hook_active: bool,
     last_message: &str,
-    ok: bool,
 ) -> String {
     let mut map = ctx.base(HookEvent::SubagentStop);
-    map.insert("stop_hook_active".into(), json!(false));
+    map.insert("stop_hook_active".into(), json!(stop_hook_active));
     map.insert("agent_id".into(), json!(agent_id));
     map.insert("agent_type".into(), json!(agent_type));
     map.insert("last_assistant_message".into(), json!(last_message));
-    map.insert("success".into(), json!(ok));
     finish(map)
 }
 
@@ -348,7 +345,7 @@ mod tests {
             (stop_payload(&c, false, "done"), "Stop"),
             (subagent_start_payload(&c, "a1", "explore"), "SubagentStart"),
             (
-                subagent_stop_payload(&c, "a1", "explore", "found it", true),
+                subagent_stop_payload(&c, "a1", "explore", false, "found it"),
                 "SubagentStop",
             ),
             (pre_compact_payload(&c, "manual", ""), "PreCompact"),
@@ -373,17 +370,24 @@ mod tests {
         let stop = parse(&stop_payload(&c, true, "the answer"));
         assert_eq!(stop["stop_hook_active"], json!(true));
         assert_eq!(stop["last_assistant_message"], json!("the answer"));
-        let sub = parse(&subagent_stop_payload(&c, "a1", "explore", "found", true));
+        let sub = parse(&subagent_stop_payload(&c, "a1", "explore", false, "found"));
         assert_eq!(sub["agent_id"], json!("a1"));
         assert_eq!(sub["agent_type"], json!("explore"));
         assert_eq!(sub["last_assistant_message"], json!("found"));
-        assert_eq!(sub["success"], json!(true));
-        // Never repurposed to mean "the agent failed": it means the run was
-        // started by a Stop hook's block, which nothing here does yet.
         assert_eq!(sub["stop_hook_active"], json!(false));
+        // The loop-guard flag is real for subagents too: a firing after a
+        // SubagentStop block's continuation says so.
         assert_eq!(
-            parse(&subagent_stop_payload(&c, "a1", "explore", "boom", false))["success"],
-            json!(false)
+            parse(&subagent_stop_payload(&c, "a1", "explore", true, "more"))["stop_hook_active"],
+            json!(true)
+        );
+        // The old `success` extension is gone: the event only fires on a
+        // natural completion, so it carried no information.
+        assert!(
+            !parse(&subagent_stop_payload(&c, "a1", "explore", false, "found"))
+                .as_object()
+                .unwrap()
+                .contains_key("success")
         );
         let pre = parse(&pre_compact_payload(&c, "manual", "keep the API notes"));
         assert_eq!(pre["trigger"], json!("manual"));

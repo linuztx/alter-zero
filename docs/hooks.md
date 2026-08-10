@@ -57,8 +57,9 @@ Eleven events are modelled. What each may return:
 | `UserPromptSubmit`              | block + reason · `additionalContext`                   |
 | `Stop` / `SubagentStop`         | block + reason (make the agent keep going)             |
 | `SessionStart` / `SubagentStart`| `additionalContext`                                    |
-| `SessionEnd`                    | the universal envelope only                            |
-| `PreCompact` / `PostCompact`    | the universal envelope only                            |
+| `SessionEnd`                    | nothing — output ignored (both references)             |
+| `PreCompact`                    | `additionalContext` / stdout → extra compact instructions — **no block** (see below) |
+| `PostCompact`                   | nothing — envelope only                                |
 
 **Exit codes** (Claude Code's semantics, verbatim): `0` — success, stdout is
 read as a verdict when it starts with `{`, else treated as plain text. `2` —
@@ -100,27 +101,35 @@ is a common matcher in real Claude Code configs, silently skipping it would be
 a footgun with no offsetting saving, and we compile it instead. A matcher that
 fails to compile is warned about and skipped.
 
-**Tool names are ours, not Claude Code's.** The match query for the tool
-events is this app's own tool name — `bash`, `read`, `write`, `edit`, `agent`
-— lowercase, as the model sees it. A config written against Claude Code's
-`Bash`/`Write` will not match; that is a naming difference between the two
-tools, not a contract difference, and `Bash|bash` covers both.
+**Tool names answer to both spellings.** The match query for the tool events
+is this app's own tool name — `bash`, `read`, `write`, `edit`, `agent` —
+lowercase, as the model sees it, and each also answers to its Claude Code
+spelling as a **second exact name** (`Bash`, `Read`, `Write`, `Edit`, and
+`Task` for `agent` — the reference's own legacy-alias precedent,
+`permissionRuleParser.ts`). So `"matcher": "Bash"` — the single most common
+hook config in the wild — and `^Bash$` both select `bash` here, while
+`bashoutput` still matches neither: an alias is a second exact name, never a
+prefix or case-folding rule. Agent types (`SubagentStart`/`SubagentStop`)
+and the other non-tool queries are never aliased.
 
 ## Where each event attaches
 
-| event               | site                                            | v1  |
-| ------------------- | ----------------------------------------------- | --- |
-| `PreToolUse`        | `llm/agent.rs` — before `approve`                | yes |
-| `PermissionRequest` | `llm/approval.rs` — after the standing rules     | yes |
-| `PostToolUse`       | `llm/agent.rs` — on `execute`'s return           | yes |
-| `SubagentStart`     | `llm/backend.rs` — inside `spawn_subagent_run`   | yes |
-| `SubagentStop`      | `llm/backend.rs` — at `registry.finish`          | yes |
-| `SessionStart`      | `tui/bootstrap.rs`                               | no  |
-| `SessionEnd`        | `tui/bootstrap.rs` — `shutdown`                  | no  |
-| `UserPromptSubmit`  | `tui/turn.rs` — `start_turn`                     | no  |
-| `Stop`              | `tui/turn.rs` — `dispatch_after_turn`            | no  |
-| `PreCompact`        | `tui/turn.rs` — `start_compact_turn`             | no  |
-| `PostCompact`       | `app/compact.rs` — `finish_compact`              | no  |
+| event               | site                                                            |
+| ------------------- | --------------------------------------------------------------- |
+| `PreToolUse`        | `llm/agent.rs` — before `approve`; **`agent` launches included** |
+| `PermissionRequest` | `llm/approval.rs` — after the standing rules                     |
+| `PostToolUse`       | `llm/agent.rs` — on `execute`'s return, **successes only**       |
+| `SubagentStart`     | `llm/backend.rs` — inside `spawn_subagent_run`                   |
+| `SubagentStop`      | `llm/agent.rs` — `run_agent`'s Complete arm, via the tagged sink |
+| `SessionStart`      | `llm/backend.rs` — the spawn top drains the queued sources       |
+| `SessionEnd`        | `tui` — `/clear` and `shutdown`, under a 2 s event budget        |
+| `UserPromptSubmit`  | `llm/backend.rs` — the spawn top, after the SessionStart drain   |
+| `Stop`              | `llm/agent.rs` — `run_agent`'s Complete arm                      |
+| `PreCompact`        | the compact spawn's top, via the `CompactHooks` wrapper          |
+| `PostCompact`       | the compact spawn's completion, via the same wrapper             |
+
+Every one of the eleven fires. All of them run on a **backend thread** —
+none on the tokio loop — which is the second half of the story below.
 
 `PermissionRequest` sits exactly where the auto-mode classifier does — after
 the standing allowlist, before the user — because it answers the same
@@ -131,48 +140,82 @@ and neither does any call when the permission gate is off entirely
 `PreToolUse` still fires in both cases — it is about the call, not about
 asking.
 
-### Two execution contexts, and why v1 stops where it does
+### One execution context — the premise that dissolved
 
-codex is async throughout, so every hook is simply awaited. This codebase is
-not, and that difference decides the phasing.
+The original phasing assumed the six "loop-path" events had to run on the
+tokio current-thread loop, where a blocking subprocess freezes the spinner
+and the keyboard — and that attaching them therefore needed a pending-turn
+state machine the codebase doesn't have. Verifying the references killed
+that premise:
 
-- **Tool-path events** fire on the backend's own OS thread, where blocking is
-  already normal and correct: the permission gate parks there on a `Condvar`
-  today, and `llm::exec` already runs a child against a deadline in a 20 ms
-  poll loop.
-- **Loop-path events** fire on the tokio current-thread loop, where a blocking
-  subprocess freezes the spinner, the shimmer and the keyboard.
+- **Claude Code fires its stop hooks inside the query loop**, not at the
+  REPL layer — a `Stop` block *is* the next iteration of that loop
+  (`query.ts:1282-1305`), which is exactly `run_agent` here.
+- **Neither reference runs `SessionStart` at startup.** Claude Code kicks it
+  off without awaiting before render and blocks only the *first API call*
+  (`main.tsx:3761-3765`); codex queues a pending source and drains it at the
+  top of the next turn (`turn.rs:239-241`). Nothing ever blocks the first
+  paint — the checkpoint probe's lesson, honoured by both references before
+  we ever hit it.
 
-v1 ships the tool-path set. That is not timidity: it is the half that needs no
-new concurrency machinery, and it is the half users actually ask for (guard
-`bash`, lint after `edit`). The **pure core models all eleven events anyway**,
-so the deferred phase is one call site each and no new subsystem.
+So every event lands on a **backend thread**, where blocking is already
+normal and correct — the permission gate parks there on a `Condvar`,
+`llm::exec` polls its children every 20 ms — and the loop-thread problem
+never existed:
 
-Three loop-path landings are also not as clean as they look, and the deferred
-phase has to answer them rather than paper over them:
-
-- **`Stop` over-fires.** `dispatch_after_turn` runs at `StreamDone`, at a
-  backend error, at *both* Esc-interrupt outcomes, and on an idle
-  background-completion arrival — so it also covers `/compact` turns and `!`
-  shell turns. None of those is "the model stopped answering the user". It
-  also begins with `checkpoint_turn_end()`, so a hook at the head of that
-  function writes *into* the turn's snapshot and its work is reverted by a
-  later Esc-Esc backtrack. Placement decides whether the hook's output
-  survives.
-- **`UserPromptSubmit` and the `!` shell.** A `!command` is a user submission,
-  it queues and dispatches like one, and gating what the user runs locally is
-  arguably the event's strongest case — but it is not a *prompt*, and the
-  payload has one field. Open.
-- **`SessionStart` blocks the first paint.** `Session::bootstrap` runs after
-  the terminal is in raw mode and before the first frame, in exactly the spot
-  where the checkpoint probe already taught us that seconds of silence read as
-  a hang.
+- **`Stop`/`SubagentStop`** fire in `run_agent` at `RoundOutcome::Complete`,
+  before `StreamDone`. A block appends the reply-so-far as an assistant
+  message and the feedback (`Stop hook feedback:\n{reason}`, Claude Code's
+  exact wording) as the next user message, flips `stop_hook_active`, and the
+  **same turn runs another round** — so the status line keeps working, the
+  queue and token tally are untouched, and `dispatch_after_turn`'s
+  turn-end checkpoint lands *after* every continuation: a formatter hook's
+  writes are inside the turn's snapshot and an Esc-Esc backtrack restores
+  them. By construction it never fires for a `/compact` turn (that backend
+  carries the wrapper below), a `!` shell (no agent loop), a backend error
+  (Claude Code fires `StopFailure` there, which we don't model), or an
+  interrupt (Claude Code returns before stop hooks on an abort — Esc always
+  breaks a continuation chain). The engine never refuses a re-block:
+  `stop_hook_active` is the hook's own guard, the reference's exact posture.
+  The tagged sink routes a subagent's completion to `SubagentStop`
+  (matcher = agent type) with the same block-to-continue semantics on the
+  agent's own loop; a killed or errored agent fires nothing.
+- **`SessionStart`** is a queued-source drain: bootstrap queues `startup`
+  (a `--continue`/`--resume` boot swaps it for `resume`), `/clear` queues
+  `clear`, a `/resume` load queues `resume`, and the next spawn's thread
+  drains the queue before round 1 (matcher = source). Context lands as
+  user messages after the prompt and is recorded (see `HookNote` below).
+- **`UserPromptSubmit`** fires right after that drain, before the first
+  request. A **block** streams `StreamEvent::PromptBlocked` instead of
+  anything else: the loop rolls the just-recorded submission back out of
+  history (the recorder's shrink-rewrite erases it from the rollout — the
+  reference's "erased from context", so nothing a secrets-filter censored
+  can reach a later turn), returns the text to the composer, purge-repaints
+  the echo away, and commits a red reason-only notice. `additionalContext`
+  injects even on a block — both references' rule. A loop-initiated turn (a
+  background completion's follow-up) is marked synthetic and skips the
+  event: its prompt is not the user's.
+- **`PreCompact`/`PostCompact`** ride the summarization spawn through the
+  `CompactHooks` wrapper: its "prompt" hook is PreCompact (context/stdout →
+  extra summarization instructions; **it cannot block — in either
+  reference**: Claude Code's own in-app docs claim exit 2 blocks compaction,
+  but the `blocked` field is never read at any PreCompact call site, and
+  codex has no exit-2 arm for it), and its completion is PostCompact. The
+  wrapper never drains the session-source queue and never continues a
+  summarization; its notes stay out of the conversation record (they are
+  ephemeral, like the compact chunks themselves).
+- **`SessionEnd`** fires on `/clear` (`clear`) and at quit
+  (`prompt_input_exit`), under a **2 s whole-event budget** — Claude Code
+  caps this event at 1.5 s and codex clamps it to 3 s, because quitting must
+  never hang on a hook. Output is ignored, as in both references.
 
 **A blocking hook must poll the `CancelToken`.** The reason the existing
 `Condvar` park is safe is that `PermissionGate::wait` takes a cancellation
 predicate and `run_bash` re-checks cancellation every 20 ms. The hook runner
-polls on the same 20 ms cadence and kills the process group on cancel, so Esc
-stays prompt.
+polls on the same 20 ms cadence — the payload write included, on its own
+thread, since a pipe-buffer-filling payload fed to a handler that never
+reads stdin used to park an inline write past both Esc and the timeout —
+and kills the process group on cancel, so Esc stays prompt.
 
 ## How a verdict reaches the screen
 
@@ -193,6 +236,24 @@ somewhere for every hook verdict to land, under another name. **No new
   existing `ToolAnswered { display, result }` split, so the cell stays clean
   while `context_output` carries what the model actually read. Both are
   recorded, both survive a `/resume`.
+
+Two additions were needed for the conversation-level events, because nothing
+existing could express them:
+
+- **`StreamEvent::HookNote { label, text }`** carries hook-injected
+  conversation text — a Stop block's feedback, a SessionStart/
+  UserPromptSubmit hook's additional context. The loop finalises the
+  assistant run before it (invariant 4's flush-before-you-interleave) and
+  records a cell-less **`HistoryItem::HookNote`**: invisible inline (Claude
+  Code hides these from its normal view too — `isMeta`), expanded in the
+  Ctrl+O transcript under its dim `● {label}` heading, replayed **verbatim**
+  by `context_messages` as the user-role message the model actually read,
+  and round-tripped through the rollout so a `/resume` keeps it. Context
+  wire text uses Claude Code's exact shape — the
+  `<system-reminder>`-wrapped `{event} hook additional context: …`.
+- **`StreamEvent::PromptBlocked { reason }`** is a `UserPromptSubmit`
+  block's terminal event — sent instead of `StreamDone`, nothing follows
+  it; the loop's arm owns the rollback described above.
 
 The one change that *was* needed: `ToolAnswered` and `ToolRejected` gained a
 `truncated` flag. They had none because their only users — the ask tool and a
@@ -310,23 +371,25 @@ signature. Instead there is one trait object with defaulted no-op methods:
 
 ```rust
 pub trait HookSink: Send + Sync + Debug {
-    fn pre_tool_use(&self, _call: &ToolCallRequest, _cancel: &CancelToken) -> PreToolVerdict {
-        PreToolVerdict::default()
-    }
-    fn post_tool_use(&self, _call: &ToolCallRequest, _out: &ToolOutcome, _cancel: &CancelToken)
-        -> PostToolVerdict { PostToolVerdict::default() }
+    fn pre_tool_use(&self, …) -> PreToolVerdict { PreToolVerdict::default() }
+    fn post_tool_use(&self, …) -> PostToolVerdict { PostToolVerdict::default() }
     fn permission_request(&self, …) -> Option<HookPermissionVerdict> { None }
-    fn subagent_start(&self, _id: &str, _type: &str, _cancel: &CancelToken) -> Vec<String> {
-        Vec::new()
-    }
-    fn subagent_stop(&self, …) {}
+    fn subagent_start(&self, …) -> Vec<String> { Vec::new() }
+    fn stop(&self, _active: bool, _last: &str, _cancel: &CancelToken) -> Option<String> { None }
+    fn session_start(&self, _cancel: &CancelToken) -> Vec<String> { Vec::new() }
+    fn user_prompt_submit(&self, _prompt: &str, _cancel: &CancelToken) -> PromptVerdict { … }
+    fn session_end(&self, _reason: &str) {}
     fn for_subagent(&self, …) -> Option<Arc<dyn HookSink>> { None }
+    fn prompt_hook_label(&self) -> &'static str { "UserPromptSubmit" }
 }
 ```
 
 Every blocking method takes the turn's `CancelToken` — the trait says one
-thing about blocking, and the one exception (`subagent_stop`, which is cleanup
-that must survive the kill it is reporting) says so at the method.
+thing about blocking, and the one exception (`session_end`, which runs past
+cancellation under its own 2 s budget) says so at the method. `stop` routes
+itself: the lead sink fires `Stop`, a `for_subagent`-tagged one fires
+`SubagentStop` — Claude Code picks the event the same way, by the presence
+of an agent id.
 
 Every method defaults, so `NoHooks` costs nothing and every existing test
 compiles untouched. **Adding event number six is one defaulted method plus one
@@ -372,8 +435,13 @@ runner calls — so the offline cell is byte-for-byte the one a real `hooks.json
 produces, the rule every other scripted demo follows with the real executor's
 formatters. **`smoke.sh` Phase 72** drives it and asserts the blocked call
 produced no output of its own, the allowed one kept its output under the
-provenance row, the model-facing paragraph never reached scrollback, and the
-Ctrl+O transcript kept the refusal.
+provenance row, the model-facing paragraph never reached scrollback, the
+Ctrl+O transcript kept the refusal, and the demo's closing Stop-hook
+feedback note stayed cell-less inline while the transcript recorded it.
+**Phase 73** drives the `prompt-block` scenario (cue: `hook` + `block my
+prompt`) through the real loop arm: the blocked submission leaves scrollback
+(exactly the composer's restored copy of the text remains) under the red
+reason-only notice.
 
 Three layers cover the rest:
 
@@ -388,17 +456,50 @@ Three layers cover the rest:
   fact and repeats it), and an `updatedInput` rewrite (the hook's command is
   what executes).
 
+## Deliberate deviations from the references
+
+Verified against both sources, and chosen — not accidental:
+
+- **Exit 2 beats a JSON verdict here and in codex; Claude Code parses the
+  JSON first** (`hooks.ts:2533` returns before the exit-2 arm at `:2648`),
+  so a script that prints a valid verdict *and* exits 2 reads differently
+  there. Scripts that do both are ambiguous everywhere; we follow codex.
+- **`{`-prefixed stdout that fails to parse is a loud warning** here and in
+  codex; Claude Code swallows it silently (`hooks.ts:447-450`) and treats
+  the output as plain text. Loud beats silent for a guard.
+- **Exit 2 with empty stderr still blocks** (with a stand-in reason) — the
+  Claude Code behaviour (`'No stderr output'`); codex fails open there.
+- **Handlers run sequentially**, not in parallel (both references
+  parallelize one event's handlers). Deterministic order is what keeps the
+  merge's "first reason wins" meaningful — Claude Code's parallel version
+  has a lost-deny-reason race (`hooks.ts:2862-2867`) we decline to copy.
+  The cost: N pathological handlers stack N timeouts.
+- **`tool_response` is a stable `{"output": …, "success": …}` object.** The
+  references send the raw tool result (a bare string for codex's bash, an
+  arbitrary object for Claude Code), which is sometimes-a-string; ours is
+  one shape a script can always index.
+- **`stop_hook_active` is advisory, engine-side too** — verified as Claude
+  Code's exact posture (no code refuses a re-block; `maxTurns` is its only
+  backstop). Esc is ours: an interrupt never fires Stop, so it always
+  breaks a continuation chain.
+- **A handler carrying Claude Code's `if` pre-filter is skipped with a
+  warning** rather than run *wider than the author scoped it* — we don't
+  evaluate permission-rule expressions. `shell: "powershell"` is skipped
+  the same way; `shell: "bash"` runs under `sh`.
+- **Oversized output is capped in memory at 64 KiB** as it is read, with a
+  truncation marker — codex spills to a temp file with a preview instead
+  (~2.5k-token default); nobody has needed the spill here yet.
+
 ## Known gaps
 
-- **`transcript_path` is always `null`.** The rollout file is created lazily on
-  the first recorded item, so at the moment the sink is built there is no path
-  to promise. The field is emitted explicitly as `null` (codex's
-  `NullableString`) rather than omitted, so a script can tell "no transcript"
-  from "old build". Publishing it later means giving the sink a shared cell the
-  recorder writes to.
-- **Loop-path events do not fire.** `SessionStart`, `SessionEnd`,
-  `UserPromptSubmit`, `Stop`, `PreCompact` and `PostCompact` are modelled —
-  payload, verdict, merge — but not yet attached; see the two-execution-contexts
-  section for why, and the three questions the deferred phase has to answer.
 - **`"async": true` runs synchronously**, with a warning. So does a
   `statusMessage`, which is parsed and not displayed.
+- **`PostToolUseFailure`, `StopFailure`, `Notification` and the rest of
+  Claude Code's twenty-seven events are unmodelled.** A failed tool call
+  fires nothing (PostToolUse fires only on success, both references'
+  behaviour); a config naming them loads fine and never fires.
+- **A PermissionRequest hook that abstains loses its warnings** — the
+  fail-open posture has no channel to the user from that position; a
+  deciding verdict carries them on its note.
+- **User-level config only** — the project layer still wants a trust model
+  first (unchanged position, see *Configuration and trust*).

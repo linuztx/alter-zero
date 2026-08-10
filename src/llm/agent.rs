@@ -69,8 +69,12 @@ fn limit_error(max_tool_calls: usize) -> String {
 /// disposition and — for a tool-calling round — the assistant message to append
 /// plus the calls to run.
 pub enum RoundOutcome {
-    /// The assistant answered with plain text (no tool calls) — the turn is done.
-    Complete,
+    /// The assistant answered with plain text (no tool calls) — the turn is
+    /// done, unless a `Stop` hook blocks (`docs/hooks.md`). `text` is the
+    /// round's full reply: the stop payload's `last_assistant_message`, and —
+    /// on a continuation — the assistant message the next round's context
+    /// keeps.
+    Complete { text: String },
     /// The assistant requested tool calls. `assistant` is the message to append
     /// verbatim (carrying its `tool_calls`); `calls` are the parsed requests.
     ToolCalls {
@@ -133,6 +137,9 @@ pub fn run_agent(
     hooks: &dyn HookSink,
 ) {
     let mut used_calls = 0usize;
+    // True from the first Stop/SubagentStop-forced continuation on — the
+    // payloads' loop-guard flag (docs/hooks.md).
+    let mut stop_hook_active = false;
     loop {
         if cancel.is_cancelled() {
             return;
@@ -141,7 +148,39 @@ pub fn run_agent(
             messages.push(ChatMessage::user(note));
         }
         match round(messages) {
-            RoundOutcome::Complete => {
+            RoundOutcome::Complete { text } => {
+                // `Stop` / `SubagentStop` (docs/hooks.md), fired where "the
+                // model finished answering" is native — and *only* here:
+                // never on a cancel (Claude Code returns before stop hooks
+                // on an abort), an error (its reference fires StopFailure,
+                // which we don't model), a `/compact` turn (that backend
+                // carries NoHooks) or a `!` shell (no agent loop). A block
+                // is continuation feedback: the reply so far becomes an
+                // assistant message, the feedback the next user message —
+                // recorded via HookNote so the transcript and every later
+                // turn's context keep it — and the SAME turn runs another
+                // round. StreamDone waits, so the turn-end checkpoint lands
+                // after every continuation and a backtrack restores the
+                // hook-driven work too. The engine never refuses a re-block:
+                // `stop_hook_active` is the hook's own guard (the
+                // reference's exact posture), and Esc stays the stop button
+                // (the runner polls the token; an interrupt never fires
+                // Stop, so it always breaks the chain).
+                if !cancel.is_cancelled()
+                    && let Some(reason) = hooks.stop(stop_hook_active, &text, cancel)
+                {
+                    let (label, feedback) = super::hooks::stop_feedback_texts(&reason);
+                    let _ = tx.send(StreamEvent::HookNote {
+                        label,
+                        text: feedback.clone(),
+                    });
+                    if !text.trim().is_empty() {
+                        messages.push(ChatMessage::new("assistant", &text));
+                    }
+                    messages.push(ChatMessage::user(&feedback));
+                    stop_hook_active = true;
+                    continue;
+                }
                 let _ = tx.send(StreamEvent::StreamDone);
                 return;
             }
@@ -214,8 +253,44 @@ pub fn run_agent(
                     .collect();
                 let mut results: Vec<(String, String)> = Vec::with_capacity(calls.len());
                 if !agent_calls.is_empty() {
-                    let owned: Vec<ToolCallRequest> = agent_calls.into_iter().cloned().collect();
-                    results.extend(run_agents(&owned));
+                    // `PreToolUse` gates a subagent launch too — Claude Code
+                    // fires it for its Task tool, and `Task` aliases to our
+                    // `agent` in the matcher (docs/hooks.md). A block refuses
+                    // the launch as an ordinary red cell; `updatedInput`
+                    // rewrites it. The gate-side verdicts (`pre_approved`,
+                    // `force_ask`) have nothing to act on — a launch never
+                    // asks permission — and a context lands nowhere: the
+                    // launcher owns the call's result.
+                    let mut launchable: Vec<ToolCallRequest> = Vec::new();
+                    for call in agent_calls {
+                        let hook = hooks.pre_tool_use(call, cancel);
+                        if let Some(reason) = &hook.blocked {
+                            let (display, result) = hook_block_texts(reason);
+                            let _ = tx.send(StreamEvent::ToolStart {
+                                name: display_name(&call.name),
+                                args: summarize_call(&call.name, &call.arguments),
+                                detail: super::tools::call_description(&call.name, &call.arguments),
+                            });
+                            let _ = tx.send(StreamEvent::ToolRejected {
+                                display,
+                                result: result.clone(),
+                                truncated: false,
+                            });
+                            results.push((call.id.clone(), result));
+                            continue;
+                        }
+                        launchable.push(match hook.updated_input {
+                            Some(arguments) => ToolCallRequest {
+                                id: call.id.clone(),
+                                name: call.name.clone(),
+                                arguments,
+                            },
+                            None => call.clone(),
+                        });
+                    }
+                    if !launchable.is_empty() {
+                        results.extend(run_agents(&launchable));
+                    }
                 }
                 // Announce the ordinary batch up front — before any tool runs
                 // — so the UI shows every requested call at once, the ones not
@@ -575,7 +650,9 @@ mod tests {
             &cancel,
             MAX_TOOL_ITERATIONS,
             &mut vec![ChatMessage::user("hi")],
-            |_msgs| RoundOutcome::Complete,
+            |_msgs| RoundOutcome::Complete {
+                text: String::new(),
+            },
             |_call, _sink| panic!("no tools should run"),
             Vec::new,
             |_calls| Vec::new(),
@@ -602,6 +679,11 @@ mod tests {
         /// Every `PostToolUse` dispatch, with the outcome's `ok` — so a test
         /// can prove the event fires only for calls that succeeded.
         posts: std::sync::Mutex<Vec<(String, bool)>>,
+        /// Scripted `stop` answers, popped front-first; empty = never block.
+        stops: std::sync::Mutex<Vec<Option<String>>>,
+        /// Every `stop` dispatch: the loop-guard flag and the last message it
+        /// was shown.
+        stop_seen: std::sync::Mutex<Vec<(bool, String)>>,
     }
 
     impl FakeHooks {
@@ -611,6 +693,10 @@ mod tests {
 
         fn posts(&self) -> Vec<(String, bool)> {
             self.posts.lock().expect("not poisoned").clone()
+        }
+
+        fn stop_seen(&self) -> Vec<(bool, String)> {
+            self.stop_seen.lock().expect("not poisoned").clone()
         }
     }
 
@@ -634,6 +720,24 @@ mod tests {
                 .expect("not poisoned")
                 .push((call.name.clone(), outcome.ok));
             self.post.clone()
+        }
+
+        fn stop(
+            &self,
+            stop_hook_active: bool,
+            last_message: &str,
+            _cancel: &CancelToken,
+        ) -> Option<String> {
+            self.stop_seen
+                .lock()
+                .expect("not poisoned")
+                .push((stop_hook_active, last_message.to_string()));
+            let mut stops = self.stops.lock().expect("not poisoned");
+            if stops.is_empty() {
+                None
+            } else {
+                stops.remove(0)
+            }
         }
     }
 
@@ -659,7 +763,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
@@ -706,7 +812,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| outcome.clone(),
@@ -724,6 +832,194 @@ mod tests {
             })
             .unwrap_or_default();
         (drain(&mut rx), result)
+    }
+
+    #[test]
+    fn a_pre_tool_use_block_refuses_an_agent_launch_too() {
+        // Claude Code fires PreToolUse for its Task tool, so a config gating
+        // subagent launches (`"matcher": "Task"` — aliased to our `agent`)
+        // must gate them here: the launcher is never called, the refusal is
+        // an ordinary red cell, and the model reads why.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call(
+            "a1",
+            "agent",
+            r#"{"description":"probe","prompt":"go"}"#,
+        )];
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                blocked: Some("no subagents today".to_string()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let mut messages = vec![ChatMessage::user("launch it")];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
+                }
+            },
+            |_c, _sink| panic!("no ordinary tools requested"),
+            Vec::new,
+            |_calls| panic!("a blocked launch must never reach the launcher"),
+            |_call, _force| Approval::Allow,
+            &hooks,
+        );
+        let events = drain(&mut rx);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolRejected { display, .. }
+                    if display.contains("no subagents today"))),
+            "{events:?}"
+        );
+        assert_eq!(hooks.seen().len(), 1, "the hook saw the agent call");
+        let result = messages
+            .iter()
+            .rev()
+            .find_map(|m| match (&m.role[..], &m.content) {
+                ("tool", crate::llm::MessageContent::Text(text)) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        assert!(result.contains("no subagents today"), "{result}");
+    }
+
+    #[test]
+    fn a_stop_hook_block_makes_the_same_turn_run_another_round() {
+        // Claude Code's shape exactly: the stop hooks fire inside the query
+        // loop, and a block IS the next iteration — the reply so far becomes
+        // an assistant message, the feedback the next user message, the flag
+        // goes true, and StreamDone waits for a firing that lets go.
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let hooks = FakeHooks {
+            stops: std::sync::Mutex::new(vec![Some("tests are red".to_string()), None]),
+            ..FakeHooks::default()
+        };
+        let mut messages = vec![ChatMessage::user("fix it")];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                RoundOutcome::Complete {
+                    text: format!("answer {n}"),
+                }
+            },
+            |_c, _sink| panic!("no tools in this turn"),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| Approval::Allow,
+            &hooks,
+        );
+        assert_eq!(
+            *rounds.borrow(),
+            2,
+            "the block bought exactly one more round"
+        );
+        assert_eq!(
+            hooks.stop_seen(),
+            vec![
+                (false, "answer 1".to_string()),
+                (true, "answer 2".to_string()),
+            ],
+            "the loop-guard flag goes true on the continuation's firing"
+        );
+        let events = drain(&mut rx);
+        let notes: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::HookNote { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes, vec!["Stop hook feedback:\ntests are red"]);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| matches!(e, StreamEvent::StreamDone))
+                .count(),
+            1,
+            "one turn, one StreamDone: {events:?}"
+        );
+        // The continuation's context carries the first answer and the
+        // feedback, in order.
+        let tail: Vec<(String, String)> = messages
+            .iter()
+            .map(|m| {
+                (
+                    m.role.clone(),
+                    match &m.content {
+                        crate::llm::MessageContent::Text(t) => t.clone(),
+                        _ => String::new(),
+                    },
+                )
+            })
+            .collect();
+        assert_eq!(
+            tail,
+            vec![
+                ("user".to_string(), "fix it".to_string()),
+                ("assistant".to_string(), "answer 1".to_string()),
+                (
+                    "user".to_string(),
+                    "Stop hook feedback:\ntests are red".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_cancelled_or_failed_round_never_fires_stop() {
+        // Claude Code returns before its stop hooks on an abort, and fires
+        // StopFailure (unmodelled here) on an API error — either way, Stop
+        // never sees a turn that didn't finish answering.
+        for outcome in [
+            RoundOutcome::Cancelled,
+            RoundOutcome::Failed(crate::llm::LlmError::Http("boom".to_string())),
+        ] {
+            let (tx, _rx) = unbounded_channel();
+            let cancel = CancelToken::new();
+            let hooks = FakeHooks {
+                stops: std::sync::Mutex::new(vec![Some("never".to_string())]),
+                ..FakeHooks::default()
+            };
+            let outcome = RefCell::new(Some(outcome));
+            run_agent(
+                &tx,
+                &cancel,
+                MAX_TOOL_ITERATIONS,
+                &mut vec![ChatMessage::user("hi")],
+                |_msgs| outcome.borrow_mut().take().expect("one round"),
+                |_c, _sink| panic!("no tools"),
+                Vec::new,
+                |_calls| Vec::new(),
+                |_call, _force| Approval::Allow,
+                &hooks,
+            );
+            assert_eq!(hooks.stop_seen(), Vec::<(bool, String)>::new());
+        }
     }
 
     #[test]
@@ -988,7 +1284,9 @@ mod tests {
                             calls: calls.clone(),
                         }
                     } else {
-                        RoundOutcome::Complete
+                        RoundOutcome::Complete {
+                            text: String::new(),
+                        }
                     }
                 },
                 |_c, _sink| ToolOutcome {
@@ -1059,7 +1357,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.name)),
@@ -1143,7 +1443,9 @@ mod tests {
                             calls: calls.clone(),
                         }
                     } else {
-                        RoundOutcome::Complete
+                        RoundOutcome::Complete {
+                            text: String::new(),
+                        }
                     }
                 },
                 |_c, _sink| {
@@ -1211,7 +1513,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, sink| {
@@ -1282,7 +1586,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |c, _sink| ToolOutcome::ok(format!("ran {}", c.arguments)),
@@ -1363,7 +1669,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| ToolOutcome::ok("file contents"),
@@ -1644,7 +1952,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| ToolOutcome::ok("done"),
@@ -1693,7 +2003,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| ToolOutcome::ok("done"),
@@ -1753,7 +2065,9 @@ mod tests {
                 } else {
                     *seen_round2.borrow_mut() =
                         msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| ToolOutcome::ok("Exit code: 0"),
@@ -1803,7 +2117,9 @@ mod tests {
             &mut vec![ChatMessage::user("hi")],
             |msgs| {
                 *seen.borrow_mut() = msgs.iter().map(|m| (m.role.clone(), text_of(m))).collect();
-                RoundOutcome::Complete
+                RoundOutcome::Complete {
+                    text: String::new(),
+                }
             },
             |_c, _sink| panic!("no tools requested"),
             || pending.borrow_mut().take().into_iter().collect(),
@@ -1877,7 +2193,9 @@ mod tests {
                     }
                 } else {
                     *seen_round2.borrow_mut() = msgs.to_vec();
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |c, _sink| {
@@ -1950,7 +2268,9 @@ mod tests {
                     }
                 } else {
                     *seen_round2.borrow_mut() = msgs.to_vec();
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| ToolOutcome::ok("1 alpha"),
@@ -1998,7 +2318,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| ToolOutcome::backgrounded("bash_1", "Command running with ID: bash_1"),
@@ -2051,7 +2373,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| panic!("a rejected call must never execute"),
@@ -2125,7 +2449,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| ToolOutcome::ok("Exit code: 0\ntotal 40"),
@@ -2178,7 +2504,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |_c, _sink| {
@@ -2226,7 +2554,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |c, _sink| {
@@ -2317,7 +2647,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |c, _sink| {
@@ -2443,7 +2775,9 @@ mod tests {
                         calls: calls.clone(),
                     }
                 } else {
-                    RoundOutcome::Complete
+                    RoundOutcome::Complete {
+                        text: String::new(),
+                    }
                 }
             },
             |c, _sink| {
