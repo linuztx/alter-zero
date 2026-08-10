@@ -30,8 +30,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::hooks::{
-    CommandHook, HookContext, HookEvent, HookOutcome, HookPermission, HookRun, HooksFile,
-    ParsedHook, merge, parse_run, truncate_output,
+    CommandHook, HOOK_OUTPUT_MAX_BYTES, HookContext, HookEvent, HookOutcome, HookPermission,
+    HookRun, HooksFile, ParsedHook, merge, parse_run, truncate_output,
 };
 use crate::stream::CancelToken;
 use crate::subprocess;
@@ -178,6 +178,12 @@ pub struct NoHooks;
 
 impl HookSink for NoHooks {}
 
+/// The rollout path the recorder publishes for hook payloads: `None` until
+/// anything was recorded (the file is created lazily on the first item), the
+/// path from then on. Shared because the sink outlives — and predates — the
+/// file (`docs/hooks.md` *Known gaps*, now closed).
+pub type TranscriptCell = Arc<std::sync::RwLock<Option<String>>>;
+
 /// The real sink: a loaded `hooks.json` plus everything a payload needs.
 #[derive(Debug, Clone)]
 pub struct CommandHooks {
@@ -187,6 +193,13 @@ pub struct CommandHooks {
     detach_helper: Option<PathBuf>,
     /// Where handlers run, and what `*_PROJECT_DIR` is set to.
     cwd: PathBuf,
+    /// The session's permission gate, read at **dispatch** time so a payload
+    /// reports the mode the session is actually in — a Ctrl+A cycle between
+    /// two calls reaches the second call's payload. `None` (gate off, or an
+    /// embedder without one) keeps the context's own value.
+    gate: Option<crate::permission::PermissionGate>,
+    /// The rollout path, read at dispatch time for the same reason.
+    transcript: TranscriptCell,
 }
 
 impl CommandHooks {
@@ -198,6 +211,8 @@ impl CommandHooks {
         context: HookContext,
         detach_helper: Option<PathBuf>,
         cwd: PathBuf,
+        gate: Option<crate::permission::PermissionGate>,
+        transcript: TranscriptCell,
     ) -> Option<Self> {
         if file.is_empty() {
             return None;
@@ -207,7 +222,29 @@ impl CommandHooks {
             context,
             detach_helper,
             cwd,
+            gate,
+            transcript,
         })
+    }
+
+    /// The context as of **now**: the stored session facts with the
+    /// permission mode and the transcript path resolved from their live
+    /// handles. Every payload builds from this, never from the frozen
+    /// snapshot.
+    fn live_context(&self) -> HookContext {
+        let mut context = self.context.clone();
+        if let Some(gate) = &self.gate {
+            context.permission_mode = Some(gate.mode().label().to_string());
+        }
+        if let Some(path) = self
+            .transcript
+            .read()
+            .ok()
+            .and_then(|cell| cell.clone())
+        {
+            context.transcript_path = Some(path);
+        }
+        context
     }
 
     /// Run every handler `event` selects for `query`, in order, and merge
@@ -264,23 +301,30 @@ impl CommandHooks {
             }
         };
 
-        // Write the payload and close the pipe, so a handler blocked on EOF
-        // (`cat`, `jq`, `read`) proceeds. A `BrokenPipe` means the handler
-        // exited without reading its input, which is legitimate — a guard
-        // that only cares *that* it was called never reads stdin.
-        if let Some(mut stdin) = child.stdin.take() {
-            let wrote = stdin
-                .write_all(payload.as_bytes())
-                .and_then(|()| stdin.flush());
-            drop(stdin);
-            if let Err(err) = wrote
-                && err.kind() != std::io::ErrorKind::BrokenPipe
-            {
-                subprocess::kill_process_group(&mut child);
-                run.error = Some(format!("failed to write payload: {err}"));
-                return run;
-            }
-        }
+        // Write the payload on its own thread and close the pipe, so a handler
+        // blocked on EOF (`cat`, `jq`, `read`) proceeds. A `BrokenPipe` means
+        // the handler exited without reading its input, which is legitimate —
+        // a guard that only cares *that* it was called never reads stdin.
+        //
+        // A thread, not an inline `write_all`: a payload past the pipe buffer
+        // (a `PostToolUse` carrying a 64 KiB tool output) fed to a handler
+        // that never reads stdin would park an inline write until the child
+        // exited — before the deadline loop below, so neither Esc nor the
+        // timeout could reap it. The wait loop owns cancellation; the writer
+        // just finishes (or breaks) when the child is gone.
+        let stdin_writer = child.stdin.take().map(|mut stdin| {
+            let payload = payload.to_string();
+            std::thread::spawn(move || {
+                let wrote = stdin
+                    .write_all(payload.as_bytes())
+                    .and_then(|()| stdin.flush());
+                match wrote {
+                    Ok(()) => None,
+                    Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => None,
+                    Err(err) => Some(format!("failed to write payload: {err}")),
+                }
+            })
+        });
 
         // Drain both pipes on their own threads: a handler that prints more
         // than a pipe buffer would otherwise deadlock against our wait.
@@ -296,6 +340,11 @@ impl CommandHooks {
                 Ok(Some(status)) => break Some(status),
                 Ok(None) => {}
                 Err(err) => {
+                    // Reap before bailing: the readers (and the writer) hold
+                    // the pipes, and a child left running would park their
+                    // joins below — codex kills on a wait error for the same
+                    // reason.
+                    subprocess::kill_process_group(&mut child);
                     run.error = Some(format!("failed to wait: {err}"));
                     break None;
                 }
@@ -316,10 +365,15 @@ impl CommandHooks {
             std::thread::sleep(POLL_INTERVAL);
         };
 
-        // The group kill above has reaped anything holding the pipes, so both
-        // joins terminate.
-        run.stdout = truncate_output(&out_reader.join().unwrap_or_default());
-        run.stderr = truncate_output(&err_reader.join().unwrap_or_default());
+        // The group kill above has reaped anything holding the pipes, so the
+        // joins terminate — the writer's pipe end is closed by the child's
+        // death too, so it can never outlive this point.
+        run.stdout = out_reader.join().unwrap_or_default();
+        run.stderr = err_reader.join().unwrap_or_default();
+        let write_error = stdin_writer.and_then(|writer| writer.join().unwrap_or_default());
+        if run.error.is_none() {
+            run.error = write_error;
+        }
         if run.error.is_none() {
             run.exit_code = status.and_then(|s| s.code());
             if run.exit_code.is_none() {
@@ -338,13 +392,29 @@ impl CommandHooks {
     }
 }
 
-/// Read a pipe to a lossy `String`; an absent pipe reads as empty.
+/// Read a pipe to a lossy `String`, **capped in memory as it is read**
+/// (`tui::shell::append_capped`'s rule — a hook that spews gigabytes must not
+/// spike RSS): the first [`HOOK_OUTPUT_MAX_BYTES`] are kept, the rest is
+/// drained and dropped so the child never blocks on a full pipe, and
+/// [`truncate_output`] stamps the marker. An absent pipe reads as empty.
 fn read_pipe<R: Read>(pipe: Option<R>) -> String {
-    let mut buffer = Vec::new();
-    if let Some(mut pipe) = pipe {
-        let _ = pipe.read_to_end(&mut buffer);
+    let Some(mut pipe) = pipe else {
+        return String::new();
+    };
+    // One byte past the cap, so `truncate_output` can tell "exactly full"
+    // from "overflowed" and only mark the latter.
+    let mut kept: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match pipe.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let room = (HOOK_OUTPUT_MAX_BYTES + 1).saturating_sub(kept.len());
+                kept.extend_from_slice(&chunk[..n.min(room)]);
+            }
+        }
     }
-    String::from_utf8_lossy(&buffer).into_owned()
+    truncate_output(&String::from_utf8_lossy(&kept))
 }
 
 /// The cell/model text pair for a hook refusal — the same two-text shape the
@@ -377,7 +447,7 @@ fn note_line(warnings: &[String], context: Option<&String>, systems: &[String]) 
 impl HookSink for CommandHooks {
     fn pre_tool_use(&self, call: &ToolCallRequest, cancel: &CancelToken) -> PreToolVerdict {
         let payload = crate::hooks::pre_tool_use_payload(
-            &self.context,
+            &self.live_context(),
             &call.name,
             &call.arguments,
             &call.id,
@@ -408,7 +478,7 @@ impl HookSink for CommandHooks {
         cancel: &CancelToken,
     ) -> PostToolVerdict {
         let payload = crate::hooks::post_tool_use_payload(
-            &self.context,
+            &self.live_context(),
             &call.name,
             &call.arguments,
             &outcome.output,
@@ -443,7 +513,7 @@ impl HookSink for CommandHooks {
         cancel: &CancelToken,
     ) -> Option<HookPermissionVerdict> {
         let payload = crate::hooks::permission_request_payload(
-            &self.context,
+            &self.live_context(),
             &call.name,
             &call.arguments,
             &call.id,
@@ -456,10 +526,17 @@ impl HookSink for CommandHooks {
         );
         match outcome.permission? {
             HookPermission::Allow => Some(HookPermissionVerdict::Allow {
-                note: outcome.permission_reason.map_or_else(
+                // A broken sibling's warning rides the note — the one channel
+                // this verdict has — so "my guard is broken" is never silent.
+                // (A verdict-less outcome has no channel at all; its warnings
+                // are dropped, the documented fail-open posture.)
+                note: std::iter::once(outcome.permission_reason.map_or_else(
                     || "Allowed by hook".to_string(),
                     |reason| format!("Allowed by hook: {reason}"),
-                ),
+                ))
+                .chain(outcome.warnings)
+                .collect::<Vec<_>>()
+                .join(" · "),
             }),
             HookPermission::Deny => {
                 let reason = outcome
@@ -481,7 +558,8 @@ impl HookSink for CommandHooks {
         cancel: &CancelToken,
     ) -> Vec<String> {
         let tagged = self.tagged(agent_id, agent_type);
-        let payload = crate::hooks::subagent_start_payload(&tagged.context, agent_id, agent_type);
+        let payload =
+            crate::hooks::subagent_start_payload(&tagged.live_context(), agent_id, agent_type);
         tagged
             .dispatch(HookEvent::SubagentStart, Some(agent_type), &payload, cancel)
             .additional_context
@@ -497,7 +575,7 @@ impl HookSink for CommandHooks {
     ) {
         let tagged = self.tagged(agent_id, agent_type);
         let payload = crate::hooks::subagent_stop_payload(
-            &tagged.context,
+            &tagged.live_context(),
             agent_id,
             agent_type,
             last_message,
@@ -538,6 +616,8 @@ mod tests {
             },
             None,
             std::env::temp_dir(),
+            None,
+            TranscriptCell::default(),
         )
         .expect("the fixture has a runnable handler")
     }
@@ -566,7 +646,9 @@ mod tests {
                 Arc::new(file),
                 HookContext::default(),
                 None,
-                std::env::temp_dir()
+                std::env::temp_dir(),
+                None,
+                TranscriptCell::default(),
             )
             .is_none()
         );
@@ -642,6 +724,34 @@ mod tests {
         );
         let note = verdict.note.expect("the failure is surfaced");
         assert!(note.contains("timed out"), "{note}");
+    }
+
+    #[test]
+    fn a_payload_bigger_than_the_pipe_buffer_never_wedges_the_cancel() {
+        // The regression: the payload write used to run on the calling thread
+        // *before* the deadline loop, so a payload past the pipe buffer
+        // (64 KiB on Linux) fed to a hook that never reads stdin parked
+        // `write_all` until the child exited — Esc dead, timeout never armed.
+        // A `PostToolUse` payload embeds the tool's output, whose cap *is*
+        // 64 KiB, so this is reachable from an ordinary `read`/`bash` call.
+        let json = r#"{"hooks":{"PostToolUse":[{"hooks":[
+            {"type":"command","command":"sleep 8","timeout":600}]}]}}"#;
+        let hooks = hooks_for(json);
+        let outcome = ToolOutcome::ok("x".repeat(HOOK_OUTPUT_MAX_BYTES));
+        let cancel = CancelToken::new();
+        let flag = cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            flag.cancel();
+        });
+        let started = Instant::now();
+        let verdict = hooks.post_tool_use(&call("bash", "{}"), &outcome, &cancel);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "Esc must reap a hook stuck on its stdin write: {:?}",
+            started.elapsed()
+        );
+        assert!(verdict.is_quiet() || verdict.note.is_some());
     }
 
     #[test]
@@ -724,6 +834,29 @@ mod tests {
     }
 
     #[test]
+    fn a_broken_permission_request_sibling_rides_the_allow_note() {
+        // Two handlers: one that cannot spawn (a warning) and one that
+        // allows. The warning must not vanish — it rides the visible note so
+        // the user hears their guard is broken.
+        let hooks = hooks_for(
+            r#"{"hooks":{"PermissionRequest":[{"hooks":[
+              {"type":"command","command":"/definitely/not/a/real/binary"},
+              {"type":"command","command":
+              "printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}'"}]}]}}"#,
+        );
+        match hooks.permission_request(&call("bash", "{}"), &CancelToken::new()) {
+            Some(HookPermissionVerdict::Allow { note }) => {
+                assert!(note.starts_with("Allowed by hook"), "{note}");
+                assert!(
+                    note.contains("/definitely/not/a/real/binary"),
+                    "the broken sibling is named: {note}"
+                );
+            }
+            other => panic!("expected an allow, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn a_subagent_start_hooks_plain_output_becomes_that_agents_context() {
         // SubagentStart is one of the events whose plain stdout *is* the
         // answer — a hook that just prints is briefing the agent.
@@ -784,6 +917,59 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&written).expect("valid JSON");
         assert_eq!(value["agent_id"], serde_json::json!("agent-7"));
         assert_eq!(value["agent_type"], serde_json::json!("explore"));
+        let _ = std::fs::remove_file(&probe);
+    }
+
+    #[test]
+    fn payloads_report_the_live_permission_mode_and_transcript_path() {
+        // The regression: the sink used to freeze `permission_mode: None`
+        // ("disabled") at build time, so a Ctrl+A cycle never reached a
+        // payload — and `transcript_path` stayed null forever because the
+        // rollout file is created after the sink. Both now resolve at
+        // dispatch time from live handles.
+        let probe = std::env::temp_dir().join("alter-zero-hook-live-ctx-probe.json");
+        let _ = std::fs::remove_file(&probe);
+        let gate = crate::permission::PermissionGate::new();
+        gate.set_mode(crate::permission::PermissionMode::Edit);
+        let transcript: TranscriptCell = TranscriptCell::default();
+        let file = HooksFile::parse(&pre_hook(&format!("cat > {}", probe.display()))).unwrap();
+        let hooks = CommandHooks::new(
+            Arc::new(file),
+            HookContext {
+                session_id: "s".into(),
+                cwd: "/tmp".into(),
+                model: "m".into(),
+                permission_mode: None,
+                ..HookContext::default()
+            },
+            None,
+            std::env::temp_dir(),
+            Some(gate.clone()),
+            Arc::clone(&transcript),
+        )
+        .expect("runnable");
+
+        let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&probe).expect("hook ran")).unwrap();
+        assert_eq!(value["permission_mode"], serde_json::json!("edit"));
+        assert_eq!(value["transcript_path"], serde_json::Value::Null);
+
+        gate.set_mode(crate::permission::PermissionMode::Master);
+        *transcript.write().expect("not poisoned") = Some("/r/sess.jsonl".to_string());
+        let _ = hooks.pre_tool_use(&call("bash", "{}"), &CancelToken::new());
+        let value: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&probe).expect("hook ran")).unwrap();
+        assert_eq!(
+            value["permission_mode"],
+            serde_json::json!("master"),
+            "a Ctrl+A cycle reaches the next payload"
+        );
+        assert_eq!(
+            value["transcript_path"],
+            serde_json::json!("/r/sess.jsonl"),
+            "the recorder's published rollout path reaches the payload"
+        );
         let _ = std::fs::remove_file(&probe);
     }
 

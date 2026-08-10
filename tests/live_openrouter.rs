@@ -2155,6 +2155,8 @@ fn backend_with_hooks(hooks_json: &str, dir: &std::path::Path) -> LlmBackend {
         context,
         None,
         dir.to_path_buf(),
+        None,
+        alter_zero::llm::hooks::TranscriptCell::default(),
     )
     .expect("the fixture has a runnable handler");
     let model =

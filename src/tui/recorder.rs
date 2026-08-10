@@ -63,6 +63,11 @@ pub(crate) struct SessionRecorder {
     /// The meta context of a *new* session file, captured once at startup.
     cwd: String,
     model: String,
+    /// The hooks' view of the rollout path (`docs/hooks.md`): published on
+    /// every `active` transition, so a payload's `transcript_path` names the
+    /// file this conversation is actually recorded to — `None` while no file
+    /// exists (deferred create), exactly the contract's nullable field.
+    transcript: alter_zero::llm::hooks::TranscriptCell,
 }
 
 impl SessionRecorder {
@@ -76,6 +81,26 @@ impl SessionRecorder {
             checkpoints_written: 0,
             cwd: cwd.display().to_string(),
             model: model.to_string(),
+            transcript: alter_zero::llm::hooks::TranscriptCell::default(),
+        }
+    }
+
+    /// Share the rollout path with the hook sink (`docs/hooks.md`): the cell
+    /// is re-published on every `active` transition — the lazy create, a
+    /// `/clear`'s reset, a `/resume`'s adopt.
+    pub(crate) fn with_transcript(mut self, cell: alter_zero::llm::hooks::TranscriptCell) -> Self {
+        self.transcript = cell;
+        self.publish_transcript();
+        self
+    }
+
+    /// Mirror the active path into the shared cell.
+    fn publish_transcript(&self) {
+        if let Ok(mut cell) = self.transcript.write() {
+            *cell = self
+                .active
+                .as_ref()
+                .map(|(path, _)| path.display().to_string());
         }
     }
 
@@ -153,6 +178,7 @@ impl SessionRecorder {
         self.repair_newline = false;
         self.checkpoints.clear();
         self.checkpoints_written = 0;
+        self.publish_transcript();
     }
 
     /// Adopt a resumed session's file: further items append there (codex's
@@ -175,6 +201,7 @@ impl SessionRecorder {
         self.repair_newline = torn;
         self.checkpoints_written = checkpoints.len();
         self.checkpoints = checkpoints;
+        self.publish_transcript();
     }
 
     /// Append `items` as rollout lines, materializing the file (date dirs +
@@ -183,6 +210,7 @@ impl SessionRecorder {
         use std::io::Write;
         if self.active.is_none() {
             self.active = self.create_session();
+            self.publish_transcript();
         }
         let Some((path, _)) = self.active.as_ref() else {
             return; // recording disabled, or the create failed

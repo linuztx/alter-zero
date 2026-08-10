@@ -154,6 +154,10 @@ impl<'t> Session<'t> {
         // hooks", which is how a user comes to trust a guard that isn't there.
         let hooks_path = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref());
         let (hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
+        // The rollout path is created lazily on the first recorded item, so
+        // the payloads' `transcript_path` rides a shared cell the recorder
+        // publishes into (below) and the sink reads at dispatch time.
+        let hook_transcript = alter_zero::llm::hooks::TranscriptCell::default();
         let hook_setup = (!hooks_file.is_empty()).then(|| HookSetup {
             file: std::sync::Arc::new(hooks_file),
             session_id: host::session_id(),
@@ -161,6 +165,9 @@ impl<'t> Session<'t> {
             // The same tty-detach helper every other shell child gets.
             detach_helper: std::env::current_exe().ok(),
             enabled: config::hooks_enabled() && settings.hooks,
+            // Read live per payload, so a Ctrl+A cycle reaches the next call.
+            gate: permissions.gate().cloned(),
+            transcript: hook_transcript.clone(),
         });
 
         // The reply backend and everything that selects it (docs/llm.md).
@@ -198,8 +205,11 @@ impl<'t> Session<'t> {
 
         // The /resume session recorder (docs/resume.md): mirrors App::history to a
         // rollout file, lazily created on the first recorded item so empty
-        // sessions never touch disk.
-        let recorder = SessionRecorder::new(&models.model_name(), &cwd);
+        // sessions never touch disk. It publishes the rollout path into the
+        // hooks' transcript cell whenever the active file changes
+        // (docs/hooks.md).
+        let recorder =
+            SessionRecorder::new(&models.model_name(), &cwd).with_transcript(hook_transcript);
         // The filesystem checkpoint store (docs/checkpoint.md): an isolated git
         // object store — never the user's real .git — that snapshots the whole cwd
         // per turn so a /resume or Esc-Esc backtrack can reset the code, not just

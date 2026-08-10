@@ -69,6 +69,17 @@ pub struct HookHandler {
     /// Fire-and-forget. Parsed and **ignored** — every v1 hook is synchronous.
     #[serde(rename = "async", default)]
     pub is_async: bool,
+    /// Claude Code's permission-rule pre-filter (`"Bash(git *)"`). We don't
+    /// evaluate those, and running the handler anyway would run it **wider
+    /// than the author scoped it** — so a handler carrying one is skipped
+    /// with a warning instead.
+    #[serde(rename = "if", default)]
+    pub if_condition: Option<String>,
+    /// Claude Code's shell choice (`"bash"` / `"powershell"`). Everything
+    /// here runs under `sh`; a `bash` handler is close enough to run, a
+    /// `powershell` one cannot be and is skipped with a warning.
+    #[serde(default)]
+    pub shell: Option<String>,
 }
 
 /// A handler's `"type"`.
@@ -178,8 +189,15 @@ impl HooksFile {
             }
             // An event with nothing to match on (Stop, SessionEnd's reason
             // aside) runs every group, matcher or not — Claude Code's rule.
+            // A tool event's query also answers to its Claude Code spelling
+            // (`Bash` for `bash` — [`matcher::claude_code_alias`]), so a
+            // config written for the reference selects the same tool here.
+            let alias = (event.matches_tool_names())
+                .then(|| query.and_then(matcher::claude_code_alias))
+                .flatten();
             if let Some(query) = query
                 && !matcher::matches(pattern, query)
+                && !alias.is_some_and(|alias| matcher::matches(pattern, alias))
             {
                 continue;
             }
@@ -220,6 +238,15 @@ impl HookHandler {
             return Err(format!(
                 "handler type {kind:?} is not \"command\" — skipped"
             ));
+        }
+        if let Some(condition) = &self.if_condition {
+            return Err(format!(
+                "handler has an \"if\" condition ({condition:?}) we don't evaluate — \
+                 skipped rather than run unscoped"
+            ));
+        }
+        if self.shell.as_deref() == Some("powershell") {
+            return Err("handler asks for powershell — skipped (hooks run under sh)".to_string());
         }
         let command = self
             .command
@@ -403,6 +430,95 @@ mod tests {
             .map(|h| h.command.as_str())
             .collect();
         assert_eq!(commands, vec!["./a.sh", "./b.sh"]);
+    }
+
+    #[test]
+    fn a_claude_code_spelling_selects_this_apps_tool() {
+        // The port's whole point is that a config written for Claude Code
+        // works here unchanged — and the single most common matcher in the
+        // wild is `"Bash"`. Exact-equality stays (per alternative), but each
+        // alternative also matches the Claude Code spelling of our tools.
+        let cases = [
+            ("Bash", "bash"),
+            ("Write|Edit", "edit"),
+            ("^Bash$", "bash"),
+            ("Task", "agent"),
+            ("Read", "read"),
+        ];
+        for (matcher, query) in cases {
+            let file = parse(&format!(
+                r#"{{"hooks":{{"PreToolUse":[{{"matcher":{m},"hooks":[
+                     {{"type":"command","command":"./x.sh"}}]}}]}}}}"#,
+                m = serde_json::to_string(matcher).unwrap()
+            ));
+            assert_eq!(
+                file.select(HookEvent::PreToolUse, Some(query)).handlers.len(),
+                1,
+                "{matcher:?} must select {query:?}"
+            );
+        }
+        // Still exact: an alias is a second exact name, not a prefix rule.
+        let file = parse(
+            r#"{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[
+                 {"type":"command","command":"./x.sh"}]}]}}"#,
+        );
+        assert!(
+            file.select(HookEvent::PreToolUse, Some("bashoutput"))
+                .handlers
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn agent_types_are_never_aliased() {
+        // The alias table maps *tool names*; a SubagentStart matcher gates on
+        // the agent type, which has no Claude Code spelling to borrow.
+        let file = parse(
+            r#"{"hooks":{"SubagentStart":[{"matcher":"Explore","hooks":[
+                 {"type":"command","command":"./x.sh"}]}]}}"#,
+        );
+        assert!(
+            file.select(HookEvent::SubagentStart, Some("explore"))
+                .handlers
+                .is_empty(),
+            "agent types match case-sensitively, no aliases"
+        );
+    }
+
+    #[test]
+    fn a_handler_with_an_if_condition_is_skipped_not_run_unscoped() {
+        // Claude Code's `if` field is a permission-rule pre-filter
+        // (`"Bash(git *)"`). We don't evaluate those; running the handler
+        // anyway would run it *wider than the author scoped it*, so the
+        // conservative reading is to skip it and say so.
+        let file = parse(
+            r#"{"hooks":{"PreToolUse":[{"hooks":[
+                 {"type":"command","command":"./scoped.sh","if":"Bash(git *)"},
+                 {"type":"command","command":"./ok.sh"}]}]}}"#,
+        );
+        let selection = file.select(HookEvent::PreToolUse, Some("bash"));
+        assert_eq!(selection.handlers.len(), 1);
+        assert_eq!(selection.handlers[0].command, "./ok.sh");
+        assert_eq!(selection.warnings.len(), 1);
+        assert!(selection.warnings[0].contains("\"if\""), "{:?}", selection.warnings);
+    }
+
+    #[test]
+    fn a_powershell_handler_is_skipped_and_a_bash_one_runs() {
+        let file = parse(
+            r#"{"hooks":{"PreToolUse":[{"hooks":[
+                 {"type":"command","command":"./win.ps1","shell":"powershell"},
+                 {"type":"command","command":"./nix.sh","shell":"bash"}]}]}}"#,
+        );
+        let selection = file.select(HookEvent::PreToolUse, Some("bash"));
+        assert_eq!(selection.handlers.len(), 1);
+        assert_eq!(selection.handlers[0].command, "./nix.sh");
+        assert_eq!(selection.warnings.len(), 1);
+        assert!(
+            selection.warnings[0].contains("powershell"),
+            "{:?}",
+            selection.warnings
+        );
     }
 
     #[test]

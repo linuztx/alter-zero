@@ -155,7 +155,14 @@ pub fn approve_call(
         }
         None => {}
     }
-    if gate.mode() == PermissionMode::Auto
+    // …and the classifier: `ask` means *a human decides* (Claude Code's ask
+    // overrides even bypassPermissions), so auto mode's machine reviewer is
+    // skipped along with the allowlist and the call goes to the prompt. The
+    // PermissionRequest hook above still answers first — a user-configured
+    // decider outranks the forced ask, exactly as it does in the reference's
+    // permission dialog.
+    if !force_ask
+        && gate.mode() == PermissionMode::Auto
         && request.kind == PermissionKind::Bash
         && let Some(classify) = classify
     {
@@ -662,6 +669,54 @@ mod tests {
             );
         }
         assert!(rx.try_recv().is_err(), "nothing was ever asked");
+    }
+
+    #[test]
+    fn force_ask_goes_to_the_user_never_to_the_classifier() {
+        // A PreToolUse hook's `permissionDecision: "ask"` means *a human
+        // decides* — Claude Code's ask even overrides bypassPermissions. Auto
+        // mode's classifier answering it instead would mean the hook's demand
+        // for judgment was met by another automation.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gate = gate_in(crate::permission::PermissionMode::Auto);
+        let cancel = CancelToken::new();
+        let classify = |_: &PermissionRequest| -> Result<ClassifierVerdict, String> {
+            panic!("the classifier must not answer a forced ask")
+        };
+        let waiter = {
+            let (gate, tx, cancel) = (gate.clone(), tx.clone(), cancel.clone());
+            std::thread::spawn(move || {
+                approve_call(
+                    Some(&gate),
+                    Some(&classify),
+                    &NoHooks,
+                    true,
+                    &tx,
+                    &cancel,
+                    None,
+                    &call("bash", r#"{"command":"ls"}"#),
+                )
+            })
+        };
+        // Bounded, so a classifier consultation (the red state) fails the
+        // test with its panic instead of hanging it on a prompt that never
+        // comes.
+        let mut request = None;
+        for _ in 0..400 {
+            if let Ok(StreamEvent::Permission(r)) = rx.try_recv() {
+                request = Some(r);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let Some(request) = request else {
+            match waiter.join() {
+                Err(panic) => std::panic::resume_unwind(panic),
+                Ok(approval) => panic!("no prompt was raised, got {approval:?}"),
+            }
+        };
+        gate.resolve(&request.id, PermissionDecision::Approve);
+        assert_eq!(waiter.join().unwrap(), Approval::Allow);
     }
 
     #[test]

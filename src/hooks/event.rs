@@ -79,6 +79,19 @@ impl HookEvent {
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|e| e.name() == name)
     }
+
+    /// Whether this event's match query is a **tool name** — the events whose
+    /// matchers also honour the Claude Code spellings of our tools
+    /// ([`crate::hooks::matcher::claude_code_alias`]). The rest match on other
+    /// facts (an agent type, a source, a trigger) that have no alias to
+    /// borrow.
+    #[must_use]
+    pub const fn matches_tool_names(self) -> bool {
+        matches!(
+            self,
+            Self::PreToolUse | Self::PostToolUse | Self::PermissionRequest
+        )
+    }
 }
 
 #[cfg(test)]

@@ -38,6 +38,26 @@ pub fn invalid_regex(matcher: Option<&str>) -> bool {
         .is_some_and(|pattern| !is_fast_path(pattern) && regex::Regex::new(pattern).is_err())
 }
 
+/// The Claude Code spelling of one of this app's tool names, so a config
+/// written against the reference (`"matcher": "Bash"`, far and away the most
+/// common hook config in the wild) selects the same tool here. Claude Code
+/// itself normalizes legacy aliases on its matchers (`Task` → its agent
+/// tool), which is the precedent: an alias is a *second exact name*, never a
+/// prefix or case-folding rule. `Task` maps to our `agent` because both are
+/// the subagent-launching tool.
+#[must_use]
+pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
+    match tool {
+        "bash" => Some("Bash"),
+        "read" => Some("Read"),
+        "write" => Some("Write"),
+        "edit" => Some("Edit"),
+        "agent" => Some("Task"),
+        "askuserquestion" => Some("AskUserQuestion"),
+        _ => None,
+    }
+}
+
 /// The matcher text when it actually constrains anything — `None` for the
 /// three spellings of "match everything" (absent, empty, `*`), so both
 /// entry points agree on what a wildcard is.

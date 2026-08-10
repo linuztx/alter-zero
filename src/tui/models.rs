@@ -744,6 +744,13 @@ pub(crate) struct HookSetup {
     /// The `/settings` **Hooks** row. `false` attaches nothing, so toggling it
     /// off mid-session genuinely stops running them.
     pub(crate) enabled: bool,
+    /// The permission gate, read at **dispatch** time so a payload's
+    /// `permission_mode` is the mode the session is in when the hook fires —
+    /// a Ctrl+A cycle reaches the very next call. `None` when the gate is off.
+    pub(crate) gate: Option<alter_zero::permission::PermissionGate>,
+    /// The rollout path the recorder publishes (`docs/hooks.md`), read per
+    /// payload for the same reason.
+    pub(crate) transcript: alter_zero::llm::hooks::TranscriptCell,
 }
 
 impl HookSetup {
@@ -755,9 +762,8 @@ impl HookSetup {
         }
         let context = alter_zero::hooks::HookContext {
             session_id: self.session_id.clone(),
-            // The rollout file is created lazily on the first recorded item,
-            // so there is no path to promise here — `null`, which the contract
-            // spells out (codex's `NullableString`).
+            // Resolved live per payload from the shared cell / the gate —
+            // these are only the fall-backs when neither handle answers.
             transcript_path: None,
             cwd: self.cwd.display().to_string(),
             model: model.to_string(),
@@ -770,6 +776,8 @@ impl HookSetup {
             context,
             self.detach_helper.clone(),
             self.cwd.clone(),
+            self.gate.clone(),
+            self.transcript.clone(),
         )
         .map(|hooks| {
             std::sync::Arc::new(hooks) as std::sync::Arc<dyn alter_zero::llm::hooks::HookSink>

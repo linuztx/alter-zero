@@ -369,6 +369,15 @@ pub fn run_agent(
                     // provenance row (docs/permissions.md).
                     if let Approval::AllowNoted { note } = approval {
                         let _ = tx.send(StreamEvent::ToolNote(note));
+                        // A pre-approving hook folded its own note into the
+                        // AllowNoted text above; any *other* noted approval
+                        // (the classifier, a PermissionRequest hook) must not
+                        // swallow the PreToolUse hook's provenance row.
+                        if !hook.pre_approved
+                            && let Some(note) = &hook.note
+                        {
+                            let _ = tx.send(StreamEvent::ToolNote(note.clone()));
+                        }
                     } else if let Some(note) = &hook.note {
                         // A hook that added context, warned, or spoke to the
                         // user without deciding the call still leaves its dim
@@ -390,22 +399,31 @@ pub fn run_agent(
                     // outcome's existing two-text split, so the cell keeps
                     // showing the tool's own output while `context_output`
                     // carries what the model actually read (and a `/resume`
-                    // replays it). A backgrounded call has produced no output
-                    // yet, so it is left alone.
-                    if outcome.background.is_none() {
-                        let post = hooks.post_tool_use(call, &outcome, cancel);
-                        if let Some(note) = post.note {
-                            let _ = tx.send(StreamEvent::ToolNote(note));
-                        }
-                        let added: Vec<String> =
-                            hook.context.into_iter().chain(post.context).collect();
-                        if !added.is_empty() {
-                            outcome.context = Some(format!(
-                                "{}\n\n{}",
-                                outcome.context_text(),
-                                added.join("\n\n")
-                            ));
-                        }
+                    // replays it). It fires **only for a call that succeeded**
+                    // — both references do (Claude Code routes failures to its
+                    // separate `PostToolUseFailure` event, codex builds no
+                    // payload at all), so a format-after-write hook written
+                    // for either never runs here after a failed write. A
+                    // backgrounded call has produced no output yet, so it too
+                    // is left alone.
+                    let post = if outcome.background.is_none() && outcome.ok {
+                        hooks.post_tool_use(call, &outcome, cancel)
+                    } else {
+                        super::hooks::PostToolVerdict::default()
+                    };
+                    if let Some(note) = post.note {
+                        let _ = tx.send(StreamEvent::ToolNote(note));
+                    }
+                    // The PreToolUse hook's context was promised before the
+                    // call ran, so it folds whatever happened — a failure and
+                    // a background launch included.
+                    let added: Vec<String> = hook.context.into_iter().chain(post.context).collect();
+                    if !added.is_empty() {
+                        outcome.context = Some(format!(
+                            "{}\n\n{}",
+                            outcome.context_text(),
+                            added.join("\n\n")
+                        ));
                     }
                     // A backgrounded call resolves via its own event — the
                     // cell shows the fixed backgrounded row while the launch
@@ -581,11 +599,18 @@ mod tests {
         /// sinks are shared across a subagent's threads, and this crate
         /// forbids the `unsafe impl` that would paper over it.
         seen: std::sync::Mutex<Vec<(String, String)>>,
+        /// Every `PostToolUse` dispatch, with the outcome's `ok` — so a test
+        /// can prove the event fires only for calls that succeeded.
+        posts: std::sync::Mutex<Vec<(String, bool)>>,
     }
 
     impl FakeHooks {
         fn seen(&self) -> Vec<(String, String)> {
             self.seen.lock().expect("not poisoned").clone()
+        }
+
+        fn posts(&self) -> Vec<(String, bool)> {
+            self.posts.lock().expect("not poisoned").clone()
         }
     }
 
@@ -600,10 +625,14 @@ mod tests {
 
         fn post_tool_use(
             &self,
-            _call: &ToolCallRequest,
-            _outcome: &ToolOutcome,
+            call: &ToolCallRequest,
+            outcome: &ToolOutcome,
             _cancel: &CancelToken,
         ) -> PostToolVerdict {
+            self.posts
+                .lock()
+                .expect("not poisoned")
+                .push((call.name.clone(), outcome.ok));
             self.post.clone()
         }
     }
@@ -648,6 +677,168 @@ mod tests {
             })
             .unwrap_or_default();
         (drain(&mut rx), result)
+    }
+
+    /// [`round_with_hooks`] with the executor's outcome and the gate's answer
+    /// chosen by the test — one `bash` round, the events plus the tool result
+    /// the model was given.
+    fn round_with(
+        hooks: &dyn HookSink,
+        outcome: ToolOutcome,
+        approval: Approval,
+    ) -> (Vec<StreamEvent>, String) {
+        let (tx, mut rx) = unbounded_channel();
+        let cancel = CancelToken::new();
+        let rounds = RefCell::new(0);
+        let calls = vec![call("c1", "bash", r#"{"command":"ls"}"#)];
+        let mut messages = vec![ChatMessage::user("run ls")];
+        run_agent(
+            &tx,
+            &cancel,
+            MAX_TOOL_ITERATIONS,
+            &mut messages,
+            |_msgs| {
+                let mut n = rounds.borrow_mut();
+                *n += 1;
+                if *n == 1 {
+                    RoundOutcome::ToolCalls {
+                        assistant: assistant_with(&calls),
+                        calls: calls.clone(),
+                    }
+                } else {
+                    RoundOutcome::Complete
+                }
+            },
+            |_c, _sink| outcome.clone(),
+            Vec::new,
+            |_calls| Vec::new(),
+            |_call, _force| approval.clone(),
+            hooks,
+        );
+        let result = messages
+            .iter()
+            .rev()
+            .find_map(|m| match (&m.role[..], &m.content) {
+                ("tool", crate::llm::MessageContent::Text(text)) => Some(text.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        (drain(&mut rx), result)
+    }
+
+    #[test]
+    fn a_post_tool_use_hook_never_fires_for_a_failed_call() {
+        // Both references fire PostToolUse only when the tool succeeded
+        // (Claude Code routes failures to its separate PostToolUseFailure
+        // event; codex builds no payload at all) — so a format-after-write
+        // hook written for either must not run here after a failed write.
+        let hooks = FakeHooks {
+            post: PostToolVerdict {
+                context: Some("should never reach the model".to_string()),
+                note: None,
+            },
+            ..FakeHooks::default()
+        };
+        let (events, result) = round_with(&hooks, ToolOutcome::error("boom"), Approval::Allow);
+        assert_eq!(hooks.posts(), Vec::<(String, bool)>::new());
+        assert!(
+            !result.contains("should never reach the model"),
+            "no post context on a failed call: {result}"
+        );
+        // The failed call resolves as a plain ToolEnd, exactly as before.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolEnd { ok: false, .. })),
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_post_tool_use_hook_fires_for_a_successful_call() {
+        let hooks = FakeHooks::default();
+        let _ = round_with(&hooks, ToolOutcome::ok("fine"), Approval::Allow);
+        assert_eq!(hooks.posts(), vec![("bash".to_string(), true)]);
+    }
+
+    #[test]
+    fn pre_hook_context_still_reaches_the_model_when_the_call_fails() {
+        // The context was promised before the call ran; a failing call keeps
+        // it (only the PostToolUse dispatch is gated on success).
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                context: Some("reviewed by policy".to_string()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (_events, result) = round_with(&hooks, ToolOutcome::error("boom"), Approval::Allow);
+        assert!(result.contains("reviewed by policy"), "{result}");
+    }
+
+    #[test]
+    fn both_the_approvals_note_and_the_hooks_note_reach_the_cell() {
+        // The regression: an AllowNoted from the classifier (or a
+        // PermissionRequest hook) used to swallow the PreToolUse hook's own
+        // provenance row — the context reached the model with no visible
+        // trace.
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                context: Some("reviewed".to_string()),
+                note: Some("Context added by hook".to_string()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (events, _result) = round_with(
+            &hooks,
+            ToolOutcome::ok("fine"),
+            Approval::AllowNoted {
+                note: "Allowed by auto mode classifier".to_string(),
+            },
+        );
+        let notes: Vec<&str> = events
+            .iter()
+            .filter_map(|e| match e {
+                StreamEvent::ToolNote(n) => Some(n.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec!["Allowed by auto mode classifier", "Context added by hook"],
+            "{events:?}"
+        );
+    }
+
+    #[test]
+    fn a_backgrounded_call_still_carries_pre_hook_context_to_the_model() {
+        let hooks = FakeHooks {
+            pre: PreToolVerdict {
+                context: Some("reviewed by policy".to_string()),
+                ..PreToolVerdict::default()
+            },
+            ..FakeHooks::default()
+        };
+        let (events, result) = round_with(
+            &hooks,
+            ToolOutcome::backgrounded("task-1", "launched in the background"),
+            Approval::Allow,
+        );
+        assert!(
+            result.contains("launched in the background") && result.contains("reviewed by policy"),
+            "the model reads the launch text and the hook's context: {result}"
+        );
+        // The cell still shows the fixed backgrounded row — the launch text
+        // rides the event untouched.
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, StreamEvent::ToolBackgrounded { .. })),
+            "{events:?}"
+        );
+        // And PostToolUse stays silent: the call has not finished.
+        assert_eq!(hooks.posts(), Vec::<(String, bool)>::new());
     }
 
     #[test]
@@ -768,10 +959,18 @@ mod tests {
             let cancel = CancelToken::new();
             let rounds = RefCell::new(0);
             let calls = vec![call("c1", "bash", r#"{"command":"yes"}"#)];
+            // The successful call is amended by a PostToolUse hook; the failed
+            // one by a PreToolUse context (PostToolUse never fires for a
+            // failure) — both routes reroute the resolution through the
+            // two-text events and must keep the flag.
             let hooks = FakeHooks {
                 post: PostToolVerdict {
-                    context: Some("a note".to_string()),
+                    context: ok.then(|| "a note".to_string()),
                     note: None,
+                },
+                pre: PreToolVerdict {
+                    context: (!ok).then(|| "a note".to_string()),
+                    ..PreToolVerdict::default()
                 },
                 ..FakeHooks::default()
             };

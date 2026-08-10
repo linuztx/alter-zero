@@ -31,7 +31,7 @@ mod verdict;
 
 pub use self::config::{CommandHook, HandlerKind, HookHandler, HooksFile, MatcherGroup, Selection};
 pub use self::event::HookEvent;
-pub use self::matcher::{invalid_regex, matches};
+pub use self::matcher::{claude_code_alias, invalid_regex, matches};
 pub use self::payload::{
     HookContext, permission_request_payload, post_compact_payload, post_tool_use_payload,
     pre_compact_payload, pre_tool_use_payload, session_end_payload, session_start_payload,
