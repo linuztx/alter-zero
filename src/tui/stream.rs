@@ -158,13 +158,20 @@ impl Session<'_> {
                 self.clocks.command_start = None;
                 false
             }
-            StreamEvent::ToolRejected { display, result } => {
+            StreamEvent::ToolRejected {
+                display,
+                result,
+                truncated,
+            } => {
                 // The user refused the call at the permission prompt: commit the
                 // red cell with the short `display` (Tab's instructions on its
                 // second line) while `result` — the longer text the model read —
                 // rides the recorded call so the derived context replays it on
                 // every later turn (docs/permissions.md). Mirrors the ToolEnd
                 // commit dance; nothing ran, so there is no truncation to mark.
+                if truncated {
+                    self.app.set_tool_truncated();
+                }
                 if let Some(tool) = self.app.reject_tool(&display, &result)
                     && committing
                 {
@@ -178,11 +185,18 @@ impl Session<'_> {
                 self.clocks.command_start = None;
                 false
             }
-            StreamEvent::ToolAnswered { display, result } => {
+            StreamEvent::ToolAnswered {
+                display,
+                result,
+                truncated,
+            } => {
                 // The user answered the `AskUserQuestion` call: commit the green
                 // cell with the `· Q → A` display while `result` — the answers
                 // JSON the model read — rides the recorded call, the
                 // ToolRejected dance in green (docs/ask.md).
+                if truncated {
+                    self.app.set_tool_truncated();
+                }
                 if let Some(tool) = self.app.answer_tool(&display, &result)
                     && committing
                 {

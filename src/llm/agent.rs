@@ -305,6 +305,8 @@ pub fn run_agent(
                         let _ = tx.send(StreamEvent::ToolRejected {
                             display,
                             result: result.clone(),
+                            // A refusal: nothing ran, so no capped output.
+                            truncated: false,
                         });
                         results.push((call.id.clone(), result));
                         continue;
@@ -325,10 +327,13 @@ pub fn run_agent(
                         // `permissionDecision: "allow"` — the classifier's
                         // provenance row, with a hook's name on it.
                         Approval::AllowNoted {
-                            note: hook
-                                .note
-                                .clone()
-                                .unwrap_or_else(|| "Allowed by hook".to_string()),
+                            note: hook.note.clone().map_or_else(
+                                || "Allowed by hook".to_string(),
+                                // Both facts are true and the user wants both:
+                                // *why it ran without them*, and what else the
+                                // hook did.
+                                |note| format!("Allowed by hook · {note}"),
+                            ),
                         }
                     } else {
                         approve(call, hook.force_ask)
@@ -346,6 +351,8 @@ pub fn run_agent(
                         let _ = tx.send(StreamEvent::ToolRejected {
                             display,
                             result: result.clone(),
+                            // A refusal: nothing ran, so no capped output.
+                            truncated: false,
                         });
                         results.push((call.id.clone(), result));
                         continue;
@@ -417,12 +424,17 @@ pub fn run_agent(
                             let _ = tx.send(StreamEvent::ToolAnswered {
                                 display: outcome.output.clone(),
                                 result: context.clone(),
+                                // The call ran: a hook-amended `bash` whose
+                                // output hit the byte cap still needs its `…`
+                                // marker (docs/hooks.md).
+                                truncated: outcome.truncated,
                             });
                         }
                         (None, Some(context)) => {
                             let _ = tx.send(StreamEvent::ToolRejected {
                                 display: outcome.output.clone(),
                                 result: context.clone(),
+                                truncated: outcome.truncated,
                             });
                         }
                         (None, None) => {
@@ -744,6 +756,64 @@ mod tests {
     }
 
     #[test]
+    fn a_hook_amended_call_keeps_its_truncation_marker() {
+        // Folding hook context onto an outcome swaps the plain ToolEnd for the
+        // two-text ToolAnswered/ToolRejected pair. Those must still carry
+        // `truncated`, or a capped `bash` output silently loses the `…` its
+        // expanded cell appends (the regression this locks).
+        for ok in [true, false] {
+            let (tx, mut rx) = unbounded_channel();
+            let cancel = CancelToken::new();
+            let rounds = RefCell::new(0);
+            let calls = vec![call("c1", "bash", r#"{"command":"yes"}"#)];
+            let hooks = FakeHooks {
+                post: PostToolVerdict {
+                    context: Some("a note".to_string()),
+                    note: None,
+                },
+                ..FakeHooks::default()
+            };
+            run_agent(
+                &tx,
+                &cancel,
+                MAX_TOOL_ITERATIONS,
+                &mut vec![ChatMessage::user("run it")],
+                |_msgs| {
+                    let mut n = rounds.borrow_mut();
+                    *n += 1;
+                    if *n == 1 {
+                        RoundOutcome::ToolCalls {
+                            assistant: assistant_with(&calls),
+                            calls: calls.clone(),
+                        }
+                    } else {
+                        RoundOutcome::Complete
+                    }
+                },
+                |_c, _sink| ToolOutcome {
+                    ok,
+                    ..ToolOutcome::ok("a very long output".to_string()).with_truncated(true)
+                },
+                Vec::new,
+                |_calls| Vec::new(),
+                |_call, _force| Approval::Allow,
+                &hooks,
+            );
+            let events = drain(&mut rx);
+            let truncated = events.iter().find_map(|e| match e {
+                StreamEvent::ToolAnswered { truncated, .. }
+                | StreamEvent::ToolRejected { truncated, .. } => Some(*truncated),
+                _ => None,
+            });
+            assert_eq!(
+                truncated,
+                Some(true),
+                "ok={ok}: the amended resolution lost the truncation flag: {events:?}"
+            );
+        }
+    }
+
+    #[test]
     fn a_silent_sink_changes_nothing_at_all() {
         let (with_hooks, result_hooked) = round_with_hooks(&FakeHooks::default());
         let (without, result_plain) = round_with_hooks(&NoHooks);
@@ -841,6 +911,7 @@ mod tests {
                 StreamEvent::ToolAnswered {
                     display: "User answered Claude's questions:\n· Q → A".to_string(),
                     result: r#"{"answers":{"Q":"A"}}"#.to_string(),
+                    truncated: false,
                 },
             ),
             (
@@ -848,6 +919,7 @@ mod tests {
                 StreamEvent::ToolRejected {
                     display: "User answered Claude's questions:\n· Q → A".to_string(),
                     result: r#"{"answers":{"Q":"A"}}"#.to_string(),
+                    truncated: false,
                 },
             ),
         ] {
@@ -1803,7 +1875,7 @@ mod tests {
         assert!(
             events.iter().any(|e| matches!(
                 e,
-                StreamEvent::ToolRejected { display, result }
+                StreamEvent::ToolRejected { display, result, .. }
                     if display == "User rejected write to hello.py"
                         && result == "The user doesn't want to proceed…"
             )),

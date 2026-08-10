@@ -434,7 +434,12 @@ pub(in crate::stream) fn hooks_turn(cue: &Cue) -> Vec<StreamEvent> {
     // cell, the long one is what the model reads — and what the rollout keeps
     // on `ToolCall::context_output`, so Ctrl+D and a `/resume` show it too.
     let (display, result) = crate::llm::hooks::block_texts(HOOK_REASON);
-    events.push(StreamEvent::ToolRejected { display, result });
+    events.push(StreamEvent::ToolRejected {
+        display,
+        result,
+        // The hook refused it, so nothing ran and nothing was capped.
+        truncated: false,
+    });
 
     // The allowed call, with the hook's provenance row on its resolved cell.
     events.push(StreamEvent::ToolStart {

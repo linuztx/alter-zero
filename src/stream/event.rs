@@ -137,7 +137,17 @@ pub enum StreamEvent {
     /// loop keeps both on the recorded call
     /// ([`crate::app::App::answer_tool`]) so the derived context replays what
     /// the model actually read.
-    ToolAnswered { display: String, result: String },
+    ///
+    /// `truncated` mirrors [`StreamEvent::ToolEnd`]'s: this event also carries
+    /// an **executed** call's resolution when a `PostToolUse` hook amended it
+    /// (`docs/hooks.md`), and such a call's output can have hit the byte cap,
+    /// so the expanded cell still needs its `…` marker. It is `false` for the
+    /// ask tool, which never truncates.
+    ToolAnswered {
+        display: String,
+        result: String,
+        truncated: bool,
+    },
     /// The in-flight tool call was **refused at the permission prompt** (option
     /// 3, a Tab-amended rejection, or Ctrl+E's explain-instead) — sent **in
     /// place of** [`StreamEvent::ToolEnd`], since the tool never ran. The
@@ -154,7 +164,16 @@ pub enum StreamEvent {
     /// [`crate::context::context_messages`] replays what was really sent — a
     /// later turn would otherwise see only the one-liner and lose the user's
     /// instructions entirely.
-    ToolRejected { display: String, result: String },
+    ///
+    /// `truncated` mirrors [`StreamEvent::ToolEnd`]'s, for the same reason as
+    /// [`StreamEvent::ToolAnswered`]'s: a **failed** call a `PostToolUse` hook
+    /// amended resolves through here (`docs/hooks.md`), and its output can
+    /// have hit the byte cap. `false` for every refusal, where nothing ran.
+    ToolRejected {
+        display: String,
+        result: String,
+        truncated: bool,
+    },
     /// A provenance note for the **in-flight** tool call — today only the
     /// auto mode classifier's `Allowed by auto mode classifier`
     /// (`docs/permissions.md`). Sent right after the call's

@@ -1984,7 +1984,9 @@ fn live_ask_user_question_round_trip() {
                     }]),
                 );
             }
-            StreamEvent::ToolAnswered { display, result } => {
+            StreamEvent::ToolAnswered {
+                display, result, ..
+            } => {
                 answered = Some((display, result));
             }
             StreamEvent::Chunk(chunk) => reply.push_str(&chunk),
@@ -2036,7 +2038,9 @@ fn live_ask_user_question_decline_stops_the_model() {
                 asks += 1;
                 gate.resolve(&request.id, alter_zero::ask::AskDecision::Declined);
             }
-            StreamEvent::ToolRejected { display, result } => {
+            StreamEvent::ToolRejected {
+                display, result, ..
+            } => {
                 rejected = Some((display, result));
             }
             StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
@@ -2207,7 +2211,10 @@ fn live_a_pre_tool_use_hook_blocks_a_real_models_bash_call() {
         !rejected.is_empty(),
         "the hook refused the call: {events:#?}"
     );
-    let StreamEvent::ToolRejected { display, result } = rejected[0] else {
+    let StreamEvent::ToolRejected {
+        display, result, ..
+    } = rejected[0]
+    else {
         unreachable!()
     };
     println!("cell: {display}\nmodel: {result}");
@@ -2244,7 +2251,9 @@ fn live_a_post_tool_use_hook_feeds_the_model_extra_context() {
     let answered = events
         .iter()
         .find_map(|e| match e {
-            StreamEvent::ToolAnswered { display, result } => Some((display, result)),
+            StreamEvent::ToolAnswered {
+                display, result, ..
+            } => Some((display, result)),
             _ => None,
         })
         .expect("the hook's context rides the two-text split");

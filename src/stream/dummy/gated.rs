@@ -119,7 +119,11 @@ impl Stage<'_> {
                 });
             }
             Err((display, result)) => {
-                let _ = self.tx.send(StreamEvent::ToolRejected { display, result });
+                let _ = self.tx.send(StreamEvent::ToolRejected {
+                    display,
+                    result,
+                    truncated: false,
+                });
             }
         }
     }
@@ -243,12 +247,14 @@ pub(in crate::stream) fn ask_questions_turn(stage: &AskStage<'_>) {
     match outcome.context {
         Some(result) if answered => {
             let _ = stage.tx.send(StreamEvent::ToolAnswered {
+                truncated: false,
                 display: outcome.output,
                 result,
             });
         }
         Some(result) => {
             let _ = stage.tx.send(StreamEvent::ToolRejected {
+                truncated: false,
                 display: outcome.output,
                 result,
             });

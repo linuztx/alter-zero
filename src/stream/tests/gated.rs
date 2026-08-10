@@ -88,7 +88,9 @@ fn the_auto_demo_classifies_instead_of_asking_in_auto_mode() {
             StreamEvent::ToolStart { args, .. } => order.push(format!("start:{args}")),
             StreamEvent::ToolNote(note) => order.push(format!("note:{note}")),
             StreamEvent::ToolEnd { ok, .. } => order.push(format!("end:{ok}")),
-            StreamEvent::ToolRejected { display, result } => {
+            StreamEvent::ToolRejected {
+                display, result, ..
+            } => {
                 assert!(
                     display.starts_with("Denied by auto mode classifier"),
                     "got {display}"
@@ -300,7 +302,9 @@ fn the_ask_demo_raises_the_questions_and_resolves_with_the_answers() {
                 );
             }
             StreamEvent::ToolStart { name, .. } => assert_eq!(name, "AskUserQuestion"),
-            StreamEvent::ToolAnswered { display, result } => {
+            StreamEvent::ToolAnswered {
+                display, result, ..
+            } => {
                 answered = Some((display, result));
             }
             StreamEvent::Chunk(c) => {
@@ -351,7 +355,9 @@ fn declining_the_ask_demo_resolves_red_and_still_closes_the_turn() {
             StreamEvent::AskUser(request) => {
                 gate.resolve(&request.id, crate::ask::AskDecision::Declined);
             }
-            StreamEvent::ToolRejected { display, result } => rejected = Some((display, result)),
+            StreamEvent::ToolRejected {
+                display, result, ..
+            } => rejected = Some((display, result)),
             StreamEvent::StreamDone => break,
             _ => {}
         }

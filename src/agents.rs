@@ -269,7 +269,9 @@ impl AgentRun {
             // kept beside the cell text so the agent's own derived context
             // (its Ctrl+D view, and a continuation run over its stored
             // messages) replays what it actually read (docs/permissions.md).
-            StreamEvent::ToolRejected { display, result } => {
+            StreamEvent::ToolRejected {
+                display, result, ..
+            } => {
                 self.tokens += crate::app::count_tokens(result) as u64;
                 if let Some(mut front) = self.tool_queue.pop_front() {
                     front.status = ToolStatus::Failed;
@@ -310,7 +312,9 @@ impl AgentRun {
             // answers, docs/ask.md). Subagents are never offered the ask tool,
             // so this is unreachable today — handled like the rejection arm
             // so the mapping stays total and honest if that ever changes.
-            StreamEvent::ToolAnswered { display, result } => {
+            StreamEvent::ToolAnswered {
+                display, result, ..
+            } => {
                 self.tokens += crate::app::count_tokens(result) as u64;
                 if let Some(mut front) = self.tool_queue.pop_front() {
                     front.status = ToolStatus::Ok;
@@ -862,6 +866,7 @@ mod tests {
         assert!(!run.apply(&StreamEvent::ToolRejected {
             display: "User rejected write to hello.py\nInstructions: use pathlib".into(),
             result: "The user doesn't want to proceed… instructions instead: use pathlib".into(),
+            truncated: false,
         }));
         let Some(HistoryItem::Tool(tool)) = run.history.last() else {
             panic!("the refused call still lands on the transcript");

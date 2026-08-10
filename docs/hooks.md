@@ -175,6 +175,13 @@ somewhere for every hook verdict to land, under another name. **No new
   while `context_output` carries what the model actually read. Both are
   recorded, both survive a `/resume`.
 
+The one change that *was* needed: `ToolAnswered` and `ToolRejected` gained a
+`truncated` flag. They had none because their only users — the ask tool and a
+permission refusal — never produce capped output. Routing an **executed**
+call's resolution through them does, so without it a hook-amended `bash`
+whose output hit `TOOL_OUTPUT_MAX_BYTES` silently lost the `…` marker its
+expanded cell appends. `false` at every site where nothing ran.
+
 **Injected context appends at the frontier, never at the front.** The obvious
 design — reuse the `user_instructions` slot — is wrong twice over. That slot
 is owned by the project-doc feature and is rewritten wholesale at turn start;

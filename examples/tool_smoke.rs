@@ -171,7 +171,9 @@ fn main() {
                 let head: String = output.lines().take(8).collect::<Vec<_>>().join("\n");
                 println!("{color}  ⎿ ok={ok} truncated={truncated}\x1b[0m\n{head}\n  ---");
             }
-            StreamEvent::ToolRejected { display, result } => {
+            StreamEvent::ToolRejected {
+                display, result, ..
+            } => {
                 // Refused at the permission prompt: the cell text, then the
                 // longer instruction the model reads (docs/permissions.md).
                 println!(
