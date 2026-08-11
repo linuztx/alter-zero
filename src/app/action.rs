@@ -151,6 +151,22 @@ pub enum Action {
     /// Ctrl+C): [`App::hooks_menu`] is already cleared; the loop just
     /// repaints the collapsed region.
     CloseHooksMenu,
+    /// `/skills`: open the inline skills browser. Like `/hooks` it works
+    /// mid-turn — it only replaces the composer. The *loop* takes the
+    /// registry's snapshot and hands it to [`App::open_skills_menu`] (the
+    /// same injection seam), so the menu and the set the model is offered can
+    /// never disagree. See `docs/skills.md`.
+    OpenSkillsMenu,
+    /// The `/skills` menu was dismissed (Esc on an empty query, or Ctrl+C):
+    /// [`App::skills_menu`] is already cleared; the loop just repaints the
+    /// collapsed region.
+    CloseSkillsMenu,
+    /// One skill was turned on or off in the `/skills` menu. The menu's own
+    /// copy already moved (so the row updates in the same frame); the loop
+    /// makes it true of the session — the shared registry, the re-rendered
+    /// listing, the backend rebuild, this project's `skills.json` entry — and
+    /// confirms with a toast. See `docs/skills.md`.
+    SkillToggled { name: String, enabled: bool },
     /// `/login` from an idle composer: open the inline API-key onboarding flow.
     /// The *loop* builds the provider choices (which need boundary key
     /// resolution to mark the already-configured ones) and hands them to

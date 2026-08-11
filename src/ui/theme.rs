@@ -760,6 +760,47 @@ pub(super) const SETTINGS_CHROME_ROWS: u16 = 11;
 /// [`cursor_position`] so the cursor lands on the query.
 pub(super) const SETTINGS_SEARCH_ROW: u16 = 2;
 
+// --- the inline /skills menu (docs/skills.md). Deliberately the /settings
+// menu's twin rather than a new shape: it reuses that menu's frame, its
+// value column geometry (SETTINGS_VALUE_GAP) and its two-tone value colours
+// wholesale, so the only consts it needs of its own are the words. ---
+
+/// The value column's two states. `disabled` is already in
+/// [`SETTINGS_OFF_VALUES`], so it dims through the same rule that dims a
+/// `false` knob — one look down the column shows what is live.
+pub(super) const SKILLS_ON_VALUE: &str = "enabled";
+pub(super) const SKILLS_OFF_VALUE: &str = "disabled";
+
+/// The key hint pinned under the description — the menu's whole grammar.
+pub(super) const SKILLS_HINT: &str =
+    "Type to search · Enter/Space to enable/disable · Esc to cancel";
+
+/// The list placeholder when the search matches no skill.
+pub(super) const SKILLS_NO_MATCH: &str = "No matching skills";
+
+/// The fixed rows framing the menu: top rule, gap, search, note, gap (5 above
+/// the list), then counter, gap, description, gap, hint, gap, bottom rule (7
+/// below). One more than [`SETTINGS_CHROME_ROWS`] — the note row, always
+/// reserved so the frame doesn't jump when it fills in.
+pub(super) const SKILLS_CHROME_ROWS: u16 = 12;
+
+/// The row (within the menu's framed area) the `❯` search line sits on — top
+/// rule (0), gap (1), search (2). Shared by `render_skills_menu` and
+/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
+/// the line drawn.
+pub(super) const SKILLS_SEARCH_ROW: u16 = 2;
+
+/// The list placeholder when **nothing was discovered** — an empty list's only
+/// real question is "where should I put one?", so the answer is the row.
+pub(super) const SKILLS_NONE_FOUND: &str = "No skills found. Add one at:";
+
+/// The note under the search line when skills are off for the whole session
+/// (the `/settings` **Skills** row): the rows still browse and toggle, but
+/// nothing here reaches the model until that row goes back on. The `/hooks`
+/// menu's disabled-note rule.
+pub(super) const SKILLS_SESSION_OFF: &str =
+    "Skills are off for this session — turn them on in /settings";
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — MODEL_SELECTED_COLOR for the selection, MODEL_ID_COLOR
 // for unselected labels, MODEL_META_COLOR for everything dim, AI_COLOR for

@@ -128,16 +128,22 @@ pub fn load_skills(
     cwd: &Path,
     config_home: Option<&Path>,
 ) -> (Vec<SkillMetadata>, Vec<SkillError>) {
+    discover_skills(&resolved_skill_roots(cwd, config_home))
+}
+
+/// The roots this environment resolves to — [`skill_roots`] with the two
+/// environment reads (`$HOME`, `ALTER_ZERO_SKILLS_DIR`) applied.
+///
+/// The **one** place those reads happen, so the `/skills` menu can name
+/// exactly the roots the walk used: two call sites resolving them separately
+/// is how a menu comes to advertise a directory nothing was ever read from.
+#[must_use]
+pub fn resolved_skill_roots(cwd: &Path, config_home: Option<&Path>) -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     let override_dir = std::env::var_os("ALTER_ZERO_SKILLS_DIR")
         .map(PathBuf::from)
         .filter(|dir| !dir.as_os_str().is_empty());
-    discover_skills(&skill_roots(
-        cwd,
-        config_home,
-        home.as_deref(),
-        override_dir.as_deref(),
-    ))
+    skill_roots(cwd, config_home, home.as_deref(), override_dir.as_deref())
 }
 
 /// One `skill` call's arguments.

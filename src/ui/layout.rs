@@ -718,6 +718,14 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
         return (x, view_cursor_y(area, body, SETTINGS_SEARCH_ROW));
     }
+    // The inline `/skills` menu parks the cursor at the end of its `❯` search
+    // line, exactly like the `/settings` menu (docs/skills.md).
+    if let Some(menu) = &app.skills_menu {
+        let [_, body] = view_split(area, super::skills_view::skills_menu_rows(app, area.width));
+        let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&menu.query);
+        let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
+        return (x, view_cursor_y(area, body, SKILLS_SEARCH_ROW));
+    }
     // The read-only `/hooks` menu has no text entry at all — park the cursor
     // in the far corner where it reads as chrome (the manager band's rule).
     if app.hooks_menu.is_some() {

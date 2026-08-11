@@ -30,6 +30,7 @@ mod queue;
 mod reasoning;
 mod resume;
 mod settings;
+mod skills_menu;
 mod tasks;
 mod tools;
 mod turn;

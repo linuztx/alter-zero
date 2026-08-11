@@ -563,6 +563,16 @@ impl ModelSession {
         self.rebuild_current();
     }
 
+    /// Re-attach the (unchanged) registry after the `/skills` menu turned one
+    /// skill on or off. The handle is shared, so the executor and the listing
+    /// already saw the change — this is only about the **tool set**, which is
+    /// decided when `with_skills` runs: turning the last skill off has to
+    /// withdraw the spec rather than leave a tool that can only fail
+    /// (`docs/skills.md`).
+    pub(crate) fn refresh_skills(&mut self) {
+        self.rebuild_current();
+    }
+
     /// The `/settings` **Error retry** knob: how many times a failed request
     /// is retried from here on.
     pub(crate) fn set_max_retries(&mut self, max_retries: u32) {

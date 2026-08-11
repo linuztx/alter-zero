@@ -42,6 +42,63 @@ impl Session<'_> {
         self.app.open_hooks_menu(overview, source, enabled);
     }
 
+    /// `/skills`: open the inline skills browser (`docs/skills.md`). The same
+    /// injection seam as `/hooks`: the loop takes the registry's snapshot —
+    /// **every** discovered skill plus the currently-off set, since a skill
+    /// you turned off is the one you need to see to turn back on — along with
+    /// whether the session-wide switch is on and where skills are looked for
+    /// (the answer an empty list needs), and hands all four to `App`.
+    pub(crate) fn open_skills_menu(&mut self) {
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        // The same resolver the startup walk used, so the menu can only ever
+        // name directories that were actually read.
+        let roots = alter_zero::llm::skill::resolved_skill_roots(
+            &self.cwd,
+            config::config_home().as_deref(),
+        )
+        .iter()
+        .map(|root| alter_zero::ui::display_cwd(root, home.as_deref()))
+        .collect();
+        self.app.open_skills_menu(
+            self.skill_registry.snapshot(),
+            self.skill_registry.disabled(),
+            self.app.settings().skills_active(),
+            roots,
+        );
+    }
+
+    /// Apply the `/skills` menu's toggle: make it true of the running session
+    /// and persist it for this project (`docs/skills.md`).
+    ///
+    /// Four things have to move together, which is why they are spelled out in
+    /// one place: the shared registry (what the executor and the listing read),
+    /// the re-rendered listing (what the next request carries), the backend
+    /// (whether the `skill` tool is offered at all — turning the *last* skill
+    /// off must withdraw it, not leave a tool that can only fail), and the
+    /// file. The confirming toast is the `/settings` row's.
+    pub(crate) fn apply_skill_toggle(&mut self, name: &str, enabled: bool) {
+        // Set rather than flip: the menu already decided, and re-deriving the
+        // state here is how the two copies would come to disagree.
+        let mut disabled = self.skill_registry.disabled();
+        if enabled {
+            disabled.remove(name);
+        } else {
+            disabled.insert(name.to_string());
+        }
+        self.skill_registry.set_disabled(disabled.clone());
+        self.sync_skill_listing();
+        // The tool set is decided at attach time, so the rebuild is what
+        // withdraws (or restores) the spec when the last skill goes off/on.
+        self.models.refresh_skills();
+        config::save_skills_file(
+            config::skills_json_path().as_deref(),
+            &self.cwd.display().to_string(),
+            &disabled,
+        );
+        let state = if enabled { "enabled" } else { "disabled" };
+        self.toast(format!("Skill {name}: {state}"), ToastKind::Info);
+    }
+
     /// Push what this host can actually run into `App` (the `set_clock`
     /// pattern), so an unavailable row says so instead of offering a toggle
     /// that does nothing.

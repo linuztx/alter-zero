@@ -28,6 +28,7 @@ mod permission_view;
 mod reasoning;
 mod resume_view;
 mod settings_view;
+mod skills_view;
 mod status;
 mod stream_render;
 mod table;

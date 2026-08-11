@@ -670,7 +670,38 @@ body's own `bash` calls still meet it. Subagents carry the tool too; the
 `ALTER_ZERO_SKILLS` gate it; `/<skill-name>` needs no code — it submits as
 text and the system prompt's guidance line makes the model answer it with a
 `skill` call (verified live); the offline `skills` scenario drives the cell
-through the real formatters, `smoke.sh` Phase 76); and the **Ctrl+O
+through the real formatters, `smoke.sh` Phase 76); and the **`/skills`
+menu** (the fifth composer-replacing inline picker and deliberately the
+`/settings` menu's **twin** rather than a new shape — same frame, same `❯`
+type-to-search, same aligned `{label}  {value}` column with the same two-tone
+colouring, same `(n/total)` counter, same Enter/Space grammar — over one row
+per discovered skill instead of one per knob, the skill's **own description**
+as the line under the list so the picker doubles as the browser that answers
+"what is this skill for?"; two rows `/settings` has no need of: a
+session-off note when the **Skills** row is down (always reserved, so the
+frame can't jump) and an empty list that **names the roots**
+(`No skills found. Add one at:` over `~/.claude/skills/<name>/SKILL.md`),
+since "why isn't my skill here?" is an empty list's only question. A toggle
+holds in **two** places — the skill leaves the `<system-reminder>` listing
+*and* `SkillRegistry::find` refuses it, so a model that remembers the name
+from an earlier turn gets the recoverable "unknown skill" rather than
+loading what the user turned off — while `snapshot` still returns it (the
+menu must show a disabled skill or you could never turn it back on), which
+is why the registry answers two questions: `is_empty` (was anything
+**found**? the `/settings` row's availability) and `has_enabled` (is
+anything **on**? whether the tool is offered), so turning every skill off
+withdraws the tool exactly as having none installed does — and that
+withdrawal is why a toggle rebuilds the backend, the shared handle already
+carrying the change to the executor and the listing but the *tool set* being
+decided when `with_skills` runs. It persists **per project** in
+`{config_home}/skills.json` (`{"projects": {"/abs/cwd": {"disabled":
+["haiku-writer"]}}}` — `permissions.json`'s shape, read-modify-write,
+best-effort, an empty set **dropping** the entry so the file stays a diff
+from everything-on, and a disabled name not installed here **kept** rather
+than pruned since the same file serves a checkout elsewhere), because skill
+relevance is project-specific while the `/settings` **Skills** row is
+already the session-wide switch; `smoke.sh` Phase 77 drives the palette
+entry, the rows, a toggle and its persistence across a restart); and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in
@@ -1182,7 +1213,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/hooks`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/hooks`, `/skills`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

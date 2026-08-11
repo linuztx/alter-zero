@@ -180,6 +180,12 @@ impl Session<'_> {
             }
             Action::SettingChanged(key) => self.apply_setting(key),
             Action::OpenHooksMenu => self.open_hooks_menu(),
+            Action::OpenSkillsMenu => self.open_skills_menu(),
+            Action::CloseSkillsMenu => {
+                // Esc/Ctrl+C dismissed the menu: nothing to reap; the region
+                // collapses back to the composer on the next draw.
+            }
+            Action::SkillToggled { name, enabled } => self.apply_skill_toggle(&name, enabled),
             Action::CloseHooksMenu => {
                 // Esc/Ctrl+C dismissed the browser: nothing to reap; the
                 // region collapses back to the composer on the next draw.

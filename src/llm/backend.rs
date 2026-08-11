@@ -239,12 +239,15 @@ impl LlmBackend {
 
     /// Attach the discovered skills, **enabling the `skill` tool**
     /// (`docs/skills.md`): the client's tool set gains the skill spec (tools
-    /// must already be enabled). An **empty** registry attaches nothing —
-    /// offering a tool that can only ever answer "unknown skill" would spend
-    /// the model's attention on a dead end.
+    /// must already be enabled). A registry with **nothing enabled** attaches
+    /// nothing — offering a tool that can only ever answer "unknown skill"
+    /// would spend the model's attention on a dead end. That is `has_enabled`
+    /// rather than `!is_empty` on purpose: turning every skill off in
+    /// `/skills` must withdraw the tool exactly as having none installed
+    /// does.
     #[must_use]
     pub fn with_skills(mut self, registry: crate::skills::SkillRegistry) -> Self {
-        if self.tools_enabled && !registry.is_empty() {
+        if self.tools_enabled && registry.has_enabled() {
             self.skills = Some(registry);
             self.sync_tool_specs();
         }

@@ -1,0 +1,196 @@
+//! The inline `/skills` menu's rendering (`docs/skills.md`).
+
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use super::*;
+use crate::skills::SkillMetadata;
+use crate::ui::theme::{
+    GAP_ROWS, MODEL_SELECTED_COLOR, SETTINGS_VALUE_COLOR, SETTINGS_VALUE_OFF_COLOR, SKILLS_HINT,
+    SKILLS_NO_MATCH, SKILLS_NONE_FOUND, SKILLS_SESSION_OFF, STATUS_GAP_ROWS, STATUS_ROWS,
+};
+
+fn meta(name: &str, description: &str) -> SkillMetadata {
+    SkillMetadata {
+        name: name.to_string(),
+        description: description.to_string(),
+        dir: std::path::PathBuf::from("/skills").join(name),
+        path: std::path::PathBuf::from("/skills")
+            .join(name)
+            .join("SKILL.md"),
+    }
+}
+
+/// An app with the menu open over two skills, the second turned off.
+fn skills_app() -> App {
+    let mut app = App::new();
+    app.open_skills_menu(
+        vec![
+            meta("commit-helper", "Write a commit message in house style"),
+            meta("dataviz", "Charts and dashboards"),
+        ],
+        ["dataviz".to_string()].into_iter().collect(),
+        true,
+        vec!["~/.claude/skills".to_string()],
+    );
+    app
+}
+
+/// Render the menu at its natural height, like the boundary does — otherwise
+/// the list's `Min(0)` would expand and push the rows below it down.
+fn render(app: &App, width: u16) -> Buffer {
+    let height = skills_menu_height(app, width, 200).expect("the menu is open");
+    let mut buf = buffer(width, height);
+    render_skills_menu(buf.area, &mut buf, app);
+    buf
+}
+
+#[test]
+fn every_skill_shows_its_state_and_the_first_is_marked() {
+    let buf = render(&skills_app(), 78);
+    let text = (0..buf.area.height)
+        .map(|y| row(&buf, y, 78))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        text.contains("→ commit-helper") && text.contains("enabled"),
+        "{text}"
+    );
+    assert!(
+        text.contains("dataviz") && text.contains("disabled"),
+        "{text}"
+    );
+    // The counter, the highlighted row's own description, and the key hint.
+    assert!(text.contains("(1/2)"), "{text}");
+    assert!(
+        text.contains("Write a commit message in house style"),
+        "the description names the highlighted skill: {text}"
+    );
+    assert!(text.contains(SKILLS_HINT), "{text}");
+}
+
+/// The cell colour at the first occurrence of `needle` on row `y` — the
+/// settings-view tests' idiom.
+fn colour_at(buf: &Buffer, y: u16, width: u16, needle: &str) -> ratatui::style::Color {
+    let line = row(buf, y, width);
+    let at = u16::try_from(
+        line.find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} in {line:?}")),
+    )
+    .unwrap();
+    buf[(at, y)].fg
+}
+
+#[test]
+fn an_on_value_and_an_off_value_are_coloured_apart() {
+    // A glance down the value column has to show what is live — the
+    // `/settings` menu's two-tone rule, reused wholesale. Rows start at 5:
+    // top rule (0), gap (1), search (2), note (3), gap (4).
+    let buf = render(&skills_app(), 78);
+    assert_eq!(colour_at(&buf, 5, 78, "enabled"), SETTINGS_VALUE_COLOR);
+    assert_eq!(colour_at(&buf, 6, 78, "disabled"), SETTINGS_VALUE_OFF_COLOR);
+}
+
+#[test]
+fn the_selected_row_lights_up_like_every_sibling_picker() {
+    let buf = render(&skills_app(), 78);
+    assert_eq!(colour_at(&buf, 5, 78, "→"), MODEL_SELECTED_COLOR);
+}
+
+#[test]
+fn the_height_is_the_chrome_plus_the_listed_rows() {
+    let mut app = skills_app();
+    let full = skills_menu_height(&app, 78, 200).expect("open");
+    // Narrowing the search shrinks the list — and so the region.
+    for c in "dataviz".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let narrowed = skills_menu_height(&app, 78, 200).expect("open");
+    assert_eq!(narrowed + 1, full, "one row fewer");
+    // …and it is clamped to the terminal.
+    assert_eq!(skills_menu_height(&app, 78, 5), Some(5));
+    // Closed, there is no menu height at all.
+    app.close_skills_menu();
+    assert_eq!(skills_menu_height(&app, 78, 200), None);
+}
+
+#[test]
+fn a_search_matching_nothing_shows_its_placeholder() {
+    let mut app = skills_app();
+    for c in "zzzz".chars() {
+        app.on_key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
+    }
+    let buf = render(&app, 78);
+    let text = (0..buf.area.height)
+        .map(|y| row(&buf, y, 78))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains(SKILLS_NO_MATCH), "{text}");
+}
+
+#[test]
+fn an_empty_list_names_where_a_skill_would_go() {
+    // "Why is my skill not here?" is the only question an empty list raises,
+    // so the placeholder answers it instead of just saying "none".
+    let mut app = App::new();
+    app.open_skills_menu(
+        Vec::new(),
+        Default::default(),
+        true,
+        vec!["~/.claude/skills".to_string()],
+    );
+    let buf = render(&app, 78);
+    let text = (0..buf.area.height)
+        .map(|y| row(&buf, y, 78))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(text.contains(SKILLS_NONE_FOUND), "{text}");
+    assert!(
+        text.contains("~/.claude/skills/<name>/SKILL.md"),
+        "the root is spelled out: {text}"
+    );
+}
+
+#[test]
+fn the_session_off_note_shows_only_when_it_applies() {
+    // On: the row is reserved but blank, so the frame doesn't jump when the
+    // note appears.
+    let on = render(&skills_app(), 78);
+    let on_text = (0..on.area.height)
+        .map(|y| row(&on, y, 78))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!on_text.contains(SKILLS_SESSION_OFF), "{on_text}");
+
+    let mut app = App::new();
+    app.open_skills_menu(
+        vec![meta("commit-helper", "d")],
+        Default::default(),
+        false,
+        Vec::new(),
+    );
+    let off = render(&app, 78);
+    let off_text = (0..off.area.height)
+        .map(|y| row(&off, y, 78))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(off_text.contains(SKILLS_SESSION_OFF), "{off_text}");
+    assert_eq!(
+        off.area.height,
+        on.area.height - 1,
+        "the note row is reserved either way; only the list length differs"
+    );
+}
+
+#[test]
+fn the_menu_reserves_the_running_turn_strip_above_it() {
+    // `/skills` replaces the composer only — the streaming strip keeps its
+    // rows, so opening it mid-turn never hides what is executing.
+    let mut app = skills_app();
+    let idle = skills_menu_height(&app, 78, 200).expect("open");
+    app.begin_stream();
+    app.start_tool("Bash", "cargo test");
+    let preview = preview_rows(&app, 78);
+    assert!(preview > 0, "the running tool previews mid-turn");
+    let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
+    assert_eq!(skills_menu_height(&app, 78, 200), Some(idle + strip));
+}

@@ -442,6 +442,42 @@ pub(crate) fn settings_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("settings.json"))
 }
 
+/// The per-project skill on/off file — `{config_home}/skills.json`
+/// (`docs/skills.md`). `None` (no config home) disables persistence: the
+/// session's toggles still work, they just don't survive a restart.
+pub(crate) fn skills_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("skills.json"))
+}
+
+/// Read the skill on/off file. Best-effort like [`load_permissions`] — a
+/// corrupt file reads as "nothing disabled" rather than costing the session
+/// its skills.
+pub(crate) fn load_skills_file(path: Option<&Path>) -> alter_zero::skills::SkillsFile {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|text| alter_zero::skills::SkillsFile::parse(&text))
+        .unwrap_or_default()
+}
+
+/// Persist this project's turned-off skills. A read-modify-write — the file is
+/// re-read first, so entries other projects wrote meanwhile survive — and
+/// best-effort like [`save_permissions`]: a write failure is swallowed, since
+/// a read-only home must never kill the TUI.
+pub(crate) fn save_skills_file(
+    path: Option<&Path>,
+    project: &str,
+    disabled: &std::collections::BTreeSet<String>,
+) {
+    let Some(path) = path else {
+        return;
+    };
+    let mut file = load_skills_file(Some(path));
+    file.record(project, disabled);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, file.to_json());
+}
+
 /// The `/settings` knobs **as the file holds them** — no environment merged
 /// in. Kept beside the live values so a save can be a read-modify-write that
 /// never persists an override (`Session::saved_settings`, `docs/settings.md`).

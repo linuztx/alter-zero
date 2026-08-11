@@ -104,6 +104,11 @@ pub enum CommandEffect {
     /// hooks. Works **mid-turn** like `/model` — browsing touches nothing.
     /// See `docs/hooks-menu.md`.
     Hooks,
+    /// Open the inline `/skills` browser: every discovered skill, each one
+    /// enable/disable-able. Works **mid-turn** like `/hooks` — the menu only
+    /// replaces the composer, and a toggle binds the *next* turn's request.
+    /// See `docs/skills.md`.
+    Skills,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
 }
@@ -177,6 +182,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "hooks",
         description: "Browse the configured lifecycle hooks",
         effect: CommandEffect::Hooks,
+    },
+    SlashCommand {
+        name: "skills",
+        description: "Browse skills and enable or disable each one",
+        effect: CommandEffect::Skills,
     },
     SlashCommand {
         name: "quit",
@@ -371,6 +381,14 @@ impl App {
                 // the menu (the /resume data-injection seam). See
                 // docs/hooks-menu.md.
                 Action::OpenHooksMenu
+            }
+            CommandEffect::Skills => {
+                // /skills works mid-turn too — browsing and toggling touch
+                // nothing running; a change binds the next turn's request.
+                // The *loop* takes the registry's snapshot and opens the menu
+                // over it, so the rows can never disagree with what the model
+                // is offered. docs/skills.md.
+                Action::OpenSkillsMenu
             }
             CommandEffect::Quit => Action::Quit,
         }

@@ -148,6 +148,13 @@ impl<'t> Session<'t> {
         let (found_skills, skill_errors) =
             alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref());
         let skill_registry = alter_zero::skills::SkillRegistry::new(found_skills);
+        // …and this project's saved on/off choices from `skills.json`, applied
+        // BEFORE the backend is built so a session that starts with its last
+        // skill turned off is never offered the tool (`docs/skills.md`).
+        skill_registry.set_disabled(
+            config::load_skills_file(config::skills_json_path().as_deref())
+                .disabled_for(&cwd.display().to_string()),
+        );
 
         // The `/settings` knobs (docs/settings.md): the saved `settings.json`
         // with each `ALTER_ZERO_*` override applied on top. Resolved BEFORE the

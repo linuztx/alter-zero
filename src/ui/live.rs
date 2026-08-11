@@ -414,6 +414,14 @@ pub fn render_live_with_preview(
         render_settings(body, buf, app);
         return;
     }
+    // …and the inline `/skills` menu, the `/settings` menu's twin. See
+    // `docs/skills.md`.
+    if app.skills_menu.is_some() {
+        let [strip, body] = view_split(area, super::skills_view::skills_menu_rows(app, area.width));
+        render_strip_above(strip, buf, app, stream_preview);
+        render_skills_menu(body, buf, app);
+        return;
+    }
     // …and the read-only `/hooks` menu — its body is the built line count,
     // the ↓ manager band's rule. See `docs/hooks-menu.md`.
     if app.hooks_menu.is_some() {

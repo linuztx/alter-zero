@@ -43,6 +43,7 @@ mod queue;
 mod reasoning;
 mod resume;
 mod settings;
+mod skills_menu;
 mod status;
 mod tasks;
 mod tools;
@@ -74,6 +75,7 @@ pub use self::queue::QueuedTurn;
 pub use self::reasoning::Reasoning;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
 pub use self::settings::{SettingRow, SettingsPicker};
+pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tasks::TaskCallRecord;
 pub use self::tools::{ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, ToolCall, ToolStatus};
@@ -313,6 +315,11 @@ pub struct App {
     /// composer-replacing picker — unlike the other three it has no text
     /// entry, only navigation. See `docs/hooks-menu.md`.
     pub hooks_menu: Option<HooksMenu>,
+    /// The open inline `/skills` menu; `None` when closed. The fifth
+    /// composer-replacing picker, and the [`settings_picker`](Self::settings_picker)'s
+    /// twin — same frame, same grammar, rows being the discovered skills
+    /// instead of the session's knobs. See `docs/skills.md`.
+    pub skills_menu: Option<SkillsMenu>,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

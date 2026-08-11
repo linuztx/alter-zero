@@ -14,6 +14,7 @@
 //!
 //! The filesystem walk and the tool executor live in [`crate::llm::skill`].
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -478,64 +479,215 @@ pub fn render_skill_body(dir: &Path, body: &str, args: &str) -> String {
 /// [`crate::tasks::TaskRegistry`] pattern: one lock, cloned by handle.
 #[derive(Debug, Clone, Default)]
 pub struct SkillRegistry {
-    skills: Arc<Mutex<Vec<SkillMetadata>>>,
+    state: Arc<Mutex<RegistryState>>,
+}
+
+/// What the registry holds behind its one lock: what was **found** and what
+/// the user has since turned **off**. The two are deliberately separate —
+/// disabling is a choice about a skill that still exists, so a rescan must
+/// not silently re-enable it and an unavailable-here name must not be
+/// forgotten (`docs/skills.md`).
+#[derive(Debug, Default)]
+struct RegistryState {
+    skills: Vec<SkillMetadata>,
+    disabled: BTreeSet<String>,
 }
 
 impl SkillRegistry {
-    /// A registry holding `skills`.
+    /// A registry holding `skills`, all enabled.
     #[must_use]
     pub fn new(skills: Vec<SkillMetadata>) -> Self {
         Self {
-            skills: Arc::new(Mutex::new(skills)),
+            state: Arc::new(Mutex::new(RegistryState {
+                skills,
+                disabled: BTreeSet::new(),
+            })),
         }
     }
 
-    /// Every skill, in discovery (precedence) order.
+    /// **Every** skill, in discovery (precedence) order — the disabled ones
+    /// included. This is the `/skills` menu's list: a skill you turned off is
+    /// exactly the one you need to see to turn back on.
     #[must_use]
     pub fn snapshot(&self) -> Vec<SkillMetadata> {
-        self.lock().clone()
+        self.lock().skills.clone()
     }
 
-    /// Swap the whole set — a rescan.
+    /// The skills the model is actually offered — [`snapshot`](Self::snapshot)
+    /// minus the disabled ones. What the listing and the lookup read.
+    #[must_use]
+    pub fn enabled(&self) -> Vec<SkillMetadata> {
+        let state = self.lock();
+        state
+            .skills
+            .iter()
+            .filter(|skill| !state.disabled.contains(&skill.name))
+            .cloned()
+            .collect()
+    }
+
+    /// Swap the discovered set — a rescan. The disabled names are **kept**:
+    /// re-finding a skill is not the user changing their mind about it.
     pub fn replace(&self, skills: Vec<SkillMetadata>) {
-        *self.lock() = skills;
+        self.lock().skills = skills;
     }
 
-    /// The skill `name` selects, tolerating the leading `/` and stray
-    /// whitespace a model writes about as often as the bare name.
+    /// Replace the disabled set wholesale — the boundary seeding this
+    /// project's saved entry at startup.
+    pub fn set_disabled(&self, disabled: BTreeSet<String>) {
+        self.lock().disabled = disabled;
+    }
+
+    /// The names currently turned off, for the menu and the file.
+    #[must_use]
+    pub fn disabled(&self) -> BTreeSet<String> {
+        self.lock().disabled.clone()
+    }
+
+    /// Is `name` currently offered to the model?
+    #[must_use]
+    pub fn is_enabled(&self, name: &str) -> bool {
+        !self.lock().disabled.contains(name)
+    }
+
+    /// Flip `name` on or off, returning its **new** enabled state. A name
+    /// that isn't installed here is left alone (and reported enabled) rather
+    /// than recorded as a phantom entry — the menu can only name real rows,
+    /// so this is belt-and-braces for a stale action.
+    pub fn toggle(&self, name: &str) -> bool {
+        let mut state = self.lock();
+        if !state.skills.iter().any(|skill| skill.name == name) {
+            return true;
+        }
+        if state.disabled.remove(name) {
+            true
+        } else {
+            state.disabled.insert(name.to_string());
+            false
+        }
+    }
+
+    /// The skill `name` selects **among the enabled ones**, tolerating the
+    /// leading `/` and stray whitespace a model writes about as often as the
+    /// bare name. A disabled skill is not found — so a model that remembers
+    /// the name from an earlier turn gets the recoverable "unknown skill"
+    /// error rather than loading something the user turned off.
     #[must_use]
     pub fn find(&self, name: &str) -> Option<SkillMetadata> {
         let wanted = name.trim().trim_start_matches('/').trim().to_lowercase();
-        self.lock()
+        let state = self.lock();
+        state
+            .skills
             .iter()
-            .find(|skill| skill.name.to_lowercase() == wanted)
+            .find(|skill| {
+                skill.name.to_lowercase() == wanted && !state.disabled.contains(&skill.name)
+            })
             .cloned()
     }
 
-    /// Every skill's name, in order — the "did you mean" list an unknown-skill
-    /// error carries.
+    /// Every **enabled** skill's name, in order — the "did you mean" list an
+    /// unknown-skill error carries, which must not advertise a skill the user
+    /// turned off.
     #[must_use]
     pub fn names(&self) -> Vec<String> {
-        self.lock().iter().map(|skill| skill.name.clone()).collect()
+        self.enabled().into_iter().map(|skill| skill.name).collect()
     }
 
-    /// Are there no skills? Then the tool is not offered and no listing is
-    /// injected.
+    /// Was **nothing found**? The `/settings` **Skills** row's availability:
+    /// a session with no `SKILL.md` anywhere has nothing to toggle.
+    /// Distinct from [`has_enabled`](Self::has_enabled) — turning every skill
+    /// off is a choice, not an absence.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
+        self.lock().skills.is_empty()
     }
 
-    /// This registry's [`skill_listing`] within `budget`.
+    /// Is **anything on**? Whether the `skill` tool is worth offering at all.
+    #[must_use]
+    pub fn has_enabled(&self) -> bool {
+        let state = self.lock();
+        state
+            .skills
+            .iter()
+            .any(|skill| !state.disabled.contains(&skill.name))
+    }
+
+    /// The **enabled** skills' [`skill_listing`] within `budget`.
     #[must_use]
     pub fn listing(&self, budget: usize) -> String {
-        skill_listing(&self.lock(), budget)
+        skill_listing(&self.enabled(), budget)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<SkillMetadata>> {
-        self.skills
+    fn lock(&self) -> std::sync::MutexGuard<'_, RegistryState> {
+        self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+/// The `skills.json` format: which skills the user has turned **off**, per
+/// project (`permissions.json`'s shape exactly — `docs/skills.md`).
+///
+/// Per project because skill relevance is project-specific: a `dataviz` skill
+/// earns its listing tokens in an analytics repo and not in a kernel driver.
+/// The session-wide switch is the `/settings` **Skills** row, so this file is
+/// the finer scope rather than a second copy of the same decision.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SkillsFile {
+    /// One entry per project directory (its absolute path). Omitted when
+    /// empty, so a file with nothing turned off anywhere really is `{}` — the
+    /// format stays a diff from "everything on" rather than accumulating
+    /// husks of projects the user re-enabled.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub projects: std::collections::BTreeMap<String, ProjectSkills>,
+}
+
+/// One project's turned-off skills.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ProjectSkills {
+    /// The names the user turned off, sorted so the file is stable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub disabled: Vec<String>,
+}
+
+impl SkillsFile {
+    /// Parse a `skills.json` body, best-effort: malformed or empty JSON reads
+    /// as nothing disabled (`PermissionsFile::parse`'s posture — a corrupt
+    /// file must never cost a session its skills, nor block startup).
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        serde_json::from_str(text).unwrap_or_default()
+    }
+
+    /// Serialize back, pretty-printed like the sibling config files.
+    #[must_use]
+    pub fn to_json(&self) -> String {
+        serde_json::to_string_pretty(self).unwrap_or_else(|_| "{}".to_string())
+    }
+
+    /// The names turned off for `project` — empty for one never recorded.
+    #[must_use]
+    pub fn disabled_for(&self, project: &str) -> BTreeSet<String> {
+        self.projects
+            .get(project)
+            .map(|entry| entry.disabled.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    /// Record `project`'s turned-off set, replacing whatever it held. An
+    /// **empty** set drops the entry entirely, so re-enabling the last skill
+    /// leaves no residue and the file stays a diff from "everything on".
+    pub fn record(&mut self, project: &str, disabled: &BTreeSet<String>) {
+        if disabled.is_empty() {
+            self.projects.remove(project);
+            return;
+        }
+        self.projects.insert(
+            project.to_string(),
+            ProjectSkills {
+                disabled: disabled.iter().cloned().collect(),
+            },
+        );
     }
 }
 
@@ -846,6 +998,140 @@ mod tests {
         let clone = registry.clone();
         registry.replace(vec![meta("pdf", "d")]);
         assert!(clone.find("pdf").is_some(), "the clone sees the swap");
+    }
+
+    // ===== enabling / disabling one skill (`/skills`, docs/skills.md) =====
+
+    #[test]
+    fn a_disabled_skill_leaves_the_listing_and_the_lookup() {
+        // Both halves matter: dropping it from the listing stops the model
+        // choosing it, and refusing it in the lookup stops a model that
+        // remembers the name from an earlier turn loading it anyway.
+        let registry = SkillRegistry::new(vec![meta("commit", "d"), meta("pdf", "d")]);
+        registry.set_disabled(["pdf".to_string()].into_iter().collect());
+
+        assert!(registry.find("pdf").is_none(), "the lookup refuses it");
+        assert!(registry.find("commit").is_some());
+        assert_eq!(registry.listing(DEFAULT_LISTING_BUDGET), "- commit: d");
+        assert_eq!(registry.names(), vec!["commit".to_string()]);
+    }
+
+    #[test]
+    fn the_menu_still_sees_every_skill_including_the_disabled_ones() {
+        // `snapshot` is the picker's list — a skill you turned off must stay
+        // visible there or you could never turn it back on.
+        let registry = SkillRegistry::new(vec![meta("commit", "d"), meta("pdf", "d")]);
+        registry.set_disabled(["pdf".to_string()].into_iter().collect());
+        assert_eq!(registry.snapshot().len(), 2);
+        assert!(registry.is_enabled("commit"));
+        assert!(!registry.is_enabled("pdf"));
+    }
+
+    #[test]
+    fn toggling_flips_one_skill_and_reports_its_new_state() {
+        let registry = SkillRegistry::new(vec![meta("commit", "d")]);
+        assert!(!registry.toggle("commit"), "was on, now off");
+        assert!(!registry.is_enabled("commit"));
+        assert!(registry.toggle("commit"), "was off, now on");
+        assert!(registry.is_enabled("commit"));
+    }
+
+    #[test]
+    fn toggling_an_unknown_name_changes_nothing() {
+        let registry = SkillRegistry::new(vec![meta("commit", "d")]);
+        assert!(registry.toggle("nope"));
+        assert!(registry.disabled().is_empty(), "no phantom entry recorded");
+    }
+
+    #[test]
+    fn discovery_and_selection_are_different_questions() {
+        // `is_empty` asks whether anything was FOUND (the /settings row's
+        // availability); `has_enabled` asks whether anything is currently ON
+        // (whether the tool is worth offering). Turning everything off must
+        // not read as "no skills installed".
+        let registry = SkillRegistry::new(vec![meta("commit", "d")]);
+        assert!(!registry.is_empty() && registry.has_enabled());
+        registry.set_disabled(["commit".to_string()].into_iter().collect());
+        assert!(!registry.is_empty(), "one is still installed");
+        assert!(!registry.has_enabled(), "…but none is on");
+    }
+
+    #[test]
+    fn a_replace_keeps_the_disabled_set() {
+        // A rescan must not silently re-enable what the user turned off.
+        let registry = SkillRegistry::new(vec![meta("commit", "d")]);
+        registry.set_disabled(["commit".to_string()].into_iter().collect());
+        registry.replace(vec![meta("commit", "d"), meta("pdf", "d")]);
+        assert!(!registry.is_enabled("commit"));
+        assert!(registry.is_enabled("pdf"));
+    }
+
+    // ===== the per-project file =====
+
+    #[test]
+    fn the_disabled_set_round_trips_through_the_file() {
+        let mut file = SkillsFile::default();
+        file.record("/work", &["pdf".to_string()].into_iter().collect());
+        let reparsed = SkillsFile::parse(&file.to_json());
+        assert_eq!(
+            reparsed.disabled_for("/work"),
+            ["pdf".to_string()].into_iter().collect()
+        );
+        assert!(reparsed.disabled_for("/elsewhere").is_empty());
+    }
+
+    #[test]
+    fn recording_one_project_leaves_the_others_alone() {
+        // The read-modify-write `permissions.json` does: two projects, two
+        // entries, neither clobbering the other.
+        let mut file = SkillsFile::default();
+        file.record("/a", &["x".to_string()].into_iter().collect());
+        file.record("/b", &["y".to_string()].into_iter().collect());
+        assert_eq!(
+            file.disabled_for("/a"),
+            ["x".to_string()].into_iter().collect()
+        );
+        assert_eq!(
+            file.disabled_for("/b"),
+            ["y".to_string()].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn a_project_with_nothing_disabled_is_dropped_from_the_file() {
+        // Re-enabling the last skill should leave no entry behind, so the file
+        // stays a diff from "everything on" rather than accumulating noise.
+        let mut file = SkillsFile::default();
+        file.record("/work", &["x".to_string()].into_iter().collect());
+        file.record("/work", &std::collections::BTreeSet::new());
+        assert_eq!(file.to_json().replace(char::is_whitespace, ""), "{}");
+    }
+
+    #[test]
+    fn a_malformed_file_reads_as_nothing_disabled() {
+        // `PermissionsFile::parse`'s posture — a corrupt file must never cost
+        // a session its skills, and never block startup.
+        assert!(
+            SkillsFile::parse("not json")
+                .disabled_for("/work")
+                .is_empty()
+        );
+        assert!(SkillsFile::parse("").disabled_for("/work").is_empty());
+    }
+
+    #[test]
+    fn a_disabled_name_that_is_not_installed_here_is_kept() {
+        // The same file serves a project checked out on another machine, where
+        // that skill exists. Pruning on load would silently re-enable it there.
+        let file = SkillsFile::parse(r#"{"projects":{"/work":{"disabled":["gone"]}}}"#);
+        let registry = SkillRegistry::new(vec![meta("commit", "d")]);
+        registry.set_disabled(file.disabled_for("/work"));
+        assert_eq!(
+            registry.disabled(),
+            ["gone".to_string()].into_iter().collect(),
+            "kept verbatim"
+        );
+        assert!(registry.is_enabled("commit"));
     }
 
     #[test]

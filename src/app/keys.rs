@@ -49,6 +49,10 @@ impl App {
         if self.view == View::Conversation && self.settings_picker.is_some() {
             return self.on_key_settings(key);
         }
+        // …and the inline `/skills` menu. See `docs/skills.md`.
+        if self.view == View::Conversation && self.skills_menu.is_some() {
+            return self.on_key_skills(key);
+        }
         // …and the read-only `/hooks` menu. See `docs/hooks-menu.md`.
         if self.view == View::Conversation && self.hooks_menu.is_some() {
             return self.on_key_hooks(key);
