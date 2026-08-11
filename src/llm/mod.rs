@@ -29,6 +29,7 @@ pub mod openai;
 pub mod reasoning;
 pub mod retry;
 pub mod settings;
+pub mod skill;
 pub mod task;
 pub mod thinking;
 pub mod tools;

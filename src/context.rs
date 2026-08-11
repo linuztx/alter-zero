@@ -274,6 +274,12 @@ fn reconstruct_arguments(tool: &ToolCall) -> String {
     let key = match tool.name.as_str() {
         "Bash" => "command",
         "Read" | "Write" | "Edit" => "path",
+        // A `skill` call's summary *is* the skill name (`docs/skills.md`), so
+        // it reconstructs exactly — and it must, since `skill` is a required
+        // parameter a validating provider rejects the call without. The
+        // optional `args` are lossy the same way `bash`'s `timeout_ms` is;
+        // the result below carries the body they already rendered into.
+        crate::skills::SKILL_TOOL_DISPLAY => "skill",
         _ => return "{}".to_string(),
     };
     serde_json::json!({ key: tool.args }).to_string()
@@ -336,6 +342,42 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
     context_messages_with(None, history)
 }
 
+/// [`context_messages_with`] plus the **skill listing** (`docs/skills.md`) —
+/// the `<system-reminder>` naming every discovered skill, injected right
+/// after the project's instructions and in front of the conversation.
+///
+/// Its position is a prompt-cache decision: both leading fragments are
+/// re-rendered per turn, and one that moved would invalidate every token
+/// behind it. `None` or a blank changes nothing, which is what a session with
+/// no skills sends.
+#[must_use]
+pub fn context_messages_full(
+    user_instructions: Option<&str>,
+    skill_listing: Option<&str>,
+    history: &[HistoryItem],
+) -> Vec<ContextMessage> {
+    let mut out = leading_fragments(user_instructions, skill_listing);
+    derive_history_into(&mut out, history);
+    out
+}
+
+/// The leading user entries a turn's context opens with, in their fixed
+/// order: the project doc, then the skill listing.
+fn leading_fragments(
+    user_instructions: Option<&str>,
+    skill_listing: Option<&str>,
+) -> Vec<ContextMessage> {
+    let mut out: Vec<ContextMessage> = Vec::new();
+    for fragment in [user_instructions, skill_listing]
+        .into_iter()
+        .flatten()
+        .filter(|fragment| !fragment.trim().is_empty())
+    {
+        push_text(&mut out, ContextRole::User, fragment.to_string(), vec![]);
+    }
+    out
+}
+
 /// [`context_messages`] with the project's AGENTS.md instructions in front —
 /// codex's user-instructions fragment (`project_doc::instructions_message`,
 /// rendered at the boundary) leads the derived context as its first **user**
@@ -349,17 +391,12 @@ pub fn context_messages_with(
     user_instructions: Option<&str>,
     history: &[HistoryItem],
 ) -> Vec<ContextMessage> {
-    let mut out: Vec<ContextMessage> = Vec::new();
-    if let Some(instructions) = user_instructions
-        && !instructions.trim().is_empty()
-    {
-        push_text(
-            &mut out,
-            ContextRole::User,
-            instructions.to_string(),
-            vec![],
-        );
-    }
+    context_messages_full(user_instructions, None, history)
+}
+
+/// Derive `history` into `out` behind whatever leading fragments it already
+/// holds — the compaction split, then the per-item mapping.
+fn derive_history_into(out: &mut Vec<ContextMessage>, history: &[HistoryItem]) {
     // A `/compact` marker (docs/compact.md): the *last* one wins, and
     // everything before it derives as codex's compacted shape — the budgeted
     // recent user texts, then the summary bridge — with the items after it
@@ -375,19 +412,18 @@ pub fn context_messages_with(
             unreachable!("rposition matched a Compaction");
         };
         for text in budgeted_user_texts(&history[..cut], COMPACT_USER_MESSAGE_MAX_TOKENS) {
-            push_text(&mut out, ContextRole::User, text, vec![]);
+            push_text(out, ContextRole::User, text, vec![]);
         }
         push_text(
-            &mut out,
+            out,
             ContextRole::User,
             summary_bridge(&compaction.summary),
             vec![],
         );
-        derive_into(&mut out, &history[cut + 1..]);
+        derive_into(out, &history[cut + 1..]);
     } else {
-        derive_into(&mut out, history);
+        derive_into(out, history);
     }
-    out
 }
 
 /// Derive `history` (a compaction-free run of items) into `out` — the
@@ -1437,6 +1473,76 @@ mod tests {
             "<INSTRUCTIONS>\nUse TDD.\n</INSTRUCTIONS>\n\nhello"
         );
         assert_eq!(ctx[1].text, "hi");
+    }
+
+    #[test]
+    fn a_skill_call_replays_with_the_skill_it_loaded() {
+        // Caught live: the replay carried `skill({})`, so a later round saw
+        // the model call the tool with no arguments — and a validating
+        // provider rejects that outright, `skill` being required. The stored
+        // summary IS the name (`summarize_call`), so it reconstructs exactly;
+        // the optional `args` are lossy the same way `bash`'s `timeout_ms`
+        // is, and the result below carries the rendered body they produced.
+        let history = vec![tool(
+            "Skill",
+            "haiku-writer",
+            crate::skills::SKILL_LOADED_DISPLAY,
+            ToolStatus::Ok,
+            false,
+        )];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[0].tool_calls.len(), 1, "{ctx:?}");
+        assert_eq!(ctx[0].tool_calls[0].name, crate::skills::SKILL_TOOL_NAME);
+        assert_eq!(
+            ctx[0].tool_calls[0].arguments,
+            r#"{"skill":"haiku-writer"}"#
+        );
+    }
+
+    #[test]
+    fn the_skill_listing_follows_the_instructions_and_leads_the_conversation() {
+        // Both leading fragments are re-rendered per turn, so their order is
+        // fixed: a fragment that moved would invalidate the prompt cache
+        // behind it (docs/skills.md).
+        let history = vec![message(Role::User, "hello")];
+        let ctx = context_messages_full(
+            Some("guide"),
+            Some("<system-reminder>x</system-reminder>"),
+            &history,
+        );
+        assert_eq!(ctx.len(), 1, "all three merge as one user entry: {ctx:?}");
+        assert_eq!(
+            ctx[0].text,
+            "guide\n\n<system-reminder>x</system-reminder>\n\nhello"
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_skills_sends_exactly_what_it_did_before() {
+        // The zero-skill path is byte-identical to the pre-feature context.
+        let history = vec![message(Role::User, "hello"), message(Role::Assistant, "hi")];
+        assert_eq!(
+            context_messages_full(Some("guide"), None, &history),
+            context_messages_with(Some("guide"), &history)
+        );
+        assert_eq!(
+            context_messages_full(None, Some("   "), &history),
+            context_messages(&history),
+            "a blank listing changes nothing"
+        );
+    }
+
+    #[test]
+    fn the_skill_listing_survives_compaction_at_the_front() {
+        // Like the project doc: the leading fragments lead the post-`/compact`
+        // shape too, so a compacted session still knows its skills.
+        let history = vec![
+            message(Role::User, "old"),
+            compaction("we did things"),
+            message(Role::User, "new"),
+        ];
+        let ctx = context_messages_full(None, Some("SKILLS"), &history);
+        assert!(ctx[0].text.starts_with("SKILLS"), "{ctx:?}");
     }
 
     #[test]

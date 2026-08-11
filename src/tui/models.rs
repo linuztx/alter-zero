@@ -116,6 +116,13 @@ pub(crate) struct ModelSession {
     /// The shared task list (docs/task-tools.md) — enables the four task
     /// tools on every rebuild.
     tasks: alter_zero::tasks::TaskRegistry,
+    /// The discovered skills (`docs/skills.md`) — enables the `skill` tool on
+    /// every rebuild, held even when the `/settings` **Skills** row is off so
+    /// turning it back on needs no rescan. `skills_enabled` is the knob.
+    skills: alter_zero::skills::SkillRegistry,
+    /// Whether the `skill` tool is offered at all — the `/settings` **Skills**
+    /// knob, read by every rebuild so a mid-session switch sticks.
+    skills_enabled: bool,
     /// The user's lifecycle hooks (`docs/hooks.md`), re-attached on every
     /// rebuild like the registries above. Held as the *setup* rather than a
     /// built sink because a payload names the model, and a `/model` switch
@@ -151,6 +158,7 @@ impl ModelSession {
         permissions: Option<&PermissionGate>,
         ask: &alter_zero::ask::AskGate,
         tasks: &alter_zero::tasks::TaskRegistry,
+        skills: &alter_zero::skills::SkillRegistry,
         settings: &SessionSettings,
         hooks: Option<HookSetup>,
     ) -> Self {
@@ -171,6 +179,11 @@ impl ModelSession {
         let tools = settings.tools;
         let max_retries = settings.error_retry;
         let max_tool_calls = settings.max_tool_calls;
+        // The **Skills** knob and the discovered set are separate: an empty
+        // registry attaches nothing either way, but holding it through an off
+        // spell means turning the row back on needs no rescan.
+        let skills_enabled = settings.skills;
+        let skills = skills.clone();
         let system_prompt = config::system_prompt(cwd);
         // The provider the /model picker lists from and switches within: env,
         // else the saved selection, else the file's default.
@@ -246,6 +259,7 @@ impl ModelSession {
                 permissions,
                 ask,
                 tasks,
+                skills_enabled.then_some(&skills),
                 hooks.as_ref(),
             )),
             (None, None) => {
@@ -299,6 +313,8 @@ impl ModelSession {
             permissions: permissions.cloned(),
             ask: ask.clone(),
             tasks: tasks.clone(),
+            skills,
+            skills_enabled,
             hooks,
             fetch_cancel: None,
             probe_pending: probe.is_some(),
@@ -421,6 +437,7 @@ impl ModelSession {
             self.permissions.as_ref(),
             &self.ask,
             &self.tasks,
+            self.skills_enabled.then_some(&self.skills),
             self.hooks.as_ref(),
         ));
     }
@@ -536,6 +553,13 @@ impl ModelSession {
         if let Some(setup) = self.hooks.as_mut() {
             setup.enabled = enabled;
         }
+        self.rebuild_current();
+    }
+
+    /// The `/settings` **Skills** knob: whether the `skill` tool and the
+    /// listing are offered from here on (`docs/skills.md`).
+    pub(crate) fn set_skills(&mut self, enabled: bool) {
+        self.skills_enabled = enabled;
         self.rebuild_current();
     }
 
@@ -902,6 +926,7 @@ fn session_backend(
     permissions: Option<&PermissionGate>,
     ask: &alter_zero::ask::AskGate,
     tasks: &alter_zero::tasks::TaskRegistry,
+    skills: Option<&alter_zero::skills::SkillRegistry>,
     hooks: Option<&HookSetup>,
 ) -> LlmBackend {
     // Captured before `configure` consumes the config: the hooks payload
@@ -923,6 +948,12 @@ fn session_backend(
         // tools — always attached, like the ask gate; the checklist is the
         // session's, so every rebuild re-binds the same registry.
         .with_tasks(tasks.clone());
+    // The discovered skills (docs/skills.md): enables the `skill` tool, and
+    // rides every rebuild so a `/model` switch keeps them. `None` is the
+    // `/settings` **Skills** row off; an empty registry attaches nothing.
+    if let Some(skills) = skills {
+        backend = backend.with_skills(skills.clone());
+    }
     // The tool-permission gate (docs/permissions.md) — absent when
     // `ALTER_ZERO_PERMISSIONS` is falsy, and every tool then runs unasked.
     if let Some(gate) = permissions {
@@ -960,6 +991,30 @@ impl Session<'_> {
         // The footer gauge + auto-compact window (docs/compact.md).
         let window = self.models.context_window();
         self.app.set_context_window(window);
+        // The skill listing is budgeted off that same window (1% of it, in
+        // characters), so it is re-rendered here rather than once at startup:
+        // a `/model` switch to a roomier model widens the listing with it.
+        self.sync_skill_listing();
+    }
+
+    /// Render the `<system-reminder>` skill listing into `App`, so the derived
+    /// context leads with it (`docs/skills.md`). `None` when no skill loaded
+    /// or the `/settings` **Skills** row is off — a session with no skills
+    /// sends exactly the context it sent before the feature existed.
+    pub(crate) fn sync_skill_listing(&mut self) {
+        let listing = if self.app.settings().skills_active() {
+            let budget = alter_zero::skills::listing_budget(
+                self.models
+                    .context_window()
+                    .and_then(|w| usize::try_from(w).ok()),
+            );
+            let rendered =
+                alter_zero::skills::listing_message(&self.skill_registry.listing(budget));
+            (!rendered.is_empty()).then_some(rendered)
+        } else {
+            None
+        };
+        self.app.set_skill_listing(listing);
     }
 
     /// `/model` from an idle composer (`docs/llm.md`): open the inline picker (it

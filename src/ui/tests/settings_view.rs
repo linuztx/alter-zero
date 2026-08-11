@@ -6,9 +6,19 @@ use super::*;
 use crate::permission::PermissionMode;
 use crate::settings::{SettingAvailability, SettingKey};
 use crate::ui::theme::{
-    GAP_ROWS, MODEL_SELECTED_COLOR, SETTINGS_CHROME_ROWS, SETTINGS_HINT, SETTINGS_SEARCH_ROW,
-    SETTINGS_VALUE_COLOR, SETTINGS_VALUE_OFF_COLOR, STATUS_GAP_ROWS, STATUS_ROWS,
+    GAP_ROWS, MODEL_SELECTED_COLOR, SETTINGS_CHROME_ROWS, SETTINGS_HINT, SETTINGS_MENU_MAX_ROWS,
+    SETTINGS_SEARCH_ROW, SETTINGS_VALUE_COLOR, SETTINGS_VALUE_OFF_COLOR, STATUS_GAP_ROWS,
+    STATUS_ROWS,
 };
+
+/// How many setting rows the menu actually shows: every one, until there are
+/// more than the window holds — past [`SETTINGS_MENU_MAX_ROWS`] the list
+/// scrolls with the selection centered rather than growing without bound.
+fn visible_rows() -> u16 {
+    u16::try_from(SettingKey::ALL.len())
+        .unwrap()
+        .min(SETTINGS_MENU_MAX_ROWS)
+}
 
 /// An app with the menu open and a gate present (the ordinary session shape).
 fn settings_app() -> App {
@@ -50,10 +60,9 @@ fn the_menu_is_framed_like_the_model_picker_with_a_hint_row() {
 #[test]
 fn the_height_is_the_chrome_plus_the_listed_rows() {
     let mut app = settings_app();
-    let all = u16::try_from(SettingKey::ALL.len()).unwrap();
     assert_eq!(
         settings_height(&app, 78, 200),
-        Some(SETTINGS_CHROME_ROWS + all)
+        Some(SETTINGS_CHROME_ROWS + visible_rows())
     );
     // A narrowed search shrinks the list — and so the region.
     for c in "retry".chars() {
@@ -80,13 +89,12 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
     let mut app = settings_app();
     app.begin_stream();
     app.start_tool("Bash", "cargo test");
-    let all = u16::try_from(SettingKey::ALL.len()).unwrap();
     let preview = preview_rows(&app, 78);
     assert!(preview > 0, "the running tool previews mid-turn");
     let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
     assert_eq!(
         settings_height(&app, 78, 200),
-        Some(strip + SETTINGS_CHROME_ROWS + all)
+        Some(strip + SETTINGS_CHROME_ROWS + visible_rows())
     );
     // Idle again, the menu is alone — the old geometry.
     app.end_tool("ok", true);
@@ -94,7 +102,7 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
     app.end_turn(1);
     assert_eq!(
         settings_height(&app, 78, 200),
-        Some(SETTINGS_CHROME_ROWS + all)
+        Some(SETTINGS_CHROME_ROWS + visible_rows())
     );
 }
 
@@ -157,12 +165,14 @@ fn the_counter_and_description_track_the_selection() {
     let mut app = settings_app();
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     let buf = render(&app, 78);
-    let all = u16::try_from(SettingKey::ALL.len()).unwrap();
-    // counter = 4 (list start) + all rows.
-    let counter = row(&buf, 4 + all, 78);
-    assert!(counter.contains(&format!("(2/{all})")), "{counter:?}");
+    let rows = visible_rows();
+    let total = SettingKey::ALL.len();
+    // counter = 4 (list start) + the rows actually drawn; the count it shows
+    // is the whole list, not the window.
+    let counter = row(&buf, 4 + rows, 78);
+    assert!(counter.contains(&format!("(2/{total})")), "{counter:?}");
     // description = counter + gap + 1.
-    let description = row(&buf, 4 + all + 2, 78);
+    let description = row(&buf, 4 + rows + 2, 78);
     assert!(
         description.contains(SettingKey::ErrorRetry.description()),
         "{description:?}"
@@ -208,6 +218,7 @@ fn an_unavailable_row_is_labelled_and_dimmed() {
     app.set_setting_availability(SettingAvailability {
         checkpoints: false,
         hooks: true,
+        skills: true,
     });
     let buf = render(&app, 78);
     let all = SettingKey::ALL.len();

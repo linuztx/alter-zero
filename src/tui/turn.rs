@@ -117,8 +117,9 @@ impl Session<'_> {
         // AGENTS.md instructions in front); the image paths also travel the
         // original typed channel (codex's `UserInput::LocalImage`). See
         // docs/context.md.
-        let context = context::context_messages_with(
+        let context = context::context_messages_full(
             self.app.user_instructions.as_deref(),
+            self.app.skill_listing.as_deref(),
             &self.app.history,
         );
         self.spawn_reply(prompt, paths, context);
@@ -181,8 +182,9 @@ impl Session<'_> {
         self.render.reset();
         // A follow-up turn about background completions — text, no command yet.
         self.clocks.start_turn();
-        let context = context::context_messages_with(
+        let context = context::context_messages_full(
             self.app.user_instructions.as_deref(),
+            self.app.skill_listing.as_deref(),
             &self.app.history,
         );
         self.spawn_reply(prompt, Vec::new(), context);
@@ -209,8 +211,9 @@ impl Session<'_> {
         // The summarizer reads the same window the model does — the AGENTS.md
         // instructions in front (codex's compact request keeps its initial
         // context too). See docs/project-doc.md.
-        let mut compact_context = context::context_messages_with(
+        let mut compact_context = context::context_messages_full(
             self.app.user_instructions.as_deref(),
+            self.app.skill_listing.as_deref(),
             &self.app.history,
         );
         compact_context.push(context::ContextMessage::new(

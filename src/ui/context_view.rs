@@ -83,15 +83,21 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // appended (`App::agent_system_prompt`, from
     // `ReplySource::agent_system_prompt`) — with no AGENTS.md fragment
     // (subagents get none). See `docs/agent-tool.md`.
-    let (history, instructions, system_prompt) = match app.viewed_agent() {
+    // A viewed subagent's own window has neither leading fragment: its
+    // instructions ride the system prompt shown above, and its skills — which
+    // it does carry (`docs/skills.md`) — are the session's, listed on the
+    // main view.
+    let (history, instructions, skills, system_prompt) = match app.viewed_agent() {
         Some(run) => (
             run.history.as_slice(),
+            None,
             None,
             app.agent_system_prompt.as_ref(),
         ),
         None => (
             app.history.as_slice(),
             app.user_instructions.as_deref(),
+            app.skill_listing.as_deref(),
             app.system_prompt.as_ref(),
         ),
     };
@@ -107,7 +113,7 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             width,
         );
     }
-    for message in crate::context::context_messages_with(instructions, history) {
+    for message in crate::context::context_messages_full(instructions, skills, history) {
         context_entry_lines(
             &mut lines,
             &format!("{}:", message.role.wire_name()),

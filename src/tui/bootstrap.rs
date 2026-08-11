@@ -139,6 +139,16 @@ impl<'t> Session<'t> {
         // on the tool thread, the loop reads and — on a rewind — replaces it.
         let task_registry = alter_zero::tasks::TaskRegistry::new();
 
+        // The skills on disk (docs/skills.md): a `<root>/<name>/SKILL.md` walk
+        // over the project's and the user's roots, done once here so the
+        // listing and the tool set are settled before the backend is built.
+        // A `SKILL.md` that will not parse is collected, not thrown — one bad
+        // skill must not cost a session the rest — and becomes the startup
+        // toast below.
+        let (found_skills, skill_errors) =
+            alter_zero::llm::skill::load_skills(&cwd, config::config_home().as_deref());
+        let skill_registry = alter_zero::skills::SkillRegistry::new(found_skills);
+
         // The `/settings` knobs (docs/settings.md): the saved `settings.json`
         // with each `ALTER_ZERO_*` override applied on top. Resolved BEFORE the
         // backend, which is built around three of them (tools, retries,
@@ -188,6 +198,7 @@ impl<'t> Session<'t> {
             permissions.gate(),
             &ask,
             &task_registry,
+            &skill_registry,
             &settings,
             hook_setup,
         );
@@ -292,6 +303,7 @@ impl<'t> Session<'t> {
             permissions,
             ask,
             task_registry,
+            skill_registry,
             recorder,
             hist_store,
             checkpoints,
@@ -309,6 +321,7 @@ impl<'t> Session<'t> {
         // After the checkpoint toast, so a session with both problems ends up
         // showing the hooks one — the actionable typo beats the size refusal.
         session.report_hooks_error(hooks_error);
+        session.report_skill_errors(&skill_errors);
         let picker = session.apply_startup(startup);
         session.paint_first_frame(picker)?;
 
@@ -402,6 +415,27 @@ impl<'t> Session<'t> {
         if let Some(error) = error {
             self.toast(error, ToastKind::Error);
         }
+    }
+
+    /// Say once, at startup, that some `SKILL.md` could not be loaded — the
+    /// hooks toast's rule (`docs/skills.md`): a skill that silently never
+    /// appears in the listing makes "the model ignores my skill" and "I typo'd
+    /// the frontmatter" read as two unrelated problems. One row names the
+    /// count and the first offender; the rest are the same shape.
+    fn report_skill_errors(&mut self, errors: &[alter_zero::skills::SkillError]) {
+        let Some(first) = errors.first() else {
+            return;
+        };
+        let more = errors.len() - 1;
+        let tail = if more > 0 {
+            format!(" (+{more} more)")
+        } else {
+            String::new()
+        };
+        self.toast(
+            format!("Skill {}: {}{tail}", first.path.display(), first.message),
+            ToastKind::Error,
+        );
     }
 
     /// Apply the CLI's `--continue`/`--resume` directive (`docs/cli.md`).

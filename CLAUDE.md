@@ -38,7 +38,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `tasks`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `tasks`, `skills`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -634,7 +634,43 @@ with ↑/↓ overflow markers, per-event summaries/descriptions stating **this**
 runner's exit-code semantics, matcher level only for the events whose
 dispatch matches on something (`hooks::event_has_matchers` — `Stop` and
 `UserPromptSubmit` skip it), the detail page's rounded box holding the real
-command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the **Ctrl+O
+command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the **`Skill`
+tool** (Claude Code's skills, `docs/skills.md`: folders of authored markdown
+the model pulls into the conversation on demand — a `<root>/<name>/SKILL.md`
+of YAML frontmatter (`name`/`description`, everything else **ignored not
+rejected** so an ecosystem skill carrying `allowed-tools:`/`model:` loads
+unchanged) over a body, discovered once at startup from the project's
+`.alter-zero/skills` + `.claude/skills`, the config home's `skills`, and
+`~/.claude/skills`, first root winning a name (`ALTER_ZERO_SKILLS_DIR`
+**replaces** the list, the `*_DIR` convention — and what makes a smoke run
+hermetic; a `SKILL.md` that won't parse is a startup toast naming it, never
+silence). Only each skill's one-line description rides the context — the
+budgeted `<system-reminder>` listing (the reference's 1%-of-window character
+budget, descriptions trimmed to an even share and degrading to names-only
+rather than **dropping** a skill, since one you can't see is one you can't
+invoke) that `context::context_messages_full` injects as the derived
+context's second leading fragment, right behind `user_instructions` and in
+front of everything else, a fixed position because both are re-rendered per
+turn and a fragment that moved would invalidate the prompt cache behind it.
+A call resolves through the **`ToolOutcome::context` two-text split the ask
+tool already had** rather than a parallel mechanism: `output` is the whole
+visible surface — `● Skill(dataviz)` over one green `⎿ Successfully loaded
+skill` — while `context` is the rendered body (its `Base directory` header,
+`$ARGUMENTS`/`$1`…`$9` substitution — non-placeholder args appended as an
+`Arguments:` line so none is silently dropped — `${…SKILL_DIR}` expansion,
+100 KiB cap), so the green `ToolAnswered` path, `ToolCall::context_output`,
+the context replay, the rollout round-trip and Ctrl+D all come for free;
+Ctrl+O keeps the one line too (the transcript is what *happened*, Ctrl+D what
+was *sent* — the rule every other two-text call follows), and the replay
+reconstructs `{"skill": "<name>"}` from the summary, which for this tool
+**is** the name, since a validating provider rejects the `{}` an unmapped
+tool would have sent. Nothing runs, so no permission prompt is raised — the
+body's own `bash` calls still meet it. Subagents carry the tool too; the
+`/settings` **Skills** row (unavailable when none loaded) and
+`ALTER_ZERO_SKILLS` gate it; `/<skill-name>` needs no code — it submits as
+text and the system prompt's guidance line makes the model answer it with a
+`skill` call (verified live); the offline `skills` scenario drives the cell
+through the real formatters, `smoke.sh` Phase 76); and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in
@@ -658,8 +694,9 @@ the **`/settings` menu** (`docs/settings.md`: the knobs that were only ever
 a hard-coded `agent::MAX_TOOL_ITERATIONS`, and an always-on auto-compaction —
 made *visible and changeable mid-session*
 in the `/model` picker's inline frame, the third composer-replacing picker:
-nine rows (**Hide thinking**, **Error retry**, **Tools**, **Permission
-mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Temperature**,
+eleven rows (**Hide thinking**, **Error retry**, **Tools**, **Permission
+mode**, **Checkpoints**, **Auto compact**, **Project docs**, **Hooks**,
+**Skills**, **Temperature**,
 **Max tool calls** — whose `0` default means *no limit*, since a cap that
 trips mid-task abandons the work half-done and Esc is already the stop
 button; it counts the **calls**, not the rounds, because a round can be a

@@ -21,7 +21,9 @@ the context window from `App::history` on demand —
 `context_messages_with(instructions, &app.history)` when the project's
 AGENTS.md instructions lead it (`docs/project-doc.md`; the two emptiness
 checks deliberately derive *without* them, so a standing guide alone is
-still "nothing to compact") — because `history`
+still "nothing to compact"), or `context_messages_full(instructions,
+skill_listing, &app.history)` when the skills' `<system-reminder>` listing
+rides behind them (`docs/skills.md`) — because `history`
 is already the single source of truth the TUI keeps correct everywhere it
 matters:
 
@@ -29,6 +31,12 @@ matters:
 - the Esc-Esc backtrack rewind truncates it;
 - an Esc interrupt's *undo* pops the submission back out of it;
 - a `/resume` load replaces it with the parsed rollout file.
+
+Both leading fragments sit **in front of** history rather than in it, in a
+fixed order (instructions, then the skill listing): they are re-rendered per
+turn, so a fragment that moved position would invalidate the prompt cache
+behind it, and keeping them out of `history` means a backtrack cannot rewind
+past them and the recorder cannot store them twice.
 
 A stored context would have to mirror every one of those transitions and
 would drift on the first missed one. A derived context *cannot* drift: the

@@ -152,6 +152,7 @@ fn cycling_an_unavailable_setting_explains_itself_instead() {
     app.set_setting_availability(SettingAvailability {
         checkpoints: false,
         hooks: true,
+        skills: true,
     });
     type_query(&mut app, "checkpoint");
     let row = app.highlighted_setting().unwrap();

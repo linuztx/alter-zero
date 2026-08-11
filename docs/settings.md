@@ -45,6 +45,7 @@ same thing on every row and the menu never needs an edit mode.
 | **Auto compact** | `true` / `false` | Whether the loop runs the summarization turn on its own past 90 % of the context window (`docs/compact.md`). `/compact` by hand is unaffected. |
 | **Project docs** | `true` / `false` | Whether the project's `AGENTS.md` files are re-read each turn into the context's leading user entry (`docs/project-doc.md`). Seeded from `ALTER_ZERO_PROJECT_DOC_MAX_BYTES=0`. |
 | **Hooks** | `true` / `false` | Whether the user's `~/.alter-zero/hooks.json` lifecycle hooks run — around tool calls, turns, and the session boundaries (`docs/hooks.md`). Seeded from `ALTER_ZERO_HOOKS`; **unavailable** when no hooks file resolved or it had nothing runnable in it. |
+| **Skills** | `true` / `false` | Whether the `skill` tool is offered and the `<system-reminder>` listing rides the context (`docs/skills.md`). Seeded from `ALTER_ZERO_SKILLS`; **unavailable** when no `SKILL.md` loaded — there is nothing to turn on. |
 | **Temperature** | `default` / `0.0` / `0.3` / `0.5` / `0.7` / `1.0` | The sampling temperature every request carries; `default` sends none and leaves it to the provider. Seeded from `ALTER_ZERO_TEMPERATURE`. |
 | **Max tool calls** | **`0`** / `5` / `10` / `20` / `50` / `100` | How many tool **calls** one turn may run before it gives up (`llm::agent::run_agent`'s cap). **`0` is no limit, and the default** — see below. |
 
@@ -188,6 +189,11 @@ docs`.
     (`docs/hooks.md`).
   - **Project docs** reloads (or drops) `App::user_instructions` at once, so
     Ctrl+D shows the change before the next turn.
+  - **Skills** does both halves, because the feature has two: the tool rides
+    the backend build (so the row rebuilds it) and the listing rides the
+    context (so the row re-renders `App::skill_listing`). Flipping it off
+    leaves the discovered set in memory, so flipping it back on costs no
+    rescan (`docs/skills.md`).
   - **Hide thinking** and **Auto compact** need nothing beyond the pure flag:
     `tui::stream` consults `App::settings().show_thinking()` per phase and
     `App::should_auto_compact` gates on the flag.

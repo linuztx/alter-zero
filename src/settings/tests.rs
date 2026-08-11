@@ -197,6 +197,7 @@ fn an_unavailable_checkpoint_row_shows_its_effective_value_not_the_stored_one() 
         availability: SettingAvailability {
             checkpoints: false,
             hooks: true,
+            skills: true,
         },
         ..SessionSettings::default()
     };
@@ -215,6 +216,7 @@ fn an_unavailable_setting_says_so_and_refuses_to_cycle() {
         availability: SettingAvailability {
             checkpoints: false,
             hooks: true,
+            skills: true,
         },
         ..SessionSettings::default()
     };
@@ -329,6 +331,7 @@ fn availability_is_never_persisted() {
         availability: SettingAvailability {
             checkpoints: false,
             hooks: true,
+            skills: true,
         },
         ..SessionSettings::default()
     };

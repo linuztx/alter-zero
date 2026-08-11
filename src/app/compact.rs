@@ -155,9 +155,11 @@ impl App {
             return 0;
         }
         let mut total = self.system_prompt.as_deref().map_or(0, count_tokens);
-        for message in
-            crate::context::context_messages_with(self.user_instructions.as_deref(), &self.history)
-        {
+        for message in crate::context::context_messages_full(
+            self.user_instructions.as_deref(),
+            self.skill_listing.as_deref(),
+            &self.history,
+        ) {
             total += count_tokens(&message.text);
             total += message.images.len() * IMAGE_INPUT_TOKENS;
             for call in &message.tool_calls {

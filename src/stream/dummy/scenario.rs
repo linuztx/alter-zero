@@ -238,6 +238,14 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         selects: |cue| cue.mentions("todo") || cue.mentions("task"),
         play: Play::Script(turns::tasks_turn),
     },
+    // Loading an authored `SKILL.md` into the conversation — the one-line
+    // cell over the whole body the model reads (docs/skills.md).
+    Scenario {
+        #[cfg(test)]
+        name: "skills",
+        selects: |cue| cue.mentions("skill"),
+        play: Play::Script(turns::skills_turn),
+    },
     // The default turn: think, then a compact `Read`+`Bash` batch.
     Scenario {
         #[cfg(test)]

@@ -200,6 +200,10 @@ pub(crate) struct Session<'t> {
     /// (`docs/task-tools.md`) — the loop syncs it to `App::tasks` after every
     /// history rewind so the model's next `tasklist` agrees with the strip.
     task_registry: alter_zero::tasks::TaskRegistry,
+    /// The skills discovered at startup (`docs/skills.md`) — the set every
+    /// backend build offers the `skill` tool over, and the source of the
+    /// `<system-reminder>` listing the derived context leads with.
+    skill_registry: alter_zero::skills::SkillRegistry,
     /// Mirrors history to the `/resume` rollout file (`docs/resume.md`).
     recorder: SessionRecorder,
     /// The cross-session input history (`docs/history-persistence.md`).

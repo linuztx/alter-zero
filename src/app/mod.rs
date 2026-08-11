@@ -266,6 +266,15 @@ pub struct App {
     /// (`context::context_messages_with`), the Ctrl+D view shows it there,
     /// and the offline token estimate counts it. See `docs/project-doc.md`.
     pub user_instructions: Option<String>,
+    /// The discovered skills' `<system-reminder>` listing, rendered at the
+    /// boundary ([`App::set_skill_listing`], from
+    /// `skills::listing_message`) and injected as the derived context's
+    /// **second** leading user entry, right behind
+    /// [`user_instructions`](Self::user_instructions)
+    /// (`context::context_messages_full`) — so the Ctrl+D view shows it and
+    /// the offline token estimate counts it. `None` when no skill loaded or
+    /// the `/settings` **Skills** row is off. See `docs/skills.md`.
+    pub skill_listing: Option<String>,
     /// The Esc-Esc backtrack gesture (edit a previous message): primed by Esc
     /// from an idle empty composer when a previous user message exists,
     /// previewing in the transcript overlay, confirmed with Enter. Reset by
@@ -697,6 +706,15 @@ impl App {
     /// token estimate all carry them. See `docs/project-doc.md`.
     pub fn set_user_instructions(&mut self, instructions: Option<String>) {
         self.user_instructions = instructions;
+    }
+
+    /// Inject the skills' `<system-reminder>` listing (from
+    /// `skills::listing_message`, rendered at the boundary once at startup and
+    /// re-rendered when the **Skills** setting changes) so the context
+    /// derivation, the Ctrl+D view, and the token estimate all carry it. See
+    /// `docs/skills.md`.
+    pub fn set_skill_listing(&mut self, listing: Option<String>) {
+        self.skill_listing = listing;
     }
 
     /// Record a finished user message in the history.

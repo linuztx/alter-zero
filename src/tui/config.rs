@@ -479,6 +479,9 @@ pub(crate) fn apply_setting_overrides(mut settings: SessionSettings) -> SessionS
     {
         settings.project_docs = budget > 0;
     }
+    if let Some(on) = env_flag_set("ALTER_ZERO_SKILLS") {
+        settings.skills = on;
+    }
     if let Some(t) = temperature() {
         settings.temperature = Some(t);
     }

@@ -49,6 +49,8 @@ impl Session<'_> {
         self.app.set_setting_availability(SettingAvailability {
             checkpoints: self.checkpoints.is_capable(),
             hooks: self.models.hooks_available(),
+            // Nothing to toggle when no `SKILL.md` loaded (`docs/skills.md`).
+            skills: !self.skill_registry.is_empty(),
         });
     }
 
@@ -88,6 +90,13 @@ impl Session<'_> {
             // row rebuilds — the next turn genuinely stops (or starts)
             // consulting them (docs/hooks.md).
             SettingKey::Hooks => self.models.set_hooks(settings.hooks_active()),
+            // The tool rides the backend build and the listing rides the
+            // context, so flipping the row does both — the next turn genuinely
+            // stops (or starts) knowing about skills (`docs/skills.md`).
+            SettingKey::Skills => {
+                self.models.set_skills(settings.skills_active());
+                self.sync_skill_listing();
+            }
             // Read where they are used — nothing to rebuild.
             SettingKey::HideThinking | SettingKey::AutoCompact => {}
             // Ctrl+A's path owns this one; the menu never routes it here.

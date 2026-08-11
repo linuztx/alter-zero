@@ -797,3 +797,60 @@ fn tool_turn(
     events.push(StreamEvent::StreamDone);
     events
 }
+
+/// The **skills** demo's narration (`docs/skills.md`): what a skill is, and
+/// what the one-line cell hides.
+const SKILLS_REPLY: &str = concat!(
+    "Skills are folders of authored markdown I can pull in on demand — a \
+     `SKILL.md` per skill under `.claude/skills/` or `~/.alter-zero/skills/`. \
+     Only each one's description sits in my context until I need it, so a \
+     library of them costs almost nothing. Let me load one.\n\n",
+    "That's the whole visible surface: one green line. What I got back is the \
+     skill's entire body — its instructions are in front of me now, so the \
+     rest of this turn follows them. The transcript keeps just this line; \
+     **ctrl+d** shows the loaded text itself, since that is what actually went \
+     into my context. Because nothing *runs*, loading a skill never raises the \
+     permission prompt — anything the skill then tells me to run still \
+     does.\n\n",
+    handoff!()
+);
+
+/// The **skills** demo (`docs/skills.md`): the model loading a `dataviz`
+/// skill, resolving to the same one-line cell over the same rendered body the
+/// live tool produces.
+///
+/// The two texts come from [`crate::skills`]'s own constants and
+/// [`crate::skills::render_skill_body`] — the very formatter
+/// `llm::skill::run_skill_tool` calls — so the offline cell and the offline
+/// context entry are byte-for-byte the live ones, the rule every scripted
+/// demo follows.
+pub(in crate::stream) fn skills_turn(cue: &Cue) -> Vec<StreamEvent> {
+    const SKILL_NAME: &str = "dataviz";
+    const SKILL_DIR: &str = "~/.claude/skills/dataviz";
+    const SKILL_BODY: &str = "# Data visualization\n\n\
+         Read `references/palette.md` before choosing any colors.\n\n\
+         ## Rules\n\n\
+         - One accent hue per chart; grey for everything unemphasised.\n\
+         - Label the axes in the units a reader thinks in.\n\
+         - Never encode a quantity by area alone.";
+
+    let (first, second) = reply_parts(SKILLS_REPLY);
+    let mut events = opening(cue);
+    events.extend(say(&first));
+    events.push(StreamEvent::ToolStart {
+        name: crate::skills::SKILL_TOOL_DISPLAY.to_string(),
+        args: SKILL_NAME.to_string(),
+        detail: None,
+    });
+    // The two-text split (docs/skills.md): the cell gets one line, the model
+    // gets the body. `ToolAnswered` is what the live loop sends for it, so the
+    // recorded call keeps both and Ctrl+D shows what was really sent.
+    events.push(StreamEvent::ToolAnswered {
+        display: crate::skills::SKILL_LOADED_DISPLAY.to_string(),
+        result: crate::skills::render_skill_body(std::path::Path::new(SKILL_DIR), SKILL_BODY, ""),
+        truncated: false,
+    });
+    events.extend(say(&second));
+    events.push(StreamEvent::StreamDone);
+    events
+}

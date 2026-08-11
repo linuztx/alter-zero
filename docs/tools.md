@@ -48,6 +48,13 @@ grammar: they work on any function-calling model, and `edit`'s exact
 `old_string`→`new_string` contract (Claude Code's) is simpler and safer for
 arbitrary models than fuzzy-context patch matching.
 
+Other tools attach conditionally, each enabled by the boundary handing the
+backend the state it needs: `agent` (`docs/agent-tool.md`),
+`askuserquestion` (`docs/ask.md`), the four task tools
+(`docs/task-tools.md`), and `skill` (`docs/skills.md`) — offered only when at
+least one `SKILL.md` was discovered, since with none it could answer nothing
+but "unknown skill".
+
 ## Wire format (Chat Completions)
 
 ### Request

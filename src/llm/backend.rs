@@ -76,6 +76,13 @@ pub struct LlmBackend {
     /// Without it the tools aren't offered (nobody holds the list). Subagents
     /// never carry it — the lead agent plans, subagents execute.
     tasks: Option<crate::tasks::TaskRegistry>,
+    /// The discovered skills, when the boundary attached them — **enables the
+    /// `skill` tool** (`docs/skills.md`): the model can pull an authored
+    /// `SKILL.md` body into the conversation on demand. Attached only when
+    /// at least one skill loaded, since with none the tool has nothing to do.
+    /// Subagents carry it too — a side agent benefits from a skill exactly as
+    /// the lead does, and loading one is pure text.
+    skills: Option<crate::skills::SkillRegistry>,
     /// The auto mode classifier bound to this backend's provider
     /// (`docs/permissions.md`): consulted by the approve seam for `bash`
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
@@ -151,6 +158,7 @@ impl LlmBackend {
             permissions: None,
             ask: None,
             tasks: None,
+            skills: None,
             classifier,
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
@@ -229,6 +237,20 @@ impl LlmBackend {
         self
     }
 
+    /// Attach the discovered skills, **enabling the `skill` tool**
+    /// (`docs/skills.md`): the client's tool set gains the skill spec (tools
+    /// must already be enabled). An **empty** registry attaches nothing —
+    /// offering a tool that can only ever answer "unknown skill" would spend
+    /// the model's attention on a dead end.
+    #[must_use]
+    pub fn with_skills(mut self, registry: crate::skills::SkillRegistry) -> Self {
+        if self.tools_enabled && !registry.is_empty() {
+            self.skills = Some(registry);
+            self.sync_tool_specs();
+        }
+        self
+    }
+
     /// Rebuild the client's tool set from what is attached — the `agent` spec
     /// when a subagent registry is, the ask spec when an ask gate is, the
     /// task specs when a task registry is — so
@@ -245,6 +267,9 @@ impl LlmBackend {
         }
         if self.tasks.is_some() {
             specs.extend(tools::task_specs());
+        }
+        if self.skills.is_some() {
+            specs.push(tools::skill_spec());
         }
         self.client = self.client.clone().with_tools(specs);
     }
@@ -526,6 +551,7 @@ impl ReplySource for LlmBackend {
         let permissions = self.permissions.clone();
         let ask = self.ask.clone();
         let task_list = self.tasks.clone();
+        let skills = self.skills.clone();
         let classifier = self.classifier.clone();
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
@@ -600,6 +626,16 @@ impl ReplySource for LlmBackend {
                         .filter(|_| crate::tasks::is_task_tool(&call.name))
                     {
                         return super::task::run_task_tool(registry, call);
+                    }
+                    // A `skill` call (docs/skills.md): read the named
+                    // `SKILL.md` and hand its body back as the model-facing
+                    // result, the cell keeping its one `Successfully loaded
+                    // skill` row. Nothing runs, so there is no gate to pass.
+                    if let Some(registry) = skills
+                        .as_ref()
+                        .filter(|_| crate::skills::is_skill_tool(&call.name))
+                    {
+                        return super::skill::run_skill_tool(registry, call);
                     }
                     match (&ask, call.name.as_str()) {
                         (Some(gate), tools::ASK_TOOL_NAME) => {
@@ -728,6 +764,10 @@ struct SubagentConfig {
     /// The auto mode classifier, so a subagent's `bash` calls are reviewed
     /// in auto mode exactly like the main turn's (`docs/permissions.md`).
     classifier: SafetyClassifier,
+    /// The session's skills, so a subagent can load one too (`docs/skills.md`)
+    /// — a side agent benefits from an authored `SKILL.md` exactly as the lead
+    /// does, and loading one is pure text, so it needs no gate of its own.
+    skills: Option<crate::skills::SkillRegistry>,
     /// The session's retry budget, so a subagent's rounds retry exactly as
     /// the main turn's do (`docs/settings.md`).
     max_retries: u32,
@@ -760,6 +800,7 @@ impl LlmBackend {
             background: self.background.clone(),
             permissions: self.permissions.clone(),
             classifier: self.classifier.clone(),
+            skills: self.skills.clone(),
             max_retries: self.max_retries,
             max_tool_calls: self.max_tool_calls,
             hooks: Arc::clone(&self.hooks),
@@ -981,10 +1022,14 @@ fn spawn_subagent_run(
     mut messages: Vec<ChatMessage>,
     cancel: CancelToken,
 ) {
-    let client = config
-        .client
-        .clone()
-        .with_tools(tools::subagent_tool_specs(&agent_type));
+    let skills = config.skills.clone();
+    // The subagent's tool set: its type's own (never `agent` — no nesting),
+    // plus the `skill` tool when the session found any (`docs/skills.md`).
+    let mut specs = tools::subagent_tool_specs(&agent_type);
+    if skills.is_some() {
+        specs.push(tools::skill_spec());
+    }
+    let client = config.client.clone().with_tools(specs);
     let vision = config.vision;
     let detach = config.detach_helper.clone();
     let background = config.background.clone();
@@ -1059,7 +1104,17 @@ fn spawn_subagent_run(
             max_tool_calls,
             &mut messages,
             |msgs| stream_round(&client, msgs, &tx2, &cancel, max_retries),
-            |call, on_output| executor.execute(call, &cancel, on_output),
+            |call, on_output| {
+                // A subagent's `skill` call loads the same `SKILL.md` the
+                // lead would (docs/skills.md).
+                if let Some(registry) = skills
+                    .as_ref()
+                    .filter(|_| crate::skills::is_skill_tool(&call.name))
+                {
+                    return super::skill::run_skill_tool(registry, call);
+                }
+                executor.execute(call, &cancel, on_output)
+            },
             // The chat seam: user messages sent into this agent's session
             // arrive at its next round boundary (docs/agent-tool.md).
             || inputs_registry.take_pending_inputs(&inputs_id),
@@ -1540,6 +1595,41 @@ mod tests {
         let backend = LlmBackend::configure(ModelConfig::fallback(), Some("be nice".into()), false);
         assert!(!backend.tools_enabled());
         assert_eq!(backend.system_prompt.as_deref(), Some("be nice"));
+    }
+
+    #[test]
+    fn an_empty_skill_registry_attaches_nothing() {
+        // Offering a tool that can only ever answer "unknown skill" spends the
+        // model's attention on a dead end, so an empty set is not attached and
+        // the spec is never sent (`docs/skills.md`).
+        let backend = LlmBackend::configure(ModelConfig::fallback(), None, true)
+            .with_skills(crate::skills::SkillRegistry::new(Vec::new()));
+        assert!(backend.skills.is_none());
+    }
+
+    #[test]
+    fn skills_attach_only_when_tools_are_enabled() {
+        // The `with_ask`/`with_tasks` rule: a tools-off backend offers no
+        // tools at all, so attaching to one must be a no-op rather than a
+        // spec that rides a request whose `tools` array is empty.
+        let registry = crate::skills::SkillRegistry::new(vec![crate::skills::SkillMetadata {
+            name: "commit".to_string(),
+            description: "d".to_string(),
+            dir: std::path::PathBuf::from("/s/commit"),
+            path: std::path::PathBuf::from("/s/commit/SKILL.md"),
+        }]);
+        assert!(
+            LlmBackend::configure(ModelConfig::fallback(), None, true)
+                .with_skills(registry.clone())
+                .skills
+                .is_some()
+        );
+        assert!(
+            LlmBackend::configure(ModelConfig::fallback(), None, false)
+                .with_skills(registry)
+                .skills
+                .is_none()
+        );
     }
 
     #[test]

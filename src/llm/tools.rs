@@ -319,6 +319,51 @@ pub fn ask_spec() -> Value {
     )
 }
 
+/// The `Skill` tool definition (`docs/skills.md`) — offered only when a
+/// **non-empty** [`crate::skills::SkillRegistry`] is attached
+/// (`LlmBackend::with_skills`): with no skills on disk the tool has nothing
+/// to load, and both references omit it too. The description follows Claude
+/// Code's `SkillTool` prompt.
+#[must_use]
+pub fn skill_spec() -> Value {
+    function_spec(
+        crate::skills::SKILL_TOOL_NAME,
+        "Execute a skill within the main conversation.\n\n\
+         When the user asks you to perform a task, check whether one of the \
+         available skills matches. Skills package specialized capabilities and \
+         domain knowledge; loading one gives you instructions written for \
+         exactly this kind of work.\n\n\
+         When the user references a \"slash command\" or \"/<something>\" (e.g. \
+         \"/commit\", \"/review-pr\"), they mean a skill — use this tool to run \
+         it.\n\n\
+         Important:\n\
+         - The available skills are listed in a system-reminder message in the \
+         conversation; only those names are valid, so never guess one.\n\
+         - When a skill matches the request, invoke it BEFORE answering about \
+         the task — the skill may change how the work should be done.\n\
+         - Never mention a skill without actually calling this tool.\n\
+         - Do not invoke a skill already loaded in this conversation; its \
+         instructions are in front of you, so just follow them.\n\
+         - Do not use this tool for built-in commands like /help or /clear.",
+        json!({
+            "type": "object",
+            "properties": {
+                "skill": {
+                    "type": "string",
+                    "description": "The skill name. E.g., \"commit\", \
+                        \"review-pr\", or \"pdf\"."
+                },
+                "args": {
+                    "type": "string",
+                    "description": "Optional arguments for the skill."
+                }
+            },
+            "required": ["skill"],
+            "additionalProperties": false
+        }),
+    )
+}
+
 /// The four task-list tool definitions (`docs/task-tools.md`) — offered only
 /// when a [`crate::tasks::TaskRegistry`] is attached
 /// (`LlmBackend::with_tasks`): without one nobody holds the list. Subagents
@@ -777,6 +822,7 @@ pub fn display_name(name: &str) -> String {
         "edit" => "Edit".to_string(),
         AGENT_TOOL_NAME => "Agent".to_string(),
         ASK_TOOL_NAME => ASK_TOOL_DISPLAY.to_string(),
+        crate::skills::SKILL_TOOL_NAME => crate::skills::SKILL_TOOL_DISPLAY.to_string(),
         other => other.to_string(),
     }
 }
@@ -817,6 +863,10 @@ pub fn summarize_call(name: &str, arguments: &str) -> String {
         "bash" => field("command"),
         "read" | "write" | "edit" => field("path"),
         AGENT_TOOL_NAME => field("description"),
+        // `● Skill(dataviz)` — the name alone, the reference's header. The
+        // optional `args` stay out of it: they are prose, and the cell has
+        // one line (`docs/skills.md`).
+        crate::skills::SKILL_TOOL_NAME => field("skill"),
         // The task tools' headers (Ctrl+O only — inline they render nothing,
         // docs/task-tools.md): a create shows its subject, a get/update the
         // `#id` (an update's status change appended — `#1 → completed`), a
@@ -1355,6 +1405,32 @@ mod tests {
             .map(|s| s["function"]["name"].as_str().unwrap())
             .collect();
         assert_eq!(names, TOOL_NAMES);
+    }
+
+    #[test]
+    fn the_skill_spec_takes_a_name_and_optional_args() {
+        // The reference's schema exactly (docs/skills.md): `skill` required,
+        // `args` optional — an over-strict `required` would make every call
+        // that omits args a validation error on a strict provider.
+        let spec = skill_spec();
+        assert_eq!(spec["function"]["name"], crate::skills::SKILL_TOOL_NAME);
+        let params = &spec["function"]["parameters"];
+        assert_eq!(params["required"], serde_json::json!(["skill"]));
+        assert!(params["properties"]["skill"]["type"] == "string");
+        assert!(params["properties"]["args"]["type"] == "string");
+    }
+
+    #[test]
+    fn a_skill_call_renders_as_the_references_header() {
+        // `● Skill(dataviz)` — the name alone, args left out of the one line.
+        assert_eq!(display_name(crate::skills::SKILL_TOOL_NAME), "Skill");
+        assert_eq!(
+            summarize_call(
+                crate::skills::SKILL_TOOL_NAME,
+                r#"{"skill":"dataviz","args":"revenue"}"#
+            ),
+            "dataviz"
+        );
     }
 
     #[test]

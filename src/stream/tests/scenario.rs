@@ -26,6 +26,7 @@ const EXAMPLES: &[&str] = &[
     "show me a diff",
     "demo the todo tool and finish every task",
     "demo the todo tool i want to see how it works",
+    "load a skill for me",
     "hello there",
 ];
 
