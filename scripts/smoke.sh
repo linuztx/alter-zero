@@ -6555,13 +6555,22 @@ echo "==== Phase 75: the detail page ===="
 printf '%s\n' "$hooks_detail"
 for expect in "Hook details" "Event:    PreToolUse" "Matcher:  Bash" \
 	"Type:     command" "Source:   User settings (" "Command:" \
-	"│ jq -re" "no recursive deletes" "To modify or remove this hook" \
+	"│ jq -re" "To modify or remove this hook" \
 	"Esc to go back"; do
 	if ! printf '%s' "$hooks_detail" | grep -qF "$expect"; then
 		echo "FAIL: Phase 75 — the detail page is missing '$expect'" >&2
 		status=1
 	fi
 done
+# The command survives WHOLE in the box — but word-wrapped, so a phrase can
+# split across box rows ('no recursive / deletes'). Strip the borders, join
+# the rows, and assert on the reassembled text (the unit test's approach).
+hooks_box="$(printf '%s\n' "$hooks_detail" | sed -n 's/^  │ \(.*\)│[[:space:]]*$/\1/p' \
+	| sed 's/[[:space:]]*$//' | tr '\n' ' ')"
+if ! printf '%s' "$hooks_box" | grep -qF "no recursive deletes"; then
+	echo "FAIL: Phase 75 — the boxed command lost 'no recursive deletes' (got: $hooks_box)" >&2
+	status=1
+fi
 if printf '%s' "$hooks_detail" | grep -qF "Enter to confirm"; then
 	echo "FAIL: Phase 75 — the detail page offers Enter (it has nothing to confirm)" >&2
 	status=1
