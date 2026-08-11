@@ -28,6 +28,20 @@ impl Session<'_> {
         self.app.open_settings();
     }
 
+    /// `/hooks`: open the read-only hooks browser (`docs/hooks-menu.md`). The
+    /// pure command returned the intent; this derives the data — the overview
+    /// from the live `HookSetup` (the same parsed file the runner consults,
+    /// so the browser and the dispatcher can never disagree), the `Source:`
+    /// path display, and whether the session actually runs the hooks — and
+    /// hands all three to `App`, the `/resume` picker's injection seam.
+    pub(crate) fn open_hooks_menu(&mut self) {
+        let (overview, enabled) = self.models.hooks_browse();
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
+        let source = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref())
+            .map(|path| alter_zero::ui::display_cwd(&path, home.as_deref()));
+        self.app.open_hooks_menu(overview, source, enabled);
+    }
+
     /// Push what this host can actually run into `App` (the `set_clock`
     /// pattern), so an unavailable row says so instead of offering a toggle
     /// that does nothing.

@@ -760,6 +760,72 @@ pub(super) const SETTINGS_CHROME_ROWS: u16 = 11;
 /// [`cursor_position`] so the cursor lands on the query.
 pub(super) const SETTINGS_SEARCH_ROW: u16 = 2;
 
+// --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
+// family's accents — MODEL_SELECTED_COLOR for the selection, MODEL_ID_COLOR
+// for unselected labels, MODEL_META_COLOR for everything dim, AI_COLOR for
+// the titles, BORDER_COLOR for the frame and the detail page's command box. ---
+
+/// The events-level title.
+pub(super) const HOOKS_TITLE: &str = "Hooks";
+
+/// The detail page's title.
+pub(super) const HOOKS_DETAIL_TITLE: &str = "Hook details";
+
+/// The most list rows shown at once — the reference `Select`'s visible-option
+/// count; a longer list scrolls to keep the selection **centered**
+/// (`centered_window`, the `/model` list's), the window's edge rows wearing
+/// the [`HOOKS_UP_MARKER`]/[`HOOKS_DOWN_MARKER`] overflow arrows.
+pub(super) const HOOKS_MENU_MAX_ROWS: usize = 5;
+
+/// The selected row's marker (the permission prompt's `❯`); unselected rows
+/// get spaces the same width.
+pub(super) const HOOKS_MARKER: &str = "❯ ";
+
+/// The scrolled window's edge markers — more rows above / below.
+pub(super) const HOOKS_UP_MARKER: &str = "↑ ";
+pub(super) const HOOKS_DOWN_MARKER: &str = "↓ ";
+
+/// Columns between the widest visible label and the description column, so
+/// the summaries line up in a block (the `/settings` value column's idea).
+pub(super) const HOOKS_DESC_GAP: usize = 3;
+
+/// The read-only banner under the count (events level only) — the reference's
+/// info line with our file and assistant names, its docs link swapped for the
+/// format's own doc.
+pub(super) const HOOKS_INFO: &str = "ℹ This menu is read-only. To add or modify hooks, \
+edit hooks.json directly or ask alter-zero. See docs/hooks.md";
+
+/// The note when the file holds hooks but the session has them off
+/// (`/settings`, `ALTER_ZERO_HOOKS=0`) — the reference's restricted-by-policy
+/// slot, red because every listed guard is currently not running.
+pub(super) const HOOKS_DISABLED_NOTE: &str =
+    "Hooks are disabled this session — enable them in /settings";
+
+/// The empty state (an event with nothing configured), two dim lines.
+pub(super) const HOOKS_EMPTY: &str = "No hooks configured for this event.";
+pub(super) const HOOKS_EMPTY_HINT: &str =
+    "To add hooks, edit hooks.json directly or ask alter-zero.";
+
+/// The list levels' key hint, and the detail/empty pages' Esc-only one.
+pub(super) const HOOKS_HINT: &str = "Enter to confirm · Esc to cancel";
+pub(super) const HOOKS_DETAIL_HINT: &str = "Esc to go back";
+
+/// The single-source tags — one `hooks.json`, one origin (the reference has
+/// user/project/local/plugin layers; ours is user-level only,
+/// `docs/hooks.md`): the `[User]` matcher-row prefix, the hook rows'
+/// `User Settings` description, and the detail page's `Source:` label.
+pub(super) const HOOKS_SOURCE_INLINE: &str = "User";
+pub(super) const HOOKS_SOURCE_HEADER: &str = "User Settings";
+pub(super) const HOOKS_SOURCE_LABEL: &str = "User settings";
+
+/// The detail page's field-name column: `Source:` (the widest) plus its pad,
+/// so the values line up (`Event:    PreToolUse`).
+pub(super) const HOOKS_FIELD_COL: usize = 10;
+
+/// The closing direction on the detail page.
+pub(super) const HOOKS_MODIFY_NOTE: &str =
+    "To modify or remove this hook, edit hooks.json directly or ask alter-zero to help.";
+
 // --- Transcript timestamps (Ctrl+O view only). Only the *user* message shows
 // its wall-clock stamp: dim, right-aligned on its own line below the message
 // (`hh:mm AM/PM`). AI replies, tools, and turn summaries record a stamp too but

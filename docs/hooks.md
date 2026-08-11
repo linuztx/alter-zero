@@ -10,6 +10,10 @@ that feature, ported to this codebase.
   ⎿  Blocked by hook: no destructive deletes outside ./tmp
 ```
 
+The **`/hooks`** command opens a read-only inline browser over this
+configuration — which events have hooks, under which matchers, running what —
+see `docs/hooks-menu.md`.
+
 ## The contract
 
 codex ships a `codex-rs/hooks` crate whose engine type is literally named

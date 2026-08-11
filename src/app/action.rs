@@ -140,6 +140,17 @@ pub enum Action {
     /// `AutoCompact` — are read straight off `App` where they are used. See
     /// `docs/settings.md`.
     SettingChanged(crate::settings::SettingKey),
+    /// `/hooks`: open the read-only hooks browser. Like `/model` it works
+    /// mid-turn — it only replaces the composer. The *loop* digests the
+    /// runner's own parsed `hooks.json` into the overview and hands it to
+    /// [`App::open_hooks_menu`] (the `/resume` picker's injection seam), so
+    /// the browser and the dispatcher can never disagree. See
+    /// `docs/hooks-menu.md`.
+    OpenHooksMenu,
+    /// The `/hooks` menu was dismissed (Esc from the events level, or
+    /// Ctrl+C): [`App::hooks_menu`] is already cleared; the loop just
+    /// repaints the collapsed region.
+    CloseHooksMenu,
     /// `/login` from an idle composer: open the inline API-key onboarding flow.
     /// The *loop* builds the provider choices (which need boundary key
     /// resolution to mark the already-configured ones) and hands them to

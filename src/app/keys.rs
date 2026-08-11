@@ -49,6 +49,10 @@ impl App {
         if self.view == View::Conversation && self.settings_picker.is_some() {
             return self.on_key_settings(key);
         }
+        // …and the read-only `/hooks` menu. See `docs/hooks-menu.md`.
+        if self.view == View::Conversation && self.hooks_menu.is_some() {
+            return self.on_key_hooks(key);
+        }
         // The ↓ background manager band owns every key while open, the same
         // way the pickers do. See `docs/background.md`.
         if self.view == View::Conversation && self.background_view.is_some() {

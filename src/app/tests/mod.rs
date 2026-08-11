@@ -20,6 +20,7 @@ mod commands;
 mod compact;
 mod composer;
 mod file_picker;
+mod hooks_menu;
 mod input_history;
 mod keys;
 mod login;

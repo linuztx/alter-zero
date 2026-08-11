@@ -100,6 +100,10 @@ pub enum CommandEffect {
     /// change that rebuilds the backend rebinds the *next* turn. See
     /// `docs/settings.md`.
     Settings,
+    /// Open the read-only `/hooks` browser over the configured lifecycle
+    /// hooks. Works **mid-turn** like `/model` — browsing touches nothing.
+    /// See `docs/hooks-menu.md`.
+    Hooks,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
 }
@@ -168,6 +172,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "settings",
         description: "Open settings menu",
         effect: CommandEffect::Settings,
+    },
+    SlashCommand {
+        name: "hooks",
+        description: "Browse the configured lifecycle hooks",
+        effect: CommandEffect::Hooks,
     },
     SlashCommand {
         name: "quit",
@@ -354,6 +363,14 @@ impl App {
                 // rebinds the *next* turn (the running one streams on its own
                 // thread). See docs/settings.md.
                 Action::OpenSettings
+            }
+            CommandEffect::Hooks => {
+                // /hooks works mid-turn too — a read-only browse of the
+                // hooks config touches nothing running. The *loop* digests
+                // the runner's parsed hooks.json into the overview and opens
+                // the menu (the /resume data-injection seam). See
+                // docs/hooks-menu.md.
+                Action::OpenHooksMenu
             }
             CommandEffect::Quit => Action::Quit,
         }

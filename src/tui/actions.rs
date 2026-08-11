@@ -179,6 +179,11 @@ impl Session<'_> {
                 // collapses back to the composer on the next draw.
             }
             Action::SettingChanged(key) => self.apply_setting(key),
+            Action::OpenHooksMenu => self.open_hooks_menu(),
+            Action::CloseHooksMenu => {
+                // Esc/Ctrl+C dismissed the browser: nothing to reap; the
+                // region collapses back to the composer on the next draw.
+            }
             Action::Notice(text) => {
                 // A slash command's one-off system notice. The helper finalises
                 // any mid-flight reply segment first (same ordering trick as a

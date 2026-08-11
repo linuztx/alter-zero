@@ -447,6 +447,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::settings_height(app, screen.width, screen.height) {
         return height;
     }
+    // The read-only `/hooks` menu, likewise (docs/hooks-menu.md).
+    if let Some(height) = ui::hooks_menu_height(app, screen.width, screen.height) {
+        return height;
+    }
     if let Some(height) = ui::background_view_height(app, screen.width, screen.height) {
         return height;
     }

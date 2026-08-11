@@ -22,16 +22,23 @@
 //! - `matcher` — which handlers an event's match query selects.
 //! - `payload` — the per-event stdin JSON.
 //! - `verdict` — parsing one handler's answer and merging several.
+//! - `overview` — the display tree the read-only `/hooks` menu browses
+//!   (`docs/hooks-menu.md`).
 
 mod config;
 mod event;
 mod matcher;
+mod overview;
 mod payload;
 mod verdict;
 
 pub use self::config::{CommandHook, HandlerKind, HookHandler, HooksFile, MatcherGroup, Selection};
 pub use self::event::HookEvent;
 pub use self::matcher::{claude_code_alias, invalid_regex, matches};
+pub use self::overview::{
+    EventOverview, HOOK_NO_CONTENT_LABEL, HookOverview, HooksOverview, MATCHER_ALL_LABEL,
+    MatcherOverview, event_description, event_has_matchers, event_summary,
+};
 pub use self::payload::{
     HookContext, permission_request_payload, post_compact_payload, post_tool_use_payload,
     pre_compact_payload, pre_tool_use_payload, session_end_payload, session_start_payload,

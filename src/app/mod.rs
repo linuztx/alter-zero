@@ -33,6 +33,7 @@ mod commands;
 mod compact;
 mod composer;
 mod file_picker;
+mod hooks_menu;
 mod input_history;
 mod keys;
 mod login;
@@ -64,6 +65,7 @@ pub use self::commands::{
 pub use self::compact::{COMPACT_VERB, Compaction};
 pub use self::composer::{SHELL_EMPTY_NOTICE, shell_query};
 pub use self::file_picker::FileSearch;
+pub use self::hooks_menu::{HooksLevel, HooksMenu};
 pub use self::input_history::{HistorySearch, InputHistory, SearchState};
 pub use self::login::{KeyOnboarding, KeyStep, ProviderChoice};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
@@ -298,6 +300,10 @@ pub struct App {
     /// [`model_picker`](Self::model_picker) and
     /// [`key_onboarding`](Self::key_onboarding). See `docs/settings.md`.
     pub settings_picker: Option<SettingsPicker>,
+    /// The open read-only `/hooks` menu; `None` when closed. The fourth
+    /// composer-replacing picker — unlike the other three it has no text
+    /// entry, only navigation. See `docs/hooks-menu.md`.
+    pub hooks_menu: Option<HooksMenu>,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

@@ -460,6 +460,27 @@ impl ModelSession {
         self.hooks.is_some()
     }
 
+    /// The parsed hooks file digested for the read-only `/hooks` browser,
+    /// plus whether the session actually runs it (`docs/hooks-menu.md`). The
+    /// digest comes from the same `Arc<HooksFile>` every backend rebuild
+    /// re-attaches, so the browser and the dispatcher can never disagree; a
+    /// session with no runnable hooks browses as empty (the `/settings`
+    /// row's own posture).
+    pub(crate) fn hooks_browse(&self) -> (alter_zero::hooks::HooksOverview, bool) {
+        match &self.hooks {
+            Some(setup) => (
+                alter_zero::hooks::HooksOverview::from_file(&setup.file),
+                setup.enabled,
+            ),
+            None => (
+                alter_zero::hooks::HooksOverview::from_file(
+                    &alter_zero::hooks::HooksFile::default(),
+                ),
+                false,
+            ),
+        }
+    }
+
     /// Queue a `SessionStart` source (`startup` / `resume` / `clear`) for the
     /// next turn's drain (`docs/hooks.md`). A no-op without hooks.
     pub(crate) fn queue_session_source(&self, source: &str) {

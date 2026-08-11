@@ -414,6 +414,16 @@ pub fn render_live_with_preview(
         render_settings(body, buf, app);
         return;
     }
+    // …and the read-only `/hooks` menu — its body is the built line count,
+    // the ↓ manager band's rule. See `docs/hooks-menu.md`.
+    if app.hooks_menu.is_some() {
+        let body_h = u16::try_from(super::hooks_view::hooks_view_lines(app, area.width).len())
+            .unwrap_or(u16::MAX);
+        let [strip, body] = view_split(area, body_h);
+        render_strip_above(strip, buf, app, stream_preview);
+        render_hooks_menu(body, buf, app);
+        return;
+    }
     // The ↓ background manager band replaces the composer (and the band/footer
     // slots below it) — but **not** the streaming strip: a running tool's live
     // cell, the status line, the queued messages and the toast keep their rows

@@ -49,11 +49,11 @@ Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `hooks_menu`, `background`,
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
-`file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `live`, `transcript`,
+`file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
 `permission_view`, `settings_view`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
@@ -564,7 +564,8 @@ handler type or event name we don't model; `matcher` — both references'
 non-regex fast path for `bash|write`, exact-equality so `bash` never matches
 `bashoutput`, else a real regex (free: `tiktoken-rs` already puts `regex` in
 every build, so warn-and-skipping `^Bash$` would have been a footgun with no
-saving); `event`; `payload`; `verdict`), taking a handler's stdout **as a
+saving); `event`; `payload`; `verdict`; `overview` — the display tree the
+read-only `/hooks` menu browses), taking a handler's stdout **as a
 string** so every rule is unit-testable with no process anywhere. The boundary
 is **`src/llm/hooks.rs`**: the `HookSink` trait — *one trait object with
 defaulted no-op methods*, not a closure per event, so adding event number six
@@ -624,7 +625,16 @@ toast, not a silent "no hooks". `/settings` gains a **Hooks** row, unavailable
 when no file resolved; `ALTER_ZERO_HOOKS` / `ALTER_ZERO_HOOKS_FILE` gate and
 locate it; the offline `hook` scenario drives the tool-path shape and the
 `prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73) in
-`docs/hooks.md`; and the **Ctrl+O
+`docs/hooks.md`; and the **read-only `/hooks` menu** (Claude Code's `/hooks`
+browser, `docs/hooks-menu.md`: the fourth composer-replacing inline picker —
+no text entry, cursor parked in the corner — walking events → matchers →
+hooks → detail over `hooks::HooksOverview`, the digest of the runner's own
+parsed file; ↑/↓/digits/Enter/Esc, a five-row selection-centered window
+with ↑/↓ overflow markers, per-event summaries/descriptions stating **this**
+runner's exit-code semantics, matcher level only for the events whose
+dispatch matches on something (`hooks::event_has_matchers` — `Stop` and
+`UserPromptSubmit` skip it), the detail page's rounded box holding the real
+command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the **Ctrl+O
 performance work** (the incrementally-built, boundary-warmed transcript cache
 and the atomic queued overlay switch, so the transcript opens instantly on a
 big resumed session with no blank alt screen / kitty cursor-trail streak) in
@@ -1135,7 +1145,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/hooks`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command
