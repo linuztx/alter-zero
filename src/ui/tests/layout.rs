@@ -428,8 +428,7 @@ fn render_pipeline_survives_extreme_terminal_sizes() {
                     render_live(area, &mut buf, app);
                     let _ = cursor_position(area, app);
                     // mirror main.rs::repaint_conversation
-                    let budget = repaint_budget(h, area.height);
-                    let _ = repaint_lines(&app.history, w, budget);
+                    let _ = repaint_lines(&app.history, w, usize::from(h));
                     // mirror the streaming commit path
                     if let Some(text) = app.streaming_text() {
                         let mut render = StreamRender::new();

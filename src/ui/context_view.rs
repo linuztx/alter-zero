@@ -133,19 +133,110 @@ pub fn context_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// The largest scroll offset the context view can take on this screen —
-/// [`tool_view_max_scroll`]'s sibling (the chrome rows are shared).
-#[must_use]
-pub fn context_view_max_scroll(app: &App, width: u16, screen_height: u16) -> usize {
-    let body = screen_height.saturating_sub(TOOL_VIEW_TITLE_ROWS + TOOL_VIEW_FOOTER_ROWS) as usize;
-    context_lines(app, width).len().saturating_sub(body)
+/// Caches the Ctrl+D view's built window so redrawing it costs O(viewport).
+///
+/// The derived-context walk + verbatim wrap above is O(conversation), and the
+/// view redraws on every animation frame while a turn runs (the 32 ms status
+/// re-arm) — rebuilt per frame it pegged the loop on a big context (a long
+/// skill's rendered body in the window) and starved the scroll keys: the
+/// reported "Ctrl+D freezes" bug. [`TranscriptCache`]'s little sibling: owned
+/// by the event loop, consulted once per draw, the lines rebuilt only when
+/// the signature below changes — so a scroll key or a status tick is a cache
+/// hit. It needs no incremental prefix: the window only changes at history
+/// boundaries (an item lands, a rewind, a turn start's fragment refresh),
+/// never per streamed chunk. See `docs/context.md`.
+///
+/// [`TranscriptCache`]: super::TranscriptCache
+#[derive(Default)]
+pub struct ContextCache {
+    sig: Option<ContextSig>,
+    lines: Vec<Line<'static>>,
+    /// Test-only: how many accesses did a rebuild, so a test can prove an
+    /// unchanged conversation is a cache hit, not a rebuild.
+    #[cfg(test)]
+    pub(super) builds: usize,
+}
+
+/// What pins a cached window. History is append-only between generation bumps
+/// (the transcript cache's premise), so `(generation, len)` pins the
+/// conversation half; the leading fragments are pinned by their lengths —
+/// cheap, and they otherwise only change beside a turn-start history append
+/// (the direct edits — a `/settings` toggle dropping the instructions, a
+/// `/model` switch swapping the prompt — all move the length). An open agent
+/// session view swaps the whole window to that agent's derivation
+/// ([`context_lines`]'s first branch), so the viewed agent — and how far its
+/// own transcript has grown — keys too.
+#[derive(PartialEq, Eq)]
+struct ContextSig {
+    generation: u64,
+    history_len: usize,
+    width: u16,
+    agent: Option<(String, usize)>,
+    prompt_len: Option<usize>,
+    agent_prompt_len: Option<usize>,
+    instructions_len: Option<usize>,
+    skills_len: Option<usize>,
+}
+
+impl ContextSig {
+    fn of(app: &App, width: u16) -> Self {
+        Self {
+            generation: app.history_generation(),
+            history_len: app.history.len(),
+            width,
+            agent: app
+                .agent_view
+                .clone()
+                .map(|id| (id, app.viewed_agent().map_or(0, |run| run.history.len()))),
+            prompt_len: app.system_prompt.as_ref().map(String::len),
+            agent_prompt_len: app.agent_system_prompt.as_ref().map(String::len),
+            instructions_len: app.user_instructions.as_ref().map(String::len),
+            skills_len: app.skill_listing.as_ref().map(String::len),
+        }
+    }
+}
+
+impl ContextCache {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The window's current line count, rebuilding first when it is stale —
+    /// what the draw's scroll clamp feeds [`tool_view_max_scroll_for`].
+    ///
+    /// [`tool_view_max_scroll_for`]: super::tool_view_max_scroll_for
+    pub fn line_count(&mut self, app: &App, width: u16) -> usize {
+        self.refresh(app, width);
+        self.lines.len()
+    }
+
+    /// The rendered window, rebuilt only when the signature changed.
+    pub fn lines(&mut self, app: &App, width: u16) -> &[Line<'static>] {
+        self.refresh(app, width);
+        &self.lines
+    }
+
+    fn refresh(&mut self, app: &App, width: u16) {
+        let sig = ContextSig::of(app, width);
+        if self.sig.as_ref() == Some(&sig) {
+            return;
+        }
+        self.lines = context_lines(app, width);
+        self.sig = Some(sig);
+        #[cfg(test)]
+        {
+            self.builds += 1;
+        }
+    }
 }
 
 /// Render the full-screen Ctrl+D context-debug view — the transcript pager's
-/// chrome over the raw context window, windowed by `App::debug_scroll`
-/// (clamped) with `~` filler past the end. Pure — `term.rs` paints this onto
-/// the overlay. See `docs/context.md`.
-pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App) {
+/// chrome over the raw context window `lines` (built by [`context_lines`],
+/// served through the loop's [`ContextCache`]), windowed by
+/// `App::debug_scroll` (clamped) with `~` filler past the end. Pure —
+/// `term.rs` paints this onto the overlay. See `docs/context.md`.
+pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Line<'static>]) {
     let [title_area, body_area, sep_area, hints_area] = Layout::vertical([
         Constraint::Length(TOOL_VIEW_TITLE_ROWS),
         Constraint::Min(0),
@@ -156,13 +247,13 @@ pub fn render_context_view(area: Rect, buf: &mut Buffer, app: &App) {
 
     Paragraph::new(overlay_header(CONTEXT_VIEW_TITLE, area.width)).render(title_area, buf);
 
-    let lines = context_lines(app, body_area.width);
     let max = lines.len().saturating_sub(body_area.height as usize);
     let scroll = app.debug_scroll.min(max);
     let mut visible: Vec<Line> = lines
-        .into_iter()
+        .iter()
         .skip(scroll)
         .take(body_area.height as usize)
+        .cloned()
         .collect();
     while (visible.len() as u16) < body_area.height {
         visible.push(Line::from(TOOL_VIEW_FILL));

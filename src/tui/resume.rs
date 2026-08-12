@@ -23,7 +23,6 @@ use alter_zero::app::{CHECKPOINT_RESTORED_NOTICE, ToastKind};
 use alter_zero::checkpoint;
 use alter_zero::cli;
 use alter_zero::session::{self, SessionSummary};
-use alter_zero::term::ReflowClear;
 
 use super::Session;
 
@@ -277,27 +276,24 @@ impl Session<'_> {
     }
 
     /// Esc/Ctrl+C dismissed the picker: the view is already back on the
-    /// conversation — leave the overlay and repaint, the Ctrl+O return.
+    /// conversation — leave the overlay and catch up, the Ctrl+O return.
     pub(crate) fn close_resume_picker(&mut self) -> std::io::Result<()> {
         self.term.exit_overlay()?;
-        let clear = self.overlay_return_clear();
-        self.repaint_active_view(clear)
+        self.overlay_return_repaint()
     }
 
     /// Enter on a picker row: read + parse the rollout here (the I/O). Success
     /// swaps the conversation and adopts the file for further recording; failure
     /// leaves the current conversation unharmed under a red notice (codex).
-    /// Either way the overlay closes and the inline view repaints from the (new
-    /// or unchanged) history.
+    /// Either way the overlay closes and the inline view catches up.
     pub(crate) fn resume_session(&mut self, path: std::path::PathBuf) -> std::io::Result<()> {
         let loaded = std::fs::read_to_string(&path).ok().and_then(|text| {
             session::parse_session(&text).map(|(meta, items)| (text, meta, items))
         });
-        let clear = self.overlay_return_clear();
         let Some((text, meta, items)) = loaded else {
             self.app.close_resume_picker();
             self.term.exit_overlay()?;
-            self.repaint_active_view(clear)?;
+            self.overlay_return_repaint()?;
             self.commit_error_notice(&format!("Failed to load session: {}", path.display()));
             return Ok(());
         };
@@ -331,15 +327,16 @@ impl Session<'_> {
         // the next turn's top (docs/hooks.md).
         self.models.queue_session_source("resume");
         self.term.exit_overlay()?;
-        // A resumed session REPLACES the whole conversation: purge-rebuild (like
-        // /clear) so the loaded history fills scrollback — an in-place repaint
-        // left the old chat above it and put only the last screenful of the
-        // resumed one on record (its earlier turns were never
-        // scrollback-committed in this run). An open agent session view closes:
-        // the user picked a conversation, so the main screen is what they land on
-        // (the roster keeps its agents).
+        // A resumed session REPLACES the whole conversation: purge-rebuild
+        // (like /clear) so the loaded history fills scrollback — a plain
+        // catch-up would leave the old chat above it, and the resumed
+        // session's earlier turns were never committed in this run. An open
+        // agent session view closes: the user picked a conversation, so the
+        // main screen is what they land on (the roster keeps its agents). A
+        // resize that landed under the picker is consumed by the purge.
+        self.overlay_resized = false;
         self.app.close_agent_view();
-        self.repaint_conversation(ReflowClear::Purge)?;
+        self.repaint_conversation()?;
         if restored {
             self.toast(CHECKPOINT_RESTORED_NOTICE, ToastKind::Info);
         }

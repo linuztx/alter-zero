@@ -74,8 +74,8 @@ impl Session<'_> {
         // Committing is suppressed while an agent session view covers the screen
         // (a queued main turn can dispatch there) — the return's purge-rebuild
         // regenerates the bubbles from history (docs/agent-tool.md). Under the
-        // Ctrl+O overlay the inserts merely queue and the return's reflow drops +
-        // regenerates them, as before.
+        // Ctrl+O overlay the inserts merely queue and the return's draw flushes
+        // them (invariant 4).
         let committing = self.app.agent_view.is_none();
         for (text, attached) in texts.iter().zip(&mut per_text) {
             self.app

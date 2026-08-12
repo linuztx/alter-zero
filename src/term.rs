@@ -71,30 +71,6 @@ use ratatui::widgets::{Paragraph, Widget};
 use crate::app::App;
 use crate::ui;
 
-/// How [`InlineViewport::reflow`] prepares the screen before rebuilding it from
-/// the `tail`.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum ReflowClear {
-    /// Overwrite the screen in place, clearing only the rows *below* the rebuilt
-    /// tail (`write_above`'s draw-then-clear). Spill-safe for the Ctrl+O /
-    /// `/resume` overlay return (invariant 4): leaving the alternate screen
-    /// restores the main screen with its stale streaming strip, and a leading
-    /// full clear would make tmux push that strip into scrollback above the
-    /// rebuilt conversation (`smoke.sh` Phase 7). Keeps the terminal's own
-    /// scrollback, so the caller repaints only the on-screen tail.
-    InPlace,
-    /// Purge the terminal scrollback **and** clear the whole visible screen
-    /// first, then rebuild from the `tail` — a port of codex's
-    /// `clear_scrollback_and_visible_screen_ansi`. Used by `/clear` and by every
-    /// resize so no duplicated or stale row can survive the rebuild (a resize's
-    /// in-place overwrite left the emulator's own reflowed copy of the old
-    /// content behind — the duplication this fixes). The purge drops scrollback,
-    /// so the caller passes the **full** history as the tail and `write_above`
-    /// scrolls the overflow back into the now-empty scrollback, reconstructing
-    /// the whole conversation clean.
-    Purge,
-}
-
 /// A content-anchored inline viewport whose height can change between draws (its
 /// top stays put; it grows downward in place).
 pub struct InlineViewport {
@@ -116,11 +92,14 @@ pub struct InlineViewport {
     /// the same synchronized update as the live-region repaint, so scrollback
     /// growth and the box land atomically — never a flushed frame without the
     /// box (`docs/flicker.md`). Only [`draw`]/[`reflow`]/[`restore`] flush it —
-    /// never [`draw_overlay`] — so queued lines can't be written into the
-    /// alternate screen even when a turn dispatched under the Ctrl+O overlay
-    /// queues its user bubbles here. [`reflow`] (the overlay's return repaint)
-    /// *drops* the queue instead: its rebuilt tail regenerates everything
-    /// pending from history.
+    /// never [`draw_overlay`] — so a commit made while the Ctrl+O / Ctrl+D /
+    /// `/resume` overlay covers the inline view simply **waits here**, and the
+    /// overlay's return flushes the whole backlog above the live region
+    /// through one ordinary [`draw`] (invariant 4: nothing an overlay-covered
+    /// turn produced is lost from the terminal, and nothing is written into
+    /// the alternate screen). [`reflow`] (a resize / `/clear` / history
+    /// rewind) *drops* the queue instead: its purge-rebuilt tail regenerates
+    /// everything pending from history.
     ///
     /// [`insert_before`]: InlineViewport::insert_before
     /// [`draw`]: InlineViewport::draw
@@ -528,6 +507,14 @@ impl InlineViewport {
         if height == 0 {
             return Ok(());
         }
+        // A zero-row screen (a tiling WM mid-animation can report one) has
+        // nowhere to draw *and* nowhere to scroll from: the screenful loop
+        // below would spin forever on `to_draw = remaining.min(0)`. Drop the
+        // batch — nothing can be shown at this size, and the resize back to a
+        // real height purge-rebuilds the whole conversation from history.
+        if self.screen.height == 0 {
+            return Ok(());
+        }
         let area = Rect::new(0, 0, self.screen.width, height);
         let mut buffer = Buffer::empty(area);
         Paragraph::new(lines).render(area, &mut buffer);
@@ -593,8 +580,8 @@ impl InlineViewport {
     /// home again. Emitted as one write because some terminals (Terminal.app,
     /// Warp) don't reliably drop scrollback when the clear and the purge are
     /// separate backend commands. Invalidates `prev` so the next paint redraws in
-    /// full. Called by [`reflow`] under [`ReflowClear::Purge`], inside its
-    /// synchronized update, so the purge and the rebuild land as one atomic frame.
+    /// full. Called by [`reflow`], inside its synchronized update, so the
+    /// purge and the rebuild land as one atomic frame.
     ///
     /// [`reflow`]: InlineViewport::reflow
     fn clear_scrollback_and_screen(&mut self) -> io::Result<()> {
@@ -628,28 +615,30 @@ impl InlineViewport {
         changed
     }
 
-    /// Repaint the conversation `tail` re-wrapped to the new width after a resize
-    /// (or a Ctrl+O return / `/clear`) **and** the live region, in one
-    /// synchronized frame: seat the viewport at the top, write the tail so it
-    /// fills the screen and pushes the viewport down below it, then paint the
-    /// box at its final position — atomically, so the rebuilt screen never
-    /// flashes without the box (`docs/flicker.md`). `clear` chooses how the
-    /// screen is prepared first — see [`ReflowClear`]: [`InPlace`] overwrites
-    /// top-down (the Ctrl+O return), [`Purge`] drops scrollback + clears the
-    /// screen (`/clear`, resize) so nothing stale or duplicated survives.
+    /// Rebuild the whole screen from the conversation `tail` re-wrapped to the
+    /// current width (a resize, `/clear`, a history rewind) **and** the live
+    /// region, in one synchronized frame: purge the terminal scrollback and
+    /// clear the screen (codex's `clear_scrollback_and_visible_screen_ansi` —
+    /// nothing stale or duplicated survives, and the emulator's own reflowed
+    /// copies of the old rows go with it), seat the viewport at the top, write
+    /// the tail so it fills the screen and scrolls the overflow into the
+    /// now-empty scrollback, then paint the box at its final position —
+    /// atomically, so the rebuilt screen never flashes without the box
+    /// (`docs/flicker.md`). The caller passes the **full** history as the
+    /// tail, since the purge dropped everything.
     ///
-    /// Lines still queued by [`insert_before`] are **dropped**, not flushed: the
-    /// tail regenerates everything pending from history (the caller resets its
-    /// `committed` count), so flushing them too would duplicate.
+    /// Lines still queued by [`insert_before`] are **dropped**, not flushed:
+    /// the tail regenerates everything pending from history (the caller resets
+    /// its `committed` count), so flushing them too would duplicate. (An
+    /// ordinary overlay return never comes here — it *flushes* its queue
+    /// through [`draw`] instead, keeping the terminal's own scrollback.)
     ///
     /// [`insert_before`]: InlineViewport::insert_before
-    /// [`InPlace`]: ReflowClear::InPlace
-    /// [`Purge`]: ReflowClear::Purge
+    /// [`draw`]: InlineViewport::draw
     pub fn reflow(
         &mut self,
         tail: Vec<Line<'static>>,
         height: u16,
-        clear: ReflowClear,
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<()> {
@@ -671,7 +660,7 @@ impl InlineViewport {
         // even emits its clear as a bare `write!` outside the diff, so hiding
         // here is the only thing that keeps the cursor out of that jog.
         queue!(self.backend, Hide)?;
-        let painted = self.paint_reflow(tail, height, clear, render, app);
+        let painted = self.paint_reflow(tail, height, render, app);
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         self.prev = Some(painted?);
         ended?;
@@ -679,39 +668,23 @@ impl InlineViewport {
     }
 
     /// The body of one [`reflow`] frame, bracketed by its synchronized update:
-    /// rebuild the screen from the `tail` and paint the live region below it.
-    /// Returns the painted buffer for `prev`.
+    /// purge, rebuild the screen from the `tail`, and paint the live region
+    /// below it. Returns the painted buffer for `prev`.
     ///
     /// [`reflow`]: InlineViewport::reflow
     fn paint_reflow(
         &mut self,
         tail: Vec<Line<'static>>,
         height: u16,
-        clear: ReflowClear,
         render: impl FnOnce(Rect, &mut Buffer),
         app: &App,
     ) -> io::Result<Buffer> {
-        match clear {
-            // Purge scrollback + clear the whole screen up front (codex's
-            // clear_scrollback_and_visible_screen_ansi). `write_above` then
-            // rebuilds the full tail into the freshly-blank screen, scrolling any
-            // overflow into the now-empty scrollback — no duplicated or stale row
-            // can survive. Safe even on the Ctrl+O return the InPlace arm guards:
-            // the ED3 purge drops the spilled strip that a bare clear-then-scroll
-            // would have left in scrollback (`/clear` and resize use this).
-            ReflowClear::Purge => self.clear_scrollback_and_screen()?,
-            // In place: an empty tail (an idle Ctrl+O/`/resume` return with no
-            // history) never reaches `write_above`'s draw, so blank the screen
-            // outright. A NON-empty tail must *not* `clear_region(All)` first —
-            // `write_above` already overwrites top-down and clears the rows below
-            // the tail (a spill-safe draw-then-clear); a leading full clear, when
-            // the screen still holds the frame restored by leaving the Ctrl+O
-            // alt-screen, makes tmux push that stale strip into scrollback.
-            ReflowClear::InPlace if tail.is_empty() => {
-                self.backend.clear_region(ClearType::All)?;
-            }
-            ReflowClear::InPlace => {}
-        }
+        // Purge scrollback + clear the whole screen up front (codex's
+        // clear_scrollback_and_visible_screen_ansi). `write_above` then
+        // rebuilds the full tail into the freshly-blank screen, scrolling any
+        // overflow into the now-empty scrollback — no duplicated or stale row
+        // can survive.
+        self.clear_scrollback_and_screen()?;
         self.backend.set_cursor_position(Position::new(0, 0))?;
         self.prev = None; // the screen is being rebuilt out from under `prev`
         self.view = Rect::new(0, 0, self.screen.width, height);

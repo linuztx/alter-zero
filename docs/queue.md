@@ -127,11 +127,11 @@ is empty. **Every** turn-end drain site calls it, so they can't drift:
 - **`StreamDone` / `Error`** (after `on_stream_event` returns "ended"): flush the
   next entry — **under the Ctrl+O overlay too** (codex's queue drains at turn
   end regardless of its Ctrl+T view, the open transcript following the new turn
-  live). Dispatching there doesn't violate invariant 4: it only records history
+  live). Dispatching there doesn't violate invariant 4: it records history
   and *queues* the user bubbles — `term` never flushes pending lines into the
-  alternate screen, and the overlay return's `repaint_conversation`/`reflow`
-  drops + regenerates them from history. The **next** turn-end flushes the
-  **next** entry, so the queue iterates one turn at a time.
+  alternate screen; the overlay return's draw flushes them above the live
+  region. The **next** turn-end flushes the **next** entry, so the queue
+  iterates one turn at a time.
 - **Esc interrupt** (`Action::Interrupt`): after committing the partial + the red
   `Conversation interrupted` notice, flush the **front** entry (the first queue)
   right away; later entries iterate at the following turn-ends.
@@ -279,4 +279,4 @@ The `tab to queue next turn` binding is listed in the `?` shortcuts band
   the transcript view; when turn 1 ends *under the overlay* the queue
   dispatches right there (the column-0 `❯ world` user entry appears and turn 2
   runs to its `Finished for` summary, the overlay still open), and the Ctrl+O
-  return repaints the inline view with both turns.
+  return flushes both turns' queued rows into the inline view.

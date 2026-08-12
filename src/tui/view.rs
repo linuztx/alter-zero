@@ -8,16 +8,20 @@
 //!   question the next draw will, which is why a post-stream commit can reseat
 //!   the viewport *before* flushing (invariant 3 — otherwise the box rises off
 //!   the bottom and leaves blank rows beneath it).
-//! - **How the screen is prepared.** `ReflowClear::InPlace` keeps the
-//!   terminal's own scrollback; `Purge` drops it and rebuilds the whole
-//!   conversation from history. Every resize and `/clear` purges; an overlay
-//!   return purges only if a resize landed underneath it
-//!   ([`Session::overlay_return_clear`]).
+//! - **When the screen rebuilds.** A full rebuild (`InlineViewport::reflow`)
+//!   purges the terminal's scrollback and repaints the whole conversation
+//!   from history — every resize, `/clear`, and history rewind takes it. An
+//!   ordinary overlay return does **not**: everything that committed while
+//!   the overlay covered the screen sits in the viewport's pending queue, so
+//!   one ordinary draw flushes it above the live region and the terminal's
+//!   own scrollback survives untouched ([`Session::overlay_return_repaint`]).
+//!   Only a resize that landed under the overlay forces the purge (the
+//!   emulator reflowed the main screen underneath, and the queued lines were
+//!   rendered at the stale width).
 //!
 //! A repaint must not lose the in-flight partial reply — it lives in the
-//! streaming buffer, not `history` — so the tail carries the rows the stream
-//! already committed and the rows that arrived since are queued right after
-//! through the normal `insert_before` pipeline (`docs/flicker.md`).
+//! streaming buffer, not `history` — so the rebuild re-commits it through the
+//! normal `insert_before` pipeline right after the reflow (`docs/flicker.md`).
 //!
 //! The clock injections live here too ([`Session::update_status_times`]): time
 //! is impure, so the pure `App`/`ui` only ever see already-computed durations.
@@ -29,7 +33,6 @@ use ratatui::text::Line;
 
 use alter_zero::app::{App, View};
 use alter_zero::paste;
-use alter_zero::term::ReflowClear;
 use alter_zero::ui;
 
 use super::Session;
@@ -39,12 +42,12 @@ use super::Session;
 /// sweep and keeps the timer advancing through event-less pauses.
 pub(crate) const STATUS_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(32);
 
-/// Upper bound on the rows a [`ReflowClear::Purge`] repaint (`/clear`, resize)
-/// re-renders into scrollback. A purge drops the terminal's own scrollback, so
-/// the whole conversation is rebuilt from history — capped here so a
-/// pathologically long conversation can't turn one resize into an unbounded
-/// write. codex bounds its resize reflow the same way (per-terminal 1k–10k rows);
-/// 10k is effectively "everything" for any real conversation.
+/// Upper bound on the rows a purge rebuild (`/clear`, resize, a history
+/// rewind) re-renders into scrollback. A purge drops the terminal's own
+/// scrollback, so the whole conversation is rebuilt from history — capped here
+/// so a pathologically long conversation can't turn one resize into an
+/// unbounded write. codex bounds its resize reflow the same way (per-terminal
+/// 1k–10k rows); 10k is effectively "everything" for any real conversation.
 pub(crate) const RESIZE_REFLOW_MAX_ROWS: usize = 10_000;
 
 impl Session<'_> {
@@ -225,14 +228,23 @@ impl Session<'_> {
 
     /// Render the Ctrl+D context-debug view onto the alternate screen — the
     /// transcript pager's raw-context sibling: settle the scroll against the
-    /// current screen, then paint. See `docs/context.md`.
+    /// current screen, then paint. The window comes from the loop-owned
+    /// [`ui::ContextCache`] — the view redraws every animation frame while a
+    /// turn runs, and rebuilding the O(conversation) derivation per frame
+    /// starved the scroll keys on a big context (the "Ctrl+D freezes" bug) —
+    /// so the count feeding the clamp and the render share one build. See
+    /// `docs/context.md`.
     pub(crate) fn draw_context_view(&mut self) -> io::Result<()> {
         let screen = self.term.screen();
-        let max = ui::context_view_max_scroll(&self.app, screen.width, screen.height);
+        let max = ui::tool_view_max_scroll_for(
+            self.context.line_count(&self.app, screen.width),
+            screen.height,
+        );
         self.app.settle_debug_scroll(max);
+        let lines = self.context.lines(&self.app, screen.width);
         let app = &self.app;
         self.term
-            .draw_overlay(|area, buf| ui::render_context_view(area, buf, app))
+            .draw_overlay(|area, buf| ui::render_context_view(area, buf, app, lines))
     }
 
     /// Paint whichever view is current — the draw tick's whole body.
@@ -260,7 +272,7 @@ impl Session<'_> {
             // `InlineViewport::take_modal_scrolled` and `docs/permissions.md`.
             View::Conversation if self.modal_rebuild_due() => {
                 let _ = self.term.take_modal_scrolled();
-                self.repaint_active_view(ReflowClear::Purge)
+                self.repaint_active_view()
             }
             View::Conversation => self.draw_conversation(),
             View::ToolOutput => self.draw_tool_view(),
@@ -269,74 +281,75 @@ impl Session<'_> {
         }
     }
 
-    /// Repaint whatever the inline screen is showing — the **agent session
-    /// view** when one is open (always a purge rebuild of the agent's
-    /// transcript), else the main conversation with the caller's clear mode.
-    /// The shared overlay-return / resize repaint (`docs/agent-tool.md`).
-    pub(crate) fn repaint_active_view(&mut self, clear: ReflowClear) -> io::Result<()> {
+    /// Rebuild whatever the inline screen is showing — the **agent session
+    /// view** when one is open (a purge rebuild of the agent's transcript),
+    /// else the main conversation. The shared resize / rewind repaint
+    /// (`docs/agent-tool.md`).
+    pub(crate) fn repaint_active_view(&mut self) -> io::Result<()> {
         if self.app.agent_view.is_some() {
             self.repaint_agent_view()
         } else {
-            self.repaint_conversation(clear)
+            self.repaint_conversation()
         }
     }
 
-    /// How an overlay-return repaint prepares the screen: the usual spill-safe
-    /// in-place overwrite — unless a resize landed while the overlay covered the
-    /// inline view, which forces the purge-rebuild every resize gets
-    /// (invariant 3; the emulator reflowed the main screen's rows under the
-    /// overlay, and an in-place overwrite would leave its re-wrapped copies
-    /// behind). Consumes the flag, so only the first return purges.
-    pub(crate) fn overlay_return_clear(&mut self) -> ReflowClear {
-        if std::mem::take(&mut self.overlay_resized) {
-            ReflowClear::Purge
+    /// Catch the inline screen up when an alternate-screen overlay closes.
+    ///
+    /// Everything that committed while the overlay was up — streamed rows,
+    /// tool cells, thought cells, queued user bubbles, the turn's summary —
+    /// sits in the viewport's pending queue (`InlineViewport::insert_before`
+    /// only queues, and nothing flushes onto the alternate screen), so the
+    /// ordinary [`Session::draw_conversation`] flushes it above the live
+    /// region and repaints the box, exactly as if the overlay had never been
+    /// up: the terminal's own scrollback survives, and nothing is lost or
+    /// doubled. The retired history-window rebuild could re-emit at most one
+    /// screenful, which silently dropped the rest of an overlay-covered turn
+    /// from the terminal — the scrollback-hole bug.
+    ///
+    /// Two cases still need the full purge rebuild: a **resize landed under
+    /// the overlay** (the emulator reflowed the main screen and the queued
+    /// lines were rendered at the stale width — `overlay_resized`, consumed
+    /// here so only this return purges), and an open **agent session view**,
+    /// which always rebuilds from its own transcript (`docs/agent-tool.md`;
+    /// its purge drops the queue, whose lines its history regenerates).
+    pub(crate) fn overlay_return_repaint(&mut self) -> io::Result<()> {
+        if std::mem::take(&mut self.overlay_resized) || self.app.agent_view.is_some() {
+            self.repaint_active_view()
         } else {
-            ReflowClear::InPlace
+            self.draw_conversation()
         }
     }
 
-    /// Repaint the inline conversation from `App`'s retained history, re-wrapped
-    /// to the current width — tail and live region in one synchronized frame
-    /// (`InlineViewport::reflow`). Used after a resize, on `/clear`, and when
-    /// returning from an overlay (which kept the stream advancing without
-    /// committing).
+    /// Rebuild the inline conversation from `App`'s retained history,
+    /// re-wrapped to the current width — scrollback purge, tail and live
+    /// region in one synchronized frame (`InlineViewport::reflow`). Used
+    /// after a resize, on `/clear`, and by every history rewind (a backtrack,
+    /// a `/resume` load, an interrupt-undo); an ordinary overlay return
+    /// instead just flushes its queued commits
+    /// ([`Session::overlay_return_repaint`]).
     ///
-    /// `clear` selects how the screen is prepared (see `ReflowClear`). A
-    /// [`Purge`](ReflowClear::Purge) rebuilds scrollback from scratch, so it
-    /// repaints the **whole** history (bounded by [`RESIZE_REFLOW_MAX_ROWS`]) —
-    /// otherwise older turns would be lost from the purged scrollback. An
-    /// [`InPlace`](ReflowClear::InPlace) repaint keeps the terminal's scrollback
-    /// and only repaints the on-screen tail.
+    /// The purge drops the terminal's scrollback, so the **whole** history is
+    /// repainted (bounded by [`RESIZE_REFLOW_MAX_ROWS`]) — otherwise older
+    /// turns would be lost from the purged scrollback.
     ///
-    /// A mid-stream repaint must not lose the in-flight partial reply — it lives
-    /// in `App`'s streaming buffer, not `history`, so the tail carries the rows
-    /// the stream had **already committed** to scrollback (`ui::repaint_tail`)
-    /// and the rows that arrived *since* (chunks drained under the overlay, or
-    /// the whole partial after a purge dropped its committed copies) are queued
-    /// right after via `ui::StreamRender::commit` — the standard `insert_before`
-    /// pipeline, landing in the next draw's synchronized update. Repainting from
-    /// history alone blanked the partial until its next chunk (the Ctrl+O
-    /// disappear-then-flicker bug), and the old
-    /// reset-then-recommit-from-scratch duplicated the already-scrolled rows in
-    /// the terminal's kept scrollback.
-    pub(crate) fn repaint_conversation(&mut self, clear: ReflowClear) -> io::Result<()> {
+    /// A mid-stream rebuild must not lose the in-flight partial reply — it
+    /// lives in `App`'s streaming buffer, not `history`. The purge dropped its
+    /// committed rows with everything else, so the renderer resets and the
+    /// whole partial is re-committed right after via `ui::StreamRender::commit`
+    /// — the standard `insert_before` pipeline, landing in the next draw's
+    /// synchronized update. (`reflow` cleared the pending queue first, so the
+    /// re-commit can never double up with pre-rebuild leftovers.)
+    pub(crate) fn repaint_conversation(&mut self) -> io::Result<()> {
         let screen = self.term.screen();
-        if clear == ReflowClear::Purge {
-            // The purge drops every committed row (screen and scrollback
-            // alike), so nothing is "already committed" any more: reset, and let
-            // the catch-up below re-commit the whole partial at the current
-            // width.
-            self.render.reset();
-        }
+        // The purge drops every committed row (screen and scrollback alike),
+        // so nothing is "already committed" any more: reset, and let the
+        // catch-up below re-commit the whole partial at the current width.
+        self.render.reset();
         // The preview comes FIRST: it injects the strip's preview row count
         // (`set_stream_preview_rows` — a forming table previews multi-row) that
         // `live_region_height` below must reserve (docs/table-streaming.md).
         let preview = self.stream_preview_lines();
         let height = self.live_region_height();
-        let budget = match clear {
-            ReflowClear::Purge => RESIZE_REFLOW_MAX_ROWS,
-            ReflowClear::InPlace => ui::repaint_budget(screen.height, height),
-        };
         let tail = ui::repaint_tail(
             // Only what has actually reached scrollback: a parallel MCP run
             // still in flight has cells recorded but held, and the strip is
@@ -345,39 +358,21 @@ impl Session<'_> {
             self.app.streaming_text(),
             &mut self.render,
             screen.width,
-            budget,
+            RESIZE_REFLOW_MAX_ROWS,
         );
         // Re-emit the header banner atop the rebuilt tail — it lives outside
-        // `history` and would otherwise be lost (docs/header.md). A `Purge`
-        // rebuilt scrollback from scratch (resize, `/clear`), so the banner tops
-        // the full rebuild uncapped. An `InPlace` overwrite (the Ctrl+O /
-        // `/resume` return) rewrites the on-screen window — where a short
-        // conversation still *shows* the banner, which the overwrite used to
-        // wipe — so the banner joins that tail too, re-capped to the window
-        // budget: exactly as much of it as the window held comes back, and one
-        // that scrolled wholly into the terminal's kept scrollback is not
-        // duplicated.
-        let tail = ui::banner_tail(
-            ui::header_lines(&self.app, screen.width),
-            tail,
-            match clear {
-                ReflowClear::Purge => usize::MAX,
-                ReflowClear::InPlace => budget,
-            },
-        );
+        // `history` and would otherwise be lost (docs/header.md).
+        let tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
         let app = &self.app;
         self.term.reflow(
             tail,
             height,
-            clear,
             |area, buf| ui::render_live_with_preview(area, buf, app, preview.as_deref()),
             app,
         )?;
-        // Catch scrollback up on what streamed while the overlay was showing
-        // (or, after a purge, on the whole partial): exactly the rows live
-        // streaming would have committed, queued for the next draw. `reflow`
-        // cleared the pending queue, so these can never double up with
-        // pre-repaint leftovers.
+        // Catch scrollback up on the in-flight partial the purge dropped:
+        // exactly the rows live streaming would have committed, queued for
+        // the next draw.
         if let Some(text) = self.app.streaming_text().filter(|text| !text.is_empty()) {
             let lines = self.render.commit(text, screen.width);
             self.term.insert_before(lines);
@@ -406,12 +401,11 @@ impl Session<'_> {
         if let Some(text) = &streaming {
             tail.extend(self.agent_render.committed_rows(text, screen.width));
         }
-        let tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail, usize::MAX);
+        let tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
         let app = &self.app;
         self.term.reflow(
             tail,
             height,
-            ReflowClear::Purge,
             |area, buf| ui::render_live_with_preview(area, buf, app, None),
             app,
         )
@@ -498,15 +492,14 @@ impl Session<'_> {
             self.draw_tool_view()
         } else {
             self.term.exit_overlay()?;
-            // Catch the inline view up on whatever streamed — or was dispatched
-            // off the queue — while the overlay was showing (the reflow
-            // regenerates any pending user bubbles from history). An in-place
-            // repaint keeps the terminal's own scrollback (invariant 4 / Phase 7)
-            // — unless a resize landed under the overlay, which forces the
-            // purge-rebuild every resize gets. An open agent session view
-            // repaints itself instead (docs/agent-tool.md).
-            let clear = self.overlay_return_clear();
-            self.repaint_active_view(clear)
+            // Catch the inline view up on whatever committed — or was
+            // dispatched off the queue — while the overlay was showing: it all
+            // sits in the pending queue, and this draw flushes it above the
+            // live region, keeping the terminal's own scrollback (invariant 4
+            // / Phase 7). A resize under the overlay forces the purge-rebuild
+            // every resize gets, and an open agent session view rebuilds
+            // itself (docs/agent-tool.md).
+            self.overlay_return_repaint()
         }
     }
 
@@ -518,8 +511,7 @@ impl Session<'_> {
             self.draw_context_view()
         } else {
             self.term.exit_overlay()?;
-            let clear = self.overlay_return_clear();
-            self.repaint_active_view(clear)
+            self.overlay_return_repaint()
         }
     }
 }

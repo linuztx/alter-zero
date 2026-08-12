@@ -73,9 +73,9 @@ pub use self::agent::{
 };
 pub use self::ask_view::{ask_height, ask_lines, render_ask};
 pub use self::background_view::{background_view_lines, render_background_view};
-pub use self::context_view::{context_lines, context_view_max_scroll, render_context_view};
+pub use self::context_view::{ContextCache, context_lines, render_context_view};
 pub use self::conversation::{
-    banner_tail, committed_history, conversation_lines, repaint_budget, repaint_lines, repaint_tail,
+    banner_tail, committed_history, conversation_lines, repaint_lines, repaint_tail,
 };
 pub use self::footer::{
     backtrack_hint_line, display_cwd, footer_line, footer_rows, queued_lines, queued_rows,

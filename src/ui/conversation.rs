@@ -124,34 +124,14 @@ fn keep_last_rows(mut lines: Vec<Line<'static>>, max_rows: usize) -> Vec<Line<'s
 }
 
 /// A rebuilt repaint tail with the header banner (docs/header.md) restored
-/// above it: `banner`, a blank spacer, then `tail`, re-capped to the last
-/// `budget` rows. Both of `main.rs::repaint_conversation`'s rebuild modes go
-/// through this. A `Purge` rebuild (resize, `/clear`) passes `usize::MAX` —
-/// the banner unconditionally tops the freshly-purged scrollback. An
-/// `InPlace` overlay return (Ctrl+O, `/resume`) passes the on-screen window
-/// budget, so the rebuild reproduces the window exactly: the banner comes
-/// back fully when the conversation is short (the bug this fixes — the
-/// overwrite used to wipe it), only its bottom rows when it had partly
-/// scrolled, and not at all once it scrolled wholly into the terminal's kept
-/// scrollback (re-adding it there would duplicate it). Prepend-then-recap is
-/// exact because `keep_last_rows` keeps suffixes:
-/// `keep(banner + keep(x, n), n) == keep(banner + x, n)`.
+/// above it: `banner`, a blank spacer, then `tail`. Every purge rebuild goes
+/// through this — the purge dropped scrollback whole, so the banner
+/// unconditionally tops the reconstructed conversation. (An ordinary overlay
+/// return never rebuilds: the on-screen banner survives untouched and the
+/// queued commits flush beneath it.)
 #[must_use]
-pub fn banner_tail(
-    mut banner: Vec<Line<'static>>,
-    tail: Vec<Line<'static>>,
-    budget: usize,
-) -> Vec<Line<'static>> {
+pub fn banner_tail(mut banner: Vec<Line<'static>>, tail: Vec<Line<'static>>) -> Vec<Line<'static>> {
     banner.push(Line::default());
     banner.extend(tail);
-    keep_last_rows(banner, budget)
-}
-
-/// How many history rows fit above a `live_height`-row live region on a
-/// `term_height`-row screen — the number of lines to repaint after a resize.
-/// Saturates at 0 so a live region taller than the screen can never underflow.
-/// The pure counterpart of the terminal calls in `main.rs::repaint_after_resize`.
-#[must_use]
-pub fn repaint_budget(term_height: u16, live_height: u16) -> usize {
-    term_height.saturating_sub(live_height) as usize
+    banner
 }

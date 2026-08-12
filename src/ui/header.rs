@@ -45,9 +45,8 @@ fn logo_width(art: &[&str]) -> usize {
 /// The startup header banner as scrollback rows (docs/header.md): the ASCII
 /// wordmark (sized to `width`), a blank, then the version, tagline, cwd, and the
 /// command hint. Pure chrome — `main.rs` commits it once at launch and restores
-/// it atop every repaint via [`banner_tail`] (uncapped on a Purge rebuild,
-/// window-capped on an InPlace overlay return); it never enters `history`, and
-/// the Ctrl+O transcript shows it as chrome too ([`transcript_lines`]).
+/// it atop every purge rebuild via [`banner_tail`]; it never enters `history`,
+/// and the Ctrl+O transcript shows it as chrome too ([`transcript_lines`]).
 /// Returns no trailing spacer (the caller adds one, the
 /// `insert_before(msg); insert_before(blank)` pattern).
 ///

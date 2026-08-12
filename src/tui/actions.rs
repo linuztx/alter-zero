@@ -25,7 +25,6 @@ use alter_zero::app::{
 };
 use alter_zero::checkpoint;
 use alter_zero::clipboard;
-use alter_zero::term::ReflowClear;
 
 use super::turn::TurnInput;
 use super::{Session, workers};
@@ -74,21 +73,17 @@ impl Session<'_> {
             Action::None => {}
             Action::Quit => {
                 // Drop back to the main screen before the loop exits if an
-                // overlay (the Ctrl+O transcript or the /resume picker) is up, so
-                // restore() lands on the chat. A turn may have finished while the
-                // overlay was showing — its scrollback commits were deferred
-                // (invariant 4) — so repaint the inline view from history (the
-                // reflow paints the box in the same frame) the same way a normal
-                // Ctrl+O return does; otherwise restore() lands on the stale live
-                // status strip ("Working… (… tokens)") instead of the committed
+                // overlay (the Ctrl+O transcript or the /resume picker) is up,
+                // so restore() lands on the chat. A turn may have finished
+                // while the overlay was showing — its scrollback commits are
+                // queued (invariant 4) — so flush them and repaint the inline
+                // view the same way a normal Ctrl+O return does; otherwise
+                // restore() lands on the stale live status strip
+                // ("Working… (… tokens)") instead of the committed
                 // "Done for Ns" summary.
                 if self.app.view != View::Conversation {
                     self.term.exit_overlay()?;
-                    // Like every overlay return: a resize that landed under the
-                    // overlay upgrades the repaint to Purge (the emulator
-                    // reflowed the main screen underneath — invariant 3).
-                    let clear = self.overlay_return_clear();
-                    self.repaint_active_view(clear)?;
+                    self.overlay_return_repaint()?;
                 }
                 return Ok(Flow::Quit);
             }
@@ -276,7 +271,7 @@ impl Session<'_> {
                 // empty queue is the undo's precondition — but background
                 // completions held during the turn still settle
                 // (docs/background.md).
-                self.repaint_conversation(ReflowClear::Purge)?;
+                self.repaint_conversation()?;
                 self.dispatch_after_turn();
             }
             Some(alter_zero::app::InterruptedTurn::Kept {
@@ -368,7 +363,7 @@ impl Session<'_> {
         // Purge scrollback + clear the screen (codex's /clear), not just blank
         // the visible screen — the old conversation must be gone from scrollback
         // too, so scrolling up shows nothing.
-        self.repaint_conversation(ReflowClear::Purge)
+        self.repaint_conversation()
     }
 
     /// A terminal resize. Repaint from history on ANY dimension change (codex
@@ -387,7 +382,7 @@ impl Session<'_> {
             // purge; the reflow notes it itself (`term.take_modal_scrolled`) so
             // the prompt's close purge-rebuilds too instead of stranding the box
             // (docs/permissions.md).
-            self.repaint_active_view(ReflowClear::Purge)?;
+            self.repaint_active_view()?;
         } else if size_changed {
             // Under an overlay the inline view can't reflow (it would write the
             // alternate screen) — remember to purge-rebuild on return instead of
@@ -460,17 +455,17 @@ impl Session<'_> {
         self.sync_task_registry();
         // Consume the overlay-resized flag (a resize under the overlay must not
         // leak to the next return); we purge unconditionally below anyway.
-        let _ = self.overlay_return_clear();
+        self.overlay_resized = false;
         self.term.exit_overlay()?;
         // (The transcript cache needs no explicit clear: the truncation bumped
         // the history generation, so the loop-bottom warm rebuilds the kept
         // prefix.)
-        // Backtrack TRUNCATES history, so an in-place overwrite leaves the
-        // dropped exchange stale in scrollback (and on screen when it overflowed)
-        // — it only cleared on the next resize. Purge-rebuild like /resume and
-        // resize: the truncated conversation replaces the screen AND scrollback
-        // cleanly (invariant 3).
-        self.repaint_conversation(ReflowClear::Purge)?;
+        // Backtrack TRUNCATES history, so lines already on screen or queued
+        // for scrollback may belong to the dropped exchange. Purge-rebuild
+        // like /resume and resize (the reflow drops the queue): the truncated
+        // conversation replaces the screen AND scrollback cleanly
+        // (invariant 3).
+        self.repaint_conversation()?;
         if restored {
             self.toast(CHECKPOINT_REWOUND_NOTICE, ToastKind::Info);
         }

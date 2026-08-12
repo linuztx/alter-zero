@@ -70,7 +70,7 @@ widened for the split.
 | `inline.rs` | Inline-span rendering: `**bold**`, `` `code` ``, links, and the wrap that keeps spans intact across a row. |
 | `table.rs` | GFM table sizing, borders, and the narrow-terminal record fallback. |
 | `message.rs` | Rendering one committed message, plus the `/compact` marker cell. |
-| `conversation.rs` | The whole-history walk and the tail a resize or overlay return repaints. |
+| `conversation.rs` | The whole-history walk and the tail a purge rebuild (resize, `/clear`, a rewind) repaints. |
 | `tool.rs` | Tool cells: the `● name(args)` header, the `⎿` output block, a running command's live tail. |
 | `file_cell.rs` | The `read`/`write`/`edit` numbered-diff cell. |
 | `status.rs` | The status line (spinner, shimmer, tally) and the `Done for Ns` summary. |

@@ -293,6 +293,7 @@ impl<'t> Session<'t> {
             render: ui::StreamRender::new(),
             agent_render: ui::StreamRender::new(),
             transcript: ui::TranscriptCache::new(),
+            context: ui::ContextCache::new(),
             burst: PasteBurst::new(),
             clocks: StatusClocks::started_now(),
             toast_deadline: None,
@@ -547,9 +548,10 @@ impl<'t> Session<'t> {
         self.frame.schedule_frame(); // first paint
         // Bare --resume boots into the /resume picker (docs/cli.md): the
         // `OpenResumePicker` arm run before the first event. The header lines
-        // queued above stay pending under the overlay and are dropped by the
-        // return's reflow, which re-emits the banner itself (`ui::banner_tail`) —
-        // whether the picker resumes a session, is dismissed, or quits outright.
+        // queued above stay pending under the overlay: a dismissal's return
+        // flushes them (the banner appears once), while resuming a session
+        // purge-rebuilds — the reflow drops the queue and re-emits the banner
+        // itself (`ui::banner_tail`).
         if picker {
             self.open_resume_picker()?;
         }

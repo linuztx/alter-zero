@@ -173,15 +173,15 @@ The boundary (`main.rs`) holds one `StreamRender` for the turn (replacing the ol
 `committed: usize`): `commit` on each `Chunk`, `finish` on `StreamDone`/tool
 split/interrupt, `preview` before each draw (its line handed to
 `ui::render_live_with_preview`), and `reset` at every turn boundary (turn end,
-tool split, interrupt, `/clear`) **and before a `Purge` repaint** (resize — the
-purge dropped every committed row, so the follow-up commit re-emits the whole
-reply at the new width). A mid-stream **overlay return** (`ReflowClear::InPlace`)
-instead *keeps* the render's state: the repaint tail carries the rows already
-committed (`StreamRender::committed_rows` via `ui::repaint_tail`) and only the
-overlay-time delta is committed after — repainting from history alone blanked
-the partial until its next chunk (the Ctrl+O disappear-then-flicker bug), and
-the old reset-then-recommit duplicated the already-scrolled rows in the
-terminal's kept scrollback (`smoke.sh` Phase 35).
+tool split, interrupt, `/clear`) **and before every purge rebuild** (resize,
+`/clear`, a history rewind — the purge dropped every committed row, so the
+follow-up commit re-emits the whole reply at the new width). A mid-stream
+**overlay return** doesn't touch it at all: the `Chunk` arm keeps committing
+while the overlay is up — the rows merely queue on the viewport — and the
+return's draw flushes them, so the restored screen keeps the already-streamed
+partial and the overlay-time delta lands exactly once (repainting from history
+alone blanked the partial until its next chunk — the Ctrl+O
+disappear-then-flicker bug; `smoke.sh` Phases 35 and 82).
 
 ## Why this is safe while streaming (prefix-stability)
 

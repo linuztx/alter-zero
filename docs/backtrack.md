@@ -93,12 +93,12 @@ is up (invariant 4), so there is nothing stale to retract — the repaint *is*
 the rewind. The submitted-input ↑ history is untouched (codex's cross-session
 input history likewise survives a fork).
 
-**Why Purge, not the in-place overlay-return repaint.** Backtrack *shrinks*
+**Why a purge rebuild, not the ordinary overlay return.** Backtrack *shrinks*
 history, so — like `/resume` (which replaces it) and every resize — the repaint
 must **purge scrollback and clear the whole screen** before rebuilding
-(invariant 3). An in-place overwrite only rewrites the visible rows: it left the
-dropped exchange lingering in the terminal's own scrollback (and still *on
-screen* when the conversation had overflowed), clearing only on the next resize
+(invariant 3). The ordinary return only flushes queued commits beneath what is
+already there: it would leave the dropped exchange lingering on screen and in
+the terminal's own scrollback, clearing only on the next resize
 — the "it's still there after I rewind" duplication bug. The purge makes the
 rewound conversation the whole record, screen and scrollback alike. (This is the
 one deliberate divergence from codex, whose post-fork scrollback keeps the

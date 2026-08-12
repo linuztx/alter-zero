@@ -71,43 +71,28 @@ header is not part of. So it is re-emitted at the I/O boundary:
    `term.insert_before(ui::header_lines(&app, width))` (plus a blank spacer),
    right before the first paint. It flows into scrollback through the normal
    flicker-free pipeline.
-2. **Every repaint** — `repaint_conversation` restores the banner over the
-   rebuilt tail via the pure `ui::banner_tail(banner, tail, budget)` (banner +
-   spacer + tail, re-capped to the last `budget` rows):
-   - A **`Purge`** rebuild (resize, `/clear`) purged scrollback outright, so the
-     banner tops the full rebuild uncapped (`usize::MAX`) — it reappears after a
-     resize **and** after `/clear` (a fresh-start banner, matching Claude Code's
-     `/clear`).
-   - An **`InPlace`** repaint (the Ctrl+O / `/resume` / Ctrl+D overlay return)
-     overwrites the on-screen window top-down — where a short conversation still
-     *shows* the banner, which the overwrite used to wipe (the header vanished
-     on a Ctrl+O round-trip until the next resize or `/clear` re-emitted it). The
-     banner joins that tail too, re-capped to the window budget
-     (`ui::repaint_budget`): exactly as much of it as the window held comes back
-     — fully when the conversation is short, only its bottom rows when it had
-     partly scrolled, and not at all once it scrolled wholly into the terminal's
-     kept scrollback (re-adding it there would paint a duplicate). The recap is
-     exact because `keep_last_rows` keeps suffixes:
-     `keep(banner + keep(x, n), n) == keep(banner + x, n)`.
+2. **Every purge rebuild** (resize, `/clear`, a history rewind) — the purge
+   dropped scrollback outright, so `repaint_conversation` restores the banner
+   over the rebuilt tail via the pure `ui::banner_tail(banner, tail)` (banner +
+   spacer + tail): it reappears after a resize **and** after `/clear` (a
+   fresh-start banner, matching Claude Code's `/clear`).
+
+An **overlay return** (Ctrl+O / `/resume` / Ctrl+D) needs no re-emission at
+all: it never rewrites the screen — everything that committed while the
+overlay was up flushes from the viewport's pending queue *beneath* whatever is
+already there — so the banner the launch committed simply survives, on screen
+or in the terminal's kept scrollback, and is never duplicated (`smoke.sh`
+Phase 3 pins the no-duplicate half, Phase 45 the settled round-trips; the
+overwrite-the-window return this replaces used to wipe it on a short
+conversation, and, when a reply had grown past the window under the overlay,
+silently dropped everything above the window from the terminal — the
+scrollback hole Phases 81/82 now pin shut).
 
 Because the repaint window is **bottom-anchored** (the input box is pinned to the
 bottom and overflow scrolls up — invariant 3), prepending the header never hides
 content that was on screen before: the header simply occupies scrollback above
 the conversation. On a long conversation it scrolls off the top, capped like
 everything else by `RESIZE_REFLOW_MAX_ROWS`.
-
-**Residual edge (pre-existing, not banner-specific):** an `InPlace` return only
-rewrites the window and trusts the terminal's kept scrollback for everything
-above it. When a reply streams *while the overlay is open*, the conversation can
-grow past the window, and the return's rebuild then starts below rows that were
-on the pre-overlay screen but had never scrolled into scrollback — those rows
-(banner or conversation alike) leave the scroll record until the next `Purge`
-rebuild (resize, `/clear`) regenerates everything. Fixing that generally would
-need the viewport to track how many rows the terminal actually holds in
-scrollback and rebuild everything above it — an invariant-3 redesign, out of
-scope for the banner. The banner is never *duplicated* by a return
-(`smoke.sh` Phase 3 pins that), and every settled round-trip keeps it
-(Phase 45).
 
 ## Why borderless
 
@@ -126,10 +111,8 @@ kept clear of the strings other phases key on (`for commands`,
   as scrollback rows (logo + blank + metadata), sized to `width`. No trailing
   spacer; the caller adds one (the `insert_before(msg); insert_before(blank)`
   pattern).
-- `banner_tail(banner, tail, budget) -> Vec<Line<'static>>` — the banner + a
-  blank spacer over a rebuilt repaint tail, re-capped to the last `budget` rows
-  (`usize::MAX` on a `Purge` rebuild, the window budget on an `InPlace` one —
-  see *Surviving every rebuild*).
+- `banner_tail(banner, tail) -> Vec<Line<'static>>` — the banner + a blank
+  spacer over a purge rebuild's repaint tail (see *Surviving every rebuild*).
 - `HEADER_LOGO_FULL` / `HEADER_LOGO_COMPACT` / `HEADER_NAME` — the three
   wordmark tiers.
 - `HEADER_TAGLINE` / `HEADER_HINT` — the persona line and the command hint.
@@ -144,9 +127,8 @@ kept clear of the strings other phases key on (`for commands`,
   the text badge and never exceed the width; the logo carries the cyan → blue
   gradient; a session-less `App` still renders logo + version (no cwd row); the
   banner contains none of the smoke-reserved strings.
-- `ui/tests/header.rs` unit tests (`banner_tail_*`): the banner + spacer restore over a short
-  tail; the recap drops the banner once the window is full and keeps only its
-  bottom rows when it half-fits; `usize::MAX` never clips.
+- `ui/tests/header.rs` unit tests (`banner_tail_*`): the banner + spacer
+  restore over the rebuilt tail, and a long tail never clips it.
 - `ui/tests/header.rs` unit tests (`transcript_*`): the transcript opens with the banner + a
   spacer before the history walk; an empty transcript still shows the
   placeholder under it; `render_tool_view` paints the version badge in the
@@ -154,8 +136,8 @@ kept clear of the strings other phases key on (`for commands`,
 - `scripts/smoke.sh` Phase 45: the header shows at startup (version + tagline),
   survives a resize (still present after 80×24 → 50×24 → 80×24), re-shows
   after `/clear`, tops the Ctrl+O transcript (empty and with a real
-  conversation), and **survives the Ctrl+O round-trip** — the InPlace return
-  restores it over both an empty and a full conversation tail; Phase 3 pins the
+  conversation), and **survives the Ctrl+O round-trip** — the return leaves it
+  untouched over both an empty and a full conversation tail; Phase 3 pins the
   no-duplication half (never more than one banner in screen+scrollback after a
   mid-stream return over a long conversation); Phases 16/17 confirm it doesn't
   disturb the `/clear`-blank or resize structural counts.

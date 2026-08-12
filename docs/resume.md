@@ -202,17 +202,18 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
 
 - `Action::OpenResumePicker` → scan, `app.open_resume_picker(sessions)`,
   `term.enter_overlay()`, paint at once (the Ctrl+O no-black-flash pattern).
-- `Action::CloseResumePicker` → `term.exit_overlay()`, `repaint_conversation`
-  (the Ctrl+O return).
+- `Action::CloseResumePicker` → `term.exit_overlay()` + the ordinary
+  overlay return (`overlay_return_repaint` — flush what queued, repaint the
+  live region).
 - `Action::ResumeSession(path)` → read + `session::parse_session` at the
   boundary. Ok: `app.load_session(items)`, recorder adopts the file,
-  `exit_overlay` + a **purge** `repaint_conversation` (`ReflowClear::Purge`,
-  like `/clear`) — the loaded session *replaces* the whole conversation, so
-  the rebuild fills scrollback with its full history; the old in-place return
-  left the previous chat in scrollback above it and committed only the last
-  screenful of the resumed one. Err: close the picker with the normal
-  in-place return, then `commit_error_notice("Failed to load session: …")` —
-  the current conversation continues unharmed (codex).
+  `exit_overlay` + a **purge** `repaint_conversation` (like `/clear`) — the
+  loaded session *replaces* the whole conversation, so the rebuild fills
+  scrollback with its full history; a plain return would leave the previous
+  chat above it and commit none of the resumed session's earlier turns. Err:
+  close the picker with the normal return, then
+  `commit_error_notice("Failed to load session: …")` — the current
+  conversation continues unharmed (codex).
 - `Action::Toast(text)` → `present_toast` (a transient info toast; the
   `Action::ErrorNotice` red-committed twin of `Action::Notice` it replaced was
   removed on 2026-07-08 — see `docs/toast.md`). A failed session *load* still

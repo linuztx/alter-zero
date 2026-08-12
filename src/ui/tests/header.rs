@@ -145,48 +145,23 @@ fn header_avoids_the_smoke_reserved_strings() {
 // --- the banner-topped repaint tail (docs/header.md) ---
 
 #[test]
-fn banner_tail_restores_the_banner_over_a_short_tail() {
-    // The InPlace overlay return on a short conversation: the banner the
-    // window still showed comes back — banner, spacer, then the tail.
+fn banner_tail_restores_the_banner_over_the_rebuilt_tail() {
+    // Every purge rebuild reconstructs scrollback from nothing, so the
+    // banner unconditionally tops it — banner, spacer, then the tail.
     let out = banner_tail(
         vec![Line::raw("LOGO"), Line::raw("meta")],
         vec![Line::raw("❯ hi"), Line::raw("ok")],
-        10,
     );
     let texts: Vec<String> = out.iter().map(plain).collect();
     assert_eq!(texts, ["LOGO", "meta", "", "❯ hi", "ok"]);
 }
 
 #[test]
-fn banner_tail_drops_the_banner_once_the_window_is_full() {
-    // A conversation that already fills the repaint window: the recap
-    // drops the banner — it scrolled into the terminal's kept scrollback,
-    // and re-adding it on screen would duplicate it.
-    let tail: Vec<Line<'static>> = (0..4).map(|i| Line::raw(format!("r{i}"))).collect();
-    let out = banner_tail(vec![Line::raw("LOGO")], tail, 4);
-    let texts: Vec<String> = out.iter().map(plain).collect();
-    assert_eq!(texts, ["r0", "r1", "r2", "r3"]);
-}
-
-#[test]
-fn banner_tail_keeps_the_banner_bottom_when_it_half_fits() {
-    // Mid-scroll: the window held only the banner's bottom rows, so only
-    // those come back — the top rows stay in the kept scrollback above.
-    let out = banner_tail(
-        vec![Line::raw("top"), Line::raw("bottom")],
-        vec![Line::raw("❯ hi")],
-        3,
-    );
-    let texts: Vec<String> = out.iter().map(plain).collect();
-    assert_eq!(texts, ["bottom", "", "❯ hi"]);
-}
-
-#[test]
-fn banner_tail_uncapped_never_clips() {
-    // The Purge rebuild passes usize::MAX: the banner tops the fresh
-    // scrollback whatever the conversation's length.
+fn banner_tail_never_clips() {
+    // The banner tops the fresh scrollback whatever the conversation's
+    // length (the tail itself is already capped by the rebuild's budget).
     let tail: Vec<Line<'static>> = (0..100).map(|i| Line::raw(format!("r{i}"))).collect();
-    let out = banner_tail(vec![Line::raw("LOGO")], tail, usize::MAX);
+    let out = banner_tail(vec![Line::raw("LOGO")], tail);
     assert_eq!(out.len(), 102, "banner + spacer + every tail row");
     assert_eq!(plain(&out[0]), "LOGO");
 }

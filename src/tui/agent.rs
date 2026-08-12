@@ -33,7 +33,6 @@ use ratatui::text::Line;
 use alter_zero::agents::{AGENT_LINGER, AgentEvent};
 use alter_zero::app::{Role, ToastKind, View};
 use alter_zero::stream::StreamEvent;
-use alter_zero::term::ReflowClear;
 use alter_zero::ui;
 
 use super::Session;
@@ -206,7 +205,7 @@ impl Session<'_> {
     /// rebuild from history, the in-flight partial included. The viewed agent's
     /// linger re-arms via the sweep (its deadline was pushed while viewed).
     pub(crate) fn leave_agent_view(&mut self) -> std::io::Result<()> {
-        self.repaint_conversation(ReflowClear::Purge)
+        self.repaint_conversation()
     }
 
     /// Enter inside an agent session: deliver the draft to the agent — queued

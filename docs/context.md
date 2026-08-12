@@ -210,14 +210,37 @@ message: a coloured `role:` tag over its text wrapped **verbatim**
 unformatted wire content), an assistant entry's native tool calls as purple
 `→ name(arguments)` rows, attachment paths dim beneath. Image placeholders, the
 raw tool-call JSON, and the tool results appear raw here and only here. While the
-view is up the loop keeps draining stream events (commits stay gated on the
-conversation view, invariant 4) and the tail-follow keeps the newest entries
-in view; closing repaints the inline conversation exactly like a Ctrl+O
-return. The `?` shortcuts band gains `ctrl+d for llm context`.
+view is up the loop keeps draining stream events (their commits queue on the
+viewport, invariant 4) and the tail-follow keeps the newest entries in view;
+closing flushes the queued commits and repaints the live region exactly like a
+Ctrl+O return. The `?` shortcuts band gains `ctrl+d for llm context`.
 
 The view shows the context as of *finished* items: an in-flight partial reply
 lives in the streaming buffer, entering the window (and the next request)
 when its segment lands in history.
+
+### The window is cached (`ui::ContextCache`)
+
+Deriving the window (`context_messages_full` over the whole history) and
+wrapping every entry verbatim is **O(conversation)** — and the view redraws on
+every animation frame while a turn runs (the loop's 32 ms status re-arm), plus
+once per scroll key. Rebuilt per frame, a big context — a loaded skill's whole
+rendered body rides the window — pegged the event loop and starved the scroll
+keys: the reported "Ctrl+D freezes the TUI" bug, worst exactly when the user
+opens the view to read what a long skill injected. So the loop owns a
+`ui::ContextCache` (the `TranscriptCache`'s little sibling, `docs/
+tool-view-performance.md`): `draw_context_view` asks it for the line count
+(the scroll clamp, `tool_view_max_scroll_for` — the pager formula, shared) and
+then the lines, and the cache rebuilds **only when its signature changes** —
+history generation + length, the width, the viewed agent (id + its own
+transcript length), and the leading fragments' lengths (system/agent prompt,
+`AGENTS.md` instructions, the skill listing — they only otherwise change
+beside a turn-start history append, and the lengths catch the direct edits: a
+`/settings` toggle dropping the instructions, a `/model` switch swapping the
+prompt). A scroll key or a status tick is a cache hit (O(viewport) to window
+the rows); a streamed chunk doesn't invalidate it at all (the window shows
+finished items only). No incremental prefix is needed — unlike the
+transcript, the window only changes at item boundaries, never per chunk.
 
 Inside an **agent session view** (`docs/agent-tool.md`) the same overlay
 debugs the *viewed agent's* context instead: the body derives from that

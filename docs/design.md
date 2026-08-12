@@ -542,7 +542,7 @@ logic is unit-testable without a real terminal.
 | `file_search.rs` | The **pure core of the `@` file picker** (`docs/file-search.md`): `at_token` (the `@token` under the cursor — byte range + query), `fuzzy_match` (ASCII-case-insensitive subsequence + score + matched-char indices), `rank_files` (filter/sort/cap), and the `AtToken`/`FileMatch` types. The filesystem walk + async plumbing are the boundary's (`tui::workers`); this is all pure. | Yes |
 | `markdown.rs` | The **pure block parser for assistant replies** (`docs/markdown.md`): `parse_blocks` splits prose runs from fenced code blocks (` ``` `/`~~~`, verbatim, prefix-stable), `fence_lang` extracts the info-string language, `heading_level` classifies an ATX heading line. `ui::assistant_lines` renders these; code stays byte-for-byte (no gutter, no language label), headings bold. Inline emphasis / lists / tables are deliberately out (they need source-newline-gating or tail-holdback). | Yes |
 | `highlight.rs` | **Dependency-free syntax highlighting** for code blocks (`docs/markdown.md`): a generic tokenizer (`highlight` → `Vec<Vec<Seg>>` of `Kind` = keyword/string/comment/number/function/plain) with per-language comment styles and left-to-right multi-line string/comment state — prefix-stable, colour-agnostic (`ui` maps `Kind`→colour). No `syntect`/grammars; degrades to plain text for unknown languages. | Yes |
-| `ui/`       | Pure rendering, split one module per area (`docs/module-layout.md`; every styling/geometry `const` lives in `ui/theme.rs`): `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`/`repaint_budget`, the growing-input geometry (`live_height`, `repin`, `cursor_position` + `cursor_visible`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **`@` file picker** sharing it too (`file_menu_rows`, `file_menu_lines`, `file_menu_row` — selected row cyan, query-matched chars bolded; `docs/file-search.md`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`; the red `SHELL_BULLET` composer prompt; `message_lines(Role::Shell…)` exec-cell headers, headerless shell `tool_lines`, and `conversation_lines`' flush shell cells), `render_live`, `render_tool_view`, and the **`/resume` picker overlay** (`render_resume_picker` + `resume_row` — dense `❯ {age:12}{preview}` rows, the shared `overlay_header`/`rule_with_label` chrome; `docs/resume.md`). | Yes |
+| `ui/`       | Pure rendering, split one module per area (`docs/module-layout.md`; every styling/geometry `const` lives in `ui/theme.rs`): `wrap_text` (display-width via `cols`, for **messages**), `message_lines`, `tool_lines` (collapsed inline) / `transcript_lines` (full conversation + expanded tools), `stable_commit`/`final_commit`, `conversation_lines`/`repaint_lines`, the growing-input geometry (`live_height`, `repin`, `cursor_position` + `cursor_visible`, `restore_cursor_row`, `input_scroll` — follows the textarea cursor), the **command-palette band** (`menu_rows`, `menu_window`, `command_menu_lines`), the **`?` shortcuts band** sharing its slot (`shortcuts_rows`, `shortcuts_lines`), the **`@` file picker** sharing it too (`file_menu_rows`, `file_menu_lines`, `file_menu_row` — selected row cyan, query-matched chars bolded; `docs/file-search.md`), the **queued messages** rendered above the box in user-message style (`queued_rows`, `queued_lines`), the **session footer** on the region's last row (`footer_rows`, `footer_line`, `display_cwd`), the **Ctrl+R search line** taking that slot while a search is open (`search_line`, the query-end cursor in `cursor_position`, `highlight_row_spans` for the reversed match preview), the **`!` shell-mode hint** taking the same slot (`shell_mode_line`; the red `SHELL_BULLET` composer prompt; `message_lines(Role::Shell…)` exec-cell headers, headerless shell `tool_lines`, and `conversation_lines`' flush shell cells), `render_live`, `render_tool_view`, and the **`/resume` picker overlay** (`render_resume_picker` + `resume_row` — dense `❯ {age:12}{preview}` rows, the shared `overlay_header`/`rule_with_label` chrome; `docs/resume.md`). | Yes |
 | `frame.rs`  | Frame scheduling (codex-style): `FrameRateLimiter` (120 fps floor) + `soonest` request-coalescing (pure), and the async `FrameRequester`/`run_scheduler` task that turns a flood of `schedule_frame` calls into one rate-limited draw tick. | Pure parts: yes (async task: smoke) |
 | `paste.rs`  | Two pure paste jobs (`docs/paste.md`): **burst detection** — `PasteBurst`, a pure state machine (a run of characters within `BURST_CHAR_INTERVAL` is a burst once `BURST_MIN_CHARS` pile up, so the loop relaxes the run's redraws) — and the **paste placeholders** — `LARGE_PASTE_CHAR_THRESHOLD` + `next_paste_placeholder` (`[Pasted Content N chars]`, collision-suffixed), `next_image_placeholder` (`[Image #N]`, `docs/image-paste.md`), `expand_pastes` (splice the real text back on send), and `placeholder_to_delete` (Backspace removes a placeholder atomically). | Yes |
 | `clipboard.rs` | Clipboard I/O — the boundary for **Ctrl+V image paste** (`read_clipboard_image`: clipboard image or copied image file → a kept temp PNG the backend reads by path — `docs/image-paste.md`) and **`/copy`** (`copy_to_clipboard`: arboard with an OSC 52 terminal-escape fallback for headless/SSH/tmux — `docs/copy.md`). The `base64`/OSC 52 framing is a tested pure core; the clipboard/filesystem I/O is smoke-covered like `term.rs`. | Pure parts: yes (I/O: smoke) |
@@ -655,11 +655,12 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   flush the kept partial, the cancelled tool (collapsed, red), and the red
   `Conversation interrupted` notice. No `Done for Ns` summary.
 - **In the tool-output view** every reply event still updates `App` (so the view
-  shows tools live), but the commit-to-scrollback steps above are **skipped** —
-  they would write into the alternate screen. The turn-end queue drain still
-  runs (its user bubbles only *queue* in `term`, dropped + regenerated from
-  history by the return's reflow), so the open transcript follows the next
-  queued turn live. The inline view is rebuilt from `history` on return.
+  shows tools live), and the commit-to-scrollback steps above still run — the
+  lines merely **queue** in `term` (nothing flushes onto the alternate screen).
+  The turn-end queue drain runs too, so the open transcript follows the next
+  queued turn live. The return's ordinary draw flushes the whole backlog above
+  the live region, so nothing an overlay-covered turn produced is lost from
+  the terminal (invariant 4).
 
 ### Key types
 
@@ -935,7 +936,7 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   on shrink) — an inline modal (a permission prompt, `region_is_modal`) grows by
   the same rule, its one-way scrolls noted for the close's purge rebuild
   (`docs/permissions.md`); `restore_cursor_row` lands the exit cursor just below the box (no
-  blank gap on quit when the box is near the top); the `BULLET_WIDTH` / `repaint_budget`
+  blank gap on quit when the box is near the top); the `BULLET_WIDTH`
   single-source-of-truth invariants; and `stable_commit`/`final_commit` proven to
   reconstruct a whole streamed reply with no gaps or duplicates, and to clamp
   safely under a mid-stream resize.
@@ -1033,35 +1034,34 @@ the backend's cell→ANSI `draw`, `append_lines` (scroll-up-into-scrollback),
 - `enter_overlay` / `draw_overlay` / `exit_overlay` — the Ctrl+O tool-output view.
   `enter_overlay` switches to the terminal's **alternate screen** (so the inline
   conversation — main screen + its real scrollback — is preserved untouched);
-  `draw_overlay` paints a full-screen buffer (`ui::render_tool_view`) every frame;
-  `exit_overlay` switches back, after which `main` reflows the inline view to catch
-  up (on a normal return *and* on a quit-from-overlay, so the restored screen is
-  rebuilt either way). This is the *only* use of the alternate screen — the
-  conversation itself stays inline.
-- `reflow` rebuilds the inline view from a re-wrapped `tail` (after a resize, a
-  Ctrl+O return, or `/clear`), taking a `ReflowClear` mode that says how to prep
-  the screen first:
-  - **`InPlace`** (the Ctrl+O / `/resume` overlay return) lets `write_above`
-    **overwrite the screen in place** (draw top-down, then clear the rows below the
-    tail) and `clear_region(All)`s *only* for an empty tail. A leading full clear
-    before that scroll makes tmux spill the on-screen frame into scrollback; after
-    a Ctrl+O return that frame is the **stale streaming strip**, so the clear would
-    push `Working… (… tokens)` into scrollback above the rebuilt conversation
-    (`smoke.sh` Phase 7). It keeps the terminal's own scrollback and repaints only
-    the on-screen tail.
-  - **`Purge`** (`/clear` *and* every resize) instead **purges the scrollback and
-    clears the whole visible screen** up front — a port of codex's
-    `clear_scrollback_and_visible_screen_ansi`, one ANSI write of `ESC[r ESC[0m
-    ESC[H ESC[2J ESC[3J ESC[H` (reset scroll region + SGR, home, clear screen with
-    ED2, purge scrollback with **ED3**, home). Because the purge drops scrollback,
-    the caller repaints the **whole** history (bounded by `RESIZE_REFLOW_MAX_ROWS`,
-    ~10k rows, mirroring codex's per-terminal resize-reflow cap) and `write_above`
-    scrolls the overflow back into the now-empty scrollback. Two things this buys,
-    both matching codex: `/clear` genuinely wipes scrollback (scrolling up after it
-    shows nothing, not the old chat — a bare `ED2` left it there), and a resize
-    can't leave the emulator's *own* reflowed copy of the old rows on screen — the
-    TUI-text duplication the in-place overwrite showed on a width change
-    (`smoke.sh` Phases 16 and 17).
+  `draw_overlay` paints a full-screen buffer (`ui::render_tool_view`) every frame
+  and **never flushes the pending queue**, so commits made while the overlay is
+  up simply wait; `exit_overlay` switches back, after which one ordinary draw
+  flushes that backlog above the live region and repaints the box — the return
+  costs O(what happened), keeps the terminal's own scrollback, and loses
+  nothing however much streamed or finished under the overlay (a normal return
+  *and* a quit-from-overlay both take it; a history-window rebuild here could
+  re-emit at most one screenful, which silently dropped the rest of an
+  overlay-covered turn — the scrollback-hole bug, `smoke.sh` Phases 81/82).
+  Only a **resize that landed under the overlay** upgrades the return to the
+  full `reflow` (the emulator reflowed the main screen underneath, and the
+  queued lines were rendered at the stale width). This is the *only* use of
+  the alternate screen — the conversation itself stays inline.
+- `reflow` rebuilds the inline view from a re-wrapped `tail` (after a resize,
+  `/clear`, or a history rewind — a backtrack, a `/resume` load, an
+  interrupt-undo). It **purges the scrollback and clears the whole visible
+  screen** up front — a port of codex's
+  `clear_scrollback_and_visible_screen_ansi`, one ANSI write of `ESC[r ESC[0m
+  ESC[H ESC[2J ESC[3J ESC[H` (reset scroll region + SGR, home, clear screen with
+  ED2, purge scrollback with **ED3**, home). Because the purge drops scrollback,
+  the caller repaints the **whole** history (bounded by `RESIZE_REFLOW_MAX_ROWS`,
+  ~10k rows, mirroring codex's per-terminal resize-reflow cap) and `write_above`
+  scrolls the overflow back into the now-empty scrollback. Two things this buys,
+  both matching codex: `/clear` genuinely wipes scrollback (scrolling up after it
+  shows nothing, not the old chat — a bare `ED2` left it there), and a resize
+  can't leave the emulator's *own* reflowed copy of the old rows on screen — the
+  TUI-text duplication an in-place overwrite showed on a width change
+  (`smoke.sh` Phases 16 and 17).
 
 `term.rs` is, like `src/tui/`, an I/O boundary verified via `scripts/smoke.sh`
 rather than unit tests; all the geometry it consumes is pure and tested in `ui`,

@@ -124,6 +124,10 @@ pub(crate) struct Session<'t> {
     /// closes and warmed at the loop bottom so it never opens cold
     /// (`docs/tool-view-performance.md`).
     transcript: ui::TranscriptCache,
+    /// The Ctrl+D overlay's built context window, rebuilt only when its
+    /// signature changes — per frame the O(conversation) derivation starved
+    /// the scroll keys on a big context (`docs/context.md`).
+    context: ui::ContextCache,
     /// Detects a paste / fast-type burst so its redraws coalesce.
     burst: PasteBurst,
 

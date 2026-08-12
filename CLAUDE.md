@@ -1048,33 +1048,33 @@ of bug:
    and the repaint reseats it; guarded by `smoke.sh` Phase 17). `App` retains a
    `history: Vec<HistoryItem>` of finished messages *and
    tool calls* (kept for two reasons: this repaint, and listing tools in the Ctrl+O
-   view) and `term::reflow` seats the viewport at the top, writes the re-wrapped
-   tail (`ui::repaint_lines`) and paints the live region below it — all in
-   the same synchronized frame (stale queued lines are dropped: the tail regenerates
-   them). How the screen is prepped first is a `term::ReflowClear` mode: **`InPlace`**
-   (the Ctrl+O / `/resume` overlay return) **overwrites the screen top-down** then
-   clears the rows below the tail, and `clear_region(All)`s *only* for an empty
-   tail — because a leading full clear before the tail-write's scroll makes tmux
-   spill the on-screen frame into scrollback, and after a Ctrl+O return (invariant 4)
-   that pushes the **stale streaming strip** (`Working… (… tokens)`) into scrollback
-   above the rebuilt conversation (guarded by `smoke.sh` Phase 7). **`Purge`** (`/clear`
-   *and* every resize) instead **purges scrollback + clears the whole screen** first
+   view) and `term::reflow` **purges scrollback + clears the whole screen** first
    (codex's `clear_scrollback_and_visible_screen_ansi` — `ESC[2J` then the `ESC[3J`
-   scrollback purge, emitted as one ANSI write) and rebuilds the **full** history
-   (`RESIZE_REFLOW_MAX_ROWS`-capped) into the blank screen, `write_above` scrolling
-   the overflow back into the now-empty scrollback: so `/clear` truly wipes
-   scrollback (scrolling up shows nothing, not the old chat), and a resize can't
-   leave the emulator's own reflowed copy of the old rows behind — the TUI-text
-   duplication that in-place overwrite showed on a width change (guarded by
-   `smoke.sh` Phases 16 and 17). A mid-stream repaint must not lose the
-   in-flight partial reply (it lives in the streaming buffer, not `history`):
-   the tail carries the rows the stream already committed
-   (`ui::repaint_tail` / `StreamRender::committed_rows`) and the rows that
-   arrived since — chunks drained under the overlay, or the whole partial after
-   a purge reset the render — are queued right after via the normal
-   `insert_before` pipeline, reaching scrollback exactly once (guarded by
-   `smoke.sh` Phase 35; a resize that lands *while* an overlay is up upgrades
-   that return's repaint from `InPlace` to `Purge` — `overlay_resized`).
+   scrollback purge, emitted as one ANSI write), seats the viewport at the top,
+   writes the re-wrapped **full** history (`RESIZE_REFLOW_MAX_ROWS`-capped,
+   `ui::repaint_lines`) into the blank screen — `write_above` scrolling the
+   overflow back into the now-empty scrollback — and paints the live region below
+   it, all in the same synchronized frame (stale queued lines are dropped: the
+   tail regenerates them). Every full rebuild goes through it: `/clear` (truly
+   wiping scrollback — scrolling up shows nothing, not the old chat), every
+   resize (the purge is what stops the emulator's own reflowed copy of the old
+   rows surviving — the TUI-text duplication an in-place overwrite showed on a
+   width change; guarded by `smoke.sh` Phases 16 and 17), and every history
+   rewind (a backtrack, a `/resume` load, an interrupt-undo, a blocked prompt).
+   An **ordinary overlay return is deliberately *not* one of them**: everything
+   that committed while the overlay was up sits in the viewport's pending queue
+   (invariant 4), so the return is one ordinary `draw` — the flush writes the
+   backlog above the live region (overwriting the stale strip in place, no tmux
+   spill) and the terminal's own scrollback survives untouched
+   (`Session::overlay_return_repaint`; a resize that landed *while* the overlay
+   was up is the exception that forces the purge rebuild — `overlay_resized`,
+   the emulator reflowed the main screen underneath and the queued lines carry
+   the stale width). A mid-stream purge rebuild must not lose the in-flight
+   partial reply (it lives in the streaming buffer, not `history`): the purge
+   dropped its committed rows with everything else, so the render resets and
+   the whole partial is re-committed right after via the normal `insert_before`
+   pipeline, reaching scrollback exactly once (guarded by `smoke.sh` Phases 35
+   and 82).
 
 4. **Tool calls interleave with text, and Ctrl+O opens a separate overlay.** A
    tool call splits the assistant text around it: `App::flush_streaming_segment`
@@ -1136,17 +1136,23 @@ of bug:
    its own line below the message** — the *only* stamp displayed anywhere
    (AI/tool/summary stamps are recorded but never shown; never inline; the
    clock is injected via `App::set_clock`, see `docs/timestamps.md`). **While
-   the overlay is up the loop keeps
-   draining reply events into `App` but does *not* commit to scrollback** (that
-   would write into the alt screen); on return, `repaint_conversation` rebuilds the
-   inline view from `history`. Never commit to scrollback while
-   `app.view == View::ToolOutput` — nor while an agent session view
-   covers the inline screen (the one gate, `tui::commit::Session::commits_allowed`; an open
+   the overlay is up the loop keeps draining reply events into `App` and keeps
+   committing — the commits merely *queue*** (`insert_before` never does I/O,
+   and only the inline `draw`/`reflow`/`restore` flush the queue — never
+   `draw_overlay` — so nothing can write the alt screen); the return's ordinary
+   draw then flushes the whole backlog above the live region, so a turn that
+   streamed — or *finished* — under the overlay keeps every row in the
+   terminal (`smoke.sh` Phases 81 and 82; the retired regenerate-from-history
+   return could re-emit at most one screenful, which silently dropped the rest
+   — the scrollback-hole bug). The one view that truly *defers* commits is an
+   open **agent session view** covering the inline screen (the one gate,
+   `tui::commit::Session::commits_allowed` — its screen shows a different
+   conversation, and its returns purge-rebuild from history; an open
    permission prompt is deliberately *not* on the list — a commit beneath it
    scrolls in above the region, visible at once, and the scroll it causes is
    one of the one-way moves the close's purge rebuild answers —
    `docs/permissions.md`). **Quitting from the overlay is also a return**:
-   the `Action::Quit` arm must `exit_overlay` *then* `repaint_conversation` + `draw`
+   the `Action::Quit` arm must `exit_overlay` *then* `overlay_return_repaint`
    before breaking — otherwise `restore` lands on the stale streaming strip a turn
    that finished in the overlay left behind, instead of the committed `Done for Ns`
    summary (`smoke.sh` Phase 7).
@@ -1252,8 +1258,8 @@ interrupt (its `Kept` branch) — the loop pops the front queued batch (`App::dr
 following turn-ends), so **Esc sends the front batch right away**; the drain
 runs **under the Ctrl+O overlay too** (codex's queue dispatches at turn end
 regardless of its Ctrl+T view, the transcript following the new turn live) —
-dispatching only records history and *queues* the user bubbles, which the
-return's reflow drops + regenerates, so invariant 4 holds.
+dispatching records history and *queues* the user bubbles, which the return's
+draw flushes, so invariant 4 holds.
 `App` (`src/app/`) is pure state +
 `on_key` (dispatched per `View`); `Action`, `Role`, `Message`, `StreamError`,
 `InterruptedTurn`, `ToolStatus`, `ToolCall`, `TokenArrow`, `TurnStatus`,

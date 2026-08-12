@@ -659,8 +659,9 @@ explains itself with a toast instead of pretending to toggle anything.
   lands the box flush at the bottom instead of floating above the rows the
   collapsed prompt vacated, each message committed exactly once.
 - `smoke.sh` Phase 62 — the same close, reached through the overlay: Ctrl+O is
-  up when the request arrives, the return's reflow seats the prompt below the
-  rebuilt tail (a one-way reseat the note records), and answering still lands
+  up when the request arrives, the return seats the open prompt over the
+  restored screen (its growth and the queued commits' flush are one-way moves
+  the note records), and answering still lands
   the box flush at the bottom with the message committed exactly once — the
   "newlines at the bottom, but only when Ctrl+O was opened first" bug.
 - `smoke.sh` Phase 63 — the mid-open shrink in a real terminal: the

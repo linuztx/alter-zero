@@ -20,8 +20,10 @@
 //!   command just killed reports right after that command's cell instead of at
 //!   the turn's distant end (`docs/background.md`).
 //!
-//! Committing is view-gated throughout: `App` records regardless, and an overlay
-//! return repaints from that history.
+//! Committing is gated throughout on [`Session::commits_allowed`]: `App`
+//! records regardless. Under an alternate-screen overlay the commits merely
+//! queue (the return's draw flushes them); only an open agent session view
+//! defers to a history rebuild (invariant 4).
 
 use ratatui::text::Line;
 
@@ -592,10 +594,10 @@ impl Session<'_> {
             // board) dispatches the automatic follow-up turn instead
             // (docs/background.md). This runs under the Ctrl+O overlay too
             // (codex's queue drains at turn end regardless of its Ctrl+T view,
-            // the transcript following along): dispatching only records history
-            // and *queues* the user bubbles — `term` never flushes pending lines
-            // into the alternate screen, and the return's reflow drops +
-            // regenerates them from history — so invariant 4 holds.
+            // the transcript following along): dispatching records history and
+            // *queues* the user bubbles — `term` never flushes pending lines
+            // into the alternate screen; the return's draw flushes them — so
+            // invariant 4 holds.
             self.dispatch_after_turn();
         }
         self.frame.schedule_frame();
@@ -615,8 +617,17 @@ impl Session<'_> {
         self.app.block_prompt(reason);
         self.render.reset();
         self.clocks.command_start = None;
+        // The hook answers on the backend thread, so the block can land while
+        // an alternate-screen overlay covers the inline view (the user hit
+        // Ctrl+O right after Enter): a reflow now would write onto the alt
+        // screen, so defer — the flag makes the overlay's return take the
+        // purge-rebuild this rollback needs (history shrank).
+        if self.app.view != alter_zero::app::View::Conversation {
+            self.overlay_resized = true;
+            return;
+        }
         // Best-effort like every mid-event repaint: a failed write means the
         // terminal is gone, and the next draw tick repaints anyway.
-        let _ = self.repaint_conversation(alter_zero::term::ReflowClear::Purge);
+        let _ = self.repaint_conversation();
     }
 }

@@ -132,21 +132,6 @@ fn inline_conversation_never_shows_the_timestamp() {
 }
 
 #[test]
-fn repaint_budget_is_the_screen_minus_the_live_region() {
-    assert_eq!(
-        repaint_budget(10, LIVE_MIN_HEIGHT),
-        10 - LIVE_MIN_HEIGHT as usize
-    );
-    assert_eq!(
-        repaint_budget(10, 9),
-        1,
-        "a taller live region leaves fewer rows"
-    );
-    assert_eq!(repaint_budget(LIVE_MIN_HEIGHT, LIVE_MIN_HEIGHT), 0);
-    assert_eq!(repaint_budget(4, 9), 0, "saturates, never wraps");
-}
-
-#[test]
 fn a_hook_note_is_invisible_inline_and_expanded_in_the_transcript() {
     // Claude Code hides these from the normal view too (docs/hooks.md): the
     // inline repaint skips the item entirely, the Ctrl+O transcript shows

@@ -2,14 +2,21 @@
 //! as a transient toast.
 //!
 //! **Invariant 4 lives here.** [`Session::commits_allowed`] is the single
-//! predicate every commit site consults: two inline views hold finished lines
-//! back — the alternate-screen overlays (Ctrl+O / `/resume` / Ctrl+D) and an
-//! open agent session view — and both end the same way. `App` records the item
-//! regardless, and the return repaints the inline view from that history, so
-//! nothing is lost by waiting. An open **permission prompt** is deliberately
-//! *not* on the list: its region sits at the bottom like any other, so a cell
-//! resolving beneath it simply scrolls in above the question — visible at once,
-//! Claude-Code style (`docs/permissions.md`).
+//! predicate every commit site consults, and exactly one inline view holds
+//! finished lines back: an open **agent session view**, whose screen shows a
+//! different conversation (`App` records the item regardless, and the view's
+//! purge-rebuild returns regenerate everything from that history). The
+//! alternate-screen overlays (Ctrl+O / `/resume` / Ctrl+D) are deliberately
+//! *not* gated any more: `InlineViewport::insert_before` only **queues**, and
+//! nothing flushes the queue onto the alternate screen — so a commit made
+//! under an overlay simply waits there, and the overlay's return flushes it
+//! above the live region through the ordinary draw. Gating them instead (and
+//! regenerating from history on return) could re-emit at most one screenful,
+//! which silently dropped everything an overlay-covered turn produced beyond
+//! it from the terminal — the scrollback hole. An open **permission prompt**
+//! is not on the list either: its region sits at the bottom like any other,
+//! so a cell resolving beneath it simply scrolls in above the question —
+//! visible at once, Claude-Code style (`docs/permissions.md`).
 //!
 //! Everything that commits mid-turn flushes the in-flight streamed segment
 //! first ([`App::flush_streaming_segment`]), which is what makes a notice slot
@@ -26,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use ratatui::text::Line;
 
-use alter_zero::app::{AgentGroup, App, Role, ToastKind, ToolCall, View};
+use alter_zero::app::{AgentGroup, App, Role, ToastKind, ToolCall};
 use alter_zero::ui;
 
 use super::Session;
@@ -36,10 +43,12 @@ use super::Session;
 const TOAST_TTL: Duration = Duration::from_secs(4);
 
 impl Session<'_> {
-    /// Whether finished lines may be written to the terminal's scrollback right
-    /// now (invariant 4 — see the module doc).
+    /// Whether finished lines may be committed (queued for the terminal's
+    /// scrollback) right now (invariant 4 — see the module doc). Under an
+    /// alternate-screen overlay the queued lines merely wait for the return's
+    /// flush; only an open agent session view defers to a history rebuild.
     pub(crate) fn commits_allowed(&self) -> bool {
-        self.app.view == View::Conversation && self.app.agent_view.is_none()
+        self.app.agent_view.is_none()
     }
 
     /// Raise a transient toast and arm its expiry: set the text, stamp the
