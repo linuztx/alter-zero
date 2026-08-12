@@ -1058,6 +1058,20 @@ pub(super) const FILE_MENU_DIR_LABEL: &str = "Dir";
 /// The kind-column label for a file match.
 pub(super) const FILE_MENU_FILE_LABEL: &str = "File";
 
+// --- The `$` skill picker. A fourth band in the same slot, opened while the
+// cursor sits in a usable `$mention`: one row per matching skill — the name
+// column (widest visible name + `FILE_MENU_GAP`, matched characters bolded)
+// then the skill's own description, `…`-cut at the width. It reuses the
+// palette's colours and the file picker's marker/indent — the selection lights
+// up cyan, the rest dim. See docs/skill-mentions.md. ---
+
+/// The most skill rows shown at once; longer lists scroll to keep the
+/// selection visible (`menu_window`), like the file picker.
+pub(super) const SKILL_MENU_MAX_ROWS: u16 = 8;
+
+/// The band's single placeholder row when the query matched no skill.
+pub(super) const SKILL_MENU_NO_MATCH: &str = "No matching skills";
+
 // --- The `?` shortcuts band. A keyboard-shortcuts overview pinned **below the
 // input box** (the palette's slot — the two never show together), toggled by
 // `?` from an empty composer — a port of codex's footer shortcut overlay

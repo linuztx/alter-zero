@@ -512,6 +512,7 @@ impl App {
         self.backtrack = Backtrack::default();
         self.command_menu = None;
         self.file_search = None;
+        self.skill_picker = None;
     }
 
     /// Leave the agent session view back to the main conversation.

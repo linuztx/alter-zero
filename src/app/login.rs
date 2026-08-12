@@ -106,6 +106,7 @@ impl App {
         self.shortcuts_open = false;
         self.command_menu = None;
         self.file_search = None;
+        self.skill_picker = None;
         self.model_picker = None;
         self.backtrack = Backtrack::default();
         self.key_onboarding = Some(KeyOnboarding {

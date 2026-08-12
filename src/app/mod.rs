@@ -43,6 +43,7 @@ mod queue;
 mod reasoning;
 mod resume;
 mod settings;
+mod skill_picker;
 mod skills_menu;
 mod status;
 mod tasks;
@@ -75,6 +76,7 @@ pub use self::queue::QueuedTurn;
 pub use self::reasoning::Reasoning;
 pub use self::resume::{ResumeControl, ResumeFilter, ResumePicker, ResumeSort};
 pub use self::settings::{SettingRow, SettingsPicker};
+pub use self::skill_picker::SkillPicker;
 pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tasks::TaskCallRecord;
@@ -291,6 +293,17 @@ pub struct App {
     /// its matches asynchronously. See `App::refresh_file_search` and
     /// `docs/file-search.md`.
     pub file_search: Option<FileSearch>,
+    /// The open `$` skill picker (when the cursor is in a usable `$mention`);
+    /// `None` when closed. Esc dismisses it (sticky within the mention); its
+    /// matches derive synchronously from the `skills` field, so unlike
+    /// the file picker nothing is fetched. See `App::refresh_skill_picker`
+    /// and `docs/skill-mentions.md`.
+    pub skill_picker: Option<SkillPicker>,
+    /// The skills the composer may `$`-mention — the registry's **enabled**
+    /// snapshot, injected at the boundary ([`set_skills`](Self::set_skills),
+    /// beside every skill-listing render) so the picker, the listing, and
+    /// the `skill` tool always agree. Empty when none are offered.
+    skills: Vec<crate::skills::SkillMetadata>,
     /// The open `/resume` session picker; `Some` exactly while
     /// [`View::ResumePicker`] is showing ([`App::open_resume_picker`] /
     /// [`App::close_resume_picker`] keep the two in step). See
@@ -791,6 +804,7 @@ impl App {
             }
         }
         self.file_search = None;
+        self.skill_picker = None;
         self.undo_floor = 0;
         // A cleared slate shows nothing lingering above the box.
         self.toast = None;

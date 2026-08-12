@@ -15,6 +15,7 @@
 //! The filesystem walk and the tool executor live in [`crate::llm::skill`].
 
 use std::collections::BTreeSet;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -436,6 +437,12 @@ pub fn skill_listing(skills: &[SkillMetadata], budget: usize) -> String {
 /// empty out: with no skills there is nothing to say, and saying it anyway
 /// would spend a turn's tokens telling the model about a tool it isn't
 /// offered.
+///
+/// The reminder closes on the `$`-mention guidance (`docs/skill-mentions.md`):
+/// the composer's `$` picker inserts mentions like `$dataviz` into the
+/// message text, and the sentence that makes a model act on one belongs
+/// beside the names it applies to. Static across turns, so the fragment
+/// stays prompt-cache-stable unless the listing itself changes.
 #[must_use]
 pub fn listing_message(listing: &str) -> String {
     if listing.trim().is_empty() {
@@ -443,7 +450,10 @@ pub fn listing_message(listing: &str) -> String {
     }
     format!(
         "<system-reminder>\nThe following skills are available for use with the \
-         Skill tool:\n\n{listing}\n</system-reminder>"
+         Skill tool:\n\n{listing}\n\nThe user may reference a skill anywhere in \
+         a message as `$<name>` (e.g. `$commit`); treat each such mention as a \
+         request to load that skill with the Skill tool before answering.\n\
+         </system-reminder>"
     )
 }
 
@@ -493,6 +503,154 @@ pub fn render_skill_body(dir: &Path, body: &str, args: &str) -> String {
         cut -= 1;
     }
     format!("{}{SKILL_TRUNCATION_MARKER}", &rendered[..cut])
+}
+
+// ===== `$` skill mentions (docs/skill-mentions.md) =====
+
+/// The sigil that opens the composer's skill picker and marks a mention in a
+/// submitted message — codex's `$` skill mentions.
+pub const SKILL_MENTION_PREFIX: char = '$';
+
+/// The well-known uppercase environment variables a `$NAME` in prose usually
+/// means — codex's `is_common_env_var` list. A query that *is* one of these
+/// (uppercase exactly) is shell talk, not a skill search, so the picker
+/// stays closed; any other capitalisation still searches (skill names are
+/// lowercase, and the fuzzy match folds case, so `$Path` can still find a
+/// `path-tools` skill).
+pub const COMMON_ENV_VARS: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "SHELL",
+    "PWD",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "LANG",
+    "TERM",
+    "XDG_CONFIG_HOME",
+];
+
+/// The `$`-mention token under the cursor: the byte `range` of the whole
+/// mention (the `$` through the end of its name run — what
+/// [`crate::textarea::TextArea::replace_range`] swaps for the chosen skill)
+/// and the `query` after the `$`. The [`crate::file_search::AtToken`] of the
+/// skill picker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MentionToken {
+    /// Byte range of the whole `$token` in the input text.
+    pub range: Range<usize>,
+    /// The token text after the `$` (the picker's fuzzy query).
+    pub query: String,
+}
+
+/// Does `c` continue a mention name? codex's `is_mention_name_char` —
+/// `[A-Za-z0-9_-]`, so a mention ends at the first punctuation/space and
+/// `$dataviz,` still queries `dataviz`.
+fn is_mention_name_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_' || c == '-'
+}
+
+/// The `$`-skill mention at `cursor` in `text`, if the cursor sits in one.
+///
+/// The grammar is codex's: the `$` must open its whitespace-delimited word
+/// (so `US$5` and `foo$bar` never trigger), the name is a run of
+/// `is_mention_name_char`s, and the mention ends at the first other
+/// character — the cursor must still be inside that run (typing the `,` in
+/// `$dataviz,` closes the picker). Unlike [`crate::file_search::at_token`]'s
+/// whitespace scan, the range never swallows trailing punctuation, so an
+/// accept can't eat a comma the user already typed.
+#[must_use]
+pub fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
+    let cursor = cursor.min(text.len());
+    // Scan back over name characters to where the run begins…
+    let run_start = text[..cursor]
+        .char_indices()
+        .rev()
+        .take_while(|&(_, c)| is_mention_name_char(c))
+        .last()
+        .map_or(cursor, |(i, _)| i);
+    // …the character just before the run must be the `$`…
+    let prefix_start = run_start.checked_sub(SKILL_MENTION_PREFIX.len_utf8())?;
+    if !text[prefix_start..].starts_with(SKILL_MENTION_PREFIX) {
+        return None;
+    }
+    // …and the `$` itself must open the word (start of text or after
+    // whitespace), codex's boundary rule.
+    if text[..prefix_start]
+        .chars()
+        .next_back()
+        .is_some_and(|c| !c.is_whitespace())
+    {
+        return None;
+    }
+    // The mention extends forward to the first non-name character.
+    let end = text[cursor..]
+        .char_indices()
+        .find(|&(_, c)| !is_mention_name_char(c))
+        .map_or(text.len(), |(i, _)| cursor + i);
+    Some(MentionToken {
+        range: prefix_start..end,
+        query: text[run_start..end].to_string(),
+    })
+}
+
+/// Is `query` really shell syntax rather than a skill search? codex's
+/// classification, folded to what matters here: positional parameters
+/// (`$1`), the `$-`/`$_` specials, and the [`COMMON_ENV_VARS`] written
+/// exactly (uppercase). The scanner stays a truthful parse and this decides
+/// separately whether the picker opens, so the two are testable apart.
+#[must_use]
+pub fn shell_flavored_query(query: &str) -> bool {
+    if query.is_empty() {
+        return false;
+    }
+    if query.chars().all(|c| c.is_ascii_digit()) {
+        return true;
+    }
+    if query == "-" || query == "_" {
+        return true;
+    }
+    let uppercase_only = query.chars().all(|c| !c.is_ascii_lowercase());
+    uppercase_only && COMMON_ENV_VARS.contains(&query)
+}
+
+/// One skill the picker offers for the query: what its row shows and where
+/// the matched characters sit — the [`crate::file_search::FileMatch`] of the
+/// skill band (`indices` are byte offsets in `name`, for the bolding).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkillMatch {
+    /// The skill's invocable name — the row's left column, and what an
+    /// accept writes into the composer (after the `$`).
+    pub name: String,
+    /// The skill's one-line description — the row's right column.
+    pub description: String,
+    /// Match score; higher ranks earlier.
+    pub score: i32,
+    /// Byte offsets in `name` of the characters the query matched.
+    pub indices: Vec<usize>,
+}
+
+/// Rank `skills` against a mention `query`: the
+/// [`crate::file_search::fuzzy_match`] subsequence on each **name**, best
+/// score first, ties keeping discovery order (the sort is stable) — so an
+/// empty query lists everything in precedence order, the cwd's skills
+/// first. No cap: the caller windows the rows like the palette does.
+#[must_use]
+pub fn rank_skills(query: &str, skills: &[SkillMetadata]) -> Vec<SkillMatch> {
+    let mut scored: Vec<SkillMatch> = skills
+        .iter()
+        .filter_map(|skill| {
+            crate::file_search::fuzzy_match(query, &skill.name).map(|(score, indices)| SkillMatch {
+                name: skill.name.clone(),
+                description: skill.description.clone(),
+                score,
+                indices,
+            })
+        })
+        .collect();
+    scored.sort_by(|a, b| b.score.cmp(&a.score));
+    scored
 }
 
 /// The discovered skills, shared between the boundary that found them, the
@@ -874,6 +1032,14 @@ mod tests {
         assert!(msg.ends_with("\n</system-reminder>"), "got {msg}");
         assert!(msg.contains("available for use with the Skill tool"));
         assert!(msg.contains("- commit: Create a git commit"));
+        // The `$` mention guidance rides the same reminder, right beside the
+        // names it applies to (docs/skill-mentions.md) — so a `$name` in the
+        // user's message reads as the skill request it is.
+        assert!(msg.contains("`$<name>`"), "got {msg}");
+        assert!(
+            msg.contains("load that skill with the Skill tool"),
+            "got {msg}"
+        );
     }
 
     #[test]
@@ -1153,6 +1319,107 @@ mod tests {
             "kept verbatim"
         );
         assert!(registry.is_enabled("commit"));
+    }
+
+    // ===== `$` skill mentions (docs/skill-mentions.md) =====
+
+    #[test]
+    fn mention_token_is_the_dollar_token_under_the_cursor() {
+        let t = mention_token("use $data please", 9).expect("token");
+        assert_eq!(t.query, "data");
+        assert_eq!(t.range, 4..9);
+        // A lone `$` lists everything (empty query), like a lone `@`.
+        let bare = mention_token("$", 1).expect("token");
+        assert_eq!(bare.query, "");
+        assert_eq!(bare.range, 0..1);
+        // Mid-word dollars (prices, currency) never trigger: the `$` must
+        // open its whitespace-delimited word (codex's boundary rule).
+        assert!(mention_token("US$5 off", 4).is_none());
+        assert!(mention_token("no mention here", 5).is_none());
+    }
+
+    #[test]
+    fn mention_token_can_sit_anywhere_in_the_text() {
+        // "Hello world $skill …generate" — the mention is mid-message.
+        let text = "Hello world $ski generate";
+        let t = mention_token(text, 16).expect("token");
+        assert_eq!(t.query, "ski");
+        assert_eq!(t.range, 12..16);
+    }
+
+    #[test]
+    fn mention_token_ends_at_the_first_non_name_character() {
+        // codex's grammar: `[A-Za-z0-9_-]` continue a mention, anything else
+        // ends it — so `$dataviz,` still queries `dataviz`, and the comma
+        // stays out of the replaced range.
+        let t = mention_token("$dataviz, please", 8).expect("token");
+        assert_eq!(t.query, "dataviz");
+        assert_eq!(t.range, 0..8);
+        // The cursor past the terminator is no longer in the mention.
+        assert!(mention_token("$dataviz, please", 9).is_none());
+        // Hyphens and underscores are name characters (skill names use them).
+        let t = mention_token("$skill-crea", 11).expect("token");
+        assert_eq!(t.query, "skill-crea");
+    }
+
+    #[test]
+    fn mention_token_ignores_shell_flavored_queries() {
+        // codex rejects what is really shell syntax, not a mention: positional
+        // parameters (`$1`), `$-`/`$_`, and the well-known uppercase
+        // environment variables (`$PATH`, `$HOME`). A capitalised skill query
+        // (`$Data`) still triggers — only all-uppercase *known* names are
+        // shell. The guard is a separate predicate so the scanner stays a
+        // truthful parse.
+        assert!(shell_flavored_query("1"));
+        assert!(shell_flavored_query("12"));
+        assert!(shell_flavored_query("-"));
+        assert!(shell_flavored_query("_"));
+        assert!(shell_flavored_query("PATH"));
+        assert!(shell_flavored_query("HOME"));
+        assert!(!shell_flavored_query(""));
+        assert!(!shell_flavored_query("data"));
+        assert!(!shell_flavored_query("Data"));
+        assert!(!shell_flavored_query("FOO"), "unknown uppercase is a query");
+        assert!(!shell_flavored_query("skill-creator"));
+    }
+
+    #[test]
+    fn rank_skills_fuzzy_matches_on_the_name() {
+        let skills = [
+            meta("dataviz", "Charts and dashboards"),
+            meta("skill-creator", "Create or update a skill"),
+        ];
+        let ranked = rank_skills("dv", &skills);
+        assert_eq!(ranked.len(), 1, "{ranked:?}");
+        assert_eq!(ranked[0].name, "dataviz");
+        assert_eq!(ranked[0].description, "Charts and dashboards");
+        assert_eq!(ranked[0].indices, vec![0, 4], "the matched-char offsets");
+        assert!(rank_skills("zzz", &skills).is_empty());
+    }
+
+    #[test]
+    fn rank_skills_empty_query_lists_all_in_discovery_order() {
+        // Discovery order is precedence order (the cwd's skills first), so an
+        // empty query must not re-sort it — ties keep their input order.
+        let skills = [
+            meta("zeta-local", "d"),
+            meta("alpha-global", "d"),
+            meta("beta", "d"),
+        ];
+        let ranked = rank_skills("", &skills);
+        let names: Vec<&str> = ranked.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, vec!["zeta-local", "alpha-global", "beta"]);
+    }
+
+    #[test]
+    fn rank_skills_puts_the_better_match_first() {
+        let skills = [
+            meta("workshop", "d"),
+            meta("shop", "d"), // exact-run basename-style hit ranks first
+        ];
+        let ranked = rank_skills("shop", &skills);
+        assert_eq!(ranked[0].name, "shop", "{ranked:?}");
+        assert_eq!(ranked[1].name, "workshop");
     }
 
     #[test]

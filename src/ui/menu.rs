@@ -262,6 +262,111 @@ pub fn file_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+/// How many rows the `$` skill picker occupies for `app`: 0 when closed —
+/// which includes the cursor having *left* the mention, since the matches
+/// derive from the live token ([`App::skill_band_active`]) — one placeholder
+/// row when the query matches no skill, else the match count capped at
+/// `SKILL_MENU_MAX_ROWS` (longer lists scroll, like the palette).
+/// [`live_height`] adds this via [`band_rows`] and [`render_live`] paints
+/// exactly this many rows — the two must agree. See `docs/skill-mentions.md`.
+#[must_use]
+pub fn skill_menu_rows(app: &App) -> u16 {
+    if !app.skill_band_active() {
+        return 0;
+    }
+    let matches = app.skill_matches().len();
+    if matches == 0 {
+        1
+    } else {
+        (matches as u16).min(SKILL_MENU_MAX_ROWS)
+    }
+}
+
+/// One skill-picker row: the marker (or its indent), the skill's name with
+/// the query's matched characters bolded, and — past the shared name column —
+/// its description, `…`-cut to the width:
+///
+/// ```text
+///   dataviz        Generate or edit charts for websites, games, a…
+/// → skill-creator  Create or update a skill
+/// ```
+///
+/// `name_col` is the widest visible name plus [`FILE_MENU_GAP`], computed by
+/// [`skill_menu_lines`] so the description column aligns across rows. The
+/// selected row lights up cyan whole (the palette's convention), the rest
+/// dim.
+fn skill_menu_row(
+    m: &crate::skills::SkillMatch,
+    selected: bool,
+    name_col: usize,
+    width: u16,
+) -> Line<'static> {
+    let color = if selected {
+        MENU_SELECTED_COLOR
+    } else {
+        MENU_DIM_COLOR
+    };
+    let base = Style::new().fg(color);
+    let matched = base.add_modifier(Modifier::BOLD);
+    let marker = if selected {
+        FILE_MENU_MARKER
+    } else {
+        FILE_MENU_INDENT
+    };
+    let mut spans = vec![Span::styled(marker, base)];
+    let avail = (width as usize).saturating_sub(cols(marker));
+    let name = truncate_cols(&m.name, avail);
+    file_menu_highlight(&mut spans, &name, 0, &m.indices, base, matched);
+    let desc_room = avail.saturating_sub(name_col);
+    if desc_room == 0 {
+        // Too narrow for the description column: just the (truncated) name.
+        return Line::from(spans);
+    }
+    spans.push(Span::styled(" ".repeat(name_col - cols(&name)), base));
+    let desc = if cols(&m.description) > desc_room {
+        // The mock's `…`-cut: a shortened description says it was.
+        format!("{}…", truncate_cols(&m.description, desc_room - 1))
+    } else {
+        m.description.clone()
+    };
+    spans.push(Span::styled(desc, base));
+    Line::from(spans)
+}
+
+/// The styled lines for the open skill picker: a *No matching skills*
+/// placeholder when the query misses, else the skill rows windowed
+/// (`menu_window`) to keep the selection visible and capped at
+/// `SKILL_MENU_MAX_ROWS`. Empty when the band is closed (or the cursor has
+/// left the mention). See `docs/skill-mentions.md`.
+#[must_use]
+pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    if !app.skill_band_active() {
+        return Vec::new();
+    }
+    let matches = app.skill_matches();
+    if matches.is_empty() {
+        return vec![Line::from(Span::styled(
+            SKILL_MENU_NO_MATCH.to_string(),
+            Style::new().fg(MENU_DIM_COLOR),
+        ))];
+    }
+    let selected = app
+        .skill_picker
+        .as_ref()
+        .map_or(0, |picker| picker.selected);
+    let max = SKILL_MENU_MAX_ROWS as usize;
+    let offset = menu_window(matches.len(), selected, max);
+    let visible = &matches[offset..(offset + max).min(matches.len())];
+    // The shared name column: the widest visible name + the gap, so the
+    // description column starts at the same place on every shown row.
+    let name_col = visible.iter().map(|m| cols(&m.name)).max().unwrap_or(0) + FILE_MENU_GAP;
+    visible
+        .iter()
+        .enumerate()
+        .map(|(i, m)| skill_menu_row(m, offset + i == selected, name_col, width))
+        .collect()
+}
+
 /// How many rows the `?` shortcuts band occupies for `app`: 0 when closed,
 /// otherwise the entry list two-per-row. [`live_height`] adds this (via its
 /// band parameter); [`render_live`] paints exactly this many rows — the two
@@ -276,14 +381,15 @@ pub fn shortcuts_rows(app: &App) -> u16 {
 }
 
 /// Total rows of the band below the input box: the slash-command palette, the
-/// `?` shortcuts overview, *or* the `@` file picker (mutually exclusive — the
-/// palette needs a `/token`, the shortcuts an empty composer, the picker an
-/// `@token`, so at most one term is non-zero). The **one** band-height sum
-/// shared by [`render_live`], [`cursor_position`], and the boundary's
-/// `live_region_height`, so the three can never drift.
+/// `?` shortcuts overview, the `@` file picker, *or* the `$` skill picker
+/// (mutually exclusive — the palette needs a `/token`, the shortcuts an empty
+/// composer, and each picker its own sigil opening the token, so at most one
+/// term is non-zero). The **one** band-height sum shared by [`render_live`],
+/// [`cursor_position`], and the boundary's `live_region_height`, so the three
+/// can never drift.
 #[must_use]
 pub fn band_rows(app: &App) -> u16 {
-    menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app)
+    menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app) + skill_menu_rows(app)
 }
 
 /// The styled lines for the open shortcuts band: the `SHORTCUTS` entries two

@@ -138,6 +138,7 @@ impl App {
         self.shortcuts_open = false;
         self.command_menu = None;
         self.file_search = None;
+        self.skill_picker = None;
         self.backtrack = Backtrack::default();
         self.model_picker = Some(ModelPicker {
             active_id: active_id.into(),

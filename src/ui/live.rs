@@ -536,8 +536,9 @@ pub fn render_live_with_preview(
         .collect();
     Paragraph::new(lines).render(bx.text, buf);
 
-    // The palette, the shortcuts overview, or the file picker, pinned in the
-    // band below the box (at most one is open — band_rows).
+    // The palette, the shortcuts overview, the file picker, or the skill
+    // picker, pinned in the band below the box (at most one is open —
+    // band_rows).
     if menu_rows(app) > 0 {
         Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
     } else if shortcuts_rows(app) > 0 {
@@ -548,6 +549,8 @@ pub fn render_live_with_preview(
         .render(band_area, buf);
     } else if file_menu_rows(app) > 0 {
         Paragraph::new(file_menu_lines(app, band_area.width)).render(band_area, buf);
+    } else if skill_menu_rows(app) > 0 {
+        Paragraph::new(skill_menu_lines(app, band_area.width)).render(band_area, buf);
     }
 
     // The session-context footer on the region's last row — only when no band

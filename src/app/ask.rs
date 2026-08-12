@@ -181,6 +181,7 @@ impl App {
         self.shortcuts_open = false;
         self.command_menu = None;
         self.file_search = None;
+        self.skill_picker = None;
         self.history_search = None;
         self.backtrack = Backtrack::default();
         let saved_input = self.input.text().to_string();

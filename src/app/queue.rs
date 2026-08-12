@@ -75,6 +75,7 @@ impl App {
         let images = std::mem::take(&mut self.images);
         let text = self.take_input();
         self.file_search = None; // the composer is consumed into the queue
+        self.skill_picker = None;
         self.input_history.record(&text);
         match self.queued.back_mut() {
             Some(QueuedTurn::Messages {

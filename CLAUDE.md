@@ -694,9 +694,16 @@ carries is a dead end the model spends a round hunting for; the tools-free
 `/compact` turn carries no listing for the same reason;
 `/<skill-name>` needs no code — it submits as
 text and the system prompt's guidance line makes the model answer it with a
-`skill` call (verified live); the offline `skills` scenario drives the cell
-through the real formatters, `smoke.sh` Phases 76 and 78 — the latter planting
-a `SKILL.md` mid-session and proving the next turn's Ctrl+D already lists it);
+`skill` call (verified live), and the composer's **`$` mention picker**
+(`docs/skill-mentions.md`) rides the same rails: Tab/Enter complete a
+`$<name>` mention in place, the listing's closing sentence tells the model a
+mention is a load request (verified live too —
+`live_dollar_mention_loads_the_mentioned_skill`), and the offline `skills`
+scenario answers `$dataviz` mentions beside its "skill" cue so the demo and
+the smoke suite drive the round trip with no network; the offline `skills` scenario drives the cell
+through the real formatters, `smoke.sh` Phases 76, 78 and 79 — 78 planting
+a `SKILL.md` mid-session and proving the next turn's Ctrl+D already lists it,
+79 driving the `$` band end to end);
 and the **`/skills`
 menu** (the fifth composer-replacing inline picker and deliberately the
 `/settings` menu's **twin** rather than a new shape — same frame, same `❯`
@@ -867,7 +874,26 @@ the path** (replacing the `@token`, a trailing space added, whitespace paths
 quoted), Esc dismisses sticky-per-token; the matched characters are bolded in
 each row (remapped across the name/parent split); suppressed in `!` shell mode
 and mutually exclusive with the palette;
-see `docs/file-search.md`); plus, *above* the box while a turn streams, **messages
+see `docs/file-search.md`; **and the same slot shows a `$` skill picker** —
+codex's skill mentions — whenever the cursor is in a usable `$mention`: the
+discovered skills fuzzy-filtered on their names (`skills::mention_token` +
+`rank_skills` over the boundary-injected `App::set_skills` snapshot — the
+registry's *enabled* skills, synchronous, no walk), rows columned
+`→ name  description` (widest visible name + gap, matched characters bolded,
+the description `…`-cut at the width), at most 8 rows; the grammar is codex's
+— the `$` must open its whitespace-delimited word (`US$5` never triggers),
+`[A-Za-z0-9_-]` continue the name so `$dataviz,` still queries `dataviz`, a
+bare `$` lists everything, and shell-flavored queries (`$1`, `$-`/`$_`, the
+well-known uppercase `$PATH`-style names) stay closed, as does `!` shell mode
+wholesale; ↑/↓ move, **Tab/Enter insert `$name `** — the sigil kept, an
+existing following space reused rather than doubled — Esc dismisses
+sticky-per-mention, and a submitted message carrying `$name` makes the model
+**load that skill** via the ordinary `skill` tool (the listing's closing
+guidance sentence + `prompts/tools.md` name the mention syntax — the
+`/<skill-name>` path's mechanism, so the green `● Skill(name)` cell, the
+context replay and the rollout all come for free; deliberately *not* codex's
+eager `<skill>` injection, which exists because codex has no skill tool);
+see `docs/skill-mentions.md`); plus, *above* the box while a turn streams, **messages
 submitted with Enter queue** instead of waiting (shown like sent user messages,
 inset two columns — `  ❯ {msg}` rows in the strip under the status line —
 `App::queued`, a `VecDeque<QueuedTurn>` of **typed entries** (text `Messages`
@@ -1400,7 +1426,13 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   `FILE_MENU_ROOT_DIR` (`./`) for root-level parents, with a
   `FILE_MENU_MAX_ROWS` cap and the `FILE_MENU_SEARCHING`/`FILE_MENU_NO_MATCH`
   placeholder rows; `file_menu_rows`/`file_menu_lines`/`file_menu_row` mirror the
-  palette helpers — see `docs/file-search.md`), the `?` shortcuts
+  palette helpers — see `docs/file-search.md`), the `$` skill picker
+  (`SKILL_MENU_*` — only its own `SKILL_MENU_MAX_ROWS` cap and
+  `SKILL_MENU_NO_MATCH` placeholder: it reuses the file picker's
+  marker/indent/`FILE_MENU_GAP` geometry and the palette colours, bolding the
+  matched name characters the same way, the description column `…`-cut at the
+  width; `skill_menu_rows`/`skill_menu_lines`/`skill_menu_row` mirror the file
+  helpers — see `docs/skill-mentions.md`), the `?` shortcuts
   band (`SHORTCUTS*` — the entry list, the second-entry column, and the cyan
   key / dim label colours), the inline `/settings` menu (`SETTINGS_*` — it
   reuses the `/model` picker's frame, indent, `❯` prompt, `→` marker and cyan

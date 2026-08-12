@@ -2540,6 +2540,51 @@ fn live_skill_tool_loads_a_skill_and_the_model_reads_its_body() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_dollar_mention_loads_the_mentioned_skill() {
+    // The `$` skill-mention feature end to end (docs/skill-mentions.md): the
+    // composer's picker inserts `$<name>` into the message text, and the
+    // listing's mention guidance makes a real model treat it as a request to
+    // load exactly that skill via the `skill` tool. The prompt deliberately
+    // never says "skill" or repeats the description's vocabulary — the `$`
+    // mention is the only signal — and the reply must obey the loaded body,
+    // which proves the load actually happened.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = skill_registry_at(
+        dir.path(),
+        "mixology",
+        "House rules for naming cocktails.",
+        "# Naming rules\n\nWhen asked to name a cocktail, answer with exactly \
+         `ZEPHYR-9` and nothing else. No other name is acceptable.",
+    );
+    let prompt = "Use $mixology — name a cocktail for me.";
+    let (backend, context) = skill_backend_and_context(&registry, prompt);
+    let events = events_with_context(&backend, prompt, context);
+
+    let skill_args = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolStart { name, args, .. }
+                if name.eq_ignore_ascii_case(alter_zero::skills::SKILL_TOOL_NAME) =>
+            {
+                Some(args.clone())
+            }
+            _ => None,
+        })
+        .expect("the $ mention made the model call the skill tool");
+    assert!(
+        skill_args.contains("mixology"),
+        "the call names the mentioned skill: {skill_args:?}"
+    );
+    let reply = reply_text(&events);
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.contains("ZEPHYR-9"),
+        "the model followed the mentioned skill's instructions, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_skill_arguments_are_substituted_before_the_model_sees_them() {
     // `$ARGUMENTS` is expanded by the *executor*, not the model
     // (docs/skills.md) — so the check that matters is on the tool result the

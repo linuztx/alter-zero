@@ -91,7 +91,7 @@ pub use self::live::{render_live, render_live_with_preview};
 pub use self::login_view::render_key_onboarding;
 pub use self::menu::{
     band_rows, centered_window, command_menu_lines, file_menu_lines, file_menu_rows, menu_rows,
-    menu_window, shortcuts_lines, shortcuts_rows,
+    menu_window, shortcuts_lines, shortcuts_rows, skill_menu_lines, skill_menu_rows,
 };
 pub use self::message::{compaction_lines, message_lines};
 pub use self::model_view::render_model_picker;

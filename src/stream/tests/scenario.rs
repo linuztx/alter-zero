@@ -338,6 +338,15 @@ fn the_finished_twin_ends_with_every_task_ticked() {
 }
 
 #[test]
+fn a_dollar_mention_of_the_demo_skill_selects_the_skills_demo() {
+    // The composer's `$` picker inserts mentions like `$dataviz`
+    // (docs/skill-mentions.md); a prompt carrying one must play the skills
+    // demo even when the word "skill" never appears, so the offline dummy
+    // answers the mention the way a live model would — by loading the skill.
+    assert_eq!(gated("use $dataviz to chart this"), "skills");
+}
+
+#[test]
 fn the_init_prompt_never_selects_the_file_change_demo() {
     // `/init` submits a canned prompt about authoring AGENTS.md as an
     // ordinary user turn (`docs/init.md`). The file-change demo's cue is the

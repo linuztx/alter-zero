@@ -304,8 +304,10 @@ impl App {
     pub(super) fn recall_input(&mut self, text: &str) {
         self.shell_mode = false;
         // A recalled draft never pops the `@` picker (recall isn't typing an
-        // `@token`); close any open one, like the search snapshot restore.
+        // `@token`) — nor the `$` one; close any open ones, like the search
+        // snapshot restore.
         self.file_search = None;
+        self.skill_picker = None;
         let had_query = command_query(self.input.text()).is_some();
         self.input.set_text(text);
         self.refresh_command_menu(had_query);
@@ -319,6 +321,7 @@ impl App {
     pub(super) fn begin_history_search(&mut self) {
         self.command_menu = None;
         self.file_search = None; // the search owns the keys from here
+        self.skill_picker = None;
         self.history_search = Some(HistorySearch {
             snapshot: self.input.clone(),
             snapshot_shell: self.shell_mode,

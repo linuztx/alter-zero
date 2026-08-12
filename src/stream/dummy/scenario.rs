@@ -239,11 +239,15 @@ pub(in crate::stream) const SCENARIOS: &[Scenario] = &[
         play: Play::Script(turns::tasks_turn),
     },
     // Loading an authored `SKILL.md` into the conversation — the one-line
-    // cell over the whole body the model reads (docs/skills.md).
+    // cell over the whole body the model reads (docs/skills.md). The
+    // `$dataviz` cue is the composer's `$` picker inserting a mention of the
+    // demo skill (docs/skill-mentions.md): the word "skill" never appears in
+    // such a prompt, and the demo answering it is how the offline dummy
+    // plays the mention the way a live model would.
     Scenario {
         #[cfg(test)]
         name: "skills",
-        selects: |cue| cue.mentions("skill"),
+        selects: |cue| cue.mentions("skill") || cue.mentions("$dataviz"),
         play: Play::Script(turns::skills_turn),
     },
     // The default turn: think, then a compact `Read`+`Bash` batch.

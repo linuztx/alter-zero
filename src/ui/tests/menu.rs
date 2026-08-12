@@ -4,7 +4,7 @@
 use super::*;
 use crate::ui::theme::{
     FILE_MENU_MAX_ROWS, MENU_DESC_COL, MENU_MAX_ROWS, MENU_SELECTED_COLOR, SHORTCUTS,
-    SHORTCUTS_COL, SHORTCUTS_KEY_COLOR, SHORTCUTS_TEXT_COLOR,
+    SHORTCUTS_COL, SHORTCUTS_KEY_COLOR, SHORTCUTS_TEXT_COLOR, SKILL_MENU_MAX_ROWS,
 };
 use crate::ui::wrap::cols;
 
@@ -683,6 +683,144 @@ fn the_file_picker_shows_at_most_eight_results() {
     assert_eq!(FILE_MENU_MAX_ROWS, 8, "the requested cap");
     let many: Vec<_> = (0..30).map(|i| fmatch(&format!("f{i}.rs"))).collect();
     assert_eq!(file_menu_lines(&file_picker("f", many, 0), 80).len(), 8);
+}
+
+// ===== the `$` skill picker band (docs/skill-mentions.md) =====
+
+/// A discovered skill for the band tests.
+fn smeta(name: &str, description: &str) -> crate::skills::SkillMetadata {
+    crate::skills::SkillMetadata {
+        name: name.to_string(),
+        description: description.to_string(),
+        dir: std::path::PathBuf::from("/skills").join(name),
+        path: std::path::PathBuf::from("/skills")
+            .join(name)
+            .join("SKILL.md"),
+    }
+}
+
+/// An app whose composer holds `text` (cursor at the end) with the skill
+/// picker open at `selected`, over the two demo skills.
+fn skill_app(text: &str, selected: usize) -> App {
+    let mut app = App::new();
+    app.set_skills(vec![
+        smeta(
+            "dataviz",
+            "Generate or edit charts for websites, games, and apps",
+        ),
+        smeta("skill-creator", "Create or update a skill"),
+    ]);
+    app.input = TextArea::from_text(text);
+    app.skill_picker = Some(crate::app::SkillPicker {
+        selected,
+        query: String::new(),
+    });
+    app
+}
+
+#[test]
+fn skill_menu_rows_counts_closed_placeholder_and_capped_matches() {
+    assert_eq!(skill_menu_rows(&App::new()), 0, "closed");
+    assert_eq!(
+        skill_menu_rows(&skill_app("$zzz", 0)),
+        1,
+        "one placeholder row when nothing matches"
+    );
+    let mut app = App::new();
+    app.set_skills((0..12).map(|i| smeta(&format!("skill-{i}"), "d")).collect());
+    app.input = TextArea::from_text("$");
+    app.skill_picker = Some(crate::app::SkillPicker::default());
+    assert_eq!(skill_menu_rows(&app), SKILL_MENU_MAX_ROWS, "capped");
+}
+
+#[test]
+fn skill_menu_hides_when_the_cursor_leaves_the_mention() {
+    // The rows derive from the live token: a cursor parked before the `$`
+    // shows no band even while the picker state lingers.
+    let mut app = skill_app("$da", 0);
+    app.input.move_home();
+    assert_eq!(skill_menu_rows(&app), 0);
+    assert!(skill_menu_lines(&app, 60).is_empty());
+}
+
+#[test]
+fn skill_menu_lines_column_name_and_description() {
+    // The requested look — names, then descriptions in one aligned column:
+    //     dataviz        Generate or edit charts for websites, games, a…
+    //   → skill-creator  Create or update a skill
+    let app = skill_app("$", 1);
+    let lines = skill_menu_lines(&app, 80);
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(texts.len(), 2);
+    assert!(texts[0].starts_with("  dataviz"), "{texts:?}");
+    assert!(texts[1].starts_with("→ skill-creator"), "{texts:?}");
+    // The description column starts right after the widest visible name
+    // (`skill-creator`, 13 wide) + the gap, marker included: 2 + 13 + 2.
+    let col_of = |t: &str, needle: &str| cols(&t[..t.find(needle).unwrap()]);
+    assert_eq!(col_of(&texts[0], "Generate"), 17, "{texts:?}");
+    assert_eq!(col_of(&texts[1], "Create"), 17, "{texts:?}");
+    // Selection is shown by colour: the highlighted row cyan, the rest not.
+    assert!(
+        lines[1]
+            .spans
+            .iter()
+            .any(|s| s.style.fg == Some(MENU_SELECTED_COLOR))
+    );
+    assert!(
+        lines[0]
+            .spans
+            .iter()
+            .all(|s| s.style.fg != Some(MENU_SELECTED_COLOR))
+    );
+}
+
+#[test]
+fn skill_menu_placeholder_names_the_miss() {
+    let app = skill_app("$zzz", 0);
+    let lines = skill_menu_lines(&app, 60);
+    assert_eq!(lines.len(), 1);
+    assert!(
+        plain(&lines[0]).contains("No matching skills"),
+        "{:?}",
+        plain(&lines[0])
+    );
+}
+
+#[test]
+fn skill_menu_truncates_the_description_with_an_ellipsis() {
+    // The mock's `…`-cut description: the row never overflows the width and
+    // a cut description says so. (Width 42 → marker 2 + name column 15 leave
+    // 25 for the description: the 54-wide first is cut, the 24-wide second
+    // fits whole.)
+    let app = skill_app("$", 0);
+    let texts: Vec<String> = skill_menu_lines(&app, 42).iter().map(plain).collect();
+    assert!(cols(&texts[0]) <= 42, "{texts:?}");
+    assert!(texts[0].trim_end().ends_with('…'), "{texts:?}");
+    assert!(
+        texts[1].trim_end().ends_with("Create or update a skill"),
+        "an uncut description keeps its tail: {texts:?}"
+    );
+}
+
+#[test]
+fn skill_menu_bolds_the_matched_characters() {
+    // "$dv" fuzzy-matches d…v in `dataviz` (bytes 0 and 4) — those glyphs
+    // render bold, the rest of the name plain.
+    let app = skill_app("$dv", 0);
+    let line = &skill_menu_lines(&app, 60)[0];
+    let bolded: String = line
+        .spans
+        .iter()
+        .filter(|s| s.style.add_modifier.contains(Modifier::BOLD))
+        .map(|s| s.content.as_ref())
+        .collect();
+    assert_eq!(bolded, "dv", "{line:?}");
+}
+
+#[test]
+fn band_rows_counts_the_skill_menu() {
+    let app = skill_app("$", 0);
+    assert_eq!(band_rows(&app), 2, "one row per matched skill");
 }
 
 #[test]

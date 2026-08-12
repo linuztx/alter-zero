@@ -402,6 +402,23 @@ unit-tested must be unit-tested.
   placeholders cover the in-flight/empty states. Suppressed in `!` shell mode.
   The path is inserted as **plain text** — it just becomes part of the message
   (codex leaves raw file paths literal too; no on-the-wire encoding).
+- **`$` opens a skill picker** (codex's `$` skill mentions — see
+  `docs/skill-mentions.md`): whenever the cursor sits in a usable `$mention`
+  (the `$` opening its whitespace-delimited word, `[A-Za-z0-9_-]` continuing
+  the name — so `US$5` and `$dataviz,`'s comma never confuse it — with
+  shell-flavored queries like `$1`/`$PATH` and `!` shell mode staying closed),
+  the discovered skills show fuzzy-filtered on their names in the same band
+  slot: `→ name  description` rows, the description `…`-cut, matched
+  characters bolded, at most 8 rows. Matches derive **synchronously** from the
+  registry's enabled snapshot (`App::set_skills`, injected beside every
+  listing render) — skills are already discovered, so unlike `@` there is no
+  async walk. ↑/↓ move, **Tab/Enter insert `$name `** (the sigil kept, an
+  existing following space reused), Esc dismisses sticky-per-mention. A
+  submitted message carrying a mention makes the model load that skill via
+  the ordinary `skill` tool — the listing's guidance sentence names the
+  syntax — so the green `● Skill(name)` cell, the context replay and the
+  rollout round-trip all come for free (deliberately not codex's eager
+  `<skill>` injection, which exists because codex has no skill tool).
 - **A large paste collapses to a placeholder** (codex's large-paste handling —
   see `docs/paste.md`): a bracketed paste (`Event::Paste`) longer than
   `LARGE_PASTE_CHAR_THRESHOLD` (1000 chars) drops a compact

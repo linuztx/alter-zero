@@ -109,6 +109,7 @@ impl App {
                 self.input_history.record_ephemeral(&text);
                 self.command_menu = None; // an emptied input can't be a /token
                 self.file_search = None; // …nor an @token, so close the picker too
+                self.skill_picker = None; // …nor a $mention
                 return Action::None;
             }
             return Action::Quit;
@@ -187,6 +188,13 @@ impl App {
         // mutually exclusive — a bare `/token` has no whitespace, so an `@` in
         // it isn't at a token boundary).
         let file_open = self.file_search.is_some();
+        // The `$` skill picker (docs/skill-mentions.md): the same keys again,
+        // gated on the band actually *showing* (picker open and the cursor
+        // still in a usable mention — the rows derive from the live token, so
+        // a bare cursor move out of it must release ↑/↓ too). Exclusive with
+        // both bands above by construction: a token starts with exactly one
+        // sigil.
+        let skill_open = self.skill_band_active();
         match key.code {
             // Esc dismisses the palette when it's open (codex's "popup wins"
             // rule — even mid-turn); else it interrupts an in-flight turn
@@ -199,6 +207,12 @@ impl App {
             // see refresh_file_search), before the interrupt/quit fallbacks.
             KeyCode::Esc if file_open => {
                 self.file_search = None;
+                Action::None
+            }
+            // …and the skill picker (sticky within the mention — see
+            // refresh_skill_picker), the same way.
+            KeyCode::Esc if skill_open => {
+                self.skill_picker = None;
                 Action::None
             }
             // Esc on an empty shell-mode composer exits the mode (codex's
@@ -254,6 +268,15 @@ impl App {
                 self.move_file_selection(1);
                 Action::None
             }
+            // Skill-picker navigation (only while its band is showing).
+            KeyCode::Up if skill_open => {
+                self.move_skill_selection(-1);
+                Action::None
+            }
+            KeyCode::Down if skill_open => {
+                self.move_skill_selection(1);
+                Action::None
+            }
             // Shift+Tab cycles the thinking mode (docs/reasoning.md). Legacy
             // terminals report it as BackTab (`ESC[Z`), the kitty protocol can
             // report Tab+SHIFT — both bind (the Shift+Enter pattern), and the
@@ -269,6 +292,12 @@ impl App {
             // (queue / submit), so an unmatched `@query` is still sendable text.
             KeyCode::Tab if file_open && self.highlighted_file().is_some() => {
                 self.accept_file_selection()
+            }
+            // Tab/Enter likewise accept the highlighted skill (codex inserts
+            // on both) — with no match they fall through, so an unmatched
+            // `$query` is still sendable text.
+            KeyCode::Tab if skill_open && self.highlighted_skill_match().is_some() => {
+                self.accept_skill_selection()
             }
             // Tab while a turn streams queues the draft as a *new* follow-up
             // batch — a separate turn that runs after the batches already queued,
@@ -289,6 +318,9 @@ impl App {
             }
             KeyCode::Enter if file_open && self.highlighted_file().is_some() => {
                 self.accept_file_selection()
+            }
+            KeyCode::Enter if skill_open && self.highlighted_skill_match().is_some() => {
+                self.accept_skill_selection()
             }
             // Alt+Enter and Shift+Enter insert a newline at the cursor so the input
             // box grows on demand; a plain Enter submits. Shift+Enter only reaches
@@ -334,6 +366,7 @@ impl App {
                     let raw = self.take_input();
                     self.shell_mode = false;
                     self.file_search = None;
+                    self.skill_picker = None;
                     self.input_history.record(&format!("!{raw}"));
                     Action::RunShell(raw.trim().to_string())
                 } else {
@@ -344,6 +377,7 @@ impl App {
                     self.submission_images = std::mem::take(&mut self.images);
                     let text = self.take_input();
                     self.file_search = None;
+                    self.skill_picker = None;
                     self.input_history.record(&text);
                     Action::Submit(text)
                 }
@@ -380,6 +414,7 @@ impl App {
             KeyCode::Backspace => {
                 let had_query = command_query(self.input.text()).is_some();
                 let had_token = self.in_at_token();
+                let had_mention = self.in_skill_mention();
                 // A Backspace on a large-paste placeholder removes the whole
                 // placeholder atomically (docs/paste.md); otherwise one grapheme.
                 if !self.delete_placeholder(/*backward*/ true) {
@@ -388,17 +423,20 @@ impl App {
                 self.refresh_command_menu(had_query);
                 self.sync_shell_mode();
                 self.refresh_file_search(had_token);
+                self.refresh_skill_picker(had_mention);
                 Action::None
             }
             KeyCode::Delete => {
                 let had_query = command_query(self.input.text()).is_some();
                 let had_token = self.in_at_token();
+                let had_mention = self.in_skill_mention();
                 if !self.delete_placeholder(/*backward*/ false) {
                     self.input.delete_forward();
                 }
                 self.refresh_command_menu(had_query);
                 self.sync_shell_mode();
                 self.refresh_file_search(had_token);
+                self.refresh_skill_picker(had_mention);
                 Action::None
             }
             KeyCode::Left => {
@@ -520,10 +558,12 @@ impl App {
             {
                 let had_query = command_query(self.input.text()).is_some();
                 let had_token = self.in_at_token();
+                let had_mention = self.in_skill_mention();
                 self.input.insert_char(c);
                 self.refresh_command_menu(had_query);
                 self.sync_shell_mode();
                 self.refresh_file_search(had_token);
+                self.refresh_skill_picker(had_mention);
                 Action::None
             }
             _ => Action::None,

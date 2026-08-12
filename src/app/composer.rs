@@ -75,13 +75,16 @@ impl App {
             self.edit_search_query(|query| query.push_str(&sanitised));
             return;
         }
-        // An edit may change the active /command or @token, like the Char arm.
+        // An edit may change the active /command, @token or $mention, like
+        // the Char arm.
         let had_query = command_query(self.input.text()).is_some();
         let had_token = self.in_at_token();
+        let had_mention = self.in_skill_mention();
         self.insert_paste_at_cursor(pasted);
         self.refresh_command_menu(had_query);
         self.sync_shell_mode();
         self.refresh_file_search(had_token);
+        self.refresh_skill_picker(had_mention);
     }
 
     /// The paste insertion itself, shared by the composer and the ask modal's
@@ -195,16 +198,19 @@ impl App {
     /// [`images`]: App::images
     /// [`take_submission_images`]: App::take_submission_images
     pub fn attach_image(&mut self, path: PathBuf) {
-        // Like `on_paste`, an insert next to a `/command` or `@token` re-derives
-        // the same menu/shell/file-search state every composer edit runs.
+        // Like `on_paste`, an insert next to a `/command`, `@token` or
+        // `$mention` re-derives the same menu/shell/picker state every
+        // composer edit runs.
         let had_query = command_query(self.input.text()).is_some();
         let had_token = self.in_at_token();
+        let had_mention = self.in_skill_mention();
         let placeholder = crate::paste::next_image_placeholder(&self.images);
         self.input.insert_str(&placeholder);
         self.images.push((placeholder, path));
         self.refresh_command_menu(had_query);
         self.sync_shell_mode();
         self.refresh_file_search(had_token);
+        self.refresh_skill_picker(had_mention);
     }
 
     /// Take the image attachments staged by the last idle submit (codex's

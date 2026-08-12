@@ -269,14 +269,19 @@ rest of the line as `args`. Verified end to end against a live model:
 ```
 
 The user-invoked and model-invoked paths therefore converge on one
-implementation rather than two.
+implementation rather than two. The same rails carry the composer's **`$`
+skill-mention picker** (`docs/skill-mentions.md`): typing `$` anywhere in a
+message fuzzy-completes the discovered skills' names, Tab/Enter insert the
+`$<name>` mention, and the listing's closing guidance sentence makes the
+model answer a submitted mention with the same `skill` call.
 
 What is **not** implemented is palette *autocomplete*: typing `/` lists only
 the built-in commands, not the discovered skills. `app::COMMANDS` is a `const`
 array and `matching_commands` hands out `&'static SlashCommand`, so mixing in
 runtime-discovered entries means making that surface owned — a refactor
-reaching `CommandMenu`, `ui::menu`, and their tests, for discovery alone. It is
-the obvious next increment, and nothing here forecloses it.
+reaching `CommandMenu`, `ui::menu`, and their tests, for discovery alone.
+The `$` picker covers the discovery gap from the mention side — every skill
+name is completable there — and nothing here forecloses the palette half.
 
 ## Turning one skill off: the `/skills` menu
 

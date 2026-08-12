@@ -1045,6 +1045,14 @@ impl Session<'_> {
     /// a reminder naming a tool the request never carries is worse than no
     /// reminder. A session with no skills sends exactly the context it sent
     /// before the feature existed.
+    ///
+    /// The composer's `$` picker rides the same gate: the **enabled**
+    /// snapshot goes into `App` beside the listing (`App::set_skills`), so
+    /// the picker can only ever complete a mention the listing names and the
+    /// registry's lookup will honour (`docs/skill-mentions.md`). Every site
+    /// that changes what is offered — the per-turn rescan, a `/skills`
+    /// toggle, the `/settings` Skills/Tools rows, a `/model` switch — already
+    /// funnels through here, which is what keeps the two in step.
     pub(crate) fn sync_skill_listing(&mut self) {
         let listing = if self.app.settings().skills_offered() {
             let budget = alter_zero::skills::listing_budget(
@@ -1058,7 +1066,13 @@ impl Session<'_> {
         } else {
             None
         };
+        let offered = listing.is_some();
         self.app.set_skill_listing(listing);
+        self.app.set_skills(if offered {
+            self.skill_registry.enabled()
+        } else {
+            Vec::new()
+        });
     }
 
     /// `/model` from an idle composer (`docs/llm.md`): open the inline picker (it
