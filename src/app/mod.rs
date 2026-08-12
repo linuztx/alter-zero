@@ -219,6 +219,11 @@ pub struct App {
     /// active call through [`current_tool`](App::current_tool) and the whole
     /// batch through [`tool_queue`](App::tool_queue). See `docs/parallel-tools.md`.
     tool_queue: VecDeque<ToolCall>,
+    /// The id [`start_tool_batch`](App::start_tool_batch) stamps the next
+    /// announced batch with ([`ToolCall::batch`]) — a plain counter, so two
+    /// rounds' calls can never be mistaken for one parallel batch by the
+    /// renderer that collapses a run of MCP cells. See `docs/mcp.md`.
+    next_batch: u64,
     /// Every finished message and tool call, oldest first — used to repaint after
     /// a resize or on returning from the tool-output view.
     pub history: Vec<HistoryItem>,
@@ -604,6 +609,15 @@ impl App {
     /// the backend's model name and the display-ready working directory.
     ///
     /// [`set_clock`]: App::set_clock
+    /// The project directory the footer names — what a permission rule's
+    /// "don't ask again … in {dir}" clause points at, since the allowlist is
+    /// per project (`docs/permissions.md`, `docs/mcp.md`). `None` until the
+    /// boundary injects the session info.
+    #[must_use]
+    pub fn project_dir(&self) -> Option<&str> {
+        self.session.as_ref().map(|info| info.cwd.as_str())
+    }
+
     pub fn set_session_info(&mut self, model: impl Into<String>, cwd: impl Into<String>) {
         self.session = Some(SessionInfo {
             model: model.into(),

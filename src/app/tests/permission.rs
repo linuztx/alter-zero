@@ -446,6 +446,7 @@ fn amended_rejection(feedback: &str) -> (String, ToolCall) {
             approve_call(
                 Some(&gate),
                 None,
+                None,
                 &crate::llm::hooks::NoHooks,
                 false,
                 &tx,

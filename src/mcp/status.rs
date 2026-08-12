@@ -164,31 +164,6 @@ pub fn pretty_args(arguments: &str) -> String {
         .join(", ")
 }
 
-/// The one-row peek a running MCP cell shows under its `Calling {server}…`
-/// header: the call's **primary string argument** — a `query`/`question`/
-/// `prompt`/`q` field when present, else the longest string value — quoted.
-/// `None` when the arguments carry no string worth showing.
-#[must_use]
-pub fn primary_arg(arguments: &str) -> Option<String> {
-    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(arguments.trim()) else {
-        return None;
-    };
-    for key in ["query", "question", "prompt", "q"] {
-        if let Some(text) = map.get(key).and_then(Value::as_str) {
-            let text = text.trim();
-            if !text.is_empty() {
-                return Some(format!("\"{text}\""));
-            }
-        }
-    }
-    map.values()
-        .filter_map(Value::as_str)
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .max_by_key(|s| s.chars().count())
-        .map(|s| format!("\"{s}\""))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,36 +243,20 @@ mod tests {
     }
 
     #[test]
-    fn pretty_args_render_key_value_pairs() {
+    fn pretty_args_render_key_value_pairs_in_the_models_own_order() {
+        // The model chose the order it emitted the arguments in — a schema's
+        // `repoName` before the long `question` it qualifies — so the header
+        // keeps it instead of re-sorting alphabetically (`docs/mcp.md`).
         assert_eq!(
             pretty_args(r#"{"repoName":"a/b","question":"What?"}"#),
-            r#"question: "What?", repoName: "a/b""#
+            r#"repoName: "a/b", question: "What?""#
         );
         assert_eq!(
             pretty_args(r#"{"n": 3, "deep": {"a": 1}}"#),
-            r#"deep: {"a":1}, n: 3"#
+            r#"n: 3, deep: {"a":1}"#
         );
         // Non-JSON falls back verbatim (an old record, a truncated string).
         assert_eq!(pretty_args("not json"), "not json");
         assert_eq!(pretty_args("{}"), "");
-    }
-
-    #[test]
-    fn primary_arg_prefers_query_style_fields() {
-        assert_eq!(
-            primary_arg(r#"{"repoName":"a/b","question":"What is it?"}"#).as_deref(),
-            Some("\"What is it?\"")
-        );
-        assert_eq!(
-            primary_arg(r#"{"query":"find x"}"#).as_deref(),
-            Some("\"find x\"")
-        );
-        // No query field: the longest string value.
-        assert_eq!(
-            primary_arg(r#"{"a":"short","b":"much longer text"}"#).as_deref(),
-            Some("\"much longer text\"")
-        );
-        assert_eq!(primary_arg(r#"{"n": 3}"#), None);
-        assert_eq!(primary_arg("nope"), None);
     }
 }

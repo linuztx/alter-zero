@@ -338,7 +338,10 @@ impl Session<'_> {
             ReflowClear::InPlace => ui::repaint_budget(screen.height, height),
         };
         let tail = ui::repaint_tail(
-            &self.app.history,
+            // Only what has actually reached scrollback: a parallel MCP run
+            // still in flight has cells recorded but held, and the strip is
+            // showing them (`docs/mcp.md`).
+            ui::committed_history(&self.app.history, self.app.tool_queue()),
             self.app.streaming_text(),
             &mut self.render,
             screen.width,
@@ -394,7 +397,9 @@ impl Session<'_> {
         let Some(run) = self.app.viewed_agent() else {
             return Ok(());
         };
-        let history = run.history.clone();
+        // Only the agent's committed cells, the main view's rule
+        // (`ui::committed_history`, `docs/mcp.md`).
+        let history = ui::committed_history(&run.history, &run.tool_queue).to_vec();
         let streaming = run.streaming.clone().filter(|text| !text.is_empty());
         let height = self.live_region_height();
         let mut tail = ui::conversation_lines(&history, screen.width);

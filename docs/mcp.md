@@ -78,8 +78,11 @@ in **`src/llm/mcp/`**.
   `parse_wire_name` splits it back (the server part never contains `__` —
   normalization collapses runs — so the split is unambiguous);
   `tool_display_name(server, tool)` is Claude Code's user-facing
-  `{server} - {tool} (MCP)`, and `wire_from_display` inverts it for the
-  context replay.
+  `{server} - {tool} (MCP)`, `tool_label`/`label_from_wire` is that name
+  without the suffix (the permission prompt renders the arguments *between*
+  the two, and names the label in its rule), `batch_label` is the aggregated
+  `deepwiki, context7 3 times` form, and `wire_from_display` inverts the
+  display name for the context replay.
 - `mcp::protocol` — JSON-RPC 2.0 framing (`request`/`notification` builders,
   `Response` parse with `result`/`error` split), the `initialize` handshake
   params (protocol version `2025-06-18`, `clientInfo` naming this crate) and
@@ -172,14 +175,43 @@ The backend follows the skills pattern:
   inverts the display name), a `/resume` keeps it, and a validating provider
   never sees a placeholder `{}`. The **pretty** `key: "value"` form the
   header shows is derived at render time (`ui::tool`'s MCP branch), never
-  stored.
+  stored — **in the model's own key order**, which is why `serde_json` is
+  built with `preserve_order`: a schema's `repoName` was written before the
+  long `question` it qualifies, and re-sorting the pair alphabetically buried
+  the short argument under the long one.
 - **Permission**: an MCP call asks first, like Claude Code. A fourth
-  `PermissionKind::Mcp` (title `MCP tool`, the question naming the display
-  form, the arguments pretty-printed as the framed body) rides the existing
-  gate; option 2 remembers the **exact wire name** in the exact-command
-  allowlist (`mcp__deepwiki__ask_question` — persisted in
-  `permissions.json` like any exact rule), `edit` mode still asks (a remote
-  tool is not a file edit), `auto` mode asks too (the classifier is a
+  `PermissionKind::Mcp` rides the existing gate, shaped like the `bash`
+  prompt — because it answers the same question, *what exactly is about to
+  run?*:
+
+  ```text
+   Tool use
+
+     deepwiki - read_wiki_structure(repoName: "linuztx/flaredantic") (MCP)
+     Get a list of documentation topics for a GitHub repository.
+
+   Do you want to proceed?
+   ❯ 1. Yes
+     2. Yes, and don't ask again for deepwiki - read_wiki_structure commands
+        in ~/Codes/tests
+     3. No
+
+   Esc to cancel · Tab to amend
+  ```
+
+  The body is the call **as its cell will read it** — the display label, the
+  arguments in the same `key: "value"` form, the ` (MCP)` marker closing it
+  dim so the eye lands on the tool — over the **server's own description** of
+  the tool, dim (`McpManager::tool_description` → the `approve_call`
+  `describe` seam → `PermissionRequest::detail`, the `bash` description's
+  slot). No `╌` frame: the pretty-printed JSON it replaced spent five rows
+  re-punctuating two arguments, and pushed the options toward the screen
+  bottom. Option 2 still remembers the **exact wire name** in the
+  exact-command allowlist (`mcp__deepwiki__read_wiki_structure` — persisted
+  in `permissions.json` like any exact rule) while *saying* the display
+  label and the project the rule is kept for (`App::project_dir`, the
+  footer's cwd — the allowlist is per project). `edit` mode still asks (a
+  remote tool is not a file edit), `auto` mode asks too (the classifier is a
   `bash` reviewer; a wrong-model consult would be theater), and `master`
   runs it unasked like everything else.
 
@@ -190,25 +222,55 @@ survives a `/resume` with no extra record field). Inline it is deliberately
 quiet; Ctrl+O carries the full story:
 
 - **Running**: `● Calling {server}… (ctrl+o to expand)` — the breathing
-  grey bullet, the hint dim on the header — over one dim `⎿ "{arg}"` peek
-  row naming the call's primary string argument (`query`/`question`/
-  `prompt`/the longest string value), ellipsized to the width. A batch
-  whose calls are **all** MCP collapses in the live strip to one aggregated
-  header — `● Calling deepwiki 2 times…`, `● Calling deepwiki,
-  context7 3 times…` (`mcp::names::batch_label`: distinct servers in
-  call order, the total count when more than one) — over the running call's
-  peek; a mixed batch keeps the ordinary per-cell strip.
+  grey bullet, the hint dim on the header — **and nothing else**. It used to
+  carry a `⎿ "{question}"` peek row; a fragment of one argument, wrapped at
+  the width, says what the header already said and costs the row.
+- **A batch**: when **every** queued call is MCP, the batch is one act and
+  shows as one cell — `● Calling deepwiki 2 times…`, `● Calling deepwiki,
+  context7 4 times…` (`mcp::names::batch_label`: distinct servers in call
+  order, the total when there is more than one) — in the live strip *and*
+  above a permission prompt asking about one of its calls, where the
+  per-call rendering used to stack a screenful of identical `⎿ Waiting…`
+  cells in the rows the question needed. The count is the **batch's**: the
+  resolved siblings are read back off the history (`ui::tool::
+  mcp_batch_lines`), so a running batch's label doesn't count itself down.
+  A mixed batch keeps the ordinary per-cell strip, `⎿ Waiting…` rows and all.
 - **Resolved ok**: the bullet-less dim two-tone
   `Called {server} (ctrl+o to expand)` line — the settled thinking line's
   shape (`summary_lines`), because what is left is a fact about the turn,
   not output to read. The result text never reaches inline scrollback;
-  that is *why* the cell can collapse.
+  that is *why* the cell can collapse. A **parallel run** resolves to one
+  such line for the whole run — `Called deepwiki 2 times (ctrl+o to
+  expand)` — because two lines saying `Called deepwiki` describe the batch
+  no better than one that counts it.
 - **Failed**: the loud generic red cell (full header + error peek) — a
-  failure must not whisper.
-- **Ctrl+O**: the full `● {server} - {tool} (MCP)({pretty args})` header
-  (args pretty-printed from the stored JSON, word-wrapped by the ordinary
-  header machinery) over the complete output in the `⎿` gutter — and the
-  model-facing result *is* that output, so Ctrl+D shows the same text.
+  failure must not whisper, and it ends the run it is part of (the ok cells
+  before it commit as their own aggregated line, then the red cell).
+- **Ctrl+O**: unchanged and per call — the full
+  `● {server} - {tool} (MCP)({pretty args})` header over the complete output
+  in the `⎿` gutter. The transcript is what *happened*; the inline line is
+  what is left of it. A header that wide wraps with a **hanging indent**
+  rather than aligning its continuation rows under the opening `(`
+  (`TOOL_HEADER_ALIGN_SHARE` — past a third of the width the alignment costs
+  more than it buys), so the arguments get the row instead of a ragged
+  column.
+
+**How one line can be both**: the aggregation is a property of the
+*history*, not of a live buffer, so scrollback and the resize repaint derive
+it from the same place (invariant 3). Every call of an announced batch
+carries that batch's id (`ToolCall::batch`, stamped by `App::
+start_tool_batch`, round-tripped through the rollout), and a **parallel MCP
+run** is a maximal run of consecutive history cells that are MCP, resolved
+ok, and share one id (`ui::tool::mcp_run`) — the id being what keeps two
+*sequential* calls that merely landed next to each other from claiming they
+ran in parallel. `conversation_lines` collapses each such run when it
+repaints; `ui::tool_commit_lines` — the one builder every resolution commits
+through — **holds** a call's line while the next call of its batch is about
+to start, then writes the run's single line when it ends. Whatever ends the
+run flushes it: its last call, a failure in the middle of it, an
+interrupt. (A held run also holds the background-completion settle, so a
+notice can never land inside one.) A subagent's calls carry no batch id: its
+session view keeps a cell per call.
 
 ## The `/mcp` manager
 
@@ -258,3 +320,25 @@ page but not injected into the system prompt. WebSocket transport isn't
 offered (neither reference ships it for user servers). The dummy backend
 scripts no MCP scenario — the manager is real I/O end to end; the smoke
 suite drives `/mcp` against a scripted stdio fixture instead.
+
+## Testing
+
+The pure halves are unit-tested as usual (the naming contract, the argument
+pretty-printers, every cell/prompt/aggregation rendering, the commit-vs-repaint
+agreement), and the boundary transports against in-process fixtures. What
+those can't prove — that a real server's tools, descriptions and parallel
+batches come out looking right — lives in **`tests/live_mcp.rs`**, `#[ignore]`d
+like every other live test:
+
+```sh
+# the public DeepWiki server only (no key needed)
+cargo test --test live_mcp -- --ignored --nocapture live_deepwiki_tool_descriptions
+# the whole round trip: a real model issuing a real parallel batch
+OPENROUTER_API_KEY=sk-or-… cargo test --test live_mcp -- --ignored --nocapture
+```
+
+The second one folds the turn's real `StreamEvent`s into `App` the way
+`tui::stream` does and asserts on the lines a terminal would show: the strip's
+one `● Calling deepwiki 2 times…` cell, the single committed
+`Called deepwiki 2 times`, and the per-call Ctrl+O headers with the model's own
+argument order.

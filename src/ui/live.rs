@@ -135,13 +135,12 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // The round's live agent group leads the strip — its blue tree cell over
     // any ordinary tool cells of a mixed round (docs/agent-tool.md).
     lines.extend(live_agent_group_lines(app, width));
-    // A parallel batch whose calls are ALL MCP collapses to one aggregated
-    // `● Calling {servers} {n} times…` cell (`docs/mcp.md`) — live-strip
-    // only: the committed cells stay per-call, and a mixed batch keeps the
-    // ordinary per-cell strip below. `preview_rows` sizes from this same
-    // walk, so the count and the paint agree.
+    // A batch whose calls are ALL MCP collapses to one aggregated
+    // `● Calling {servers} {n} times…` cell (`docs/mcp.md`); a mixed batch
+    // keeps the ordinary per-cell strip below. `preview_rows` sizes from this
+    // same walk, so the count and the paint agree.
     if lines.is_empty()
-        && let Some(batch) = super::tool::mcp_batch_strip_lines(app.tool_queue(), pulse, width)
+        && let Some(batch) = super::tool::mcp_batch_lines(app, Some(pulse), width)
     {
         return batch;
     }

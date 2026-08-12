@@ -83,7 +83,22 @@ pub fn parse_wire_name(name: &str) -> Option<(&str, &str)> {
 /// `{server} - {tool} (MCP)`.
 #[must_use]
 pub fn tool_display_name(server: &str, tool: &str) -> String {
-    format!("{server} - {tool}{MCP_DISPLAY_SUFFIX}")
+    format!("{}{MCP_DISPLAY_SUFFIX}", tool_label(server, tool))
+}
+
+/// The display name's **label** half — `{server} - {tool}`, no suffix. The
+/// permission prompt renders the arguments *between* the two
+/// (`deepwiki - ask_question(repoName: "…") (MCP)`) and names the label in
+/// its "don't ask again" rule, so the pieces are built separately.
+#[must_use]
+pub fn tool_label(server: &str, tool: &str) -> String {
+    format!("{server} - {tool}")
+}
+
+/// [`tool_label`] from a wire name — `None` when the name isn't one.
+#[must_use]
+pub fn label_from_wire(name: &str) -> Option<String> {
+    parse_wire_name(name).map(|(server, tool)| tool_label(server, tool))
 }
 
 /// [`tool_display_name`] from a wire name — what
@@ -204,6 +219,13 @@ mod tests {
             display_from_wire("mcp__deepwiki__ask_question").as_deref(),
             Some("deepwiki - ask_question (MCP)")
         );
+        // The label is the same name without the suffix — what the permission
+        // prompt puts the arguments between.
+        assert_eq!(
+            label_from_wire("mcp__deepwiki__ask_question").as_deref(),
+            Some("deepwiki - ask_question")
+        );
+        assert_eq!(label_from_wire("bash"), None);
     }
 
     #[test]

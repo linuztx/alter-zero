@@ -396,6 +396,7 @@ fn live_amended_rejection_still_steers_the_model_a_turn_later() {
         // …and what the model was actually told.
         context_output: Some(denial_result(Some(feedback))),
         approval_note: None,
+        batch: None,
     })];
     let mut context = vec![ContextMessage::new(
         ContextRole::User,
@@ -1015,6 +1016,7 @@ fn live_replayed_image_read_is_visible_on_the_next_turn() {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         }),
         HistoryItem::Message(Message {
             role: Role::Assistant,
@@ -2708,7 +2710,11 @@ fn live_mcp_deepwiki_tool_call_round_trips() {
     assert!(
         snapshot[0].tools.iter().any(|t| t.name == "ask_question"),
         "deepwiki lists ask_question: {:?}",
-        snapshot[0].tools.iter().map(|t| &t.name).collect::<Vec<_>>()
+        snapshot[0]
+            .tools
+            .iter()
+            .map(|t| &t.name)
+            .collect::<Vec<_>>()
     );
     let specs = manager.tool_specs();
     assert!(

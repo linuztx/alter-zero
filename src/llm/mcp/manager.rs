@@ -493,6 +493,22 @@ impl McpManager {
         out
     }
 
+    /// The server's own one-line description of the tool `wire` names — the
+    /// dim row the permission prompt shows under the call (`docs/mcp.md`).
+    /// `None` for a tool no connected server offers.
+    #[must_use]
+    pub fn tool_description(&self, wire: &str) -> Option<String> {
+        let inner = self.lock();
+        inner.servers.iter().find_map(|server| {
+            let name = server.wire_map.get(wire)?;
+            server
+                .tools
+                .iter()
+                .find(|tool| &tool.name == name)
+                .map(|tool| tool.description.clone())
+        })
+    }
+
     /// Is any tool currently offered?
     #[must_use]
     pub fn has_tools(&self) -> bool {

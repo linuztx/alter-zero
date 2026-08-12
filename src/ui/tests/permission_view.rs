@@ -3,8 +3,8 @@
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::super::theme::{
-    PERMISSION_AGENT_COLOR, PERMISSION_OPTION_MAX_ROWS, PERMISSION_SELECTED_COLOR,
-    PERMISSION_TITLE_COLOR,
+    PERMISSION_AGENT_COLOR, PERMISSION_DETAIL_COLOR, PERMISSION_OPTION_MAX_ROWS,
+    PERMISSION_SELECTED_COLOR, PERMISSION_TITLE_COLOR,
 };
 use super::*;
 use crate::permission::{PermissionKind, PermissionRequest};
@@ -835,4 +835,105 @@ fn the_context_rows_count_against_the_body_budget() {
         );
         assert!(painted <= usize::from(height), "fits at height {height}");
     }
+}
+
+// --- the MCP prompt (docs/mcp.md) ---
+
+/// An app asking about a `deepwiki - read_wiki_structure` call, with the
+/// session info the footer (and option 2's project clause) reads.
+fn pending_mcp() -> App {
+    let mut app = App::new();
+    app.set_session_info("dummy_model_name", "~/Codes/tests");
+    app.start_tool_batch(&[ToolCallSummary {
+        name: "deepwiki - read_wiki_structure (MCP)".to_string(),
+        args: r#"{"repoName":"linuztx/flaredantic"}"#.to_string(),
+    }]);
+    let mut request = request(
+        PermissionKind::Mcp,
+        "mcp__deepwiki__read_wiki_structure",
+        r#"repoName: "linuztx/flaredantic""#,
+    );
+    request.detail =
+        Some("Get a list of documentation topics for a GitHub repository.".to_string());
+    app.open_permission(request);
+    app
+}
+
+#[test]
+fn an_mcp_prompt_reads_as_the_call_it_is_about() {
+    let text = rows(&pending_mcp(), 76, 30);
+    let body = text
+        .iter()
+        .position(|r| {
+            r.trim_start()
+                .starts_with("deepwiki - read_wiki_structure(")
+        })
+        .expect("the call names the tool, the server and its arguments");
+    // The title is the act, the call is the body — no framed JSON.
+    assert_eq!(text[body - 2].trim_end(), " Tool use");
+    assert_eq!(
+        text[body],
+        "   deepwiki - read_wiki_structure(repoName: \"linuztx/flaredantic\") (MCP)"
+    );
+    assert_eq!(
+        text[body + 1],
+        "   Get a list of documentation topics for a GitHub repository."
+    );
+    assert!(
+        !text.iter().any(|r| r.contains('╌') || r.contains('{')),
+        "no framed JSON body: {text:?}"
+    );
+    // The question, and the rule option 2 would remember — named the way the
+    // user knows the tool, and scoped to this project.
+    assert_eq!(text[body + 3].trim_end(), " Do you want to proceed?");
+    assert_eq!(text[body + 4].trim_end(), " ❯ 1. Yes");
+    assert_eq!(
+        text[body + 5].trim_end(),
+        "   2. Yes, and don't ask again for deepwiki - read_wiki_structure commands"
+    );
+    assert_eq!(text[body + 6].trim_end(), "      in ~/Codes/tests");
+    assert_eq!(text[body + 7].trim_end(), "   3. No");
+}
+
+#[test]
+fn the_mcp_marker_and_description_are_dim() {
+    // `(MCP)` is a badge, not the call: it wears the description's colour so
+    // the eye lands on the tool (`docs/mcp.md`).
+    let app = pending_mcp();
+    let lines = permission_lines(&app, 76, 30);
+    let call = lines
+        .iter()
+        .find(|line| plain(line).contains("read_wiki_structure(repoName"))
+        .expect("the call row");
+    let last = call.spans.last().expect("the ` (MCP)` marker");
+    assert_eq!(last.content.as_ref(), " (MCP)");
+    assert_eq!(last.style.fg, Some(PERMISSION_DETAIL_COLOR));
+    let detail = lines
+        .iter()
+        .find(|line| plain(line).contains("Get a list of documentation"))
+        .expect("the description row");
+    assert_eq!(detail.spans[1].style.fg, Some(PERMISSION_DETAIL_COLOR));
+}
+
+#[test]
+fn a_parallel_mcp_batch_shows_one_context_cell_above_the_prompt() {
+    // The three `⎿ Waiting…` copies of one aggregated line said the same
+    // thing three times, in the rows the question needed (`docs/mcp.md`).
+    let mut app = pending_mcp();
+    app.start_tool_batch(&[
+        ToolCallSummary {
+            name: "deepwiki - read_wiki_structure (MCP)".to_string(),
+            args: "{}".to_string(),
+        },
+        ToolCallSummary {
+            name: "deepwiki - read_wiki_contents (MCP)".to_string(),
+            args: "{}".to_string(),
+        },
+    ]);
+    let text = rows(&app, 76, 30);
+    assert_eq!(text[0], "● Calling deepwiki 2 times… (ctrl+o to expand)");
+    assert!(
+        !text.iter().any(|r| r.contains("Waiting…")),
+        "one line for the batch, not one per call: {text:?}"
+    );
 }

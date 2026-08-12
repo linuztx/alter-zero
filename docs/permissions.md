@@ -33,13 +33,17 @@ cross-thread handshake in [`crate::permission::PermissionGate`].
 
 ## The shape
 
-Three kinds, one layout, per `permission::PermissionKind`:
+Four kinds, one layout, per `permission::PermissionKind`:
 
 | kind    | title          | body                              | question                              |
 | ------- | -------------- | --------------------------------- | ------------------------------------- |
 | `Write` | `Create file`  | the numbered new contents         | `Do you want to create {file}?`       |
 | `Edit`  | `Edit file`    | the numbered diff hunks           | `Do you want to make this edit to {file}?` |
 | `Bash`  | `Bash command` | the indented command + description | `Do you want to proceed?`             |
+| `Mcp`   | `Tool use`     | the indented `{server} - {tool}({args}) (MCP)` + the server's description | `Do you want to proceed?` |
+
+The `Mcp` row is the `Bash` row with a different target: it names a call
+rather than a command, so it wears the same shape (`docs/mcp.md`).
 
 A `write` whose target **already exists** is an `Edit` — it shows the diff, not
 the whole file, exactly as the resulting `Updated {path} (+A -D)` cell will.
@@ -180,7 +184,11 @@ Every prompt offers three, selected with ↑/↓ + Enter or by typing `1`/`2`/`3
    any arguments", Claude Code's `Bash(prefix:*)`), or the whole command when
    only an exact match is safe. No letter shortcut: the old `(a)` binding was
    one fat-finger away from a standing approval, so the remember row is
-   picked by number or ↑/↓ + Enter, like Claude Code.
+   picked by number or ↑/↓ + Enter, like Claude Code;
+   **Yes, and don't ask again for {server} - {tool} commands in {project}**
+   for an MCP call — the tool named the way the user knows it and the
+   project the rule is kept for (`App::project_dir`), while the rule stored
+   stays the exact `mcp__…` wire name (`docs/mcp.md`).
 3. **No** — reject; the model is told to stop and wait.
 
 A long option **word-wraps** instead of truncating (`option_rows`, the

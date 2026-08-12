@@ -99,8 +99,10 @@ pub enum PermissionKind {
     /// indented under the title.
     Bash,
     /// An `mcp__server__tool` call (`docs/mcp.md`): the target is the wire
-    /// name (the rule key), the body its arguments pretty-printed, the
-    /// question naming the `{server} - {tool} (MCP)` display form.
+    /// name (the rule key), the body its arguments as the one-line
+    /// `key: "value"` form the cell header shows, and the detail the server's
+    /// own description of the tool — the `Bash` shape, because it answers the
+    /// same question (*what exactly is about to run?*).
     Mcp,
 }
 
@@ -110,13 +112,17 @@ pub struct PermissionRequest {
     /// The gate id this request is resolved by ([`PermissionGate::next_id`]).
     pub id: String,
     pub kind: PermissionKind,
-    /// The file path (`Write`/`Edit`) or the whole command (`Bash`).
+    /// The file path (`Write`/`Edit`), the whole command (`Bash`), or the
+    /// `mcp__server__tool` wire name (`Mcp` — the rule key).
     pub target: String,
-    /// The framed body: the numbered contents / diff for a file change, empty
-    /// for a command (whose `target` *is* the body).
+    /// The framed body: the numbered contents / diff for a file change, the
+    /// `key: "value"` arguments for an MCP call, empty for a command (whose
+    /// `target` *is* the body).
     pub body: String,
-    /// The model's own one-line description of a `bash` call (its `description`
-    /// argument), shown under the command. `None` for everything else.
+    /// The one-line description shown dim under the target: the model's own
+    /// `description` argument for a `bash` call, the server's own description
+    /// of the tool for an MCP one. `None` for a file change (and for either of
+    /// those when none was given).
     pub detail: Option<String>,
     /// The subagent type that asked (`general-purpose`), so the title can say
     /// `· from the general-purpose agent`. `None` for the main agent.
@@ -165,7 +171,9 @@ pub const fn title(kind: PermissionKind) -> &'static str {
         PermissionKind::Write => "Create file",
         PermissionKind::Edit => "Edit file",
         PermissionKind::Bash => "Bash command",
-        PermissionKind::Mcp => "MCP tool",
+        // Claude Code's own title for a server tool: the user is approving a
+        // *use*, and the body names the tool and server (`docs/mcp.md`).
+        PermissionKind::Mcp => "Tool use",
     }
 }
 
@@ -187,15 +195,25 @@ pub fn question(request: &PermissionRequest) -> String {
             "Do you want to make this edit to {}?",
             file_name(&request.target)
         ),
-        PermissionKind::Bash => "Do you want to proceed?".to_string(),
-        PermissionKind::Mcp => format!("Do you want to use {}?", mcp_display(&request.target)),
+        // The body above already names the tool, the server and the arguments,
+        // so the question asks the one thing left (`docs/mcp.md`) — the `bash`
+        // prompt's wording, for the same reason.
+        PermissionKind::Bash | PermissionKind::Mcp => "Do you want to proceed?".to_string(),
     }
 }
 
 /// The `{server} - {tool} (MCP)` display form for an MCP request's wire-name
-/// `target` — what the question and the rejected cell name.
+/// `target` — what the rejected cell names.
 fn mcp_display(wire: &str) -> String {
     crate::mcp::display_from_wire(wire).unwrap_or_else(|| wire.to_string())
+}
+
+/// The `{server} - {tool}` label — the display name without its ` (MCP)`
+/// suffix — for an MCP request's wire-name `target`. What the prompt's body
+/// puts the arguments after, and what its "don't ask again" rule names.
+#[must_use]
+pub fn mcp_label(wire: &str) -> String {
+    crate::mcp::label_from_wire(wire).unwrap_or_else(|| wire.to_string())
 }
 
 /// How many options every prompt offers (Yes / remember / No) — the length of
@@ -212,16 +230,28 @@ pub const OPTION_COUNT: usize = 3;
 /// and is picked with `2` or ↑/↓ + Enter, like Claude Code. The file-change
 /// remember row carries its shortcut: **Ctrl+A**, the permission-mode toggle,
 /// because choosing it *is* the switch to [`PermissionMode::Edit`].
+///
+/// An MCP row names the tool the way the user knows it (`deepwiki -
+/// read_wiki_structure`, not the `mcp__…` wire name it stores) **and the
+/// project the rule is remembered for** — `project`, the directory the
+/// footer names, since the allowlist is per project (`docs/mcp.md`). `None`
+/// (no session info injected yet) simply leaves that clause off.
 #[must_use]
-pub fn options(request: &PermissionRequest) -> [String; OPTION_COUNT] {
+pub fn options(request: &PermissionRequest, project: Option<&str>) -> [String; OPTION_COUNT] {
     let remember = match request.kind {
         PermissionKind::Bash => format!(
             "Yes, and don't ask again for: {}",
             command_scope(&request.target).display()
         ),
-        // An MCP rule remembers the exact wire name — precise, and the
-        // Claude Code rule shape (`docs/mcp.md`).
-        PermissionKind::Mcp => format!("Yes, and don't ask again for: {}", request.target),
+        // An MCP rule remembers the exact wire name (`docs/mcp.md`); the row
+        // shows the display label, which is the same tool said out loud.
+        PermissionKind::Mcp => {
+            let label = mcp_label(&request.target);
+            match project {
+                Some(dir) => format!("Yes, and don't ask again for {label} commands in {dir}"),
+                None => format!("Yes, and don't ask again for {label} commands"),
+            }
+        }
         _ => "Yes, allow all edits during this session (ctrl+a)".to_string(),
     };
     ["Yes".to_string(), remember, "No".to_string()]
@@ -998,7 +1028,7 @@ mod tests {
     fn the_second_option_names_what_it_remembers() {
         // The edit option carries its shortcut — Ctrl+A, the mode toggle —
         // and choosing it IS the switch to edit mode (docs/permissions.md).
-        let edits = options(&request(PermissionKind::Write, "hello.py"));
+        let edits = options(&request(PermissionKind::Write, "hello.py"), None);
         assert_eq!(edits[0], "Yes");
         assert_eq!(
             edits[1],
@@ -1008,14 +1038,17 @@ mod tests {
         // The command prompt names the rule it would store — the last
         // segment's program with the `*` saying "any arguments", Claude
         // Code's `prefix:*` — with no `(a)` shortcut (only 2/↑↓+Enter pick it).
-        let bash = options(&request(
-            PermissionKind::Bash,
-            r#"echo "" | python3 script.py"#,
-        ));
+        let bash = options(
+            &request(PermissionKind::Bash, r#"echo "" | python3 script.py"#),
+            None,
+        );
         assert_eq!(bash[1], "Yes, and don't ask again for: python3 *");
         // An exact-only scope (here: a redirect) shows the whole command, no
         // star — nothing broader than this byte-identical command is stored.
-        let exact = options(&request(PermissionKind::Bash, "python3 x.py > out.txt"));
+        let exact = options(
+            &request(PermissionKind::Bash, "python3 x.py > out.txt"),
+            None,
+        );
         assert_eq!(
             exact[1],
             "Yes, and don't ask again for: python3 x.py > out.txt"
@@ -1616,15 +1649,21 @@ mod tests {
     #[test]
     fn an_mcp_request_asks_with_the_display_form_and_exact_rule() {
         let req = request(PermissionKind::Mcp, "mcp__deepwiki__ask_question");
-        assert_eq!(title(PermissionKind::Mcp), "MCP tool");
-        assert_eq!(
-            question(&req),
-            "Do you want to use deepwiki - ask_question (MCP)?"
-        );
-        let opts = options(&req);
+        assert_eq!(title(PermissionKind::Mcp), "Tool use");
+        // The body names the tool, the server and the arguments, so the
+        // question asks the one thing left (`docs/mcp.md`).
+        assert_eq!(question(&req), "Do you want to proceed?");
+        // The rule names the tool the way the user knows it, scoped to the
+        // project it is remembered for; the stored key stays the wire name.
+        let opts = options(&req, Some("~/Codes/tests"));
         assert_eq!(
             opts[1],
-            "Yes, and don't ask again for: mcp__deepwiki__ask_question"
+            "Yes, and don't ask again for deepwiki - ask_question commands in ~/Codes/tests"
+        );
+        assert_eq!(
+            options(&req, None)[1],
+            "Yes, and don't ask again for deepwiki - ask_question commands",
+            "no session info yet: the clause simply drops"
         );
         assert_eq!(
             denied_display(&req, None),

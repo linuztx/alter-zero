@@ -124,9 +124,14 @@ fn option_rows(index: usize, label: &str, selected: bool, width: u16) -> Vec<Lin
 /// Per-option wrapped heights at `width` — the seat's map: shared with
 /// [`cursor_position`](super::layout::cursor_position) so the `❯` row the
 /// renderer paints and the row the cursor rests on can never drift. The
-/// selection changes an option's colour, never its height.
-pub(super) fn option_heights(request: &PermissionRequest, width: u16) -> Vec<usize> {
-    options(request)
+/// selection changes an option's colour, never its height. `project` is the
+/// directory an MCP rule's row names ([`options`]).
+pub(super) fn option_heights(
+    request: &PermissionRequest,
+    project: Option<&str>,
+    width: u16,
+) -> Vec<usize> {
+    options(request, project)
         .iter()
         .enumerate()
         .map(|(i, label)| option_rows(i, label, false, width).len())
@@ -200,18 +205,7 @@ fn command_rows(
         .into_iter()
         .map(|row| (row, PERMISSION_TARGET_COLOR))
         .collect();
-    if let Some(detail) = request
-        .detail
-        .as_ref()
-        .map(|d| d.trim())
-        .filter(|d| !d.is_empty())
-    {
-        source.extend(
-            wrap_output(detail, room)
-                .into_iter()
-                .map(|row| (row, PERMISSION_DETAIL_COLOR)),
-        );
-    }
+    source.extend(detail_rows(request, room));
     let hidden = source.len().saturating_sub(budget.max(1));
     let shown = source.len() - hidden;
     let lines = source
@@ -227,6 +221,79 @@ fn command_rows(
     (lines, hidden)
 }
 
+/// The dim one-line description under a `bash` command / an MCP call, wrapped
+/// to `room` — empty when the request carries none.
+fn detail_rows(request: &PermissionRequest, room: u16) -> Vec<(String, Color)> {
+    request
+        .detail
+        .as_ref()
+        .map(|d| d.trim())
+        .filter(|d| !d.is_empty())
+        .map(|detail| {
+            wrap_output(detail, room)
+                .into_iter()
+                .map(|row| (row, PERMISSION_DETAIL_COLOR))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// An MCP prompt's body (`docs/mcp.md`) — the `bash` body's shape, because it
+/// answers the same question (*what exactly is about to run?*):
+///
+/// ```text
+///   deepwiki - read_wiki_structure(repoName: "linuztx/flaredantic") (MCP)
+///   Get a list of documentation topics for a GitHub repository.
+/// ```
+///
+/// The call reads as the cell header will — the display label with the
+/// arguments in the `key: "value"` form, in the model's own key order — and
+/// the ` (MCP)` marker closes it dim, riding the call's last row when it fits
+/// so the eye lands on the tool and not on the badge. The server's own
+/// description follows, dim. (The framed pretty-printed JSON this replaced
+/// spent five rows re-punctuating two arguments.)
+fn mcp_rows(request: &PermissionRequest, width: u16, budget: usize) -> (Vec<Line<'static>>, usize) {
+    let indent = PERMISSION_COMMAND_INDENT;
+    let room = width.saturating_sub(cols(indent) as u16).max(1);
+    let label = crate::permission::mcp_label(&request.target);
+    let args = request.body.trim();
+    let call = if args.is_empty() {
+        label
+    } else {
+        format!("{label}({args})")
+    };
+    let dim = Style::new().fg(PERMISSION_DETAIL_COLOR);
+    let mut rows: Vec<Vec<Span<'static>>> = wrap_output(&call, room)
+        .into_iter()
+        .map(|row| vec![Span::styled(row, Style::new().fg(PERMISSION_TARGET_COLOR))])
+        .collect();
+    let suffix = crate::mcp::MCP_DISPLAY_SUFFIX;
+    let fits = rows.last().is_some_and(|last| {
+        last.iter().map(|s| cols(&s.content)).sum::<usize>() + cols(suffix) <= room as usize
+    });
+    match rows.last_mut() {
+        Some(last) if fits => last.push(Span::styled(suffix.to_string(), dim)),
+        _ => rows.push(vec![Span::styled(suffix.trim_start().to_string(), dim)]),
+    }
+    rows.extend(
+        detail_rows(request, room)
+            .into_iter()
+            .map(|(text, color)| vec![Span::styled(text, Style::new().fg(color))]),
+    );
+    let hidden = rows.len().saturating_sub(budget.max(1));
+    let shown = rows.len() - hidden;
+    let lines = rows
+        .into_iter()
+        .take(shown)
+        .map(|spans| {
+            let mut row = vec![Span::raw(indent)];
+            row.extend(spans);
+            Line::from(row)
+        })
+        .collect();
+    (lines, hidden)
+}
+
 /// The context cells above the prompt as separable chunks, in priority order:
 /// the round's live agent group (when a subagent asked), then one chunk per
 /// queued call — the asked-about front call first, its batch siblings behind
@@ -236,6 +303,15 @@ fn context_chunks(app: &App, width: u16) -> Vec<Vec<Line<'static>>> {
     let agents = live_agent_group_lines(app, width);
     if !agents.is_empty() {
         chunks.push(agents);
+    }
+    // An all-MCP batch is one act and reads as one line here too — the strip's
+    // aggregated cell, drawn at rest (`docs/mcp.md`). A prompt raised while
+    // three `⎿ Waiting…` copies of it stacked up said the same thing three
+    // times, in the rows the question needed.
+    if chunks.is_empty()
+        && let Some(batch) = super::tool::mcp_batch_lines(app, None, width)
+    {
+        return vec![batch];
     }
     chunks.extend(app.tool_queue().iter().map(|tool| tool_lines(tool, width)));
     chunks
@@ -369,7 +445,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         below.push(Line::default());
         below.push(hint_row(PERMISSION_AMEND_HINTS));
     } else {
-        for (i, label) in options(request).iter().enumerate() {
+        for (i, label) in options(request, app.project_dir()).iter().enumerate() {
             below.extend(option_rows(i, label, i == prompt.selected, width));
         }
         below.push(Line::default());
@@ -385,9 +461,9 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     // after the cells, the rule, its gap, the title, the target/gap row) — so
     // a big parallel batch collapses its excess `⎿ Waiting…` siblings into the
     // summary row instead of squeezing the body out (see [`context_lines`]).
-    // A framed body (a file change's numbered rows, an MCP call's arguments
-    // JSON) carries its two dashed rules.
-    let framed = file_change || request.kind == PermissionKind::Mcp;
+    // A framed body (a file change's numbered rows) carries its two dashed
+    // rules; a command's — and an MCP call's, which reads like one — does not.
+    let framed = file_change;
     let framing = if framed { 2 } else { 0 };
     let context_budget = usize::from(term_height).saturating_sub(
         5 + below.len() + framing + 2 /* the gap + rule */ + body_reserve(request, file_change),
@@ -399,16 +475,9 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     out.extend([rule(width), Line::default(), title_row(request, width)]);
     if file_change {
         out.push(text_row(&request.target, PERMISSION_TARGET_COLOR, width));
-    } else if request.kind == PermissionKind::Mcp {
-        // The display form under the title — what the user knows the tool
-        // as; the wire name is in option 2's rule (`docs/mcp.md`).
-        out.push(text_row(
-            &crate::mcp::display_from_wire(&request.target)
-                .unwrap_or_else(|| request.target.clone()),
-            PERMISSION_TARGET_COLOR,
-            width,
-        ));
     } else {
+        // A command — and an MCP call, whose body names the tool the same way
+        // (`docs/mcp.md`) — gaps here instead: its target *is* the body.
         out.push(Line::default());
     }
 
@@ -447,9 +516,7 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
             ))
         }
     } else if request.kind == PermissionKind::Mcp {
-        // The arguments JSON, framed like a file body (the `╌` rules) — the
-        // exact payload the server receives is what is being approved.
-        (!request.body.trim().is_empty()).then(|| mcp_body_rows(&request.body, width, budget))
+        Some(mcp_rows(request, width, budget))
     } else {
         Some(command_rows(request, width, budget))
     };
@@ -499,9 +566,11 @@ fn body_fits(body: &str, budget: usize) -> bool {
 /// rows like [`body_fits`] (wrapping only ever makes the shown body cap
 /// earlier, never pushes the options off).
 fn body_reserve(request: &PermissionRequest, file_change: bool) -> usize {
-    let natural = if file_change || request.kind == PermissionKind::Mcp {
+    let natural = if file_change {
         request.body.lines().count()
     } else {
+        // A command's target is its body; an MCP call's is its one call row
+        // (plus the ` (MCP)` marker's, when it doesn't fit beside it).
         request.target.lines().count()
             + request
                 .detail
@@ -509,31 +578,6 @@ fn body_reserve(request: &PermissionRequest, file_change: bool) -> usize {
                 .map_or(0, |d| d.trim().lines().count())
     };
     natural.min(PERMISSION_MIN_BODY_ROWS)
-}
-
-/// An MCP prompt's body: the arguments JSON, word-wrapped and indented like
-/// the command body — at most `budget` rows, the hidden count returned for
-/// the `… +N lines` tail.
-fn mcp_body_rows(body: &str, width: u16, budget: usize) -> (Vec<Line<'static>>, usize) {
-    let indent = PERMISSION_COMMAND_INDENT;
-    let room = width.saturating_sub(cols(indent) as u16).max(1);
-    let source: Vec<String> = body
-        .lines()
-        .flat_map(|line| wrap_output(line, room))
-        .collect();
-    let hidden = source.len().saturating_sub(budget.max(1));
-    let shown = source.len() - hidden;
-    let lines = source
-        .into_iter()
-        .take(shown)
-        .map(|text| {
-            Line::from(vec![
-                Span::raw(indent),
-                Span::styled(text, Style::new().fg(PERMISSION_TARGET_COLOR)),
-            ])
-        })
-        .collect();
-    (lines, hidden)
 }
 
 /// The highlight language for the preview — the target path's extension.

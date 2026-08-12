@@ -29,8 +29,8 @@ pub use self::config::{
 };
 pub use self::names::{
     MCP_DISPLAY_SUFFIX, MCP_TOOL_PREFIX, batch_label, display_from_wire, display_server,
-    is_mcp_display_name, is_mcp_tool, normalize_name, parse_wire_name, tool_display_name,
-    tool_wire_name, wire_from_display,
+    is_mcp_display_name, is_mcp_tool, label_from_wire, normalize_name, parse_wire_name,
+    tool_display_name, tool_label, tool_wire_name, wire_from_display,
 };
 pub use self::protocol::{
     CallOutcome, Incoming, MAX_TOOL_DESCRIPTION_CHARS, McpToolInfo, PROTOCOL_VERSION, RpcError,
@@ -39,6 +39,5 @@ pub use self::protocol::{
 };
 pub use self::sse::{SseEvent, SseParser};
 pub use self::status::{
-    McpAuthState, McpServerSnapshot, McpServerStatus, ToolParameter, pretty_args, primary_arg,
-    tool_parameters,
+    McpAuthState, McpServerSnapshot, McpServerStatus, ToolParameter, pretty_args, tool_parameters,
 };

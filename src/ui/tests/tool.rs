@@ -1327,7 +1327,7 @@ fn tool_full_lines_expand_tabs_for_display() {
 // --- MCP cells (docs/mcp.md) ---
 
 use crate::ui::theme::{MCP_CALLED_PREFIX, MCP_CALLING_PREFIX, REASONING_LABEL_COLOR};
-use crate::ui::tool::mcp_batch_strip_lines;
+use crate::ui::tool::{mcp_batch_lines, tool_commit_lines};
 
 /// An MCP cell fixture: the display name + raw-JSON args the loop records.
 fn mcp_tool(status: ToolStatus, output: &str) -> ToolCall {
@@ -1341,16 +1341,14 @@ fn mcp_tool(status: ToolStatus, output: &str) -> ToolCall {
 
 #[test]
 fn a_running_mcp_cell_collapses_to_calling_server() {
+    // One line and nothing else: the arguments (and the result) are Ctrl+O's
+    // story, so the inline cell doesn't echo a peek of the question
+    // (`docs/mcp.md`).
     let lines = tool_lines(&mcp_tool(ToolStatus::Running, ""), 100);
+    assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
         format!("● {MCP_CALLING_PREFIX}deepwiki…{EXPAND_HINT}")
-    );
-    // The one-row peek names the call's primary string argument, quoted.
-    assert!(
-        plain(&lines[1]).contains("\"What is this?\""),
-        "got {:?}",
-        plain(&lines[1])
     );
 }
 
@@ -1398,6 +1396,41 @@ fn a_failed_mcp_cell_keeps_the_loud_generic_form() {
 }
 
 #[test]
+fn a_wide_mcp_header_wraps_to_the_bullets_own_hanging_indent() {
+    // `● deepwiki - ask_question (MCP)` is 31 columns: aligning the wrapped
+    // arguments under the opening `(` would spend 40% of the terminal on
+    // indent, so a header that wide falls back to the bullet's two columns
+    // and the args get the whole width (`docs/mcp.md`).
+    let mut cell = mcp_tool(ToolStatus::Ok, "");
+    cell.args = r#"{"repoName":"linuztx/flaredantic","question":"What is this project about? What does it do, what problem does it solve, and how is it typically used?"}"#.to_string();
+    let lines = tool_full_lines(&cell, 76);
+    assert_eq!(
+        plain(&lines[0]),
+        "● deepwiki - ask_question (MCP)(repoName: \"linuztx/flaredantic\", question:"
+    );
+    assert_eq!(
+        plain(&lines[1]),
+        "  \"What is this project about? What does it do, what problem does it solve,"
+    );
+    assert_eq!(plain(&lines[2]), "  and how is it typically used?\")");
+}
+
+#[test]
+fn a_narrow_header_still_aligns_under_its_opening_paren() {
+    // The hanging indent is for headers whose name eats the width; an
+    // ordinary `● Bash(…)` keeps the alignment it always had.
+    let cell = tool(
+        "Bash",
+        "echo one two three four five six seven eight nine ten eleven twelve",
+        ToolStatus::Ok,
+        "",
+    );
+    let lines = tool_full_lines(&cell, 40);
+    assert_eq!(plain(&lines[0]), "● Bash(echo one two three four five six");
+    assert_eq!(plain(&lines[1]), "      seven eight nine ten eleven");
+}
+
+#[test]
 fn the_ctrl_o_view_shows_the_full_mcp_story() {
     let cell = mcp_tool(ToolStatus::Ok, "{\n  \"result\": \"Flaredantic is…\"\n}");
     let lines = tool_full_lines(&cell, 120);
@@ -1411,44 +1444,184 @@ fn the_ctrl_o_view_shows_the_full_mcp_story() {
     assert!(lines.iter().any(|l| plain(l).contains("Flaredantic is…")));
 }
 
+/// An app whose live queue is the announced batch `names` (display names),
+/// the front call running — the shape the strip and the permission prompt
+/// render from.
+fn app_calling(names: &[&str]) -> App {
+    let mut app = App::new();
+    let items: Vec<crate::stream::ToolCallSummary> = names
+        .iter()
+        .map(|name| crate::stream::ToolCallSummary {
+            name: (*name).to_string(),
+            args: r#"{"repoName":"linuztx/flaredantic"}"#.to_string(),
+        })
+        .collect();
+    app.start_tool_batch(&items);
+    app.start_tool(names[0], "");
+    app
+}
+
 #[test]
 fn an_all_mcp_batch_collapses_the_strip_to_one_aggregated_cell() {
-    let mut queue = VecDeque::new();
-    let mut first = mcp_tool(ToolStatus::Running, "");
-    first.args = r#"{"question":"What is flaredantic and how do I use it?"}"#.to_string();
-    queue.push_back(first);
-    queue.push_back(mcp_tool(ToolStatus::Waiting, ""));
-    let mut third = tool(
+    let app = app_calling(&[
+        "deepwiki - ask_question (MCP)",
+        "deepwiki - read_wiki_structure (MCP)",
         "plugin:context7:context7 - resolve-library-id (MCP)",
-        r#"{"libraryName":"flaredantic"}"#,
-        ToolStatus::Waiting,
-        "",
-    );
-    third.shell = false;
-    queue.push_back(third);
-    let lines = mcp_batch_strip_lines(&queue, Duration::ZERO, 120).expect("all-MCP batch");
+    ]);
+    let lines = mcp_batch_lines(&app, Some(Duration::ZERO), 120).expect("all-MCP batch");
+    // One line, no peek: the servers in call order and the batch's own count.
+    assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
         format!("● {MCP_CALLING_PREFIX}deepwiki, plugin:context7:context7 3 times…{EXPAND_HINT}")
     );
-    // The running call's primary argument rides as the peek.
-    assert!(
-        plain(&lines[1]).contains("What is flaredantic and how do I use it?"),
-        "got {:?}",
-        plain(&lines[1])
+}
+
+#[test]
+fn the_aggregated_label_counts_the_whole_batch_not_what_is_left_of_it() {
+    // The first of two parallel calls resolved: the strip still says `2
+    // times` — the label describes the batch, not the remaining queue.
+    let mut app = app_calling(&[
+        "deepwiki - ask_question (MCP)",
+        "deepwiki - read_wiki_structure (MCP)",
+    ]);
+    app.end_tool("{\"answer\":\"…\"}", true);
+    let lines = mcp_batch_lines(&app, Some(Duration::ZERO), 120).expect("still an all-MCP batch");
+    assert_eq!(
+        plain(&lines[0]),
+        format!("● {MCP_CALLING_PREFIX}deepwiki 2 times…{EXPAND_HINT}")
     );
 }
 
 #[test]
 fn a_mixed_batch_keeps_the_ordinary_per_cell_strip() {
-    let mut queue = VecDeque::new();
-    queue.push_back(mcp_tool(ToolStatus::Running, ""));
-    queue.push_back(tool("Bash", "ls", ToolStatus::Waiting, ""));
-    assert!(mcp_batch_strip_lines(&queue, Duration::ZERO, 120).is_none());
-    // A lone MCP call keeps its own (un-aggregated) cell too.
-    let mut lone = VecDeque::new();
-    lone.push_back(mcp_tool(ToolStatus::Running, ""));
-    assert!(mcp_batch_strip_lines(&lone, Duration::ZERO, 120).is_none());
+    let app = app_calling(&["deepwiki - ask_question (MCP)", "Bash"]);
+    assert!(mcp_batch_lines(&app, Some(Duration::ZERO), 120).is_none());
+    // A lone MCP call aggregates to the same single line it renders anyway.
+    let lone = app_calling(&["deepwiki - ask_question (MCP)"]);
+    let lines = mcp_batch_lines(&lone, Some(Duration::ZERO), 120).expect("a lone MCP call");
+    assert_eq!(
+        plain(&lines[0]),
+        format!("● {MCP_CALLING_PREFIX}deepwiki…{EXPAND_HINT}")
+    );
+    // Nothing in flight is nothing to aggregate.
+    assert!(mcp_batch_lines(&App::new(), Some(Duration::ZERO), 120).is_none());
+}
+
+#[test]
+fn a_finished_parallel_mcp_run_commits_one_aggregated_line() {
+    // Two calls of one batch resolve: the first holds its line (the run is
+    // still going), the second commits both as one `Called … 2 times` line —
+    // the same line the history repaint renders (`docs/mcp.md`).
+    let mut app = app_calling(&[
+        "deepwiki - ask_question (MCP)",
+        "deepwiki - read_wiki_structure (MCP)",
+    ]);
+    app.end_tool("{\"answer\":\"…\"}", true);
+    assert_eq!(
+        tool_commit_lines(&app.history, app.tool_queue(), 100),
+        None,
+        "the run's first call holds its commit"
+    );
+    app.start_tool("deepwiki - read_wiki_structure (MCP)", "");
+    app.end_tool("{\"topics\":[]}", true);
+    let lines = tool_commit_lines(&app.history, app.tool_queue(), 100).expect("the run committed");
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        plain(&lines[0]),
+        format!("{MCP_CALLED_PREFIX}deepwiki 2 times{EXPAND_HINT}")
+    );
+    // And the repaint from history agrees, line for line.
+    let repaint = crate::ui::conversation_lines(&app.history, 100);
+    assert_eq!(plain(&repaint[0]), plain(&lines[0]));
+    assert_eq!(repaint.len(), 2, "one line + its spacer: {repaint:?}");
+}
+
+#[test]
+fn a_rebuild_mid_run_leaves_the_held_cell_to_the_strip() {
+    // The bug a live run caught: the first call of a parallel batch resolves,
+    // its line is held (the run isn't over) — and then the permission prompt
+    // for the *second* call closes, which purge-rebuilds the screen from
+    // history. Painting the held cell there wrote a `Called deepwiki` line
+    // that the run's own `Called deepwiki 2 times` then followed. Until the
+    // run ends the strip's `● Calling deepwiki 2 times…` speaks for it, so a
+    // rebuild must skip exactly the held cells (`docs/mcp.md`).
+    let mut app = app_calling(&[
+        "deepwiki - ask_question (MCP)",
+        "deepwiki - read_wiki_structure (MCP)",
+    ]);
+    app.end_tool("{\"answer\":\"…\"}", true);
+    assert_eq!(app.history.len(), 1, "the call is recorded…");
+    let committed = crate::ui::committed_history(&app.history, app.tool_queue());
+    assert!(
+        committed.is_empty(),
+        "…but not yet committed: {committed:?}"
+    );
+    assert!(crate::ui::conversation_lines(committed, 100).is_empty());
+    // Once the run ends, the rebuild has the whole run — as its one line.
+    app.start_tool("deepwiki - read_wiki_structure (MCP)", "");
+    app.end_tool("{\"topics\":[]}", true);
+    let committed = crate::ui::committed_history(&app.history, app.tool_queue());
+    assert_eq!(committed.len(), 2);
+    let rebuilt: Vec<String> = crate::ui::conversation_lines(committed, 100)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        rebuilt,
+        vec![
+            format!("{MCP_CALLED_PREFIX}deepwiki 2 times{EXPAND_HINT}"),
+            String::new()
+        ]
+    );
+}
+
+#[test]
+fn a_failed_call_still_flushes_the_run_it_ends() {
+    // The batch's first call succeeded (its line held), the second failed:
+    // the failure commits loudly, and the held line comes with it rather
+    // than being lost.
+    let mut app = app_calling(&[
+        "deepwiki - ask_question (MCP)",
+        "deepwiki - read_wiki_structure (MCP)",
+    ]);
+    app.end_tool("{\"answer\":\"…\"}", true);
+    app.start_tool("deepwiki - read_wiki_structure (MCP)", "");
+    app.end_tool("server exploded", false);
+    let lines = tool_commit_lines(&app.history, app.tool_queue(), 100).expect("the run committed");
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(
+        texts[0],
+        format!("{MCP_CALLED_PREFIX}deepwiki{EXPAND_HINT}")
+    );
+    assert_eq!(texts[1], "");
+    assert!(texts[2].starts_with("● deepwiki - read_wiki_structure (MCP)("));
+    assert!(texts.iter().any(|t| t.contains("server exploded")));
+    let repaint: Vec<String> = crate::ui::conversation_lines(&app.history, 100)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(repaint[..texts.len()], texts[..]);
+}
+
+#[test]
+fn two_sequential_mcp_calls_are_not_one_parallel_run() {
+    // Adjacent in history, but each its own round: they were never parallel,
+    // so they keep their own lines (the batch id is what tells them apart).
+    let mut app = App::new();
+    for _ in 0..2 {
+        app.start_tool("deepwiki - ask_question (MCP)", "{}");
+        app.end_tool("{}", true);
+    }
+    let repaint: Vec<String> = crate::ui::conversation_lines(&app.history, 100)
+        .iter()
+        .map(plain)
+        .collect();
+    let called = format!("{MCP_CALLED_PREFIX}deepwiki{EXPAND_HINT}");
+    assert_eq!(
+        repaint,
+        vec![called.clone(), String::new(), called, String::new()]
+    );
 }
 
 #[test]

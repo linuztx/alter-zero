@@ -666,6 +666,7 @@ mod tests {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         })
     }
 
@@ -682,6 +683,7 @@ mod tests {
             truncated: false,
             context_output: Some(result.to_string()),
             approval_note: None,
+            batch: None,
         })
     }
 

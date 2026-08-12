@@ -189,6 +189,14 @@ pub(super) const TOOL_HEADER_MAX_ROWS: usize = 3;
 /// [`TOOL_HEADER_MAX_ROWS`].
 pub(super) const TOOL_HEADER_ELLIPSIS: &str = "…";
 
+/// The share of the terminal a wrapped header may spend aligning its
+/// continuation rows under the opening `(`: at most one part in this many.
+/// Past it (an MCP call's `● deepwiki - ask_question (MCP)` is 31 columns —
+/// 40% of an 76-column terminal) the header hangs its continuations at the
+/// bullet's own two columns instead, so the arguments get the width rather
+/// than a ragged column. See `tool_header_lines` and `docs/mcp.md`.
+pub(super) const TOOL_HEADER_ALIGN_SHARE: usize = 3;
+
 /// Dim marker appended at the end of a `!` shell command's **expanded** output
 /// (`tool_full_lines`) when it was cut at the in-memory cap (`tool.truncated`),
 /// to show that more output was dropped. See `docs/shell-command.md`.

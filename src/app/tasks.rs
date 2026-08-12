@@ -62,6 +62,7 @@ impl TaskCallRecord {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         }
     }
 }

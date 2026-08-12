@@ -133,26 +133,17 @@ impl Session<'_> {
                 }
                 // Commit the finished tool *collapsed* (green/red) to scrollback;
                 // its full (retained) output lives in the Ctrl+O view.
-                if let Some(tool) = self.app.end_tool(&output, ok)
-                    && committing
-                {
-                    // A `!` shell turn's strip (preview + gap; it has no status
-                    // line) collapses the moment end_tool clears the running
-                    // tool — reseat the viewport before queueing the cell, like
-                    // StreamDone does, so a draw tick racing in ahead of the
-                    // back-to-back StreamDone can't flush against the stale
-                    // strip-inflated height and over-scroll the box off the
-                    // bottom (invariant 3).
-                    let height = self.live_region_height();
-                    self.term.set_view_height(height);
-                    self.term.insert_before(ui::tool_lines(&tool, width));
-                    self.term.insert_before(vec![Line::default()]);
-                }
+                let resolved = self.app.end_tool(&output, ok).is_some();
+                let held = resolved && !self.commit_tool_cell(committing, width);
                 // A tool resolution is a settle point: completions that landed
                 // while the call ran (often a `kill` this very command issued)
                 // commit right after its cell — the user's example order — not
-                // at the turn's distant end (docs/background.md).
-                self.settle_bg_completions();
+                // at the turn's distant end (docs/background.md). A **held**
+                // MCP run is the exception: its cells commit together when the
+                // run ends, so a notice must not land inside it (docs/mcp.md).
+                if !held {
+                    self.settle_bg_completions();
+                }
                 // The command resolved — stop its Ctrl+B-hint clock (the turn may
                 // continue with more text/tools).
                 self.clocks.command_start = None;
@@ -172,13 +163,8 @@ impl Session<'_> {
                 if truncated {
                     self.app.set_tool_truncated();
                 }
-                if let Some(tool) = self.app.reject_tool(&display, &result)
-                    && committing
-                {
-                    let height = self.live_region_height();
-                    self.term.set_view_height(height);
-                    self.term.insert_before(ui::tool_lines(&tool, width));
-                    self.term.insert_before(vec![Line::default()]);
+                if self.app.reject_tool(&display, &result).is_some() {
+                    self.commit_tool_cell(committing, width);
                 }
                 // A resolution boundary like ToolEnd (docs/background.md).
                 self.settle_bg_completions();
@@ -197,13 +183,8 @@ impl Session<'_> {
                 if truncated {
                     self.app.set_tool_truncated();
                 }
-                if let Some(tool) = self.app.answer_tool(&display, &result)
-                    && committing
-                {
-                    let height = self.live_region_height();
-                    self.term.set_view_height(height);
-                    self.term.insert_before(ui::tool_lines(&tool, width));
-                    self.term.insert_before(vec![Line::default()]);
+                if self.app.answer_tool(&display, &result).is_some() {
+                    self.commit_tool_cell(committing, width);
                 }
                 self.settle_bg_completions();
                 self.clocks.command_start = None;
@@ -215,13 +196,8 @@ impl Session<'_> {
                 // (the stored output is the model-facing launch text). The process
                 // itself now reports through the background channel. Mirrors the
                 // ToolEnd commit dance (docs/background.md).
-                if let Some(tool) = self.app.background_tool(&output)
-                    && committing
-                {
-                    let height = self.live_region_height();
-                    self.term.set_view_height(height);
-                    self.term.insert_before(ui::tool_lines(&tool, width));
-                    self.term.insert_before(vec![Line::default()]);
+                if self.app.background_tool(&output).is_some() {
+                    self.commit_tool_cell(committing, width);
                 }
                 // A resolution boundary like ToolEnd — completions held during
                 // the launch settle here (docs/background.md).

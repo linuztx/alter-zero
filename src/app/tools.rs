@@ -26,6 +26,12 @@ impl App {
     /// (the `!` shell, the dummy's lone calls) skips it and a lone
     /// [`start_tool`](App::start_tool) still works. See `docs/parallel-tools.md`.
     pub fn start_tool_batch(&mut self, items: &[ToolCallSummary]) {
+        // One id per announced batch: what tells the renderer a run of MCP
+        // cells was **parallel** (one `Called deepwiki 2 times` line) from two
+        // sequential single calls that merely landed next to each other in
+        // history (`docs/mcp.md`).
+        self.next_batch += 1;
+        let batch = Some(self.next_batch);
         self.tool_queue = items
             .iter()
             .map(|item| ToolCall {
@@ -38,6 +44,7 @@ impl App {
                 truncated: false,
                 context_output: None,
                 approval_note: None,
+                batch,
             })
             .collect();
     }
@@ -68,6 +75,8 @@ impl App {
             truncated: false,
             context_output: None,
             approval_note: None,
+            // A lone call is nobody's batch sibling.
+            batch: None,
         });
     }
 
@@ -283,6 +292,14 @@ pub struct ToolCall {
     /// example transcript's last line), and a `/resume` restores it. `None`
     /// for every call the user approved (or that needed no approval).
     pub approval_note: Option<String>,
+    /// The **parallel batch** this call was announced in
+    /// ([`App::start_tool_batch`]), or `None` for a lone call. Every call of
+    /// one round's batch shares the id, which is what lets the renderer
+    /// collapse a run of MCP cells that really ran *in parallel* into one
+    /// `Called deepwiki 2 times (ctrl+o to expand)` line without also
+    /// collapsing two sequential calls that happen to sit next to each other
+    /// in history. Round-trips through the rollout (`docs/mcp.md`).
+    pub batch: Option<u64>,
 }
 
 impl ToolCall {

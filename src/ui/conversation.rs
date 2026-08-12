@@ -16,6 +16,20 @@ pub(super) fn is_shell_header(item: &HistoryItem) -> bool {
     matches!(item, HistoryItem::Message(m) if m.role == Role::Shell)
 }
 
+/// The slice of `history` that has actually reached scrollback: everything
+/// except the trailing cells of a **parallel MCP run still in flight**, whose
+/// lines the commit path is holding until the run ends ([`held_run_len`],
+/// `docs/mcp.md`) — the live strip speaks for them meanwhile. Every rebuild
+/// renders *this*, so a repaint landing mid-run can't paint a line the commit
+/// is about to write.
+#[must_use]
+pub fn committed_history<'a>(
+    history: &'a [HistoryItem],
+    queue: &VecDeque<ToolCall>,
+) -> &'a [HistoryItem] {
+    &history[..history.len() - super::tool::held_run_len(history, queue)]
+}
+
 /// Build the whole conversation as styled lines, mirroring how it was streamed
 /// to scrollback: each message's wrapped lines (or each tool call's collapsed
 /// peek), with a blank spacer after every item. Used to repaint after a resize
@@ -23,7 +37,20 @@ pub(super) fn is_shell_header(item: &HistoryItem) -> bool {
 #[must_use]
 pub fn conversation_lines(history: &[HistoryItem], width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for item in history {
+    let mut index = 0;
+    while index < history.len() {
+        // A **parallel MCP run** — consecutive cells of one announced batch,
+        // all resolved ok — is one act, so it collapses to the single
+        // `Called deepwiki 2 times (ctrl+o to expand)` line the commit path
+        // writes ([`tool_commit_lines`], `docs/mcp.md`), spacer included.
+        if let Some((len, servers)) = super::tool::mcp_run(&history[index..]) {
+            lines.push(super::tool::mcp_called_line(&servers));
+            lines.push(Line::default());
+            index += len;
+            continue;
+        }
+        let item = &history[index];
+        index += 1;
         match item {
             // A task tool call renders NOTHING inline — no cell, no spacer:
             // the live checklist is its display, and the record expands only

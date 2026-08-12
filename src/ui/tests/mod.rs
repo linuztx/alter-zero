@@ -96,6 +96,7 @@ pub(super) fn stamped_history() -> Vec<HistoryItem> {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         }),
         HistoryItem::Message(Message {
             role: Role::Assistant,
@@ -155,6 +156,7 @@ pub(super) fn tool(name: &str, args: &str, status: ToolStatus, output: &str) -> 
         truncated: false,
         context_output: None,
         approval_note: None,
+        batch: None,
     }
 }
 

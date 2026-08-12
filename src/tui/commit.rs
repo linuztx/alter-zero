@@ -53,6 +53,37 @@ impl Session<'_> {
         self.frame.schedule_frame_in(TOAST_TTL);
     }
 
+    /// Commit the cell of the tool call that just resolved — the one commit
+    /// site every resolution (`ToolEnd`, a rejection, an answer, a background
+    /// launch, an interrupt) goes through.
+    ///
+    /// What it writes comes from [`ui::tool_commit_lines`], which reads the
+    /// same history the resize repaint does: usually the resolved call's
+    /// collapsed cell, but a call inside a **parallel MCP batch** holds its
+    /// line until the run ends and then commits it as one aggregated
+    /// `Called deepwiki 2 times` line (`docs/mcp.md`). Returns whether
+    /// anything was due — a held run also holds the background-completion
+    /// settle, so a notice can't land inside it.
+    ///
+    /// The viewport is reseated first, like `StreamDone` does: a `!` shell
+    /// turn's strip collapses the moment the call leaves the queue, and a
+    /// draw tick racing in ahead of the back-to-back `StreamDone` would
+    /// otherwise flush against the stale strip-inflated height and scroll the
+    /// box off the bottom (invariant 3).
+    pub(crate) fn commit_tool_cell(&mut self, committing: bool, width: u16) -> bool {
+        let Some(lines) = ui::tool_commit_lines(&self.app.history, self.app.tool_queue(), width)
+        else {
+            return false;
+        };
+        if committing && !lines.is_empty() {
+            let height = self.live_region_height();
+            self.term.set_view_height(height);
+            self.term.insert_before(lines);
+            self.term.insert_before(vec![Line::default()]);
+        }
+        true
+    }
+
     /// Commit a one-off notice to scrollback + history, finalising any in-flight
     /// streamed segment first so the notice slots in order — the same flush
     /// trick a tool call uses. The shared body of [`Session::commit_error_notice`]
@@ -121,9 +152,17 @@ impl Session<'_> {
             self.term.insert_before(self.render.finish(&partial, width));
             self.term.insert_before(vec![Line::default()]);
         }
-        if let Some(tool) = tool {
-            self.term.insert_before(ui::tool_lines(&tool, width));
-            self.term.insert_before(vec![Line::default()]);
+        if tool.is_some() {
+            // The resolved (failed) call — and any MCP siblings whose lines
+            // its run was holding — through the shared commit path
+            // (`docs/mcp.md`). The viewport was reseated just above.
+            if let Some(lines) =
+                ui::tool_commit_lines(&self.app.history, self.app.tool_queue(), width)
+                && !lines.is_empty()
+            {
+                self.term.insert_before(lines);
+                self.term.insert_before(vec![Line::default()]);
+            }
         }
         // The agent group the death resolved (its members marked interrupted) —
         // the red tree cell, before the notice (docs/agent-tool.md).

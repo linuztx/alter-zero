@@ -722,9 +722,16 @@ impl ReplySource for LlmBackend {
                     let classify = |request: &crate::permission::PermissionRequest| {
                         classifier.classify(request, &cancel)
                     };
+                    // An MCP prompt shows the server's own description of the
+                    // tool under the call (docs/mcp.md).
+                    let describe = |wire: &str| {
+                        mcp.as_ref()
+                            .and_then(|manager| manager.tool_description(wire))
+                    };
                     approval::approve_call(
                         permissions.as_ref(),
                         Some(&classify),
+                        Some(&describe),
                         hooks.as_ref(),
                         force_ask,
                         &tx,
@@ -1223,9 +1230,14 @@ fn spawn_subagent_run(
                 let classify = |request: &crate::permission::PermissionRequest| {
                     classifier.classify(request, &cancel)
                 };
+                let describe = |wire: &str| {
+                    mcp.as_ref()
+                        .and_then(|manager| manager.tool_description(wire))
+                };
                 approval::approve_call(
                     permissions.as_ref(),
                     Some(&classify),
+                    Some(&describe),
                     hooks.as_ref(),
                     force_ask,
                     &tx2,

@@ -75,7 +75,7 @@ pub use self::ask_view::{ask_height, ask_lines, render_ask};
 pub use self::background_view::{background_view_lines, render_background_view};
 pub use self::context_view::{context_lines, context_view_max_scroll, render_context_view};
 pub use self::conversation::{
-    banner_tail, conversation_lines, repaint_budget, repaint_lines, repaint_tail,
+    banner_tail, committed_history, conversation_lines, repaint_budget, repaint_lines, repaint_tail,
 };
 pub use self::footer::{
     backtrack_hint_line, display_cwd, footer_line, footer_rows, queued_lines, queued_rows,
@@ -109,7 +109,7 @@ pub use self::status::{
 pub use self::stream_render::StreamRender;
 pub use self::tasks::{checklist_lines, idle_task_lines, task_rows};
 pub use self::theme::{COMPACTED_NOTICE, LIVE_MIN_HEIGHT};
-pub use self::tool::tool_lines;
+pub use self::tool::{held_run_len, tool_commit_lines, tool_lines};
 pub use self::transcript::{
     TranscriptCache, agent_transcript_lines, backtrack_scroll, backtrack_scroll_for,
     render_tool_view, tool_view_body_rows, tool_view_max_scroll, tool_view_max_scroll_for,

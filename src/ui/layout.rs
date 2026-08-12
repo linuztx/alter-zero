@@ -683,7 +683,11 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
             // height and the highlighted option's first row come from the
             // renderer's own per-option heights — the seat lands on the `❯`
             // row however tall the labels are.
-            let heights = super::permission_view::option_heights(&prompt.request, area.width);
+            let heights = super::permission_view::option_heights(
+                &prompt.request,
+                app.project_dir(),
+                area.width,
+            );
             let selected = prompt.selected.min(heights.len().saturating_sub(1));
             let total: usize = heights.iter().sum();
             let before: usize = heights[..selected].iter().sum();

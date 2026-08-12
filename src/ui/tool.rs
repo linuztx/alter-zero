@@ -4,7 +4,7 @@
 
 use super::assistant::expand_code_tabs;
 use super::file_cell::{diff_line_color, file_cell_lines, gutter_row, is_diff_tool};
-use super::inline::wrap_inline;
+use super::inline::wrap_inline_hanging;
 use super::theme::*;
 use super::wrap::{blend, cols, truncate_cols, truncate_spans, wrap_output, wrap_verbatim};
 use super::*;
@@ -91,13 +91,31 @@ pub(super) fn tool_header_lines(
         .fg(TOOL_ARGS_COLOR)
         .add_modifier(Modifier::BOLD);
     // Continuation rows indent to align under the opening `(`, which sits right
-    // after `● {name}`; wrapping `(args)` as one run — parens and args alike bold
-    // white (a uniform, noticeable header body) — keeps every row (the first
-    // included) the same body width, so the wrapped rows land exactly beneath the
-    // `(`.
-    let indent_cols = cols(TOOL_BULLET) + cols(&tool.name);
+    // after `● {name}` — wrapping `(args)` as one run, parens and args alike bold
+    // white (a uniform, noticeable header body) — so the wrapped rows land
+    // exactly beneath the `(`.
+    //
+    // That reads best while the name is short. A long one — an MCP call's
+    // `deepwiki - ask_question (MCP)` is 31 columns — would spend a third of a
+    // terminal on indent and squeeze the arguments into a ragged column, so a
+    // header wider than [`TOOL_HEADER_ALIGN_SHARE`] of the width falls back to
+    // the bullet's own two columns and the args get the whole row
+    // (`docs/mcp.md`). The two rows then have **different** budgets — the first
+    // is what is left beside `● {name}`, the rest what is left beside the
+    // indent — which is exactly [`wrap_inline_hanging`].
+    let aligned = cols(TOOL_BULLET) + cols(&tool.name);
+    let indent_cols = if aligned > (width as usize) / TOOL_HEADER_ALIGN_SHARE {
+        cols(TOOL_BULLET)
+    } else {
+        aligned
+    };
+    let first_width = (width as usize).saturating_sub(aligned).max(1);
     let body_width = (width as usize).saturating_sub(indent_cols).max(1);
-    let mut rows = wrap_inline(&[(format!("({args})"), args_style)], body_width as u16);
+    let mut rows = wrap_inline_hanging(
+        &[(format!("({args})"), args_style)],
+        first_width as u16,
+        body_width as u16,
+    );
     // Cap a very long header: keep the first `max` rows and replace the tail with
     // `…)` (fitted within the body width, the same bold white) — the whole command
     // is still in Ctrl+O.
@@ -105,8 +123,13 @@ pub(super) fn tool_header_lines(
         && rows.len() > max.max(1)
     {
         rows.truncate(max.max(1));
+        let room = if rows.len() == 1 {
+            first_width
+        } else {
+            body_width
+        };
         if let Some(last) = rows.last_mut() {
-            let keep = body_width.saturating_sub(cols(TOOL_HEADER_ELLIPSIS) + cols(")"));
+            let keep = room.saturating_sub(cols(TOOL_HEADER_ELLIPSIS) + cols(")"));
             *last = truncate_spans(last, keep);
             last.push(Span::styled(format!("{TOOL_HEADER_ELLIPSIS})"), args_style));
         }
@@ -417,10 +440,13 @@ fn ask_cell_lines(
 /// The **collapsed** MCP cell (`docs/mcp.md`) — inline it is deliberately
 /// quiet, the full `{server} - {tool} (MCP)({args})` story living in Ctrl+O:
 ///
-/// - **Running/Waiting**: `● Calling {server}… (ctrl+o to expand)` — the
-///   bullet coloured (and, live, breathing) by status — over a one-row peek
-///   of the call's primary string argument (`⎿ "query"`), or the dim
-///   `⎿ Waiting…` for a batch sibling.
+/// - **Running**: `● Calling {server}… (ctrl+o to expand)` — the bullet
+///   coloured (and, live, breathing) by status — and nothing else: echoing a
+///   peek of the question under it says what the header already does, at the
+///   cost of a row and a wrapped fragment of the argument.
+/// - **Waiting**: the same header over the dim `⎿ Waiting…` its non-MCP
+///   batch siblings show (only a *mixed* batch renders these — an all-MCP
+///   batch collapses to [`mcp_batch_lines`]).
 /// - **Resolved ok**: the bullet-less dim
 ///   `Called {server} (ctrl+o to expand)` line — the settled thinking line's
 ///   exact shape ([`REASONING_LABEL_COLOR`]), because what is left is a fact
@@ -435,39 +461,162 @@ fn mcp_cell_lines(
     let server = crate::mcp::display_server(&tool.name)?.to_string();
     match tool.status {
         ToolStatus::Waiting | ToolStatus::Running => {
-            let mut lines = vec![mcp_calling_header(
-                &format!("{MCP_CALLING_PREFIX}{server}{MCP_CALLING_SUFFIX}"),
-                tool.status,
-                pulse,
-                width,
-            )];
-            let peek_width = (width as usize)
-                .saturating_sub(cols(TOOL_RESULT_PREFIX))
-                .max(1);
+            let mut lines = vec![mcp_calling_header(&server, tool.status, pulse, width)];
             if tool.status == ToolStatus::Waiting {
                 lines.push(result_row(0, TOOL_WAITING.to_string()));
-            } else if let Some(peek) = crate::mcp::primary_arg(&tool.args) {
-                lines.push(output_row(0, truncate_cols(&peek, peek_width)));
             }
             Some(lines)
         }
-        ToolStatus::Ok => Some(vec![Line::from(Span::styled(
-            format!("{MCP_CALLED_PREFIX}{server}{EXPAND_HINT}"),
-            Style::new().fg(REASONING_LABEL_COLOR),
-        ))]),
+        ToolStatus::Ok => Some(vec![mcp_called_line(&[&server])]),
         ToolStatus::Failed | ToolStatus::Backgrounded => None,
     }
+}
+
+/// The bullet-less dim `Called deepwiki 2 times (ctrl+o to expand)` line a
+/// resolved MCP call — or a whole **parallel run** of them ([`mcp_run`]) —
+/// leaves in scrollback: the settled thinking line's shape, because what is
+/// left is a fact about the turn (`docs/mcp.md`).
+pub(super) fn mcp_called_line(servers: &[&str]) -> Line<'static> {
+    Line::from(Span::styled(
+        format!(
+            "{MCP_CALLED_PREFIX}{}{EXPAND_HINT}",
+            crate::mcp::batch_label(servers)
+        ),
+        Style::new().fg(REASONING_LABEL_COLOR),
+    ))
+}
+
+/// The batch and server of a **collapsible** MCP cell: an MCP call that
+/// resolved `Ok` inside an announced parallel batch. `None` for anything else
+/// — a failure (which stays loud and separate), a lone call, a non-MCP tool.
+fn mcp_run_member(item: &HistoryItem) -> Option<(u64, &str)> {
+    let HistoryItem::Tool(tool) = item else {
+        return None;
+    };
+    let batch = tool.batch?;
+    (tool.status == ToolStatus::Ok)
+        .then(|| crate::mcp::display_server(&tool.name))
+        .flatten()
+        .map(|server| (batch, server))
+}
+
+/// The **parallel MCP run** leading `items`: the consecutive collapsible cells
+/// sharing the first one's batch id, as `(len, servers-in-call-order)`.
+///
+/// `None` unless at least two line up — one call's cell is already the same
+/// `Called {server}` line, and requiring the shared batch id is what keeps two
+/// *sequential* calls that merely landed next to each other in history from
+/// claiming they ran in parallel. See `docs/mcp.md`.
+pub(super) fn mcp_run(items: &[HistoryItem]) -> Option<(usize, Vec<&str>)> {
+    let (batch, first) = mcp_run_member(items.first()?)?;
+    let mut servers = vec![first];
+    for item in &items[1..] {
+        match mcp_run_member(item) {
+            Some((id, server)) if id == batch => servers.push(server),
+            _ => break,
+        }
+    }
+    (servers.len() > 1).then_some((servers.len(), servers))
+}
+
+/// How many trailing cells of `history` are collapsible members of `batch` —
+/// the run walk both the commit and the hold are built on.
+fn trailing_run_len(history: &[HistoryItem], batch: Option<u64>) -> usize {
+    history
+        .iter()
+        .rev()
+        .take_while(|item| mcp_run_member(item).is_some_and(|(id, _)| Some(id) == batch))
+        .count()
+}
+
+/// The trailing `history` cells of a **parallel MCP run that is still in
+/// flight** — the ones [`tool_commit_lines`] is holding because the next call
+/// of their batch is about to start (`docs/mcp.md`).
+///
+/// They are *recorded* but not yet in scrollback, and until the run ends the
+/// live strip's aggregated `● Calling deepwiki 2 times…` cell speaks for the
+/// whole batch. So a rebuild that happens in that gap — a permission prompt
+/// closing between two calls of the batch, a resize — must skip exactly these
+/// (`conversation_lines_live`), or it paints a `Called deepwiki` line the
+/// commit path is about to replace with the run's own.
+#[must_use]
+pub fn held_run_len(history: &[HistoryItem], queue: &VecDeque<ToolCall>) -> usize {
+    let Some(HistoryItem::Tool(last)) = history.last() else {
+        return 0;
+    };
+    let continues = mcp_run_member(history.last().expect("just matched")).is_some()
+        && queue.front().is_some_and(|next| {
+            next.batch == last.batch && crate::mcp::display_server(&next.name).is_some()
+        });
+    if continues {
+        trailing_run_len(history, last.batch)
+    } else {
+        0
+    }
+}
+
+/// The scrollback lines a **just-resolved** tool call commits — the last item
+/// of `history`, with `queue` holding what is left of its batch.
+///
+/// Normally that is simply its own collapsed cell. But an MCP call inside a
+/// parallel batch **holds** its line (`None`) while the next call of the same
+/// batch is about to run, so the run commits *once*, as the aggregated
+/// `Called deepwiki 2 times (ctrl+o to expand)` line — the very line the
+/// repaint builds from the same history ([`conversation_lines`]), so
+/// scrollback and a resize can never disagree. Whatever ends the run — its
+/// last call, or a failure/rejection in the middle of it — flushes the held
+/// cells with it. See `docs/mcp.md`.
+#[must_use]
+pub fn tool_commit_lines(
+    history: &[HistoryItem],
+    queue: &VecDeque<ToolCall>,
+    width: u16,
+) -> Option<Vec<Line<'static>>> {
+    let HistoryItem::Tool(last) = history.last()? else {
+        return None;
+    };
+    // Still mid-run: the next call of this batch is about to start, and it
+    // will render with this one.
+    if held_run_len(history, queue) > 0 {
+        return None;
+    }
+    // The run this call ends: the cells held before it (its collapsible
+    // batch siblings) plus this call itself, whatever it resolved as.
+    let before = trailing_run_len(&history[..history.len() - 1], last.batch);
+    let items = &history[history.len() - 1 - before..];
+    let mut lines = Vec::new();
+    let mut i = 0;
+    while i < items.len() {
+        if !lines.is_empty() {
+            lines.push(Line::default()); // the spacer between committed cells
+        }
+        if let Some((len, servers)) = mcp_run(&items[i..]) {
+            lines.push(mcp_called_line(&servers));
+            i += len;
+        } else {
+            match &items[i] {
+                HistoryItem::Tool(tool) => lines.extend(tool_lines(tool, width)),
+                // Unreachable: the walk above only ever crosses tool cells.
+                _ => break,
+            }
+            i += 1;
+        }
+    }
+    Some(lines)
 }
 
 /// The `● Calling {label}… (ctrl+o to expand)` header row a collapsed MCP
 /// cell (or the aggregated all-MCP batch strip) wears — truncated to the
 /// width, the hint dropped first when the terminal is too narrow for both.
+/// `label` is the bare server list; the `Calling …` framing is added here so
+/// every caller wears it identically.
 fn mcp_calling_header(
     label: &str,
     status: ToolStatus,
     pulse: Option<Duration>,
     width: u16,
 ) -> Line<'static> {
+    let label = &format!("{MCP_CALLING_PREFIX}{label}{MCP_CALLING_SUFFIX}");
     let bullet_style = Style::new()
         .fg(tool_status_color(status, pulse))
         .add_modifier(Modifier::BOLD);
@@ -490,44 +639,55 @@ fn mcp_calling_header(
     Line::from(spans)
 }
 
-/// The one aggregated live-strip cell for a parallel batch whose calls are
+/// The one aggregated live cell for an in-flight batch whose calls are
 /// **all** MCP (`docs/mcp.md`): `● Calling deepwiki, context7 3 times…
-/// (ctrl+o to expand)` — the servers in call order — over the running call's
-/// primary-argument peek. `None` when any call isn't MCP (the ordinary
-/// per-cell strip stands).
-pub(super) fn mcp_batch_strip_lines(
-    queue: &VecDeque<ToolCall>,
-    pulse: Duration,
+/// (ctrl+o to expand)` — the servers in call order, and nothing else. A
+/// parallel batch is one act, so it reads as one line whether it is drawn in
+/// the streaming strip ([`preview_tool_lines`](super::live::preview_tool_lines),
+/// with a `pulse`) or above a permission prompt asking about one of its calls
+/// (at rest, `pulse: None`).
+///
+/// The count is the **batch's**, not the queue's: the siblings that already
+/// resolved are read back off the history, so a running batch's label doesn't
+/// count itself down. `None` when the queue is empty or holds anything that
+/// isn't an MCP call — a mixed batch keeps the ordinary per-cell rendering.
+pub(super) fn mcp_batch_lines(
+    app: &App,
+    pulse: Option<Duration>,
     width: u16,
 ) -> Option<Vec<Line<'static>>> {
-    if queue.len() < 2 {
+    let queue = app.tool_queue();
+    if queue.is_empty() {
         return None;
     }
-    let servers: Vec<&str> = queue
+    let mut servers: Vec<&str> = queue
         .iter()
         .map(|tool| crate::mcp::display_server(&tool.name))
         .collect::<Option<_>>()?;
-    let label = format!(
-        "{MCP_CALLING_PREFIX}{}{MCP_CALLING_SUFFIX}",
-        crate::mcp::batch_label(&servers)
-    );
-    let mut lines = vec![mcp_calling_header(
-        &label,
-        ToolStatus::Running,
-        Some(pulse),
-        width,
-    )];
-    if let Some(peek) = queue
-        .iter()
-        .find(|tool| tool.status == ToolStatus::Running)
-        .and_then(|tool| crate::mcp::primary_arg(&tool.args))
-    {
-        let peek_width = (width as usize)
-            .saturating_sub(cols(TOOL_RESULT_PREFIX))
-            .max(1);
-        lines.push(output_row(0, truncate_cols(&peek, peek_width)));
+    // The batch's already-resolved calls, in call order, ahead of the queued
+    // ones: the trailing history cells stamped with this batch's id.
+    if let Some(batch) = queue.front().and_then(|tool| tool.batch) {
+        let mut done: Vec<&str> = Vec::new();
+        for item in app.history.iter().rev() {
+            match item {
+                HistoryItem::Tool(tool) if tool.batch == Some(batch) => {
+                    match crate::mcp::display_server(&tool.name) {
+                        Some(server) => done.push(server),
+                        None => break,
+                    }
+                }
+                _ => break,
+            }
+        }
+        done.reverse();
+        servers.splice(0..0, done);
     }
-    Some(lines)
+    Some(vec![mcp_calling_header(
+        &crate::mcp::batch_label(&servers),
+        ToolStatus::Running,
+        pulse,
+        width,
+    )])
 }
 
 /// [`tool_cell_lines`] minus the trailing provenance note, so every branch's

@@ -905,6 +905,7 @@ fn a_rejected_cell_shows_the_amended_instructions_and_never_the_model_text() {
                 .to_string(),
         ),
         approval_note: None,
+        batch: None,
     };
     for lines in [tool_lines(&tool, 80), tool_full_lines(&tool, 80)] {
         let texts: Vec<String> = lines.iter().map(plain).collect();
@@ -945,6 +946,7 @@ fn a_backgrounded_tool_cell_shows_the_fixed_row_not_its_output() {
         truncated: false,
         context_output: None,
         approval_note: None,
+        batch: None,
     };
     for lines in [tool_lines(&tool, 60), tool_full_lines(&tool, 60)] {
         let texts: Vec<String> = lines.iter().map(plain).collect();
@@ -978,6 +980,7 @@ fn a_backgrounded_shell_cell_is_the_headerless_fixed_row() {
         truncated: false,
         context_output: None,
         approval_note: None,
+        batch: None,
     };
     let texts: Vec<String> = tool_lines(&tool, 60).iter().map(plain).collect();
     assert_eq!(texts.len(), 1);

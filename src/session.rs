@@ -343,6 +343,14 @@ struct ToolRecord {
     /// Omitted when absent, the `context_output` rule.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     approval_note: Option<String>,
+    /// The **parallel batch** this call was announced in
+    /// ([`crate::app::ToolCall::batch`]) — what makes a resumed session's run
+    /// of MCP cells collapse to the same one `Called deepwiki 2 times` line
+    /// it had before the reload (`docs/mcp.md`). Omitted when absent, the
+    /// `context_output` rule, so a lone call and every older file keep their
+    /// shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    batch: Option<u64>,
 }
 
 /// A [`BackgroundNotice`] on disk — a background shell's completion notice
@@ -472,6 +480,7 @@ pub fn item_line(item: &HistoryItem, stamp: &str) -> String {
             backgrounded: matches!(tool.status, ToolStatus::Backgrounded),
             context_output: tool.context_output.clone(),
             approval_note: tool.approval_note.clone(),
+            batch: tool.batch,
         }),
         HistoryItem::Summary(summary) => ItemRecord::Summary(SummaryRecord {
             verb: summary.verb.to_string(),
@@ -650,6 +659,7 @@ pub fn parse_session(text: &str) -> Option<(SessionMeta, Vec<HistoryItem>)> {
                 truncated: tool.truncated,
                 context_output: tool.context_output,
                 approval_note: tool.approval_note,
+                batch: tool.batch,
             })),
             ItemRecord::Summary(summary) => items.push(HistoryItem::Summary(TurnSummary {
                 verb: done_verb(&summary.verb),
@@ -1301,6 +1311,7 @@ mod tests {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         });
         let failed_shell = HistoryItem::Tool(ToolCall {
             name: "tree ~/".into(),
@@ -1312,6 +1323,7 @@ mod tests {
             truncated: true,
             context_output: None,
             approval_note: None,
+            batch: None,
         });
         let (_, parsed) =
             parse_session(&file_of(&[ok_tool.clone(), failed_shell.clone()])).expect("parses");
@@ -1337,6 +1349,7 @@ mod tests {
                     .into(),
             ),
             approval_note: None,
+            batch: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&rejected))).expect("parses");
         assert_eq!(parsed, vec![rejected]);
@@ -1357,6 +1370,7 @@ mod tests {
             truncated: false,
             context_output: None,
             approval_note: Some("Allowed by auto mode classifier".into()),
+            batch: None,
         });
         let (_, parsed) = parse_session(&file_of(std::slice::from_ref(&tool))).expect("parses");
         assert_eq!(parsed, vec![tool]);
@@ -1371,6 +1385,7 @@ mod tests {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         });
         assert!(!item_line(&plain, "t").contains("approval_note"));
     }
@@ -1390,6 +1405,7 @@ mod tests {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         });
         let line = item_line(&tool, "t");
         assert!(!line.contains("context_output"), "not recorded: {line}");
@@ -1611,6 +1627,7 @@ mod tests {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         });
         let line = item_line(&tool, "t");
         let value: serde_json::Value = serde_json::from_str(&line).expect("valid JSON");
@@ -1633,6 +1650,7 @@ mod tests {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         });
         let line = item_line(&tool, "t");
         assert!(

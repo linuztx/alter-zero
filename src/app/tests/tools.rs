@@ -112,6 +112,7 @@ fn end_tool_records_a_successful_tool_call_and_clears_the_slot() {
             truncated: false,
             context_output: None,
             approval_note: None,
+            batch: None,
         }))
     );
 }

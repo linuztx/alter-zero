@@ -31,7 +31,7 @@ use std::time::Instant;
 use ratatui::text::Line;
 
 use alter_zero::agents::{AGENT_LINGER, AgentEvent};
-use alter_zero::app::{HistoryItem, Role, ToastKind, View};
+use alter_zero::app::{Role, ToastKind, View};
 use alter_zero::stream::StreamEvent;
 use alter_zero::term::ReflowClear;
 use alter_zero::ui;
@@ -118,18 +118,19 @@ impl Session<'_> {
             | StreamEvent::ToolRejected { .. }
             | StreamEvent::ToolBackgrounded { .. } => {
                 // The resolved call was pushed onto the agent's transcript —
-                // commit its collapsed cell (the main ToolEnd dance).
-                let tool = self
+                // commit its collapsed cell (the main ToolEnd dance), through
+                // the same history-derived builder, so the agent view and its
+                // rebuild agree the way the main view's do (`docs/mcp.md`).
+                let lines = self
                     .app
                     .viewed_agent()
-                    .and_then(|run| match run.history.last() {
-                        Some(HistoryItem::Tool(tool)) => Some(tool.clone()),
-                        _ => None,
-                    });
-                if let Some(tool) = tool {
+                    .and_then(|run| ui::tool_commit_lines(&run.history, &run.tool_queue, width));
+                if let Some(lines) = lines
+                    && !lines.is_empty()
+                {
                     let height = self.live_region_height();
                     self.term.set_view_height(height);
-                    self.term.insert_before(ui::tool_lines(&tool, width));
+                    self.term.insert_before(lines);
                     self.term.insert_before(vec![Line::default()]);
                 }
             }

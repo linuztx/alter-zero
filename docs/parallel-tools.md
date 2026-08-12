@@ -75,7 +75,11 @@ VecDeque<ToolCall>`. The front is the running (or about-to-run) call; the rest
 are `ToolStatus::Waiting`.
 
 - `ToolStatus` gains a `Waiting` variant (dim, rendered `⎿ Waiting…`).
-- `start_tool_batch(&[(name,args)])` fills the queue with `Waiting` calls.
+- `start_tool_batch(&[(name,args)])` fills the queue with `Waiting` calls,
+  each stamped with the batch's own id (`ToolCall::batch`, a plain counter).
+  Nothing in *this* feature reads it; it is what lets a later renderer tell
+  one round's parallel calls from two rounds' sequential ones — the MCP run
+  collapse (`docs/mcp.md`). A lone call's is `None`.
 - `start_tool(name,args)` flips the **front** `Waiting` → `Running`; with an empty
   queue (the dummy's lone tools, the `!` shell) it pushes a fresh `Running` call —
   so the single-tool path is byte-for-byte the old behaviour.

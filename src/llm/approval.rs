@@ -37,6 +37,13 @@ const CANCELLED_DISPLAY: &str = "Interrupted by user";
 /// would default it to `'static`, refusing the backend's stack closures.)
 pub type ClassifyCommand<'a> = dyn Fn(&PermissionRequest) -> Result<ClassifierVerdict, String> + 'a;
 
+/// The MCP tool-description lookup an MCP prompt's body needs
+/// (`docs/mcp.md`): a wire name → the server's own one-line description of
+/// that tool ([`crate::llm::mcp::McpManager::tool_description`]). `None` —
+/// no manager attached, or a tool it doesn't know — simply leaves the dim
+/// description row out of the prompt.
+pub type DescribeTool<'a> = dyn Fn(&str) -> Option<String> + 'a;
+
 /// What the user is being asked to approve for `call`, or `None` when the tool
 /// needs no approval — a `read`, an unknown tool, or an `edit` that cannot
 /// apply (it will fail without touching the file, so there is nothing to
@@ -48,6 +55,7 @@ pub type ClassifyCommand<'a> = dyn Fn(&PermissionRequest) -> Result<ClassifierVe
 pub fn permission_request(
     call: &ToolCallRequest,
     agent: Option<&str>,
+    describe: Option<&DescribeTool<'_>>,
 ) -> Option<PermissionRequest> {
     let agent = agent.map(str::to_string);
     match call.name.as_str() {
@@ -103,31 +111,22 @@ pub fn permission_request(
             })
         }
         // An MCP call asks too (`docs/mcp.md`): the wire name is the target
-        // (the rule key option 2 remembers), the arguments pretty-printed as
-        // the framed body so the user reads exactly what the server will.
+        // (the rule key option 2 remembers), the arguments the one-line
+        // `key: "value"` form the resulting cell header shows — so the prompt
+        // and the cell name the call identically — and the detail the
+        // server's own description of the tool.
         name if crate::mcp::is_mcp_tool(name) => Some(PermissionRequest {
             id: String::new(),
             kind: PermissionKind::Mcp,
             target: name.to_string(),
-            body: mcp_arguments_body(&call.arguments),
-            detail: None,
+            body: crate::mcp::pretty_args(&call.arguments),
+            detail: describe
+                .and_then(|describe| describe(name))
+                .map(|text| text.trim().to_string())
+                .filter(|text| !text.is_empty()),
             agent,
         }),
         _ => None,
-    }
-}
-
-/// An MCP request's framed body: the arguments as pretty JSON (the exact
-/// payload the server receives), or nothing for an argument-less call.
-fn mcp_arguments_body(arguments: &str) -> String {
-    let trimmed = arguments.trim();
-    if trimmed.is_empty() || trimmed == "{}" {
-        return String::new();
-    }
-    match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(value) if value.as_object().is_some_and(|o| o.is_empty()) => String::new(),
-        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| trimmed.to_string()),
-        Err(_) => trimmed.to_string(),
     }
 }
 
@@ -150,6 +149,7 @@ fn mcp_arguments_body(arguments: &str) -> String {
 pub fn approve_call(
     gate: Option<&PermissionGate>,
     classify: Option<&ClassifyCommand<'_>>,
+    describe: Option<&DescribeTool<'_>>,
     hooks: &dyn HookSink,
     force_ask: bool,
     tx: &UnboundedSender<StreamEvent>,
@@ -160,7 +160,7 @@ pub fn approve_call(
     let Some(gate) = gate else {
         return Approval::Allow;
     };
-    let Some(mut request) = permission_request(call, agent) else {
+    let Some(mut request) = permission_request(call, agent, describe) else {
         return Approval::Allow;
     };
     // A `PreToolUse` hook's `permissionDecision: "ask"` means *put this to the
@@ -262,8 +262,8 @@ mod tests {
 
     #[test]
     fn a_read_never_asks() {
-        assert!(permission_request(&call("read", r#"{"path":"a.txt"}"#), None).is_none());
-        assert!(permission_request(&call("nonsense", "{}"), None).is_none());
+        assert!(permission_request(&call("read", r#"{"path":"a.txt"}"#), None, None).is_none());
+        assert!(permission_request(&call("nonsense", "{}"), None, None).is_none());
     }
 
     #[test]
@@ -273,6 +273,7 @@ mod tests {
                 "bash",
                 r#"{"command":"python3 script.py","description":"Run it"}"#,
             ),
+            None,
             None,
         )
         .expect("a command asks");
@@ -284,6 +285,7 @@ mod tests {
         let bare = permission_request(
             &call("bash", r#"{"command":"ls","description":"  "}"#),
             Some("general-purpose"),
+            None,
         )
         .unwrap();
         assert_eq!(bare.detail, None);
@@ -298,7 +300,7 @@ mod tests {
             "path": path.to_str().unwrap(),
             "content": "one\ntwo\n",
         });
-        let request = permission_request(&call("write", &args.to_string()), None).unwrap();
+        let request = permission_request(&call("write", &args.to_string()), None, None).unwrap();
         assert_eq!(request.kind, PermissionKind::Write);
         assert_eq!(request.body, "1 one\n2 two");
         assert!(!path.exists(), "asking must not write anything");
@@ -315,7 +317,7 @@ mod tests {
             "path": path.to_str().unwrap(),
             "content": "one\nTWO\n",
         });
-        let request = permission_request(&call("write", &args.to_string()), None).unwrap();
+        let request = permission_request(&call("write", &args.to_string()), None, None).unwrap();
         assert_eq!(request.kind, PermissionKind::Edit);
         assert!(request.body.contains("-two"), "got {}", request.body);
         assert!(request.body.contains("+TWO"), "got {}", request.body);
@@ -336,7 +338,7 @@ mod tests {
             "old_string": "beta",
             "new_string": "BETA",
         });
-        let request = permission_request(&call("edit", &args.to_string()), None).unwrap();
+        let request = permission_request(&call("edit", &args.to_string()), None, None).unwrap();
         assert_eq!(request.kind, PermissionKind::Edit);
         assert!(request.body.contains("-beta"), "got {}", request.body);
         assert!(request.body.contains("+BETA"), "got {}", request.body);
@@ -359,20 +361,21 @@ mod tests {
             "old_string": "nowhere",
             "new_string": "x",
         });
-        assert!(permission_request(&call("edit", &args.to_string()), None).is_none());
+        assert!(permission_request(&call("edit", &args.to_string()), None, None).is_none());
         // …as is an edit to a file that isn't there.
         let missing = serde_json::json!({
             "path": dir.path().join("gone.py").to_str().unwrap(),
             "old_string": "a",
             "new_string": "b",
         });
-        assert!(permission_request(&call("edit", &missing.to_string()), None).is_none());
+        assert!(permission_request(&call("edit", &missing.to_string()), None, None).is_none());
     }
 
     #[test]
     fn no_gate_means_every_call_runs_as_before() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let approval = approve_call(
+            None,
             None,
             None,
             &NoHooks,
@@ -391,10 +394,11 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let gate = PermissionGate::new();
         let call = call("bash", r#"{"command":"cargo test"}"#);
-        gate.remember(&permission_request(&call, None).unwrap());
+        gate.remember(&permission_request(&call, None, None).unwrap());
         assert_eq!(
             approve_call(
                 Some(&gate),
+                None,
                 None,
                 &NoHooks,
                 false,
@@ -419,6 +423,7 @@ mod tests {
             std::thread::spawn(move || {
                 approve_call(
                     Some(&gate),
+                    None,
                     None,
                     &NoHooks,
                     false,
@@ -447,6 +452,7 @@ mod tests {
             approve_call(
                 Some(&gate),
                 None,
+                None,
                 &NoHooks,
                 false,
                 &tx,
@@ -472,6 +478,7 @@ mod tests {
             std::thread::spawn(move || {
                 approve_call(
                     Some(&gate),
+                    None,
                     None,
                     &NoHooks,
                     false,
@@ -528,6 +535,7 @@ mod tests {
         let approval = approve_call(
             Some(&gate),
             Some(&classify),
+            None,
             &NoHooks,
             false,
             &tx,
@@ -557,6 +565,7 @@ mod tests {
         let approval = approve_call(
             Some(&gate),
             Some(&classify),
+            None,
             &NoHooks,
             false,
             &tx,
@@ -597,6 +606,7 @@ mod tests {
             approve_call(
                 Some(&gate),
                 Some(&classify),
+                None,
                 &NoHooks,
                 false,
                 &tx,
@@ -607,11 +617,12 @@ mod tests {
             Approval::Allow
         );
         let listed = call("bash", r#"{"command":"cargo test"}"#);
-        gate.remember(&permission_request(&listed, None).unwrap());
+        gate.remember(&permission_request(&listed, None, None).unwrap());
         assert_eq!(
             approve_call(
                 Some(&gate),
                 Some(&classify),
+                None,
                 &NoHooks,
                 false,
                 &tx,
@@ -643,6 +654,7 @@ mod tests {
                     approve_call(
                         Some(&gate),
                         Some(&classify),
+                        None,
                         &NoHooks,
                         false,
                         &tx,
@@ -683,6 +695,7 @@ mod tests {
                 approve_call(
                     Some(&gate),
                     Some(&classify),
+                    None,
                     &NoHooks,
                     false,
                     &tx,
@@ -714,6 +727,7 @@ mod tests {
                 approve_call(
                     Some(&gate),
                     Some(&classify),
+                    None,
                     &NoHooks,
                     true,
                     &tx,
@@ -758,6 +772,7 @@ mod tests {
                 approve_call(
                     Some(&gate),
                     Some(&classify),
+                    None,
                     &NoHooks,
                     false,
                     &tx,
@@ -790,6 +805,7 @@ mod tests {
         let approval = approve_call(
             Some(&gate),
             Some(&classify),
+            None,
             &NoHooks,
             false,
             &tx,
@@ -816,6 +832,7 @@ mod tests {
             std::thread::spawn(move || {
                 approve_call(
                     Some(&gate),
+                    None,
                     None,
                     &NoHooks,
                     false,
@@ -848,6 +865,7 @@ mod tests {
                 approve_call(
                     Some(&gate),
                     None,
+                    None,
                     &NoHooks,
                     false,
                     &tx,
@@ -865,28 +883,31 @@ mod tests {
         );
     }
     #[test]
-    fn an_mcp_call_raises_a_request_with_the_wire_name_and_pretty_body() {
+    fn an_mcp_call_raises_a_request_with_the_wire_name_args_and_description() {
+        let describe = |wire: &str| {
+            (wire == "mcp__deepwiki__ask_question").then(|| "  Ask about a repo.  ".to_string())
+        };
         let request = permission_request(
             &call(
                 "mcp__deepwiki__ask_question",
                 r#"{"repoName":"a/b","question":"What?"}"#,
             ),
             None,
+            Some(&describe),
         )
         .expect("MCP calls ask");
         assert_eq!(request.kind, PermissionKind::Mcp);
         assert_eq!(request.target, "mcp__deepwiki__ask_question");
-        // The body is the exact payload, pretty-printed for reading.
-        assert!(
-            request.body.contains("\"question\": \"What?\""),
-            "{}",
-            request.body
-        );
-        assert!(request.detail.is_none());
-        // An argument-less call frames no body at all.
-        let bare = permission_request(&call("mcp__s__t", "{}"), None).unwrap();
+        // The body is what the cell header will show — the model's own key
+        // order, the one-line `key: "value"` form (`docs/mcp.md`).
+        assert_eq!(request.body, r#"repoName: "a/b", question: "What?""#);
+        // …and the detail is the server's own description, trimmed.
+        assert_eq!(request.detail.as_deref(), Some("Ask about a repo."));
+        // An argument-less call has no body, and an unknown tool no detail.
+        let bare = permission_request(&call("mcp__s__t", "{}"), None, Some(&describe)).unwrap();
         assert!(bare.body.is_empty());
+        assert_eq!(bare.detail, None);
         // A non-MCP unknown tool still never asks.
-        assert!(permission_request(&call("mystery", "{}"), None).is_none());
+        assert!(permission_request(&call("mystery", "{}"), None, None).is_none());
     }
 }

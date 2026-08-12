@@ -215,6 +215,9 @@ impl AgentRun {
                         truncated: false,
                         context_output: None,
                         approval_note: None,
+                        // A subagent's parallel calls are not aggregated: its
+                        // session view keeps a cell per call (`docs/mcp.md`).
+                        batch: None,
                     });
                 }
             }
@@ -244,6 +247,7 @@ impl AgentRun {
                         truncated: false,
                         context_output: None,
                         approval_note: None,
+                        batch: None,
                     }),
                 }
             }
@@ -370,6 +374,7 @@ impl AgentRun {
                     truncated: false,
                     context_output: None,
                     approval_note: None,
+                    batch: None,
                 }));
             }
             // A permission request is the *user's* business, not the roster's:

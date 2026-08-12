@@ -47,13 +47,26 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
 /// boundaries; whitespace collapses to single base-styled spaces between words.
 /// An empty line yields one empty row (matching [`wrap_text`]).
 pub(super) fn wrap_inline(segments: &[(String, Style)], width: u16) -> Vec<Vec<Span<'static>>> {
+    wrap_inline_hanging(segments, width, width)
+}
+
+/// [`wrap_inline`] with a **hanging indent**: the first row is wrapped to
+/// `first` columns — the room left beside a lead the caller prints on that row
+/// (a tool header's `● {name}`) — and every continuation row to `rest`, the
+/// room left beside the indent they are printed at. Equal widths are exactly
+/// [`wrap_inline`]. See [`tool_header_lines`](super::tool::tool_header_lines).
+pub(super) fn wrap_inline_hanging(
+    segments: &[(String, Style)],
+    first: u16,
+    rest: u16,
+) -> Vec<Vec<Span<'static>>> {
     let words = tokenize_words(segments);
     let to_spans = |rows: Vec<Vec<(String, Style)>>| -> Vec<Vec<Span<'static>>> {
         rows.into_iter()
             .map(|r| r.into_iter().map(|(t, s)| Span::styled(t, s)).collect())
             .collect()
     };
-    if width == 0 {
+    if first == 0 || rest == 0 {
         // No wrapping: one row, words rejoined by single spaces.
         let mut row: Vec<(String, Style)> = Vec::new();
         for (i, word) in words.iter().enumerate() {
@@ -66,11 +79,13 @@ pub(super) fn wrap_inline(segments: &[(String, Style)], width: u16) -> Vec<Vec<S
         }
         return to_spans(vec![row]);
     }
-    let width = width as usize;
+    let (first, rest) = (first as usize, rest as usize);
     let mut rows: Vec<Vec<(String, Style)>> = Vec::new();
     let mut row: Vec<(String, Style)> = Vec::new();
     let mut row_w = 0usize;
     for word in &words {
+        // The row being filled is the first one until one has been pushed.
+        let width = if rows.is_empty() { first } else { rest };
         let ww: usize = word.iter().map(|(t, _)| cols(t)).sum();
         if ww > width {
             // A word too wide for any line: hard-break it grapheme by grapheme.
@@ -81,6 +96,9 @@ pub(super) fn wrap_inline(segments: &[(String, Style)], width: u16) -> Vec<Vec<S
             for (t, s) in word {
                 for g in t.graphemes(true) {
                     let gw = cols(g);
+                    // Re-read the budget per grapheme: the break may have just
+                    // left the (possibly narrower) first row.
+                    let width = if rows.is_empty() { first } else { rest };
                     if row_w > 0 && row_w + gw > width {
                         rows.push(std::mem::take(&mut row));
                         row_w = 0;
