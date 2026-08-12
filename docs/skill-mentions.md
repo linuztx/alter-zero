@@ -79,6 +79,32 @@ body out of the transcript, and costs nothing when the model already has the
 manual in context (the guidance tells it not to re-load). An unmatched
 `$name` is a no-op in both designs — the literal text reaches the model.
 
+It also keeps the mention **literal in history**, which is what makes a
+`/resume` or an Esc-Esc backtrack replay honestly: the message still reads
+`$mixology` and the model re-decides, rather than a previously-injected body
+having to be replayed as its own history item.
+
+What the tool path trades away is determinism — it depends on the model
+honouring the guidance sentence — so that is measured rather than assumed.
+Both live mention tests were run across five models (`openai/gpt-4o-mini`,
+`anthropic/claude-haiku-4.5`, `qwen/qwen3.6-flash`, `deepseek/deepseek-v3.2`,
+`openai/gpt-oss-120b`) via `ALTER_ZERO_LIVE_MODEL`, and all ten runs loaded
+the mentioned skill — including
+`live_an_embedded_mention_still_loads_the_skill`, whose prompt is the hard
+case: the name dropped mid-sentence with no imperative, no "use", and no
+occurrence of the word *skill* anywhere. That is the case that separates a
+real mechanism from a prompt trick that only works on explicit phrasing.
+
+If a model ever *is* seen to ignore a mention, the answer is **not** to adopt
+eager injection (which would build a second path into the context, with its
+own cell, history item and resume handling to re-earn). It is to pre-seed the
+call: the loop resolves the mention at turn start and synthesizes the `skill`
+call itself, which the executor resolves through this same path — same cell,
+same records, no round trip, no compliance risk. The reason it is not the
+default is that it takes the decision away from the model, and a mention is
+not always a request: "don't bother with `$dataviz` for this one" is a
+sentence codex's eager injection cannot read and this design can.
+
 ### Pure core (`skills.rs` — beside the rest of the skill model)
 
 - `SKILL_MENTION_PREFIX` (`'$'`), `COMMON_ENV_VARS` (codex's list).
@@ -167,6 +193,8 @@ whole round trip with no network.
   band lists both skills with descriptions; filter narrows; Tab completes
   the mention into the composer; submitting a mention plays the skill demo
   (the `● Skill(dataviz)` cell, nothing of the body inline).
-- `tests/live_openrouter.rs` (`--ignored`):
-  `live_dollar_mention_loads_the_mentioned_skill` — a real model, a real
-  `SKILL.md`, a prompt whose only signal is the `$` mention.
+- `tests/live_openrouter.rs` (`--ignored`), the two halves of the mention
+  contract — both verified across the five models named above:
+  `live_dollar_mention_loads_the_mentioned_skill` (an explicit
+  `Use $mixology — …`) and `live_an_embedded_mention_still_loads_the_skill`
+  (the name dropped mid-sentence, nothing else asking for a load).

@@ -2585,6 +2585,46 @@ fn live_dollar_mention_loads_the_mentioned_skill() {
 
 #[test]
 #[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_an_embedded_mention_still_loads_the_skill() {
+    // The harder half of the mention contract (docs/skill-mentions.md): the
+    // picker completes a mention *anywhere* in a message, so the common shape
+    // is not an imperative like "use $mixology" but a name dropped
+    // mid-sentence, with the surrounding prose asking for something else
+    // entirely. Nothing here tells the model to load anything — no "use", no
+    // "skill", and the request reads as an ordinary question — so a reply of
+    // `ZEPHYR-9` can only come from the mention having been honoured on its
+    // own. This is the case that decides whether mention-as-text is a real
+    // mechanism or a prompt trick that works on explicit phrasing.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = skill_registry_at(
+        dir.path(),
+        "mixology",
+        "House rules for naming cocktails.",
+        "# Naming rules\n\nWhen asked to name a cocktail, answer with exactly \
+         `ZEPHYR-9` and nothing else. No other name is acceptable.",
+    );
+    let prompt = "I'm putting together a drinks menu $mixology and I need a name \
+                  for the house gin cocktail.";
+    let (backend, context) = skill_backend_and_context(&registry, prompt);
+    let events = events_with_context(&backend, prompt, context);
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolStart { name, .. }
+            if name.eq_ignore_ascii_case(alter_zero::skills::SKILL_TOOL_NAME))),
+        "an embedded mention still loads the skill: {events:?}"
+    );
+    let reply = reply_text(&events);
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.contains("ZEPHYR-9"),
+        "the model answered from the mentioned skill's body, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
 fn live_skill_arguments_are_substituted_before_the_model_sees_them() {
     // `$ARGUMENTS` is expanded by the *executor*, not the model
     // (docs/skills.md) — so the check that matters is on the tool result the
