@@ -112,6 +112,11 @@ impl Session<'_> {
             self.app
                 .set_user_instructions(project_doc::load_user_instructions(&cwd));
         }
+        // …and re-walk the skill roots for the same reason (docs/skills.md):
+        // the turn that just ended may have written a `SKILL.md`, and a skill
+        // the user drops in mid-session must not need a restart to be seen.
+        // Re-renders the listing this turn's context is about to carry.
+        self.rescan_skills();
         // The whole conversation — the just-recorded user message included —
         // rides the request so a real model keeps its context across turns (the
         // AGENTS.md instructions in front); the image paths also travel the
@@ -182,6 +187,10 @@ impl Session<'_> {
         self.render.reset();
         // A follow-up turn about background completions — text, no command yet.
         self.clocks.start_turn();
+        // The agent that just finished in the background may have written a
+        // skill; this turn is a real model turn, so it re-walks like any other
+        // (docs/skills.md).
+        self.rescan_skills();
         let context = context::context_messages_full(
             self.app.user_instructions.as_deref(),
             self.app.skill_listing.as_deref(),
@@ -211,9 +220,14 @@ impl Session<'_> {
         // The summarizer reads the same window the model does — the AGENTS.md
         // instructions in front (codex's compact request keeps its initial
         // context too). See docs/project-doc.md.
+        // …but **not** the skill listing: the summarizer runs on the
+        // tools-free backend, so naming a `skill` tool it was never given is
+        // the very inconsistency the listing's gate exists to prevent — and
+        // the handoff summary has no use for the roster either
+        // (`docs/skills.md`).
         let mut compact_context = context::context_messages_full(
             self.app.user_instructions.as_deref(),
-            self.app.skill_listing.as_deref(),
+            None,
             &self.app.history,
         );
         compact_context.push(context::ContextMessage::new(

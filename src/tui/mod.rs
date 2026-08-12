@@ -200,10 +200,18 @@ pub(crate) struct Session<'t> {
     /// (`docs/task-tools.md`) — the loop syncs it to `App::tasks` after every
     /// history rewind so the model's next `tasklist` agrees with the strip.
     task_registry: alter_zero::tasks::TaskRegistry,
-    /// The skills discovered at startup (`docs/skills.md`) — the set every
-    /// backend build offers the `skill` tool over, and the source of the
-    /// `<system-reminder>` listing the derived context leads with.
+    /// The skills on disk (`docs/skills.md`) — the set every backend build
+    /// offers the `skill` tool over, and the source of the
+    /// `<system-reminder>` listing the derived context leads with. Re-walked
+    /// at every turn start ([`Session::rescan_skills`]), so a skill added
+    /// mid-session — or written by the agent itself — is live on the next
+    /// turn instead of waiting for a restart.
     skill_registry: alter_zero::skills::SkillRegistry,
+    /// The `SKILL.md` files whose parse failure has already been raised as a
+    /// toast, so the rescan doesn't repeat itself every turn. Re-seeded from
+    /// each walk's errors, so a file that is fixed and broken again reports
+    /// again (`alter_zero::skills::unreported_errors`).
+    reported_skill_errors: std::collections::BTreeSet<std::path::PathBuf>,
     /// Mirrors history to the `/resume` rollout file (`docs/resume.md`).
     recorder: SessionRecorder,
     /// The cross-session input history (`docs/history-persistence.md`).

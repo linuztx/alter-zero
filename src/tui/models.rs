@@ -123,6 +123,14 @@ pub(crate) struct ModelSession {
     /// Whether the `skill` tool is offered at all — the `/settings` **Skills**
     /// knob, read by every rebuild so a mid-session switch sticks.
     skills_enabled: bool,
+    /// Whether the **live** backend was built with the `skill` tool on it.
+    ///
+    /// Tracked rather than re-derived, because it is the *last build's*
+    /// verdict: [`Self::refresh_skills`] runs on every turn now (the per-turn
+    /// rescan) and only the turns where this disagrees with
+    /// [`Self::skills_offered`] need a rebuild. Re-deriving both sides would
+    /// make them equal by construction and rebuild either never or always.
+    skills_attached: bool,
     /// The user's lifecycle hooks (`docs/hooks.md`), re-attached on every
     /// rebuild like the registries above. Held as the *setup* rather than a
     /// built sink because a payload names the model, and a `/model` switch
@@ -313,6 +321,10 @@ impl ModelSession {
             permissions: permissions.cloned(),
             ask: ask.clone(),
             tasks: tasks.clone(),
+            // What the backend built just above was handed: the same three
+            // gates, so the first `refresh_skills` measures a real change
+            // rather than the difference between two spellings of "on".
+            skills_attached: real_backend && tools && skills_enabled && skills.has_enabled(),
             skills,
             skills_enabled,
             hooks,
@@ -426,6 +438,10 @@ impl ModelSession {
     /// through here: the initial pick and each rebind (a `/model` switch, a
     /// Shift+Tab thinking change, the capability probe) alike.
     fn rebuild(&mut self, cfg: ModelConfig) {
+        // Recorded here because this is the one place a backend is actually
+        // built — `set_tools`, a `/model` switch and a skill toggle all land
+        // on it, and any of them can change the verdict.
+        self.skills_attached = self.skills_offered();
         self.backend = Box::new(session_backend(
             cfg,
             self.system_prompt.clone(),
@@ -563,14 +579,29 @@ impl ModelSession {
         self.rebuild_current();
     }
 
-    /// Re-attach the (unchanged) registry after the `/skills` menu turned one
-    /// skill on or off. The handle is shared, so the executor and the listing
-    /// already saw the change — this is only about the **tool set**, which is
-    /// decided when `with_skills` runs: turning the last skill off has to
-    /// withdraw the spec rather than leave a tool that can only fail
-    /// (`docs/skills.md`).
+    /// Whether a build right now would put the `skill` spec on the wire: the
+    /// three gates `with_skills` applies (tools at all, the `/settings`
+    /// **Skills** row, and something actually enabled), plus the dummy — which
+    /// is never handed the registry, so it can never be out of date.
+    fn skills_offered(&self) -> bool {
+        self.real_backend && self.tools && self.skills_enabled && self.skills.has_enabled()
+    }
+
+    /// Re-attach the registry after its contents moved — the `/skills` menu
+    /// turning a skill on or off, or the per-turn rescan finding (or losing)
+    /// one. The handle is shared, so the executor and the listing already saw
+    /// the change; this is only about the **tool set**, which is decided when
+    /// `with_skills` runs: turning the last skill off has to withdraw the spec
+    /// rather than leave a tool that can only fail (`docs/skills.md`).
+    ///
+    /// Rebuilds only when that verdict actually flips. Toggling one of five
+    /// skills changes nothing about the request's shape, and this runs every
+    /// turn — an unconditional rebuild would re-derive the whole backend on
+    /// each one for nothing.
     pub(crate) fn refresh_skills(&mut self) {
-        self.rebuild_current();
+        if self.skills_offered() != self.skills_attached {
+            self.rebuild_current();
+        }
     }
 
     /// The `/settings` **Error retry** knob: how many times a failed request
@@ -1008,11 +1039,14 @@ impl Session<'_> {
     }
 
     /// Render the `<system-reminder>` skill listing into `App`, so the derived
-    /// context leads with it (`docs/skills.md`). `None` when no skill loaded
-    /// or the `/settings` **Skills** row is off — a session with no skills
-    /// sends exactly the context it sent before the feature existed.
+    /// context leads with it (`docs/skills.md`). `None` when no skill loaded,
+    /// the `/settings` **Skills** row is off, **or tools are off at all** —
+    /// the listing and the tool set share one gate (`skills_offered`), since
+    /// a reminder naming a tool the request never carries is worse than no
+    /// reminder. A session with no skills sends exactly the context it sent
+    /// before the feature existed.
     pub(crate) fn sync_skill_listing(&mut self) {
-        let listing = if self.app.settings().skills_active() {
+        let listing = if self.app.settings().skills_offered() {
             let budget = alter_zero::skills::listing_budget(
                 self.models
                     .context_window()

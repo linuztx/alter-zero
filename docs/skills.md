@@ -55,15 +55,27 @@ the description in the listing, and it is pure prose, so it costs nothing.)
 
 ### Roots
 
-Discovered once at startup, in precedence order — the **first** root to claim
-a name wins, so a project can shadow a personal skill of the same name:
+In precedence order — the **first** root to claim a name wins, so a project
+can shadow a personal skill of the same name, and a subdirectory can shadow
+its own project:
 
 | # | Root | Scope |
 |---|------|-------|
-| 1 | `<cwd>/.alter-zero/skills` | project |
-| 2 | `<cwd>/.claude/skills` | project (compat) |
-| 3 | `{config_home}/skills` | personal (`~/.alter-zero/skills`) |
-| 4 | `~/.claude/skills` | personal (compat) |
+| 1 | `<cwd>/.alter-zero/skills` | directory |
+| 2 | `<cwd>/.claude/skills` | directory (compat) |
+| 3 | `<project root>/.alter-zero/skills` | project |
+| 4 | `<project root>/.claude/skills` | project (compat) |
+| 5 | `{config_home}/skills` | personal (`~/.alter-zero/skills`) |
+| 6 | `~/.claude/skills` | personal (compat) |
+
+Rows 3–4 are the **`.git` walk-up** — `project_doc::find_project_root`, the
+same discovery `AGENTS.md` uses — and they are skipped entirely when the
+project root *is* the cwd, which is the common case: launched at the repo
+root, the walk reads the same two directories it always did. They exist
+because launching in `repo/src` must still find `repo/.claude/skills`; a
+skill is a property of the project, not of whichever directory you happened
+to start in. The cwd keeps precedence over the project root for the same
+reason project keeps it over personal: the more specific root wins.
 
 The personal root hangs off the **config home**, so it follows
 `ALTER_ZERO_CONFIG_DIR` exactly like `hooks.json`, `permissions.json`,
@@ -85,19 +97,46 @@ markdown with no tool-specific behaviour in them, the ecosystem writes them to
 returns `NotFound`. A user who has already written skills for Claude Code gets
 them here for free.
 
-Discovery runs **once**, at startup. A skill's *body* is re-read on every
-invocation, so editing a `SKILL.md` mid-session takes effect on the next call;
-*adding* one needs a restart. That asymmetry is deliberate — re-walking four
-roots and re-parsing every `SKILL.md` each turn would cost O(skills) of I/O
-per turn and, worse, a listing that changed mid-session would invalidate the
-prompt cache behind it for no gain the common case can feel.
+### The walk re-runs every turn
+
+Discovery runs at startup **and at every turn start** —
+`Session::rescan_skills`, right beside the `AGENTS.md` refresh and for the
+same reason. A skill's *body* was always re-read on every invocation, so
+editing a `SKILL.md` mid-session already took effect on the next call; what
+the startup-only walk could not do was notice a skill that had just been
+*added*. That left the session frozen at what it booted with — including,
+awkwardly, a skill the agent had written for you one turn earlier, which it
+then could not use.
+
+The cost is four to six `read_dir`s and one small read per skill, against a
+turn that is about to make a network request. Two things follow from the new
+set beyond the registry itself, and both matter:
+
+- **The listing is re-rendered**, so this turn's context carries it. A
+  listing that *changed* does invalidate the prompt cache behind it — but a
+  listing that changed is one where the answer genuinely differs, and an
+  unchanged listing renders byte-identically, so the steady state is
+  unaffected.
+- **The backend is rebuilt only when the tool set changes.** The `skill` spec
+  is decided at `with_skills` time, so the *first* skill appearing (or the
+  last one going away) has to re-attach; `ModelSession::refresh_skills`
+  compares its recorded `skills_attached` against the live verdict and does
+  nothing on the turns — nearly all of them — where the answer is the same.
+  Rebuilding unconditionally would re-derive the whole backend every turn for
+  nothing.
+
+The `/settings` **Skills** row's availability is re-derived too, since "did
+anything load" can now flip mid-session.
 
 Discovery never fails a session: an unreadable root is skipped, and a
 `SKILL.md` that won't parse is collected as a [`SkillError`] and surfaced as a
-one-row startup toast naming the file and the reason
+one-row toast naming the file and the reason
 (`Skill /p/.claude/skills/broken/SKILL.md: missing YAML frontmatter delimited
 by ---`, `(+N more)` when there are others), never a panic and never
 silence — going quiet is what makes "my skill isn't being used" unanswerable.
+Because the walk now repeats, so would the toast: [`unreported_errors`] keeps
+it to **once per file**, and the reported set is re-seeded from each walk, so
+a file that is fixed and broken again reports again.
 
 ## The listing
 
@@ -338,6 +377,25 @@ didn't — better evidence than the cell, which only shows what the TUI drew.
 `ALTER_ZERO_SKILLS=0` seeds it off for the session. It is the session-wide
 switch; `/skills` is the per-skill one.
 
+`/settings` → **Tools** = `false` withdraws the whole tool set, `skill`
+included — so it withdraws the listing too. That is
+`SessionSettings::skills_offered`, the one gate the listing and the tool set
+share, and it is deliberately *not* `skills_active`: the **Skills** row keeps
+its own value (Tools must not rewrite it), while what reaches the wire is the
+conjunction. Gating the listing on the Skills row alone left a
+`<system-reminder>` naming a `skill` tool the request never carried — a dead
+end the model spends a round hunting for. That is one invariant with three
+enforcement points, and this is the third: the rescan's conditional rebuild
+keeps the tool set current, `skills_offered` keeps the listing and the tool
+set on one gate, and `subagent_skill_reminder` (below) carries the pair onto
+the subagent surface. The `/compact` summarization turn runs on the
+tools-free backend and so carries no listing either.
+
+Because a `skill` call goes through the ordinary tool loop, it also meets the
+lifecycle hooks: `PreToolUse` can block or rewrite one, `PostToolUse` sees the
+load. Claude Code's spelling is aliased, so `{"matcher": "Skill"}` selects it
+here unchanged (`hooks::claude_code_alias`, `docs/hooks.md`).
+
 ## Module layout
 
 | Where | What |
@@ -356,6 +414,18 @@ switch; `/skills` is the per-skill one.
 Subagents carry the tool too (`SubagentConfig::skills`): a side agent benefits
 from an authored `SKILL.md` exactly as the lead does, and loading one is pure
 text, so it needs no gate of its own.
+
+They carry the **listing** with it — `subagent_skill_reminder`, pushed onto
+the agent's message list right after its launch prompt and ahead of any
+`SubagentStart` hook note, so it reads as part of the briefing. A subagent
+starts on a fresh context, so the lead's `<system-reminder>` never reaches it;
+with the spec but no roster it would have to guess a name and read the real
+ones back out of the "unknown skill" error, and the spec's own description
+would be lying to it ("the available skills are listed in a system-reminder
+message in the conversation"). This is the same invariant `skills_offered`
+enforces for the lead, applied to the other surface: the tool and the listing
+travel together, or neither does. Its budget is the default 8 000 characters —
+`SubagentConfig` carries no context window, and a roster is small.
 
 The offline `DummyAi` carries a `skills` scenario (cue `skill`) whose cell and
 context entry are built by [`SKILL_LOADED_DISPLAY`] and [`render_skill_body`] —

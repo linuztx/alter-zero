@@ -2391,3 +2391,190 @@ fn live_a_stop_hook_block_makes_the_model_keep_going() {
         "one turn, one StreamDone"
     );
 }
+
+// ===== the `Skill` tool (docs/skills.md) =====
+
+/// Write `<root>/<name>/SKILL.md` with the given description and body, and
+/// return a registry over everything discovered under `root` — the real
+/// frontmatter parser and the real walk, so a live run exercises exactly what
+/// a session does at startup.
+fn skill_registry_at(
+    root: &std::path::Path,
+    name: &str,
+    description: &str,
+    body: &str,
+) -> alter_zero::skills::SkillRegistry {
+    let dir = root.join(name);
+    std::fs::create_dir_all(&dir).expect("skill dir");
+    std::fs::write(
+        dir.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"),
+    )
+    .expect("SKILL.md");
+    let (skills, errors) = alter_zero::llm::skill::discover_skills(&[root.to_path_buf()]);
+    assert!(errors.is_empty(), "the fixture parses: {errors:?}");
+    alter_zero::skills::SkillRegistry::new(skills)
+}
+
+/// A tools-enabled backend carrying `registry`, plus the `<system-reminder>`
+/// listing the model picks a skill name out of — the two halves that have to
+/// agree, assembled the way `tui::models` assembles them.
+fn skill_backend_and_context(
+    registry: &alter_zero::skills::SkillRegistry,
+    prompt: &str,
+) -> (LlmBackend, Vec<ContextMessage>) {
+    let key =
+        std::env::var("OPENROUTER_API_KEY").expect("set OPENROUTER_API_KEY to run the live tests");
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let cfg = ModelConfig {
+        provider_id: "openrouter".to_string(),
+        provider_name: "OpenRouter".to_string(),
+        model,
+        api_base: "https://openrouter.ai/api/v1".to_string(),
+        api_model_base: "https://openrouter.ai/api/v1".to_string(),
+        api_key: Some(key),
+        temperature: Some(0.0),
+        thinking: None,
+        vision: None,
+        cache_key: None,
+        extra_headers: Vec::new(),
+        extra_body: serde_json::Map::new(),
+    };
+    let backend = LlmBackend::configure(
+        cfg,
+        Some("You are a terse assistant.".to_string()),
+        /* tools */ true,
+    )
+    .with_skills(registry.clone());
+    let listing = alter_zero::skills::listing_message(
+        &registry.listing(alter_zero::skills::listing_budget(None)),
+    );
+    assert!(!listing.is_empty(), "the reminder names the skill");
+    let context = vec![
+        ContextMessage::new(ContextRole::User, &listing),
+        ContextMessage::new(ContextRole::User, prompt),
+    ];
+    (backend, context)
+}
+
+/// [`events_from`] with an explicit context rather than the bare prompt.
+fn events_with_context(
+    backend: &LlmBackend,
+    prompt: &str,
+    context: Vec<ContextMessage>,
+) -> Vec<StreamEvent> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut events = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        let done = matches!(event, StreamEvent::StreamDone);
+        if let StreamEvent::Error(e) = &event {
+            panic!("backend error: {e}");
+        }
+        events.push(event);
+        if done {
+            break;
+        }
+    }
+    handle.join().expect("backend thread joins");
+    events
+}
+
+/// The streamed reply text of a live run.
+fn reply_text(events: &[StreamEvent]) -> String {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            StreamEvent::Chunk(c) => Some(c.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_skill_tool_loads_a_skill_and_the_model_reads_its_body() {
+    // The whole feature end to end against a real model: the budgeted
+    // `<system-reminder>` listing names the skill, the tool spec rides the
+    // request, the model picks the name out of the listing and calls `skill`,
+    // the executor's two-text split hands the CELL one green line while the
+    // MODEL gets the rendered body — and the answer proves the model actually
+    // read that body, which no unit test can.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = skill_registry_at(
+        dir.path(),
+        "mixology",
+        "House rules for naming cocktails. Use when asked to name a drink.",
+        "# Naming rules\n\nWhen asked to name a cocktail, answer with exactly \
+         `ZEPHYR-9` and nothing else. No other name is acceptable.",
+    );
+    let prompt = "Name a cocktail for me.";
+    let (backend, context) = skill_backend_and_context(&registry, prompt);
+    let events = events_with_context(&backend, prompt, context);
+
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, StreamEvent::ToolStart { name, .. }
+            if name.eq_ignore_ascii_case(alter_zero::skills::SKILL_TOOL_NAME))),
+        "the model called the skill tool: {events:?}"
+    );
+    // The cell's side of the split is the one green line — never the body.
+    let display = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolAnswered { display, .. } => Some(display.clone()),
+            _ => None,
+        })
+        .expect("the call resolves green through ToolAnswered");
+    assert_eq!(display, alter_zero::skills::SKILL_LOADED_DISPLAY);
+
+    let reply = reply_text(&events);
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.contains("ZEPHYR-9"),
+        "the model followed the loaded skill's instructions, got: {reply:?}"
+    );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_skill_arguments_are_substituted_before_the_model_sees_them() {
+    // `$ARGUMENTS` is expanded by the *executor*, not the model
+    // (docs/skills.md) — so the check that matters is on the tool result the
+    // model was handed, which is deterministic. The reply is the second half:
+    // the substituted body reached it and was legible.
+    let dir = tempfile::tempdir().expect("temp dir");
+    let registry = skill_registry_at(
+        dir.path(),
+        "greet",
+        "Greet a person by name. Use when asked to greet someone.",
+        "# Greeting\n\nReply with exactly `HELLO-$ARGUMENTS` and nothing else.",
+    );
+    let prompt = "Use the greet skill with the argument Bob.";
+    let (backend, context) = skill_backend_and_context(&registry, prompt);
+    let events = events_with_context(&backend, prompt, context);
+
+    let result = events
+        .iter()
+        .find_map(|e| match e {
+            StreamEvent::ToolAnswered { result, .. } => Some(result.clone()),
+            _ => None,
+        })
+        .expect("the call resolves through ToolAnswered");
+    assert!(
+        result.contains("HELLO-Bob"),
+        "the executor substituted $ARGUMENTS before the model saw the body: {result:?}"
+    );
+    assert!(
+        !result.contains("$ARGUMENTS"),
+        "…and left no placeholder behind: {result:?}"
+    );
+    let reply = reply_text(&events);
+    println!("model replied: {reply:?}");
+    assert!(
+        reply.contains("HELLO-Bob"),
+        "the model read the substituted body, got: {reply:?}"
+    );
+}

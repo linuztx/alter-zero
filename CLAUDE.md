@@ -639,12 +639,25 @@ tool** (Claude Code's skills, `docs/skills.md`: folders of authored markdown
 the model pulls into the conversation on demand — a `<root>/<name>/SKILL.md`
 of YAML frontmatter (`name`/`description`, everything else **ignored not
 rejected** so an ecosystem skill carrying `allowed-tools:`/`model:` loads
-unchanged) over a body, discovered once at startup from the project's
-`.alter-zero/skills` + `.claude/skills`, the config home's `skills`, and
-`~/.claude/skills`, first root winning a name (`ALTER_ZERO_SKILLS_DIR`
-**replaces** the list, the `*_DIR` convention — and what makes a smoke run
-hermetic; a `SKILL.md` that won't parse is a startup toast naming it, never
-silence). Only each skill's one-line description rides the context — the
+unchanged) over a body, discovered from the cwd's `.alter-zero/skills` +
+`.claude/skills`, **the nearest-`.git` project root's** pair (skipped when it
+*is* the cwd, so launching in `repo/src` still finds the repo's skills — the
+`AGENTS.md` walk-up, `project_doc::find_project_root`), the config home's
+`skills`, and `~/.claude/skills`, first root winning a name
+(`ALTER_ZERO_SKILLS_DIR` **replaces** the list, the `*_DIR` convention — and
+what makes a smoke run hermetic; a `SKILL.md` that won't parse is a toast
+naming it, never silence). The walk re-runs at **every turn start**
+(`Session::rescan_skills`, beside the `AGENTS.md` refresh): a startup-only
+discovery froze the session at what it booted with — a skill you added, or one
+the agent had just written *for* you, was invisible until a restart — and the
+cost is four to six `read_dir`s against a turn about to hit the network. The
+`/settings` **Skills** availability is re-derived **before** the listing (it
+gates it, so the other order shipped the listing a turn late), the backend is
+rebuilt **only** when the tool set actually flips
+(`ModelSession::skills_attached` vs the live verdict — toggling one of five
+skills reshapes no request), and the repeated walk's toast is held to once per
+file by `skills::unreported_errors`, re-seeded each pass so a file fixed and
+re-broken reports again. Only each skill's one-line description rides the context — the
 budgeted `<system-reminder>` listing (the reference's 1%-of-window character
 budget, descriptions trimmed to an even share and degrading to names-only
 rather than **dropping** a skill, since one you can't see is one you can't
@@ -665,12 +678,26 @@ was *sent* — the rule every other two-text call follows), and the replay
 reconstructs `{"skill": "<name>"}` from the summary, which for this tool
 **is** the name, since a validating provider rejects the `{}` an unmapped
 tool would have sent. Nothing runs, so no permission prompt is raised — the
-body's own `bash` calls still meet it. Subagents carry the tool too; the
+body's own `bash` calls still meet it, and the call *does* meet the lifecycle
+hooks like any other (`{"matcher": "Skill"}` selects it —
+`hooks::claude_code_alias`). Subagents carry the tool **and its listing** —
+`subagent_skill_reminder` pushes the `<system-reminder>` right after the
+launch prompt, since a side agent starts on a fresh context and a spec whose
+own description points at a reminder that isn't there is the same
+listing/tool mismatch in mirror; the
 `/settings` **Skills** row (unavailable when none loaded) and
-`ALTER_ZERO_SKILLS` gate it; `/<skill-name>` needs no code — it submits as
+`ALTER_ZERO_SKILLS` gate it — as does **Tools**, since the spec rides the tool
+set: `SessionSettings::skills_offered` is the one gate the listing and the
+tool set share (`skills_active` stays the row's own value, which Tools must
+not rewrite), because a `<system-reminder>` naming a tool the request never
+carries is a dead end the model spends a round hunting for; the tools-free
+`/compact` turn carries no listing for the same reason;
+`/<skill-name>` needs no code — it submits as
 text and the system prompt's guidance line makes the model answer it with a
 `skill` call (verified live); the offline `skills` scenario drives the cell
-through the real formatters, `smoke.sh` Phase 76); and the **`/skills`
+through the real formatters, `smoke.sh` Phases 76 and 78 — the latter planting
+a `SKILL.md` mid-session and proving the next turn's Ctrl+D already lists it);
+and the **`/skills`
 menu** (the fifth composer-replacing inline picker and deliberately the
 `/settings` menu's **twin** rather than a new shape — same frame, same `❯`
 type-to-search, same aligned `{label}  {value}` column with the same two-tone

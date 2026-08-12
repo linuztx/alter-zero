@@ -49,6 +49,11 @@ impl Session<'_> {
     /// whether the session-wide switch is on and where skills are looked for
     /// (the answer an empty list needs), and hands all four to `App`.
     pub(crate) fn open_skills_menu(&mut self) {
+        // Re-walk first (`docs/skills.md`). This is the surface where "why is
+        // my skill not here?" gets asked, so it must not be able to answer
+        // with what the session booted with — a menu that lied for one turn
+        // is worse than no menu.
+        self.rescan_skills();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
         // The same resolver the startup walk used, so the menu can only ever
         // name directories that were actually read.
@@ -65,6 +70,43 @@ impl Session<'_> {
             self.app.settings().skills_active(),
             roots,
         );
+    }
+
+    /// Re-walk the skill roots and adopt what is there now — run at every turn
+    /// start (`docs/skills.md`).
+    ///
+    /// The startup walk alone left a session frozen at the skills it booted
+    /// with: adding one meant restarting, and a skill the *agent* had just
+    /// written for you was invisible to the very next turn. The walk is four
+    /// to six `read_dir`s and one small read per skill, against a turn that is
+    /// about to make a network request.
+    ///
+    /// Four things follow from the new set, and they are spelled out here for
+    /// the reason `apply_skill_toggle` spells out its four: the shared
+    /// registry (the executor's and the listing's source — the disabled names
+    /// survive, `SkillRegistry::replace`), the `/settings` **Skills** row's
+    /// availability (which is "did anything load", and can now flip
+    /// mid-session), the re-rendered listing (this turn's context), and the
+    /// backend (only when the *tool set* changes — the first skill appearing,
+    /// or the last one going away).
+    ///
+    /// **Availability before the listing**, and that order is load-bearing:
+    /// `skills_offered` reads it, so re-rendering first meant the very turn a
+    /// skill appeared still carried no `<system-reminder>` — the listing
+    /// arrived a turn late, which reads exactly like the rescan not working.
+    pub(crate) fn rescan_skills(&mut self) {
+        let (skills, errors) =
+            alter_zero::llm::skill::load_skills(&self.cwd, config::config_home().as_deref());
+        self.skill_registry.replace(skills);
+        self.sync_setting_availability();
+        self.sync_skill_listing();
+        self.models.refresh_skills();
+        // A `SKILL.md` that stopped parsing says so — once. Silence here is
+        // what makes "the model ignores my skill" and "I typo'd the
+        // frontmatter" read as two unrelated problems.
+        let fresh = alter_zero::skills::unreported_errors(&self.reported_skill_errors, &errors);
+        self.reported_skill_errors = errors.iter().map(|error| error.path.clone()).collect();
+        self.report_skill_errors(&fresh);
     }
 
     /// Apply the `/skills` menu's toggle: make it true of the running session
@@ -121,8 +163,15 @@ impl Session<'_> {
         let settings = *self.app.settings();
         match key {
             // Offering (or withholding) the tools changes the request's shape,
-            // so the backend is rebuilt around the new tool set.
-            SettingKey::Tools => self.models.set_tools(settings.tools),
+            // so the backend is rebuilt around the new tool set — and the
+            // skill listing rides that same gate, so it is re-rendered here
+            // too: withdrawing the `skill` tool without withdrawing the
+            // `<system-reminder>` that names it leaves the model hunting for
+            // a tool it was told it had (`docs/skills.md`).
+            SettingKey::Tools => {
+                self.models.set_tools(settings.tools);
+                self.sync_skill_listing();
+            }
             // The retry budget rides every round of every turn — the main
             // one's and a subagent's.
             SettingKey::ErrorRetry => self.models.set_max_retries(settings.error_retry),

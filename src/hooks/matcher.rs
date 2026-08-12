@@ -54,6 +54,7 @@ pub fn claude_code_alias(tool: &str) -> Option<&'static str> {
         "edit" => Some("Edit"),
         "agent" => Some("Task"),
         "askuserquestion" => Some("AskUserQuestion"),
+        "skill" => Some("Skill"),
         _ => None,
     }
 }

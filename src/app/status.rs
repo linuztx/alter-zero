@@ -269,10 +269,11 @@ impl App {
     /// Also `None` while a tool-permission prompt is open: the prompt owns
     /// every key, so Ctrl+B does nothing there — and the hint this gates would
     /// be advertising it (`docs/permissions.md`). Nothing is really *running*
-    /// while a call waits on the user, either. The ↓ manager band and the three
-    /// inline pickers (`/model`, `/login`, `/settings`) own every key the same
-    /// way, so the running cell they keep visible above themselves stays
-    /// hintless while one is open (`docs/background.md`, `docs/llm.md`).
+    /// while a call waits on the user, either. The ↓ manager band and **every**
+    /// composer-replacing picker (`/model`, `/login`, `/settings`, `/hooks`,
+    /// `/skills`) own every key the same way, so the running cell they keep
+    /// visible above themselves stays hintless while one is open
+    /// (`docs/background.md`, `docs/llm.md`, `docs/skills.md`).
     #[must_use]
     pub fn command_elapsed(&self) -> Option<Duration> {
         if self.permission.is_some()
@@ -280,6 +281,8 @@ impl App {
             || self.model_picker.is_some()
             || self.key_onboarding.is_some()
             || self.settings_picker.is_some()
+            || self.hooks_menu.is_some()
+            || self.skills_menu.is_some()
         {
             return None;
         }

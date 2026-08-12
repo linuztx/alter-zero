@@ -476,10 +476,11 @@ fn the_open_manager_band_suppresses_the_ctrl_b_hint_clock() {
 
 #[test]
 fn an_open_inline_picker_suppresses_the_ctrl_b_hint_clock() {
-    // The `/model`, `/login` and `/settings` pickers own every key while open
-    // too (`on_key`'s dispatch), so the running cell they now keep visible
-    // above themselves must not advertise a Ctrl+B they would swallow — the
-    // band's rule (docs/background.md).
+    // The `/model`, `/login`, `/settings`, `/hooks` and `/skills` pickers own
+    // every key while open too (`on_key`'s dispatch), so the running cell they
+    // now keep visible above themselves must not advertise a Ctrl+B they would
+    // swallow — the band's rule (docs/background.md). Every composer-replacing
+    // picker belongs on this list; the two newest were the ones that grew it.
     let hint_clock_off = |open: fn(&mut App)| {
         let mut app = App::new();
         app.begin_stream();
@@ -492,6 +493,12 @@ fn an_open_inline_picker_suppresses_the_ctrl_b_hint_clock() {
     hint_clock_off(|app| app.open_model_picker("a"));
     hint_clock_off(|app| app.open_key_onboarding(Vec::new(), "~/.alter-zero/.env"));
     hint_clock_off(App::open_settings);
+    hint_clock_off(|app| {
+        app.open_hooks_menu(crate::hooks::HooksOverview::default(), None, true);
+    });
+    hint_clock_off(|app| {
+        app.open_skills_menu(Vec::new(), Default::default(), true, Vec::new());
+    });
 }
 
 #[test]

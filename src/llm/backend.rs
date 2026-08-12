@@ -811,6 +811,21 @@ impl LlmBackend {
     }
 }
 
+/// The `<system-reminder>` naming the session's enabled skills, for a subagent
+/// that is being handed the `skill` tool — `None` when it isn't (no registry,
+/// or every skill turned off).
+///
+/// A subagent starts on a **fresh** context, so the lead's listing never
+/// reaches it; without this it would carry a spec whose own description says
+/// the available names are listed in a system-reminder that isn't there. The
+/// budget is the default rather than the model's window: `SubagentConfig`
+/// does not carry one, and a roster is small.
+fn subagent_skill_reminder(skills: Option<&crate::skills::SkillRegistry>) -> Option<String> {
+    let listing = skills?.listing(crate::skills::listing_budget(None));
+    let rendered = crate::skills::listing_message(&listing);
+    (!rendered.is_empty()).then_some(rendered)
+}
+
 /// The subagent note appended to a subagent's system prompt, authored in
 /// [`prompts/subagent.md`](../../prompts/subagent.md) (the maintainable-
 /// markdown seam every prompt fragment uses).
@@ -1032,6 +1047,12 @@ fn spawn_subagent_run(
     if skills.is_some() {
         specs.push(tools::skill_spec());
     }
+    // …and the listing that makes that tool usable. A subagent starts on a
+    // fresh context, so the lead's `<system-reminder>` never reaches it: with
+    // the spec but no roster it would have to guess a name and read the real
+    // ones back out of the error. The tool and the listing travel together on
+    // every surface — the same rule `skills_offered` enforces for the lead.
+    let skill_reminder = subagent_skill_reminder(skills.as_ref());
     let client = config.client.clone().with_tools(specs);
     let vision = config.vision;
     let detach = config.detach_helper.clone();
@@ -1048,6 +1069,11 @@ fn spawn_subagent_run(
         .for_subagent(&id, &agent_type)
         .unwrap_or_else(|| Arc::clone(&config.hooks));
     thread::spawn(move || {
+        // Right after the launch prompt and in front of the hook notes, so it
+        // reads as part of the briefing rather than an answer to it.
+        if let Some(reminder) = skill_reminder {
+            messages.push(ChatMessage::user(&reminder));
+        }
         // `SubagentStart` (docs/hooks.md) runs here, on the agent's **own**
         // thread rather than at `registry.register`, for two reasons: the
         // parent launching a batch of agents must not block on each one's
@@ -1633,6 +1659,31 @@ mod tests {
                 .skills
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_subagent_carrying_the_skill_tool_is_told_which_skills_exist() {
+        // The tool spec's own text says the available skills are named in a
+        // system-reminder — and a subagent gets a fresh context, so without
+        // this one it carries a tool it cannot use without first guessing a
+        // name and reading the names back out of the error. Listing and tool
+        // set travel together, on every surface (`docs/skills.md`).
+        let registry = crate::skills::SkillRegistry::new(vec![crate::skills::SkillMetadata {
+            name: "commit".to_string(),
+            description: "Write a commit message".to_string(),
+            dir: std::path::PathBuf::from("/s/commit"),
+            path: std::path::PathBuf::from("/s/commit/SKILL.md"),
+        }]);
+        let reminder = subagent_skill_reminder(Some(&registry)).expect("a reminder");
+        assert!(reminder.contains("<system-reminder>"), "{reminder}");
+        assert!(
+            reminder.contains("commit: Write a commit message"),
+            "{reminder}"
+        );
+        // No registry (or nothing enabled) means no tool, so no reminder.
+        assert!(subagent_skill_reminder(None).is_none());
+        registry.set_disabled(["commit".to_string()].into_iter().collect());
+        assert!(subagent_skill_reminder(Some(&registry)).is_none());
     }
 
     #[test]

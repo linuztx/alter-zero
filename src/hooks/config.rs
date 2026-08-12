@@ -444,6 +444,10 @@ mod tests {
             ("^Bash$", "bash"),
             ("Task", "agent"),
             ("Read", "read"),
+            // `Skill` is the reference's spelling of the skill loader; a guard
+            // that audits which skills a session pulls in is written against
+            // it (`docs/skills.md`).
+            ("Skill", "skill"),
         ];
         for (matcher, query) in cases {
             let file = parse(&format!(

@@ -271,6 +271,21 @@ impl SessionSettings {
         self.skills && self.availability.skills
     }
 
+    /// Whether the `skill` tool actually reaches the wire:
+    /// [`skills_active`](Self::skills_active) **and** tools at all.
+    ///
+    /// The one gate the listing and the tool set must share. `with_skills`
+    /// already refuses without tools, so a listing gated on the Skills row
+    /// alone would leave the `<system-reminder>` advertising a tool the
+    /// request never carries — a dead end the model spends a round hunting
+    /// for. Distinct from `skills_active` on purpose: that is the
+    /// `/settings` **Skills** row's own value, which Tools must not rewrite.
+    /// See `docs/skills.md`.
+    #[must_use]
+    pub const fn skills_offered(&self) -> bool {
+        self.tools && self.skills_active()
+    }
+
     /// Whether `key` can be cycled at all in this session: the host's verdict
     /// ([`SettingAvailability`]) plus, for the permission row, whether there is
     /// a gate to cycle.

@@ -96,6 +96,27 @@ pub struct SkillError {
     pub message: String,
 }
 
+/// The errors in `current` whose file `reported` has not already raised — the
+/// per-turn rescan's toast filter (`docs/skills.md`).
+///
+/// A `SKILL.md` that stops parsing has to say so: silence is what makes "the
+/// model ignores my skill" and "I typo'd the frontmatter" read as two
+/// unrelated problems. But the walk re-runs every turn and a broken file
+/// stays broken, so the startup toast's shape alone would put the same red
+/// row on every turn for the rest of the session.
+///
+/// Keyed on the **path**, and the caller re-seeds its set from each rescan's
+/// errors: a file that is fixed is forgotten, so breaking it again reports
+/// again.
+#[must_use]
+pub fn unreported_errors(reported: &BTreeSet<PathBuf>, current: &[SkillError]) -> Vec<SkillError> {
+    current
+        .iter()
+        .filter(|error| !reported.contains(&error.path))
+        .cloned()
+        .collect()
+}
+
 /// A validated `SKILL.md`: its frontmatter and the markdown body under it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedSkill {
@@ -1139,5 +1160,30 @@ mod tests {
         assert!(is_skill_tool(SKILL_TOOL_NAME));
         assert!(!is_skill_tool("skills"));
         assert!(!is_skill_tool("bash"));
+    }
+
+    #[test]
+    fn a_rescan_reports_each_broken_skill_once() {
+        // The walk re-runs every turn, and a broken file stays broken: without
+        // this filter the same red row would land on every turn for the rest
+        // of the session. Fixing it and breaking it again does report again —
+        // the boundary forgets a path the moment it stops erroring.
+        let err = |path: &str| SkillError {
+            path: PathBuf::from(path),
+            message: "missing description".to_string(),
+        };
+        let mut reported: BTreeSet<PathBuf> = BTreeSet::new();
+        let first = unreported_errors(&reported, &[err("/a/SKILL.md")]);
+        assert_eq!(first.len(), 1, "the first sighting is news");
+
+        reported.insert(PathBuf::from("/a/SKILL.md"));
+        assert!(
+            unreported_errors(&reported, &[err("/a/SKILL.md")]).is_empty(),
+            "still broken is not news"
+        );
+        // A second file breaking IS news, and only that one is named.
+        let fresh = unreported_errors(&reported, &[err("/a/SKILL.md"), err("/b/SKILL.md")]);
+        assert_eq!(fresh.len(), 1);
+        assert_eq!(fresh[0].path, PathBuf::from("/b/SKILL.md"));
     }
 }

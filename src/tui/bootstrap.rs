@@ -311,6 +311,12 @@ impl<'t> Session<'t> {
             ask,
             task_registry,
             skill_registry,
+            // Seeded with the startup walk's failures, so the first turn's
+            // rescan doesn't re-toast what the banner already said.
+            reported_skill_errors: skill_errors
+                .iter()
+                .map(|error| error.path.clone())
+                .collect(),
             recorder,
             hist_store,
             checkpoints,
@@ -424,12 +430,15 @@ impl<'t> Session<'t> {
         }
     }
 
-    /// Say once, at startup, that some `SKILL.md` could not be loaded — the
-    /// hooks toast's rule (`docs/skills.md`): a skill that silently never
-    /// appears in the listing makes "the model ignores my skill" and "I typo'd
-    /// the frontmatter" read as two unrelated problems. One row names the
-    /// count and the first offender; the rest are the same shape.
-    fn report_skill_errors(&mut self, errors: &[alter_zero::skills::SkillError]) {
+    /// Say that some `SKILL.md` could not be loaded — the hooks toast's rule
+    /// (`docs/skills.md`): a skill that silently never appears in the listing
+    /// makes "the model ignores my skill" and "I typo'd the frontmatter" read
+    /// as two unrelated problems. One row names the count and the first
+    /// offender; the rest are the same shape.
+    ///
+    /// Shared with the per-turn rescan (`Session::rescan_skills`), which hands
+    /// it only the files it has not already reported.
+    pub(crate) fn report_skill_errors(&mut self, errors: &[alter_zero::skills::SkillError]) {
         let Some(first) = errors.first() else {
             return;
         };

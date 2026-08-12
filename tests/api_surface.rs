@@ -60,6 +60,8 @@ use alter_zero::app::{
     SessionInfo,
     SettingRow,
     SettingsPicker,
+    SkillMenuRow,
+    SkillsMenu,
     SlashCommand,
     StreamError,
     TaskCallRecord,
@@ -125,6 +127,37 @@ use alter_zero::stream::{
     dummy_response,
     image_ack,
     turn_events,
+};
+
+// --- `skills` — the `Skill` tool's pure model (docs/skills.md) ---
+#[rustfmt::skip]
+#[allow(unused_imports)]
+use alter_zero::skills::{
+    ParsedSkill,
+    ProjectSkills,
+    SkillError,
+    SkillMetadata,
+    SkillParseError,
+    SkillRegistry,
+    SkillsFile,
+    DEFAULT_LISTING_BUDGET,
+    MAX_LISTING_DESC_CHARS,
+    MAX_SKILL_NAME_LEN,
+    SKILL_BODY_MAX_BYTES,
+    SKILL_FILE_NAME,
+    SKILL_LOADED_DISPLAY,
+    SKILL_TOOL_DISPLAY,
+    SKILL_TOOL_NAME,
+    SKILL_TRUNCATION_MARKER,
+    is_skill_tool,
+    listing_budget,
+    listing_message,
+    parse_skill,
+    render_skill_body,
+    skill_listing,
+    substitute_arguments,
+    unreported_errors,
+    validate_skill_name,
 };
 
 // --- `tasks` — the task tools' pure model (docs/task-tools.md) ---
@@ -217,6 +250,7 @@ use alter_zero::ui::{
     render_permission,
     render_resume_picker,
     render_settings,
+    render_skills_menu,
     render_tool_view,
     repaint_budget,
     repaint_lines,
@@ -226,6 +260,7 @@ use alter_zero::ui::{
     search_line,
     settings_height,
     shell_mode_line,
+    skills_menu_height,
     checklist_lines,
     idle_task_lines,
     shortcuts_lines,

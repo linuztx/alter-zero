@@ -343,3 +343,33 @@ fn availability_is_never_persisted() {
         "a stale file can't disable a capable host"
     );
 }
+
+#[test]
+fn skills_are_not_offered_with_tools_off() {
+    // The `skill` tool rides the tool set, so `/settings` → Tools = false
+    // withdraws it — and the `<system-reminder>` listing has to go with it.
+    // A context that advertises a tool the request never carries is a dead
+    // end the model will spend a round hunting for (`docs/skills.md`).
+    let mut s = SessionSettings {
+        availability: SettingAvailability {
+            checkpoints: true,
+            hooks: true,
+            skills: true,
+        },
+        ..SessionSettings::default()
+    };
+    assert!(
+        s.skills_active() && s.skills_offered(),
+        "both on by default"
+    );
+    s.tools = false;
+    assert!(
+        s.skills_active(),
+        "the Skills row keeps its own value — Tools is a separate knob"
+    );
+    assert!(!s.skills_offered(), "…but nothing is offered");
+    // And with no skill installed there is nothing to offer either way.
+    s.tools = true;
+    s.availability.skills = false;
+    assert!(!s.skills_offered());
+}

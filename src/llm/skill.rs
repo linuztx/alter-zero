@@ -24,6 +24,12 @@ use crate::skills::{
 /// shape that gives a test run a hermetic set, since a merely-prepended root
 /// would still leave the developer's own `~/.claude/skills` in every session.
 ///
+/// `project_root` (the nearest `.git`, from
+/// [`crate::project_doc::find_project_root`]) is searched **after** the cwd
+/// and skipped when it *is* the cwd: launching in `repo/src` must still find
+/// the repo's own skills — the same walk-up `AGENTS.md` discovery does — while
+/// the more specific directory keeps precedence over the more general one.
+///
 /// The personal `.alter-zero/skills` hangs off `config_home` rather than
 /// `$HOME` directly, so it follows `ALTER_ZERO_CONFIG_DIR` like `hooks.json`,
 /// `permissions.json` and `settings.json` do. The `.claude/skills` rows are
@@ -33,6 +39,7 @@ use crate::skills::{
 #[must_use]
 pub fn skill_roots(
     cwd: &Path,
+    project_root: Option<&Path>,
     config_home: Option<&Path>,
     home: Option<&Path>,
     override_dir: Option<&Path>,
@@ -40,10 +47,10 @@ pub fn skill_roots(
     if let Some(dir) = override_dir {
         return vec![dir.to_path_buf()];
     }
-    let mut roots = vec![
-        cwd.join(".alter-zero").join("skills"),
-        cwd.join(".claude").join("skills"),
-    ];
+    let mut roots = project_dirs(cwd);
+    if let Some(root) = project_root.filter(|root| *root != cwd) {
+        roots.extend(project_dirs(root));
+    }
     if let Some(config_home) = config_home {
         roots.push(config_home.join("skills"));
     }
@@ -51,6 +58,14 @@ pub fn skill_roots(
         roots.push(home.join(".claude").join("skills"));
     }
     roots
+}
+
+/// The two per-directory skill roots, in precedence order.
+fn project_dirs(dir: &Path) -> Vec<PathBuf> {
+    vec![
+        dir.join(".alter-zero").join("skills"),
+        dir.join(".claude").join("skills"),
+    ]
 }
 
 /// Walk `roots` for `<root>/<name>/SKILL.md`, parsing each one's frontmatter.
@@ -132,7 +147,8 @@ pub fn load_skills(
 }
 
 /// The roots this environment resolves to — [`skill_roots`] with the two
-/// environment reads (`$HOME`, `ALTER_ZERO_SKILLS_DIR`) applied.
+/// environment reads (`$HOME`, `ALTER_ZERO_SKILLS_DIR`) and the `.git`
+/// walk-up applied.
 ///
 /// The **one** place those reads happen, so the `/skills` menu can name
 /// exactly the roots the walk used: two call sites resolving them separately
@@ -143,7 +159,14 @@ pub fn resolved_skill_roots(cwd: &Path, config_home: Option<&Path>) -> Vec<PathB
     let override_dir = std::env::var_os("ALTER_ZERO_SKILLS_DIR")
         .map(PathBuf::from)
         .filter(|dir| !dir.as_os_str().is_empty());
-    skill_roots(cwd, config_home, home.as_deref(), override_dir.as_deref())
+    let project_root = crate::project_doc::find_project_root(cwd);
+    skill_roots(
+        cwd,
+        project_root.as_deref(),
+        config_home,
+        home.as_deref(),
+        override_dir.as_deref(),
+    )
 }
 
 /// One `skill` call's arguments.
@@ -238,6 +261,7 @@ mod tests {
         // per-user file here (hooks.json, permissions.json, settings.json).
         let roots = skill_roots(
             Path::new("/work"),
+            None,
             Some(Path::new("/cfg/.alter-zero")),
             Some(Path::new("/home/u")),
             None,
@@ -261,6 +285,7 @@ mod tests {
         // leaves the developer's own ~/.claude/skills in every session.
         let roots = skill_roots(
             Path::new("/work"),
+            Some(Path::new("/work/..")),
             Some(Path::new("/cfg/.alter-zero")),
             Some(Path::new("/home/u")),
             Some(Path::new("/override")),
@@ -270,8 +295,53 @@ mod tests {
 
     #[test]
     fn a_homeless_environment_still_has_project_roots() {
-        let roots = skill_roots(Path::new("/work"), None, None, None);
+        let roots = skill_roots(Path::new("/work"), None, None, None, None);
         assert_eq!(roots.len(), 2, "{roots:?}");
+    }
+
+    #[test]
+    fn the_project_root_is_searched_from_a_subdirectory() {
+        // Launched in `repo/src`, the repo's own `.claude/skills` is still
+        // the project's — codex's and Claude Code's rule, and the reason
+        // `project_doc` walks up to the nearest `.git` too. The cwd's roots
+        // stay in front: a more specific root shadows a more general one,
+        // the same precedence project already has over personal.
+        let roots = skill_roots(
+            Path::new("/work/repo/src"),
+            Some(Path::new("/work/repo")),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/work/repo/src/.alter-zero/skills"),
+                PathBuf::from("/work/repo/src/.claude/skills"),
+                PathBuf::from("/work/repo/.alter-zero/skills"),
+                PathBuf::from("/work/repo/.claude/skills"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_project_root_that_is_the_cwd_adds_no_second_pass() {
+        // The common case — launched at the repo root — must read the same
+        // two directories it always did, not each of them twice.
+        let roots = skill_roots(
+            Path::new("/work"),
+            Some(Path::new("/work")),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            roots,
+            vec![
+                PathBuf::from("/work/.alter-zero/skills"),
+                PathBuf::from("/work/.claude/skills"),
+            ]
+        );
     }
 
     #[test]
