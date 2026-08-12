@@ -560,7 +560,10 @@ fn agent_spec() -> Value {
     )
 }
 
-fn function_spec(name: &str, description: &str, parameters: Value) -> Value {
+/// The Chat Completions `{"type":"function", …}` entry every tool def uses —
+/// `pub(crate)` so the MCP manager can build specs for dynamically-discovered
+/// tools in exactly this shape (`docs/mcp.md`).
+pub(crate) fn function_spec(name: &str, description: &str, parameters: Value) -> Value {
     json!({
         "type": "function",
         "function": {
@@ -815,6 +818,11 @@ pub fn display_name(name: &str) -> String {
     if let Some(display) = crate::tasks::task_display_name(name) {
         return display.to_string();
     }
+    // An `mcp__server__tool` call wears Claude Code's user-facing
+    // `{server} - {tool} (MCP)` (`docs/mcp.md`).
+    if let Some(display) = crate::mcp::display_from_wire(name) {
+        return display;
+    }
     match name {
         "bash" => "Bash".to_string(),
         "read" => "Read".to_string(),
@@ -851,6 +859,20 @@ pub fn call_description(name: &str, arguments: &str) -> Option<String> {
 /// flattened slice of the raw arguments when they don't parse.
 #[must_use]
 pub fn summarize_call(name: &str, arguments: &str) -> String {
+    // An MCP call keeps its **arguments JSON** as the summary — that is
+    // what makes the recorded cell replayable (`context::reconstruct_arguments`
+    // returns it verbatim, so a later round re-reads the JSON the model
+    // actually sent); the pretty `key: "value"` header form is derived at
+    // render time from this string instead (`ui::tool`'s MCP branch,
+    // `docs/mcp.md`). Re-serialized compactly — lossless (a raw flatten
+    // would collapse spaces *inside* string values), and single-line by
+    // construction; only unparseable arguments fall back to the flatten.
+    if crate::mcp::is_mcp_tool(name) {
+        if let Ok(value) = serde_json::from_str::<Value>(arguments.trim()) {
+            return value.to_string();
+        }
+        return flatten_one_line(arguments.trim());
+    }
     let value: Option<Value> = serde_json::from_str(arguments.trim()).ok();
     let field = |key: &str| -> Option<String> {
         value
@@ -2026,5 +2048,29 @@ mod tests {
             ),
             "Fetch Warsaw"
         );
+    }
+    #[test]
+    fn an_mcp_call_wears_the_claude_code_display_name() {
+        assert_eq!(
+            display_name("mcp__deepwiki__ask_question"),
+            "deepwiki - ask_question (MCP)"
+        );
+        // A non-MCP unknown name still falls through verbatim.
+        assert_eq!(display_name("mystery"), "mystery");
+    }
+
+    #[test]
+    fn an_mcp_summary_is_the_compact_arguments_json() {
+        // Lossless: `context::reconstruct_arguments` replays this verbatim
+        // (docs/mcp.md). Spaces inside string values survive.
+        assert_eq!(
+            summarize_call(
+                "mcp__deepwiki__ask_question",
+                "{\n  \"q\": \"two  spaces\"\n}"
+            ),
+            r#"{"q":"two  spaces"}"#
+        );
+        // Unparseable arguments degrade to the flattened text.
+        assert_eq!(summarize_call("mcp__s__t", "not json"), "not json");
     }
 }

@@ -83,6 +83,13 @@ pub struct LlmBackend {
     /// Subagents carry it too — a side agent benefits from a skill exactly as
     /// the lead does, and loading one is pure text.
     skills: Option<crate::skills::SkillRegistry>,
+    /// The session's MCP servers, when the boundary attached the manager —
+    /// **adds every connected server's tools** under their
+    /// `mcp__server__tool` wire names (`docs/mcp.md`). Attached only when at
+    /// least one tool is actually offered (the `with_skills` posture — a
+    /// spec set that can only answer "unknown tool" spends the model's
+    /// attention on a dead end). Subagents carry it too.
+    mcp: Option<super::mcp::McpManager>,
     /// The auto mode classifier bound to this backend's provider
     /// (`docs/permissions.md`): consulted by the approve seam for `bash`
     /// calls in [`crate::permission::PermissionMode::Auto`] — idle in every
@@ -159,6 +166,7 @@ impl LlmBackend {
             ask: None,
             tasks: None,
             skills: None,
+            mcp: None,
             classifier,
             max_retries: MAX_RETRIES,
             max_tool_calls: agent::MAX_TOOL_ITERATIONS,
@@ -254,11 +262,27 @@ impl LlmBackend {
         self
     }
 
+    /// Attach the session's MCP manager, **adding every connected server's
+    /// tools** (`docs/mcp.md`): the client's tool set gains one
+    /// `mcp__server__tool` spec per discovered tool (tools must already be
+    /// enabled). Attached only when something is actually offered — the
+    /// boundary re-checks at every MCP event and rebuilds on a flip
+    /// (`Session::refresh_mcp`, the `skills_attached` pattern).
+    #[must_use]
+    pub fn with_mcp(mut self, manager: super::mcp::McpManager) -> Self {
+        if self.tools_enabled && manager.has_tools() {
+            self.mcp = Some(manager);
+            self.sync_tool_specs();
+        }
+        self
+    }
+
     /// Rebuild the client's tool set from what is attached — the `agent` spec
     /// when a subagent registry is, the ask spec when an ask gate is, the
-    /// task specs when a task registry is — so
-    /// [`with_agents`](Self::with_agents)/[`with_ask`](Self::with_ask)/
-    /// [`with_tasks`](Self::with_tasks) compose in any order.
+    /// task specs when a task registry is, the MCP specs when a manager is —
+    /// so [`with_agents`](Self::with_agents)/[`with_ask`](Self::with_ask)/
+    /// [`with_tasks`](Self::with_tasks)/[`with_mcp`](Self::with_mcp) compose
+    /// in any order.
     fn sync_tool_specs(&mut self) {
         let mut specs = if self.agents.is_some() {
             tools::tool_specs_with_agents()
@@ -273,6 +297,9 @@ impl LlmBackend {
         }
         if self.skills.is_some() {
             specs.push(tools::skill_spec());
+        }
+        if let Some(manager) = &self.mcp {
+            specs.extend(manager.tool_specs());
         }
         self.client = self.client.clone().with_tools(specs);
     }
@@ -555,6 +582,7 @@ impl ReplySource for LlmBackend {
         let ask = self.ask.clone();
         let task_list = self.tasks.clone();
         let skills = self.skills.clone();
+        let mcp = self.mcp.clone();
         let classifier = self.classifier.clone();
         let max_retries = self.max_retries;
         let max_tool_calls = self.max_tool_calls;
@@ -639,6 +667,15 @@ impl ReplySource for LlmBackend {
                         .filter(|_| crate::skills::is_skill_tool(&call.name))
                     {
                         return super::skill::run_skill_tool(registry, call);
+                    }
+                    // An `mcp__server__tool` call (docs/mcp.md): routed to
+                    // the manager's live connection; without one the call is
+                    // declined recoverably.
+                    if crate::mcp::is_mcp_tool(&call.name) {
+                        return match &mcp {
+                            Some(manager) => manager.call_tool(call, &cancel),
+                            None => tools::ToolOutcome::error("MCP tools are not available here"),
+                        };
                     }
                     match (&ask, call.name.as_str()) {
                         (Some(gate), tools::ASK_TOOL_NAME) => {
@@ -771,6 +808,10 @@ struct SubagentConfig {
     /// — a side agent benefits from an authored `SKILL.md` exactly as the lead
     /// does, and loading one is pure text, so it needs no gate of its own.
     skills: Option<crate::skills::SkillRegistry>,
+    /// The session's MCP manager, so a subagent can call the same servers'
+    /// tools (`docs/mcp.md`) — a side agent queries a wiki exactly as the
+    /// lead does, over the same live connections.
+    mcp: Option<super::mcp::McpManager>,
     /// The session's retry budget, so a subagent's rounds retry exactly as
     /// the main turn's do (`docs/settings.md`).
     max_retries: u32,
@@ -804,6 +845,7 @@ impl LlmBackend {
             permissions: self.permissions.clone(),
             classifier: self.classifier.clone(),
             skills: self.skills.clone(),
+            mcp: self.mcp.clone(),
             max_retries: self.max_retries,
             max_tool_calls: self.max_tool_calls,
             hooks: Arc::clone(&self.hooks),
@@ -1041,11 +1083,16 @@ fn spawn_subagent_run(
     cancel: CancelToken,
 ) {
     let skills = config.skills.clone();
+    let mcp = config.mcp.clone();
     // The subagent's tool set: its type's own (never `agent` — no nesting),
-    // plus the `skill` tool when the session found any (`docs/skills.md`).
+    // plus the `skill` tool when the session found any (`docs/skills.md`),
+    // plus the MCP servers' tools (`docs/mcp.md`).
     let mut specs = tools::subagent_tool_specs(&agent_type);
     if skills.is_some() {
         specs.push(tools::skill_spec());
+    }
+    if let Some(manager) = &mcp {
+        specs.extend(manager.tool_specs());
     }
     // …and the listing that makes that tool usable. A subagent starts on a
     // fresh context, so the lead's `<system-reminder>` never reaches it: with
@@ -1141,6 +1188,14 @@ fn spawn_subagent_run(
                     .filter(|_| crate::skills::is_skill_tool(&call.name))
                 {
                     return super::skill::run_skill_tool(registry, call);
+                }
+                // …and its MCP calls ride the same live connections
+                // (docs/mcp.md).
+                if crate::mcp::is_mcp_tool(&call.name) {
+                    return match &mcp {
+                        Some(manager) => manager.call_tool(call, &cancel),
+                        None => tools::ToolOutcome::error("MCP tools are not available here"),
+                    };
                 }
                 executor.execute(call, &cancel, on_output)
             },

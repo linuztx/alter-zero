@@ -255,6 +255,11 @@ const MERGE_SEPARATOR: &str = "\n\n";
 /// known tools reverse exactly; anything else falls back to a lowercase of the
 /// display name.
 fn wire_tool_name(display: &str) -> String {
+    // An MCP cell's display name (`{server} - {tool} (MCP)`) inverts to the
+    // `mcp__server__tool` the model actually called (`docs/mcp.md`).
+    if let Some(wire) = crate::mcp::wire_from_display(display) {
+        return wire;
+    }
     match display {
         "Bash" => "bash".to_string(),
         "Read" => "read".to_string(),
@@ -271,6 +276,18 @@ fn wire_tool_name(display: &str) -> String {
 /// **result** (below it) carries the full outcome the model reasons from. An
 /// unrecognised tool replays with empty arguments.
 fn reconstruct_arguments(tool: &ToolCall) -> String {
+    // An MCP call's stored `args` **is** the raw arguments JSON
+    // (`llm::tools::summarize_call` keeps it verbatim precisely so this
+    // replay is lossless — the pretty `key: value` form is derived at render
+    // time instead; `docs/mcp.md`). Guard on it parsing as an object so an
+    // odd record still degrades to `{}` rather than an invalid request.
+    if crate::mcp::is_mcp_display_name(&tool.name) {
+        if serde_json::from_str::<serde_json::Value>(tool.args.trim()).is_ok_and(|v| v.is_object())
+        {
+            return tool.args.trim().to_string();
+        }
+        return "{}".to_string();
+    }
     let key = match tool.name.as_str() {
         "Bash" => "command",
         "Read" | "Write" | "Edit" => "path",
@@ -1658,5 +1675,43 @@ mod tests {
                 .starts_with("[background agent] Agent \"Fetch Warsaw\"")
         );
         assert!(messages[0].text.contains("19°C and sunny"));
+    }
+    #[test]
+    fn an_mcp_call_replays_with_its_wire_name_and_verbatim_arguments() {
+        // The recorded display name inverts to the wire name and the stored
+        // args ARE the raw JSON — a validating provider re-reads exactly what
+        // the model sent (docs/mcp.md).
+        let history = vec![
+            message(Role::User, "ask the wiki"),
+            tool(
+                "deepwiki - ask_question (MCP)",
+                r#"{"repoName":"a/b","question":"What?"}"#,
+                "the answer",
+                ToolStatus::Ok,
+                false,
+            ),
+        ];
+        let ctx = context_messages(&history);
+        let call = &ctx[1].tool_calls[0];
+        assert_eq!(call.name, "mcp__deepwiki__ask_question");
+        assert_eq!(call.arguments, r#"{"repoName":"a/b","question":"What?"}"#);
+        assert_eq!(ctx[2].text, "the answer");
+        assert_eq!(ctx[2].tool_call_id.as_deref(), Some("call_0"));
+    }
+
+    #[test]
+    fn an_mcp_call_with_unparseable_args_degrades_to_empty_arguments() {
+        let history = vec![
+            message(Role::User, "x"),
+            tool(
+                "deepwiki - ask_question (MCP)",
+                "corrupted…",
+                "out",
+                ToolStatus::Ok,
+                false,
+            ),
+        ];
+        let ctx = context_messages(&history);
+        assert_eq!(ctx[1].tool_calls[0].arguments, "{}");
     }
 }

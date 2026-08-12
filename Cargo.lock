@@ -30,6 +30,7 @@ dependencies = [
  "arboard",
  "chrono",
  "crossterm",
+ "getrandom 0.3.4",
  "image",
  "ratatui",
  "regex",
@@ -37,6 +38,7 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
+ "sha2",
  "syntect",
  "tempfile",
  "tiktoken-rs",
@@ -46,6 +48,7 @@ dependencies = [
  "two-face",
  "unicode-segmentation",
  "unicode-width",
+ "url",
 ]
 
 [[package]]

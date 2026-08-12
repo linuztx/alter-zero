@@ -135,6 +135,16 @@ pub(super) fn preview_tool_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     // The round's live agent group leads the strip — its blue tree cell over
     // any ordinary tool cells of a mixed round (docs/agent-tool.md).
     lines.extend(live_agent_group_lines(app, width));
+    // A parallel batch whose calls are ALL MCP collapses to one aggregated
+    // `● Calling {servers} {n} times…` cell (`docs/mcp.md`) — live-strip
+    // only: the committed cells stay per-call, and a mixed batch keeps the
+    // ordinary per-cell strip below. `preview_rows` sizes from this same
+    // walk, so the count and the paint agree.
+    if lines.is_empty()
+        && let Some(batch) = super::tool::mcp_batch_strip_lines(app.tool_queue(), pulse, width)
+    {
+        return batch;
+    }
     for (i, tool) in app.tool_queue().iter().enumerate() {
         if i > 0 || !lines.is_empty() {
             lines.push(Line::default()); // blank row between batch cells
@@ -430,6 +440,15 @@ pub fn render_live_with_preview(
         let [strip, body] = view_split(area, body_h);
         render_strip_above(strip, buf, app, stream_preview);
         render_hooks_menu(body, buf, app);
+        return;
+    }
+    // …and the `/mcp` manager, the hooks menu's twin. See `docs/mcp.md`.
+    if app.mcp_menu.is_some() {
+        let body_h = u16::try_from(super::mcp_view::mcp_view_lines(app, area.width).len())
+            .unwrap_or(u16::MAX);
+        let [strip, body] = view_split(area, body_h);
+        render_strip_above(strip, buf, app, stream_preview);
+        render_mcp_menu(body, buf, app);
         return;
     }
     // The ↓ background manager band replaces the composer (and the band/footer

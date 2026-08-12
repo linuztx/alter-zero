@@ -75,6 +75,15 @@ serde_json = "1"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 # Parse `providers.toml` (docs/llm.md) into the `llm::config` provider table.
 toml = "0.8"
+# The MCP OAuth flow's PKCE S256 challenge (docs/mcp.md) — used ONLY at the
+# I/O boundary (src/llm/mcp/oauth.rs). Both crates are already compiled into
+# every build transitively (rustls/ring pull them), so declaring them direct
+# costs nothing new.
+sha2 = "0.10"
+getrandom = "0.3"
+# Parse/derive OAuth discovery URLs and the legacy-SSE endpoint resolution at
+# the MCP boundary. Already in the tree via reqwest — same zero-cost stance.
+url = "2"
 # Hook matchers (docs/hooks.md). Both Claude Code and codex take a non-regex
 # fast path for `Bash`-style names and compile anything else as a regex; we
 # match that contract. This costs **nothing** to build: `tiktoken-rs` above

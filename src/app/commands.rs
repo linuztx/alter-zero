@@ -109,6 +109,11 @@ pub enum CommandEffect {
     /// replaces the composer, and a toggle binds the *next* turn's request.
     /// See `docs/skills.md`.
     Skills,
+    /// Open the inline `/mcp` manager: every declared MCP server, its live
+    /// status, tools, and the authenticate/reconnect/disable operations.
+    /// Works **mid-turn** like `/hooks` — it only replaces the composer;
+    /// connection work runs on worker threads either way. See `docs/mcp.md`.
+    Mcp,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
 }
@@ -187,6 +192,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "skills",
         description: "Browse skills and enable or disable each one",
         effect: CommandEffect::Skills,
+    },
+    SlashCommand {
+        name: "mcp",
+        description: "Manage MCP servers",
+        effect: CommandEffect::Mcp,
     },
     SlashCommand {
         name: "quit",
@@ -389,6 +399,13 @@ impl App {
                 // over it, so the rows can never disagree with what the model
                 // is offered. docs/skills.md.
                 Action::OpenSkillsMenu
+            }
+            CommandEffect::Mcp => {
+                // /mcp works mid-turn too — it only replaces the composer,
+                // and every connection op runs on a worker thread. The *loop*
+                // snapshots the live manager and opens the menu over it
+                // (docs/mcp.md).
+                Action::OpenMcpMenu
             }
             CommandEffect::Quit => Action::Quit,
         }

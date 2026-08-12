@@ -102,7 +102,32 @@ pub fn permission_request(
                 agent,
             })
         }
+        // An MCP call asks too (`docs/mcp.md`): the wire name is the target
+        // (the rule key option 2 remembers), the arguments pretty-printed as
+        // the framed body so the user reads exactly what the server will.
+        name if crate::mcp::is_mcp_tool(name) => Some(PermissionRequest {
+            id: String::new(),
+            kind: PermissionKind::Mcp,
+            target: name.to_string(),
+            body: mcp_arguments_body(&call.arguments),
+            detail: None,
+            agent,
+        }),
         _ => None,
+    }
+}
+
+/// An MCP request's framed body: the arguments as pretty JSON (the exact
+/// payload the server receives), or nothing for an argument-less call.
+fn mcp_arguments_body(arguments: &str) -> String {
+    let trimmed = arguments.trim();
+    if trimmed.is_empty() || trimmed == "{}" {
+        return String::new();
+    }
+    match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(value) if value.as_object().is_some_and(|o| o.is_empty()) => String::new(),
+        Ok(value) => serde_json::to_string_pretty(&value).unwrap_or_else(|_| trimmed.to_string()),
+        Err(_) => trimmed.to_string(),
     }
 }
 
@@ -838,5 +863,30 @@ mod tests {
             matches!(waiter.join().unwrap(), Approval::Reject { .. }),
             "a reaped wait never allows the call"
         );
+    }
+    #[test]
+    fn an_mcp_call_raises_a_request_with_the_wire_name_and_pretty_body() {
+        let request = permission_request(
+            &call(
+                "mcp__deepwiki__ask_question",
+                r#"{"repoName":"a/b","question":"What?"}"#,
+            ),
+            None,
+        )
+        .expect("MCP calls ask");
+        assert_eq!(request.kind, PermissionKind::Mcp);
+        assert_eq!(request.target, "mcp__deepwiki__ask_question");
+        // The body is the exact payload, pretty-printed for reading.
+        assert!(
+            request.body.contains("\"question\": \"What?\""),
+            "{}",
+            request.body
+        );
+        assert!(request.detail.is_none());
+        // An argument-less call frames no body at all.
+        let bare = permission_request(&call("mcp__s__t", "{}"), None).unwrap();
+        assert!(bare.body.is_empty());
+        // A non-MCP unknown tool still never asks.
+        assert!(permission_request(&call("mystery", "{}"), None).is_none());
     }
 }

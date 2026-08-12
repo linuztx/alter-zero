@@ -102,6 +102,10 @@ pub(crate) async fn run(
             Some(AgentEvent::Stream { id, event }) = session.agent_rx.recv() => {
                 session.on_agent_stream(&id, event);
             }
+
+            // 10. An MCP server's state changed (a connect resolved, an auth
+            //     flow progressed) — docs/mcp.md.
+            Some(event) = session.mcp_rx.recv() => session.on_mcp_event(event),
         }
         session.after_iteration();
     }

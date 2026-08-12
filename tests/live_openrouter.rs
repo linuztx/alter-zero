@@ -2663,3 +2663,108 @@ fn live_skill_arguments_are_substituted_before_the_model_sees_them() {
         "the model read the substituted body, got: {reply:?}"
     );
 }
+
+/// The MCP surface end to end against the public DeepWiki server
+/// (`docs/mcp.md`): the manager connects over streamable HTTP, lists the
+/// tools, `with_mcp` offers them under their `mcp__deepwiki__…` wire names,
+/// and a real turn's call routes through the live connection — the model
+/// reading the server's answer and the recorded events carrying the
+/// `{server} - {tool} (MCP)` display + raw-JSON args split the cells render
+/// from.
+#[test]
+#[ignore]
+fn live_mcp_deepwiki_tool_call_round_trips() {
+    use alter_zero::llm::mcp::{McpManager, McpSources};
+    use alter_zero::mcp::{McpScope, McpServerConfig, McpServerEntry, McpServerStatus};
+
+    let (mcp_tx, _mcp_rx) = tokio::sync::mpsc::unbounded_channel();
+    let manager = McpManager::new(
+        mcp_tx,
+        McpSources {
+            entries: vec![McpServerEntry {
+                name: "deepwiki".to_string(),
+                config: McpServerConfig::Http {
+                    url: "https://mcp.deepwiki.com/mcp".to_string(),
+                    headers: Default::default(),
+                    sse_fallback: false,
+                },
+                scope: McpScope::User,
+                config_path: "~/.alter-zero/mcp.json".to_string(),
+            }],
+            project: "/live".to_string(),
+            ..Default::default()
+        },
+    );
+    manager.start_connections();
+    for _ in 0..240 {
+        match &manager.snapshot()[0].status {
+            McpServerStatus::Connected => break,
+            McpServerStatus::Failed(e) => panic!("deepwiki connect failed: {e}"),
+            _ => std::thread::sleep(std::time::Duration::from_millis(250)),
+        }
+    }
+    let snapshot = manager.snapshot();
+    assert_eq!(snapshot[0].status, McpServerStatus::Connected, "timed out");
+    assert!(
+        snapshot[0].tools.iter().any(|t| t.name == "ask_question"),
+        "deepwiki lists ask_question: {:?}",
+        snapshot[0].tools.iter().map(|t| &t.name).collect::<Vec<_>>()
+    );
+    let specs = manager.tool_specs();
+    assert!(
+        specs
+            .iter()
+            .any(|s| s["function"]["name"] == "mcp__deepwiki__ask_question"),
+        "the wire names ride the offered specs"
+    );
+
+    // A real turn: the model must call the MCP tool and read its answer.
+    let backend = backend().with_mcp(manager.clone());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(
+        "Use the deepwiki read_wiki_structure tool on the repository \
+         linuztx/flaredantic, then answer in one short sentence: what is the \
+         repository about?"
+            .to_string(),
+        Vec::new(),
+        Vec::new(),
+        tx,
+        CancelToken::new(),
+    );
+    let mut text = String::new();
+    let mut tool_start: Option<(String, String)> = None;
+    let mut tool_output: Option<String> = None;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(chunk) => text.push_str(&chunk),
+            StreamEvent::ToolStart { name, args, .. } => tool_start = Some((name, args)),
+            StreamEvent::ToolEnd { output, ok, .. } => {
+                assert!(ok, "the MCP call failed: {output}");
+                tool_output = Some(output);
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread");
+    manager.shutdown();
+    let (name, args) = tool_start.expect("the model called the MCP tool");
+    // The display/args split the cells render from (docs/mcp.md). The model
+    // is free to pick either deepwiki tool — the surface under test is the
+    // MCP plumbing, not its choice.
+    assert!(
+        name.starts_with("deepwiki - ") && name.ends_with(" (MCP)"),
+        "the display name wears the Claude Code shape: {name}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&args).expect("raw JSON args");
+    assert_eq!(parsed["repoName"], "linuztx/flaredantic");
+    let output = tool_output.expect("the call resolved");
+    assert!(
+        !output.trim().is_empty(),
+        "the server's answer came back: {output}"
+    );
+    println!("reply: {text}");
+    assert!(!text.trim().is_empty(), "the model answered after the call");
+}

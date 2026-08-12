@@ -131,6 +131,13 @@ pub(crate) struct ModelSession {
     /// [`Self::skills_offered`] need a rebuild. Re-deriving both sides would
     /// make them equal by construction and rebuild either never or always.
     skills_attached: bool,
+    /// The session's MCP manager (`docs/mcp.md`) — `None` when the feature is
+    /// off. Re-attached on every rebuild like the registries above; the
+    /// tracked `mcp_fingerprint` is the *last build's* offered wire-name set,
+    /// so [`Self::refresh_mcp`] rebuilds only when a connection change
+    /// actually flipped what the request carries.
+    mcp: Option<alter_zero::llm::mcp::McpManager>,
+    mcp_fingerprint: Vec<String>,
     /// The user's lifecycle hooks (`docs/hooks.md`), re-attached on every
     /// rebuild like the registries above. Held as the *setup* rather than a
     /// built sink because a payload names the model, and a `/model` switch
@@ -167,6 +174,7 @@ impl ModelSession {
         ask: &alter_zero::ask::AskGate,
         tasks: &alter_zero::tasks::TaskRegistry,
         skills: &alter_zero::skills::SkillRegistry,
+        mcp: Option<&alter_zero::llm::mcp::McpManager>,
         settings: &SessionSettings,
         hooks: Option<HookSetup>,
     ) -> Self {
@@ -268,6 +276,7 @@ impl ModelSession {
                 ask,
                 tasks,
                 skills_enabled.then_some(&skills),
+                mcp,
                 hooks.as_ref(),
             )),
             (None, None) => {
@@ -327,6 +336,10 @@ impl ModelSession {
             skills_attached: real_backend && tools && skills_enabled && skills.has_enabled(),
             skills,
             skills_enabled,
+            mcp_fingerprint: mcp
+                .map(alter_zero::llm::mcp::McpManager::fingerprint)
+                .unwrap_or_default(),
+            mcp: mcp.cloned(),
             hooks,
             fetch_cancel: None,
             probe_pending: probe.is_some(),
@@ -442,6 +455,11 @@ impl ModelSession {
         // built — `set_tools`, a `/model` switch and a skill toggle all land
         // on it, and any of them can change the verdict.
         self.skills_attached = self.skills_offered();
+        self.mcp_fingerprint = self
+            .mcp
+            .as_ref()
+            .map(alter_zero::llm::mcp::McpManager::fingerprint)
+            .unwrap_or_default();
         self.backend = Box::new(session_backend(
             cfg,
             self.system_prompt.clone(),
@@ -454,6 +472,7 @@ impl ModelSession {
             &self.ask,
             &self.tasks,
             self.skills_enabled.then_some(&self.skills),
+            self.mcp.as_ref(),
             self.hooks.as_ref(),
         ));
     }
@@ -600,6 +619,20 @@ impl ModelSession {
     /// each one for nothing.
     pub(crate) fn refresh_skills(&mut self) {
         if self.skills_offered() != self.skills_attached {
+            self.rebuild_current();
+        }
+    }
+
+    /// Re-attach the MCP manager after its connections moved — a server
+    /// connected, failed, was disabled or re-authenticated (`docs/mcp.md`).
+    /// The handle is shared (the executor already routes through the live
+    /// connections); this is only about the **tool set**, decided when
+    /// `with_mcp` ran — so it rebuilds only when the offered wire-name set
+    /// actually changed (`refresh_skills`'s exact posture, fingerprinted
+    /// because the set is a list rather than a bool).
+    pub(crate) fn refresh_mcp(&mut self) {
+        let Some(manager) = &self.mcp else { return };
+        if manager.fingerprint() != self.mcp_fingerprint {
             self.rebuild_current();
         }
     }
@@ -968,6 +1001,7 @@ fn session_backend(
     ask: &alter_zero::ask::AskGate,
     tasks: &alter_zero::tasks::TaskRegistry,
     skills: Option<&alter_zero::skills::SkillRegistry>,
+    mcp: Option<&alter_zero::llm::mcp::McpManager>,
     hooks: Option<&HookSetup>,
 ) -> LlmBackend {
     // Captured before `configure` consumes the config: the hooks payload
@@ -994,6 +1028,12 @@ fn session_backend(
     // `/settings` **Skills** row off; an empty registry attaches nothing.
     if let Some(skills) = skills {
         backend = backend.with_skills(skills.clone());
+    }
+    // The MCP servers' tools (docs/mcp.md): one `mcp__server__tool` spec per
+    // connected server's tool — a manager with nothing connected attaches
+    // nothing, and `refresh_mcp` re-runs this build when that changes.
+    if let Some(manager) = mcp {
+        backend = backend.with_mcp(manager.clone());
     }
     // The tool-permission gate (docs/permissions.md) — absent when
     // `ALTER_ZERO_PERMISSIONS` is falsy, and every tool then runs unasked.

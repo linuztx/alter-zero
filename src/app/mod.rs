@@ -37,6 +37,7 @@ mod hooks_menu;
 mod input_history;
 mod keys;
 mod login;
+mod mcp_menu;
 mod model_picker;
 mod permission;
 mod queue;
@@ -52,7 +53,7 @@ mod turn;
 mod types;
 mod views;
 
-pub use self::action::Action;
+pub use self::action::{Action, McpOp};
 pub use self::agent::{
     AGENT_STOPPED_OUTPUT, AgentGroup, AgentGroupEntry, AgentGroupLive, AgentNotice,
 };
@@ -70,6 +71,7 @@ pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
 pub use self::input_history::{HistorySearch, InputHistory, SearchState};
 pub use self::login::{KeyOnboarding, KeyStep, ProviderChoice};
+pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
 pub use self::permission::PermissionPrompt;
 pub use self::queue::QueuedTurn;
@@ -333,6 +335,11 @@ pub struct App {
     /// twin — same frame, same grammar, rows being the discovered skills
     /// instead of the session's knobs. See `docs/skills.md`.
     pub skills_menu: Option<SkillsMenu>,
+    /// The open `/mcp` manager; `None` when closed. The sixth
+    /// composer-replacing picker, the [`hooks_menu`](Self::hooks_menu)'s twin
+    /// (page walk, no search) over the boundary-injected server snapshot.
+    /// See `docs/mcp.md`.
+    pub mcp_menu: Option<McpMenu>,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

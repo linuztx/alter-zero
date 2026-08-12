@@ -50,6 +50,9 @@ impl App {
             return self.on_key_settings(key);
         }
         // …and the inline `/skills` menu. See `docs/skills.md`.
+        if self.view == View::Conversation && self.mcp_menu.is_some() {
+            return self.on_key_mcp(key);
+        }
         if self.view == View::Conversation && self.skills_menu.is_some() {
             return self.on_key_skills(key);
         }

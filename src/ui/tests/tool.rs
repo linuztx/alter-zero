@@ -1323,3 +1323,138 @@ fn tool_full_lines_expand_tabs_for_display() {
         "the recipe keeps its indentation: {texts:?}"
     );
 }
+
+// --- MCP cells (docs/mcp.md) ---
+
+use crate::ui::theme::{MCP_CALLED_PREFIX, MCP_CALLING_PREFIX, REASONING_LABEL_COLOR};
+use crate::ui::tool::mcp_batch_strip_lines;
+
+/// An MCP cell fixture: the display name + raw-JSON args the loop records.
+fn mcp_tool(status: ToolStatus, output: &str) -> ToolCall {
+    tool(
+        "deepwiki - ask_question (MCP)",
+        r#"{"repoName":"linuztx/flaredantic","question":"What is this?"}"#,
+        status,
+        output,
+    )
+}
+
+#[test]
+fn a_running_mcp_cell_collapses_to_calling_server() {
+    let lines = tool_lines(&mcp_tool(ToolStatus::Running, ""), 100);
+    assert_eq!(
+        plain(&lines[0]),
+        format!("● {MCP_CALLING_PREFIX}deepwiki…{EXPAND_HINT}")
+    );
+    // The one-row peek names the call's primary string argument, quoted.
+    assert!(
+        plain(&lines[1]).contains("\"What is this?\""),
+        "got {:?}",
+        plain(&lines[1])
+    );
+}
+
+#[test]
+fn a_waiting_mcp_sibling_shows_the_waiting_row() {
+    let lines = tool_lines(&mcp_tool(ToolStatus::Waiting, ""), 100);
+    assert!(plain(&lines[0]).starts_with(&format!("● {MCP_CALLING_PREFIX}deepwiki…")));
+    assert!(plain(&lines[1]).contains("Waiting…"));
+}
+
+#[test]
+fn a_resolved_mcp_cell_is_the_bullet_less_called_line() {
+    // The settled thinking line's shape: no bullet, dim throughout, the
+    // result text never inline (docs/mcp.md).
+    let lines = tool_lines(
+        &mcp_tool(ToolStatus::Ok, "{\"result\": \"long json…\"}"),
+        100,
+    );
+    assert_eq!(lines.len(), 1);
+    assert_eq!(
+        plain(&lines[0]),
+        format!("{MCP_CALLED_PREFIX}deepwiki{EXPAND_HINT}")
+    );
+    assert_eq!(lines[0].spans[0].style.fg, Some(REASONING_LABEL_COLOR));
+    assert!(
+        !plain(&lines[0]).contains("long json"),
+        "the result stays out of inline scrollback"
+    );
+}
+
+#[test]
+fn a_failed_mcp_cell_keeps_the_loud_generic_form() {
+    let lines = tool_lines(&mcp_tool(ToolStatus::Failed, "server exploded"), 120);
+    // The full header — pretty-printed args, not the raw JSON — over the
+    // error peek, red bullet.
+    let head = plain(&lines[0]);
+    assert!(
+        head.starts_with("● deepwiki - ask_question (MCP)("),
+        "got {head:?}"
+    );
+    assert!(head.contains("question: \"What is this?\""), "got {head:?}");
+    assert!(!head.contains("{\"repoName\""), "raw JSON never renders");
+    assert_eq!(lines[0].spans[0].style.fg, Some(TOOL_FAIL_COLOR));
+    assert!(lines.iter().any(|l| plain(l).contains("server exploded")));
+}
+
+#[test]
+fn the_ctrl_o_view_shows_the_full_mcp_story() {
+    let cell = mcp_tool(ToolStatus::Ok, "{\n  \"result\": \"Flaredantic is…\"\n}");
+    let lines = tool_full_lines(&cell, 120);
+    let head = plain(&lines[0]);
+    assert!(
+        head.starts_with("● deepwiki - ask_question (MCP)("),
+        "got {head:?}"
+    );
+    assert!(head.contains("repoName: \"linuztx/flaredantic\""));
+    // The complete output sits in the ⎿ gutter.
+    assert!(lines.iter().any(|l| plain(l).contains("Flaredantic is…")));
+}
+
+#[test]
+fn an_all_mcp_batch_collapses_the_strip_to_one_aggregated_cell() {
+    let mut queue = VecDeque::new();
+    let mut first = mcp_tool(ToolStatus::Running, "");
+    first.args = r#"{"question":"What is flaredantic and how do I use it?"}"#.to_string();
+    queue.push_back(first);
+    queue.push_back(mcp_tool(ToolStatus::Waiting, ""));
+    let mut third = tool(
+        "plugin:context7:context7 - resolve-library-id (MCP)",
+        r#"{"libraryName":"flaredantic"}"#,
+        ToolStatus::Waiting,
+        "",
+    );
+    third.shell = false;
+    queue.push_back(third);
+    let lines = mcp_batch_strip_lines(&queue, Duration::ZERO, 120).expect("all-MCP batch");
+    assert_eq!(
+        plain(&lines[0]),
+        format!("● {MCP_CALLING_PREFIX}deepwiki, plugin:context7:context7 3 times…{EXPAND_HINT}")
+    );
+    // The running call's primary argument rides as the peek.
+    assert!(
+        plain(&lines[1]).contains("What is flaredantic and how do I use it?"),
+        "got {:?}",
+        plain(&lines[1])
+    );
+}
+
+#[test]
+fn a_mixed_batch_keeps_the_ordinary_per_cell_strip() {
+    let mut queue = VecDeque::new();
+    queue.push_back(mcp_tool(ToolStatus::Running, ""));
+    queue.push_back(tool("Bash", "ls", ToolStatus::Waiting, ""));
+    assert!(mcp_batch_strip_lines(&queue, Duration::ZERO, 120).is_none());
+    // A lone MCP call keeps its own (un-aggregated) cell too.
+    let mut lone = VecDeque::new();
+    lone.push_back(mcp_tool(ToolStatus::Running, ""));
+    assert!(mcp_batch_strip_lines(&lone, Duration::ZERO, 120).is_none());
+}
+
+#[test]
+fn a_narrow_terminal_drops_the_mcp_hint_before_the_label() {
+    let lines = tool_lines(&mcp_tool(ToolStatus::Running, ""), 20);
+    let head = plain(&lines[0]);
+    assert!(head.starts_with("● Calling deepwiki…"), "got {head:?}");
+    assert!(!head.contains("ctrl+o"), "no room for the hint at 20 cols");
+}

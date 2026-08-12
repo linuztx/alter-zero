@@ -733,6 +733,28 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let y = area.y + area.height.saturating_sub(1);
         return (x, y);
     }
+    // The `/mcp` manager parks in the corner too — except its auth page,
+    // whose `URL >` paste field seats the caret at the typed text's end
+    // (found from the region's bottom: the field sits a fixed 4 rows up —
+    // its row, the blank, the return note, the blank, the rule — plus the
+    // `Checking…` row while a submission runs). See `docs/mcp.md`.
+    if let Some(menu) = &app.mcp_menu {
+        if menu.page == crate::app::McpPage::Auth {
+            let extra = if menu.auth.submitted { 1 } else { 0 };
+            let x =
+                cols(MODEL_INDENT)
+                    + cols(super::theme::MCP_AUTH_PROMPT)
+                    + cols(&menu.auth.input).min(usize::from(area.width).saturating_sub(
+                        cols(MODEL_INDENT) + cols(super::theme::MCP_AUTH_PROMPT) + 1,
+                    ));
+            let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
+            let y = area.y + area.height.saturating_sub(5 + extra);
+            return (x, y);
+        }
+        let x = area.x + area.width.saturating_sub(1);
+        let y = area.y + area.height.saturating_sub(1);
+        return (x, y);
+    }
     // The ↓ background manager band has no text entry at all — park the
     // (shown-once-per-frame) cursor in the band's far corner where it reads
     // as chrome, not input.

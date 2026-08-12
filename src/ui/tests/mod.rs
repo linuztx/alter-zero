@@ -21,6 +21,7 @@ mod hooks_view;
 mod layout;
 mod live;
 mod login_view;
+mod mcp_view;
 mod menu;
 mod message;
 mod model_view;

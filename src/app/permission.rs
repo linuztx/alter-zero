@@ -239,15 +239,13 @@ impl App {
         }
         // Ctrl+A — the mode toggle, reachable inside the prompt too. On a
         // file prompt it IS option 2 (allow all edits = edit mode); on a
-        // command prompt it only flips the posture — the command still asks,
-        // and the loop's sweep releases any queued file requests the new
-        // mode covers.
+        // command or MCP prompt it only flips the posture — the call still
+        // asks (their option 2 is a named rule, not the mode), and the
+        // loop's sweep releases any queued file requests the new mode covers.
         if ctrl && key.code == KeyCode::Char('a') {
-            if self
-                .permission
-                .as_ref()
-                .is_some_and(|p| p.request.kind != PermissionKind::Bash)
-            {
+            if self.permission.as_ref().is_some_and(|p| {
+                matches!(p.request.kind, PermissionKind::Write | PermissionKind::Edit)
+            }) {
                 return self.resolve_permission(PermissionDecision::ApproveAlways);
             }
             return self.toggle_permission_mode();

@@ -155,6 +155,15 @@ pub(super) const TOOL_MORE_PREFIX: &str = "     … ";
 /// Hint telling the user how to see the full output.
 pub(super) const EXPAND_HINT: &str = " (ctrl+o to expand)";
 
+/// The collapsed MCP cell's vocabulary (`docs/mcp.md`): a running call's
+/// `● Calling {server}… (ctrl+o to expand)` header and the resolved
+/// bullet-less dim `Called {server} (ctrl+o to expand)` line (the settled
+/// thinking line's shape — `REASONING_LABEL_COLOR`). The full
+/// `{server} - {tool} (MCP)({args})` story lives in Ctrl+O.
+pub(super) const MCP_CALLING_PREFIX: &str = "Calling ";
+pub(super) const MCP_CALLING_SUFFIX: &str = "…";
+pub(super) const MCP_CALLED_PREFIX: &str = "Called ";
+
 /// How many output lines a `!` shell command shows inline before collapsing the
 /// rest behind a `… +N lines (ctrl+o to expand)` hint (Claude-Code's exec-cell
 /// preview). The full output is always in the Ctrl+O view.
@@ -862,6 +871,31 @@ pub(super) const HOOKS_SOURCE_LABEL: &str = "User settings";
 /// The detail page's field-name column: `Source:` (the widest) plus its pad,
 /// so the values line up (`Event:    PreToolUse`).
 pub(super) const HOOKS_FIELD_COL: usize = 10;
+
+/// The `/mcp` manager (`docs/mcp.md`) — the hooks menu's twin, so it borrows
+/// the whole `HOOKS_*` frame (marker, overflow arrows, window size, hints)
+/// and adds only its own vocabulary.
+///
+/// The list page's title + hint.
+pub(super) const MCP_TITLE: &str = "Manage MCP servers";
+pub(super) const MCP_LIST_HINT: &str = "↑/↓ to navigate · Enter to confirm · Esc to cancel";
+pub(super) const MCP_SERVER_HINT: &str = "↑/↓ to navigate · Enter to select · Esc to back";
+/// The empty list names both config files — "why isn't my server here?" is
+/// its only question (the skills empty-state posture).
+pub(super) const MCP_NONE_FOUND: &str = "No MCP servers configured. Add one at:";
+/// The detail page's field column (`Config location:  ` is the widest).
+pub(super) const MCP_FIELD_COL: usize = 18;
+/// The auth page's fixed lines.
+pub(super) const MCP_AUTH_BROWSER_NOTE: &str = "*  A browser window will open for authentication";
+pub(super) const MCP_AUTH_COPY_NOTE: &str =
+    "If your browser doesn't open automatically, copy this URL manually (c to copy)";
+pub(super) const MCP_AUTH_PASTE_NOTE: &str =
+    "If the redirect page shows a connection error, paste the URL from your browser's address bar:";
+pub(super) const MCP_AUTH_PROMPT: &str = "URL > ";
+pub(super) const MCP_AUTH_RETURN_NOTE: &str =
+    "Return here after authenticating in your browser. Press Esc to go back.";
+pub(super) const MCP_AUTH_WAITING: &str = "Preparing the authorization request…";
+pub(super) const MCP_AUTH_SUBMITTED: &str = "Checking the pasted URL…";
 
 /// The closing direction on the detail page.
 pub(super) const HOOKS_MODIFY_NOTE: &str =

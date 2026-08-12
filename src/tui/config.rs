@@ -602,3 +602,50 @@ pub(crate) fn system_prompt(cwd: &Path) -> Option<String> {
             )
         })
 }
+
+/// Is the MCP feature on? On by default; a falsy `ALTER_ZERO_MCP` turns the
+/// whole thing off — no connections, no tools, `/mcp` explains via toast
+/// (`docs/mcp.md`).
+pub(crate) fn mcp_enabled() -> bool {
+    env_flag("ALTER_ZERO_MCP")
+}
+
+/// The **user** MCP config file: `ALTER_ZERO_MCP_FILE` (what makes a smoke
+/// run hermetic — the project `.mcp.json` is still discovered), else
+/// `{config_home}/mcp.json`.
+pub(crate) fn mcp_user_file_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("ALTER_ZERO_MCP_FILE") {
+        return Some(PathBuf::from(path));
+    }
+    config_home().map(|dir| dir.join("mcp.json"))
+}
+
+/// The OAuth token store (`docs/mcp.md`).
+pub(crate) fn mcp_auth_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("mcp-auth.json"))
+}
+
+/// One MCP timeout knob in milliseconds, defaulting when unset/unparseable.
+fn mcp_timeout_ms(name: &str, default: std::time::Duration) -> std::time::Duration {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|ms| *ms > 0)
+        .map_or(default, std::time::Duration::from_millis)
+}
+
+/// The per-server connect budget (`ALTER_ZERO_MCP_STARTUP_TIMEOUT_MS`).
+pub(crate) fn mcp_startup_timeout() -> std::time::Duration {
+    mcp_timeout_ms(
+        "ALTER_ZERO_MCP_STARTUP_TIMEOUT_MS",
+        alter_zero::llm::mcp::DEFAULT_STARTUP_TIMEOUT,
+    )
+}
+
+/// The per-call budget (`ALTER_ZERO_MCP_TOOL_TIMEOUT_MS`).
+pub(crate) fn mcp_tool_timeout() -> std::time::Duration {
+    mcp_timeout_ms(
+        "ALTER_ZERO_MCP_TOOL_TIMEOUT_MS",
+        alter_zero::llm::mcp::DEFAULT_TOOL_TIMEOUT,
+    )
+}

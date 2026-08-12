@@ -76,7 +76,15 @@ pub(super) fn tool_header_lines(
         .add_modifier(Modifier::BOLD);
     let bullet = || Span::styled(TOOL_BULLET.to_string(), bullet_style);
     let name = || Span::styled(tool.name.clone(), name_style);
-    if tool.args.is_empty() {
+    // An MCP call stores its **raw arguments JSON** (what makes the record
+    // replayable — `docs/mcp.md`); the header derives the pretty
+    // `key: "value"` form at render time instead.
+    let args = if crate::mcp::is_mcp_display_name(&tool.name) {
+        crate::mcp::pretty_args(&tool.args)
+    } else {
+        tool.args.clone()
+    };
+    if args.is_empty() {
         return vec![Line::from(vec![bullet(), name()])];
     }
     let args_style = Style::new()
@@ -89,10 +97,7 @@ pub(super) fn tool_header_lines(
     // `(`.
     let indent_cols = cols(TOOL_BULLET) + cols(&tool.name);
     let body_width = (width as usize).saturating_sub(indent_cols).max(1);
-    let mut rows = wrap_inline(
-        &[(format!("({})", tool.args), args_style)],
-        body_width as u16,
-    );
+    let mut rows = wrap_inline(&[(format!("({args})"), args_style)], body_width as u16);
     // Cap a very long header: keep the first `max` rows and replace the tail with
     // `…)` (fitted within the body width, the same bold white) — the whole command
     // is still in Ctrl+O.
@@ -409,12 +414,133 @@ fn ask_cell_lines(
     Some(lines)
 }
 
+/// The **collapsed** MCP cell (`docs/mcp.md`) — inline it is deliberately
+/// quiet, the full `{server} - {tool} (MCP)({args})` story living in Ctrl+O:
+///
+/// - **Running/Waiting**: `● Calling {server}… (ctrl+o to expand)` — the
+///   bullet coloured (and, live, breathing) by status — over a one-row peek
+///   of the call's primary string argument (`⎿ "query"`), or the dim
+///   `⎿ Waiting…` for a batch sibling.
+/// - **Resolved ok**: the bullet-less dim
+///   `Called {server} (ctrl+o to expand)` line — the settled thinking line's
+///   exact shape ([`REASONING_LABEL_COLOR`]), because what is left is a fact
+///   about the turn; the result text never reaches inline scrollback.
+/// - **Failed / everything else**: `None` — the loud generic red cell (a
+///   failure must not whisper).
+fn mcp_cell_lines(
+    tool: &ToolCall,
+    width: u16,
+    pulse: Option<Duration>,
+) -> Option<Vec<Line<'static>>> {
+    let server = crate::mcp::display_server(&tool.name)?.to_string();
+    match tool.status {
+        ToolStatus::Waiting | ToolStatus::Running => {
+            let mut lines = vec![mcp_calling_header(
+                &format!("{MCP_CALLING_PREFIX}{server}{MCP_CALLING_SUFFIX}"),
+                tool.status,
+                pulse,
+                width,
+            )];
+            let peek_width = (width as usize)
+                .saturating_sub(cols(TOOL_RESULT_PREFIX))
+                .max(1);
+            if tool.status == ToolStatus::Waiting {
+                lines.push(result_row(0, TOOL_WAITING.to_string()));
+            } else if let Some(peek) = crate::mcp::primary_arg(&tool.args) {
+                lines.push(output_row(0, truncate_cols(&peek, peek_width)));
+            }
+            Some(lines)
+        }
+        ToolStatus::Ok => Some(vec![Line::from(Span::styled(
+            format!("{MCP_CALLED_PREFIX}{server}{EXPAND_HINT}"),
+            Style::new().fg(REASONING_LABEL_COLOR),
+        ))]),
+        ToolStatus::Failed | ToolStatus::Backgrounded => None,
+    }
+}
+
+/// The `● Calling {label}… (ctrl+o to expand)` header row a collapsed MCP
+/// cell (or the aggregated all-MCP batch strip) wears — truncated to the
+/// width, the hint dropped first when the terminal is too narrow for both.
+fn mcp_calling_header(
+    label: &str,
+    status: ToolStatus,
+    pulse: Option<Duration>,
+    width: u16,
+) -> Line<'static> {
+    let bullet_style = Style::new()
+        .fg(tool_status_color(status, pulse))
+        .add_modifier(Modifier::BOLD);
+    let label_room = (width as usize).saturating_sub(cols(TOOL_BULLET)).max(1);
+    let mut spans = vec![
+        Span::styled(TOOL_BULLET.to_string(), bullet_style),
+        Span::styled(
+            truncate_cols(label, label_room).to_string(),
+            Style::new()
+                .fg(TOOL_NAME_COLOR)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    if cols(TOOL_BULLET) + cols(label) + cols(EXPAND_HINT) <= width as usize {
+        spans.push(Span::styled(
+            EXPAND_HINT.to_string(),
+            Style::new().fg(TOOL_DIM_COLOR),
+        ));
+    }
+    Line::from(spans)
+}
+
+/// The one aggregated live-strip cell for a parallel batch whose calls are
+/// **all** MCP (`docs/mcp.md`): `● Calling deepwiki, context7 3 times…
+/// (ctrl+o to expand)` — the servers in call order — over the running call's
+/// primary-argument peek. `None` when any call isn't MCP (the ordinary
+/// per-cell strip stands).
+pub(super) fn mcp_batch_strip_lines(
+    queue: &VecDeque<ToolCall>,
+    pulse: Duration,
+    width: u16,
+) -> Option<Vec<Line<'static>>> {
+    if queue.len() < 2 {
+        return None;
+    }
+    let servers: Vec<&str> = queue
+        .iter()
+        .map(|tool| crate::mcp::display_server(&tool.name))
+        .collect::<Option<_>>()?;
+    let label = format!(
+        "{MCP_CALLING_PREFIX}{}{MCP_CALLING_SUFFIX}",
+        crate::mcp::batch_label(&servers)
+    );
+    let mut lines = vec![mcp_calling_header(
+        &label,
+        ToolStatus::Running,
+        Some(pulse),
+        width,
+    )];
+    if let Some(peek) = queue
+        .iter()
+        .find(|tool| tool.status == ToolStatus::Running)
+        .and_then(|tool| crate::mcp::primary_arg(&tool.args))
+    {
+        let peek_width = (width as usize)
+            .saturating_sub(cols(TOOL_RESULT_PREFIX))
+            .max(1);
+        lines.push(output_row(0, truncate_cols(&peek, peek_width)));
+    }
+    Some(lines)
+}
+
 /// [`tool_cell_lines`] minus the trailing provenance note, so every branch's
 /// early return stays as it was and the note lands exactly once.
 fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<Line<'static>> {
     // The resolved ask cell replaces the whole header with its outcome
     // headline (`docs/ask.md`).
     if let Some(lines) = ask_cell_lines(tool, width, pulse, /*cap=*/ true) {
+        return lines;
+    }
+    // The collapsed MCP cell (`docs/mcp.md`) — its failed state falls
+    // through to the loud generic path below.
+    if let Some(lines) = mcp_cell_lines(tool, width, pulse) {
         return lines;
     }
     let peek_width = (width as usize)

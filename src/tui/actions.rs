@@ -190,6 +190,12 @@ impl Session<'_> {
                 // Esc/Ctrl+C dismissed the browser: nothing to reap; the
                 // region collapses back to the composer on the next draw.
             }
+            Action::OpenMcpMenu => self.open_mcp_menu(),
+            Action::CloseMcpMenu => {
+                // Esc/Ctrl+C dismissed the manager: nothing to reap; the
+                // region collapses back to the composer on the next draw.
+            }
+            Action::McpOp(op) => self.apply_mcp_op(op),
             Action::Notice(text) => {
                 // A slash command's one-off system notice. The helper finalises
                 // any mid-flight reply segment first (same ordering trick as a
@@ -420,6 +426,12 @@ impl Session<'_> {
             // pastes is a setting name — swallow it rather than letting it
             // reach the composer draft underneath (docs/settings.md).
             View::Conversation if self.app.settings_picker.is_some() => {}
+            // The `/mcp` manager: the auth page's `URL >` field takes pastes
+            // (the redirect URL is always pasted — that is the field's whole
+            // point); every other page swallows them (docs/mcp.md).
+            View::Conversation if self.app.mcp_menu.is_some() => {
+                let _ = self.app.paste_into_mcp_auth(pasted);
+            }
             View::Conversation => {
                 self.app.on_paste(pasted);
                 // The paste may have changed the active `@token`.

@@ -49,6 +49,7 @@ mod inline;
 mod layout;
 mod live;
 mod login_view;
+mod mcp_view;
 mod menu;
 mod message;
 mod model_view;
@@ -89,6 +90,7 @@ pub use self::layout::{
 };
 pub use self::live::{render_live, render_live_with_preview};
 pub use self::login_view::render_key_onboarding;
+pub use self::mcp_view::{mcp_menu_height, mcp_view_lines, render_mcp_menu};
 pub use self::menu::{
     band_rows, centered_window, command_menu_lines, file_menu_lines, file_menu_rows, menu_rows,
     menu_window, shortcuts_lines, shortcuts_rows, skill_menu_lines, skill_menu_rows,

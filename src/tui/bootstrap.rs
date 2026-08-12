@@ -156,6 +156,18 @@ impl<'t> Session<'t> {
                 .disabled_for(&cwd.display().to_string()),
         );
 
+        // The MCP servers (docs/mcp.md): both config files parsed and merged,
+        // the manager built over them, and every enabled server's connect
+        // kicked off on worker threads — never blocking the first frame. The
+        // event channel is a select! source like the background shells'.
+        let (mcp_tx, mcp_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mcp_manager = config::mcp_enabled().then(|| {
+            let manager =
+                alter_zero::llm::mcp::McpManager::new(mcp_tx, super::mcp::load_mcp_sources(&cwd));
+            manager.start_connections();
+            manager
+        });
+
         // The `/settings` knobs (docs/settings.md): the saved `settings.json`
         // with each `ALTER_ZERO_*` override applied on top. Resolved BEFORE the
         // backend, which is built around three of them (tools, retries,
@@ -206,6 +218,7 @@ impl<'t> Session<'t> {
             &ask,
             &task_registry,
             &skill_registry,
+            mcp_manager.as_ref(),
             &settings,
             hook_setup,
         );
@@ -304,6 +317,7 @@ impl<'t> Session<'t> {
             probe_rx,
             bg_rx,
             agent_rx,
+            mcp_rx,
             _file_worker: file_worker,
             registry,
             agent_registry,
@@ -311,6 +325,7 @@ impl<'t> Session<'t> {
             ask,
             task_registry,
             skill_registry,
+            mcp: mcp_manager,
             // Seeded with the startup walk's failures, so the first turn's
             // rescan doesn't re-toast what the banner already said.
             reported_skill_errors: skill_errors
@@ -335,6 +350,7 @@ impl<'t> Session<'t> {
         // showing the hooks one — the actionable typo beats the size refusal.
         session.report_hooks_error(hooks_error);
         session.report_skill_errors(&skill_errors);
+        session.report_mcp_errors();
         let picker = session.apply_startup(startup);
         session.paint_first_frame(picker)?;
 
@@ -587,6 +603,12 @@ impl<'t> Session<'t> {
         // in-flight requests promptly — docs/agent-tool.md).
         self.registry.kill_all();
         self.agent_registry.kill_all();
+        // Tear down the MCP connections (docs/mcp.md): drops every transport
+        // — killing the stdio children synchronously — and cancels a running
+        // auth flow, so quitting can't orphan a server process.
+        if let Some(mcp) = &self.mcp {
+            mcp.shutdown();
+        }
         // The exit hint's handle (docs/cli.md): the active rollout's id, only when
         // this session holds a conversation — an empty session has no file and no
         // id (deferred create), and a `/clear`ed-then-idle one no history, so

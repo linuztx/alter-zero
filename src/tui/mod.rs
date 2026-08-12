@@ -83,6 +83,7 @@ pub(crate) mod config;
 pub(crate) mod event_loop;
 pub(crate) mod history_store;
 pub(crate) mod host;
+pub(crate) mod mcp;
 pub(crate) mod models;
 pub(crate) mod permission;
 pub(crate) mod recorder;
@@ -178,6 +179,9 @@ pub(crate) struct Session<'t> {
     /// (`docs/agent-tool.md`) — never swapped, because both outlive turns.
     bg_rx: tokio::sync::mpsc::UnboundedReceiver<BgEvent>,
     agent_rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>,
+    /// MCP server state changes (`docs/mcp.md`) — never swapped either;
+    /// connections outlive turns like background shells.
+    mcp_rx: tokio::sync::mpsc::UnboundedReceiver<alter_zero::llm::mcp::McpEvent>,
     /// The `@` file-search worker's handle, kept so the thread's lifetime is
     /// tied to the session's. Never joined.
     _file_worker: JoinHandle<()>,
@@ -207,6 +211,10 @@ pub(crate) struct Session<'t> {
     /// mid-session — or written by the agent itself — is live on the next
     /// turn instead of waiting for a restart.
     skill_registry: alter_zero::skills::SkillRegistry,
+    /// The MCP servers (`docs/mcp.md`): every declared server's live
+    /// connection state, the tool specs the backend folds in, and the OAuth
+    /// flows. `None` when `ALTER_ZERO_MCP` turned the feature off.
+    mcp: Option<alter_zero::llm::mcp::McpManager>,
     /// The `SKILL.md` files whose parse failure has already been raised as a
     /// toast, so the rescan doesn't repeat itself every turn. Re-seeded from
     /// each walk's errors, so a file that is fixed and broken again reports

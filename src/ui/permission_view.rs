@@ -348,16 +348,19 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         return Vec::new();
     };
     let request = &prompt.request;
-    let file_change = request.kind != PermissionKind::Bash;
+    let file_change = matches!(request.kind, PermissionKind::Write | PermissionKind::Edit);
 
     // Everything below the body, built FIRST so both budgets can see its
     // height: the standing notice (commands only), the question, the options —
     // or Tab's amend field, which is as tall as the feedback typed — the hint
     // row, and the closing frame.
     let mut below = Vec::new();
-    if !file_change {
+    if request.kind == PermissionKind::Bash {
         below.push(Line::default());
         below.push(text_row(PERMISSION_NOTICE, PERMISSION_NOTICE_COLOR, width));
+        below.push(Line::default());
+    }
+    if request.kind == PermissionKind::Mcp {
         below.push(Line::default());
     }
     below.push(text_row(&question(request), Color::Reset, width));
@@ -382,7 +385,10 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     // after the cells, the rule, its gap, the title, the target/gap row) — so
     // a big parallel batch collapses its excess `⎿ Waiting…` siblings into the
     // summary row instead of squeezing the body out (see [`context_lines`]).
-    let framing = if file_change { 2 } else { 0 };
+    // A framed body (a file change's numbered rows, an MCP call's arguments
+    // JSON) carries its two dashed rules.
+    let framed = file_change || request.kind == PermissionKind::Mcp;
+    let framing = if framed { 2 } else { 0 };
     let context_budget = usize::from(term_height).saturating_sub(
         5 + below.len() + framing + 2 /* the gap + rule */ + body_reserve(request, file_change),
     );
@@ -393,6 +399,15 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     out.extend([rule(width), Line::default(), title_row(request, width)]);
     if file_change {
         out.push(text_row(&request.target, PERMISSION_TARGET_COLOR, width));
+    } else if request.kind == PermissionKind::Mcp {
+        // The display form under the title — what the user knows the tool
+        // as; the wire name is in option 2's rule (`docs/mcp.md`).
+        out.push(text_row(
+            &crate::mcp::display_from_wire(&request.target)
+                .unwrap_or_else(|| request.target.clone()),
+            PERMISSION_TARGET_COLOR,
+            width,
+        ));
     } else {
         out.push(Line::default());
     }
@@ -431,19 +446,23 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
                 },
             ))
         }
+    } else if request.kind == PermissionKind::Mcp {
+        // The arguments JSON, framed like a file body (the `╌` rules) — the
+        // exact payload the server receives is what is being approved.
+        (!request.body.trim().is_empty()).then(|| mcp_body_rows(&request.body, width, budget))
     } else {
         Some(command_rows(request, width, budget))
     };
     if let Some((body, hidden)) = body_rows {
         capped = hidden > 0;
-        if file_change {
+        if framed {
             out.push(body_rule(width));
         }
         out.extend(body);
         if hidden > 0 {
             out.push(more_row(hidden, width));
         }
-        if file_change {
+        if framed {
             out.push(body_rule(width));
         }
     }
@@ -480,7 +499,7 @@ fn body_fits(body: &str, budget: usize) -> bool {
 /// rows like [`body_fits`] (wrapping only ever makes the shown body cap
 /// earlier, never pushes the options off).
 fn body_reserve(request: &PermissionRequest, file_change: bool) -> usize {
-    let natural = if file_change {
+    let natural = if file_change || request.kind == PermissionKind::Mcp {
         request.body.lines().count()
     } else {
         request.target.lines().count()
@@ -490,6 +509,31 @@ fn body_reserve(request: &PermissionRequest, file_change: bool) -> usize {
                 .map_or(0, |d| d.trim().lines().count())
     };
     natural.min(PERMISSION_MIN_BODY_ROWS)
+}
+
+/// An MCP prompt's body: the arguments JSON, word-wrapped and indented like
+/// the command body — at most `budget` rows, the hidden count returned for
+/// the `… +N lines` tail.
+fn mcp_body_rows(body: &str, width: u16, budget: usize) -> (Vec<Line<'static>>, usize) {
+    let indent = PERMISSION_COMMAND_INDENT;
+    let room = width.saturating_sub(cols(indent) as u16).max(1);
+    let source: Vec<String> = body
+        .lines()
+        .flat_map(|line| wrap_output(line, room))
+        .collect();
+    let hidden = source.len().saturating_sub(budget.max(1));
+    let shown = source.len() - hidden;
+    let lines = source
+        .into_iter()
+        .take(shown)
+        .map(|text| {
+            Line::from(vec![
+                Span::raw(indent),
+                Span::styled(text, Style::new().fg(PERMISSION_TARGET_COLOR)),
+            ])
+        })
+        .collect();
+    (lines, hidden)
 }
 
 /// The highlight language for the preview — the target path's extension.
@@ -516,6 +560,8 @@ pub fn render_permission(area: Rect, buf: &mut Buffer, app: &App) {
 pub fn permission_remember_label(request: &PermissionRequest) -> String {
     match request.kind {
         PermissionKind::Bash => command_scope(&request.target).display(),
+        // The MCP rule is the exact wire name (`docs/mcp.md`).
+        PermissionKind::Mcp => request.target.clone(),
         _ => "all edits".to_string(),
     }
 }

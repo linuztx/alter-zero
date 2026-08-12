@@ -98,6 +98,10 @@ pub enum PermissionKind {
     /// A `bash` command: no framed body — the command and its description sit
     /// indented under the title.
     Bash,
+    /// An `mcp__server__tool` call (`docs/mcp.md`): the target is the wire
+    /// name (the rule key), the body its arguments pretty-printed, the
+    /// question naming the `{server} - {tool} (MCP)` display form.
+    Mcp,
 }
 
 /// One tool call waiting on the user's approval.
@@ -161,6 +165,7 @@ pub const fn title(kind: PermissionKind) -> &'static str {
         PermissionKind::Write => "Create file",
         PermissionKind::Edit => "Edit file",
         PermissionKind::Bash => "Bash command",
+        PermissionKind::Mcp => "MCP tool",
     }
 }
 
@@ -183,7 +188,14 @@ pub fn question(request: &PermissionRequest) -> String {
             file_name(&request.target)
         ),
         PermissionKind::Bash => "Do you want to proceed?".to_string(),
+        PermissionKind::Mcp => format!("Do you want to use {}?", mcp_display(&request.target)),
     }
+}
+
+/// The `{server} - {tool} (MCP)` display form for an MCP request's wire-name
+/// `target` — what the question and the rejected cell name.
+fn mcp_display(wire: &str) -> String {
+    crate::mcp::display_from_wire(wire).unwrap_or_else(|| wire.to_string())
 }
 
 /// How many options every prompt offers (Yes / remember / No) — the length of
@@ -207,6 +219,9 @@ pub fn options(request: &PermissionRequest) -> [String; OPTION_COUNT] {
             "Yes, and don't ask again for: {}",
             command_scope(&request.target).display()
         ),
+        // An MCP rule remembers the exact wire name — precise, and the
+        // Claude Code rule shape (`docs/mcp.md`).
+        PermissionKind::Mcp => format!("Yes, and don't ask again for: {}", request.target),
         _ => "Yes, allow all edits during this session (ctrl+a)".to_string(),
     };
     ["Yes".to_string(), remember, "No".to_string()]
@@ -237,6 +252,7 @@ pub fn denied_display(request: &PermissionRequest, feedback: Option<&str>) -> St
         PermissionKind::Write => format!("User rejected write to {}", file_name(&request.target)),
         PermissionKind::Edit => format!("User rejected edit to {}", file_name(&request.target)),
         PermissionKind::Bash => "User rejected command".to_string(),
+        PermissionKind::Mcp => format!("User rejected {}", mcp_display(&request.target)),
     };
     match feedback.map(str::trim).filter(|f| !f.is_empty()) {
         Some(text) => format!("{headline}\n{AMEND_DISPLAY_LABEL}{text}"),
@@ -668,6 +684,11 @@ impl PermissionRules {
                 }
                 CommandScope::Exact(command) => self.exact.contains(&command),
             },
+            // An MCP call is covered only by its exact wire-name rule (or
+            // master, above): `edit` mode is about file changes and `auto`'s
+            // classifier is a `bash` reviewer — a remote tool asks
+            // (`docs/mcp.md`).
+            PermissionKind::Mcp => self.exact.contains(&request.target),
         }
     }
 
@@ -683,6 +704,13 @@ impl PermissionRules {
                     self.exact.insert(command);
                 }
             },
+            // The exact wire name — it persists in `permissions.json` like
+            // any exact rule, and can never collide with a real command
+            // (nothing the scope parser produces starts with `mcp__` and
+            // carries no space).
+            PermissionKind::Mcp => {
+                self.exact.insert(request.target.clone());
+            }
         }
     }
 }
@@ -1584,5 +1612,46 @@ mod tests {
             ProjectPermissions::from_rules(&edit_rules).mode.as_deref(),
             Some("edit")
         );
+    }
+    #[test]
+    fn an_mcp_request_asks_with_the_display_form_and_exact_rule() {
+        let req = request(PermissionKind::Mcp, "mcp__deepwiki__ask_question");
+        assert_eq!(title(PermissionKind::Mcp), "MCP tool");
+        assert_eq!(
+            question(&req),
+            "Do you want to use deepwiki - ask_question (MCP)?"
+        );
+        let opts = options(&req);
+        assert_eq!(
+            opts[1],
+            "Yes, and don't ask again for: mcp__deepwiki__ask_question"
+        );
+        assert_eq!(
+            denied_display(&req, None),
+            "User rejected deepwiki - ask_question (MCP)"
+        );
+        // No Ctrl+E hint — explain is a command affordance.
+        assert!(!hints(&req).iter().any(|(k, _)| *k == "ctrl+e"));
+    }
+
+    #[test]
+    fn mcp_rules_are_exact_and_survive_every_mode_below_master() {
+        let mut rules = PermissionRules::default();
+        let req = request(PermissionKind::Mcp, "mcp__deepwiki__ask_question");
+        assert!(!rules.allows(&req));
+        // Edit and auto modes still ask — a remote tool is not a file edit,
+        // and the classifier reviews bash (docs/mcp.md).
+        rules.mode = PermissionMode::Edit;
+        assert!(!rules.allows(&req));
+        rules.mode = PermissionMode::Auto;
+        assert!(!rules.allows(&req));
+        rules.mode = PermissionMode::Master;
+        assert!(rules.allows(&req));
+        rules.mode = PermissionMode::Manual;
+        rules.remember(&req);
+        assert!(rules.allows(&req));
+        assert!(rules.exact.contains("mcp__deepwiki__ask_question"));
+        // The rule is exact: a sibling tool still asks.
+        assert!(!rules.allows(&request(PermissionKind::Mcp, "mcp__deepwiki__read_wiki")));
     }
 }
