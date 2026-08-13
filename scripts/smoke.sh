@@ -7262,7 +7262,11 @@ TRJSON
 cat >"$TR_WORK/.alter-zero/hooks.json" <<'TRHOOKS'
 {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./fmt.sh"}]}]}}
 TRHOOKS
-APP_TR="env ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_CONFIG_DIR=$TR_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+# The phase runs in a temp cwd (-c "$TR_WORK"), so the binary path must be
+# absolute — the Phase 46 BIN_ABS rule; a relative $BIN would resolve inside
+# the temp project and never launch.
+TR_BIN="$(readlink -f "$BIN")"
+APP_TR="env ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_CONFIG_DIR=$TR_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $TR_BIN"
 tmux new-session -d -s "$S83" -x 100 -y 36 -c "$TR_WORK" "$APP_TR"
 # The pending toast rides the first frames and self-clears — poll for it.
 tr_toast=""
