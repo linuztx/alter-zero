@@ -142,10 +142,28 @@ pub(crate) fn load_project_layer(cwd: &Path) -> (Option<ProjectLayer>, Option<St
         return (None, None);
     }
     let root = alter_zero::project_doc::find_project_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
+    // The home directory is never a project (`trust::is_project_root`):
+    // launched in `~` the fallback root makes `{root}/.alter-zero` the
+    // user's own config home, and the layer would ask the user to trust
+    // their own files.
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    if !trust::is_project_root(&root, home.as_deref()) {
+        return (None, None);
+    }
     let (trust_file, trust_error) = config::load_trust_file(config::trust_json_path().as_deref());
     let project = root.display().to_string();
-    let hooks_path = trust::project_hooks_file(&root);
-    let [mcp_alter_path, mcp_compat_path] = trust::project_mcp_files(&root);
+    // The same self-inclusion guard, per file: a project path that IS the
+    // user layer's file (an `ALTER_ZERO_CONFIG_DIR` pointed inside the
+    // project) is already loaded without a gate — never re-read as project
+    // config.
+    let user_files = [
+        alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref()),
+        config::mcp_user_file_path(),
+    ];
+    let own = |path: &PathBuf| user_files.iter().flatten().any(|user| user == path);
+    let guard = |path: PathBuf| (!own(&path)).then_some(path);
+    let hooks_path = guard(trust::project_hooks_file(&root));
+    let [mcp_alter_path, mcp_compat_path] = trust::project_mcp_files(&root).map(guard);
     let parse_mcp = |text: &str| -> Result<mcp::McpFile, String> {
         let file = mcp::parse_mcp_file(text);
         // A document-level failure parses to a lone error and no servers —
@@ -158,9 +176,12 @@ pub(crate) fn load_project_layer(cwd: &Path) -> (Option<ProjectLayer>, Option<St
     };
     let layer = ProjectLayer {
         trusted: trust_file.has_project(&project),
-        hooks: load_file(hooks_path, hooks::HooksFile::parse, &trust_file, &project),
-        mcp_alter: load_file(mcp_alter_path, parse_mcp, &trust_file, &project),
-        mcp_compat: load_file(mcp_compat_path, parse_mcp, &trust_file, &project),
+        hooks: hooks_path
+            .and_then(|path| load_file(path, hooks::HooksFile::parse, &trust_file, &project)),
+        mcp_alter: mcp_alter_path
+            .and_then(|path| load_file(path, parse_mcp, &trust_file, &project)),
+        mcp_compat: mcp_compat_path
+            .and_then(|path| load_file(path, parse_mcp, &trust_file, &project)),
         root,
     };
     (Some(layer), trust_error)
@@ -216,14 +237,18 @@ impl Session<'_> {
     }
 
     /// `/trust`: open the review menu over the bootstrap-loaded project
-    /// layer (the `open_hooks_menu` injection seam). Without the layer
-    /// (`ALTER_ZERO_PROJECT_CONFIG` off) the command explains via toast.
+    /// layer (the `open_hooks_menu` injection seam). Without the layer the
+    /// command explains via toast — which of the two reasons applies
+    /// (`ALTER_ZERO_PROJECT_CONFIG` off, or the cwd resolving to the home
+    /// directory, which is never a project).
     pub(crate) fn open_trust_menu(&mut self) {
         let Some(layer) = &self.project_layer else {
-            self.toast(
-                "Project config is disabled (ALTER_ZERO_PROJECT_CONFIG). Unset it to review.",
-                ToastKind::Info,
-            );
+            let message = if config::project_config_enabled() {
+                "The home directory is not a project — project config loads from a repo's .alter-zero"
+            } else {
+                "Project config is disabled (ALTER_ZERO_PROJECT_CONFIG). Unset it to review."
+            };
+            self.toast(message, ToastKind::Info);
             return;
         };
         let home = std::env::var_os("HOME").map(PathBuf::from);

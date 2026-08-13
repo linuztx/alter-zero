@@ -642,7 +642,13 @@ command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the
 (union-merged after the user file — `HooksFile::merged`, the pre-committed
 additive semantics) and `{root}/.alter-zero/mcp.json` + the compat
 `{root}/.mcp.json` (first-name-wins ahead of the user file) are read once at
-bootstrap, each file's bytes SHA-256-fingerprinted (`trust::fingerprint`)
+bootstrap — the root being the nearest-`.git` ancestor-or-self, else the cwd,
+**except the home directory, which is never a project**
+(`trust::is_project_root`: a git-less `~` would make `{root}/.alter-zero`
+the user's own config home and ask the user to trust their own files; a
+per-file identity guard catches the same collision under a moved
+`ALTER_ZERO_CONFIG_DIR`) — each file's bytes SHA-256-fingerprinted
+(`trust::fingerprint`)
 and checked against `{config_home}/trust.json` — **default-deny**, because a
 checked-in hooks handler or stdio server executing on clone is the hole the
 hooks doc refused to open (and `.mcp.json` used to have): untrusted hooks

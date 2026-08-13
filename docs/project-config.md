@@ -9,7 +9,17 @@ uses), not a second spelling.
 The **project root** is the nearest ancestor-or-self of the cwd carrying a
 `.git` entry (`project_doc::find_project_root` — the `AGENTS.md`/skills/MCP
 walk-up, so launching in `repo/src` still finds `repo/.alter-zero`), falling
-back to the cwd itself in a directory that isn't a repo.
+back to the cwd itself in a directory that isn't a repo — **except the home
+directory, which is never a project** (`trust::is_project_root`, the
+`checkpoint::cwd_scope` instinct): launched in `~` the fallback root would
+make `{root}/.alter-zero` the user's own config home, and the layer would
+rediscover the user's `hooks.json`/`mcp.json` as pending "project config"
+and ask the user to trust their own files. In `~` the layer is simply off —
+no pending toast, `/trust` explains — while the same files keep loading as
+the user layer they are. A per-file identity guard in `tui::trust` catches
+the same collision anywhere else (an `ALTER_ZERO_CONFIG_DIR` pointed inside
+a project): a project path that *is* the user layer's file is never re-read
+as project config.
 
 What the project layer reads:
 

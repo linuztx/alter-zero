@@ -39,6 +39,21 @@ pub fn fingerprint(bytes: &[u8]) -> String {
     out
 }
 
+/// Is `root` a directory the project layer should read config from at all?
+///
+/// The **home directory is never a project** (the `checkpoint::cwd_scope`
+/// instinct): a cwd with no `.git` ancestor falls back to itself as the
+/// root, and launched in `~` that makes `{root}/.alter-zero` the user's own
+/// config home — the layer would rediscover the user's `hooks.json` and
+/// `mcp.json` as "project config" and raise a trust prompt asking the user
+/// to approve their own files. The boundary skips the layer instead (the
+/// per-file identity guard in `tui::trust` catches the same collision when
+/// `ALTER_ZERO_CONFIG_DIR` moves the config home somewhere else).
+#[must_use]
+pub fn is_project_root(root: &Path, home: Option<&Path>) -> bool {
+    home != Some(root)
+}
+
 /// The project's hooks file: `{root}/.alter-zero/hooks.json`.
 #[must_use]
 pub fn project_hooks_file(root: &Path) -> PathBuf {
@@ -399,6 +414,24 @@ mod tests {
             error: error.map(str::to_string),
             pending,
         }
+    }
+
+    #[test]
+    fn the_home_directory_is_never_a_project() {
+        // Launching in `~` resolves the fallback root to the home dir, where
+        // `{root}/.alter-zero` IS the user's own config home — the layer
+        // would rediscover the user's files as "project config" and ask the
+        // user to trust themself (the reported bug).
+        assert!(!is_project_root(
+            Path::new("/home/me"),
+            Some(Path::new("/home/me"))
+        ));
+        // Any other directory — a repo, a temp dir, home's own subdirs — is.
+        assert!(is_project_root(
+            Path::new("/home/me/repo"),
+            Some(Path::new("/home/me"))
+        ));
+        assert!(is_project_root(Path::new("/tmp/proj"), None));
     }
 
     #[test]

@@ -125,6 +125,7 @@ cleanup() {
 	tmux kill-session -t "${S}_trust" 2>/dev/null
 	[ -n "${TR_CFG:-}" ] && rm -rf "$TR_CFG" 2>/dev/null
 	[ -n "${TR_WORK:-}" ] && rm -rf "$TR_WORK" 2>/dev/null
+	[ -n "${TR_HOME:-}" ] && rm -rf "$TR_HOME" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -7412,7 +7413,47 @@ if ! printf '%s' "$tr_boot" | grep -qF "projfix · ✔ connected · 1 tool"; the
 	status=1
 fi
 tmux kill-session -t "$S83" 2>/dev/null
-rm -rf "$TR_CFG" "$TR_WORK"
+# The home directory is never a project (docs/project-config.md): a cwd with
+# no .git falls back to itself as the root, and launched in ~ that made
+# {root}/.alter-zero the user's own config home — the layer rediscovered the
+# user's files as pending "project config" and asked the user to trust
+# themself (the reported bug). A fake HOME carrying user-level hooks must
+# raise no pending toast, still load them as user hooks, and /trust explains.
+TR_HOME="$(mktemp -d)"
+mkdir -p "$TR_HOME/.alter-zero"
+cat >"$TR_HOME/.alter-zero/hooks.json" <<'TRHOME'
+{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./fmt.sh"}]}]}}
+TRHOME
+tmux new-session -d -s "$S83" -x 100 -y 36 -c "$TR_HOME" \
+	"env HOME=$TR_HOME ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $TR_BIN"
+sleep 1.5
+tr_home_pane="$(tmux capture-pane -t "$S83" -p)"
+echo "==== Phase 83: launched in the home directory ===="
+printf '%s\n' "$tr_home_pane"
+if printf '%s' "$tr_home_pane" | grep -qF "/trust to review"; then
+	echo "FAIL: Phase 83 — the user's own config home raised the project trust toast" >&2
+	status=1
+fi
+tmux send-keys -t "$S83" -l "/hooks"
+sleep 0.4
+tmux send-keys -t "$S83" Enter
+sleep 0.5
+if ! tmux capture-pane -t "$S83" -p | grep -qF "1 hook configured"; then
+	echo "FAIL: Phase 83 — the home config no longer loads as user-level hooks" >&2
+	status=1
+fi
+tmux send-keys -t "$S83" Escape
+sleep 0.4
+tmux send-keys -t "$S83" -l "/trust"
+sleep 0.4
+tmux send-keys -t "$S83" Enter
+sleep 0.5
+if ! tmux capture-pane -t "$S83" -p | grep -qF "The home directory is not a project"; then
+	echo "FAIL: Phase 83 — /trust in the home directory does not explain itself" >&2
+	status=1
+fi
+tmux kill-session -t "$S83" 2>/dev/null
+rm -rf "$TR_CFG" "$TR_WORK" "$TR_HOME"
 
 
 if [ "$status" -eq 0 ]; then
