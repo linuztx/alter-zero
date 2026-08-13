@@ -277,19 +277,19 @@ composer, one step per press in increasing autonomy:
 - **edit** — Claude Code's "auto-accept edits on": `write`/`edit` run without
   asking, `bash` commands still ask (until allow-listed).
 - **auto** — Claude Code's auto mode: `write`/`edit` run like edit mode, and
-  a `bash` command the allowlist doesn't already cover is reviewed by the
-  **auto mode classifier** — a silent LLM safety check in the user's stead
-  (the next section). No prompt opens in auto mode unless the classifier
-  itself fails.
+  a `bash` command — or an MCP tool call (`docs/mcp.md`) — the allowlist
+  doesn't already cover is reviewed by the **auto mode classifier** — a
+  silent LLM safety check in the user's stead (the next section). No prompt
+  opens in auto mode unless the classifier itself fails.
 - **master** — Claude Code's bypass-permissions posture: everything runs
   unasked. No prompt, no classifier; the user has taken the seatbelt off.
 
 The cycle wraps (`master` → `manual`), so one key walks the whole ladder.
 `PermissionRules::allows` encodes the standing coverage: file changes are
-covered by every mode above manual; a command only by master or the
-allowlist — auto mode's classifier is a **per-call consult in the approve
-seam**, never a standing rule, which is what lets a classifier failure fall
-back to the prompt.
+covered by every mode above manual; a command or an MCP call only by master
+or the allowlist — auto mode's classifier is a **per-call consult in the
+approve seam**, never a standing rule, which is what lets a classifier
+failure fall back to the prompt.
 
 Option 2 on a `write`/`edit` prompt **is** the switch to edit mode — the mode
 is exactly the old "allow all edits during this session" flag, made visible
@@ -313,24 +313,30 @@ disabled there is no mode: the footer segment is hidden and Ctrl+A raises a
 
 ## Auto mode: the classifier
 
-In auto mode a `bash` command that would have prompted goes to the **auto
-mode classifier** instead — Claude Code's auto-mode reviewer, rebuilt on the
-session's own provider (`llm::classifier::SafetyClassifier`). The approve
-seam (`llm::approval::approve_call`) consults it between the allowlist check
-and the prompt:
+In auto mode a `bash` command — or an MCP tool call (`docs/mcp.md`) — that
+would have prompted goes to the **auto mode classifier** instead — Claude
+Code's auto-mode reviewer, rebuilt on the session's own provider
+(`llm::classifier::SafetyClassifier`; the reference feeds its MCP calls to
+the same reviewer, `mcpToolInputToAutoClassifierInput`). The approve seam
+(`llm::approval::approve_call`) consults it between the allowlist check and
+the prompt:
 
 ```
-approve(bash call) ── gate.allows()? ── yes ─────────────────────► runs (no note)
-                       └ no · mode == auto
-                          classifier ── allow ──► runs, cell notes the classifier
-                                      ── deny ───► rejected with the reason
-                                      ── error ──► the ordinary prompt (fallback)
+approve(bash/MCP call) ── gate.allows()? ── yes ─────────────────► runs (no note)
+                           └ no · mode == auto
+                              classifier ── allow ──► runs, cell notes the classifier
+                                          ── deny ───► rejected with the reason
+                                          ── error ──► the ordinary prompt (fallback)
 ```
 
 The request is **one silent completion** — no events reach the UI, so the
 asked-about cell just keeps the `⎿ Waiting…` row its batch announcement gave
-it while the verdict is decided. The classifier sees only the command, the
-model's stated `description` (labelled a claim, not proof), and the cwd —
+it while the verdict is decided. The classifier sees only the request itself
+— for a command: the command, the model's stated `description` (labelled a
+claim, not proof), and the cwd; for an MCP call: the tool named
+`{server} - {tool}`, the server's own description of it, and the arguments
+in the cell's `key: "value"` form (`classifier_request_prompt`'s MCP arm —
+the wire name alone would hide where a remote call's risk actually lives) —
 never the conversation, so a poisoned transcript can't lobby it. Its system
 prompt (`prompts/classifier.md`, the `include_str!` seam every prompt uses)
 ends with the reference's strict output contract — the reply must begin
@@ -345,7 +351,7 @@ small-fast-model slot. Cancellation rides the same `CancelToken` polling as
 every request, and a classify that fails *because* the turn was torn down
 resolves like a reaped gate wait — no prompt is raised into a dying turn.
 
-An **allowed** command runs exactly like a user-approved one, plus a
+An **allowed** call runs exactly like a user-approved one, plus a
 provenance note: `run_agent` emits `StreamEvent::ToolNote` right after the
 `ToolStart` (the `Approval::AllowNoted` variant), the loop keeps it on the
 running call (`App::set_tool_note` → `ToolCall::approval_note`), and once the
@@ -368,15 +374,16 @@ statuses — a running cell keeps its live look), rides the rollout as
 survives a `/resume`, and a subagent's allowed call carries it onto its own
 transcript through the same `ToolNote` event (`AgentRun::apply`).
 
-A **denied** command never runs: the seam returns `Approval::Reject` with
+A **denied** call never runs: the seam returns `Approval::Reject` with
 `Denied by auto mode classifier` (+ `Reason: {…}` on a second line, the
 amend-feedback shape) as the red cell and a longer model-facing result —
-adapted from Claude Code's auto-mode denial — telling the model the command
-was not executed, other work may continue, a safer approach is fine, the
-denial's intent must not be bypassed, and an essential capability means stop
-and ask the user (who can run it themselves, approve it in manual mode, or
-Ctrl+A). Both texts ride the recorded call like any rejection
-(`context_output`), so later turns replay exactly what the model was told.
+adapted from Claude Code's auto-mode denial, worded kind-neutrally since it
+answers commands and MCP calls alike — telling the model the call was not
+executed, other work may continue, a safer approach is fine, the denial's
+intent must not be bypassed, and an essential capability means stop and ask
+the user (who can approve it in manual mode, do it themselves, or Ctrl+A).
+Both texts ride the recorded call like any rejection (`context_output`), so
+later turns replay exactly what the model was told.
 
 A classifier **failure** — network, an unparseable reply — falls back to the
 ordinary prompt: asking the user is the safe posture, and the one that still
@@ -387,8 +394,11 @@ list): the scripted `ls -la` runs with the note, the scripted
 `rm -rf /tmp/scratch` rejects, and the same demo in manual mode prompts —
 which is what lets `smoke.sh` drive the whole feature without a provider.
 The live OpenRouter suite (`tests/live_openrouter.rs`) covers the real
-thing: verdicts both ways, and a full auto-mode turn whose events show
-`ToolStart → ToolNote → ToolEnd` with no `Permission` in sight.
+thing: verdicts both ways for commands *and* MCP calls, and a full
+auto-mode turn whose events show `ToolStart → ToolNote → ToolEnd` with no
+`Permission` in sight — `tests/live_mcp.rs` closing the loop with a real
+server tool classified end to end
+(`live_auto_mode_classifies_an_mcp_call_instead_of_prompting`).
 
 ## Persisted per project (`~/.alter-zero/permissions.json`)
 

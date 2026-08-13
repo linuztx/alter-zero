@@ -197,7 +197,7 @@ impl Session<'_> {
                     "Mode: edit — file edits run without asking, commands still ask"
                 }
                 PermissionMode::Auto => {
-                    "Mode: auto — file edits run; a classifier reviews commands"
+                    "Mode: auto — file edits run; a classifier reviews commands and MCP tools"
                 }
                 PermissionMode::Master => "Mode: master — everything runs without asking",
                 PermissionMode::Manual => "Mode: manual — asking before edits and commands",

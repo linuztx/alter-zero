@@ -34,11 +34,12 @@ pub enum PermissionMode {
     /// `bash` commands still ask until allow-listed.
     Edit,
     /// Claude Code's auto mode: `write`/`edit` run unasked like [`Edit`],
-    /// and a `bash` command is reviewed by the **auto mode classifier** — a
-    /// silent LLM safety check — instead of the user. An allowed command
-    /// runs (its cell noting [`CLASSIFIER_ALLOWED_NOTE`]); a denied one is
-    /// rejected with the classifier's reason; a classifier *failure* falls
-    /// back to the ordinary prompt. See `docs/permissions.md`.
+    /// and a `bash` command — or an MCP tool call (`docs/mcp.md`) — is
+    /// reviewed by the **auto mode classifier** — a silent LLM safety check —
+    /// instead of the user. An allowed call runs (its cell noting
+    /// [`CLASSIFIER_ALLOWED_NOTE`]); a denied one is rejected with the
+    /// classifier's reason; a classifier *failure* falls back to the
+    /// ordinary prompt. See `docs/permissions.md`.
     ///
     /// [`Edit`]: Self::Edit
     Auto,
@@ -323,14 +324,14 @@ pub fn explain_display() -> String {
     "User asked for an explanation first".to_string()
 }
 
-/// The **auto mode classifier**'s verdict on one `bash` command
-/// (`docs/permissions.md`): whether it may run unasked, and — for a denial —
-/// the reason both the red cell and the model read. Produced by the real
-/// LLM classifier (`crate::llm::classifier`) or the dummy's offline
-/// heuristic ([`auto_verdict`]).
+/// The **auto mode classifier**'s verdict on one `bash` command or MCP tool
+/// call (`docs/permissions.md`, `docs/mcp.md`): whether it may run unasked,
+/// and — for a denial — the reason both the red cell and the model read.
+/// Produced by the real LLM classifier (`crate::llm::classifier`) or the
+/// dummy's offline heuristic ([`auto_verdict`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassifierVerdict {
-    /// `true` — run the command; `false` — reject it with `reason`.
+    /// `true` — run the call; `false` — reject it with `reason`.
     pub allow: bool,
     /// The classifier's one-line justification. Shown on a denial's cell
     /// (`Reason: …`) and in the model-facing result; informational (and
@@ -338,13 +339,13 @@ pub struct ClassifierVerdict {
     pub reason: String,
 }
 
-/// The dim note appended to a command cell the classifier allowed — the
-/// transcript's record that no human approved this call.
+/// The dim note appended to a cell the classifier allowed — the transcript's
+/// record that no human approved this call.
 pub const CLASSIFIER_ALLOWED_NOTE: &str = "Allowed by auto mode classifier";
 
-/// The short output recorded on a command cell the classifier **denied** —
-/// the red counterpart of [`CLASSIFIER_ALLOWED_NOTE`], with the classifier's
-/// reason on a second line when it gave one (the amend-feedback shape).
+/// The short output recorded on a cell the classifier **denied** — the red
+/// counterpart of [`CLASSIFIER_ALLOWED_NOTE`], with the classifier's reason
+/// on a second line when it gave one (the amend-feedback shape).
 #[must_use]
 pub fn classifier_denied_display(reason: Option<&str>) -> String {
     let headline = "Denied by auto mode classifier";
@@ -355,10 +356,11 @@ pub fn classifier_denied_display(reason: Option<&str>) -> String {
 }
 
 /// The model-facing tool result for a classifier denial — adapted from
-/// Claude Code's auto-mode rejection message: the command did not run, other
+/// Claude Code's auto-mode rejection message: the call did not run, other
 /// work may continue, a safer approach is fine, but the intent behind the
 /// denial must not be bypassed; if the capability is essential, stop and ask
-/// the user.
+/// the user. Kind-neutral wording, since the classifier reviews `bash`
+/// commands and MCP tool calls alike (`docs/mcp.md`).
 #[must_use]
 pub fn classifier_denial_result(reason: Option<&str>) -> String {
     let reason = match reason.map(str::trim).filter(|r| !r.is_empty()) {
@@ -366,13 +368,13 @@ pub fn classifier_denial_result(reason: Option<&str>) -> String {
         None => String::new(),
     };
     format!(
-        "Permission to run this command was denied by the auto mode classifier.{reason} \
-         The command was not executed. If you have other tasks that don't depend on this \
+        "Permission for this tool call was denied by the auto mode classifier.{reason} \
+         The call was not executed. If you have other tasks that don't depend on this \
          action, continue working on those. You may try to accomplish the goal in a safer, \
          narrower way, but do not attempt to bypass the intent behind this denial. If this \
          capability is essential to the user's request, STOP and explain what you were \
-         trying to do and why — the user can run it themselves, approve it in manual mode, \
-         or switch modes (ctrl+a)."
+         trying to do and why — the user can approve it in manual mode, run the action \
+         themselves, or switch modes (ctrl+a)."
     )
 }
 
@@ -694,10 +696,10 @@ pub struct PermissionRules {
 
 impl PermissionRules {
     /// Does a standing approval already cover this request? File changes are
-    /// covered by every mode above manual; a command only by
+    /// covered by every mode above manual; a command or an MCP call only by
     /// [`PermissionMode::Master`] or the allowlist — auto mode's classifier
     /// is a per-call consult in the approve seam, never a standing rule, so
-    /// `allows` still says no for its commands.
+    /// `allows` still says no for the calls it reviews.
     #[must_use]
     pub fn allows(&self, request: &PermissionRequest) -> bool {
         if self.mode == PermissionMode::Master {
@@ -715,9 +717,10 @@ impl PermissionRules {
                 CommandScope::Exact(command) => self.exact.contains(&command),
             },
             // An MCP call is covered only by its exact wire-name rule (or
-            // master, above): `edit` mode is about file changes and `auto`'s
-            // classifier is a `bash` reviewer — a remote tool asks
-            // (`docs/mcp.md`).
+            // master, above): `edit` mode is about file changes, and `auto`'s
+            // classifier is the approve seam's per-call consult — never a
+            // standing rule — so an uncovered tool still classifies (or, in
+            // the asking modes, asks) every time (`docs/mcp.md`).
             PermissionKind::Mcp => self.exact.contains(&request.target),
         }
     }
@@ -1678,8 +1681,10 @@ mod tests {
         let mut rules = PermissionRules::default();
         let req = request(PermissionKind::Mcp, "mcp__deepwiki__ask_question");
         assert!(!rules.allows(&req));
-        // Edit and auto modes still ask — a remote tool is not a file edit,
-        // and the classifier reviews bash (docs/mcp.md).
+        // Edit mode still asks — a remote tool is not a file edit — and auto
+        // mode's `allows` still says no: its classifier is the approve seam's
+        // per-call consult, never a standing rule, so an uncovered tool
+        // classifies every time exactly like a command (docs/mcp.md).
         rules.mode = PermissionMode::Edit;
         assert!(!rules.allows(&req));
         rules.mode = PermissionMode::Auto;

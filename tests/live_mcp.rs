@@ -311,3 +311,43 @@ fn live_a_parallel_deepwiki_batch_renders_as_one_cell() {
     );
     manager.shutdown();
 }
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_auto_mode_classifies_an_mcp_call_instead_of_prompting() {
+    // The reported gap (docs/mcp.md): in auto mode a server tool used to
+    // raise the permission prompt anyway. It must ride the classifier like a
+    // command — no `Permission` event, the `ToolNote` provenance row on the
+    // allowed call, and a green resolution.
+    use alter_zero::permission::{PermissionGate, PermissionMode};
+    let manager = connected_deepwiki();
+    let gate = PermissionGate::new();
+    gate.set_mode(PermissionMode::Auto);
+    let backend = backend_with_deepwiki(manager.clone()).with_permissions(gate);
+    let events = run_turn(
+        &backend,
+        &format!(
+            "Call the deepwiki tool read_wiki_structure for the repository {REPO}, then \
+             answer in one sentence."
+        ),
+        Duration::from_secs(180),
+    );
+    let mut notes = Vec::new();
+    let mut ends = Vec::new();
+    for event in &events {
+        match event {
+            StreamEvent::Permission(request) => panic!("auto mode must not prompt: {request:?}"),
+            StreamEvent::ToolNote(note) => notes.push(note.clone()),
+            StreamEvent::ToolEnd { ok, .. } => ends.push(*ok),
+            StreamEvent::Error(message) => panic!("the turn failed: {message}"),
+            _ => {}
+        }
+    }
+    println!("notes: {notes:?}, ends: {ends:?}");
+    assert!(
+        notes.iter().any(|n| n == "Allowed by auto mode classifier"),
+        "the classifier cleared the call: {notes:?}"
+    );
+    assert!(ends.iter().any(|ok| *ok), "the MCP call ran: {ends:?}");
+    manager.shutdown();
+}

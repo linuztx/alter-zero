@@ -211,9 +211,17 @@ The backend follows the skills pattern:
   in `permissions.json` like any exact rule) while *saying* the display
   label and the project the rule is kept for (`App::project_dir`, the
   footer's cwd — the allowlist is per project). `edit` mode still asks (a
-  remote tool is not a file edit), `auto` mode asks too (the classifier is a
-  `bash` reviewer; a wrong-model consult would be theater), and `master`
-  runs it unasked like everything else.
+  remote tool is not a file edit), `auto` mode sends an uncovered call to
+  the **auto mode classifier** instead of the user — exactly as it does a
+  `bash` command, and exactly as the reference feeds MCP calls to its
+  auto-mode classifier (`mcpToolInputToAutoClassifierInput`): the classifier
+  reads the tool named `{server} - {tool}`, the server's own description,
+  and the arguments (`llm::classifier::classifier_request_prompt`'s MCP arm
+  — the wire name alone would hide where the risk lives), the allowed call
+  runs with the dim `⎿ Allowed by auto mode classifier` row, a denial
+  rejects red with the classifier's reason, and a classifier *failure*
+  falls back to this prompt (`docs/permissions.md`) — and `master` runs it
+  unasked like everything else.
 
 ## Rendering — the collapsed inline cell vs the expanded transcript
 
