@@ -634,7 +634,55 @@ pub fn cursor_visible(app: &App) -> bool {
     if let Some(ask) = app.ask() {
         return ask.editing();
     }
-    app.permission().is_none_or(|prompt| prompt.amend)
+    if let Some(prompt) = app.permission() {
+        return prompt.amend;
+    }
+    // The no-text-entry pickers (`/hooks`, `/trust`, `/mcp`) and the ↓
+    // manager band are menus too — same rule (`docs/project-config.md`,
+    // `docs/mcp.md`). The `/mcp` Auth page's `URL >` field *is* typed into,
+    // so its caret stays, the amend-field exception again.
+    if app.hooks_menu.is_some() || app.trust_menu.is_some() || app.background_view.is_some() {
+        return false;
+    }
+    if let Some(menu) = &app.mcp_menu {
+        return menu.page == crate::app::McpPage::Auth;
+    }
+    true
+}
+
+/// The hidden cursor's seat inside a no-text-entry menu: the highlighted
+/// `❯` row's marker column, found by scanning the built lines for the
+/// selection marker span — the views are content-driven, so the row is
+/// wherever the content put it. The [`view_split`] the paint uses seats the
+/// body under any streaming strip; a marker-less page (a detail view) and a
+/// marker clamped off a short terminal fall back to the far corner, where
+/// the seat reads as chrome (the manager band's old rule).
+fn menu_marker_seat(lines: &[ratatui::text::Line<'_>], area: Rect) -> (u16, u16) {
+    let corner = (
+        area.x + area.width.saturating_sub(1),
+        area.y + area.height.saturating_sub(1),
+    );
+    let body_h = u16::try_from(lines.len()).unwrap_or(u16::MAX);
+    let [_, body] = view_split(area, body_h);
+    for (i, line) in lines.iter().enumerate() {
+        let mut before = 0usize;
+        for span in &line.spans {
+            if span.content.as_ref() == HOOKS_MARKER {
+                let Ok(row) = u16::try_from(i) else {
+                    return corner;
+                };
+                // A body clamped shorter than the content truncates the
+                // tail — a marker past the clamp has no on-screen row.
+                if row >= body.height {
+                    return corner;
+                }
+                let x = area.x + (before.min(usize::from(area.width.saturating_sub(1))) as u16);
+                return (x, body.y + row);
+            }
+            before += cols(&span.content);
+        }
+    }
+    corner
 }
 
 /// Absolute `(x, y)` where the terminal's hardware cursor should sit for the
@@ -730,15 +778,22 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
         return (x, view_cursor_y(area, body, SKILLS_SEARCH_ROW));
     }
-    // The read-only `/hooks` menu has no text entry at all — park the cursor
-    // in the far corner where it reads as chrome (the manager band's rule).
-    // The `/trust` review menu is its sibling and parks the same way.
-    if app.hooks_menu.is_some() || app.trust_menu.is_some() {
-        let x = area.x + area.width.saturating_sub(1);
-        let y = area.y + area.height.saturating_sub(1);
-        return (x, y);
+    // The read-only `/hooks` menu has no text entry at all — the permission
+    // prompt's rule: [`cursor_visible`] shows no hardware cursor over a menu
+    // (a kitty cursor animation blinks at whatever seat one picks), while
+    // the *seat* tracks the highlighted `❯` row, so the cursor's return
+    // when the menu closes starts somewhere sensible. A marker-less page
+    // (the hook detail) falls back to the far corner. The `/trust` review
+    // menu is its sibling and seats the same way.
+    if app.hooks_menu.is_some() {
+        let lines = super::hooks_view::hooks_view_lines(app, area.width);
+        return menu_marker_seat(&lines, area);
     }
-    // The `/mcp` manager parks in the corner too — except its auth page,
+    if app.trust_menu.is_some() {
+        let lines = super::trust_view::trust_view_lines(app, area.width);
+        return menu_marker_seat(&lines, area);
+    }
+    // The `/mcp` manager seats on its `❯` too — except its auth page,
     // whose `URL >` paste field seats the caret at the typed text's end
     // (found from the region's bottom: the field sits a fixed 4 rows up —
     // its row, the blank, the return note, the blank, the rule — plus the
@@ -756,9 +811,8 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
             let y = area.y + area.height.saturating_sub(5 + extra);
             return (x, y);
         }
-        let x = area.x + area.width.saturating_sub(1);
-        let y = area.y + area.height.saturating_sub(1);
-        return (x, y);
+        let lines = super::mcp_view::mcp_view_lines(app, area.width);
+        return menu_marker_seat(&lines, area);
     }
     // The ↓ background manager band has no text entry at all — park the
     // (shown-once-per-frame) cursor in the band's far corner where it reads

@@ -412,19 +412,28 @@ fn the_height_is_the_built_lines_and_none_when_closed() {
 }
 
 #[test]
-fn render_paints_the_lines_and_the_cursor_parks_in_the_far_corner() {
+fn render_paints_the_lines_and_the_cursor_hides_seated_on_the_selection() {
     let app = hooks_app();
     let height = hooks_menu_height(&app, 78, 200).unwrap();
     let mut buf = buffer(78, height);
     render_hooks_menu(buf.area, &mut buf, &app);
     assert!(row(&buf, 0, 78).starts_with('─'));
     assert!(row(&buf, 2, 78).contains("Hooks"));
-    // No text entry anywhere in the menu — the hardware cursor parks in the
-    // region's far corner where it reads as chrome (the manager band's rule).
+    // No text entry anywhere in the menu — the permission prompt's rule: the
+    // frame shows no hardware cursor at all (a kitty cursor animation blinks
+    // at whatever seat a menu picks), while the *seat* still tracks the
+    // highlighted `❯` row so the cursor's return starts somewhere sensible.
+    assert!(
+        !crate::ui::cursor_visible(&app),
+        "a menu has nothing for a cursor to point at"
+    );
     let area = Rect::new(0, 0, 78, height);
+    let marker_row = (0..height)
+        .find(|&y| row(&buf, y, 78).trim_start().starts_with('❯'))
+        .expect("the selected row wears the marker");
     assert_eq!(
         cursor_position(area, &app),
-        (77, height - 1),
-        "the cursor has nothing to point at"
+        (2, marker_row),
+        "the seat is the highlighted row's marker"
     );
 }

@@ -300,7 +300,13 @@ session view keeps a cell per call.
 
 The sixth composer-replacing picker (`app::McpMenu`, `ui::mcp_view`), and
 deliberately the **hooks-menu twin** rather than a new shape: no text entry
-(cursor parked in the corner), ↑/↓/digits/Enter/Esc, a selection-centred
+— so the frame shows **no hardware cursor** while the menu is up (the
+permission prompt's rule, `ui::cursor_visible`: a menu has nothing for one
+to point at, and a kitty cursor animation blinks at whatever seat it picks
+— the reported artifact under the bottom rule), the *seat* instead tracking
+the highlighted `❯` row (`ui::layout`'s marker scan; the Auth page's
+`URL >` field is typed into, so its caret comes back — the amend-field
+exception) — ↑/↓/digits/Enter/Esc, a selection-centred
 window with `↑ N more above` / `↓ N more below` overflow markers, working
 mid-turn (the strip stays above it). Pages:
 

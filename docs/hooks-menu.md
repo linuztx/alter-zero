@@ -23,9 +23,14 @@ and `/settings`: it renders between the `/model` picker's rules in place of
 the composer, keeps the streaming strip above itself (`ui::layout`'s
 `strip_above_rows` / `view_split` — opening it mid-turn never hides the
 running turn), owns every key while open, and closes back to the composer.
-Like the ↓ background manager band it has **no text entry** — the hardware
-cursor parks in the frame's far corner where it reads as chrome, and there is
-no type-to-search: navigation is the whole grammar.
+Like the ↓ background manager band it has **no text entry**, and there is
+no type-to-search: navigation is the whole grammar. So the frame shows **no
+hardware cursor** while the menu is up — the permission prompt's rule
+(`ui::cursor_visible`): a menu has nothing for a cursor to point at, and a
+terminal with a cursor animation (kitty) blinks at whatever seat one picks.
+The *seat* still tracks the highlighted `❯` row (`ui::layout`'s marker
+scan), so a terminal that ignores the hide — and the cursor's return when
+the menu closes — starts from somewhere meaningful.
 
 Because browsing touches nothing, `/hooks` works mid-turn (the `/model`
 rule), and closing is pure collapse — the loop has nothing to reap.

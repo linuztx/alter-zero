@@ -145,12 +145,18 @@ fn the_height_is_the_built_lines_and_none_when_closed() {
 }
 
 #[test]
-fn render_paints_the_frame_and_the_cursor_parks_in_the_far_corner() {
+fn render_paints_the_frame_and_the_cursor_hides_seated_on_the_selection() {
     let app = trust_app();
     let height = trust_menu_height(&app, 78, 200).unwrap();
     let mut buf = buffer(78, height);
     render_trust_menu(buf.area, &mut buf, &app);
     assert!(row(&buf, 0, 78).starts_with('─'));
-    let (x, y) = crate::ui::cursor_position(buf.area, &app);
-    assert_eq!((x, y), (77, height - 1));
+    // The permission prompt's rule: no hardware cursor over a menu (kitty's
+    // cursor animation blinks at whatever seat it picks), the seat itself on
+    // the highlighted `❯` option row.
+    assert!(!crate::ui::cursor_visible(&app));
+    let marker_row = (0..height)
+        .find(|&y| row(&buf, y, 78).trim_start().starts_with('❯'))
+        .expect("the selected option wears the marker");
+    assert_eq!(crate::ui::cursor_position(buf.area, &app), (2, marker_row));
 }

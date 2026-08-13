@@ -131,6 +131,30 @@ fn the_tools_and_tool_detail_pages_render() {
 }
 
 #[test]
+fn the_menu_hides_the_cursor_seated_on_the_selection_and_auth_brings_it_back() {
+    let app = mcp_app();
+    // The permission prompt's rule (docs/mcp.md): a menu shows no hardware
+    // cursor — a kitty cursor animation blinks at whatever seat it picks —
+    // while the seat itself tracks the highlighted `❯` row.
+    assert!(!crate::ui::cursor_visible(&app));
+    let height = crate::ui::mcp_menu_height(&app, 100, 60).unwrap();
+    let mut buf = buffer(100, height);
+    render_mcp_menu(buf.area, &mut buf, &app);
+    let marker_row = (0..height)
+        .find(|&y| row(&buf, y, 100).trim_start().starts_with('❯'))
+        .expect("the selected server wears the marker");
+    assert_eq!(crate::ui::cursor_position(buf.area, &app), (2, marker_row));
+
+    // The Auth page's `URL >` field is typed into, so its caret comes back
+    // (the permission prompt's amend-field exception).
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Enter)); // linear
+    app.on_key(key(KeyCode::Enter)); // Authenticate
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Auth);
+    assert!(crate::ui::cursor_visible(&app));
+}
+
+#[test]
 fn the_auth_page_shows_the_url_and_paste_field() {
     let mut app = mcp_app();
     app.on_key(key(KeyCode::Enter)); // linear

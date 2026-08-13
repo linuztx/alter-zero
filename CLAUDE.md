@@ -627,7 +627,9 @@ locate it; the offline `hook` scenario drives the tool-path shape and the
 `prompt-block` scenario the rollback, `smoke.sh` Phases 72 and 73) in
 `docs/hooks.md`; and the **read-only `/hooks` menu** (Claude Code's `/hooks`
 browser, `docs/hooks-menu.md`: the fourth composer-replacing inline picker —
-no text entry, cursor parked in the corner — walking events → matchers →
+no text entry, so the hardware cursor hides while its seat tracks the
+selected `❯` row (the permission prompt's kitty-cursor-trail rule, shared
+with `/mcp` and `/trust` — `ui::cursor_visible`) — walking events → matchers →
 hooks → detail over `hooks::HooksOverview`, the digest of the runner's own
 parsed file; ↑/↓/digits/Enter/Esc, a five-row selection-centered window
 with ↑/↓ overflow markers, per-event summaries/descriptions stating **this**
@@ -648,7 +650,7 @@ contribute nothing to the merge, untrusted servers sit in `/mcp` as
 `⚠ untrusted` (never launched, never shadowing the user's own same-named
 server — `mcp::merge_project_scopes`) while a startup toast points at
 **`/trust`**, the seventh composer-replacing picker (the `/hooks` browser's
-sibling: no text entry, corner-parked cursor) showing the root, each file's
+sibling: no text entry, hidden cursor seated on the `❯`) showing the root, each file's
 hook commands / server targets **verbatim** with a
 pending-approval/trusted/won't-parse badge, over `❯ 1. Trust this project's
 config` / `2. Revoke trust`; approval records the **reviewed snapshot's**
