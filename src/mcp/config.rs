@@ -276,17 +276,46 @@ fn parse_server(entry: &Value) -> Result<McpServerConfig, String> {
     }
 }
 
-/// Merge the two scopes into the declared server list, **project shadowing
-/// user** on a name collision (the Claude Code precedence, minus the scopes
-/// we don't model). Order: project entries first (their file's order), then
-/// the user's — the `/mcp` list renders the same grouping.
+/// Merge the scopes into the declared server list, first occurrence of a
+/// name winning (the Claude Code precedence, minus the scopes we don't
+/// model): the project's `.alter-zero/mcp.json`, then the compat
+/// `.mcp.json`, then the user file (`docs/project-config.md`). Order:
+/// project entries first (each file's order), then the user's — both
+/// project files' entries stay contiguous under the Project scope, so the
+/// `/mcp` list's headings render once per scope.
 #[must_use]
 pub fn merge_scopes(
-    project: Option<(&McpFile, &str)>,
+    project_alter: Option<(&McpFile, &str)>,
+    project_compat: Option<(&McpFile, &str)>,
     user: Option<(&McpFile, &str)>,
 ) -> Vec<McpServerEntry> {
+    merge_project_scopes(
+        project_alter.map(|(file, path)| (file, path, true)),
+        project_compat.map(|(file, path)| (file, path, true)),
+        user,
+    )
+    .0
+}
+
+/// [`merge_scopes`] with the trust gate woven in (`docs/project-config.md`):
+/// each project file carries whether it is trusted. Precedence is
+/// trust-aware — **trusted project files, then the user, then untrusted
+/// project files**, first occurrence of a name winning — so an untrusted
+/// repo file is *listed* (the `/mcp` row that points at `/trust`) but can
+/// never shadow the user's own server out of the session. The returned set
+/// names the entries the trust gate is holding. The output is re-grouped
+/// Project-then-User afterwards so each scope's entries stay contiguous and
+/// the `/mcp` headings render once.
+#[must_use]
+pub fn merge_project_scopes(
+    project_alter: Option<(&McpFile, &str, bool)>,
+    project_compat: Option<(&McpFile, &str, bool)>,
+    user: Option<(&McpFile, &str)>,
+) -> (Vec<McpServerEntry>, std::collections::BTreeSet<String>) {
     let mut out: Vec<McpServerEntry> = Vec::new();
-    let mut push = |file: &McpFile, scope: McpScope, path: &str| {
+    let mut untrusted = std::collections::BTreeSet::new();
+    let push = |out: &mut Vec<McpServerEntry>, file: &McpFile, scope: McpScope, path: &str| {
+        let mut pushed = Vec::new();
         for (name, config) in &file.servers {
             if out.iter().any(|entry| entry.name == *name) {
                 continue;
@@ -297,15 +326,31 @@ pub fn merge_scopes(
                 scope,
                 config_path: path.to_string(),
             });
+            pushed.push(name.clone());
         }
+        pushed
     };
-    if let Some((file, path)) = project {
-        push(file, McpScope::Project, path);
+    for scoped in [project_alter, project_compat] {
+        if let Some((file, path, true)) = scoped {
+            push(&mut out, file, McpScope::Project, path);
+        }
     }
     if let Some((file, path)) = user {
-        push(file, McpScope::User, path);
+        push(&mut out, file, McpScope::User, path);
     }
-    out
+    for scoped in [project_alter, project_compat] {
+        if let Some((file, path, false)) = scoped {
+            untrusted.extend(push(&mut out, file, McpScope::Project, path));
+        }
+    }
+    // Stable re-group: Project entries first (trusted before untrusted —
+    // their push order), then the user's, each scope keeping its own order.
+    let (project, user_entries): (Vec<_>, Vec<_>) = out
+        .into_iter()
+        .partition(|entry| entry.scope == McpScope::Project);
+    let mut entries = project;
+    entries.extend(user_entries);
+    (entries, untrusted)
 }
 
 #[cfg(test)]
@@ -412,6 +457,7 @@ mod tests {
             r#"{"mcpServers": {"wiki": {"url": "https://u"}, "extra": {"command": "x"}}}"#,
         );
         let merged = merge_scopes(
+            None,
             Some((&project, "/repo/.mcp.json")),
             Some((&user, "~/mcp.json")),
         );
@@ -421,6 +467,83 @@ mod tests {
         assert_eq!(merged[0].config.url(), Some("https://p"));
         assert_eq!(merged[1].name, "extra");
         assert_eq!(merged[1].scope, McpScope::User);
+    }
+
+    #[test]
+    fn untrusted_project_entries_join_the_list_without_shadowing_the_user() {
+        let alter = parse_mcp_file(
+            r#"{"mcpServers": {"wiki": {"url": "https://p"}, "docs": {"command": "d"}}}"#,
+        );
+        let user = parse_mcp_file(
+            r#"{"mcpServers": {"wiki": {"url": "https://u"}, "extra": {"command": "x"}}}"#,
+        );
+        let (merged, untrusted) = merge_project_scopes(
+            Some((&alter, "/repo/.alter-zero/mcp.json", false)),
+            None,
+            Some((&user, "~/mcp.json")),
+        );
+        // The untrusted file's entries are listed (so `/mcp` can show them
+        // waiting on `/trust`) but never shadow the user's own server — and
+        // the scopes stay contiguous so the list headings render once.
+        let summary: Vec<(&str, McpScope)> =
+            merged.iter().map(|e| (e.name.as_str(), e.scope)).collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("docs", McpScope::Project),
+                ("wiki", McpScope::User),
+                ("extra", McpScope::User),
+            ]
+        );
+        assert_eq!(merged[1].config.url(), Some("https://u"));
+        assert_eq!(untrusted, ["docs".to_string()].into());
+    }
+
+    #[test]
+    fn a_trusted_project_file_keeps_its_shadowing_precedence() {
+        let alter = parse_mcp_file(r#"{"mcpServers": {"wiki": {"url": "https://p"}}}"#);
+        let user = parse_mcp_file(r#"{"mcpServers": {"wiki": {"url": "https://u"}}}"#);
+        let (merged, untrusted) = merge_project_scopes(
+            Some((&alter, "/repo/.alter-zero/mcp.json", true)),
+            None,
+            Some((&user, "~/mcp.json")),
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].scope, McpScope::Project);
+        assert_eq!(merged[0].config.url(), Some("https://p"));
+        assert!(untrusted.is_empty());
+    }
+
+    #[test]
+    fn the_alter_zero_project_file_shadows_the_compat_file() {
+        let alter = parse_mcp_file(
+            r#"{"mcpServers": {"wiki": {"url": "https://a"}, "docs": {"command": "d"}}}"#,
+        );
+        let compat = parse_mcp_file(
+            r#"{"mcpServers": {"wiki": {"url": "https://c"}, "team": {"command": "t"}}}"#,
+        );
+        let user = parse_mcp_file(r#"{"mcpServers": {"wiki": {"url": "https://u"}}}"#);
+        let merged = merge_scopes(
+            Some((&alter, "/repo/.alter-zero/mcp.json")),
+            Some((&compat, "/repo/.mcp.json")),
+            Some((&user, "~/mcp.json")),
+        );
+        // First name wins across [.alter-zero/mcp.json, .mcp.json, user] —
+        // and both project files' entries stay contiguous under the Project
+        // scope so the `/mcp` headings render once.
+        let summary: Vec<(&str, McpScope, &str)> = merged
+            .iter()
+            .map(|e| (e.name.as_str(), e.scope, e.config_path.as_str()))
+            .collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("wiki", McpScope::Project, "/repo/.alter-zero/mcp.json"),
+                ("docs", McpScope::Project, "/repo/.alter-zero/mcp.json"),
+                ("team", McpScope::Project, "/repo/.mcp.json"),
+            ]
+        );
+        assert_eq!(merged[0].config.url(), Some("https://a"));
     }
 
     #[test]

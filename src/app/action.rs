@@ -151,6 +151,20 @@ pub enum Action {
     /// Ctrl+C): [`App::hooks_menu`] is already cleared; the loop just
     /// repaints the collapsed region.
     CloseHooksMenu,
+    /// `/trust`: open the project-config review menu. Like `/hooks` it works
+    /// mid-turn — it only replaces the composer. The *loop* digests the
+    /// project layer it actually loaded into the review and hands it to
+    /// [`App::open_trust_menu`] (the same injection seam), so the review and
+    /// what would run can never disagree. See `docs/project-config.md`.
+    OpenTrustMenu,
+    /// The `/trust` menu was dismissed without a decision (Esc or Ctrl+C):
+    /// [`App::trust_menu`] is already cleared; the loop just repaints.
+    CloseTrustMenu,
+    /// The `/trust` menu's decision: record (or revoke) the project's trust
+    /// and (de)activate its config live. The menu is already closed; the
+    /// loop writes `trust.json` and swaps the hooks merge / releases or
+    /// re-holds the MCP servers. See `docs/project-config.md`.
+    ApplyTrust(crate::trust::TrustAction),
     /// `/skills`: open the inline skills browser. Like `/hooks` it works
     /// mid-turn — it only replaces the composer. The *loop* takes the
     /// registry's snapshot and hands it to [`App::open_skills_menu`] (the

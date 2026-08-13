@@ -78,6 +78,9 @@
 //! - [`textarea`]    — the grapheme-aware editable composer.
 //! - [`tokenizer`]   — accurate token counting for the status tally (tiktoken
 //!   `o200k_base`, ranks embedded; the count seam behind `app::count_tokens`).
+//! - [`trust`]       — per-project trust for the `.alter-zero` project config
+//!   layer: the content-hash fingerprint, the `trust.json` format, and the
+//!   project-file path builders (pure; see `docs/project-config.md`).
 //! - [`ui`]          — pure rendering helpers (word-wrap, message lines, live
 //!   region), split one module per area with every styling constant in
 //!   `ui::theme` (see `docs/module-layout.md`).
@@ -110,4 +113,5 @@ pub mod tasks;
 pub mod term;
 pub mod textarea;
 pub mod tokenizer;
+pub mod trust;
 pub mod ui;

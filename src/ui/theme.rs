@@ -880,6 +880,44 @@ pub(super) const HOOKS_SOURCE_LABEL: &str = "User settings";
 /// so the values line up (`Event:    PreToolUse`).
 pub(super) const HOOKS_FIELD_COL: usize = 10;
 
+/// The `/trust` review menu (`docs/project-config.md`) — the hooks menu's
+/// sibling, borrowing the `HOOKS_*` marker and frame; only its own
+/// vocabulary lives here.
+///
+/// The page title (the root's display path is appended).
+pub(super) const TRUST_TITLE: &str = "Project trust";
+
+/// The banner under the status: what approving means, in one breath.
+pub(super) const TRUST_INFO: &str = "ℹ A project's .alter-zero config can run commands — hooks \
+fire on lifecycle events and MCP servers are spawned processes — so nothing below runs until \
+you approve it. Approval is pinned to each file's content: an edited file asks again. See \
+docs/project-config.md";
+
+/// The two status headlines beside `Status:`.
+pub(super) const TRUST_STATUS_TRUSTED: &str = "trusted";
+pub(super) const TRUST_STATUS_UNTRUSTED: &str = "not trusted";
+
+/// The per-file badges: waiting on approval, recorded, or unreadable.
+pub(super) const TRUST_BADGE_PENDING: &str = "pending approval";
+pub(super) const TRUST_BADGE_TRUSTED: &str = "trusted";
+pub(super) const TRUST_BADGE_ERROR: &str = "won't parse";
+
+/// The option rows' labels — what Enter applies.
+pub const TRUST_APPROVE_LABEL: &str = "Trust this project's config";
+pub const TRUST_REVOKE_LABEL: &str = "Revoke trust";
+
+/// The most item lines shown per file before the fold — enough to review a
+/// real config, few enough that a huge one can't push the options off the
+/// terminal (the permission prompt's body-cap instinct).
+pub const TRUST_MENU_MAX_ITEMS: usize = 8;
+
+/// The empty state: nothing found, so name exactly where the layer looks.
+pub(super) const TRUST_EMPTY: &str = "No project config found. Add one at:";
+
+/// The key hints — options on offer, or Esc-only when there are none.
+pub(super) const TRUST_HINT: &str = "Enter to apply · Esc to close";
+pub(super) const TRUST_CLOSE_HINT: &str = "Esc to close";
+
 /// The `/mcp` manager (`docs/mcp.md`) — the hooks menu's twin, so it borrows
 /// the whole `HOOKS_*` frame (marker, overflow arrows, window size, hints)
 /// and adds only its own vocabulary.

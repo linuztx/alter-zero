@@ -732,7 +732,8 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     }
     // The read-only `/hooks` menu has no text entry at all — park the cursor
     // in the far corner where it reads as chrome (the manager band's rule).
-    if app.hooks_menu.is_some() {
+    // The `/trust` review menu is its sibling and parks the same way.
+    if app.hooks_menu.is_some() || app.trust_menu.is_some() {
         let x = area.x + area.width.saturating_sub(1);
         let y = area.y + area.height.saturating_sub(1);
         return (x, y);

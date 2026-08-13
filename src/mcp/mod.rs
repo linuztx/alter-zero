@@ -24,8 +24,8 @@ mod sse;
 mod status;
 
 pub use self::config::{
-    McpFile, McpScope, McpServerConfig, McpServerEntry, merge_scopes, parse_disabled,
-    parse_mcp_file, record_disabled,
+    McpFile, McpScope, McpServerConfig, McpServerEntry, merge_project_scopes, merge_scopes,
+    parse_disabled, parse_mcp_file, record_disabled,
 };
 pub use self::names::{
     MCP_DISPLAY_SUFFIX, MCP_TOOL_PREFIX, batch_label, display_from_wire, display_server,

@@ -506,10 +506,27 @@ impl ModelSession {
         self.rebuild_current();
     }
 
-    /// Whether a `hooks.json` resolved with anything runnable in it — the
-    /// `/settings` **Hooks** row's availability (`docs/hooks.md`).
-    pub(crate) const fn hooks_available(&self) -> bool {
-        self.hooks.is_some()
+    /// Whether the hooks config resolved with anything runnable in it — the
+    /// `/settings` **Hooks** row's availability (`docs/hooks.md`). The setup
+    /// itself now exists even over an empty file (so a `/trust` approval can
+    /// swap a project merge in mid-session, `docs/project-config.md`); an
+    /// empty merge still reports unavailable, exactly as no setup used to.
+    pub(crate) fn hooks_available(&self) -> bool {
+        self.hooks
+            .as_ref()
+            .is_some_and(|setup| !setup.file.is_empty())
+    }
+
+    /// Swap the parsed hooks config the session runs — the `/trust` seam
+    /// (`docs/project-config.md`): an approval rebinds the user+project
+    /// merge, a revoke rebinds the user layer alone. The rebuild carries it
+    /// into the next backend build; the live handles (gate, transcript,
+    /// SessionStart sources) ride along untouched.
+    pub(crate) fn set_hooks_file(&mut self, file: alter_zero::hooks::HooksFile) {
+        if let Some(setup) = self.hooks.as_mut() {
+            setup.file = std::sync::Arc::new(file);
+        }
+        self.rebuild_current();
     }
 
     /// The parsed hooks file digested for the read-only `/hooks` browser,

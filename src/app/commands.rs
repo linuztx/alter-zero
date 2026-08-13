@@ -114,6 +114,11 @@ pub enum CommandEffect {
     /// Works **mid-turn** like `/hooks` — it only replaces the composer;
     /// connection work runs on worker threads either way. See `docs/mcp.md`.
     Mcp,
+    /// Open the `/trust` review menu over the project's `.alter-zero`
+    /// config layer. Works **mid-turn** like `/hooks` — it only replaces
+    /// the composer; an approval rebinds the *next* turn's hooks and
+    /// connects servers on worker threads. See `docs/project-config.md`.
+    Trust,
     /// Exit the app (`/quit` — codex's `/quit`/`/exit`, "exit Codex").
     Quit,
 }
@@ -197,6 +202,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "mcp",
         description: "Manage MCP servers",
         effect: CommandEffect::Mcp,
+    },
+    SlashCommand {
+        name: "trust",
+        description: "Review and approve this project's .alter-zero config",
+        effect: CommandEffect::Trust,
     },
     SlashCommand {
         name: "quit",
@@ -391,6 +401,14 @@ impl App {
                 // the menu (the /resume data-injection seam). See
                 // docs/hooks-menu.md.
                 Action::OpenHooksMenu
+            }
+            CommandEffect::Trust => {
+                // /trust works mid-turn too — reviewing touches nothing
+                // running, and an approval rebinds the *next* turn. The
+                // *loop* digests the project layer it loaded into the review
+                // and opens the menu (the same injection seam). See
+                // docs/project-config.md.
+                Action::OpenTrustMenu
             }
             CommandEffect::Skills => {
                 // /skills works mid-turn too — browsing and toggling touch

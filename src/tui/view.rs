@@ -454,6 +454,10 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::hooks_menu_height(app, screen.width, screen.height) {
         return height;
     }
+    // The `/trust` review menu, likewise (docs/project-config.md).
+    if let Some(height) = ui::trust_menu_height(app, screen.width, screen.height) {
+        return height;
+    }
     // The `/mcp` manager, likewise (docs/mcp.md).
     if let Some(height) = ui::mcp_menu_height(app, screen.width, screen.height) {
         return height;

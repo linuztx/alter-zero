@@ -304,6 +304,53 @@ pub(crate) fn hooks_enabled() -> bool {
     env_flag("ALTER_ZERO_HOOKS")
 }
 
+/// Whether the project-level `.alter-zero` config layer is discovered at all
+/// (`docs/project-config.md`) — `ALTER_ZERO_PROJECT_CONFIG`, default on.
+/// Falsy = no project hooks/MCP discovery, no pending toast, `/trust`
+/// explains via toast — and the smoke suite's hermeticity switch, since its
+/// phases run with cwd inside a real checkout.
+pub(crate) fn project_config_enabled() -> bool {
+    env_flag("ALTER_ZERO_PROJECT_CONFIG")
+}
+
+/// `{config_home}/trust.json` — the per-project trust store
+/// (`docs/project-config.md`). No override var of its own (the
+/// `permissions.json` posture): `ALTER_ZERO_CONFIG_DIR` moves it.
+pub(crate) fn trust_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("trust.json"))
+}
+
+/// Load `trust.json` — the [`load_hooks`] posture, for the same reason: a
+/// guard file that silently reads as "nothing trusted" (or worse) must say
+/// so. Missing is the normal case; malformed/unreadable **fails closed**
+/// (nothing trusted) with the message to raise.
+pub(crate) fn load_trust_file(
+    path: Option<&Path>,
+) -> (alter_zero::trust::TrustFile, Option<String>) {
+    let empty = alter_zero::trust::TrustFile::default;
+    let Some(path) = path else {
+        return (empty(), None);
+    };
+    match std::fs::read_to_string(path) {
+        Ok(text) => match alter_zero::trust::TrustFile::parse(&text) {
+            Ok(file) => (file, None),
+            Err(err) => (
+                empty(),
+                Some(format!(
+                    "trust.json: {err} — project config stays untrusted this session"
+                )),
+            ),
+        },
+        Err(err) if err.kind() == io::ErrorKind::NotFound => (empty(), None),
+        Err(err) => (
+            empty(),
+            Some(format!(
+                "trust.json: {err} — project config stays untrusted this session"
+            )),
+        ),
+    }
+}
+
 /// The checkpoints root — `ALTER_ZERO_CHECKPOINTS_DIR` (the smoke test points
 /// it at a temp dir, the `ALTER_ZERO_SESSIONS_DIR` pattern), else
 /// `~/.alter-zero/checkpoints`. `None` (no HOME and no override) disables

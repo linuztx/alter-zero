@@ -63,8 +63,9 @@ fn count_noun(n: usize, noun: &str) -> String {
 fn status_color(status: &McpServerStatus) -> Color {
     match status {
         McpServerStatus::Connected => TOOL_OK_COLOR,
-        // The ask review page's amber — the needs-attention colour.
-        McpServerStatus::NeedsAuth => ASK_WARNING_COLOR,
+        // The ask review page's amber — the needs-attention colour, which an
+        // untrusted project server also is (`/trust` is the way in).
+        McpServerStatus::NeedsAuth | McpServerStatus::Untrusted => ASK_WARNING_COLOR,
         McpServerStatus::Failed(_) => TOOL_FAIL_COLOR,
         McpServerStatus::Pending | McpServerStatus::Disabled => MODEL_META_COLOR,
     }

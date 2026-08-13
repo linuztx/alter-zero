@@ -153,6 +153,27 @@ impl HooksFile {
         serde_json::from_str(text).map_err(|err| err.to_string())
     }
 
+    /// This layer with `project`'s matcher groups appended per event — the
+    /// project-config union (`docs/project-config.md`): purely additive, one
+    /// more entry from the loader, no precedence rules to invent. Every
+    /// collision is already answered downstream by [`Self::select`]'s rules —
+    /// duplicates dedup by command (this layer's copy first, so it wins), any
+    /// block wins, `deny` > `ask` > `allow`, contexts concatenate.
+    #[must_use]
+    pub fn merged(&self, project: &Self) -> Self {
+        let mut out = self.clone();
+        if out.description.is_none() {
+            out.description = project.description.clone();
+        }
+        for (event, groups) in &project.hooks {
+            out.hooks
+                .entry(event.clone())
+                .or_default()
+                .extend(groups.iter().cloned());
+        }
+        out
+    }
+
     /// Is there nothing here to run? Used to report the `/settings` row as
     /// unavailable rather than advertising a toggle that does nothing.
     #[must_use]
@@ -552,5 +573,81 @@ mod tests {
         assert!(parse(r#"{"hooks":{"PreToolUse":[]}}"#).is_empty());
         assert!(parse(r#"{"hooks":{"PreToolUse":[{"hooks":[{"type":"prompt"}]}]}}"#).is_empty());
         assert!(!parse(SAMPLE).is_empty());
+    }
+
+    #[test]
+    fn merged_unions_the_events_of_both_layers() {
+        let user = parse(SAMPLE);
+        let project =
+            parse(r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./fmt.sh"}]}]}}"#);
+        let merged = user.merged(&project);
+        // The user's event survives untouched…
+        assert_eq!(
+            merged.select(HookEvent::PreToolUse, Some("bash")).handlers[0].command,
+            "./guard.sh"
+        );
+        // …and the project's event is one more entry from the loader.
+        assert_eq!(
+            merged.select(HookEvent::Stop, None).handlers[0].command,
+            "./fmt.sh"
+        );
+        assert!(!merged.is_empty());
+    }
+
+    #[test]
+    fn merged_appends_project_groups_after_the_users() {
+        let user = parse(SAMPLE);
+        let project = parse(
+            r#"{"hooks":{"PreToolUse":[{"matcher":"bash","hooks":[{"type":"command","command":"./extra.sh"}]}]}}"#,
+        );
+        let merged = user.merged(&project);
+        let commands: Vec<String> = merged
+            .select(HookEvent::PreToolUse, Some("bash"))
+            .handlers
+            .into_iter()
+            .map(|h| h.command)
+            .collect();
+        // Union order: the user layer first, the project layer appended.
+        assert_eq!(commands, vec!["./guard.sh", "./extra.sh"]);
+    }
+
+    #[test]
+    fn a_command_listed_by_both_layers_still_runs_once() {
+        let user = parse(SAMPLE);
+        let project = parse(
+            r#"{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"./guard.sh"}]}]}}"#,
+        );
+        let merged = user.merged(&project);
+        // `select`'s dedup-by-command answers the cross-layer duplicate too:
+        // the user's copy (first) wins, and the guard runs once.
+        assert_eq!(
+            merged.select(HookEvent::PreToolUse, Some("bash")).handlers,
+            vec![CommandHook {
+                command: "./guard.sh".to_string(),
+                timeout_secs: 10,
+                status_message: Some("checking…".to_string()),
+            }]
+        );
+    }
+
+    #[test]
+    fn merged_keeps_the_first_description_present() {
+        let user = parse(SAMPLE);
+        let project = parse(r#"{"description":"project guards","hooks":{}}"#);
+        assert_eq!(user.merged(&project).description.as_deref(), Some("guards"));
+        // Without a user description, the project's fills in.
+        assert_eq!(
+            HooksFile::default().merged(&project).description.as_deref(),
+            Some("project guards")
+        );
+    }
+
+    #[test]
+    fn merging_two_empty_layers_is_still_empty() {
+        assert!(
+            HooksFile::default()
+                .merged(&HooksFile::default())
+                .is_empty()
+        );
     }
 }

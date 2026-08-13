@@ -97,6 +97,12 @@ markdown with no tool-specific behaviour in them, the ecosystem writes them to
 returns `NotFound`. A user who has already written skills for Claude Code gets
 them here for free.
 
+The project rows sit deliberately **outside** the `/trust` gate that guards
+the project's hooks and MCP files (`docs/project-config.md`): a `SKILL.md`
+is inert markdown until the model explicitly loads it, and any command in a
+loaded body still meets the permission gate like every other tool call —
+there is nothing here that executes on discovery.
+
 ### The walk re-runs every turn
 
 Discovery runs at startup **and at every turn start** —

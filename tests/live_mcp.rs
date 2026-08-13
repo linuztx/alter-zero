@@ -54,6 +54,7 @@ fn connected_deepwiki() -> McpManager {
             }],
             errors: Vec::new(),
             disabled: BTreeSet::new(),
+            untrusted: BTreeSet::new(),
             project: ".".to_string(),
             user_file: None,
             auth_path: None,

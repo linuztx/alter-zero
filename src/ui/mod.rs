@@ -65,6 +65,7 @@ mod tasks;
 mod theme;
 mod tool;
 mod transcript;
+mod trust_view;
 mod wrap;
 
 pub use self::agent::{
@@ -115,6 +116,7 @@ pub use self::transcript::{
     render_tool_view, tool_view_body_rows, tool_view_max_scroll, tool_view_max_scroll_for,
     transcript_lines, transcript_selection,
 };
+pub use self::trust_view::{render_trust_menu, trust_menu_height, trust_view_lines};
 pub use self::wrap::wrap_text;
 
 #[cfg(test)]

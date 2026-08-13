@@ -441,6 +441,16 @@ pub fn render_live_with_preview(
         render_hooks_menu(body, buf, app);
         return;
     }
+    // …and the `/trust` review menu, its sibling. See
+    // `docs/project-config.md`.
+    if app.trust_menu.is_some() {
+        let body_h = u16::try_from(super::trust_view::trust_view_lines(app, area.width).len())
+            .unwrap_or(u16::MAX);
+        let [strip, body] = view_split(area, body_h);
+        render_strip_above(strip, buf, app, stream_preview);
+        render_trust_menu(body, buf, app);
+        return;
+    }
     // …and the `/mcp` manager, the hooks menu's twin. See `docs/mcp.md`.
     if app.mcp_menu.is_some() {
         let body_h = u16::try_from(super::mcp_view::mcp_view_lines(app, area.width).len())

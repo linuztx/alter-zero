@@ -38,24 +38,24 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `tasks`, `skills`, `mcp`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `tasks`, `skills`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
 `background`, `permission`, `view`, `commit`, `models`, `config`, `bootstrap`,
-`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mcp`,
+`startup`, `recorder`, `resume`, `history_store`, `settings`, `shell`, `workers`, `host`, `mcp`, `trust`,
 with the **`Session`** struct itself in `mod.rs` — every handler is an `impl
 Session` block in its area module, reaching the private fields the way `app/`'s
 submodules reach `App`'s). The four big ones are **directories
 of per-area modules**, not single files — `src/app/` (`types`, `action`, `keys`,
 `composer`, `commands`, `file_picker`, `input_history`, `queue`, `tools`, `turn`,
-`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `hooks_menu`, `mcp_menu`, `background`,
+`compact`, `backtrack`, `views`, `resume`, `model_picker`, `login`, `settings`, `hooks_menu`, `mcp_menu`, `trust_menu`, `background`,
 `agent`, `status`, `permission`, with the `App` struct itself in `mod.rs` so every submodule and
 the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mcp_view`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mcp_view`, `trust_view`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -634,7 +634,39 @@ with ↑/↓ overflow markers, per-event summaries/descriptions stating **this**
 runner's exit-code semantics, matcher level only for the events whose
 dispatch matches on something (`hooks::event_has_matchers` — `Stop` and
 `UserPromptSubmit` skip it), the detail page's rounded box holding the real
-command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the **`Skill`
+command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the
+**project-level `.alter-zero` config layer behind the `/trust` gate**
+(`docs/project-config.md`: a project's own `{root}/.alter-zero/hooks.json`
+(union-merged after the user file — `HooksFile::merged`, the pre-committed
+additive semantics) and `{root}/.alter-zero/mcp.json` + the compat
+`{root}/.mcp.json` (first-name-wins ahead of the user file) are read once at
+bootstrap, each file's bytes SHA-256-fingerprinted (`trust::fingerprint`)
+and checked against `{config_home}/trust.json` — **default-deny**, because a
+checked-in hooks handler or stdio server executing on clone is the hole the
+hooks doc refused to open (and `.mcp.json` used to have): untrusted hooks
+contribute nothing to the merge, untrusted servers sit in `/mcp` as
+`⚠ untrusted` (never launched, never shadowing the user's own same-named
+server — `mcp::merge_project_scopes`) while a startup toast points at
+**`/trust`**, the seventh composer-replacing picker (the `/hooks` browser's
+sibling: no text entry, corner-parked cursor) showing the root, each file's
+hook commands / server targets **verbatim** with a
+pending-approval/trusted/won't-parse badge, over `❯ 1. Trust this project's
+config` / `2. Revoke trust`; approval records the **reviewed snapshot's**
+fingerprints (never a re-read — no approve-what-you-didn't-see race, an
+edited file re-pends at the next launch) via `trust::record_trust`'s RMW and
+activates **live** — `ModelSession::set_hooks_file` swaps the merge into the
+next backend build, `McpManager::set_trusted` connects the held servers
+(revoke kills them back to `untrusted`); a malformed `trust.json` fails
+**closed** with a red toast (guard files are loud), an unparseable project
+file is pending-but-unapprovable (recording a hash sight-unseen is not
+trust); skills stay outside the gate (inert markdown; their bodies' commands
+still meet the permission gate); the pure format/fingerprint/review model is
+`src/trust.rs`, the boundary load/apply `src/tui/trust.rs`, gated by
+`ALTER_ZERO_PROJECT_CONFIG` — which `smoke.sh`'s base env turns **off** for
+hermeticity (the skills Phase 36 lesson: the suite's cwd is a real
+checkout), Phase 83 driving the whole flow — pending toast → untrusted
+`/mcp` row → review → approve → live connect + merged `/hooks` → relaunch
+still trusted — in a temp project); and the **`Skill`
 tool** (Claude Code's skills, `docs/skills.md`: folders of authored markdown
 the model pulls into the conversation on demand — a `<root>/<name>/SKILL.md`
 of YAML frontmatter (`name`/`description`, everything else **ignored not
@@ -1272,7 +1304,7 @@ live in the pure `file_search` module, and the `/resume` primitives
 Typing a bare `/token` opens a **slash-command palette** below the input box (a
 third live-region band): `App::command_menu` holds the highlight, the registry
 `app::COMMANDS` (`SlashCommand { name, description, effect }` — currently `/help`,
-`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/hooks`, `/skills`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
+`/clear`, `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`, `/hooks`, `/skills`, `/mcp`, `/trust`, and `/quit`) is filtered by `matching_commands`, and ↑/↓ scroll / Tab+Enter run
 the highlighted command. Descriptions line up in a column, and the selection is
 shown **by colour** — the whole highlighted row lights up cyan (name *and*
 description the same colour) while the others are dimmed grey, no caret. A command

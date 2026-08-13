@@ -122,6 +122,9 @@ cleanup() {
 	tmux kill-session -t "${S}_compactdummy" 2>/dev/null
 	[ -n "${CD_DIR:-}" ] && rm -rf "$CD_DIR" 2>/dev/null
 	[ -n "${CLIR_DIR:-}" ] && rm -rf "$CLIR_DIR" 2>/dev/null
+	tmux kill-session -t "${S}_trust" 2>/dev/null
+	[ -n "${TR_CFG:-}" ] && rm -rf "$TR_CFG" 2>/dev/null
+	[ -n "${TR_WORK:-}" ] && rm -rf "$TR_WORK" 2>/dev/null
 }
 trap cleanup EXIT
 
@@ -156,7 +159,7 @@ SMOKE_CFG="$(mktemp -d)"
 # leaving the feature itself on — Phase 76's demo is a dummy scenario and needs
 # no skill on disk.
 SMOKE_SKILLS="$(mktemp -d /tmp/alter-zero-smoke-skills-XXXXXX)"
-CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS"
+CFG_ENV="ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_PROJECT_CONFIG=0"
 # Persistence (docs/history-persistence.md) seeds the input history from a file
 # on startup. Point the base app at /dev/null so every phase starts with an
 # EMPTY input history — the in-session ↑/↓ (Phase 10) and Ctrl+R (Phase 18)
@@ -5354,7 +5357,7 @@ fi
 # denial). A fresh config dir so earlier phases' rules can't cover anything.
 S64="${S}_automode"
 SMOKE_CFG64="$(mktemp -d)"
-APP_AUTO="env ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG64 ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=300 $BIN"
+APP_AUTO="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$SMOKE_CFG64 ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=300 $BIN"
 tmux new-session -d -s "$S64" -x 100 -y 44 "$APP_AUTO"
 sleep 0.4
 # Two Ctrl+A steps: manual → edit → auto. The footer's right-edge segment and
@@ -5477,7 +5480,7 @@ api_base = "http://127.0.0.1:9/v1"
 PROVIDERS
 # A key resolves for the provider, but ALTER_ZERO_MODEL is unset — so the
 # session falls back to the dummy while `active_model` is "dummy_model_name".
-APP_CD="env ALTER_ZERO_CONFIG_DIR=$CD_DIR/cfg ALTER_ZERO_SESSIONS_DIR=$CD_DIR/sessions ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_PROVIDERS_FILE=$CD_DIR/providers.toml ALTER_ZERO_API_KEY=not-a-real-key ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+APP_CD="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$CD_DIR/cfg ALTER_ZERO_SESSIONS_DIR=$CD_DIR/sessions ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_PROVIDERS_FILE=$CD_DIR/providers.toml ALTER_ZERO_API_KEY=not-a-real-key ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S65" -x 80 -y 24 "$APP_CD"
 sleep 0.6
 compact_dummy_footer="$(tmux capture-pane -t "$S65" -p)"
@@ -5660,7 +5663,7 @@ tmux kill-session -t "$S66B" 2>/dev/null
 # must show the changed value — the file persisted it. ---
 S67="${S}_settings"
 SET_CFG="$(mktemp -d)"
-APP_SET="env ALTER_ZERO_CONFIG_DIR=$SET_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+APP_SET="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$SET_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S67" -x 90 -y 30 "$APP_SET"
 sleep 0.6
 # The palette lists it (a bare `/set` token filters to it).
@@ -6535,7 +6538,7 @@ cat >"$HK_CFG/hooks.json" <<'HOOKS75'
   }
 }
 HOOKS75
-APP_HK="env ALTER_ZERO_CONFIG_DIR=$HK_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+APP_HK="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$HK_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S75" -x 100 -y 35 "$APP_HK"
 sleep 0.6
 tmux send-keys -t "$S75" -l "/hooks"
@@ -6757,7 +6760,7 @@ description: The second demo skill, for the smoke suite only
 ---
 Beta body.
 SKILL
-APP_SK="env ALTER_ZERO_CONFIG_DIR=$SK_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_SKILLS_DIR=$SK_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+APP_SK="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$SK_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_SKILLS_DIR=$SK_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S77" -x 90 -y 32 "$APP_SK"
 sleep 0.6
 # The palette lists it (a bare `/skil` token filters to it).
@@ -6857,7 +6860,7 @@ rm -rf "$SK_CFG" "$SK_DIR"
 S78="${S}_skillrescan"
 RS_CFG="$(mktemp -d)"
 RS_DIR="$(mktemp -d)"
-APP_RS="env ALTER_ZERO_CONFIG_DIR=$RS_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_SKILLS_DIR=$RS_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+APP_RS="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$RS_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_SKILLS_DIR=$RS_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S78" -x 90 -y 32 "$APP_RS"
 sleep 0.6
 # Nothing on disk yet: the menu opens on the where-would-one-go placeholder.
@@ -6952,7 +6955,7 @@ description: The second demo skill, for the smoke suite only
 ---
 Beta body.
 SKILL
-APP_SM="env ALTER_ZERO_CONFIG_DIR=$SM_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_SKILLS_DIR=$SM_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+APP_SM="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$SM_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_SKILLS_DIR=$SM_DIR ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S79" -x 90 -y 32 "$APP_SM"
 sleep 0.6
 # A bare `$` lists every discovered skill with its description.
@@ -7043,7 +7046,7 @@ chmod +x "$MCP_DIR/server.sh"
 cat >"$MCP_CFG/mcp.json" <<MCPJSON
 {"mcpServers": {"fixture": {"type": "stdio", "command": "sh", "args": ["$MCP_DIR/server.sh"]}}}
 MCPJSON
-APP_MCP="env ALTER_ZERO_CONFIG_DIR=$MCP_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+APP_MCP="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$MCP_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
 tmux new-session -d -s "$S80" -x 100 -y 36 "$APP_MCP"
 sleep 0.8
 tmux send-keys -t "$S80" -l "/mcp"
@@ -7229,6 +7232,183 @@ for marker in "❯ $USER_MSG" "$EXPECT_REPLY" "Read(about.py)" "Edit(about.py)" 
 done
 tmux kill-session -t "$S82" 2>/dev/null
 
+
+# --- Phase 83: the project-level .alter-zero config layer behind the /trust
+# gate (docs/project-config.md). A temp project (no .git — the root falls
+# back to the cwd) carries .alter-zero/hooks.json and .mcp.json (the Phase
+# 80 scripted stdio fixture). First launch, the layer ON over its own fresh
+# config home: the startup toast points at /trust, /mcp lists the project
+# server '⚠ untrusted' (default-deny — never launched), /trust reviews the
+# hook command and the server target VERBATIM over the approve option, and
+# approving activates LIVE — the server connects with no restart and the
+# /hooks browser shows the merged Stop hook. A relaunch on the same config
+# home starts already-trusted: /trust reads 'Status: trusted' offering only
+# the revoke, and the server connects unprompted. ---
+S83="${S}_trust"
+TR_CFG="$(mktemp -d)"
+TR_WORK="$(mktemp -d)"
+mkdir -p "$TR_WORK/.alter-zero"
+cat >"$TR_WORK/server.sh" <<'TRSRV'
+#!/bin/sh
+cat > /dev/null &
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"projfix","version":"1.0"}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo_text","description":"Echo the text back.","inputSchema":{"type":"object","properties":{"text":{"type":"string","description":"What to echo."}},"required":["text"]}}]}}'
+sleep 60
+TRSRV
+chmod +x "$TR_WORK/server.sh"
+cat >"$TR_WORK/.mcp.json" <<TRJSON
+{"mcpServers": {"projfix": {"type": "stdio", "command": "sh", "args": ["$TR_WORK/server.sh"]}}}
+TRJSON
+cat >"$TR_WORK/.alter-zero/hooks.json" <<'TRHOOKS'
+{"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "./fmt.sh"}]}]}}
+TRHOOKS
+APP_TR="env ALTER_ZERO_PROJECT_CONFIG=1 ALTER_ZERO_CONFIG_DIR=$TR_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+tmux new-session -d -s "$S83" -x 100 -y 36 -c "$TR_WORK" "$APP_TR"
+# The pending toast rides the first frames and self-clears — poll for it.
+tr_toast=""
+for _ in $(seq 1 25); do
+	tr_toast="$(tmux capture-pane -t "$S83" -p)"
+	if printf '%s' "$tr_toast" | grep -qF "/trust to review"; then
+		break
+	fi
+	sleep 0.2
+done
+echo "==== Phase 83: the pending-config startup toast ===="
+printf '%s\n' "$tr_toast"
+if ! printf '%s' "$tr_toast" | grep -qF "Project .alter-zero config found — /trust to review"; then
+	echo "FAIL: Phase 83 — the pending project config raised no startup toast" >&2
+	status=1
+fi
+# Default-deny: /mcp lists the project server untrusted, never connected.
+tmux send-keys -t "$S83" -l "/mcp"
+sleep 0.4
+tmux send-keys -t "$S83" Enter
+sleep 0.6
+tr_mcp="$(tmux capture-pane -t "$S83" -p)"
+echo "==== Phase 83: /mcp holds the untrusted project server ===="
+printf '%s\n' "$tr_mcp"
+for expect in "Project MCPs" "projfix · ⚠ untrusted"; do
+	if ! printf '%s' "$tr_mcp" | grep -qF "$expect"; then
+		echo "FAIL: Phase 83 — /mcp is missing '$expect' before approval" >&2
+		status=1
+	fi
+done
+tmux send-keys -t "$S83" Escape
+sleep 0.4
+# The /trust review names the root, both files, and what would run.
+tmux send-keys -t "$S83" -l "/trust"
+sleep 0.4
+tmux send-keys -t "$S83" Enter
+sleep 0.5
+tr_review="$(tmux capture-pane -t "$S83" -p)"
+echo "==== Phase 83: the /trust review ===="
+printf '%s\n' "$tr_review"
+for expect in "Project trust —" "Status: not trusted" \
+	"Hooks — " "pending approval" "Stop: ./fmt.sh" \
+	"MCP servers — " "projfix: sh $TR_WORK/server.sh" \
+	"1. Trust this project's config"; do
+	if ! printf '%s' "$tr_review" | grep -qF "$expect"; then
+		echo "FAIL: Phase 83 — the /trust review is missing '$expect'" >&2
+		status=1
+	fi
+done
+# Approve: Enter on option 1 records trust.json and activates live.
+tmux send-keys -t "$S83" Enter
+sleep 0.5
+tr_after="$(tmux capture-pane -t "$S83" -p)"
+echo "==== Phase 83: after the approval ===="
+printf '%s\n' "$tr_after"
+if ! printf '%s' "$tr_after" | grep -qF "Trusted this project's config"; then
+	echo "FAIL: Phase 83 — approving raised no confirmation toast" >&2
+	status=1
+fi
+# Live activation, no restart: the project server connects…
+tmux send-keys -t "$S83" -l "/mcp"
+sleep 0.4
+tmux send-keys -t "$S83" Enter
+for _ in $(seq 1 60); do
+	if tmux capture-pane -t "$S83" -p | grep -qF "✔ connected"; then
+		break
+	fi
+	sleep 0.25
+done
+tr_live="$(tmux capture-pane -t "$S83" -p)"
+echo "==== Phase 83: the approved server connected live ===="
+printf '%s\n' "$tr_live"
+if ! printf '%s' "$tr_live" | grep -qF "projfix · ✔ connected · 1 tool"; then
+	echo "FAIL: Phase 83 — the approved project server did not connect live" >&2
+	status=1
+fi
+tmux send-keys -t "$S83" Escape
+sleep 0.4
+# …and the merged project hook shows in the /hooks browser.
+tmux send-keys -t "$S83" -l "/hooks"
+sleep 0.4
+tmux send-keys -t "$S83" Enter
+sleep 0.5
+tr_hooks="$(tmux capture-pane -t "$S83" -p)"
+echo "==== Phase 83: the merged project hook in /hooks ===="
+printf '%s\n' "$tr_hooks"
+if ! printf '%s' "$tr_hooks" | grep -qF "1 hook configured"; then
+	echo "FAIL: Phase 83 — /hooks does not count the merged project hook" >&2
+	status=1
+fi
+# Stop sits past the five-row event window — the digit jumps straight into
+# its handler list, which names the project file's command.
+tmux send-keys -t "$S83" -l "7"
+sleep 0.5
+tr_stop="$(tmux capture-pane -t "$S83" -p)"
+echo "==== Phase 83: the Stop handler list ===="
+printf '%s\n' "$tr_stop"
+if ! printf '%s' "$tr_stop" | grep -qF "./fmt.sh"; then
+	echo "FAIL: Phase 83 — the merged Stop hook does not list ./fmt.sh" >&2
+	status=1
+fi
+tmux send-keys -t "$S83" Escape
+sleep 0.3
+tmux send-keys -t "$S83" Escape
+sleep 0.3
+tmux kill-session -t "$S83" 2>/dev/null
+# Relaunch on the same config home: the trust persisted.
+tmux new-session -d -s "$S83" -x 100 -y 36 -c "$TR_WORK" "$APP_TR"
+sleep 0.8
+tmux send-keys -t "$S83" -l "/trust"
+sleep 0.4
+tmux send-keys -t "$S83" Enter
+sleep 0.5
+tr_persist="$(tmux capture-pane -t "$S83" -p)"
+echo "==== Phase 83: /trust after a relaunch ===="
+printf '%s\n' "$tr_persist"
+for expect in "Status: trusted" "1. Revoke trust"; do
+	if ! printf '%s' "$tr_persist" | grep -qF "$expect"; then
+		echo "FAIL: Phase 83 — the relaunch lost the recorded trust ('$expect' missing)" >&2
+		status=1
+	fi
+done
+if printf '%s' "$tr_persist" | grep -qF "Trust this project's config"; then
+	echo "FAIL: Phase 83 — a trusted, unchanged project still offers the approval" >&2
+	status=1
+fi
+tmux send-keys -t "$S83" Escape
+sleep 0.3
+tmux send-keys -t "$S83" -l "/mcp"
+sleep 0.4
+tmux send-keys -t "$S83" Enter
+for _ in $(seq 1 60); do
+	if tmux capture-pane -t "$S83" -p | grep -qF "✔ connected"; then
+		break
+	fi
+	sleep 0.25
+done
+tr_boot="$(tmux capture-pane -t "$S83" -p)"
+echo "==== Phase 83: the trusted server connects unprompted at startup ===="
+printf '%s\n' "$tr_boot"
+if ! printf '%s' "$tr_boot" | grep -qF "projfix · ✔ connected · 1 tool"; then
+	echo "FAIL: Phase 83 — the trusted project server did not connect at the relaunch" >&2
+	status=1
+fi
+tmux kill-session -t "$S83" 2>/dev/null
+rm -rf "$TR_CFG" "$TR_WORK"
 
 
 if [ "$status" -eq 0 ]; then

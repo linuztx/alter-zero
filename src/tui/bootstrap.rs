@@ -156,14 +156,23 @@ impl<'t> Session<'t> {
                 .disabled_for(&cwd.display().to_string()),
         );
 
-        // The MCP servers (docs/mcp.md): both config files parsed and merged,
-        // the manager built over them, and every enabled server's connect
-        // kicked off on worker threads — never blocking the first frame. The
-        // event channel is a select! source like the background shells'.
+        // The project's `.alter-zero` config layer (docs/project-config.md):
+        // each file read once, fingerprinted, and checked against trust.json
+        // — the snapshot /trust reviews. Loaded BEFORE the MCP manager and
+        // the hooks merge, both of which it feeds. Nothing untrusted runs.
+        let (project_layer, trust_error) = super::trust::load_project_layer(&cwd);
+
+        // The MCP servers (docs/mcp.md): the config files parsed and merged
+        // (the project layer's, trust-aware), the manager built over them,
+        // and every enabled server's connect kicked off on worker threads —
+        // never blocking the first frame. The event channel is a select!
+        // source like the background shells'.
         let (mcp_tx, mcp_rx) = tokio::sync::mpsc::unbounded_channel();
         let mcp_manager = config::mcp_enabled().then(|| {
-            let manager =
-                alter_zero::llm::mcp::McpManager::new(mcp_tx, super::mcp::load_mcp_sources(&cwd));
+            let manager = alter_zero::llm::mcp::McpManager::new(
+                mcp_tx,
+                super::mcp::load_mcp_sources(&cwd, project_layer.as_ref()),
+            );
             manager.start_connections();
             manager
         });
@@ -183,6 +192,19 @@ impl<'t> Session<'t> {
         // hooks", which is how a user comes to trust a guard that isn't there.
         let hooks_path = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref());
         let (hooks_file, hooks_error) = config::load_hooks(hooks_path.as_deref());
+        // The trusted project layer unions in after the user's file
+        // (docs/project-config.md — one more entry from the loader; an
+        // untrusted or unparseable project file contributes nothing). The
+        // user layer is kept apart on the session so a /trust decision can
+        // rebuild this merge live.
+        let user_hooks_file = hooks_file.clone();
+        let hooks_file = match project_layer
+            .as_ref()
+            .and_then(super::trust::ProjectLayer::trusted_hooks)
+        {
+            Some(project_hooks) => user_hooks_file.merged(project_hooks),
+            None => hooks_file,
+        };
         // The rollout path is created lazily on the first recorded item, so
         // the payloads' `transcript_path` rides a shared cell the recorder
         // publishes into (below) and the sink reads at dispatch time. The
@@ -198,7 +220,13 @@ impl<'t> Session<'t> {
             sources.push("startup".to_string());
         }
         let hook_transcript = hook_handles.transcript.clone();
-        let hook_setup = (!hooks_file.is_empty()).then(|| HookSetup {
+        // Constructed even over an empty merge (docs/project-config.md): a
+        // /trust approval mid-session swaps its file in place, and the live
+        // handles must be THESE — a second set would split the transcript
+        // path and the SessionStart queue. `hooks_available()` reads the
+        // file's emptiness, so the /settings row reports exactly as before;
+        // an empty file's sink is `None` either way.
+        let hook_setup = Some(HookSetup {
             file: std::sync::Arc::new(hooks_file),
             session_id: host::session_id(),
             cwd: cwd.clone(),
@@ -327,6 +355,8 @@ impl<'t> Session<'t> {
             task_registry,
             skill_registry,
             mcp: mcp_manager,
+            project_layer,
+            user_hooks_file,
             // Seeded with the startup walk's failures, so the first turn's
             // rescan doesn't re-toast what the banner already said.
             reported_skill_errors: skill_errors
@@ -352,6 +382,7 @@ impl<'t> Session<'t> {
         session.report_hooks_error(hooks_error);
         session.report_skill_errors(&skill_errors);
         session.report_mcp_errors();
+        session.report_trust_state(trust_error);
         let picker = session.apply_startup(startup);
         session.paint_first_frame(picker)?;
 

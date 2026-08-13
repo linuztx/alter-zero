@@ -92,6 +92,7 @@ pub(crate) mod settings;
 pub(crate) mod shell;
 pub(crate) mod startup;
 pub(crate) mod stream;
+pub(crate) mod trust;
 pub(crate) mod turn;
 pub(crate) mod view;
 pub(crate) mod workers;
@@ -219,6 +220,15 @@ pub(crate) struct Session<'t> {
     /// connection state, the tool specs the backend folds in, and the OAuth
     /// flows. `None` when `ALTER_ZERO_MCP` turned the feature off.
     mcp: Option<alter_zero::llm::mcp::McpManager>,
+    /// The project's `.alter-zero` config layer as loaded at bootstrap — the
+    /// snapshot `/trust` reviews and its approval records/activates. `None`
+    /// when `ALTER_ZERO_PROJECT_CONFIG` turned the layer off
+    /// (`docs/project-config.md`).
+    project_layer: Option<trust::ProjectLayer>,
+    /// The **user** layer of the parsed hooks config, kept apart from the
+    /// merge riding `HookSetup` so a `/trust` approval or revoke can rebuild
+    /// the merge live (`docs/project-config.md`).
+    user_hooks_file: alter_zero::hooks::HooksFile,
     /// The `SKILL.md` files whose parse failure has already been raised as a
     /// toast, so the rescan doesn't repeat itself every turn. Re-seeded from
     /// each walk's errors, so a file that is fixed and broken again reports

@@ -10,15 +10,28 @@ that need one.
 
 ## Configuration
 
-Two scopes, first scope wins a name (project shadows user — the Claude Code
-precedence, minus the `local` scope we don't model):
+Two scopes over three files, first occurrence of a name winning (the Claude
+Code precedence, minus the `local` scope we don't model):
 
-- **Project**: `{project_root}/.mcp.json` — the nearest-`.git` root's file
-  (the `AGENTS.md` walk-up, `project_doc::find_project_root`), so launching
-  in `repo/src` still finds the repo's servers. Claude Code's shared-project
-  convention, checked into the repo.
+- **Project**: `{project_root}/.alter-zero/mcp.json` first (the app-specific
+  location, `docs/project-config.md`), then `{project_root}/.mcp.json` (the
+  Claude-Code-compat convention, checked into the repo) — both at the
+  nearest-`.git` root (the `AGENTS.md` walk-up,
+  `project_doc::find_project_root`), so launching in `repo/src` still finds
+  the repo's servers.
 - **User**: `{config_home}/mcp.json` (`~/.alter-zero/mcp.json`) — personal
   servers, every project.
+
+**The project scope sits behind the trust gate**
+(`docs/project-config.md`): a checked-in stdio entry is a process this app
+would spawn at startup, so an untrusted project file's servers are *listed*
+in `/mcp` — status `⚠ untrusted`, no actions — but never launched (and
+never shadow the user's own same-named server) until the user approves the
+project in `/trust`. Approval connects them live; an edited file is
+untrusted again at the next launch. This is the one behavioral change to
+the original two-scope design, and it is deliberate: `.mcp.json` used to
+launch unasked, which is exactly the clone-equals-code-execution hole the
+hooks doc refused to open.
 
 Both files carry Claude Code's exact shape, so a `.mcp.json` written for it
 loads here unchanged:
@@ -56,9 +69,12 @@ serves a checkout elsewhere).
 
 Env knobs: `ALTER_ZERO_MCP` (falsy = the whole feature off: no connections,
 no tools, `/mcp` explains via toast), `ALTER_ZERO_MCP_FILE` (replaces the
-*user* file path — what makes a smoke run hermetic; the project file is
-still discovered), `ALTER_ZERO_MCP_STARTUP_TIMEOUT_MS` (per-server
-initialize + tools/list budget, default 30 000 — both references' default),
+*user* file path; the project files are still discovered),
+`ALTER_ZERO_PROJECT_CONFIG` (falsy = no project files at all — the project
+layer's own kill switch, shared with hooks, and the smoke suite's
+hermeticity mechanism; `docs/project-config.md`),
+`ALTER_ZERO_MCP_STARTUP_TIMEOUT_MS` (per-server initialize + tools/list
+budget, default 30 000 — both references' default),
 `ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` (per `tools/call`, default 120 000).
 
 ## The module split

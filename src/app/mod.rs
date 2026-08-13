@@ -49,6 +49,7 @@ mod skills_menu;
 mod status;
 mod tasks;
 mod tools;
+mod trust_menu;
 mod turn;
 mod types;
 mod views;
@@ -83,6 +84,7 @@ pub use self::skills_menu::{SkillMenuRow, SkillsMenu};
 pub use self::status::{RetryInfo, ThinkingState, TokenArrow, TurnStatus, TurnSummary};
 pub use self::tasks::TaskCallRecord;
 pub use self::tools::{ERROR_TOOL_OUTPUT, INTERRUPT_TOOL_OUTPUT, ToolCall, ToolStatus};
+pub use self::trust_menu::TrustMenu;
 pub use self::turn::{
     DONE_VERBS, INTERRUPT_NOTICE, InterruptedTurn, SHELL_VERB, StreamError, WORKING_VERBS,
     format_elapsed,
@@ -345,6 +347,11 @@ pub struct App {
     /// (page walk, no search) over the boundary-injected server snapshot.
     /// See `docs/mcp.md`.
     pub mcp_menu: Option<McpMenu>,
+    /// The open `/trust` review menu; `None` when closed. The seventh
+    /// composer-replacing picker, the [`hooks_menu`](Self::hooks_menu)'s
+    /// sibling (no text entry) over the boundary-injected project-config
+    /// review. See `docs/project-config.md`.
+    pub trust_menu: Option<TrustMenu>,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

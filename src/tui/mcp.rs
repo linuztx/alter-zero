@@ -12,10 +12,18 @@ use alter_zero::mcp;
 use super::Session;
 use super::config;
 
-/// Gather everything the manager is built from: both config files parsed,
-/// scopes merged (project shadows user), this project's disabled set, the
-/// token-store path, and the timeout knobs. Pure parse over boundary reads.
-pub(crate) fn load_mcp_sources(cwd: &Path) -> McpSources {
+/// Gather everything the manager is built from: the user file parsed here,
+/// the project files taken from the bootstrap-loaded [`ProjectLayer`]
+/// snapshot (each already fingerprinted and trust-checked,
+/// `docs/project-config.md`), scopes merged trust-aware — a trusted project
+/// file shadows the user, an untrusted one is listed but held — plus this
+/// project's disabled set, the token-store path, and the timeout knobs.
+/// Pure parse/merge over boundary reads. Without a layer
+/// (`ALTER_ZERO_PROJECT_CONFIG` off) no project file contributes at all.
+pub(crate) fn load_mcp_sources(
+    cwd: &Path,
+    layer: Option<&super::trust::ProjectLayer>,
+) -> McpSources {
     let project = cwd.display().to_string();
     let user_path = config::mcp_user_file_path();
     let user_contents = user_path
@@ -26,38 +34,57 @@ pub(crate) fn load_mcp_sources(cwd: &Path) -> McpSources {
         .as_deref()
         .map(|contents| mcp::parse_disabled(contents, &project))
         .unwrap_or_default();
-    // The project file sits at the nearest-`.git` root (the `AGENTS.md`
-    // walk-up), so launching in `repo/src` still finds the repo's servers.
-    let project_root =
-        alter_zero::project_doc::find_project_root(cwd).unwrap_or_else(|| cwd.to_path_buf());
-    let project_path = project_root.join(".mcp.json");
-    let project_contents = std::fs::read_to_string(&project_path).ok();
-    let project_file = project_contents.as_deref().map(mcp::parse_mcp_file);
     let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
     let user_display = user_path
         .as_deref()
         .map(|path| alter_zero::ui::display_cwd(path, home.as_deref()))
         .unwrap_or_else(|| "~/.alter-zero/mcp.json".to_string());
-    let project_display = alter_zero::ui::display_cwd(&project_path, home.as_deref());
+    // The project files ride the trust layer's snapshot: `(parse, display
+    // path, trusted)` per present file, plus its parse errors for the toast.
     let mut errors = Vec::new();
-    for (file, origin) in [
-        (project_file.as_ref(), project_display.as_str()),
-        (user_file.as_ref(), user_display.as_str()),
-    ] {
-        if let Some(file) = file {
-            errors.extend(file.errors.iter().map(|error| format!("{origin}: {error}")));
+    let scoped = |file: Option<&super::trust::ProjectFile<mcp::McpFile>>,
+                  errors: &mut Vec<String>| {
+        let file = file?;
+        let display = alter_zero::ui::display_cwd(&file.path, home.as_deref());
+        match &file.parsed {
+            Ok(parsed) => {
+                errors.extend(
+                    parsed
+                        .errors
+                        .iter()
+                        .map(|error| format!("{display}: {error}")),
+                );
+                Some((parsed.clone(), display, file.trusted))
+            }
+            Err(error) => {
+                errors.push(format!("{display}: {error}"));
+                None
+            }
         }
+    };
+    let alter = scoped(layer.and_then(|l| l.mcp_alter.as_ref()), &mut errors);
+    let compat = scoped(layer.and_then(|l| l.mcp_compat.as_ref()), &mut errors);
+    if let Some(file) = user_file.as_ref() {
+        errors.extend(
+            file.errors
+                .iter()
+                .map(|error| format!("{user_display}: {error}")),
+        );
     }
-    let entries = mcp::merge_scopes(
-        project_file
+    let (entries, untrusted) = mcp::merge_project_scopes(
+        alter
             .as_ref()
-            .map(|file| (file, project_display.as_str())),
+            .map(|(file, display, trusted)| (file, display.as_str(), *trusted)),
+        compat
+            .as_ref()
+            .map(|(file, display, trusted)| (file, display.as_str(), *trusted)),
         user_file.as_ref().map(|file| (file, user_display.as_str())),
     );
     McpSources {
         entries,
         errors,
         disabled,
+        untrusted,
         project,
         user_file: user_path,
         auth_path: config::mcp_auth_path(),

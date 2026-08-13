@@ -76,6 +76,7 @@ use alter_zero::app::{
     ToastKind,
     TokenArrow,
     ToolCall,
+    TrustMenu,
     ToolStatus,
     TurnStatus,
     TurnSummary,
@@ -260,6 +261,7 @@ use alter_zero::ui::{
     render_context_view,
     render_hooks_menu,
     render_mcp_menu,
+    render_trust_menu,
     render_key_onboarding,
     render_live,
     render_live_with_preview,
@@ -297,6 +299,8 @@ use alter_zero::ui::{
     tool_view_max_scroll_for,
     transcript_lines,
     transcript_selection,
+    trust_menu_height,
+    trust_view_lines,
     wrap_text,
 };
 

@@ -191,6 +191,12 @@ impl Session<'_> {
                 // region collapses back to the composer on the next draw.
             }
             Action::McpOp(op) => self.apply_mcp_op(op),
+            Action::OpenTrustMenu => self.open_trust_menu(),
+            Action::CloseTrustMenu => {
+                // Esc/Ctrl+C dismissed the review: nothing to reap; the
+                // region collapses back to the composer on the next draw.
+            }
+            Action::ApplyTrust(action) => self.apply_trust(action),
             Action::Notice(text) => {
                 // A slash command's one-off system notice. The helper finalises
                 // any mid-flight reply segment first (same ordering trick as a

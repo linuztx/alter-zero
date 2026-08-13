@@ -35,6 +35,7 @@ mod skill_picker;
 mod skills_menu;
 mod tasks;
 mod tools;
+mod trust_menu;
 mod turn;
 mod types;
 mod views;

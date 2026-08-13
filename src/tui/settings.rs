@@ -37,8 +37,20 @@ impl Session<'_> {
     pub(crate) fn open_hooks_menu(&mut self) {
         let (overview, enabled) = self.models.hooks_browse();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
-        let source = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref())
+        let mut source = alter_zero::llm::hooks::hooks_file_path(config::config_home().as_deref())
             .map(|path| alter_zero::ui::display_cwd(&path, home.as_deref()));
+        // A trusted project file is part of the merge the browser shows, so
+        // the `Source:` row names it too (`docs/project-config.md`).
+        if let Some(layer) = &self.project_layer
+            && let Some(file) = &layer.hooks
+            && layer.trusted_hooks().is_some()
+        {
+            let project = alter_zero::ui::display_cwd(&file.path, home.as_deref());
+            source = Some(match source {
+                Some(user) => format!("{user} + {project}"),
+                None => project,
+            });
+        }
         self.app.open_hooks_menu(overview, source, enabled);
     }
 

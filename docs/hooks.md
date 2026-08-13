@@ -329,16 +329,24 @@ printf '%s' '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalCon
 
 ## Configuration and trust
 
-**User-level config only.** `~/.alter-zero/hooks.json`
-(`ALTER_ZERO_HOOKS_FILE` overrides the path; `ALTER_ZERO_HOOKS` gates the
-feature off entirely, the `ALTER_ZERO_PERMISSIONS` pattern). A project-local
-`.alter-zero/hooks.json` without a trust gate means cloning a repository earns
-arbitrary code execution on the first tool call. codex answers this with a
-per-hook content hash and a `trusted_hash` state, but the hard part is the
-interaction design — what a user *does* about an untrusted hook — not the
-hashing. Because layers would **union** rather than override, the project
-layer stays a purely additive change later: one more entry from the loader, no
-precedence rules to invent.
+**Two layers: the user's file, plus the project's behind a trust gate.**
+`~/.alter-zero/hooks.json` (`ALTER_ZERO_HOOKS_FILE` overrides that user
+path; `ALTER_ZERO_HOOKS` gates the feature off entirely, the
+`ALTER_ZERO_PERMISSIONS` pattern) — and, since `docs/project-config.md`, the
+project's own `{root}/.alter-zero/hooks.json`, discovered at the
+nearest-`.git` root and **union-merged** after the user file
+(`HooksFile::merged` — one more entry from the loader, no precedence rules to
+invent: `select`'s existing dedup-by-command keeps the user's copy of a
+duplicate, any block wins, contexts concatenate). The reason it was
+user-level-only for so long is the reason the project layer is
+**default-deny**: a project-local hooks file without a trust gate means
+cloning a repository earns arbitrary code execution on the first tool call.
+The gate is codex's content-hash answer with the interaction design solved
+by `/trust` — the project file is read and fingerprinted at bootstrap but
+contributes **nothing** to the merge until the user approves it in the
+`/trust` review menu, and an edited file is untrusted again. See
+`docs/project-config.md` for the whole gate (the `trust.json` store, the
+review menu, live activation, `ALTER_ZERO_PROJECT_CONFIG`).
 
 A malformed `hooks.json` is **not** silently treated as "no hooks" — that is
 how a user comes to believe a guard is running when it is not. The parse
@@ -510,5 +518,7 @@ Verified against both sources, and chosen — not accidental:
 - **A PermissionRequest hook that abstains loses its warnings** — the
   fail-open posture has no channel to the user from that position; a
   deciding verdict carries them on its note.
-- **User-level config only** — the project layer still wants a trust model
-  first (unchanged position, see *Configuration and trust*).
+- **The project layer is read once, at bootstrap** — like the user file. A
+  `.alter-zero/hooks.json` that appears (or changes) mid-session is a
+  restart away; `/trust`'s approval activates exactly the reviewed startup
+  snapshot (`docs/project-config.md`).

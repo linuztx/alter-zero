@@ -50,6 +50,9 @@ pub struct McpSources {
     pub errors: Vec<String>,
     /// The per-project disabled set (from the user file).
     pub disabled: std::collections::BTreeSet<String>,
+    /// Project-declared servers the trust gate is holding
+    /// (`docs/project-config.md`): never launched until `/trust` approves.
+    pub untrusted: std::collections::BTreeSet<String>,
     /// The absolute cwd — the disabled sets' project key.
     pub project: String,
     /// The user config file — where a disable persists. `None` = no
@@ -90,6 +93,7 @@ struct Inner {
     servers: Vec<ServerState>,
     errors: Vec<String>,
     disabled: std::collections::BTreeSet<String>,
+    untrusted: std::collections::BTreeSet<String>,
     project: String,
     user_file: Option<PathBuf>,
     auth_path: Option<PathBuf>,
@@ -123,12 +127,18 @@ impl McpManager {
             .into_iter()
             .map(|entry| {
                 let disabled = sources.disabled.contains(&entry.name);
+                let untrusted = sources.untrusted.contains(&entry.name);
                 let has_tokens = entry
                     .config
                     .url()
                     .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
                 ServerState {
-                    status: if disabled {
+                    // The trust gate outranks the user's own toggle: an
+                    // untrusted server may not run either way, and `/trust`
+                    // is the only way in.
+                    status: if untrusted {
+                        McpServerStatus::Untrusted
+                    } else if disabled {
                         McpServerStatus::Disabled
                     } else {
                         McpServerStatus::Pending
@@ -148,6 +158,7 @@ impl McpManager {
                 servers,
                 errors: sources.errors,
                 disabled: sources.disabled,
+                untrusted: sources.untrusted,
                 project: sources.project,
                 user_file: sources.user_file,
                 auth_path,
@@ -320,9 +331,68 @@ impl McpManager {
             }
         }
         self.notify(McpEvent::Changed);
-        if !disabled {
+        if !disabled && !self.lock().untrusted.contains(name) {
             self.spawn_connect(name);
         }
+    }
+
+    /// The `/trust` seam (`docs/project-config.md`): grant or revoke the
+    /// trust gate's hold on the named project servers. Granting hands each
+    /// server back to its ordinary lifecycle — connect, unless the user's
+    /// own disable toggle holds it; revoking kills the transport (a stdio
+    /// child dies with it) and returns the server to `untrusted`. Unlike
+    /// [`Self::set_disabled`], nothing persists here — trust lives in
+    /// `trust.json` at the boundary, not the user's MCP file.
+    pub fn set_trusted(&self, names: &[String], trusted: bool) {
+        let mut connect = Vec::new();
+        {
+            let mut inner = self.lock();
+            for name in names {
+                if trusted {
+                    inner.untrusted.remove(name);
+                } else {
+                    inner.untrusted.insert(name.clone());
+                }
+                let disabled = inner.disabled.contains(name);
+                let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == *name) else {
+                    continue;
+                };
+                if trusted {
+                    if server.status != McpServerStatus::Untrusted {
+                        continue;
+                    }
+                    if disabled {
+                        server.status = McpServerStatus::Disabled;
+                    } else {
+                        connect.push(name.clone());
+                    }
+                } else {
+                    server.generation += 1;
+                    server.status = McpServerStatus::Untrusted;
+                    server.transport = None; // kills a stdio child
+                    server.tools.clear();
+                    server.wire_map.clear();
+                    server.identity = None;
+                }
+            }
+        }
+        self.notify(McpEvent::Changed);
+        for name in connect {
+            self.spawn_connect(&name);
+        }
+    }
+
+    /// The names the trust gate is currently holding — what a `/trust`
+    /// approval should release.
+    #[must_use]
+    pub fn untrusted_names(&self) -> Vec<String> {
+        let inner = self.lock();
+        inner
+            .servers
+            .iter()
+            .filter(|s| s.status == McpServerStatus::Untrusted)
+            .map(|s| s.entry.name.clone())
+            .collect()
     }
 
     /// Delete a server's stored OAuth tokens (the `/mcp` "Clear
@@ -753,6 +823,61 @@ mod tests {
         assert!(outcome.output.contains("unknown MCP tool"));
         assert!(!manager.has_tools());
         assert!(manager.fingerprint().is_empty());
+    }
+
+    #[test]
+    fn an_untrusted_server_never_launches_until_trusted() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![stdio_entry("fix")],
+                untrusted: ["fix".to_string()].into(),
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        // A beat for any wrongly-spawned connect to land before we look.
+        std::thread::sleep(Duration::from_millis(150));
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot[0].status, McpServerStatus::Untrusted);
+        assert!(!manager.has_tools());
+        // `/trust` approval connects it…
+        manager.set_trusted(&["fix".to_string()], true);
+        wait_connected(&manager, "fix");
+        assert!(manager.has_tools());
+        // …and a revoke kills it back to untrusted, tools withdrawn.
+        manager.set_trusted(&["fix".to_string()], false);
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot[0].status, McpServerStatus::Untrusted);
+        assert!(!manager.has_tools());
+        manager.shutdown();
+    }
+
+    #[test]
+    fn trusting_a_disabled_server_respects_the_disable() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![stdio_entry("fix")],
+                untrusted: ["fix".to_string()].into(),
+                disabled: ["fix".to_string()].into(),
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        // The gate outranks the toggle while untrusted…
+        assert_eq!(manager.snapshot()[0].status, McpServerStatus::Untrusted);
+        // …and trusting hands the server back to the user's disable rather
+        // than launching over it.
+        manager.set_trusted(&["fix".to_string()], true);
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(manager.snapshot()[0].status, McpServerStatus::Disabled);
+        assert!(!manager.has_tools());
+        manager.shutdown();
     }
 
     #[test]
