@@ -44,6 +44,25 @@ pub fn normalize_name(name: &str) -> String {
     out.trim_matches('_').to_string()
 }
 
+/// Validate a server name for the `mcp add` CLI (`docs/mcp-cli.md`): a valid
+/// name is a non-empty one [`normalize_name`] maps to itself — the
+/// `[A-Za-z0-9_-]` class both references enforce, minus the `__` runs and
+/// edge underscores normalization would rewrite — so the declared name, the
+/// `/mcp` list, the permission rules and the wire name always agree. The
+/// error names the culprit and, when normalization has a spelling to offer,
+/// suggests it.
+pub fn validate_server_name(name: &str) -> Result<(), String> {
+    let normalized = normalize_name(name);
+    if !name.is_empty() && normalized == name {
+        return Ok(());
+    }
+    let mut message = format!("invalid server name \"{name}\" (use letters, numbers, '-', '_')");
+    if !normalized.is_empty() {
+        message.push_str(&format!("; try \"{normalized}\""));
+    }
+    Err(message)
+}
+
 /// The fully-qualified wire name the model calls:
 /// `mcp__{server}__{tool}`, both parts normalized.
 #[must_use]
@@ -163,6 +182,25 @@ pub fn batch_label(servers: &[&str]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_accepts_exactly_what_normalize_keeps() {
+        // The `mcp add` name rule (docs/mcp-cli.md): a valid name is one
+        // `normalize_name` maps to itself, so the declared name, the /mcp
+        // list and the wire name can never disagree.
+        assert_eq!(validate_server_name("deepwiki"), Ok(()));
+        assert_eq!(validate_server_name("Server_1-x"), Ok(()));
+        for bad in ["", "my server", "a.b", "caf\u{e9}", "a/b", "a__b", "_x"] {
+            let err = validate_server_name(bad).expect_err("invalid name");
+            assert!(err.contains("letters, numbers"), "{err}");
+        }
+        // The message names the culprit and suggests the wire-safe spelling.
+        let err = validate_server_name("my server").unwrap_err();
+        assert!(err.contains("my server"), "{err}");
+        assert!(err.contains("\"my_server\""), "{err}");
+        // Nothing to suggest for a name that normalizes to nothing.
+        assert!(!validate_server_name("___").unwrap_err().contains("try"));
+    }
 
     #[test]
     fn normalize_maps_invalid_chars_to_underscores() {

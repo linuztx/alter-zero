@@ -24,13 +24,14 @@ mod sse;
 mod status;
 
 pub use self::config::{
-    McpFile, McpScope, McpServerConfig, McpServerEntry, merge_project_scopes, merge_scopes,
-    parse_disabled, parse_mcp_file, record_disabled,
+    McpFile, McpScope, McpServerConfig, McpServerEntry, McpWriteError, merge_project_scopes,
+    merge_scopes, parse_disabled, parse_mcp_file, parse_server_entry, record_disabled,
+    record_server, remove_server, render_server,
 };
 pub use self::names::{
     MCP_DISPLAY_SUFFIX, MCP_TOOL_PREFIX, batch_label, display_from_wire, display_server,
     is_mcp_display_name, is_mcp_tool, label_from_wire, normalize_name, parse_wire_name,
-    tool_display_name, tool_label, tool_wire_name, wire_from_display,
+    tool_display_name, tool_label, tool_wire_name, validate_server_name, wire_from_display,
 };
 pub use self::protocol::{
     CallOutcome, Incoming, MAX_TOOL_DESCRIPTION_CHARS, McpToolInfo, PROTOCOL_VERSION, RpcError,

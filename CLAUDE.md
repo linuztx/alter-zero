@@ -180,7 +180,16 @@ the id lookup via `session::rollout_file_id`/`latest_for_cwd`), the loaded
 transcript committed under the banner through `insert_before` — never a
 startup Purge, the user's terminal scrollback survives — and a quit that
 recorded anything printing `Resume this session with: {bin} --resume {id}`
-after `term.restore()`, `docs/cli.md`) in
+after `term.restore()`, `docs/cli.md` — and the **`mcp` subcommand family**,
+`docs/mcp-cli.md`: `alter-zero mcp add {name} --url {url}` / `mcp add {name}
+[--] {command} [args…]` (plus `add-json`/`remove`/`get`/`list`) edits the
+*user* MCP config file at that same pre-TUI boundary — codex's explicit
+url-or-command grammar with Claude Code's `--transport sse`/`--header`/
+duplicate-error ergonomics on top, a bare `--url` writing the type-less
+http→sse-fallback shape, the pure grammar in `cli::parse_mcp` → `McpCli`,
+the RMW writers `mcp::record_server`/`remove_server` (order-preserving
+`shift_remove`, unparseable files refused never clobbered), the file I/O in
+`tui::mcp_cli`) in
 `docs/resume.md`; the **filesystem checkpoints** (every turn snapshots the whole
 cwd into an *isolated* git store — never the user's real `.git` — keyed to the
 conversation length, so the Esc-Esc backtrack **and** `/resume` **reset the

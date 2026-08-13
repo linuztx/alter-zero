@@ -5,7 +5,10 @@ Claude Code's session CLI, ported onto the `/resume` rollout files
 recorded in the current directory, `alter-zero --resume {id}` reopens a
 specific session from anywhere, a bare `alter-zero --resume` opens the
 `/resume` picker as the very first screen — and quitting a session that
-recorded anything prints the copy-paste command that brings it back:
+recorded anything prints the copy-paste command that brings it back. (The
+same pre-TUI boundary also answers the `mcp` subcommand family —
+`alter-zero mcp add/add-json/remove/get/list`, `docs/mcp-cli.md` — routed
+by a first argument of `mcp` before the flag grammar below applies.)
 
 ```
 ────────────────────────────────────────────────────────────────────────────

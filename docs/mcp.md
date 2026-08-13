@@ -67,6 +67,10 @@ project file, which may be shared with a team:
 empty set drops the entry, a name not installed here is kept (the same file
 serves a checkout elsewhere).
 
+The **user** file can be edited from the command line — `alter-zero mcp add
+{name} --url {url}` (and `add-json`/`remove`/`get`/`list`), resolved before
+the TUI boots like `--continue`/`--resume`; see `docs/mcp-cli.md`.
+
 Env knobs: `ALTER_ZERO_MCP` (falsy = the whole feature off: no connections,
 no tools, `/mcp` explains via toast), `ALTER_ZERO_MCP_FILE` (replaces the
 *user* file path; the project files are still discovered),

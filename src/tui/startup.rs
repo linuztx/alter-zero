@@ -48,7 +48,14 @@ pub(crate) struct LoadedSession {
 /// never starts on an error path.
 pub(crate) fn resolve_cli() -> Result<Option<Startup>, i32> {
     let parsed = cli::parse(std::env::args().skip(1)).map_err(|message| {
-        eprintln!("{message}\n\n{}", cli::USAGE);
+        // An `mcp` grammar error gets the subcommand's own usage trailer
+        // (`mcp` only ever routes as the first argument).
+        let usage = if std::env::args().nth(1).is_some_and(|first| first == "mcp") {
+            cli::MCP_USAGE
+        } else {
+            cli::USAGE
+        };
+        eprintln!("{message}\n\n{usage}");
         2
     })?;
     match parsed {
@@ -57,6 +64,9 @@ pub(crate) fn resolve_cli() -> Result<Option<Startup>, i32> {
             println!("{}", cli::USAGE);
             Err(0)
         }
+        // The mcp subcommand family (docs/mcp-cli.md): does its file work
+        // and exits — success rides the same Err(0) channel --help uses.
+        Cli::Mcp(cmd) => Err(super::mcp_cli::run(&cmd)),
         Cli::Version => {
             println!("{} {}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
             Err(0)

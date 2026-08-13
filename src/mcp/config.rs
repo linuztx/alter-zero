@@ -89,6 +89,19 @@ impl McpServerConfig {
     pub const fn is_remote(&self) -> bool {
         matches!(self, Self::Http { .. } | Self::Sse { .. })
     }
+
+    /// The transport's display word (`stdio`/`http`/`sse`) — the CLI's
+    /// `mcp list`/`get` label (`docs/mcp-cli.md`). The `sse_fallback` Http
+    /// shape still *is* http; the retry is a resilience detail, not a
+    /// fourth transport.
+    #[must_use]
+    pub const fn transport_label(&self) -> &'static str {
+        match self {
+            Self::Stdio { .. } => "stdio",
+            Self::Http { .. } => "http",
+            Self::Sse { .. } => "sse",
+        }
+    }
 }
 
 /// One declared server: its name, config, and scope.
@@ -199,6 +212,161 @@ pub fn record_disabled(
         }
     }
     serde_json::to_string_pretty(&value).unwrap_or_else(|_| contents.to_string())
+}
+
+/// Why a CLI write ([`record_server`]/[`remove_server`]) was refused — the
+/// boundary maps each to its message and exit code (`docs/mcp-cli.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpWriteError {
+    /// The file's contents don't parse as a JSON object (with `mcpServers`,
+    /// when present, an object) — refused rather than clobbered:
+    /// `record_disabled`'s silent fresh-`{}` fallback is the in-TUI
+    /// never-kill-the-TUI posture, but for a CLI edit it would discard
+    /// every declared server.
+    InvalidJson(String),
+    /// [`record_server`]: the name already has an entry (checked on the
+    /// raw JSON keys, so even an entry that doesn't parse can't be
+    /// silently replaced).
+    Exists,
+    /// [`remove_server`]: no entry with that name.
+    Missing,
+}
+
+/// Parse one server **entry** from a JSON string — `mcp add-json`'s parser
+/// (`docs/mcp-cli.md`), the same `parse_server` every file read uses, so a
+/// README's `{"type":"http","url":…}` snippet round-trips through the one
+/// schema.
+pub fn parse_server_entry(json: &str) -> Result<McpServerConfig, String> {
+    let value: Value =
+        serde_json::from_str(json.trim()).map_err(|e| format!("not valid JSON: {e}"))?;
+    parse_server(&value)
+}
+
+/// Serialize one server entry — the inverse of `parse_server`, so
+/// [`parse_server_entry`]`(render_server(config).to_string())` is the
+/// identity for every shape. Empty `args`/`env`/`headers` are omitted
+/// (absent means empty on the read side), and the `sse_fallback` Http shape
+/// renders as the bare `{"url": …}` with **no** `type` key — the only
+/// spelling that re-arms the http→sse compat retry.
+#[must_use]
+pub fn render_server(config: &McpServerConfig) -> Value {
+    let string_map = |map: &BTreeMap<String, String>| -> Value {
+        Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+                .collect(),
+        )
+    };
+    let mut obj = serde_json::Map::new();
+    match config {
+        McpServerConfig::Stdio { command, args, env } => {
+            obj.insert("type".to_string(), "stdio".into());
+            obj.insert("command".to_string(), command.as_str().into());
+            if !args.is_empty() {
+                obj.insert(
+                    "args".to_string(),
+                    Value::Array(args.iter().map(|a| Value::String(a.clone())).collect()),
+                );
+            }
+            if !env.is_empty() {
+                obj.insert("env".to_string(), string_map(env));
+            }
+        }
+        McpServerConfig::Http {
+            url,
+            headers,
+            sse_fallback,
+        } => {
+            if !sse_fallback {
+                obj.insert("type".to_string(), "http".into());
+            }
+            obj.insert("url".to_string(), url.as_str().into());
+            if !headers.is_empty() {
+                obj.insert("headers".to_string(), string_map(headers));
+            }
+        }
+        McpServerConfig::Sse { url, headers } => {
+            obj.insert("type".to_string(), "sse".into());
+            obj.insert("url".to_string(), url.as_str().into());
+            if !headers.is_empty() {
+                obj.insert("headers".to_string(), string_map(headers));
+            }
+        }
+    }
+    Value::Object(obj)
+}
+
+/// Parse the whole document for a CLI write: empty/whitespace contents are a
+/// fresh `{}` (a `touch`ed file, or the boundary's missing-file read);
+/// anything else must be a JSON object whose `mcpServers`, when present, is
+/// an object too — else the write is refused ([`McpWriteError::InvalidJson`]).
+fn parse_document(contents: &str) -> Result<serde_json::Map<String, Value>, McpWriteError> {
+    let trimmed = contents.trim();
+    if trimmed.is_empty() {
+        return Ok(serde_json::Map::new());
+    }
+    let value: Value = serde_json::from_str(trimmed)
+        .map_err(|e| McpWriteError::InvalidJson(format!("not valid JSON: {e}")))?;
+    match value {
+        Value::Object(map) => {
+            if map.get("mcpServers").is_some_and(|s| !s.is_object()) {
+                return Err(McpWriteError::InvalidJson(
+                    "\"mcpServers\" must be an object".to_string(),
+                ));
+            }
+            Ok(map)
+        }
+        _ => Err(McpWriteError::InvalidJson(
+            "the document must be a JSON object".to_string(),
+        )),
+    }
+}
+
+/// Re-render the user file with `name`'s entry added — `record_disabled`'s
+/// sibling for the `mcp add` CLI (`docs/mcp-cli.md`): the boundary reads the
+/// file, calls this, writes the result. A duplicate name is
+/// [`McpWriteError::Exists`] (remove it first — never a silent overwrite),
+/// and every other key — the `projects` disabled sets, unknown keys, the
+/// other servers' entries — passes through untouched, in order.
+pub fn record_server(
+    contents: &str,
+    name: &str,
+    config: &McpServerConfig,
+) -> Result<String, McpWriteError> {
+    let mut root = parse_document(contents)?;
+    let servers = root
+        .entry("mcpServers")
+        .or_insert_with(|| Value::Object(Default::default()));
+    let servers = servers.as_object_mut().expect("object ensured above");
+    if servers.contains_key(name) {
+        return Err(McpWriteError::Exists);
+    }
+    servers.insert(name.to_string(), render_server(config));
+    Ok(pretty(root))
+}
+
+/// Re-render the user file with `name`'s entry removed. Under serde_json's
+/// `preserve_order` a plain `Map::remove` is a *swap_remove* that moves the
+/// last server into the removed slot — this one shifts, so the file keeps
+/// its declaration order. Removing the last server drops the empty
+/// `mcpServers` key (the file stays a diff from empty), never the document.
+pub fn remove_server(contents: &str, name: &str) -> Result<String, McpWriteError> {
+    let mut root = parse_document(contents)?;
+    let Some(servers) = root.get_mut("mcpServers").and_then(Value::as_object_mut) else {
+        return Err(McpWriteError::Missing);
+    };
+    if servers.shift_remove(name).is_none() {
+        return Err(McpWriteError::Missing);
+    }
+    if servers.is_empty() {
+        root.shift_remove("mcpServers");
+    }
+    Ok(pretty(root))
+}
+
+/// The writers' one output shape: 2-space-indented JSON, keys in map order.
+fn pretty(root: serde_json::Map<String, Value>) -> String {
+    serde_json::to_string_pretty(&Value::Object(root)).expect("JSON values always serialize")
 }
 
 /// Parse one server entry. `type` is optional: `command` present defaults to
@@ -544,6 +712,191 @@ mod tests {
             ]
         );
         assert_eq!(merged[0].config.url(), Some("https://a"));
+    }
+
+    // ===== the CLI writers (docs/mcp-cli.md) =====
+
+    fn http(url: &str) -> McpServerConfig {
+        McpServerConfig::Http {
+            url: url.to_string(),
+            headers: BTreeMap::new(),
+            sse_fallback: false,
+        }
+    }
+
+    fn stdio(command: &str) -> McpServerConfig {
+        McpServerConfig::Stdio {
+            command: command.to_string(),
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn render_round_trips_every_transport_shape() {
+        let map = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect()
+        };
+        let shapes = [
+            McpServerConfig::Stdio {
+                command: "npx".to_string(),
+                args: vec!["-y".to_string(), "srv".to_string()],
+                env: map(&[("K", "v")]),
+            },
+            stdio("server"),
+            McpServerConfig::Http {
+                url: "https://x/mcp".to_string(),
+                headers: map(&[("Authorization", "Bearer t")]),
+                sse_fallback: false,
+            },
+            McpServerConfig::Http {
+                url: "https://x/mcp".to_string(),
+                headers: BTreeMap::new(),
+                sse_fallback: true,
+            },
+            McpServerConfig::Sse {
+                url: "https://x/sse".to_string(),
+                headers: map(&[("A", "b")]),
+            },
+        ];
+        for config in shapes {
+            let rendered = render_server(&config).to_string();
+            assert_eq!(
+                parse_server_entry(&rendered),
+                Ok(config.clone()),
+                "{rendered}"
+            );
+        }
+        // The fallback shape is the bare `{"url": …}` — NO "type" key, the
+        // only spelling that re-arms the http→sse compat retry.
+        let fallback = render_server(&McpServerConfig::Http {
+            url: "https://x".to_string(),
+            headers: BTreeMap::new(),
+            sse_fallback: true,
+        });
+        assert!(fallback.get("type").is_none(), "{fallback}");
+        // Empty args/env/headers are omitted, matching absent-means-empty.
+        assert_eq!(
+            render_server(&stdio("x")),
+            serde_json::json!({"type": "stdio", "command": "x"})
+        );
+        assert_eq!(
+            render_server(&http("https://x")),
+            serde_json::json!({"type": "http", "url": "https://x"})
+        );
+    }
+
+    #[test]
+    fn parse_server_entry_reports_bad_json_and_bad_entries() {
+        let err = parse_server_entry("{not json").expect_err("garbage");
+        assert!(err.contains("not valid JSON"), "{err}");
+        let err = parse_server_entry(r#"{"type": "ws", "url": "wss://x"}"#).expect_err("bad type");
+        assert!(err.contains("ws"), "{err}");
+    }
+
+    #[test]
+    fn record_server_creates_appends_and_preserves_siblings() {
+        // Empty/whitespace contents are a fresh file (a `touch`ed mcp.json,
+        // or the boundary's missing-file read), never an error.
+        let written = record_server("  ", "wiki", &http("https://w")).expect("fresh file");
+        let file = parse_mcp_file(&written);
+        assert!(file.errors.is_empty(), "{:?}", file.errors);
+        assert_eq!(file.servers, vec![("wiki".to_string(), http("https://w"))]);
+        // Appending keeps file order, and every sibling key survives.
+        let base = r#"{"mcpServers": {"a": {"url": "https://a"}},
+                       "projects": {"/p": {"disabled": ["x"]}}}"#;
+        let written = record_server(base, "b", &stdio("cmd")).expect("append");
+        let names: Vec<String> = parse_mcp_file(&written)
+            .servers
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+        assert_eq!(
+            parse_disabled(&written, "/p"),
+            ["x".to_string()].into_iter().collect()
+        );
+    }
+
+    #[test]
+    fn record_server_refuses_duplicates_and_garbage() {
+        let base = r#"{"mcpServers": {"a": {"url": "https://a"}}}"#;
+        assert_eq!(
+            record_server(base, "a", &http("https://new")),
+            Err(McpWriteError::Exists)
+        );
+        // Even an entry that does NOT parse blocks its name — the check is
+        // on the raw JSON keys, so a broken entry can't be silently replaced.
+        let broken = r#"{"mcpServers": {"a": {"type": "ws"}}}"#;
+        assert_eq!(
+            record_server(broken, "a", &http("https://new")),
+            Err(McpWriteError::Exists)
+        );
+        // A file that doesn't parse is refused, never clobbered.
+        assert!(matches!(
+            record_server("{not json", "a", &http("https://x")),
+            Err(McpWriteError::InvalidJson(_))
+        ));
+        assert!(matches!(
+            record_server("[1, 2]", "a", &http("https://x")),
+            Err(McpWriteError::InvalidJson(_))
+        ));
+        assert!(matches!(
+            record_server(r#"{"mcpServers": 3}"#, "a", &http("https://x")),
+            Err(McpWriteError::InvalidJson(_))
+        ));
+    }
+
+    #[test]
+    fn remove_server_keeps_declaration_order() {
+        // serde_json's preserve_order makes Map::remove a swap_remove that
+        // would move "c" into "a"'s slot — the writer must shift instead.
+        let base = r#"{"mcpServers": {
+            "a": {"url": "https://a"},
+            "b": {"url": "https://b"},
+            "c": {"url": "https://c"}
+        }}"#;
+        let written = remove_server(base, "a").expect("remove first");
+        let names: Vec<String> = parse_mcp_file(&written)
+            .servers
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect();
+        assert_eq!(names, ["b", "c"]);
+        // A missing name is an error the boundary can exit 1 on.
+        assert_eq!(remove_server(&written, "a"), Err(McpWriteError::Missing));
+        assert!(matches!(
+            remove_server("{not json", "a"),
+            Err(McpWriteError::InvalidJson(_))
+        ));
+        // Removing the last server drops the empty mcpServers key (the file
+        // stays a diff from empty), while the document itself survives.
+        let one = r#"{"mcpServers": {"a": {"url": "https://a"}}, "projects": {}}"#;
+        let written = remove_server(one, "a").expect("remove last");
+        assert!(!written.contains("mcpServers"), "{written}");
+        assert!(written.contains("projects"), "{written}");
+    }
+
+    #[test]
+    fn transport_labels_name_the_three_kinds() {
+        assert_eq!(stdio("x").transport_label(), "stdio");
+        assert_eq!(http("https://x").transport_label(), "http");
+        // The fallback shape still *is* http — the retry is an internal
+        // resilience detail, not a fourth transport.
+        let fallback = McpServerConfig::Http {
+            url: "https://x".to_string(),
+            headers: BTreeMap::new(),
+            sse_fallback: true,
+        };
+        assert_eq!(fallback.transport_label(), "http");
+        let sse = McpServerConfig::Sse {
+            url: "https://x".to_string(),
+            headers: BTreeMap::new(),
+        };
+        assert_eq!(sse.transport_label(), "sse");
     }
 
     #[test]
