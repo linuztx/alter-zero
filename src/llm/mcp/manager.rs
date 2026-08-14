@@ -19,7 +19,7 @@ use crate::mcp::{
 };
 use crate::stream::CancelToken;
 
-use super::client::{ConnectError, connect};
+use super::client::{ConnectError, connect_with_era};
 use super::oauth::{self, AuthProgress};
 use super::transport::{Transport, TransportError};
 use crate::llm::tools::{ToolCallRequest, ToolOutcome};
@@ -60,6 +60,10 @@ pub struct McpSources {
     pub user_file: Option<PathBuf>,
     /// The OAuth token store (`{config_home}/mcp-auth.json`).
     pub auth_path: Option<PathBuf>,
+    /// The era cache (`{config_home}/mcp-era.json`) — the remembered
+    /// protocol-era verdict per server, so the probe runs once rather than
+    /// at every launch (`docs/mcp.md`).
+    pub era_path: Option<PathBuf>,
     /// The session cwd stdio children run in.
     pub cwd: Option<PathBuf>,
     pub startup_timeout: Duration,
@@ -75,6 +79,29 @@ pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The cancel-poll cadence every blocking wait shares with the transports.
 const POLL: Duration = Duration::from_millis(20);
+
+/// The remembered era for one server, if any. Best-effort: an unreadable or
+/// unrecognised cache simply means "probe".
+fn load_era(path: Option<&PathBuf>, key: &str) -> Option<crate::mcp::ServerEra> {
+    let contents = std::fs::read_to_string(path?).ok()?;
+    crate::mcp::parse_era_store(&contents).remove(key)
+}
+
+/// Remember one server's era, so the next launch skips the probe. Written
+/// only when the verdict actually changed — a connect per launch per server
+/// otherwise rewrites the file for nothing.
+fn save_era(path: Option<&PathBuf>, key: &str, era: &crate::mcp::ServerEra) {
+    let Some(path) = path else { return };
+    if load_era(Some(path), key).as_ref() == Some(era) {
+        return;
+    }
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let updated = crate::mcp::record_era(&existing, key, Some(era));
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, updated);
+}
 
 /// Run blocking work on a worker thread while polling `cancel` on the 20 ms
 /// cadence — the transport's own contract (`docs/mcp.md`), which anything
@@ -133,6 +160,7 @@ struct Inner {
     project: String,
     user_file: Option<PathBuf>,
     auth_path: Option<PathBuf>,
+    era_path: Option<PathBuf>,
     cwd: Option<PathBuf>,
     startup_timeout: Duration,
     tool_timeout: Duration,
@@ -199,6 +227,7 @@ impl McpManager {
                 project: sources.project,
                 user_file: sources.user_file,
                 auth_path,
+                era_path: sources.era_path,
                 cwd: sources.cwd,
                 startup_timeout: if sources.startup_timeout.is_zero() {
                     DEFAULT_STARTUP_TIMEOUT
@@ -256,10 +285,11 @@ impl McpManager {
 
     /// Connect (or re-connect) one server on a worker thread.
     fn spawn_connect(&self, name: &str) {
-        let (config, auth_path, cwd, timeout, generation) = {
+        let (config, auth_path, era_path, cwd, timeout, generation) = {
             let mut inner = self.lock();
-            let (auth_path, cwd, timeout) = (
+            let (auth_path, era_path, cwd, timeout) = (
                 inner.auth_path.clone(),
+                inner.era_path.clone(),
                 inner.cwd.clone(),
                 inner.startup_timeout,
             );
@@ -280,6 +310,7 @@ impl McpManager {
             (
                 server.entry.config.clone(),
                 auth_path,
+                era_path,
                 cwd,
                 timeout,
                 generation,
@@ -299,7 +330,18 @@ impl McpManager {
             let bearer = config
                 .url()
                 .and_then(|url| oauth::connect_bearer(auth_path.as_deref(), url));
-            let mut result = connect(&config, bearer, cwd.as_deref(), timeout, &cancel);
+            // The remembered era, so a legacy server is not re-probed at
+            // every launch (`docs/mcp.md`).
+            let era_key = config.target();
+            let cached_era = load_era(era_path.as_ref(), &era_key);
+            let mut result = connect_with_era(
+                &config,
+                bearer,
+                cwd.as_deref(),
+                cached_era.clone(),
+                timeout,
+                &cancel,
+            );
             // A 401 with a stored grant gets one forced refresh and one
             // retry before anyone is asked to re-authenticate — an access
             // token expiring between sessions is ordinary, not an auth
@@ -310,12 +352,18 @@ impl McpManager {
             if matches!(result, Err(ConnectError::NeedsAuth(_)))
                 && let Some(url) = config.url()
             {
-                match oauth::refresh_grant(auth_path.as_deref(), url) {
+                // The token the store held when this connect was refused —
+                // if another thread has rotated past it by the time the
+                // refresh lock is ours, we take theirs instead of replaying.
+                let presented =
+                    oauth::load_tokens(auth_path.as_deref(), url).map(|t| t.access_token);
+                match oauth::refresh_grant(auth_path.as_deref(), url, presented.as_deref()) {
                     Ok(tokens) => {
-                        result = connect(
+                        result = connect_with_era(
                             &config,
                             Some(tokens.access_token),
                             cwd.as_deref(),
+                            cached_era.clone(),
                             timeout,
                             &cancel,
                         );
@@ -335,6 +383,7 @@ impl McpManager {
             }
             match result {
                 Ok(connection) => {
+                    save_era(era_path.as_ref(), &era_key, &connection.era);
                     server.identity = Some(connection.identity);
                     server.wire_map = connection
                         .tools
@@ -762,11 +811,20 @@ impl McpManager {
             && let Some(url) = server_url.clone()
         {
             let path = auth_path.clone();
-            let refreshed =
-                match off_thread(move || oauth::refresh_grant(path.as_deref(), &url), cancel) {
-                    Some(refreshed) => refreshed,
-                    None => return ToolOutcome::error("tool call cancelled"),
-                };
+            let refreshed = match off_thread(
+                move || {
+                    // The token the store held when the server refused
+                    // us; a concurrent rotation past it wins the
+                    // single-flight and we take its grant instead.
+                    let presented =
+                        oauth::load_tokens(path.as_deref(), &url).map(|t| t.access_token);
+                    oauth::refresh_grant(path.as_deref(), &url, presented.as_deref())
+                },
+                cancel,
+            ) {
+                Some(refreshed) => refreshed,
+                None => return ToolOutcome::error("tool call cancelled"),
+            };
             match refreshed {
                 Ok(tokens) => result = request(Some(tokens.access_token)),
                 Err(oauth::RefreshFailure::Transient(detail)) => {

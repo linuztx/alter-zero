@@ -237,6 +237,19 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   **NeedsAuth**, carrying the `WWW-Authenticate` detail for the OAuth
   discovery — auth outranks era, and detection re-runs on the authenticated
   reconnect.
+
+  **The verdict is remembered** (`{config_home}/mcp-era.json`, keyed by the
+  server's `target()` — its URL, or its command line for stdio), because
+  the spec says a client SHOULD cache it and the cost is measurable:
+  probing spends a round trip against every legacy server — which today is
+  nearly all of them — and against one that *ignores* unknown methods
+  rather than erroring them, it spends the entire `MODERN_PROBE_TIMEOUT`,
+  at **every launch** (measured: 10.1 s cold, 0.4 s warm). A cached
+  `legacy` verdict goes straight to `initialize` at the revision the server
+  itself settled on last time. A stale cache is not fatal: the handshake
+  still negotiates, and a server that changed era simply fails once and
+  re-probes. Nothing is written when the verdict hasn't changed, so a
+  steady session never rewrites the file.
 - `oauth` — the RFC-shaped authorization-code + PKCE flow: protected-resource
   metadata (RFC 9728) → authorization-server metadata (RFC 8414, with the
   OIDC fallback path) → dynamic client registration (RFC 7591) when offered
@@ -299,6 +312,19 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     PKCE (authorization-code only). The store is re-read before every
     refresh, so another process's newer grant is used instead of burning a
     rotated token.
+  - **Single-flight, per server.** Serializing the store's *write* does not
+    stop two threads presenting the same refresh token to the **network**,
+    and that is the more expensive race: OAuth 2.1 §4.3.1 requires a
+    rotating server to detect reuse and revoke the **whole family**, so the
+    second presentation doesn't merely fail — it destroys the grant, and
+    only the browser brings it back. Two subagents calling one server share
+    the manager, so this is reachable in ordinary use (measured: 7 of 8
+    concurrent refreshes were rejected as replays before the lock). Every
+    refresh takes its server's lock, then **re-reads the store under it**:
+    if the access token it found unusable is no longer the stored one,
+    another thread already rotated the grant and its result is returned
+    instead of a replay. Per server rather than global, so a slow
+    authorization server can't hold up an unrelated one.
   - **The store is one file for every server**, so its read-modify-write is
     serialized behind a process-wide lock and committed **write-then-rename**.
     Without the lock, two servers renewing at once (two subagents, or a tool

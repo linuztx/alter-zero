@@ -672,6 +672,12 @@ pub(crate) fn mcp_auth_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("mcp-auth.json"))
 }
 
+/// The remembered protocol-era verdict per server — a plain cache beside the
+/// token store, holding no secrets (`docs/mcp.md`).
+pub(crate) fn mcp_era_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("mcp-era.json"))
+}
+
 /// One MCP timeout knob in milliseconds, defaulting when unset/unparseable.
 fn mcp_timeout_ms(name: &str, default: std::time::Duration) -> std::time::Duration {
     std::env::var(name)

@@ -88,6 +88,7 @@ pub(crate) fn load_mcp_sources(
         project,
         user_file: user_path,
         auth_path: config::mcp_auth_path(),
+        era_path: config::mcp_era_path(),
         cwd: Some(cwd.to_path_buf()),
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),

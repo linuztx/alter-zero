@@ -38,6 +38,29 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 /// family — the browser flow again, for the exact reason the refresh exists.
 static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+/// One refresh lock per server. Serializing the store's *write* does not
+/// stop two threads presenting the same refresh token to the **network** —
+/// and that is the more expensive race: OAuth 2.1 §4.3.1 requires a
+/// rotating server to detect reuse and revoke the **whole family**, so the
+/// second presentation doesn't just fail, it destroys the grant permanently
+/// and only the browser brings it back. Two subagents calling one MCP
+/// server share the manager, so this is reachable in ordinary use.
+///
+/// Per server rather than global: a slow authorization server must not hold
+/// up an unrelated server's renewal.
+#[allow(clippy::type_complexity)]
+static REFRESH_LOCKS: std::sync::Mutex<
+    std::collections::BTreeMap<String, std::sync::Arc<std::sync::Mutex<()>>>,
+> = std::sync::Mutex::new(std::collections::BTreeMap::new());
+
+/// The refresh lock for one server, minted on first use.
+fn refresh_lock_for(server_url: &str) -> std::sync::Arc<std::sync::Mutex<()>> {
+    let mut locks = REFRESH_LOCKS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    std::sync::Arc::clone(locks.entry(server_url.to_string()).or_default())
+}
+
 /// Refresh a token this long before it actually expires — five minutes, the
 /// production default the reference clients converged on (60 s is the floor;
 /// clock skew plus in-flight latency eat a short window).
@@ -273,10 +296,27 @@ pub fn refresh_params(tokens: &StoredTokens, server_url: &str) -> Vec<(String, S
 pub fn refresh_grant(
     path: Option<&Path>,
     server_url: &str,
+    presented: Option<&str>,
 ) -> Result<StoredTokens, RefreshFailure> {
+    // Single-flight, per server: only one thread may present this grant's
+    // refresh token to the network at a time.
+    let lock = refresh_lock_for(server_url);
+    let _guard = lock
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let Some(tokens) = load_tokens(path, server_url) else {
         return Err(RefreshFailure::NoGrant);
     };
+    // Re-read under the lock decides it: if the store no longer holds the
+    // access token we found unusable, another thread already rotated the
+    // grant while we waited. Take its result — presenting our now-spent copy
+    // of the refresh token would be a replay, and a compliant server answers
+    // that by revoking the whole family.
+    if let Some(presented) = presented
+        && tokens.access_token != presented
+    {
+        return Ok(tokens);
+    }
     if tokens.refresh_token.is_none() || tokens.token_endpoint.trim().is_empty() {
         return Err(RefreshFailure::NoGrant);
     }
@@ -320,7 +360,7 @@ pub fn connect_bearer(path: Option<&Path>, server_url: &str) -> Option<String> {
     if tokens_fresh(&tokens, unix_now()) {
         return Some(tokens.access_token);
     }
-    match refresh_grant(path, server_url) {
+    match refresh_grant(path, server_url, Some(&tokens.access_token)) {
         Ok(refreshed) => Some(refreshed.access_token),
         Err(RefreshFailure::Permanent(_)) => None,
         Err(RefreshFailure::NoGrant | RefreshFailure::Transient(_)) => Some(tokens.access_token),
@@ -338,7 +378,7 @@ pub fn refresh_if_stale(path: Option<&Path>, server_url: &str) -> Option<String>
     if tokens_fresh(&tokens, unix_now()) || tokens.refresh_token.is_none() {
         return None;
     }
-    refresh_grant(path, server_url)
+    refresh_grant(path, server_url, Some(&tokens.access_token))
         .ok()
         .map(|refreshed| refreshed.access_token)
 }
@@ -1384,6 +1424,124 @@ mod tests {
         // rejection when the metadata promised the parameter.
         assert!(validate_issuer(None, Some("https://as.test"), true).is_err());
         assert!(validate_issuer(None, Some("https://as.test"), false).is_ok());
+    }
+
+    /// A token endpoint that **detects refresh-token reuse**, as OAuth 2.1
+    /// §4.3.1 requires of any server that rotates: the first presentation of
+    /// a token rotates it, a second presentation of the *same* token is a
+    /// replay and the whole family dies. Returns `(url, reuse_count)`.
+    fn spawn_rotating_token_endpoint() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let reuse = std::sync::Arc::new(AtomicUsize::new(0));
+        let reuse_t = std::sync::Arc::clone(&reuse);
+        std::thread::spawn(move || {
+            let spent: std::sync::Mutex<std::collections::HashSet<String>> =
+                std::sync::Mutex::new(std::collections::HashSet::new());
+            let issued = AtomicUsize::new(1);
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(rest) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                let presented = body
+                    .split('&')
+                    .find_map(|pair| pair.strip_prefix("refresh_token="))
+                    .unwrap_or_default()
+                    .to_string();
+                let replayed = !spent.lock().unwrap().insert(presented);
+                let response = if replayed {
+                    reuse_t.fetch_add(1, Ordering::SeqCst);
+                    let body = r#"{"error":"invalid_grant","error_description":"token reuse detected; grant revoked"}"#;
+                    format!(
+                        "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    let n = issued.fetch_add(1, Ordering::SeqCst) + 1;
+                    let body = format!(
+                        r#"{{"access_token":"at-{n}","refresh_token":"rt-{n}","token_type":"Bearer","expires_in":3600}}"#
+                    );
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                };
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        (format!("http://127.0.0.1:{port}/token"), reuse)
+    }
+
+    #[test]
+    fn concurrent_refreshes_present_the_token_once() {
+        // Serialising the *file write* does not stop two threads presenting
+        // the same refresh token to the *network*. Two subagents hitting one
+        // MCP server share the manager, so this is reachable in normal use —
+        // and its cost is the worst failure mode in this area: a compliant
+        // AS treats the replay as theft and revokes the whole family, so the
+        // grant is gone permanently and only the browser brings it back.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-auth.json");
+        let (token_url, reuse) = spawn_rotating_token_endpoint();
+        let server = "https://s.test/mcp";
+        save_tokens(
+            Some(&path),
+            server,
+            Some(&StoredTokens {
+                access_token: "at-1".to_string(),
+                refresh_token: Some("rt-1".to_string()),
+                expires_at: Some(1), // stale: every caller wants a refresh
+                client_id: "cid".to_string(),
+                client_secret: None,
+                token_endpoint: token_url,
+                scope: None,
+            }),
+        );
+        // Spawn every thread *before* joining any — a lazy `.map().map()`
+        // chain would spawn-and-join one at a time and race nothing.
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || refresh_grant(Some(&path), server, Some("at-1")))
+            })
+            .collect();
+        let outcomes: Vec<_> = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("refresh thread"))
+            .collect();
+        assert_eq!(
+            reuse.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the refresh token was presented twice — a reuse-detecting server \
+             revokes the whole grant for this"
+        );
+        // Every caller comes away with a usable grant, and the store holds one.
+        for outcome in &outcomes {
+            assert!(
+                outcome.is_ok(),
+                "a caller was left without a token: {outcome:?}"
+            );
+        }
+        assert!(load_tokens(Some(&path), server).is_some());
     }
 
     #[test]
