@@ -931,6 +931,44 @@ pub(super) const MCP_SERVER_HINT: &str = "↑/↓ to navigate · Enter to select
 pub(super) const MCP_NONE_FOUND: &str = "No MCP servers configured. Add one at:";
 /// The detail page's field column (`Config location:  ` is the widest).
 pub(super) const MCP_FIELD_COL: usize = 18;
+
+/// Every page's headline — **cyan**, the one place the manager parts company
+/// with its white-titled `/hooks` twin. The twin is a browser you read
+/// top-down; this is a *walk* four pages deep, and the headline is the only
+/// row that answers "where am I?", so it is the row the eye must land on
+/// first (`docs/mcp.md`).
+pub(super) const MCP_TITLE_COLOR: Color = MODEL_SELECTED_COLOR;
+
+/// Both detail pages' two-tone: **every field label is bright** (`Status:`,
+/// `Tool name:`, `Description:`, `Parameters:`, a parameter's `● name`), and
+/// the values they introduce are quiet by default — an address, a path, a
+/// protocol revision, a count. The label is the column the eye runs down;
+/// the value is what it stops on once it has found the row.
+pub(super) const MCP_DETAIL_LABEL_COLOR: Color = AI_COLOR;
+pub(super) const MCP_DETAIL_VALUE_COLOR: Color = MODEL_META_COLOR;
+
+/// The exception: a value that is itself the answer to "is this server
+/// working, and what can it do?" — the `Status:`/`Auth:` words and the
+/// capability list — keeps the light the addresses around it give up.
+pub(super) const MCP_DETAIL_STATE_COLOR: Color = AI_COLOR;
+
+/// The tool's own description — **half white**: a step down from the label
+/// announcing it, a clear step up from the schema prose below it. It is the
+/// one paragraph on the page written *for* a reader rather than derived from
+/// a schema, so it must not read as boilerplate; full white made it shout
+/// over the labels that organise the page.
+pub(super) const MCP_DESCRIPTION_COLOR: Color = MODEL_ID_COLOR;
+
+/// The tool page's compact field spacing: one space after the label, not the
+/// server page's [`MCP_FIELD_COL`] pad. Its two labels (`Tool name:`,
+/// `Full name:`) are the same width, so they line up on their own and the
+/// value sits where the eye already is instead of across a gulf.
+pub(super) const MCP_TOOL_FIELD_GAP: &str = " ";
+
+/// The `Parameters:` listing's bullet and its continuation-row indent (the
+/// same width, so a wrapped parameter hangs under its own name).
+pub(super) const MCP_PARAM_BULLET: &str = "  ● ";
+pub(super) const MCP_PARAM_INDENT: &str = "    ";
 /// The auth page's fixed lines.
 pub(super) const MCP_AUTH_BROWSER_NOTE: &str = "*  A browser window will open for authentication";
 pub(super) const MCP_AUTH_COPY_NOTE: &str =

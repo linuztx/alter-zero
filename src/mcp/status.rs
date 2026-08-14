@@ -77,19 +77,37 @@ pub enum McpAuthState {
 }
 
 impl McpAuthState {
-    /// The `Auth:` row's text. Only a state that wants the user to *do*
-    /// something wears the red `✘`.
+    /// The `Auth:` row's glyph — the coloured half of the row's two-tone
+    /// ([`McpServerStatus::glyph`]'s job, for the same reason: the detail
+    /// page colours the glyph by state and prints the words plainly, and a
+    /// renderer must never have to split a string it didn't build).
+    #[must_use]
+    pub const fn glyph(self) -> &'static str {
+        match self {
+            Self::Authenticated | Self::Header | Self::NotRequired => "✔",
+            Self::Expired | Self::NotAuthenticated => "✘",
+        }
+    }
+
+    /// The `Auth:` row's words. Only a state that wants the user to *do*
+    /// something wears the red `✘` ([`glyph`](Self::glyph)).
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::Authenticated => "✔ authenticated",
-            Self::Header => "✔ authenticated (config header)",
-            // Shown, never hidden: "this server needs no login" is the
-            // answer to the question the row exists to ask, and silence
-            // leaves the user wondering (`docs/mcp.md`).
-            Self::NotRequired => "◯ not needed",
-            Self::Expired => "✘ expired",
-            Self::NotAuthenticated => "✘ not authenticated",
+            Self::Authenticated => "authenticated",
+            Self::Header => "authenticated (config header)",
+            // Shown, never hidden: whether a login is wanted here is the
+            // question the row exists to answer, and silence leaves the user
+            // wondering. A server that never challenged us reports the same
+            // settled row a stored grant earns, because from the user's side
+            // the answer is the same — you are cleared to use it — and a
+            // `not needed` shrug beside `✔ connected` read as a caveat where
+            // there is none. The *state* stays distinct: it is what
+            // withholds the re-authenticate and clear actions
+            // (`docs/mcp.md`).
+            Self::NotRequired => "authenticated",
+            Self::Expired => "expired",
+            Self::NotAuthenticated => "not authenticated",
         }
     }
 
@@ -358,6 +376,25 @@ mod tests {
             auth_state(true, true, true, &S::NeedsAuth),
             Some(McpAuthState::Header)
         );
+    }
+
+    #[test]
+    fn an_auth_row_splits_into_a_coloured_glyph_and_plain_words() {
+        // The `McpServerStatus` shape, for the same reason: the detail page
+        // two-tones the row (glyph in the state's colour, words white), and
+        // a renderer must never have to split a string it didn't build.
+        assert_eq!(McpAuthState::Authenticated.label(), "authenticated");
+        assert_eq!(
+            McpAuthState::Header.label(),
+            "authenticated (config header)"
+        );
+        assert_eq!(McpAuthState::Expired.label(), "expired");
+        assert_eq!(McpAuthState::NotAuthenticated.label(), "not authenticated");
+        // A server that never asked for credentials is one you are cleared
+        // to use, so it reports the settled row rather than a `not needed`
+        // that reads as a shrug. The *state* stays distinct — it is what
+        // withholds the re-authenticate/clear actions.
+        assert_eq!(McpAuthState::NotRequired.label(), "authenticated");
     }
 
     #[test]

@@ -7087,15 +7087,22 @@ sleep 0.5
 mcp_detail="$(tmux capture-pane -t "$S80" -p)"
 echo "==== Phase 80: the server detail ===="
 printf '%s\n' "$mcp_detail"
-for expect in "fixture MCP Server" "Status:" "✔ connected · 1 tool" \
+for expect in "Fixture MCP Server" "Status:" "✔ connected" \
 	"Protocol:" "2026-07-28" \
 	"Command:" "server.sh" "Config location:" "Capabilities:" "tools" \
+	"Tools:" "1 tool" \
 	"1. View tools" "2. Reconnect" "3. Disable"; do
 	if ! printf '%s' "$mcp_detail" | grep -qF "$expect"; then
 		echo "FAIL: Phase 80 — the server detail is missing '$expect'" >&2
 		status=1
 	fi
 done
+# The count belongs to the LIST row; the detail page has a `Tools:` row of
+# its own, so saying it on the Status row too is a duplicate (docs/mcp.md).
+if printf '%s' "$mcp_detail" | grep -qF "· 1 tool"; then
+	echo "FAIL: Phase 80 — the detail's Status row repeats the tool count" >&2
+	status=1
+fi
 # A stdio server has no auth story — and a modern one that never asked for
 # credentials must not wear a '✘ not authenticated' row (the deepwiki bug).
 if printf '%s' "$mcp_detail" | grep -qF "Auth:"; then

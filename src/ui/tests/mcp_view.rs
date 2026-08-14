@@ -6,6 +6,11 @@ use crate::mcp::{
     McpAuthState, McpScope, McpServerConfig, McpServerSnapshot, McpServerStatus, McpToolInfo,
 };
 use crate::ui::mcp_view_lines;
+use crate::ui::theme::{
+    MCP_DESCRIPTION_COLOR, MCP_DETAIL_LABEL_COLOR, MCP_DETAIL_STATE_COLOR, MCP_DETAIL_VALUE_COLOR,
+    MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TITLE_COLOR, MCP_TOOL_FIELD_GAP,
+    TOOL_FAIL_COLOR, TOOL_OK_COLOR,
+};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 fn key(code: KeyCode) -> KeyEvent {
@@ -97,7 +102,7 @@ fn the_server_detail_shows_facts_and_actions() {
     let mut app = mcp_app();
     app.on_key(key(KeyCode::Enter)); // linear detail
     let all = texts(&app).join("\n");
-    assert!(all.contains("linear MCP Server"));
+    assert!(all.contains("Linear MCP Server"));
     assert!(all.contains("Status:"));
     assert!(all.contains("△ needs authentication"));
     assert!(all.contains("✘ not authenticated"));
@@ -119,11 +124,11 @@ fn the_detail_shows_the_negotiated_protocol_and_a_truthful_auth_row() {
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Enter)); // deepwiki detail
     let all = texts(&app).join("\n");
-    assert!(all.contains("deepwiki MCP Server"));
+    assert!(all.contains("Deepwiki MCP Server"));
     assert!(all.contains("Protocol:"), "{all}");
     assert!(all.contains("2026-07-28"));
     assert!(all.contains("Auth:"), "{all}");
-    assert!(all.contains("◯ not needed"), "{all}");
+    assert!(all.contains("✔ authenticated"), "{all}");
     assert!(!all.contains("not authenticated"), "{all}");
     // An authenticated server still shows its ✔ row.
     let mut authed = snapshot("vercel", McpScope::User, McpServerStatus::Connected);
@@ -164,9 +169,11 @@ fn the_auth_row_distinguishes_a_header_a_dead_grant_and_a_public_server() {
     );
     assert!(!header.contains("Re-authenticate"), "{header}");
     assert!(!header.contains("Clear authentication"), "{header}");
-    // A public server: shown, dim, and actionless.
+    // A public server reads settled — the same row a stored grant earns,
+    // because from the user's side the answer is the same: you are cleared
+    // to use it. It stays actionless, though: there is no grant to re-run.
     let public = row(Some(McpAuthState::NotRequired));
-    assert!(public.contains("◯ not needed"), "{public}");
+    assert!(public.contains("✔ authenticated"), "{public}");
     assert!(!public.contains("Re-authenticate"), "{public}");
     // A grant the server refuses reads expired — and stays removable.
     let expired = row(Some(McpAuthState::Expired));
@@ -196,6 +203,214 @@ fn the_tools_and_tool_detail_pages_render() {
     assert!(all.contains("● repoName (required): unknown - owner/repo"));
     assert!(all.contains("● question (required): string - The question."));
     assert!(all.contains("Esc to go back"));
+}
+
+/// Walk `app` to the `ask_question` detail page (list → deepwiki → tools →
+/// the tool), the deepest page and the one the two-tone body lives on.
+fn tool_detail_app() -> App {
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down)); // deepwiki (connected — it has tools)
+    app.on_key(key(KeyCode::Enter)); // its detail
+    app.on_key(key(KeyCode::Enter)); // View tools
+    app.on_key(key(KeyCode::Enter)); // ask_question
+    app
+}
+
+#[test]
+fn every_page_headline_is_cyan_and_the_server_one_is_capitalised() {
+    // The manager is a four-page walk, so the headline is the only row that
+    // says where you are — it wears the cyan the frame's white titles were
+    // too quiet to carry (`docs/mcp.md`).
+    let headline = |app: &App| {
+        let line = mcp_view_lines(app, 100)
+            .into_iter()
+            .find(|line| {
+                line.spans
+                    .iter()
+                    .any(|span| span.style.fg == Some(MCP_TITLE_COLOR))
+            })
+            .expect("a cyan headline");
+        plain(&line).trim().to_string()
+    };
+    let mut app = mcp_app();
+    assert_eq!(headline(&app), "Manage MCP servers");
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter)); // deepwiki detail
+    // A config key is lower-case by convention; a headline is a headline.
+    assert_eq!(headline(&app), "Deepwiki MCP Server");
+    app.on_key(key(KeyCode::Enter)); // View tools
+    assert_eq!(headline(&app), "Tools for deepwiki");
+    app.on_key(key(KeyCode::Enter)); // the tool detail
+    assert_eq!(headline(&app), "ask_question");
+    // …over the server it belongs to, dim: the name identifies, it doesn't
+    // announce.
+    let under = mcp_view_lines(&app, 100)
+        .into_iter()
+        .find(|line| plain(line).trim() == "deepwiki")
+        .expect("the server subtitle");
+    assert_eq!(under.spans[1].style.fg, Some(MCP_DETAIL_VALUE_COLOR));
+}
+
+#[test]
+fn the_server_detail_lights_its_labels_and_only_the_state_values() {
+    // deepwiki: connected, one tool, never challenged for credentials.
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter));
+    let lines = mcp_view_lines(&app, 100);
+    let find = |text: &str| {
+        lines
+            .iter()
+            .find(|line| plain(line).contains(text))
+            .unwrap_or_else(|| panic!("no row containing {text:?}"))
+            .clone()
+    };
+    // The tool count is the `Tools:` row's job — a page that says it twice
+    // is a page with a duplicate on it.
+    let status = find("Status:");
+    assert_eq!(
+        plain(&status),
+        format!("  {:<MCP_FIELD_COL$}✔ connected", "Status:")
+    );
+    assert_eq!(status.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    // The glyph keeps its state colour — it is the one thing on the row that
+    // still has to shout when a server is failing — over white words.
+    assert_eq!(status.spans[2].content.as_ref(), "✔ ");
+    assert_eq!(status.spans[2].style.fg, Some(TOOL_OK_COLOR));
+    assert_eq!(status.spans[3].content.as_ref(), "connected");
+    assert_eq!(status.spans[3].style.fg, Some(MCP_DETAIL_STATE_COLOR));
+    // A server that needs no login is one you are cleared to use, so it
+    // reports the settled row rather than a `◯ not needed` shrug.
+    let auth = find("Auth:");
+    assert_eq!(
+        plain(&auth),
+        format!("  {:<MCP_FIELD_COL$}✔ authenticated", "Auth:")
+    );
+    assert_eq!(auth.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    assert_eq!(auth.spans[2].style.fg, Some(TOOL_OK_COLOR));
+    assert_eq!(auth.spans[3].style.fg, Some(MCP_DETAIL_STATE_COLOR));
+    // The addresses, the revision and the count are what the labels lead to,
+    // not what the page is about: bright label, quiet value.
+    for row in ["Protocol:", "URL:", "Config location:", "Tools:"] {
+        let line = find(row);
+        assert_eq!(
+            line.spans[1].style.fg,
+            Some(MCP_DETAIL_LABEL_COLOR),
+            "{row}"
+        );
+        assert_eq!(
+            line.spans[2].style.fg,
+            Some(MCP_DETAIL_VALUE_COLOR),
+            "{row}"
+        );
+    }
+    // What the server can actually do stays lit with the state rows.
+    let caps = find("Capabilities:");
+    assert_eq!(caps.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    assert_eq!(caps.spans[2].style.fg, Some(MCP_DETAIL_STATE_COLOR));
+}
+
+#[test]
+fn a_failing_server_keeps_its_red_glyph_beside_the_white_words() {
+    // The two-tone must not launder a failure into a calm white row.
+    let mut server = snapshot(
+        "broken",
+        McpScope::User,
+        McpServerStatus::Failed("no".into()),
+    );
+    server.auth = Some(McpAuthState::Expired);
+    let mut app = App::new();
+    app.open_mcp_menu(vec![server]);
+    app.on_key(key(KeyCode::Enter));
+    let lines = mcp_view_lines(&app, 100);
+    let find = |text: &str| {
+        lines
+            .iter()
+            .find(|line| plain(line).contains(text))
+            .unwrap_or_else(|| panic!("no row containing {text:?}"))
+            .clone()
+    };
+    let status = find("Status:");
+    assert_eq!(status.spans[2].style.fg, Some(TOOL_FAIL_COLOR));
+    assert_eq!(status.spans[3].style.fg, Some(MCP_DETAIL_STATE_COLOR));
+    let auth = find("Auth:");
+    assert_eq!(
+        plain(&auth),
+        format!("  {:<MCP_FIELD_COL$}✘ expired", "Auth:")
+    );
+    assert_eq!(auth.spans[2].style.fg, Some(TOOL_FAIL_COLOR));
+}
+
+#[test]
+fn the_tool_detail_reads_label_bright_and_value_dim() {
+    let app = tool_detail_app();
+    let lines = mcp_view_lines(&app, 100);
+    let find = |text: &str| {
+        lines
+            .iter()
+            .find(|line| plain(line).contains(text))
+            .unwrap_or_else(|| panic!("no row containing {text:?}"))
+            .clone()
+    };
+    // One space after the label, not the server page's 18-column pad — the
+    // two labels are the same width, so they line up on their own.
+    let name = find("Tool name:");
+    assert_eq!(
+        plain(&name),
+        format!("  Tool name:{MCP_TOOL_FIELD_GAP}ask_question")
+    );
+    assert_eq!(name.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    assert_eq!(name.spans[2].style.fg, Some(MCP_DETAIL_VALUE_COLOR));
+    let full = find("Full name:");
+    assert_eq!(
+        plain(&full),
+        format!("  Full name:{MCP_TOOL_FIELD_GAP}mcp__deepwiki__ask_question")
+    );
+    assert_eq!(full.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    assert_eq!(full.spans[2].style.fg, Some(MCP_DETAIL_VALUE_COLOR));
+    // The description's label is bright like every other; the prose under it
+    // is **half white** — a third tone, so it can't be mistaken for either
+    // the labels organising the page or the schema boilerplate below it.
+    assert_eq!(
+        find("Description:").spans[1].style.fg,
+        Some(MCP_DETAIL_LABEL_COLOR)
+    );
+    assert_eq!(
+        find("Ask any question").spans[1].style.fg,
+        Some(MCP_DESCRIPTION_COLOR)
+    );
+    assert_ne!(MCP_DESCRIPTION_COLOR, MCP_DETAIL_LABEL_COLOR);
+    assert_ne!(MCP_DESCRIPTION_COLOR, MCP_DETAIL_VALUE_COLOR);
+    assert_eq!(
+        find("Parameters:").spans[1].style.fg,
+        Some(MCP_DETAIL_LABEL_COLOR)
+    );
+}
+
+#[test]
+fn a_parameter_lights_its_name_and_dims_what_it_introduces() {
+    // Narrow enough that the first parameter wraps: the name leads its row
+    // bright, the schema prose after it dims, and the continuation row —
+    // carrying no name — is dim throughout.
+    let app = tool_detail_app();
+    let lines = mcp_view_lines(&app, 40);
+    let at = lines
+        .iter()
+        .position(|line| plain(line).contains("● repoName"))
+        .expect("the repoName row");
+    let head = &lines[at];
+    assert_eq!(head.spans[1].content.as_ref(), MCP_PARAM_BULLET);
+    assert_eq!(head.spans[1].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    assert_eq!(head.spans[2].content.as_ref(), "repoName");
+    assert_eq!(head.spans[2].style.fg, Some(MCP_DETAIL_LABEL_COLOR));
+    assert!(plain(head).contains("(required): unknown"), "{head:?}");
+    assert_eq!(head.spans[3].style.fg, Some(MCP_DETAIL_VALUE_COLOR));
+    let tail = &lines[at + 1];
+    assert_eq!(plain(tail).trim(), "owner/repo");
+    assert_eq!(tail.spans[1].content.as_ref(), MCP_PARAM_INDENT);
+    for span in tail.spans.iter().skip(1) {
+        assert_eq!(span.style.fg, Some(MCP_DETAIL_VALUE_COLOR), "{span:?}");
+    }
 }
 
 #[test]

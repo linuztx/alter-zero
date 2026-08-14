@@ -11,9 +11,7 @@ use super::wrap::{cols, truncate_cols, wrap_output};
 use super::*;
 
 use crate::app::{McpMenu, McpPage, server_actions};
-use crate::mcp::{
-    McpAuthState, McpServerSnapshot, McpServerStatus, tool_parameters, tool_wire_name,
-};
+use crate::mcp::{McpServerSnapshot, McpServerStatus, tool_parameters, tool_wire_name};
 
 /// A `MODEL_INDENT`-inset single line in `style`, truncated to the width.
 fn mcp_line(text: &str, style: Style, width: u16) -> Line<'static> {
@@ -28,26 +26,42 @@ fn dim_line(text: &str, width: u16) -> Line<'static> {
     mcp_line(text, Style::new().fg(MODEL_META_COLOR), width)
 }
 
+/// The page's headline — cyan, the row that says which of the four pages
+/// this is (`docs/mcp.md`).
 fn title_line(text: &str, width: u16) -> Line<'static> {
     mcp_line(
         text,
-        Style::new().fg(AI_COLOR).add_modifier(Modifier::BOLD),
+        Style::new()
+            .fg(MCP_TITLE_COLOR)
+            .add_modifier(Modifier::BOLD),
         width,
     )
 }
 
-/// `text` word-wrapped to inset dim rows.
-fn dim_wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
+/// A server name with its first character upper-cased — `deepwiki` →
+/// `Deepwiki` — for the detail page's headline alone. A config key is
+/// lower-case by convention, which reads as a typo once it opens a sentence;
+/// everywhere the name is an *identity* rather than a headline (the list
+/// rows, `Tools for …`, the wire name) it stays verbatim.
+fn capitalize_first(name: &str) -> String {
+    let mut chars = name.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// `text` word-wrapped to inset rows in `style`.
+fn wrapped(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
     let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
     text.split('\n')
         .flat_map(|part| wrap_text(part, room))
-        .map(|row| {
-            Line::from(vec![
-                Span::raw(MODEL_INDENT),
-                Span::styled(row, Style::new().fg(MODEL_META_COLOR)),
-            ])
-        })
+        .map(|row| Line::from(vec![Span::raw(MODEL_INDENT), Span::styled(row, style)]))
         .collect()
+}
+
+/// `text` word-wrapped to inset dim rows.
+fn dim_wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
+    wrapped(text, Style::new().fg(MODEL_META_COLOR), width)
 }
 
 /// `{n} server(s)` / `{n} tool(s)`.
@@ -180,7 +194,10 @@ fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-/// One `{label:<18}{value}` field row of the server detail page.
+/// One `{label:<18}{value}` field row of the server detail page — the label
+/// always bright, the value styled by what it *is*
+/// ([`MCP_DETAIL_VALUE_COLOR`] for an address or a count,
+/// [`MCP_DETAIL_STATE_COLOR`] for a value that is itself the answer).
 fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<'static> {
     let room = (width as usize)
         .saturating_sub(cols(MODEL_INDENT) + MCP_FIELD_COL)
@@ -189,9 +206,60 @@ fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("{label:<MCP_FIELD_COL$}"),
-            Style::new().fg(MODEL_META_COLOR),
+            Style::new().fg(MCP_DETAIL_LABEL_COLOR),
         ),
         Span::styled(truncate_cols(value, room), value_style),
+    ])
+}
+
+/// A `{label:<18}{glyph} {words}` state row — `Status:` and `Auth:`, the two
+/// rows that answer "is this working?". The glyph keeps its state's colour
+/// (it is the one thing on the row that still has to shout when a server is
+/// failing) over white words, so the row reads settled without laundering a
+/// failure into a calm white line.
+fn state_field_line(
+    label: &str,
+    glyph: &str,
+    glyph_color: Color,
+    words: &str,
+    width: u16,
+) -> Line<'static> {
+    let room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + MCP_FIELD_COL + cols(glyph) + 1)
+        .max(1);
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(
+            format!("{label:<MCP_FIELD_COL$}"),
+            Style::new().fg(MCP_DETAIL_LABEL_COLOR),
+        ),
+        Span::styled(format!("{glyph} "), Style::new().fg(glyph_color)),
+        Span::styled(
+            truncate_cols(words, room),
+            Style::new().fg(MCP_DETAIL_STATE_COLOR),
+        ),
+    ])
+}
+
+/// One `{label} {value}` row of the **tool** detail page — the compact
+/// sibling of [`field_line`]: one space instead of the server page's
+/// [`MCP_FIELD_COL`] pad (its two labels are the same width, so they line up
+/// on their own), and the two-tone reversed — the label bright, the value it
+/// introduces dim.
+fn tool_field_line(label: &str, value: &str, width: u16) -> Line<'static> {
+    let room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + cols(label) + cols(MCP_TOOL_FIELD_GAP))
+        .max(1);
+    Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(
+            format!("{label}{MCP_TOOL_FIELD_GAP}"),
+            Style::new().fg(MCP_DETAIL_LABEL_COLOR),
+        ),
+        Span::styled(
+            truncate_cols(value, room),
+            Style::new().fg(MCP_DETAIL_VALUE_COLOR),
+        ),
     ])
 }
 
@@ -229,34 +297,44 @@ fn action_rows(labels: &[&'static str], selected: usize, width: u16) -> Vec<Line
 
 /// The server detail page: the fact rows the state affords, then the actions.
 fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Line<'static>> {
-    let value = Style::new().fg(AI_COLOR);
+    // An address, a revision, a count: what the label leads to, not what the
+    // page is about.
+    let value = Style::new().fg(MCP_DETAIL_VALUE_COLOR);
+    // A value that *is* the answer — what this server can do.
+    let state = Style::new().fg(MCP_DETAIL_STATE_COLOR);
     let mut lines = vec![
         model_rule(width),
         Line::default(),
-        title_line(&format!("{} MCP Server", server.name), width),
+        title_line(
+            &format!("{} MCP Server", capitalize_first(&server.name)),
+            width,
+        ),
         Line::default(),
     ];
-    // Status: the glyph in its state colour, the words dim (the row shape).
-    let status = server.status_line();
-    lines.push(Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(
-            format!("{:<MCP_FIELD_COL$}", "Status:"),
-            Style::new().fg(MODEL_META_COLOR),
-        ),
-        Span::styled(status, Style::new().fg(status_color(&server.status))),
-    ]));
+    // Status: the glyph in its state colour over white words — and **no tool
+    // count**, which is the `Tools:` row's own job three lines down.
+    lines.push(state_field_line(
+        "Status:",
+        server.status.glyph(),
+        status_color(&server.status),
+        server.status.label(),
+        width,
+    ));
     if let Some(auth) = server.auth {
-        // Green for a settled login, red only for a state the user should
-        // act on, dim for "nothing to do here" (`docs/mcp.md`).
-        let style = if auth.is_problem() {
-            Style::new().fg(TOOL_FAIL_COLOR)
-        } else if auth == McpAuthState::NotRequired {
-            Style::new().fg(MODEL_META_COLOR)
+        // Red only for a state the user should act on; everything else is a
+        // settled green ✔ (`docs/mcp.md`).
+        let glyph_color = if auth.is_problem() {
+            TOOL_FAIL_COLOR
         } else {
-            Style::new().fg(TOOL_OK_COLOR)
+            TOOL_OK_COLOR
         };
-        lines.push(field_line("Auth:", auth.label(), style, width));
+        lines.push(state_field_line(
+            "Auth:",
+            auth.glyph(),
+            glyph_color,
+            auth.label(),
+            width,
+        ));
     }
     // The protocol revision the handshake settled on — a fact only a server
     // that actually initialized can report.
@@ -290,7 +368,7 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
             lines.push(field_line(
                 "Capabilities:",
                 &identity.capabilities.join(", "),
-                value,
+                state,
                 width,
             ));
         }
@@ -389,32 +467,38 @@ fn tool_lines_page(
     let Some(tool) = server.tools.get(tool_index) else {
         return vec![model_rule(width), Line::default(), model_rule(width)];
     };
-    let value = Style::new().fg(AI_COLOR);
+    let label = Style::new().fg(MCP_DETAIL_LABEL_COLOR);
+    let dim = Style::new().fg(MCP_DETAIL_VALUE_COLOR);
     let mut lines = vec![
         model_rule(width),
         Line::default(),
         title_line(&tool.name, width),
         dim_line(&server.name, width),
         Line::default(),
-        field_line("Tool name:", &tool.name, value, width),
-        field_line(
+        tool_field_line("Tool name:", &tool.name, width),
+        tool_field_line(
             "Full name:",
             &tool_wire_name(&server.name, &tool.name),
-            value,
             width,
         ),
     ];
     if !tool.description.trim().is_empty() {
         lines.push(Line::default());
-        lines.push(dim_line("Description:", width));
-        lines.extend(dim_wrapped(tool.description.trim(), width));
+        lines.push(mcp_line("Description:", label, width));
+        // The one paragraph on the page written *for* a reader, so it reads
+        // as brightly as the label announcing it.
+        lines.extend(wrapped(
+            tool.description.trim(),
+            Style::new().fg(MCP_DESCRIPTION_COLOR),
+            width,
+        ));
     }
     let parameters = tool_parameters(&tool.input_schema);
     if !parameters.is_empty() {
         lines.push(Line::default());
-        lines.push(dim_line("Parameters:", width));
+        lines.push(mcp_line("Parameters:", label, width));
         let room = (width as usize)
-            .saturating_sub(cols(MODEL_INDENT) + 4)
+            .saturating_sub(cols(MODEL_INDENT) + cols(MCP_PARAM_BULLET))
             .max(1) as u16;
         for parameter in parameters {
             let requirement = if parameter.required {
@@ -431,12 +515,28 @@ fn tool_lines_page(
                 )
             };
             for (i, row) in wrap_output(&text, room).into_iter().enumerate() {
-                let lead = if i == 0 { "  ● " } else { "    " };
-                lines.push(Line::from(vec![
+                let first = i == 0;
+                let lead = if first {
+                    MCP_PARAM_BULLET
+                } else {
+                    MCP_PARAM_INDENT
+                };
+                let mut spans = vec![
                     Span::raw(MODEL_INDENT),
-                    Span::styled(lead.to_string(), Style::new().fg(MODEL_META_COLOR)),
-                    Span::styled(row, Style::new().fg(MODEL_META_COLOR)),
-                ]));
+                    Span::styled(lead, if first { label } else { dim }),
+                ];
+                // The name leads its row bright — it is what the reader is
+                // scanning this column for; the schema's boilerplate around
+                // it (the requirement, the type, the server's prose) and
+                // every continuation row stay dim.
+                match row.strip_prefix(parameter.name.as_str()).filter(|_| first) {
+                    Some(rest) => {
+                        spans.push(Span::styled(parameter.name.clone(), label));
+                        spans.push(Span::styled(rest.to_string(), dim));
+                    }
+                    None => spans.push(Span::styled(row, dim)),
+                }
+                lines.push(Line::from(spans));
             }
         }
     }

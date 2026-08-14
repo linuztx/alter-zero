@@ -145,10 +145,13 @@ in **`src/llm/mcp/`**.
 - `mcp::status` — what the UI consumes: `McpServerSnapshot { name, scope,
   config_path, status, url_or_command, auth, server_info, tools }` with
   `McpServerStatus` (`Connected`/`Pending`/`NeedsAuth`/`Failed(reason)`/
-  `Disabled`), the status glyph/label mapping (`✔ connected · 3 tools`,
-  `△ needs authentication`, `◯ disabled`, `✘ failed`), the **`auth_state`
-  rule** (below), and the parameter listing a tool detail page renders from
-  an `input_schema`.
+  `Disabled`), the status glyph/label mapping — `glyph()` and `label()` kept
+  **separate** on both `McpServerStatus` and `McpAuthState` so a renderer can
+  colour the glyph by state without splitting a string it didn't build, with
+  `status_line()` composing the list row's `✔ connected · 3 tools` (the tool
+  count is the *list's*: the detail page has a `Tools:` row of its own and
+  must not say it twice) — the **`auth_state` rule** (below), and the
+  parameter listing a tool detail page renders from an `input_schema`.
 
 ### The `Auth:` row — five truths, not two
 
@@ -162,17 +165,27 @@ derives five, in this order:
 | `Header` | `✔ authenticated (config header)` | the config carries its own `Authorization` header |
 | `Expired` | `✘ expired` | tokens stored **and** the server refusing them |
 | `Authenticated` | `✔ authenticated` | tokens stored |
-| `NotRequired` | `◯ not needed` | connected while presenting nothing |
+| `NotRequired` | `✔ authenticated` | connected while presenting nothing |
 | `NotAuthenticated` | `✘ not authenticated` | remote, no tokens, not serving |
 
 A configured header outranks a stored grant because **the transport does
 the same** — it sends the header and never the bearer — so reporting the
 grant would offer to re-run and clear a login the server never sees. Only
 a stdio server gets no row: there is no remote server to authenticate
-*to*. A public server's row is **shown, not hidden**: "this one needs no
-login" is the answer to the question the row exists to ask, and silence
-just leaves the user wondering. Red is reserved for the two states the
-user can act on; `not needed` is dim.
+*to*. A public server's row is **shown, not hidden**: whether a login is
+wanted here is the question the row exists to answer, and silence just
+leaves the user wondering. Red is reserved for the two states the user can
+act on.
+
+**Why `NotRequired` reports the settled row rather than its own wording.**
+It said `◯ not needed` for a while, which is the *precise* truth and the
+wrong emphasis: it reads as a caveat hung off `✔ connected`, and the
+question the user is actually asking — "am I cleared to use this server?"
+— has the same answer here as for a stored grant. So the row says so, and
+the **state stays distinct** where distinctness earns its keep: it is what
+withholds `Re-authenticate` and `Clear authentication`, because there is
+no grant to re-run or delete. Display collapses two states; behaviour does
+not.
 
 The actions follow the same derivation: a stored grant (live or expired)
 affords `Re-authenticate` + `Clear authentication` — so a dead grant is
@@ -527,6 +540,97 @@ mid-turn (the strip stays above it). Pages:
    while the page is up); the loopback callback resolves it from either
    side. Esc backs out; the result lands as a toast + the server list
    re-sorting itself.
+
+### Where the colour goes
+
+The twin borrows the `/hooks` frame but **not** its flat white titles, and
+the difference is the shape of the thing: `/hooks` is a browser you read
+top-down, while this is a *walk* four pages deep, so the headline is the one
+row that answers "where am I?" — and it has to be the row the eye lands on
+first. Three rules, all of them `MCP_*` consts in `ui/theme.rs`:
+
+- **Every page's headline is cyan** (`MCP_TITLE_COLOR`, the picker family's
+  selection accent) and bold — `Manage MCP servers`, `Deepwiki MCP Server`,
+  `Tools for deepwiki`, `ask_question`, `Authenticating with deepwiki…`.
+- **The server detail's headline capitalises the name** — `deepwiki` →
+  `Deepwiki MCP Server`. A config key is lower-case by convention, which
+  reads as a typo the moment it opens a sentence; everywhere the name is an
+  *identity* rather than a headline (the list rows, `Tools for …`, the
+  `Tool name:`/`Full name:` values, the wire name) it stays verbatim,
+  because those are strings the user has to match against a file or a tool
+  call.
+- **Every field label on both detail pages is bright, and values are quiet
+  by default** (`MCP_DETAIL_LABEL_COLOR` / `MCP_DETAIL_VALUE_COLOR`). The
+  labels are the column the eye runs *down*; the value is what it stops on
+  once it has found its row, so a page of white values had nothing to scan
+  by. Addresses, paths, protocol revisions, counts, a tool's wire name, a
+  parameter's type and `(required)` — all quiet.
+
+Two exceptions, one per page, and both are the same rule: *the value that is
+itself the answer keeps the light*.
+
+- On the **server page** (`MCP_DETAIL_STATE_COLOR`) that is `Status:`,
+  `Auth:` and `Capabilities:` — "is this working, and what can it do?" —
+  while `Protocol:`, `URL:`/`Command:`, `Config location:` and `Tools:` go
+  quiet. The two *state* rows are drawn two-tone: **the glyph keeps its
+  state's colour over white words**, because the glyph is the one thing on
+  the row that still has to shout when a server is failing, and a flatly
+  white row would launder `✘ failed` into something calm. `Status:` also
+  drops the tool count `status_line()` appends for the list — the `Tools:`
+  row three lines down already says it, and a page that says it twice has a
+  duplicate on it.
+- On the **tool page** it is the description (`MCP_DESCRIPTION_COLOR`), and
+  it gets a tone of its own: **half white**, a step down from the label
+  announcing it and a clear step up from the schema prose below. It is the
+  one paragraph on the page written *for* a reader rather than derived from
+  a schema, so it must not read as boilerplate — but full white made it
+  shout over the labels organising the page. The parameter listing keeps the
+  default split, with `● name` bright as a label (it is one) and everything
+  it introduces dim.
+
+The tool page's field rows also drop the `MCP_FIELD_COL` pad for a single
+space (`MCP_TOOL_FIELD_GAP`) — its two labels are the same width, so they
+line up on their own and the value sits where the eye already is instead of
+across an 18-column gulf. A wrapped parameter hangs under its own name
+(`MCP_PARAM_BULLET` / `MCP_PARAM_INDENT`, the same width) and its
+continuation rows are dim throughout: only the row that actually carries the
+name lights it.
+
+Both pages, annotated:
+
+```text
+────────────────────────────────────────────────────────────────
+
+  Context7 MCP Server              ← cyan, name capitalised
+
+  Status:           ✔ connected    ← label white, ✔ green, words white
+  Auth:             ✔ authenticated    (and no tool count here)
+  Protocol:         2026-07-28     ← label white, value dim
+  URL:              https://…      ← label white, value dim
+  Config location:  ~/.alter-…     ← label white, value dim
+  Capabilities:     prompts, res…  ← label white, value WHITE
+  Tools:            2 tools        ← label white, value dim
+
+────────────────────────────────────────────────────────────────
+
+  ask_question                     ← cyan
+  deepwiki                         ← dim
+
+  Tool name: ask_question          ← label white, value dim, one space
+  Full name: mcp__deepwiki__ask…   ← label white, value dim
+
+  Description:                     ← white
+  Ask any question about a GitHub  ← HALF white (the tool's own prose)
+  repository…
+
+  Parameters:                      ← white
+    ● repoName (required): unknown ← "● repoName" white, the rest dim
+      - GitHub repository or list… ← dim (a continuation carries no name)
+
+  Esc to go back                   ← dim
+
+────────────────────────────────────────────────────────────────
+```
 
 Ops dispatch as `Action::McpOp(op)` to `tui::mcp::Session::apply_mcp_op`,
 which runs connection work on worker threads and persists disabled state
