@@ -255,6 +255,16 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
         };
         lines.push(field_line("Auth:", text, style, width));
     }
+    // The protocol revision the handshake settled on — a fact only a server
+    // that actually initialized can report.
+    if let Some(version) = server
+        .identity
+        .as_ref()
+        .map(|identity| identity.protocol_version.trim())
+        .filter(|v| !v.is_empty())
+    {
+        lines.push(field_line("Protocol:", version, value, width));
+    }
     let target_label = if server.config.is_remote() {
         "URL:"
     } else {

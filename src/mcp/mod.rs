@@ -34,11 +34,14 @@ pub use self::names::{
     tool_display_name, tool_label, tool_wire_name, validate_server_name, wire_from_display,
 };
 pub use self::protocol::{
-    CallOutcome, Incoming, MAX_TOOL_DESCRIPTION_CHARS, McpToolInfo, PROTOCOL_VERSION, RpcError,
-    ServerIdentity, call_params, initialize_params, notification, parse_call_result,
-    parse_incoming, parse_initialize, parse_tools_page, request, tools_list_params,
+    CallOutcome, Incoming, LEGACY_PROTOCOL_VERSION, MAX_TOOL_DESCRIPTION_CHARS, McpToolInfo,
+    PROTOCOL_VERSION, RpcError, SUPPORTED_VERSIONS, ServerIdentity, call_params, choose_version,
+    discover_params, header_value, initialize_params, initialize_params_for, is_modern_error,
+    notification, parse_call_result, parse_discover, parse_incoming, parse_initialize,
+    parse_tools_page, request, request_meta, tools_list_params, unsupported_versions, with_meta,
 };
 pub use self::sse::{SseEvent, SseParser};
 pub use self::status::{
-    McpAuthState, McpServerSnapshot, McpServerStatus, ToolParameter, pretty_args, tool_parameters,
+    McpAuthState, McpServerSnapshot, McpServerStatus, ToolParameter, auth_state, pretty_args,
+    tool_parameters,
 };

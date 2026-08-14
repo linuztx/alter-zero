@@ -14,8 +14,8 @@ use serde_json::Value;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::mcp::{
-    McpAuthState, McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo, ServerIdentity,
-    call_params, parse_call_result, tool_wire_name,
+    McpServerEntry, McpServerSnapshot, McpServerStatus, McpToolInfo, ServerIdentity, call_params,
+    parse_call_result, tool_wire_name,
 };
 use crate::stream::CancelToken;
 
@@ -219,7 +219,7 @@ impl McpManager {
 
     /// Connect (or re-connect) one server on a worker thread.
     fn spawn_connect(&self, name: &str) {
-        let (config, bearer, cwd, timeout, generation) = {
+        let (config, auth_path, cwd, timeout, generation) = {
             let mut inner = self.lock();
             let (auth_path, cwd, timeout) = (
                 inner.auth_path.clone(),
@@ -235,20 +235,14 @@ impl McpManager {
             // Drop the old transport now (kills a stdio child) — the new
             // connect starts clean.
             server.transport = None;
-            let bearer = server
+            server.has_tokens = server
                 .entry
                 .config
                 .url()
-                .and_then(|url| oauth::fresh_bearer(auth_path.as_deref(), url));
-            server.has_tokens = bearer.is_some()
-                || server
-                    .entry
-                    .config
-                    .url()
-                    .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
+                .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
             (
                 server.entry.config.clone(),
-                bearer,
+                auth_path,
                 cwd,
                 timeout,
                 generation,
@@ -259,7 +253,42 @@ impl McpManager {
         let name = name.to_string();
         std::thread::spawn(move || {
             let cancel = CancelToken::new();
-            let result = connect(&config, bearer, cwd.as_deref(), timeout, &cancel);
+            // The stored access token, refreshed first when it is inside the
+            // expiry skew (a transient refresh failure still sends the
+            // stored token — the 401 dance below is the backstop). On this
+            // worker, never under the manager lock: a refresh is a blocking
+            // HTTP call, and holding the lock across it would freeze every
+            // snapshot for the duration.
+            let bearer = config
+                .url()
+                .and_then(|url| oauth::connect_bearer(auth_path.as_deref(), url));
+            let mut result = connect(&config, bearer, cwd.as_deref(), timeout, &cancel);
+            // A 401 with a stored grant gets one forced refresh and one
+            // retry before anyone is asked to re-authenticate — an access
+            // token expiring between sessions is ordinary, not an auth
+            // failure. Only a refresh the AS *rejected* (or no grant at all)
+            // resolves as needs-auth; a transient failure keeps the grant
+            // and reads as an ordinary connect failure Reconnect retries.
+            let mut transient_refresh: Option<String> = None;
+            if matches!(result, Err(ConnectError::NeedsAuth(_)))
+                && let Some(url) = config.url()
+            {
+                match oauth::refresh_grant(auth_path.as_deref(), url) {
+                    Ok(tokens) => {
+                        result = connect(
+                            &config,
+                            Some(tokens.access_token),
+                            cwd.as_deref(),
+                            timeout,
+                            &cancel,
+                        );
+                    }
+                    Err(oauth::RefreshFailure::Transient(detail)) => {
+                        transient_refresh = Some(detail);
+                    }
+                    Err(_) => {} // no grant, or a cleared dead one: needs-auth is truthful
+                }
+            }
             let mut inner = manager.lock();
             let Some(server) = inner.servers.iter_mut().find(|s| s.entry.name == name) else {
                 return;
@@ -280,12 +309,27 @@ impl McpManager {
                     server.status = McpServerStatus::Connected;
                 }
                 Err(ConnectError::NeedsAuth(_)) => {
-                    server.status = McpServerStatus::NeedsAuth;
+                    server.status = match transient_refresh {
+                        // The grant survives a blip: a Failed row whose
+                        // Reconnect retries, never a needs-auth that walks
+                        // the user into discarding a working refresh token.
+                        Some(detail) => {
+                            McpServerStatus::Failed(format!("token refresh failed: {detail}"))
+                        }
+                        None => McpServerStatus::NeedsAuth,
+                    };
                 }
                 Err(ConnectError::Failed(detail)) => {
                     server.status = McpServerStatus::Failed(detail);
                 }
             }
+            // The dance above may have rotated or cleared the grant — the
+            // snapshot's auth row re-derives from what the store now holds.
+            server.has_tokens = server
+                .entry
+                .config
+                .url()
+                .is_some_and(|url| oauth::load_tokens(auth_path.as_deref(), url).is_some());
             drop(inner);
             manager.notify(McpEvent::Changed);
         });
@@ -526,15 +570,11 @@ impl McpManager {
                 config_path: server.entry.config_path.clone(),
                 config: server.entry.config.clone(),
                 status: server.status.clone(),
-                auth: server
-                    .entry
-                    .config
-                    .is_remote()
-                    .then_some(if server.has_tokens {
-                        McpAuthState::Authenticated
-                    } else {
-                        McpAuthState::NotAuthenticated
-                    }),
+                auth: crate::mcp::auth_state(
+                    server.entry.config.is_remote(),
+                    server.has_tokens,
+                    &server.status,
+                ),
                 identity: server.identity.clone(),
                 tools: server.tools.clone(),
             })
@@ -620,11 +660,14 @@ impl McpManager {
                         server.entry.name.clone(),
                         server.wire_map.get(&call.name)?.clone(),
                         server.transport.clone()?,
+                        server.entry.config.url().map(str::to_string),
+                        inner.auth_path.clone(),
                         inner.tool_timeout,
                     ))
                 })
         };
-        let Some((server_name, raw_tool, transport, timeout)) = lookup else {
+        let Some((server_name, raw_tool, transport, server_url, auth_path, timeout)) = lookup
+        else {
             return ToolOutcome::error(format!(
                 "unknown MCP tool: {} (run /mcp to see the connected servers)",
                 call.name
@@ -635,10 +678,13 @@ impl McpManager {
             Err(_) if call.arguments.trim().is_empty() => Value::Object(Default::default()),
             Err(e) => return ToolOutcome::error(format!("invalid tool arguments: {e}")),
         };
-        let result = {
+        let request = |refreshed_bearer: Option<String>| {
             let mut transport = transport
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if let Some(bearer) = refreshed_bearer {
+                transport.set_bearer(Some(bearer));
+            }
             transport.request(
                 "tools/call",
                 call_params(&raw_tool, &arguments),
@@ -646,6 +692,34 @@ impl McpManager {
                 cancel,
             )
         };
+        // Proactive: a grant inside its expiry skew refreshes *before* the
+        // call, so the token never goes over the wire dead — the 401 arm
+        // below stays as the backstop for revocation, clock skew, and grants
+        // with no known expiry (`docs/mcp.md`).
+        let stale_refresh = server_url
+            .as_deref()
+            .and_then(|url| oauth::refresh_if_stale(auth_path.as_deref(), url));
+        let mut result = request(stale_refresh);
+        // Reactive: a 401 mid-session gets one forced refresh and one retry
+        // before anyone is told to re-authenticate — the reference client's
+        // rule, and the difference between a session that renews itself and
+        // one that asks the user again every hour.
+        if matches!(result, Err(TransportError::NeedsAuth(_)))
+            && let Some(url) = server_url.as_deref()
+        {
+            match oauth::refresh_grant(auth_path.as_deref(), url) {
+                Ok(tokens) => result = request(Some(tokens.access_token)),
+                Err(oauth::RefreshFailure::Transient(detail)) => {
+                    // A blip is not an auth state: keep the grant AND the
+                    // connection, and let the model (or the next call) retry.
+                    return ToolOutcome::error(format!(
+                        "the {server_name} MCP server rejected the stored token and the \
+                         refresh failed transiently ({detail}) — retry shortly"
+                    ));
+                }
+                Err(_) => {} // no grant / a cleared dead one: fall through to needs-auth
+            }
+        }
         match result {
             Ok(result) => {
                 let outcome = parse_call_result(&result);
@@ -727,14 +801,18 @@ mod tests {
     use crate::mcp::{McpScope, McpServerConfig};
 
     fn stdio_entry(name: &str) -> McpServerEntry {
-        // The deterministic-ids `sh` fixture: initialize = 1, tools/list = 2,
-        // then every tools/call (ids 3, 4, …) is answered from a canned list.
-        let init = r#"{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"0"}}}"#;
-        let tools = r#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo","description":"Echo.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}]}}"#;
+        // The deterministic-ids `sh` fixture, a LEGACY server: the modern
+        // server/discover probe = 1 (answered -32601), initialize = 2,
+        // tools/list = 3, then the first tools/call (id 4) is answered from
+        // a canned line.
+        let probe =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}"#;
+        let init = r#"{"jsonrpc":"2.0","id":2,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"0"}}}"#;
+        let tools = r#"{"jsonrpc":"2.0","id":3,"result":{"tools":[{"name":"echo","description":"Echo.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}]}}"#;
         let call =
-            r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"echoed"}]}}"#;
+            r#"{"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"echoed"}]}}"#;
         let script = format!(
-            "cat > /dev/null & printf '%s\\n' '{init}'; printf '%s\\n' '{tools}'; printf '%s\\n' '{call}'; sleep 10"
+            "cat > /dev/null & printf '%s\\n' '{probe}'; printf '%s\\n' '{init}'; printf '%s\\n' '{tools}'; printf '%s\\n' '{call}'; sleep 10"
         );
         McpServerEntry {
             name: name.to_string(),
@@ -923,6 +1001,374 @@ mod tests {
         std::thread::sleep(Duration::from_millis(100));
         assert_eq!(manager.snapshot()[0].status, McpServerStatus::Disabled);
         assert!(manager.tool_specs().is_empty());
+    }
+
+    /// How the refresh fixtures' token endpoint answers a refresh grant.
+    #[derive(Clone, Copy)]
+    enum TokenMode {
+        /// Rotate: issue `tok-{n+1}` / `rt-{n+1}`.
+        Rotate,
+        /// The AS's permanent verdict: 400 `invalid_grant`.
+        InvalidGrant,
+        /// A transient outage: 503.
+        Outage,
+    }
+
+    struct OauthFixture {
+        /// The MCP endpoint URL (`{base}/mcp`).
+        url: String,
+        /// The token endpoint URL (`{base}/token`).
+        token_url: String,
+        /// The token generation `/mcp` currently accepts (`tok-{required}`).
+        required: Arc<std::sync::atomic::AtomicUsize>,
+        /// How many requests `/mcp` answered 401.
+        unauthorized: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    /// A canned streamable-HTTP MCP server plus its OAuth token endpoint on
+    /// one socket: `/mcp` serves the handshake and calls only under
+    /// `Authorization: Bearer tok-{required}` (anything else 401s with a
+    /// challenge), `/token` answers a refresh grant per [`TokenMode`].
+    fn spawn_oauth_fixture(mode: TokenMode) -> OauthFixture {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let required = Arc::new(AtomicUsize::new(1));
+        let issued_t = Arc::new(AtomicUsize::new(1));
+        let unauthorized = Arc::new(AtomicUsize::new(0));
+        let (required_t, unauthorized_t) = (Arc::clone(&required), Arc::clone(&unauthorized));
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let path = line.split_whitespace().nth(1).unwrap_or("").to_string();
+                let mut content_length = 0usize;
+                let mut bearer = String::new();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let lower = header.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                    if let Some(rest) = lower.strip_prefix("authorization: bearer ") {
+                        bearer = rest.trim().to_string();
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).to_string();
+                let respond = |stream: &mut std::net::TcpStream,
+                               status: &str,
+                               extra: &str,
+                               body: &str| {
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                };
+                if path.starts_with("/token") {
+                    match mode {
+                        TokenMode::Rotate => {
+                            let n = issued_t.fetch_add(1, Ordering::SeqCst) + 1;
+                            let body = format!(
+                                r#"{{"access_token":"tok-{n}","refresh_token":"rt-{n}","token_type":"Bearer","expires_in":3600}}"#
+                            );
+                            respond(&mut stream, "200 OK", "", &body);
+                        }
+                        TokenMode::InvalidGrant => respond(
+                            &mut stream,
+                            "400 Bad Request",
+                            "",
+                            r#"{"error":"invalid_grant","error_description":"revoked"}"#,
+                        ),
+                        TokenMode::Outage => {
+                            respond(&mut stream, "503 Service Unavailable", "", "down");
+                        }
+                    }
+                    continue;
+                }
+                // The MCP endpoint: auth first, then the method dispatch.
+                let expected = format!("tok-{}", required_t.load(Ordering::SeqCst));
+                if bearer != expected {
+                    unauthorized_t.fetch_add(1, Ordering::SeqCst);
+                    let _ = stream.write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer error=\"invalid_token\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                    continue;
+                }
+                let id = serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(Value::as_u64));
+                let method = serde_json::from_str::<Value>(&body)
+                    .ok()
+                    .and_then(|v| v.get("method").and_then(Value::as_str).map(str::to_string))
+                    .unwrap_or_default();
+                match method.as_str() {
+                    "initialize" => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "protocolVersion": "2025-06-18",
+                                "capabilities": {"tools": {}},
+                                "serverInfo": {"name": "authed", "version": "0"}
+                            }
+                        })
+                        .to_string();
+                        respond(&mut stream, "200 OK", "", &body);
+                    }
+                    "notifications/initialized" => {
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                    "tools/list" => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {"tools": [
+                                {"name": "hello", "description": "Say hello.",
+                                 "inputSchema": {"type": "object", "properties": {}}}
+                            ]}
+                        })
+                        .to_string();
+                        respond(&mut stream, "200 OK", "", &body);
+                    }
+                    "tools/call" => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {"content": [{"type": "text", "text": "authed hello"}]}
+                        })
+                        .to_string();
+                        respond(&mut stream, "200 OK", "", &body);
+                    }
+                    _ => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": {"code": -32601, "message": "method not found"}
+                        })
+                        .to_string();
+                        respond(&mut stream, "200 OK", "", &body);
+                    }
+                }
+            }
+        });
+        OauthFixture {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            token_url: format!("http://127.0.0.1:{port}/token"),
+            required,
+            unauthorized,
+        }
+    }
+
+    fn seed_tokens(path: &std::path::Path, fixture: &OauthFixture, expires_at: Option<u64>) {
+        oauth::save_tokens(
+            Some(path),
+            &fixture.url,
+            Some(&super::oauth::StoredTokens {
+                access_token: "tok-1".to_string(),
+                refresh_token: Some("rt-1".to_string()),
+                expires_at,
+                client_id: "cid".to_string(),
+                client_secret: None,
+                token_endpoint: fixture.token_url.clone(),
+                scope: None,
+            }),
+        );
+    }
+
+    fn oauth_manager(fixture: &OauthFixture, auth_path: &std::path::Path) -> McpManager {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![McpServerEntry {
+                    name: "fix".to_string(),
+                    config: McpServerConfig::Http {
+                        url: fixture.url.clone(),
+                        headers: Default::default(),
+                        sse_fallback: false,
+                    },
+                    scope: McpScope::User,
+                    config_path: "~/.alter-zero/mcp.json".to_string(),
+                }],
+                project: "/proj".to_string(),
+                auth_path: Some(auth_path.to_path_buf()),
+                ..Default::default()
+            },
+        )
+    }
+
+    fn wait_status(manager: &McpManager, name: &str, want: impl Fn(&McpServerStatus) -> bool) {
+        for _ in 0..200 {
+            let snapshot = manager.snapshot();
+            let server = snapshot.iter().find(|s| s.name == name).unwrap();
+            if want(&server.status) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!(
+            "server never reached the wanted status (at {:?})",
+            manager.snapshot()[0].status
+        );
+    }
+
+    #[test]
+    fn a_mid_session_401_refreshes_and_retries_without_reauth() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::Rotate);
+        // A fresh grant: the connect goes out on tok-1 untouched.
+        seed_tokens(&auth_path, &fixture, Some(u64::MAX / 4));
+        let manager = oauth_manager(&fixture, &auth_path);
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        // The server rotates its expectation mid-session (the access token
+        // "expired" server-side).
+        fixture
+            .required
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        let call = ToolCallRequest {
+            id: "c1".to_string(),
+            name: "mcp__fix__hello".to_string(),
+            arguments: "{}".to_string(),
+        };
+        let outcome = manager.call_tool(&call, &CancelToken::new());
+        assert!(outcome.ok, "{}", outcome.output);
+        assert_eq!(outcome.output, "authed hello");
+        // Exactly one 401 was seen — the refresh + retry absorbed it: the
+        // server never left Connected and nobody was asked to re-auth.
+        assert_eq!(
+            fixture
+                .unauthorized
+                .load(std::sync::atomic::Ordering::SeqCst),
+            1
+        );
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot[0].status, McpServerStatus::Connected);
+        // The rotated grant was persisted (rt-2 replaced rt-1).
+        let stored = oauth::load_tokens(Some(&auth_path), &fixture.url).unwrap();
+        assert_eq!(stored.access_token, "tok-2");
+        assert_eq!(stored.refresh_token.as_deref(), Some("rt-2"));
+        manager.shutdown();
+    }
+
+    #[test]
+    fn a_stale_grant_refreshes_proactively_before_the_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::Rotate);
+        seed_tokens(&auth_path, &fixture, Some(u64::MAX / 4));
+        let manager = oauth_manager(&fixture, &auth_path);
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        // The grant goes stale on disk and the server moves on to tok-2:
+        // the pre-call refresh must mint tok-2 *before* the request, so the
+        // server never sees a dead token.
+        seed_tokens(&auth_path, &fixture, Some(1));
+        fixture
+            .required
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        let call = ToolCallRequest {
+            id: "c1".to_string(),
+            name: "mcp__fix__hello".to_string(),
+            arguments: "{}".to_string(),
+        };
+        let outcome = manager.call_tool(&call, &CancelToken::new());
+        assert!(outcome.ok, "{}", outcome.output);
+        assert_eq!(
+            fixture
+                .unauthorized
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the proactive refresh means no 401 ever happened"
+        );
+        manager.shutdown();
+    }
+
+    #[test]
+    fn an_expired_token_at_connect_refreshes_and_connects() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::Rotate);
+        // tok-1 is long expired; the server already demands tok-2.
+        seed_tokens(&auth_path, &fixture, Some(1));
+        fixture
+            .required
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        let manager = oauth_manager(&fixture, &auth_path);
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        let snapshot = manager.snapshot();
+        assert_eq!(
+            snapshot[0].auth,
+            Some(crate::mcp::McpAuthState::Authenticated)
+        );
+        manager.shutdown();
+    }
+
+    #[test]
+    fn a_dead_refresh_token_resolves_needs_auth_and_clears_the_grant() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::InvalidGrant);
+        // The server rejects tok-1 and the AS rejects the refresh: the grant
+        // is dead — needs-auth is the truthful state, and the dead grant is
+        // cleared so it can't loop the failure.
+        seed_tokens(&auth_path, &fixture, Some(u64::MAX / 4));
+        fixture
+            .required
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        let manager = oauth_manager(&fixture, &auth_path);
+        manager.start_connections();
+        wait_status(&manager, "fix", |status| {
+            *status == McpServerStatus::NeedsAuth
+        });
+        assert!(oauth::load_tokens(Some(&auth_path), &fixture.url).is_none());
+        let snapshot = manager.snapshot();
+        assert_eq!(
+            snapshot[0].auth,
+            Some(crate::mcp::McpAuthState::NotAuthenticated)
+        );
+        manager.shutdown();
+    }
+
+    #[test]
+    fn a_transient_refresh_failure_keeps_the_grant_and_never_demands_reauth() {
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::Outage);
+        seed_tokens(&auth_path, &fixture, Some(u64::MAX / 4));
+        fixture
+            .required
+            .store(2, std::sync::atomic::Ordering::SeqCst);
+        let manager = oauth_manager(&fixture, &auth_path);
+        manager.start_connections();
+        // The 503 from the token endpoint is a blip, not a verdict: the
+        // server reads failed (Reconnect retries), never needs-auth, and the
+        // grant survives untouched.
+        wait_status(
+            &manager,
+            "fix",
+            |status| matches!(status, McpServerStatus::Failed(detail) if detail.contains("token refresh failed")),
+        );
+        let stored = oauth::load_tokens(Some(&auth_path), &fixture.url).unwrap();
+        assert_eq!(stored.access_token, "tok-1");
+        assert_eq!(stored.refresh_token.as_deref(), Some("rt-1"));
+        let snapshot = manager.snapshot();
+        assert_eq!(
+            snapshot[0].auth,
+            Some(crate::mcp::McpAuthState::Authenticated)
+        );
+        manager.shutdown();
     }
 
     #[test]

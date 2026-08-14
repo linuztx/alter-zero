@@ -18,7 +18,9 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::mcp::{Incoming, RpcError, SseParser, notification, parse_incoming, request};
+use crate::mcp::{
+    Incoming, RpcError, SseParser, header_value, notification, parse_incoming, request, with_meta,
+};
 use crate::stream::CancelToken;
 
 /// The cancel-poll cadence every blocking wait uses.
@@ -101,6 +103,42 @@ impl Transport {
             Self::Sse(t) => t.notify(method, params),
         }
     }
+
+    /// Re-arm the bearer a remote transport sends — the mid-session token
+    /// refresh seam (`docs/mcp.md`): a rotated access token reaches the next
+    /// request without a reconnect. A stdio transport has no auth story.
+    pub fn set_bearer(&mut self, bearer: Option<String>) {
+        match self {
+            Self::Stdio(_) => {}
+            Self::Http(t) => t.set_bearer(bearer),
+            Self::Sse(t) => t.set_bearer(bearer),
+        }
+    }
+
+    /// Enter the modern (2026-07-28) wire mode: every request carries the
+    /// `_meta` version/capabilities block, and streamable HTTP adds the
+    /// `Mcp-Method`/`Mcp-Name` request-metadata headers beside the
+    /// `MCP-Protocol-Version` echo. The legacy SSE transport predates the
+    /// modern era wholesale — a no-op there.
+    pub fn set_modern(&mut self, version: &str) {
+        match self {
+            Self::Stdio(t) => t.modern = Some(version.to_string()),
+            Self::Http(t) => t.set_modern(version),
+            Self::Sse(_) => {}
+        }
+    }
+
+    /// Back to the legacy handshake mode (the modern probe met a legacy
+    /// server): no `_meta`, no request-metadata headers, and the
+    /// streamable-HTTP version header returns only once `initialize`
+    /// settles a revision.
+    pub fn set_legacy(&mut self) {
+        match self {
+            Self::Stdio(t) => t.modern = None,
+            Self::Http(t) => t.set_legacy(),
+            Self::Sse(_) => {}
+        }
+    }
 }
 
 /// Wait on a receiver with the deadline and cancel polls every transport
@@ -143,6 +181,10 @@ pub struct StdioTransport {
     parked: HashMap<u64, Result<Value, RpcError>>,
     /// The retained stderr tail — what a connect error shows.
     stderr: Arc<Mutex<String>>,
+    /// The modern (2026-07-28) protocol version when the era detection
+    /// settled modern — every request's params then carry the `_meta`
+    /// block. Stdio has no header layer: the message body is everything.
+    pub(super) modern: Option<String>,
     next_id: u64,
 }
 
@@ -217,6 +259,7 @@ impl StdioTransport {
             lines,
             parked: HashMap::new(),
             stderr: stderr_tail,
+            modern: None,
             next_id: 1,
         })
     }
@@ -269,6 +312,10 @@ impl StdioTransport {
     ) -> Result<Value, TransportError> {
         let id = self.next_id;
         self.next_id += 1;
+        let params = match &self.modern {
+            Some(version) => with_meta(params, version),
+            None => params,
+        };
         if self.send(&request(id, method, params)).is_err() {
             // A write to a closed pipe: the child died — explain with its
             // stderr rather than a bare broken-pipe message.
@@ -344,16 +391,33 @@ impl RemoteHeaders {
 }
 
 /// A streamable-HTTP server: POST per message, the response either JSON or
-/// an SSE stream carrying it; the `Mcp-Session-Id` captured at initialize
-/// and echoed thereafter.
+/// an SSE stream carrying it. Legacy mode captures the `Mcp-Session-Id` at
+/// initialize and echoes it thereafter; modern (2026-07-28) mode is
+/// stateless — `_meta` in every request, the `Mcp-Method`/`Mcp-Name`
+/// request-metadata headers beside the version echo, and no sessions (a
+/// modern server never mints one).
 pub struct HttpTransport {
     url: String,
     remote: RemoteHeaders,
     session: Option<String>,
-    /// The protocol revision settled at initialize, echoed as
-    /// `MCP-Protocol-Version` on every later request (the 2025-06-18 spec).
+    /// The protocol revision every request's `MCP-Protocol-Version` header
+    /// echoes: the modern version while probing/settled modern, else the
+    /// revision `initialize` settled (absent until it does — the pre-header
+    /// servers' contract).
     protocol_version: Option<String>,
+    /// Set while the transport speaks the modern era: the version whose
+    /// `_meta` rides every request.
+    modern: Option<String>,
     next_id: u64,
+}
+
+/// The modern request-metadata headers one POST carries.
+struct ModernHeaders {
+    /// `Mcp-Method` — the JSON-RPC method, verbatim.
+    method: String,
+    /// `Mcp-Name` — `params.name`/`params.uri` for the three methods that
+    /// have one (`tools/call`, `resources/read`, `prompts/get`).
+    name: Option<String>,
 }
 
 /// What one POST resolved to, off the worker thread.
@@ -375,6 +439,7 @@ impl HttpTransport {
             remote,
             session: None,
             protocol_version: None,
+            modern: None,
             next_id: 1,
         }
     }
@@ -387,6 +452,21 @@ impl HttpTransport {
         }
     }
 
+    /// Enter the modern wire mode at `version` — the era probe's first act,
+    /// and the settled state when the probe succeeds. The version header
+    /// rides every request from here (it MUST match the `_meta`).
+    pub fn set_modern(&mut self, version: &str) {
+        self.modern = Some(version.to_string());
+        self.protocol_version = Some(version.to_string());
+    }
+
+    /// Back to legacy: no `_meta`, no request-metadata headers, and no
+    /// version header until `initialize` settles a revision.
+    pub fn set_legacy(&mut self) {
+        self.modern = None;
+        self.protocol_version = None;
+    }
+
     /// Refresh the bearer the transport sends (a token refresh mid-session).
     pub fn set_bearer(&mut self, bearer: Option<String>) {
         self.remote.bearer = bearer;
@@ -396,6 +476,7 @@ impl HttpTransport {
         &self,
         body: Value,
         want_id: Option<u64>,
+        modern: Option<ModernHeaders>,
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<PostOutcome, TransportError> {
@@ -411,12 +492,32 @@ impl HttpTransport {
                 &remote,
                 session.as_deref(),
                 protocol.as_deref(),
+                modern.as_ref(),
                 &body,
                 want_id,
             );
             let _ = tx.send(outcome);
         });
         wait_channel(&rx, started, deadline, cancel)
+    }
+
+    /// The modern request-metadata headers for one request, when the
+    /// transport is in modern mode.
+    fn modern_headers(&self, method: &str, params: &Value) -> Option<ModernHeaders> {
+        self.modern.as_ref()?;
+        let name = matches!(method, "tools/call" | "resources/read" | "prompts/get")
+            .then(|| {
+                params
+                    .get("name")
+                    .or_else(|| params.get("uri"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .flatten();
+        Some(ModernHeaders {
+            method: method.to_string(),
+            name,
+        })
     }
 
     fn request(
@@ -428,7 +529,18 @@ impl HttpTransport {
     ) -> Result<Value, TransportError> {
         let id = self.next_id;
         self.next_id += 1;
-        let outcome = self.post(request(id, method, params), Some(id), deadline, cancel)?;
+        let params = match &self.modern {
+            Some(version) => with_meta(params, version),
+            None => params,
+        };
+        let modern = self.modern_headers(method, &params);
+        let outcome = self.post(
+            request(id, method, params),
+            Some(id),
+            modern,
+            deadline,
+            cancel,
+        )?;
         let outcome = match outcome {
             PostOutcome::Session(session, inner) => {
                 // The session id is captured whenever the server names one
@@ -454,10 +566,18 @@ impl HttpTransport {
     fn notify(&mut self, method: &str, params: Value) -> Result<(), TransportError> {
         // Fire-and-forget on a worker thread with a generous deadline; an
         // acceptance failure is not worth failing the connect over, but a
-        // transport error is surfaced.
+        // transport error is surfaced. (Only the legacy handshake sends
+        // notifications — the modern era has none of ours — but the `_meta`
+        // and header rules are honoured all the same.)
+        let params = match &self.modern {
+            Some(version) => with_meta(params, version),
+            None => params,
+        };
+        let modern = self.modern_headers(method, &params);
         let outcome = self.post(
             notification(method, params),
             None,
+            modern,
             HTTP_OP_TIMEOUT,
             &CancelToken::new(),
         )?;
@@ -474,6 +594,7 @@ fn post_blocking(
     remote: &RemoteHeaders,
     session: Option<&str>,
     protocol_version: Option<&str>,
+    modern: Option<&ModernHeaders>,
     body: &Value,
     want_id: Option<u64>,
 ) -> PostOutcome {
@@ -491,6 +612,12 @@ fn post_blocking(
     }
     if let Some(version) = protocol_version {
         req = req.header("MCP-Protocol-Version", version);
+    }
+    if let Some(headers) = modern {
+        req = req.header("Mcp-Method", header_value(&headers.method));
+        if let Some(name) = &headers.name {
+            req = req.header("Mcp-Name", header_value(name));
+        }
     }
     let response = match req.body(body.to_string()).send() {
         Ok(response) => response,
@@ -516,6 +643,15 @@ fn post_blocking(
     }
     if !status.is_success() {
         let body = response.text().unwrap_or_default();
+        // A modern server answers a version/header problem as `400` with a
+        // JSON-RPC error *body* (`-32022` naming its supported versions) —
+        // surface that as the RPC error it is, so era detection can read the
+        // code instead of a flattened refusal string.
+        if status.is_client_error()
+            && let Some(Incoming::Response { result: Err(e), .. }) = parse_incoming(&body)
+        {
+            return PostOutcome::Err(TransportError::Rpc(e));
+        }
         let detail = format!("HTTP {}: {}", status.as_u16(), one_line(&body, 200));
         // A 4xx on POST is the spec's cue to try the legacy transport; the
         // client layer decides whether this config wants that.
@@ -665,6 +801,13 @@ impl SseTransport {
             parked: HashMap::new(),
             next_id: 1,
         })
+    }
+
+    /// Re-arm the bearer the POST side sends (a mid-session token refresh).
+    /// The persistent GET stream keeps the credentials it opened with — auth
+    /// only matters there at open.
+    pub fn set_bearer(&mut self, bearer: Option<String>) {
+        self.remote.bearer = bearer;
     }
 
     fn post(&self, body: &Value) -> Result<Option<Value>, TransportError> {
@@ -817,6 +960,7 @@ mod tests {
             TransportError::Rpc(RpcError {
                 code: -32601,
                 message: "no such method".to_string(),
+                data: None,
             })
         );
 

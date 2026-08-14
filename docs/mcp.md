@@ -51,9 +51,19 @@ loads here unchanged:
 
 `type` is optional: an entry with `command` defaults to `stdio`; an entry
 with only `url` defaults to `http` **with automatic fallback** — a
-streamable-HTTP `initialize` that fails with a client error retries the same
+streamable-HTTP handshake that fails with a client error retries the same
 URL as a legacy SSE server (the MCP spec's backwards-compatibility recipe),
-so a bare `{"url": …}` works against either generation of server.
+so a bare `{"url": …}` works against any generation of server.
+
+## Protocol versions — the dual-era client
+
+This client speaks the **modern `2026-07-28` revision** (stateless: no
+`initialize` handshake, the protocol version + client capabilities riding
+every request's `_meta`, `server/discover` the identity surface) *and* the
+handshake-based **legacy revisions** (`2025-11-25` and earlier), detecting
+each server's era with the spec's own recipe — see `mcp::protocol` and
+`llm::mcp::client` below. The revision a server settled on shows as the
+detail page's `Protocol:` row.
 
 **Disabled state** lives per project in the **user** file — never in the
 project file, which may be shared with a team:
@@ -104,16 +114,31 @@ in **`src/llm/mcp/`**.
   `deepwiki, context7 3 times` form, and `wire_from_display` inverts the
   display name for the context replay.
 - `mcp::protocol` — JSON-RPC 2.0 framing (`request`/`notification` builders,
-  `Response` parse with `result`/`error` split), the `initialize` handshake
-  params (protocol version `2025-06-18`, `clientInfo` naming this crate) and
-  result (`ServerIdentity`: name, version, capabilities, instructions), the
-  `tools/list` page parse (`McpToolInfo { name, description, input_schema }`,
-  cursor-chained), the `tools/call` params builder, and the result mapping:
-  `CallToolResult` → the cell/model text (a lone `text` content item is its
-  text verbatim; anything else renders as compact JSON so nothing is
-  dropped), `is_error` → the red cell, and a first `image` content item →
-  a `data:` URL riding `ToolOutcome::image` (the `read` tool's channel, so
-  a vision model *sees* an MCP image).
+  `Response` parse with `result`/`error` split, `RpcError` keeping the
+  error's `data` whole — `-32022` names the server's versions there), **both
+  eras' vocabularies**: the modern (2026-07-28, `PROTOCOL_VERSION`) side —
+  `request_meta`/`with_meta` (the `io.modelcontextprotocol/*` `_meta` block
+  every modern request carries: version, `clientInfo`, and an *empty*
+  `clientCapabilities`, the schema's own "no optional capabilities"),
+  `discover_params`/`parse_discover` (`server/discover`, whose `serverInfo`
+  rides the result's `_meta`, never a top-level field), `is_modern_error`
+  (the `-32020`/`-32021`/`-32022` allowlist era detection keys on),
+  `unsupported_versions` + `choose_version` (the `-32022` negotiation),
+  `header_value` (the `Mcp-Method`/`Mcp-Name` header encoding with the
+  `=?base64?…?=` sentinel for non-header-safe names) — and the legacy side:
+  the `initialize` params (`initialize_params_for`, proposing
+  `LEGACY_PROTOCOL_VERSION` `2025-11-25` by default) and result parse
+  (`ServerIdentity`: the settled `protocol_version`, name, version,
+  capabilities, instructions); plus the era-neutral `tools/list` page parse
+  (`McpToolInfo { name, description, input_schema }`, cursor-chained), the
+  `tools/call` params builder, and the result mapping: `CallToolResult` →
+  the cell/model text (a lone `text` content item is its text verbatim;
+  anything else renders as compact JSON so nothing is dropped), `is_error` →
+  the red cell, a modern `resultType: "input_required"` (a multi-round-trip
+  request this capability-less client can't answer) → a recoverable red
+  outcome, and a first `image` content item → a `data:` URL riding
+  `ToolOutcome::image` (the `read` tool's channel, so a vision model *sees*
+  an MCP image).
 - `mcp::sse` — the Server-Sent-Events frame parser (`data:`/`event:` lines,
   multi-line data, comment lines) shared by both HTTP transports; pure over
   `&str` pushes, tested without a socket.
@@ -121,8 +146,15 @@ in **`src/llm/mcp/`**.
   config_path, status, url_or_command, auth, server_info, tools }` with
   `McpServerStatus` (`Connected`/`Pending`/`NeedsAuth`/`Failed(reason)`/
   `Disabled`), the status glyph/label mapping (`✔ connected · 3 tools`,
-  `△ needs authentication`, `◯ disabled`, `✘ failed`), and the parameter
-  listing a tool detail page renders from an `input_schema`.
+  `△ needs authentication`, `◯ disabled`, `✘ failed`), the **`auth_state`
+  rule** — the detail page's `Auth:` row shows only when auth *matters*: a
+  stdio server has no auth story, and a remote server holding no tokens
+  that never demanded auth shows no row either (`✘ not authenticated`
+  beside `✔ connected` reads as a problem where there is none — the
+  deepwiki case); stored tokens show `✔ authenticated`, a server in
+  `NeedsAuth` shows `✘` even over stored tokens, because the server just
+  refused whatever the store holds — and the parameter listing a tool
+  detail page renders from an `input_schema`.
 
 `src/llm/mcp/` (boundary, verified hermetically against in-process fixtures —
 a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
@@ -135,29 +167,87 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     matched by id.
   - **streamable HTTP**: POST per message (`Accept: application/json,
     text/event-stream`), the response either a JSON body or an SSE stream
-    drained until the request's id answers; the `Mcp-Session-Id` response
-    header captured at initialize and echoed thereafter, with the
-    `MCP-Protocol-Version` header; notifications POST and ignore the body.
+    drained until the request's id answers. **Legacy mode** captures the
+    `Mcp-Session-Id` response header at initialize and echoes it
+    thereafter, with the `MCP-Protocol-Version` header once settled;
+    **modern mode** is stateless — the `_meta` block in every request, the
+    version header from the first probe (it MUST match the `_meta`), plus
+    `Mcp-Method` on every request and `Mcp-Name` on `tools/call` (the
+    `header_value` sentinel encoding for non-header-safe names), and no
+    sessions. A 4xx whose body parses as a JSON-RPC error surfaces as that
+    error (a modern server answers version/header problems as `400` + a
+    modern error body), else as the refusal the SSE fallback keys on;
+    notifications POST and ignore the body.
   - **legacy HTTP+SSE**: GET opens the event stream on its own thread, the
     first `endpoint` event names the POST target (resolved against the
     base URL), requests POST there and answers arrive on the stream.
   All three poll the turn's `CancelToken` on the 20 ms cadence while
   waiting (the hooks-runner contract — a hung server must not eat Esc) and
   enforce the configured deadlines.
-- `client` — the per-server connect sequence: `initialize` →
-  `notifications/initialized` → `tools/list` (cursors drained). A 401 (or
-  the http→sse fallback both failing with one) resolves as **NeedsAuth**,
-  carrying the `WWW-Authenticate` detail for the OAuth discovery.
+- `client` — the per-server connect sequence, **era detection first** (the
+  2026-07-28 spec's own recipe): one `server/discover` probe under the
+  modern version (a bounded slice of the connect budget — a server that
+  answers *nothing* still leaves room for the handshake). A discover result
+  = a modern server: its identity parsed, no initialize, no initialized
+  notification, straight to `tools/list`. A **modern error** (`-32020`/
+  `-32021`/`-32022` — an allowlist, never one specific code: legacy servers
+  answer unknown pre-initialize requests with implementation-defined errors,
+  commonly `-32601`) is a modern server that can't do our revision — a
+  `-32022` naming a legacy revision we speak falls back to `initialize`
+  proposing exactly that; nothing shared fails with both lists in the
+  message. **Anything else** — a legacy error code, an HTTP refusal, a dead
+  probe — is a legacy server: `set_legacy()` → `initialize` (proposing
+  `2025-11-25`) → `notifications/initialized` → `tools/list` (cursors
+  drained), the settled revision echoed on later requests. A 401 anywhere
+  (or the http→sse fallback both failing with one) resolves as
+  **NeedsAuth**, carrying the `WWW-Authenticate` detail for the OAuth
+  discovery — auth outranks era, and detection re-runs on the authenticated
+  reconnect.
 - `oauth` — the RFC-shaped authorization-code + PKCE flow: protected-resource
   metadata (RFC 9728) → authorization-server metadata (RFC 8414, with the
-  OIDC fallback path) → dynamic client registration (RFC 7591) when offered →
-  the authorize URL (S256 challenge, `state`, RFC 8707 `resource`) → a
-  loopback `TcpListener` callback server (fixed port range, first free) *and*
-  the paste-the-redirect-URL fallback — both accepted, whichever lands
-  first — → the token exchange, refresh-token rotation on expiry. Tokens
-  persist in `{config_home}/mcp-auth.json` keyed by server URL
-  (0600, best-effort), and ride every HTTP request as `Authorization:
-  Bearer …`. "Clear authentication" deletes the entry.
+  OIDC fallback path) → dynamic client registration (RFC 7591) when offered
+  (`application_type: "native"` — the 2026-07-28 requirement whose OIDC
+  default of `web` rejects a CLI's loopback redirect) → the authorize URL
+  (S256 challenge, `state`, RFC 8707 `resource`, and `offline_access`
+  folded into the scopes **only when the AS metadata offers it** —
+  SEP-2207's refresh-capable grant, never added blind) → a loopback
+  `TcpListener` callback server *and* the paste-the-redirect-URL fallback —
+  both accepted, whichever lands first, each validating the RFC 9207 `iss`
+  against the discovered issuer (byte-for-byte, absence rejected when the
+  metadata advertised the parameter) before the code is redeemed → the
+  token exchange. Tokens persist in `{config_home}/mcp-auth.json` keyed by
+  server URL (0600, best-effort), and ride every HTTP request as
+  `Authorization: Bearer …`. "Clear authentication" deletes the entry.
+
+  **Token refresh — why a session never asks twice** (`refresh_grant` and
+  friends; the reference client's own bug class, fixed here the way its
+  v2.1.206/211 fixed it):
+  - **Proactive**: a stored grant inside the 300-second expiry skew
+    refreshes *before* it goes over the wire — at connect
+    (`connect_bearer`) and before every tool call (`refresh_if_stale` →
+    `Transport::set_bearer`, the mid-session re-arm seam) — so the server
+    never sees a dead token in the ordinary course.
+  - **Reactive**: a 401 anyway (revocation, clock skew, a grant with no
+    known expiry) gets **one forced refresh and one retry** — at connect
+    and per call — before anyone is asked to re-authenticate.
+  - **Classification is the contract** (`RefreshFailure`,
+    `refresh_failure_kind`): only the AS's own structured verdict on a
+    400/401 (`invalid_grant` and friends) is **permanent** — the dead grant
+    is *cleared* (kept, it would loop the failure into every request) and
+    the server truthfully reads `needs authentication`. Network failures,
+    5xx, 429, or an unreadable body are **transient**: the grant is kept
+    untouched, the server reads `✘ failed (token refresh failed: …)` whose
+    `Reconnect` retries — never needs-auth, which would walk the user into
+    discarding a working refresh token over a blip.
+  - **Rotation**: a returned `refresh_token` replaces the stored one
+    (RFC 6749 §6's MUST — the AS may revoke the old one on rotation); an
+    absent one keeps the old, never overwriting a live token with nothing.
+    The refresh request carries `grant_type`/`refresh_token`/`client_id`
+    (+ `client_secret` for a confidential client) and the RFC 8707
+    `resource` — and **no scope** (it could only narrow the grant) and no
+    PKCE (authorization-code only). The store is re-read before every
+    refresh, so another process's newer grant is used instead of burning a
+    rotated token.
 - `manager` — the session-owned registry (`McpManager`, the
   `Arc<Mutex<…>>` sibling of `BackgroundRegistry`): holds each server's
   config + live state, connects them **concurrently on worker threads at
@@ -320,12 +410,16 @@ mid-turn (the strip stays above it). Pages:
    each row `{name} · {glyph} {status}` (`✔ connected · 3 tools`,
    `△ needs authentication`, `◯ disabled`, `✘ failed`). An empty list names
    both file paths — "why isn't my server here?" is its only question.
-2. **Server detail** — the status/auth/URL-or-command/config-location fact
-   rows (+ capabilities and tool count when connected), then the actions the
-   state affords: connected → `View tools` / `Re-authenticate` (when OAuth
-   tokens exist) / `Clear authentication` / `Reconnect` / `Disable`;
-   needs-auth → `Authenticate` / `Disable`; failed → `Reconnect` /
-   `Disable`; disabled → `Enable`.
+2. **Server detail** — the fact rows the state affords: `Status:`, `Auth:`
+   (only when auth matters — the `auth_state` rule above), `Protocol:` (the
+   revision the era detection settled — `2026-07-28` on a modern server,
+   whatever `initialize` negotiated on a legacy one; hidden until the server
+   has initialized), URL-or-command, config location (+ capabilities and
+   tool count when connected), then the actions: connected → `View tools` /
+   `Re-authenticate` (when OAuth tokens exist) / `Clear authentication` /
+   `Reconnect` / `Disable`; needs-auth → `Authenticate` / `Disable`;
+   failed → `Re-authenticate` + `Clear authentication` (when tokens exist) /
+   `Reconnect` / `Disable`; disabled → `Enable`.
 3. **Tools list** — `Tools for {server}` over numbered tool names.
 4. **Tool detail** — the tool name + server, `Tool name:` / `Full name:`
    (the wire `mcp__{server}__{tool}` the model actually calls),
@@ -349,17 +443,35 @@ pending row shows `… connecting` until its thread reports.
 ## What stays out (v1)
 
 Resources, prompts, sampling, elicitation, and roots are not modeled — the
-tools surface is the feature. Server `instructions` are shown in the detail
-page but not injected into the system prompt. WebSocket transport isn't
-offered (neither reference ships it for user servers). The dummy backend
-scripts no MCP scenario — the manager is real I/O end to end; the smoke
-suite drives `/mcp` against a scripted stdio fixture instead.
+tools surface is the feature — and neither is their modern replacement, the
+2026-07-28 multi-round-trip request: this client declares an empty
+`clientCapabilities` on every request, so a compliant server never sends
+`input_required`, and one that does anyway gets the recoverable red outcome
+rather than a stalled turn. `subscriptions/listen`, response caching
+(`ttlMs`/`cacheScope` parse-through but nothing caches), and CIMD client
+registration (we are not a hosted client with an `https` client id — DCR,
+deprecated but retained, is our registration path) stay out with it. Server
+`instructions` are shown in the detail page but not injected into the system
+prompt. WebSocket transport isn't offered (neither reference ships it for
+user servers). The dummy backend scripts no MCP scenario — the manager is
+real I/O end to end; the smoke suite drives `/mcp` against a scripted
+(modern) stdio fixture instead.
 
 ## Testing
 
 The pure halves are unit-tested as usual (the naming contract, the argument
-pretty-printers, every cell/prompt/aggregation rendering, the commit-vs-repaint
-agreement), and the boundary transports against in-process fixtures. What
+pretty-printers, the `_meta`/discover/negotiation shapes, the refresh
+classification, every cell/prompt/aggregation rendering, the
+commit-vs-repaint agreement), and the boundary against in-process fixtures:
+a modern stdio server (discover-first), a legacy one (the -32601 fallback),
+a strict modern HTTP server that *rejects* requests missing the 2026-07-28
+request metadata (so a green connect proves we send it), a `-32022`
+negotiation server, and an OAuth pair — an MCP endpoint demanding
+`tok-{n}` beside a scripted token endpoint — driving the whole refresh
+matrix (mid-session 401 → refresh → retry with the server never leaving
+Connected; proactive pre-call refresh with **zero** 401s seen; connect-time
+refresh; `invalid_grant` → cleared grant + needs-auth; a 503 → grant kept +
+`✘ failed`, never needs-auth). What
 those can't prove — that a real server's tools, descriptions and parallel
 batches come out looking right — lives in **`tests/live_mcp.rs`**, `#[ignore]`d
 like every other live test:

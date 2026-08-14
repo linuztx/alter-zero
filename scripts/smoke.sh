@@ -7030,20 +7030,21 @@ rm -rf "$SM_CFG" "$SM_DIR"
 
 # --- Phase 80: the /mcp MANAGER (docs/mcp.md). Claude Code's MCP surface
 # driven offline end to end against a SCRIPTED stdio server (a sh script
-# answering the deterministic ids: 1 = initialize, 2 = tools/list): the
+# answering the deterministic ids of a MODERN 2026-07-28 server: 1 = the
+# server/discover probe, 2 = tools/list — no initialize anywhere): the
 # palette lists /mcp, the manager opens on the grouped server list, the
 # startup connect resolves the row to '✔ connected · 1 tool', Enter walks
-# list → server detail (facts + actions) → tools → the tool detail naming
-# the wire name the model calls, and Esc walks all the way back out with
-# the composer restored. ---
+# list → server detail (facts + actions, the negotiated Protocol row
+# included) → tools → the tool detail naming the wire name the model calls,
+# and Esc walks all the way back out with the composer restored. ---
 S80="${S}_mcp"
 MCP_CFG="$(mktemp -d)"
 MCP_DIR="$(mktemp -d)"
 cat >"$MCP_DIR/server.sh" <<'MCPSRV'
 #!/bin/sh
 cat > /dev/null &
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1.0"}}}'
-printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo_text","description":"Echo the text back.","inputSchema":{"type":"object","properties":{"text":{"type":"string","description":"What to echo."}},"required":["text"]}}]}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":60000,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"fixture","version":"1.0"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","tools":[{"name":"echo_text","description":"Echo the text back.","inputSchema":{"type":"object","properties":{"text":{"type":"string","description":"What to echo."}},"required":["text"]}}],"ttlMs":60000,"cacheScope":"public"}}'
 sleep 60
 MCPSRV
 chmod +x "$MCP_DIR/server.sh"
@@ -7087,6 +7088,7 @@ mcp_detail="$(tmux capture-pane -t "$S80" -p)"
 echo "==== Phase 80: the server detail ===="
 printf '%s\n' "$mcp_detail"
 for expect in "fixture MCP Server" "Status:" "✔ connected · 1 tool" \
+	"Protocol:" "2026-07-28" \
 	"Command:" "server.sh" "Config location:" "Capabilities:" "tools" \
 	"1. View tools" "2. Reconnect" "3. Disable"; do
 	if ! printf '%s' "$mcp_detail" | grep -qF "$expect"; then
@@ -7094,6 +7096,12 @@ for expect in "fixture MCP Server" "Status:" "✔ connected · 1 tool" \
 		status=1
 	fi
 done
+# A stdio server has no auth story — and a modern one that never asked for
+# credentials must not wear a '✘ not authenticated' row (the deepwiki bug).
+if printf '%s' "$mcp_detail" | grep -qF "Auth:"; then
+	echo "FAIL: Phase 80 — the detail page shows an Auth row for a server with no auth story" >&2
+	status=1
+fi
 tmux send-keys -t "$S80" Enter
 sleep 0.5
 mcp_tools="$(tmux capture-pane -t "$S80" -p)"
@@ -7255,8 +7263,8 @@ mkdir -p "$TR_WORK/.alter-zero"
 cat >"$TR_WORK/server.sh" <<'TRSRV'
 #!/bin/sh
 cat > /dev/null &
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"projfix","version":"1.0"}}}'
-printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo_text","description":"Echo the text back.","inputSchema":{"type":"object","properties":{"text":{"type":"string","description":"What to echo."}},"required":["text"]}}]}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":60000,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"projfix","version":"1.0"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","tools":[{"name":"echo_text","description":"Echo the text back.","inputSchema":{"type":"object","properties":{"text":{"type":"string","description":"What to echo."}},"required":["text"]}}],"ttlMs":60000,"cacheScope":"public"}}'
 sleep 60
 TRSRV
 chmod +x "$TR_WORK/server.sh"
@@ -7472,8 +7480,8 @@ MCP84_DIR="$(mktemp -d)"
 cat >"$MCP84_DIR/server.sh" <<'MCPSRV84'
 #!/bin/sh
 cat > /dev/null &
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1.0"}}}'
-printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"echo_text","description":"Echo the text back.","inputSchema":{"type":"object","properties":{"text":{"type":"string","description":"What to echo."}},"required":["text"]}}]}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"ttlMs":60000,"cacheScope":"public","_meta":{"io.modelcontextprotocol/serverInfo":{"name":"fixture","version":"1.0"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"resultType":"complete","tools":[{"name":"echo_text","description":"Echo the text back.","inputSchema":{"type":"object","properties":{"text":{"type":"string","description":"What to echo."}},"required":["text"]}}],"ttlMs":60000,"cacheScope":"public"}}'
 sleep 60
 MCPSRV84
 chmod +x "$MCP84_DIR/server.sh"

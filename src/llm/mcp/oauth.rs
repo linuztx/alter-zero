@@ -29,8 +29,10 @@ const POLL: Duration = Duration::from_millis(50);
 /// Discovery/token requests' per-operation deadline.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Refresh a token this long before it actually expires.
-const EXPIRY_SKEW_SECS: u64 = 60;
+/// Refresh a token this long before it actually expires — five minutes, the
+/// production default the reference clients converged on (60 s is the floor;
+/// clock skew plus in-flight latency eat a short window).
+const EXPIRY_SKEW_SECS: u64 = 300;
 
 // ---------------------------------------------------------------------------
 // the token store (pure format + file I/O)
@@ -154,31 +156,160 @@ pub fn tokens_fresh(tokens: &StoredTokens, now: u64) -> bool {
     }
 }
 
-/// A usable bearer for `server_url`: the stored access token, refreshed
-/// through the token endpoint (and re-persisted) when stale. `None` when
-/// nothing is stored or the refresh fails — the connect will 401 and the
-/// server goes back to needs-auth, which is the truthful state.
+/// Why a refresh failed — the split that decides what happens to the stored
+/// grant.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RefreshFailure {
+    /// Nothing stored, or the grant carries no refresh token: interactive
+    /// auth is the only way forward (the spec lets an AS withhold refresh
+    /// tokens — a client MUST NOT assume one).
+    NoGrant,
+    /// The AS rejected the grant itself (`invalid_grant` and friends): the
+    /// refresh token is dead, the stored grant is cleared, and only an
+    /// interactive re-auth recovers.
+    Permanent(String),
+    /// Network/5xx/429 or an unreadable answer: the grant is kept untouched
+    /// and the refresh simply retried later. Demanding re-auth here was the
+    /// reference client's own long-standing bug (fixed in Claude Code
+    /// v2.1.206) — a blip must not cost the user their session.
+    Transient(String),
+}
+
+/// Classify a failed token-endpoint answer. `status` is `None` when the
+/// request never got one (a network failure — transient by definition).
+/// Only the AS's own structured verdict on a 400/401 — the RFC 6749 §5.2
+/// `{"error": …}` shape — is permanent; an unparseable body at those
+/// statuses is a proxy or gateway speaking, not the AS.
 #[must_use]
-pub fn fresh_bearer(path: Option<&Path>, server_url: &str) -> Option<String> {
-    let tokens = load_tokens(path, server_url)?;
-    let now = unix_now();
-    if tokens_fresh(&tokens, now) {
-        return Some(tokens.access_token);
+pub fn refresh_failure_kind(status: Option<u16>, body: &str) -> RefreshFailure {
+    let flat = || {
+        let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        flat.chars().take(200).collect::<String>()
+    };
+    let Some(status) = status else {
+        return RefreshFailure::Transient(flat());
+    };
+    if matches!(status, 400 | 401) {
+        let parsed = serde_json::from_str::<Value>(body.trim()).ok();
+        let error = parsed
+            .as_ref()
+            .and_then(|v| v.get("error"))
+            .and_then(Value::as_str);
+        if let Some(error) = error {
+            let description = parsed
+                .as_ref()
+                .and_then(|v| v.get("error_description"))
+                .and_then(Value::as_str)
+                .map(|d| format!(": {d}"))
+                .unwrap_or_default();
+            return RefreshFailure::Permanent(format!("{error}{description}"));
+        }
     }
-    let refresh = tokens.refresh_token.clone()?;
+    RefreshFailure::Transient(format!("HTTP {status}: {}", flat()))
+}
+
+/// The refresh grant's form body (RFC 6749 §6 + RFC 8707): no `scope` — it
+/// could only narrow the grant, and some ASes narrow it permanently — and no
+/// PKCE, which belongs to the authorization-code grant alone. The `resource`
+/// indicator rides every token request, the refresh included: omitting it
+/// mints a token audience-bound to nothing, which the MCP server then 401s —
+/// the classic silent refresh loop.
+#[must_use]
+pub fn refresh_params(tokens: &StoredTokens, server_url: &str) -> Vec<(String, String)> {
     let mut params = vec![
         ("grant_type".to_string(), "refresh_token".to_string()),
-        ("refresh_token".to_string(), refresh),
+        (
+            "refresh_token".to_string(),
+            tokens.refresh_token.clone().unwrap_or_default(),
+        ),
         ("client_id".to_string(), tokens.client_id.clone()),
     ];
     if let Some(secret) = &tokens.client_secret {
         params.push(("client_secret".to_string(), secret.clone()));
     }
     params.push(("resource".to_string(), server_url.to_string()));
-    let response = post_form(&tokens.token_endpoint, &params).ok()?;
-    let refreshed = tokens_from_response(&response, &tokens)?;
+    params
+}
+
+/// Refresh the stored grant for `server_url` through its token endpoint —
+/// forced, regardless of freshness (the reactive 401 path needs exactly
+/// that). The store is re-read first, so another process's newer grant is
+/// used instead of burning a rotated refresh token. On success the rotated
+/// grant is persisted (`tokens_from_response` keeps the old refresh token
+/// when the AS returns none — never overwrite with nothing) and returned; a
+/// [`RefreshFailure::Permanent`] rejection clears the store entry, because a
+/// dead grant kept around loops the failure into every later request.
+pub fn refresh_grant(
+    path: Option<&Path>,
+    server_url: &str,
+) -> Result<StoredTokens, RefreshFailure> {
+    let Some(tokens) = load_tokens(path, server_url) else {
+        return Err(RefreshFailure::NoGrant);
+    };
+    if tokens.refresh_token.is_none() || tokens.token_endpoint.trim().is_empty() {
+        return Err(RefreshFailure::NoGrant);
+    }
+    let params = refresh_params(&tokens, server_url);
+    let (status, body) = match post_form_raw(&tokens.token_endpoint, &params) {
+        Ok(answer) => answer,
+        Err(detail) => return Err(RefreshFailure::Transient(detail)),
+    };
+    if !(200..300).contains(&status) {
+        let failure = refresh_failure_kind(Some(status), &body);
+        if matches!(failure, RefreshFailure::Permanent(_)) {
+            save_tokens(path, server_url, None);
+        }
+        return Err(failure);
+    }
+    let Ok(response) = serde_json::from_str::<Value>(&body) else {
+        return Err(RefreshFailure::Transient(
+            "the token endpoint answered non-JSON".to_string(),
+        ));
+    };
+    let Some(refreshed) = tokens_from_response(&response, &tokens) else {
+        return Err(RefreshFailure::Transient(
+            "the token response carried no access_token".to_string(),
+        ));
+    };
     save_tokens(path, server_url, Some(&refreshed));
-    Some(refreshed.access_token)
+    Ok(refreshed)
+}
+
+/// The bearer a connect should send: the stored access token, refreshed
+/// first when it sits inside the expiry skew and a refresh token exists. A
+/// transient refresh failure still sends the stored token — the skew is a
+/// refresh *trigger*, not an invalidity verdict, so the token may have
+/// minutes left; and the connect's own 401 path retries the refresh with the
+/// classification deciding the final state. `None` only when nothing is
+/// stored (or a permanent rejection just cleared it) — the connect goes out
+/// bare and a 401 resolves as needs-auth, the truthful state.
+#[must_use]
+pub fn connect_bearer(path: Option<&Path>, server_url: &str) -> Option<String> {
+    let tokens = load_tokens(path, server_url)?;
+    if tokens_fresh(&tokens, unix_now()) {
+        return Some(tokens.access_token);
+    }
+    match refresh_grant(path, server_url) {
+        Ok(refreshed) => Some(refreshed.access_token),
+        Err(RefreshFailure::Permanent(_)) => None,
+        Err(RefreshFailure::NoGrant | RefreshFailure::Transient(_)) => Some(tokens.access_token),
+    }
+}
+
+/// The proactive pre-call refresh: `Some(new bearer)` only when the stored
+/// grant was stale and the refresh succeeded — the caller re-arms the
+/// transport with it. `None` otherwise: a fresh grant needs nothing, and a
+/// transient failure just proceeds on the old bearer with the reactive 401
+/// path as backstop.
+#[must_use]
+pub fn refresh_if_stale(path: Option<&Path>, server_url: &str) -> Option<String> {
+    let tokens = load_tokens(path, server_url)?;
+    if tokens_fresh(&tokens, unix_now()) || tokens.refresh_token.is_none() {
+        return None;
+    }
+    refresh_grant(path, server_url)
+        .ok()
+        .map(|refreshed| refreshed.access_token)
 }
 
 fn unix_now() -> u64 {
@@ -189,9 +320,17 @@ fn unix_now() -> u64 {
 }
 
 /// Fold a token response onto the prior grant (rotating refresh tokens,
-/// keeping the client identity).
+/// keeping the client identity). A returned `refresh_token` replaces the old
+/// one (RFC 6749 §6's MUST — rotation is mandatory for public clients); an
+/// absent one keeps the old, never overwriting a live token with nothing.
 fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<StoredTokens> {
     let access = response.get("access_token").and_then(Value::as_str)?;
+    // `expires_in` is a number per RFC 6749 §5.1, but real ASes send strings
+    // too — absent either way means an unknown lifetime (reactive-only).
+    let expires_in = response.get("expires_in").and_then(|v| {
+        v.as_u64()
+            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+    });
     Some(StoredTokens {
         access_token: access.to_string(),
         refresh_token: response
@@ -199,10 +338,7 @@ fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<Stored
             .and_then(Value::as_str)
             .map(str::to_string)
             .or_else(|| prior.refresh_token.clone()),
-        expires_at: response
-            .get("expires_in")
-            .and_then(Value::as_u64)
-            .map(|secs| unix_now() + secs),
+        expires_at: expires_in.map(|secs| unix_now() + secs),
         client_id: prior.client_id.clone(),
         client_secret: prior.client_secret.clone(),
         token_endpoint: prior.token_endpoint.clone(),
@@ -342,6 +478,77 @@ pub fn build_authorize_url(
     format!("{authorization_endpoint}{sep}{query}")
 }
 
+/// One query parameter out of a redirect URL/path/query —
+/// [`parse_redirect`]'s extractor generalized, because RFC 9207's `iss`
+/// rides beside `code` and the validation wants it by name.
+#[must_use]
+pub fn redirect_param(text: &str, key: &str) -> Option<String> {
+    let text = text.trim();
+    let query = text
+        .split_once('?')
+        .map_or(text, |(_, query)| query)
+        .split('#')
+        .next()
+        .unwrap_or_default();
+    query
+        .split('&')
+        .find_map(|pair| {
+            let (k, value) = pair.split_once('=')?;
+            (k == key).then(|| url_decode(value))
+        })
+        .filter(|value| !value.is_empty())
+}
+
+/// RFC 9207 issuer identification — the 2026-07-28 authorization spec's
+/// MUST: a redirect carrying `iss` must name the authorization server the
+/// flow started with, compared byte for byte (the spec forbids case folding,
+/// port elision and every other normalization), and an AS whose metadata
+/// advertises `authorization_response_iss_parameter_supported` must send it
+/// — absence there is a rejection, not a shrug.
+pub fn validate_issuer(
+    iss: Option<&str>,
+    expected: Option<&str>,
+    required: bool,
+) -> Result<(), String> {
+    let Some(expected) = expected else {
+        return Ok(());
+    };
+    match iss {
+        Some(iss) if iss == expected => Ok(()),
+        Some(iss) => Err(format!(
+            "the redirect names a different authorization server (got {iss}, expected {expected})"
+        )),
+        None if required => Err(
+            "the authorization server advertises iss support but the redirect carried no iss"
+                .to_string(),
+        ),
+        None => Ok(()),
+    }
+}
+
+/// Fold `offline_access` into the requested scopes when (and only when) the
+/// AS metadata offers it — SEP-2207's MAY, and the difference between a
+/// session that renews itself and one that asks the user again in an hour.
+/// Never added blind: an AS that doesn't know the scope may reject the whole
+/// authorization over it.
+#[must_use]
+pub fn with_offline_access(scopes: Option<String>, as_supports: bool) -> Option<String> {
+    if !as_supports {
+        return scopes;
+    }
+    match scopes {
+        Some(scopes)
+            if scopes
+                .split_whitespace()
+                .any(|scope| scope == "offline_access") =>
+        {
+            Some(scopes)
+        }
+        Some(scopes) => Some(format!("{scopes} offline_access")),
+        None => Some("offline_access".to_string()),
+    }
+}
+
 /// Parse `code` and `state` out of a pasted redirect URL (or a bare
 /// `?code=…` query, or the callback request path).
 #[must_use]
@@ -420,6 +627,12 @@ pub struct AuthServerMeta {
     pub token_endpoint: String,
     pub registration_endpoint: Option<String>,
     pub scopes: Option<String>,
+    /// The AS `issuer` identifier — what RFC 9207's `iss` must equal.
+    pub issuer: Option<String>,
+    /// `authorization_response_iss_parameter_supported`: an AS that
+    /// advertises it must send `iss` on every authorization response, so a
+    /// response without one is rejected rather than excused.
+    pub iss_required: bool,
 }
 
 fn get_json(url: &str) -> Result<Value, String> {
@@ -438,7 +651,9 @@ fn get_json(url: &str) -> Result<Value, String> {
         .map_err(|e| format!("bad JSON: {e}"))
 }
 
-fn post_form(url: &str, params: &[(String, String)]) -> Result<Value, String> {
+/// POST a form and hand back `(status, body)` raw — the refresh path
+/// classifies the failure itself (`Err` only when no answer arrived at all).
+fn post_form_raw(url: &str, params: &[(String, String)]) -> Result<(u16, String), String> {
     let client = crate::llm::http_client(HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let response = client
         .post(url)
@@ -447,12 +662,16 @@ fn post_form(url: &str, params: &[(String, String)]) -> Result<Value, String> {
         .body(form_encode(params))
         .send()
         .map_err(|e| format!("request failed: {e}"))?;
-    let status = response.status();
-    let body = response.text().unwrap_or_default();
-    if !status.is_success() {
+    let status = response.status().as_u16();
+    Ok((status, response.text().unwrap_or_default()))
+}
+
+fn post_form(url: &str, params: &[(String, String)]) -> Result<Value, String> {
+    let (status, body) = post_form_raw(url, params)?;
+    if !(200..300).contains(&status) {
         let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
         let flat: String = flat.chars().take(200).collect();
-        return Err(format!("HTTP {}: {flat}", status.as_u16()));
+        return Err(format!("HTTP {status}: {flat}"));
     }
     serde_json::from_str(&body).map_err(|e| format!("bad JSON: {e}"))
 }
@@ -512,23 +731,38 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
                     last_err = format!("{candidate}: missing endpoints");
                     continue;
                 };
-                let scopes = resource_scopes.clone().or_else(|| {
-                    meta.get("scopes_supported")
-                        .and_then(Value::as_array)
-                        .map(|scopes| {
-                            scopes
-                                .iter()
-                                .filter_map(Value::as_str)
-                                .collect::<Vec<_>>()
-                                .join(" ")
-                        })
-                        .filter(|s| !s.is_empty())
-                });
+                let as_scopes: Vec<String> = meta
+                    .get("scopes_supported")
+                    .and_then(Value::as_array)
+                    .map(|scopes| {
+                        scopes
+                            .iter()
+                            .filter_map(Value::as_str)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let scopes = resource_scopes
+                    .clone()
+                    .or_else(|| Some(as_scopes.join(" ")).filter(|s| !s.is_empty()));
+                // SEP-2207: ask for a refresh-capable grant when the AS
+                // offers one — this is what lets the session renew itself
+                // instead of asking the user again when the access token
+                // expires.
+                let scopes = with_offline_access(
+                    scopes,
+                    as_scopes.iter().any(|scope| scope == "offline_access"),
+                );
                 return Ok(AuthServerMeta {
                     authorization_endpoint,
                     token_endpoint,
                     registration_endpoint: field("registration_endpoint"),
                     scopes,
+                    issuer: field("issuer"),
+                    iss_required: meta
+                        .get("authorization_response_iss_parameter_supported")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 });
             }
             Err(e) => last_err = format!("{candidate}: {e}"),
@@ -565,6 +799,10 @@ pub fn register_client(
         "grant_types": ["authorization_code", "refresh_token"],
         "response_types": ["code"],
         "token_endpoint_auth_method": "none",
+        // 2026-07-28 (SEP-837): a registration MUST name its application
+        // type — a CLI with a loopback redirect is a native app, and the
+        // OIDC default of "web" rejects exactly that redirect.
+        "application_type": "native",
     });
     let response = client
         .post(registration_endpoint)
@@ -659,7 +897,7 @@ pub fn run_auth_flow(
     );
     progress.on_url(&authorize_url);
     open_browser(&authorize_url);
-    let code = wait_for_code(&listener, &state, paste_rx, cancel)?;
+    let code = wait_for_code(&listener, &state, &meta, paste_rx, cancel)?;
     let mut params = vec![
         ("grant_type".to_string(), "authorization_code".to_string()),
         ("code".to_string(), code),
@@ -688,10 +926,12 @@ pub fn run_auth_flow(
 
 /// Wait for the authorization code from **either** side: the loopback
 /// callback, or a pasted redirect URL. Validates `state` when the redirect
-/// carries one.
+/// carries one, and the RFC 9207 `iss` against the discovered issuer before
+/// the code is ever redeemed.
 fn wait_for_code(
     listener: &TcpListener,
     state: &str,
+    meta: &AuthServerMeta,
     paste_rx: &mpsc::Receiver<String>,
     cancel: &CancelToken,
 ) -> Result<String, String> {
@@ -713,6 +953,11 @@ fn wait_for_code(
                     if got_state.as_deref().is_some_and(|got| got != state) {
                         return Err("the pasted URL's state doesn't match".to_string());
                     }
+                    validate_issuer(
+                        redirect_param(&text, "iss").as_deref(),
+                        meta.issuer.as_deref(),
+                        meta.iss_required,
+                    )?;
                     return Ok(code);
                 }
                 // Not parseable — keep waiting; the page shows the format.
@@ -747,6 +992,11 @@ fn wait_for_code(
                     if got_state.as_deref().is_some_and(|got| got != state) {
                         return Err("the callback's state doesn't match".to_string());
                     }
+                    validate_issuer(
+                        redirect_param(path, "iss").as_deref(),
+                        meta.issuer.as_deref(),
+                        meta.iss_required,
+                    )?;
                     return Ok(code);
                 }
             }
@@ -872,6 +1122,139 @@ mod tests {
         );
         assert_eq!(parse_redirect("https://x/cb?error=denied"), None);
         assert_eq!(parse_redirect("plain text"), None);
+    }
+
+    #[test]
+    fn refresh_params_shape_the_grant() {
+        let tokens = StoredTokens {
+            access_token: "at".to_string(),
+            refresh_token: Some("rt-1".to_string()),
+            expires_at: Some(1),
+            client_id: "cid".to_string(),
+            client_secret: None,
+            token_endpoint: "https://as/token".to_string(),
+            scope: Some("read write".to_string()),
+        };
+        let params = refresh_params(&tokens, "https://mcp.test/mcp");
+        let get = |key: &str| {
+            params
+                .iter()
+                .find(|(k, _)| k == key)
+                .map(|(_, v)| v.as_str())
+        };
+        assert_eq!(get("grant_type"), Some("refresh_token"));
+        assert_eq!(get("refresh_token"), Some("rt-1"));
+        assert_eq!(get("client_id"), Some("cid"));
+        // RFC 8707: the resource indicator rides every token request, the
+        // refresh included — omitting it mints a token the server rejects.
+        assert_eq!(get("resource"), Some("https://mcp.test/mcp"));
+        // No scope (it could only narrow the grant), no PKCE verifier (the
+        // refresh grant has none), no absent secret.
+        assert_eq!(get("scope"), None);
+        assert_eq!(get("code_verifier"), None);
+        assert_eq!(get("client_secret"), None);
+        // A confidential client authenticates with its secret.
+        let confidential = StoredTokens {
+            client_secret: Some("shh".to_string()),
+            ..tokens
+        };
+        let params = refresh_params(&confidential, "https://mcp.test/mcp");
+        assert!(
+            params
+                .iter()
+                .any(|(k, v)| k == "client_secret" && v == "shh")
+        );
+    }
+
+    #[test]
+    fn refresh_failures_classify_permanent_vs_transient() {
+        use RefreshFailure as F;
+        // The AS rejecting the grant itself is permanent — the refresh token
+        // is dead and retrying only loops the failure.
+        for error in [
+            "invalid_grant",
+            "invalid_client",
+            "invalid_request",
+            "unauthorized_client",
+            "invalid_scope",
+        ] {
+            let body = format!(r#"{{"error":"{error}","error_description":"no"}}"#);
+            match refresh_failure_kind(Some(400), &body) {
+                F::Permanent(detail) => assert!(detail.contains(error), "{detail}"),
+                other => panic!("{error} classified {other:?}"),
+            }
+        }
+        assert!(matches!(
+            refresh_failure_kind(Some(401), r#"{"error":"invalid_client"}"#),
+            F::Permanent(_)
+        ));
+        // Everything else is transient: the grant is kept and the refresh
+        // retried later (flagging needs-auth on a network blip was the bug).
+        assert!(matches!(
+            refresh_failure_kind(Some(503), "upstream down"),
+            F::Transient(_)
+        ));
+        assert!(matches!(
+            refresh_failure_kind(Some(429), ""),
+            F::Transient(_)
+        ));
+        assert!(matches!(
+            refresh_failure_kind(Some(400), "<html>proxy error</html>"),
+            F::Transient(_)
+        ));
+        assert!(matches!(
+            refresh_failure_kind(None, "connect timeout"),
+            F::Transient(_)
+        ));
+    }
+
+    #[test]
+    fn offline_access_rides_only_an_as_that_offers_it() {
+        // SEP-2207's MAY: request a refresh-capable grant when (and only
+        // when) the AS metadata lists offline_access.
+        assert_eq!(
+            with_offline_access(Some("read write".to_string()), true).as_deref(),
+            Some("read write offline_access")
+        );
+        assert_eq!(
+            with_offline_access(None, true).as_deref(),
+            Some("offline_access")
+        );
+        assert_eq!(
+            with_offline_access(Some("read".to_string()), false).as_deref(),
+            Some("read")
+        );
+        assert_eq!(with_offline_access(None, false), None);
+        // Already granted: never doubled.
+        assert_eq!(
+            with_offline_access(Some("offline_access read".to_string()), true).as_deref(),
+            Some("offline_access read")
+        );
+    }
+
+    #[test]
+    fn redirect_params_extract_iss() {
+        assert_eq!(
+            redirect_param("https://x/cb?code=a&iss=https%3A%2F%2Fas.test", "iss").as_deref(),
+            Some("https://as.test")
+        );
+        assert_eq!(redirect_param("https://x/cb?code=a", "iss"), None);
+    }
+
+    #[test]
+    fn issuer_validation_follows_rfc_9207() {
+        // No recorded issuer: nothing to validate against.
+        assert!(validate_issuer(Some("https://as"), None, false).is_ok());
+        assert!(validate_issuer(None, None, true).is_ok());
+        // A present iss must equal the recorded issuer byte for byte — no
+        // normalization (the spec forbids case folding and friends).
+        assert!(validate_issuer(Some("https://as.test"), Some("https://as.test"), false).is_ok());
+        assert!(validate_issuer(Some("https://AS.test"), Some("https://as.test"), false).is_err());
+        assert!(validate_issuer(Some("https://evil"), Some("https://as.test"), true).is_err());
+        // An AS that advertises iss support must send it — absence is a
+        // rejection when the metadata promised the parameter.
+        assert!(validate_issuer(None, Some("https://as.test"), true).is_err());
+        assert!(validate_issuer(None, Some("https://as.test"), false).is_ok());
     }
 
     #[test]

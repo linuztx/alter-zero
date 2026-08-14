@@ -13,6 +13,9 @@ fn key(code: KeyCode) -> KeyEvent {
 }
 
 fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSnapshot {
+    // Auth derives the way the manager derives it (`crate::mcp::auth_state`):
+    // a row only when the server demands auth or tokens are stored.
+    let auth = crate::mcp::auth_state(true, false, &status);
     McpServerSnapshot {
         name: name.to_string(),
         scope,
@@ -26,9 +29,9 @@ fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSn
             sse_fallback: false,
         },
         status,
-        auth: Some(McpAuthState::NotAuthenticated),
+        auth,
         identity: Some(crate::mcp::ServerIdentity {
-            protocol_version: "2025-06-18".to_string(),
+            protocol_version: "2026-07-28".to_string(),
             name: name.to_string(),
             version: "1.0".to_string(),
             capabilities: vec!["tools".to_string()],
@@ -104,6 +107,39 @@ fn the_server_detail_shows_facts_and_actions() {
     assert!(all.contains("1. Authenticate"));
     assert!(all.contains("2. Disable"));
     assert!(all.contains("❯ 1. Authenticate"), "first action selected");
+}
+
+#[test]
+fn the_detail_shows_the_negotiated_protocol_and_hides_an_irrelevant_auth_row() {
+    // deepwiki: connected, no auth story — the detail shows the settled
+    // protocol revision and NO `Auth:` row (`✘ not authenticated` beside
+    // `✔ connected` reads as a problem where there is none).
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Enter)); // deepwiki detail
+    let all = texts(&app).join("\n");
+    assert!(all.contains("deepwiki MCP Server"));
+    assert!(all.contains("Protocol:"), "{all}");
+    assert!(all.contains("2026-07-28"));
+    assert!(!all.contains("Auth:"), "{all}");
+    // An authenticated server still shows its ✔ row.
+    let mut authed = snapshot("vercel", McpScope::User, McpServerStatus::Connected);
+    authed.auth = Some(McpAuthState::Authenticated);
+    let mut app = App::new();
+    app.open_mcp_menu(vec![authed]);
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(all.contains("Auth:"));
+    assert!(all.contains("✔ authenticated"));
+    assert!(all.contains("Protocol:"));
+    // A server that never initialized has no revision to report: no row.
+    let mut pending = snapshot("slow", McpScope::User, McpServerStatus::Pending);
+    pending.identity = None;
+    let mut app = App::new();
+    app.open_mcp_menu(vec![pending]);
+    app.on_key(key(KeyCode::Enter));
+    let all = texts(&app).join("\n");
+    assert!(!all.contains("Protocol:"));
 }
 
 #[test]

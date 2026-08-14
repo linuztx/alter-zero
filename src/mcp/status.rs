@@ -62,8 +62,31 @@ impl McpServerStatus {
 pub enum McpAuthState {
     /// Stored OAuth tokens exist for this server.
     Authenticated,
-    /// A remote server with no stored tokens.
+    /// The server demands OAuth and no working grant is stored.
     NotAuthenticated,
+}
+
+/// The `Auth:` row a server's state affords — `None` hides it. Auth is only
+/// a fact worth stating when it *matters*: a stdio server has no auth story,
+/// and a remote server holding no tokens that never demanded auth shows no
+/// row either — `✘ not authenticated` beside `✔ connected` reads as a
+/// problem where there is none (the open-server case, e.g. deepwiki). Stored
+/// tokens report the grant; a server in `NeedsAuth` reports `✘` even over
+/// stored tokens, because whatever the store holds, the server just refused
+/// it.
+#[must_use]
+pub fn auth_state(
+    is_remote: bool,
+    has_tokens: bool,
+    status: &McpServerStatus,
+) -> Option<McpAuthState> {
+    if !is_remote {
+        return None;
+    }
+    if matches!(status, McpServerStatus::NeedsAuth) {
+        return Some(McpAuthState::NotAuthenticated);
+    }
+    has_tokens.then_some(McpAuthState::Authenticated)
 }
 
 /// One server, snapshotted whole for the UI — pure data, injected at the
@@ -231,6 +254,41 @@ mod tests {
         assert_eq!(
             snapshot(McpServerStatus::Untrusted, 0).status_line(),
             "⚠ untrusted"
+        );
+    }
+
+    #[test]
+    fn auth_rows_show_only_when_auth_matters() {
+        use McpServerStatus as S;
+        // A stdio server has no auth story — never a row.
+        assert_eq!(auth_state(false, false, &S::Connected), None);
+        assert_eq!(auth_state(false, true, &S::Connected), None);
+        // A remote server holding no tokens that never demanded auth shows
+        // no row either — `✘ not authenticated` beside `✔ connected` reads
+        // as a problem where there is none (the deepwiki case).
+        assert_eq!(auth_state(true, false, &S::Connected), None);
+        assert_eq!(auth_state(true, false, &S::Pending), None);
+        assert_eq!(auth_state(true, false, &S::Disabled), None);
+        assert_eq!(auth_state(true, false, &S::Failed("x".to_string())), None);
+        assert_eq!(auth_state(true, false, &S::Untrusted), None);
+        // Stored tokens: the row reports the grant.
+        assert_eq!(
+            auth_state(true, true, &S::Connected),
+            Some(McpAuthState::Authenticated)
+        );
+        assert_eq!(
+            auth_state(true, true, &S::Failed("x".to_string())),
+            Some(McpAuthState::Authenticated)
+        );
+        // A server demanding auth is `✘` even over stored tokens — whatever
+        // the store holds, the server just refused it.
+        assert_eq!(
+            auth_state(true, false, &S::NeedsAuth),
+            Some(McpAuthState::NotAuthenticated)
+        );
+        assert_eq!(
+            auth_state(true, true, &S::NeedsAuth),
+            Some(McpAuthState::NotAuthenticated)
         );
     }
 
