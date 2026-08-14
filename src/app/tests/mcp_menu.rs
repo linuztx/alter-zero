@@ -9,7 +9,7 @@ use crate::mcp::{
 fn snapshot(name: &str, status: McpServerStatus, tools: usize) -> McpServerSnapshot {
     // The auth row derives exactly as the manager derives it: only a server
     // that demands auth (or holds tokens) shows one.
-    let auth = crate::mcp::auth_state(true, false, &status);
+    let auth = crate::mcp::auth_state(true, false, false, &status);
     McpServerSnapshot {
         name: name.to_string(),
         scope: McpScope::User,
@@ -109,13 +109,30 @@ fn server_actions_follow_the_state() {
         server_actions(&snapshot("l", McpServerStatus::NeedsAuth, 0)),
         [A::Authenticate, A::Disable]
     );
+    // A grant the server is refusing must be clearable from the very page
+    // that reports it — it used to be removable only by editing the store.
+    let mut expired = snapshot("l", McpServerStatus::NeedsAuth, 0);
+    expired.auth = Some(McpAuthState::Expired);
+    assert_eq!(
+        server_actions(&expired),
+        [A::Authenticate, A::ClearAuth, A::Disable]
+    );
     assert_eq!(
         server_actions(&snapshot("g", McpServerStatus::Disabled, 0)),
         [A::Enable]
     );
+    // A remote server that failed with no stored grant can now be logged
+    // into from here; before, authenticating it was simply unreachable.
     assert_eq!(
         server_actions(&snapshot("f", McpServerStatus::Failed("x".to_string()), 0)),
-        [A::Reconnect, A::Disable]
+        [A::Authenticate, A::Reconnect, A::Disable]
+    );
+    // A written-in header affords neither login nor clear.
+    let mut header = snapshot("h", McpServerStatus::Connected, 1);
+    header.auth = Some(McpAuthState::Header);
+    assert_eq!(
+        server_actions(&header),
+        [A::ViewTools, A::Reconnect, A::Disable]
     );
 }
 

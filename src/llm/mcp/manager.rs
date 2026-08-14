@@ -73,6 +73,37 @@ pub const DEFAULT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// The default per-call budget (`ALTER_ZERO_MCP_TOOL_TIMEOUT_MS` overrides).
 pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// The cancel-poll cadence every blocking wait shares with the transports.
+const POLL: Duration = Duration::from_millis(20);
+
+/// Run blocking work on a worker thread while polling `cancel` on the 20 ms
+/// cadence — the transport's own contract (`docs/mcp.md`), which anything
+/// that blocks a turn's thread must obey. `None` means the turn was
+/// cancelled (or the worker died); the thread is abandoned rather than
+/// joined, exactly as a cancelled transport wait abandons its POST.
+///
+/// A token refresh is a blocking HTTP call, so running it inline on the tool
+/// thread made Esc dead for the token endpoint's whole timeout.
+fn off_thread<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+    cancel: &CancelToken,
+) -> Option<T> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    loop {
+        if cancel.is_cancelled() {
+            return None;
+        }
+        match rx.recv_timeout(POLL) {
+            Ok(value) => return Some(value),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+        }
+    }
+}
+
 struct ServerState {
     entry: McpServerEntry,
     status: McpServerStatus,
@@ -84,6 +115,11 @@ struct ServerState {
     /// wire tool name → the server's raw tool name.
     wire_map: BTreeMap<String, String>,
     has_tokens: bool,
+    /// The last 401's `WWW-Authenticate` challenge. Discovery runs blind
+    /// without it: the challenge names the `resource_metadata` URL a server
+    /// publishes off the well-known path, and the `scope` the resource
+    /// actually wants (`docs/mcp.md`).
+    challenge: Option<String>,
     /// Bumped on disable/reconnect so a stale connect thread's result is
     /// dropped instead of resurrecting an old state.
     generation: u64,
@@ -148,6 +184,7 @@ impl McpManager {
                     transport: None,
                     wire_map: BTreeMap::new(),
                     has_tokens,
+                    challenge: None,
                     generation: 0,
                     entry,
                 }
@@ -308,7 +345,12 @@ impl McpManager {
                     server.transport = Some(Arc::new(Mutex::new(connection.transport)));
                     server.status = McpServerStatus::Connected;
                 }
-                Err(ConnectError::NeedsAuth(_)) => {
+                Err(ConnectError::NeedsAuth(challenge)) => {
+                    // Keep what the server told us: the flow needs it to
+                    // find the resource metadata and the wanted scope.
+                    if challenge.is_some() {
+                        server.challenge = challenge;
+                    }
                     server.status = match transient_refresh {
                         // The grant survives a blip: a Failed row whose
                         // Reconnect retries, never a needs-auth that walks
@@ -461,7 +503,7 @@ impl McpManager {
     ///
     /// [`submit_auth_paste`]: McpManager::submit_auth_paste
     pub fn authenticate(&self, name: &str) {
-        let (url, auth_path) = {
+        let (url, challenge, auth_path) = {
             let inner = self.lock();
             let Some(server) = inner.servers.iter().find(|s| s.entry.name == name) else {
                 return;
@@ -474,7 +516,7 @@ impl McpManager {
                 });
                 return;
             };
-            (url, inner.auth_path.clone())
+            (url, server.challenge.clone(), inner.auth_path.clone())
         };
         let (paste_tx, paste_rx) = mpsc::channel();
         let cancel = CancelToken::new();
@@ -508,7 +550,7 @@ impl McpManager {
             };
             let result = oauth::run_auth_flow(
                 &url,
-                None,
+                challenge.as_deref(),
                 auth_path.as_deref(),
                 &paste_rx,
                 &progress,
@@ -572,6 +614,7 @@ impl McpManager {
                 status: server.status.clone(),
                 auth: crate::mcp::auth_state(
                     server.entry.config.is_remote(),
+                    server.entry.config.has_auth_header(),
                     server.has_tokens,
                     &server.status,
                 ),
@@ -695,19 +738,36 @@ impl McpManager {
         // Proactive: a grant inside its expiry skew refreshes *before* the
         // call, so the token never goes over the wire dead — the 401 arm
         // below stays as the backstop for revocation, clock skew, and grants
-        // with no known expiry (`docs/mcp.md`).
-        let stale_refresh = server_url
-            .as_deref()
-            .and_then(|url| oauth::refresh_if_stale(auth_path.as_deref(), url));
+        // with no known expiry (`docs/mcp.md`). Off-thread with the turn's
+        // cancel polled, because a wedged token endpoint must not eat Esc.
+        let stale_refresh = match &server_url {
+            Some(url) => {
+                let (path, url) = (auth_path.clone(), url.clone());
+                match off_thread(
+                    move || oauth::refresh_if_stale(path.as_deref(), &url),
+                    cancel,
+                ) {
+                    Some(refreshed) => refreshed,
+                    None => return ToolOutcome::error("tool call cancelled"),
+                }
+            }
+            None => None,
+        };
         let mut result = request(stale_refresh);
         // Reactive: a 401 mid-session gets one forced refresh and one retry
         // before anyone is told to re-authenticate — the reference client's
         // rule, and the difference between a session that renews itself and
         // one that asks the user again every hour.
         if matches!(result, Err(TransportError::NeedsAuth(_)))
-            && let Some(url) = server_url.as_deref()
+            && let Some(url) = server_url.clone()
         {
-            match oauth::refresh_grant(auth_path.as_deref(), url) {
+            let path = auth_path.clone();
+            let refreshed =
+                match off_thread(move || oauth::refresh_grant(path.as_deref(), &url), cancel) {
+                    Some(refreshed) => refreshed,
+                    None => return ToolOutcome::error("tool call cancelled"),
+                };
+            match refreshed {
                 Ok(tokens) => result = request(Some(tokens.access_token)),
                 Err(oauth::RefreshFailure::Transient(detail)) => {
                     // A blip is not an auth state: keep the grant AND the
@@ -738,7 +798,7 @@ impl McpManager {
                 }
                 out
             }
-            Err(TransportError::NeedsAuth(_)) => {
+            Err(TransportError::NeedsAuth(challenge)) => {
                 {
                     let mut inner = self.lock();
                     if let Some(server) = inner
@@ -746,6 +806,9 @@ impl McpManager {
                         .iter_mut()
                         .find(|s| s.entry.name == server_name)
                     {
+                        if challenge.is_some() {
+                            server.challenge = challenge;
+                        }
                         server.status = McpServerStatus::NeedsAuth;
                         server.generation += 1;
                         server.transport = None;
@@ -1012,6 +1075,9 @@ mod tests {
         InvalidGrant,
         /// A transient outage: 503.
         Outage,
+        /// The token endpoint accepts the connection and never answers —
+        /// what a wedged authorization server looks like from here.
+        Hang,
     }
 
     struct OauthFixture {
@@ -1093,6 +1159,7 @@ mod tests {
                         TokenMode::Outage => {
                             respond(&mut stream, "503 Service Unavailable", "", "down");
                         }
+                        TokenMode::Hang => std::thread::sleep(Duration::from_secs(30)),
                     }
                     continue;
                 }
@@ -1312,6 +1379,49 @@ mod tests {
             snapshot[0].auth,
             Some(crate::mcp::McpAuthState::Authenticated)
         );
+        manager.shutdown();
+    }
+
+    #[test]
+    fn esc_reaps_a_call_whose_token_refresh_is_wedged() {
+        // The transport contract (`docs/mcp.md`): every blocking wait polls
+        // the turn's CancelToken on the 20 ms cadence, or Esc silently stops
+        // working for as long as the peer takes. A refresh is a blocking
+        // HTTP call on the tool thread, so it has to obey the same rule —
+        // run inline, a wedged token endpoint ate Esc for the whole 20 s
+        // HTTP timeout.
+        let dir = tempfile::tempdir().unwrap();
+        let auth_path = dir.path().join("mcp-auth.json");
+        let fixture = spawn_oauth_fixture(TokenMode::Hang);
+        seed_tokens(&auth_path, &fixture, Some(u64::MAX / 4));
+        let manager = oauth_manager(&fixture, &auth_path);
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        // The grant goes stale, so the next call refreshes first — into a
+        // token endpoint that never answers.
+        seed_tokens(&auth_path, &fixture, Some(1));
+        let cancel = CancelToken::new();
+        let reaper = {
+            let cancel = cancel.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(200));
+                cancel.cancel();
+            })
+        };
+        let started = std::time::Instant::now();
+        let call = ToolCallRequest {
+            id: "c1".to_string(),
+            name: "mcp__fix__hello".to_string(),
+            arguments: "{}".to_string(),
+        };
+        let outcome = manager.call_tool(&call, &cancel);
+        let elapsed = started.elapsed();
+        reaper.join().unwrap();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "Esc must reap the call while the refresh hangs (took {elapsed:?})"
+        );
+        assert!(!outcome.ok, "a cancelled call is not a success");
         manager.shutdown();
     }
 

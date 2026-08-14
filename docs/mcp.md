@@ -147,14 +147,39 @@ in **`src/llm/mcp/`**.
   `McpServerStatus` (`Connected`/`Pending`/`NeedsAuth`/`Failed(reason)`/
   `Disabled`), the status glyph/label mapping (`✔ connected · 3 tools`,
   `△ needs authentication`, `◯ disabled`, `✘ failed`), the **`auth_state`
-  rule** — the detail page's `Auth:` row shows only when auth *matters*: a
-  stdio server has no auth story, and a remote server holding no tokens
-  that never demanded auth shows no row either (`✘ not authenticated`
-  beside `✔ connected` reads as a problem where there is none — the
-  deepwiki case); stored tokens show `✔ authenticated`, a server in
-  `NeedsAuth` shows `✘` even over stored tokens, because the server just
-  refused whatever the store holds — and the parameter listing a tool
-  detail page renders from an `input_schema`.
+  rule** (below), and the parameter listing a tool detail page renders from
+  an `input_schema`.
+
+### The `Auth:` row — five truths, not two
+
+Two states made "no stored token" cover both *the server never asked* and
+*the login is gone*, so DeepWiki — which has no authentication at all —
+reported `✘ not authenticated` beside `✔ connected`. `mcp::auth_state`
+derives five, in this order:
+
+| State | Row | When |
+|---|---|---|
+| `Header` | `✔ authenticated (config header)` | the config carries its own `Authorization` header |
+| `Expired` | `✘ expired` | tokens stored **and** the server refusing them |
+| `Authenticated` | `✔ authenticated` | tokens stored |
+| `NotRequired` | `◯ not needed` | connected while presenting nothing |
+| `NotAuthenticated` | `✘ not authenticated` | remote, no tokens, not serving |
+
+A configured header outranks a stored grant because **the transport does
+the same** — it sends the header and never the bearer — so reporting the
+grant would offer to re-run and clear a login the server never sees. Only
+a stdio server gets no row: there is no remote server to authenticate
+*to*. A public server's row is **shown, not hidden**: "this one needs no
+login" is the answer to the question the row exists to ask, and silence
+just leaves the user wondering. Red is reserved for the two states the
+user can act on; `not needed` is dim.
+
+The actions follow the same derivation: a stored grant (live or expired)
+affords `Re-authenticate` + `Clear authentication` — so a dead grant is
+removable from the very page that reports it, where it used to be
+editable only by hand — a `NotAuthenticated` server affords `Authenticate`
+(reachable now from the connected and failed pages too, not only from
+needs-auth), and a header or a public server affords neither.
 
 `src/llm/mcp/` (boundary, verified hermetically against in-process fixtures —
 a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
@@ -177,7 +202,16 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     sessions. A 4xx whose body parses as a JSON-RPC error surfaces as that
     error (a modern server answers version/header problems as `400` + a
     modern error body), else as the refusal the SSE fallback keys on;
-    notifications POST and ignore the body.
+    notifications POST and ignore the body. A **404 to a request that
+    carried a session id** means that session is gone (a restart, an idle
+    timeout): the spec's answer is a fresh `initialize` at the settled
+    revision, a repeated `notifications/initialized`, and a replay of the
+    request — so a server recycling its sessions costs a round trip instead
+    of the whole connection. The re-handshake's own failure is returned
+    intact, because masking it would hide a 401 underneath, which is the
+    very signal the token refresh acts on. Gated on having *sent* a session
+    id, since a sessionless modern server answers an unknown **method**
+    with 404.
   - **legacy HTTP+SSE**: GET opens the event stream on its own thread, the
     first `endpoint` event names the POST target (resolved against the
     base URL), requests POST there and answers arrive on the stream.
@@ -219,6 +253,23 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   server URL (0600, best-effort), and ride every HTTP request as
   `Authorization: Bearer …`. "Clear authentication" deletes the entry.
 
+  Two things the flow must get right or the grant is born unrenewable:
+  **`offline_access`** is what actually buys a refresh token, and SEP-2207
+  deliberately keeps it out of the *protected resource's* metadata
+  ("refresh tokens are not a resource requirement"), so it can only come
+  from the authorization server's own catalogue — Vercel is exactly this
+  shape (resource `openid`, AS `offline_access`), and without the union its
+  grant has nothing to renew. And OIDC only *releases* that refresh token
+  when consent is actually shown, so the authorize URL carries
+  **`prompt=consent`** whenever the scope asks for it; a silent
+  re-authorization returns an access token alone, the same dead end as
+  never asking. The scope is the resource's (or, ahead of it, the **401
+  challenge's own `scope`**, which the spec makes authoritative for the
+  operation refused) plus `offline_access` when the AS advertises it —
+  **never** the AS's whole catalogue, which strict providers answer with
+  `invalid_scope`, and never `offline_access` alone, which is not a
+  resource request.
+
   **Token refresh — why a session never asks twice** (`refresh_grant` and
   friends; the reference client's own bug class, fixed here the way its
   v2.1.206/211 fixed it):
@@ -248,6 +299,24 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
     PKCE (authorization-code only). The store is re-read before every
     refresh, so another process's newer grant is used instead of burning a
     rotated token.
+  - **The store is one file for every server**, so its read-modify-write is
+    serialized behind a process-wide lock and committed **write-then-rename**.
+    Without the lock, two servers renewing at once (two subagents, or a tool
+    call while the loop reconnects another) interleave read/read/write/write
+    and drop one of the two rotated refresh tokens; the loser then presents
+    an already-used token, which a compliant AS treats as a replay and
+    answers by **revoking the whole family** — the browser flow again, for
+    the exact reason the refresh exists. Without the rename, a crash
+    mid-write leaves a truncated file that parses as *no* servers, silently
+    unauthenticating every one of them at once.
+  - Every refresh runs **off the tool thread, polling the turn's
+    `CancelToken` on the 20 ms cadence** — the transports' own contract,
+    which anything blocking a turn's thread must obey. Run inline, a wedged
+    token endpoint ate Esc for the whole 20 s HTTP timeout.
+  - The 401's **`WWW-Authenticate` challenge is kept** on the server state
+    and handed to the flow. Discovery runs blind without it: the challenge
+    names the `resource_metadata` URL a server publishes off the well-known
+    path, and the scope the resource actually wants.
 - `manager` — the session-owned registry (`McpManager`, the
   `Arc<Mutex<…>>` sibling of `BackgroundRegistry`): holds each server's
   config + live state, connects them **concurrently on worker threads at

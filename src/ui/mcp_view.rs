@@ -247,13 +247,16 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
         Span::styled(status, Style::new().fg(status_color(&server.status))),
     ]));
     if let Some(auth) = server.auth {
-        let (text, style) = match auth {
-            McpAuthState::Authenticated => ("✔ authenticated", Style::new().fg(TOOL_OK_COLOR)),
-            McpAuthState::NotAuthenticated => {
-                ("✘ not authenticated", Style::new().fg(MODEL_META_COLOR))
-            }
+        // Green for a settled login, red only for a state the user should
+        // act on, dim for "nothing to do here" (`docs/mcp.md`).
+        let style = if auth.is_problem() {
+            Style::new().fg(TOOL_FAIL_COLOR)
+        } else if auth == McpAuthState::NotRequired {
+            Style::new().fg(MODEL_META_COLOR)
+        } else {
+            Style::new().fg(TOOL_OK_COLOR)
         };
-        lines.push(field_line("Auth:", text, style, width));
+        lines.push(field_line("Auth:", auth.label(), style, width));
     }
     // The protocol revision the handshake settled on — a fact only a server
     // that actually initialized can report.

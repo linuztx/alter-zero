@@ -662,6 +662,139 @@ mod tests {
         assert_eq!(connection.identity.protocol_version, "2025-06-18");
     }
 
+    /// A legacy server whose session dies under us: it mints `s1`, serves
+    /// the handshake and the listing, then 404s any request carrying `s1` —
+    /// a server restart or an idle timeout, from the client's side. The
+    /// spec's answer is a fresh `initialize`, and the request replays.
+    #[test]
+    fn an_expired_session_re_initializes_and_replays_the_request() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            let mut minted = 0u32;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                let mut session = String::new();
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    let lower = header.to_ascii_lowercase();
+                    if let Some(rest) = lower.strip_prefix("content-length:") {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                    if let Some(rest) = lower.strip_prefix("mcp-session-id:") {
+                        session = rest.trim().to_string();
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let parsed = serde_json::from_str::<Value>(&String::from_utf8_lossy(&body))
+                    .unwrap_or_default();
+                let id = parsed.get("id").and_then(Value::as_u64);
+                let method = parsed
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let respond = |stream: &mut std::net::TcpStream,
+                               status: &str,
+                               extra: &str,
+                               body: &str| {
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                };
+                // Only `s1` is dead; the session minted by the re-handshake
+                // works, so a replay must succeed.
+                if session == "s1" {
+                    respond(&mut stream, "404 Not Found", "", "session not found");
+                    continue;
+                }
+                match method.as_str() {
+                    "server/discover" => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": {"code": -32601, "message": "method not found"}
+                        })
+                        .to_string();
+                        respond(&mut stream, "200 OK", "", &body);
+                    }
+                    "initialize" => {
+                        minted += 1;
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "protocolVersion": "2025-11-25",
+                                "capabilities": {"tools": {}},
+                                "serverInfo": {"name": "sessioned", "version": "1"}
+                            }
+                        })
+                        .to_string();
+                        respond(
+                            &mut stream,
+                            "200 OK",
+                            &format!("Mcp-Session-Id: s{minted}\r\n"),
+                            &body,
+                        );
+                    }
+                    "notifications/initialized" => {
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                    "tools/list" => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {"tools": [{"name": "ping",
+                                "inputSchema": {"type": "object", "properties": {}}}]}
+                        })
+                        .to_string();
+                        respond(&mut stream, "200 OK", "", &body);
+                    }
+                    _ => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {"content": [{"type": "text", "text": "survived"}]}
+                        })
+                        .to_string();
+                        respond(&mut stream, "200 OK", "", &body);
+                    }
+                }
+            }
+        });
+        let config = McpServerConfig::Http {
+            url: format!("http://127.0.0.1:{port}/mcp"),
+            headers: Default::default(),
+            sse_fallback: false,
+        };
+        let cancel = CancelToken::new();
+        let mut connection =
+            connect(&config, None, None, Duration::from_secs(10), &cancel).expect("connect");
+        assert_eq!(connection.identity.name, "sessioned");
+        // The call goes out under the now-dead `s1`; without the recovery it
+        // fails outright instead of re-handshaking and replaying.
+        let result = connection
+            .transport
+            .request(
+                "tools/call",
+                crate::mcp::call_params("ping", &serde_json::json!({})),
+                Duration::from_secs(10),
+                &cancel,
+            )
+            .expect("the request survives its session expiring");
+        assert_eq!(crate::mcp::parse_call_result(&result).text, "survived");
+    }
+
     /// A 401 server resolves as NeedsAuth with the challenge captured.
     #[test]
     fn a_401_resolves_as_needs_auth() {

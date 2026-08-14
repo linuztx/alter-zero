@@ -57,36 +57,87 @@ impl McpServerStatus {
 }
 
 /// A server's OAuth standing — the detail page's `Auth:` row. `None` hides
-/// the row (a stdio server has no auth story).
+/// the row entirely, which only a stdio server earns: there is no remote
+/// server to authenticate *to*.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpAuthState {
-    /// Stored OAuth tokens exist for this server.
+    /// A usable OAuth grant is stored for this server.
     Authenticated,
-    /// The server demands OAuth and no working grant is stored.
+    /// The config carries its own `Authorization` header — a written-down
+    /// token, so there is nothing to log into and nothing to clear.
+    Header,
+    /// Connected while presenting no credentials at all: the server never
+    /// challenged us. A public server, not a failed login.
+    NotRequired,
+    /// A grant is stored but the server is refusing it — the honest reading
+    /// of tokens plus a needs-auth status.
+    Expired,
+    /// A remote server with no stored tokens that isn't serving.
     NotAuthenticated,
 }
 
-/// The `Auth:` row a server's state affords — `None` hides it. Auth is only
-/// a fact worth stating when it *matters*: a stdio server has no auth story,
-/// and a remote server holding no tokens that never demanded auth shows no
-/// row either — `✘ not authenticated` beside `✔ connected` reads as a
-/// problem where there is none (the open-server case, e.g. deepwiki). Stored
-/// tokens report the grant; a server in `NeedsAuth` reports `✘` even over
-/// stored tokens, because whatever the store holds, the server just refused
-/// it.
+impl McpAuthState {
+    /// The `Auth:` row's text. Only a state that wants the user to *do*
+    /// something wears the red `✘`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Authenticated => "✔ authenticated",
+            Self::Header => "✔ authenticated (config header)",
+            // Shown, never hidden: "this server needs no login" is the
+            // answer to the question the row exists to ask, and silence
+            // leaves the user wondering (`docs/mcp.md`).
+            Self::NotRequired => "◯ not needed",
+            Self::Expired => "✘ expired",
+            Self::NotAuthenticated => "✘ not authenticated",
+        }
+    }
+
+    /// Is this a state the user should act on (red), rather than a settled
+    /// fact (green) or a non-issue (dim)?
+    #[must_use]
+    pub const fn is_problem(self) -> bool {
+        matches!(self, Self::Expired | Self::NotAuthenticated)
+    }
+
+    /// Is an OAuth grant actually stored — the only thing "re-authenticate"
+    /// and "clear authentication" have to work with?
+    #[must_use]
+    pub const fn has_grant(self) -> bool {
+        matches!(self, Self::Authenticated | Self::Expired)
+    }
+}
+
+/// The `Auth:` row a server's state affords — `None` only for stdio.
+///
+/// The rules, in order: a stdio child has no auth story at all; a configured
+/// `Authorization` header outranks a stored grant, because the transport
+/// does the same (it sends the header and never the bearer, so reporting the
+/// grant would offer to re-run and clear a login the server never sees);
+/// tokens the server is refusing read `Expired` rather than a login that
+/// plainly is not working; tokens otherwise read `Authenticated`; and a
+/// server that *connected* presenting nothing was never challenged, so it
+/// reads `NotRequired` instead of `✘ not authenticated` beside `✔ connected`
+/// — the reported lie about a connection with nothing wrong with it.
 #[must_use]
 pub fn auth_state(
     is_remote: bool,
+    has_header: bool,
     has_tokens: bool,
     status: &McpServerStatus,
 ) -> Option<McpAuthState> {
     if !is_remote {
         return None;
     }
-    if matches!(status, McpServerStatus::NeedsAuth) {
-        return Some(McpAuthState::NotAuthenticated);
+    if has_header {
+        return Some(McpAuthState::Header);
     }
-    has_tokens.then_some(McpAuthState::Authenticated)
+    Some(match (has_tokens, status) {
+        (true, McpServerStatus::NeedsAuth) => McpAuthState::Expired,
+        (true, _) => McpAuthState::Authenticated,
+        (false, McpServerStatus::Connected) => McpAuthState::NotRequired,
+        (false, _) => McpAuthState::NotAuthenticated,
+    })
 }
 
 /// One server, snapshotted whole for the UI — pure data, injected at the
@@ -258,37 +309,54 @@ mod tests {
     }
 
     #[test]
-    fn auth_rows_show_only_when_auth_matters() {
+    fn auth_rows_tell_the_five_truths_apart() {
         use McpServerStatus as S;
-        // A stdio server has no auth story — never a row.
-        assert_eq!(auth_state(false, false, &S::Connected), None);
-        assert_eq!(auth_state(false, true, &S::Connected), None);
-        // A remote server holding no tokens that never demanded auth shows
-        // no row either — `✘ not authenticated` beside `✔ connected` reads
-        // as a problem where there is none (the deepwiki case).
-        assert_eq!(auth_state(true, false, &S::Connected), None);
-        assert_eq!(auth_state(true, false, &S::Pending), None);
-        assert_eq!(auth_state(true, false, &S::Disabled), None);
-        assert_eq!(auth_state(true, false, &S::Failed("x".to_string())), None);
-        assert_eq!(auth_state(true, false, &S::Untrusted), None);
+        // A stdio server has no auth story at all — there is no server to
+        // authenticate *to*, so no row.
+        assert_eq!(auth_state(false, false, false, &S::Connected), None);
+        assert_eq!(auth_state(false, false, true, &S::Connected), None);
+        // A remote server that connected presenting nothing was never
+        // challenged: say so plainly. `✘ not authenticated` beside
+        // `✔ connected` reads as a problem where there is none (deepwiki).
+        assert_eq!(
+            auth_state(true, false, false, &S::Connected),
+            Some(McpAuthState::NotRequired)
+        );
         // Stored tokens: the row reports the grant.
         assert_eq!(
-            auth_state(true, true, &S::Connected),
+            auth_state(true, false, true, &S::Connected),
             Some(McpAuthState::Authenticated)
         );
         assert_eq!(
-            auth_state(true, true, &S::Failed("x".to_string())),
+            auth_state(true, false, true, &S::Failed("x".to_string())),
             Some(McpAuthState::Authenticated)
         );
-        // A server demanding auth is `✘` even over stored tokens — whatever
-        // the store holds, the server just refused it.
+        // Tokens *plus* a server refusing them is the honest reading of a
+        // dead grant — not "authenticated", and not "never logged in".
         assert_eq!(
-            auth_state(true, false, &S::NeedsAuth),
+            auth_state(true, false, true, &S::NeedsAuth),
+            Some(McpAuthState::Expired)
+        );
+        // No tokens and not connected: nothing to show but the truth.
+        assert_eq!(
+            auth_state(true, false, false, &S::NeedsAuth),
             Some(McpAuthState::NotAuthenticated)
         );
         assert_eq!(
-            auth_state(true, true, &S::NeedsAuth),
+            auth_state(true, false, false, &S::Pending),
             Some(McpAuthState::NotAuthenticated)
+        );
+        // A written-down `Authorization` header outranks everything: the
+        // transport sends it and never the bearer, so reporting a stored
+        // grant would offer to re-run and clear a login the server never
+        // sees.
+        assert_eq!(
+            auth_state(true, true, false, &S::Connected),
+            Some(McpAuthState::Header)
+        );
+        assert_eq!(
+            auth_state(true, true, true, &S::NeedsAuth),
+            Some(McpAuthState::Header)
         );
     }
 

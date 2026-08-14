@@ -64,15 +64,35 @@ impl McpServerAction {
 #[must_use]
 pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
     use McpServerAction as A;
+    // What the auth row affords: a stored grant can be re-run and cleared, a
+    // server that never issued one can only be logged into, and a written-in
+    // header or a public server affords neither — there is nothing stored to
+    // re-run (`docs/mcp.md`).
+    let auth_actions = |out: &mut Vec<A>| match server.auth {
+        Some(McpAuthState::Authenticated | McpAuthState::Expired) => {
+            out.push(A::Reauthenticate);
+            out.push(A::ClearAuth);
+        }
+        Some(McpAuthState::NotAuthenticated) => out.push(A::Authenticate),
+        Some(McpAuthState::Header | McpAuthState::NotRequired) | None => {}
+    };
     match &server.status {
         McpServerStatus::Disabled => vec![A::Enable],
-        McpServerStatus::NeedsAuth => vec![A::Authenticate, A::Disable],
-        McpServerStatus::Failed(_) => {
+        McpServerStatus::NeedsAuth => {
             let mut out = Vec::new();
-            if server.auth == Some(McpAuthState::Authenticated) {
-                out.push(A::Reauthenticate);
+            out.push(A::Authenticate);
+            // A grant the server is refusing must be removable from the page
+            // that reports it — it used to be unclearable from here, so a
+            // dead login could only be deleted by editing the store by hand.
+            if server.auth.is_some_and(McpAuthState::has_grant) {
                 out.push(A::ClearAuth);
             }
+            out.push(A::Disable);
+            out
+        }
+        McpServerStatus::Failed(_) => {
+            let mut out = Vec::new();
+            auth_actions(&mut out);
             out.push(A::Reconnect);
             out.push(A::Disable);
             out
@@ -82,10 +102,7 @@ pub fn server_actions(server: &McpServerSnapshot) -> Vec<McpServerAction> {
             if !server.tools.is_empty() {
                 out.push(A::ViewTools);
             }
-            if server.auth == Some(McpAuthState::Authenticated) {
-                out.push(A::Reauthenticate);
-                out.push(A::ClearAuth);
-            }
+            auth_actions(&mut out);
             out.push(A::Reconnect);
             out.push(A::Disable);
             out

@@ -15,7 +15,7 @@ fn key(code: KeyCode) -> KeyEvent {
 fn snapshot(name: &str, scope: McpScope, status: McpServerStatus) -> McpServerSnapshot {
     // Auth derives the way the manager derives it (`crate::mcp::auth_state`):
     // a row only when the server demands auth or tokens are stored.
-    let auth = crate::mcp::auth_state(true, false, &status);
+    let auth = crate::mcp::auth_state(true, false, false, &status);
     McpServerSnapshot {
         name: name.to_string(),
         scope,
@@ -110,10 +110,11 @@ fn the_server_detail_shows_facts_and_actions() {
 }
 
 #[test]
-fn the_detail_shows_the_negotiated_protocol_and_hides_an_irrelevant_auth_row() {
-    // deepwiki: connected, no auth story — the detail shows the settled
-    // protocol revision and NO `Auth:` row (`✘ not authenticated` beside
-    // `✔ connected` reads as a problem where there is none).
+fn the_detail_shows_the_negotiated_protocol_and_a_truthful_auth_row() {
+    // deepwiki: connected while presenting nothing, so it was never
+    // challenged. The row is *shown* and says so — `✘ not authenticated`
+    // beside `✔ connected` reported a problem where there is none, and
+    // hiding the row entirely just leaves the question unanswered.
     let mut app = mcp_app();
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Enter)); // deepwiki detail
@@ -121,7 +122,9 @@ fn the_detail_shows_the_negotiated_protocol_and_hides_an_irrelevant_auth_row() {
     assert!(all.contains("deepwiki MCP Server"));
     assert!(all.contains("Protocol:"), "{all}");
     assert!(all.contains("2026-07-28"));
-    assert!(!all.contains("Auth:"), "{all}");
+    assert!(all.contains("Auth:"), "{all}");
+    assert!(all.contains("◯ not needed"), "{all}");
+    assert!(!all.contains("not authenticated"), "{all}");
     // An authenticated server still shows its ✔ row.
     let mut authed = snapshot("vercel", McpScope::User, McpServerStatus::Connected);
     authed.auth = Some(McpAuthState::Authenticated);
@@ -140,6 +143,35 @@ fn the_detail_shows_the_negotiated_protocol_and_hides_an_irrelevant_auth_row() {
     app.on_key(key(KeyCode::Enter));
     let all = texts(&app).join("\n");
     assert!(!all.contains("Protocol:"));
+}
+
+#[test]
+fn the_auth_row_distinguishes_a_header_a_dead_grant_and_a_public_server() {
+    let row = |auth: Option<McpAuthState>| {
+        let mut server = snapshot("s", McpScope::User, McpServerStatus::Connected);
+        server.auth = auth;
+        let mut app = App::new();
+        app.open_mcp_menu(vec![server]);
+        app.on_key(key(KeyCode::Enter));
+        texts(&app).join("\n")
+    };
+    // A written-down token is a login the user already has — never "not
+    // authenticated", and nothing to re-run or clear.
+    let header = row(Some(McpAuthState::Header));
+    assert!(
+        header.contains("✔ authenticated (config header)"),
+        "{header}"
+    );
+    assert!(!header.contains("Re-authenticate"), "{header}");
+    assert!(!header.contains("Clear authentication"), "{header}");
+    // A public server: shown, dim, and actionless.
+    let public = row(Some(McpAuthState::NotRequired));
+    assert!(public.contains("◯ not needed"), "{public}");
+    assert!(!public.contains("Re-authenticate"), "{public}");
+    // A grant the server refuses reads expired — and stays removable.
+    let expired = row(Some(McpAuthState::Expired));
+    assert!(expired.contains("✘ expired"), "{expired}");
+    assert!(expired.contains("Clear authentication"), "{expired}");
 }
 
 #[test]

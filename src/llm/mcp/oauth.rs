@@ -29,6 +29,15 @@ const POLL: Duration = Duration::from_millis(50);
 /// Discovery/token requests' per-operation deadline.
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
 
+/// Serializes the token store's read-modify-write. The store is **one file
+/// for every server**, so without this two servers renewing at once (two
+/// subagents, or a tool call while the loop reconnects another) interleave
+/// read/read/write/write and drop one of the two rotated refresh tokens.
+/// The loser then presents an already-used token, which a spec-compliant
+/// authorization server treats as a replay and answers by revoking the whole
+/// family — the browser flow again, for the exact reason the refresh exists.
+static STORE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Refresh a token this long before it actually expires — five minutes, the
 /// production default the reference clients converged on (60 s is the floor;
 /// clock skew plus in-flight latency eat a short window).
@@ -134,17 +143,39 @@ pub fn load_tokens(path: Option<&Path>, server_url: &str) -> Option<StoredTokens
 /// best-effort like every other config write.
 pub fn save_tokens(path: Option<&Path>, server_url: &str, tokens: Option<&StoredTokens>) {
     let Some(path) = path else { return };
+    let _guard = STORE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let existing = std::fs::read_to_string(path).unwrap_or_default();
     let updated = record_tokens(&existing, server_url, tokens);
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    // Write-then-rename, so a crash mid-write can't leave a truncated store:
+    // a half-written file parses as *no* servers, silently unauthenticating
+    // every one of them at once.
+    let temp = path.with_extension("json.tmp");
+    if std::fs::write(&temp, &updated).is_ok() {
+        set_owner_only(&temp);
+        if std::fs::rename(&temp, path).is_ok() {
+            return;
+        }
+        let _ = std::fs::remove_file(&temp);
+    }
     let _ = std::fs::write(path, updated);
+    set_owner_only(path);
+}
+
+/// `0600` — the store holds refresh tokens, which the spec requires be kept
+/// confidential in storage.
+fn set_owner_only(path: &Path) {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
     }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 /// Is this grant still fresh (with the refresh skew)? `now` is Unix seconds.
@@ -325,11 +356,23 @@ fn unix_now() -> u64 {
 /// absent one keeps the old, never overwriting a live token with nothing.
 fn tokens_from_response(response: &Value, prior: &StoredTokens) -> Option<StoredTokens> {
     let access = response.get("access_token").and_then(Value::as_str)?;
-    // `expires_in` is a number per RFC 6749 §5.1, but real ASes send strings
-    // too — absent either way means an unknown lifetime (reactive-only).
-    let expires_in = response.get("expires_in").and_then(|v| {
-        v.as_u64()
-            .or_else(|| v.as_str().and_then(|s| s.trim().parse().ok()))
+    // `expires_in` is a number per RFC 6749 §5.1, but real ASes send floats
+    // and strings too. Absent either way means an unknown lifetime, which
+    // stays `None` rather than a fabricated hour: with rotation mandatory
+    // for public clients, guessing short refreshes a long-lived token ~24×
+    // a day, and every rotation is another chance to lose the grant. The
+    // 401 path is the backstop for a lifetime nobody declared.
+    let expires_in = response.get("expires_in").and_then(|v| match v {
+        Value::Number(n) => n
+            .as_u64()
+            .or_else(|| n.as_f64().filter(|f| *f >= 0.0).map(|f| f as u64)),
+        Value::String(s) => s
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .filter(|f| *f >= 0.0)
+            .map(|f| f as u64),
+        _ => None,
     });
     Some(StoredTokens {
         access_token: access.to_string(),
@@ -404,18 +447,38 @@ pub fn form_encode(pairs: &[(String, String)]) -> String {
         .join("&")
 }
 
+/// One `key="value"` parameter out of a 401's `WWW-Authenticate` challenge.
+#[must_use]
+pub fn challenge_param(challenge: &str, key: &str) -> Option<String> {
+    let lower = challenge.to_ascii_lowercase();
+    let at = lower.find(&key.to_ascii_lowercase())?;
+    let rest = &challenge[at + key.len()..];
+    let rest = rest.trim_start().strip_prefix('=')?.trim_start();
+    // A quoted value may contain spaces (a scope list is exactly that), so
+    // only an unquoted one ends at whitespace.
+    let (rest, terminators): (&str, &[char]) = match rest.strip_prefix('"') {
+        Some(rest) => (rest, &['"']),
+        None => (rest, &['"', ',', ' ']),
+    };
+    let end = rest.find(terminators).unwrap_or(rest.len());
+    let value = rest[..end].trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
 /// The `resource_metadata` URL a 401's `WWW-Authenticate` challenge names
 /// (RFC 9728's discovery seed), if any.
 #[must_use]
 pub fn challenge_resource_metadata(challenge: &str) -> Option<String> {
-    let lower = challenge.to_ascii_lowercase();
-    let at = lower.find("resource_metadata")?;
-    let rest = &challenge[at + "resource_metadata".len()..];
-    let rest = rest.trim_start().strip_prefix('=')?.trim_start();
-    let rest = rest.strip_prefix('"').unwrap_or(rest);
-    let end = rest.find(['"', ',', ' ']).unwrap_or(rest.len());
-    let url = rest[..end].trim();
-    (!url.is_empty()).then(|| url.to_string())
+    challenge_param(challenge, "resource_metadata")
+}
+
+/// The `scope` a 401 challenge asks for (RFC 6750 §3). The spec makes this
+/// **authoritative** for the operation that was refused — ahead of the
+/// resource's own `scopes_supported` — so a server that wants more than its
+/// metadata advertises gets what it actually asked for.
+#[must_use]
+pub fn challenge_scope(challenge: &str) -> Option<String> {
+    challenge_param(challenge, "scope")
 }
 
 /// The well-known URL candidates for a resource/AS `base` — path-aware first
@@ -468,6 +531,12 @@ pub fn build_authorize_url(
     ];
     if let Some(scope) = scope.filter(|s| !s.trim().is_empty()) {
         params.push(("scope".to_string(), scope.to_string()));
+        // OpenID Connect only releases a refresh token for `offline_access`
+        // when consent is actually shown; a silent re-authorization returns
+        // an access token alone — the same dead end as never asking.
+        if scope.split_whitespace().any(|s| s == OFFLINE_ACCESS) {
+            params.push(("prompt".to_string(), "consent".to_string()));
+        }
     }
     let query = form_encode(&params);
     let sep = if authorization_endpoint.contains('?') {
@@ -526,27 +595,33 @@ pub fn validate_issuer(
     }
 }
 
-/// Fold `offline_access` into the requested scopes when (and only when) the
-/// AS metadata offers it — SEP-2207's MAY, and the difference between a
-/// session that renews itself and one that asks the user again in an hour.
-/// Never added blind: an AS that doesn't know the scope may reject the whole
-/// authorization over it.
+/// The OIDC scope that actually buys a refresh token.
+const OFFLINE_ACCESS: &str = "offline_access";
+
+/// The scope to request, given the resource's own scopes (`base`) and the
+/// authorization server's catalogue — SEP-2207.
+///
+/// `offline_access` is what actually buys a **refresh token**, and the spec
+/// deliberately keeps it out of the protected resource's metadata ("refresh
+/// tokens are not a resource requirement"), so it can only ever come from
+/// the authorization server's `scopes_supported`. Without the union a server
+/// like Vercel (resource scope `openid`, AS catalogue including
+/// `offline_access`) issues an access token with **nothing to renew it**,
+/// and the session dies at expiry with a browser round as the only cure.
+///
+/// Three guards: never ask for a scope the server doesn't advertise (strict
+/// providers answer `invalid_scope` and the whole flow fails), never
+/// duplicate it, and never send it *alone* — a bare `offline_access` request
+/// is not a resource request.
 #[must_use]
-pub fn with_offline_access(scopes: Option<String>, as_supports: bool) -> Option<String> {
-    if !as_supports {
-        return scopes;
+pub fn with_offline_access(base: Option<&str>, as_supported: &[String]) -> Option<String> {
+    let base = base.map(str::trim).filter(|scope| !scope.is_empty())?;
+    let already = base.split_whitespace().any(|s| s == OFFLINE_ACCESS);
+    let offered = as_supported.iter().any(|s| s == OFFLINE_ACCESS);
+    if already || !offered {
+        return Some(base.to_string());
     }
-    match scopes {
-        Some(scopes)
-            if scopes
-                .split_whitespace()
-                .any(|scope| scope == "offline_access") =>
-        {
-            Some(scopes)
-        }
-        Some(scopes) => Some(format!("{scopes} offline_access")),
-        None => Some("offline_access".to_string()),
-    }
+    Some(format!("{base} {OFFLINE_ACCESS}"))
 }
 
 /// Parse `code` and `state` out of a pasted redirect URL (or a bare
@@ -696,6 +771,10 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
             break;
         }
     }
+    // The challenge's own `scope` outranks the resource's metadata: the spec
+    // makes it authoritative for the operation that was refused, so a server
+    // wanting more than it advertises gets what it actually asked for.
+    let challenged_scopes = challenge.and_then(challenge_scope);
     let (auth_server, resource_scopes) = match &resource_meta {
         Some(meta) => (
             meta.get("authorization_servers")
@@ -742,17 +821,16 @@ pub fn discover(server_url: &str, challenge: Option<&str>) -> Result<AuthServerM
                             .collect()
                     })
                     .unwrap_or_default();
-                let scopes = resource_scopes
-                    .clone()
-                    .or_else(|| Some(as_scopes.join(" ")).filter(|s| !s.is_empty()));
-                // SEP-2207: ask for a refresh-capable grant when the AS
-                // offers one — this is what lets the session renew itself
-                // instead of asking the user again when the access token
-                // expires.
-                let scopes = with_offline_access(
-                    scopes,
-                    as_scopes.iter().any(|scope| scope == "offline_access"),
-                );
+                // SEP-2207: the *resource's* scopes, plus `offline_access`
+                // when this authorization server advertises it — the only
+                // way a refresh token is ever issued, and the reason an
+                // authenticated server stops needing the browser every hour.
+                // Deliberately never the AS's whole catalogue as a fallback:
+                // asking for scopes the resource never wanted is what strict
+                // providers answer with `invalid_scope`, failing the flow
+                // outright.
+                let base = challenged_scopes.as_deref().or(resource_scopes.as_deref());
+                let scopes = with_offline_access(base, &as_scopes);
                 return Ok(AuthServerMeta {
                     authorization_endpoint,
                     token_endpoint,
@@ -1125,6 +1203,29 @@ mod tests {
     }
 
     #[test]
+    fn a_challenge_yields_its_metadata_url_and_its_scope() {
+        // Discovery runs blind without these: the server publishes its
+        // resource metadata off the well-known path and names the scope it
+        // actually wants, and both live in the 401 we used to throw away.
+        let challenge = r#"Bearer error="invalid_token", resource_metadata="https://x.test/.well-known/oauth-protected-resource/mcp", scope="read:wiki write:wiki""#;
+        assert_eq!(
+            challenge_resource_metadata(challenge).as_deref(),
+            Some("https://x.test/.well-known/oauth-protected-resource/mcp")
+        );
+        // A quoted scope list contains spaces — it must not end at the first.
+        assert_eq!(
+            challenge_scope(challenge).as_deref(),
+            Some("read:wiki write:wiki")
+        );
+        // An unquoted value still ends at whitespace or a comma.
+        assert_eq!(
+            challenge_scope("Bearer scope=read, realm=x").as_deref(),
+            Some("read")
+        );
+        assert_eq!(challenge_scope("Bearer realm=\"x\""), None);
+    }
+
+    #[test]
     fn refresh_params_shape_the_grant() {
         let tokens = StoredTokens {
             access_token: "at".to_string(),
@@ -1210,26 +1311,54 @@ mod tests {
 
     #[test]
     fn offline_access_rides_only_an_as_that_offers_it() {
-        // SEP-2207's MAY: request a refresh-capable grant when (and only
-        // when) the AS metadata lists offline_access.
+        // SEP-2207: `offline_access` is what actually buys a refresh token,
+        // and the spec keeps it out of the *resource's* metadata ("refresh
+        // tokens are not a resource requirement"), so it can only come from
+        // the authorization server's catalogue. Vercel is exactly this shape
+        // — resource `openid`, AS `offline_access` — and without the union
+        // its grant has nothing to renew.
+        let offered = ["openid".to_string(), "offline_access".to_string()];
+        let bare = ["read".to_string()];
         assert_eq!(
-            with_offline_access(Some("read write".to_string()), true).as_deref(),
+            with_offline_access(Some("read write"), &offered).as_deref(),
             Some("read write offline_access")
         );
         assert_eq!(
-            with_offline_access(None, true).as_deref(),
-            Some("offline_access")
-        );
-        assert_eq!(
-            with_offline_access(Some("read".to_string()), false).as_deref(),
+            with_offline_access(Some("read"), &bare).as_deref(),
             Some("read")
         );
-        assert_eq!(with_offline_access(None, false), None);
         // Already granted: never doubled.
         assert_eq!(
-            with_offline_access(Some("offline_access read".to_string()), true).as_deref(),
+            with_offline_access(Some("offline_access read"), &offered).as_deref(),
             Some("offline_access read")
         );
+        // Never *alone*: a bare `offline_access` is not a resource request,
+        // so no resource scope means no scope parameter at all.
+        assert_eq!(with_offline_access(None, &offered), None);
+        assert_eq!(with_offline_access(Some("  "), &offered), None);
+    }
+
+    #[test]
+    fn the_authorize_url_asks_for_consent_only_when_it_wants_a_refresh_token() {
+        let url = |scope: Option<&str>| {
+            build_authorize_url(
+                "https://as.test/authorize",
+                "cid",
+                "http://127.0.0.1:1/cb",
+                "chal",
+                "st",
+                scope,
+                "https://mcp.test/mcp",
+            )
+        };
+        // OIDC releases a refresh token for `offline_access` only when
+        // consent is actually shown — a silent re-authorization returns an
+        // access token alone, the same dead end as never asking.
+        assert!(url(Some("openid offline_access")).contains("prompt=consent"));
+        // Nothing to consent to otherwise: don't force a click.
+        assert!(!url(Some("openid")).contains("prompt="));
+        assert!(!url(None).contains("prompt="));
+        assert!(!url(None).contains("scope="));
     }
 
     #[test]
@@ -1255,6 +1384,49 @@ mod tests {
         // rejection when the metadata promised the parameter.
         assert!(validate_issuer(None, Some("https://as.test"), true).is_err());
         assert!(validate_issuer(None, Some("https://as.test"), false).is_ok());
+    }
+
+    #[test]
+    fn concurrent_saves_never_drop_a_rotation() {
+        // The store is one file for every server, so two servers renewing at
+        // once (two subagents, or a tool call while the loop reconnects
+        // another) interleave read/read/write/write and the second write
+        // clobbers the first's rotation. The loser then presents an
+        // already-used refresh token, which a spec-compliant AS treats as a
+        // replay and answers by revoking the whole family — the browser flow
+        // again, which is the bug this whole file exists to prevent.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("mcp-auth.json");
+        let handles: Vec<_> = (0..16)
+            .map(|i| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let tokens = StoredTokens {
+                        access_token: format!("at-{i}"),
+                        refresh_token: Some(format!("rt-{i}")),
+                        expires_at: Some(999),
+                        client_id: "cid".to_string(),
+                        client_secret: None,
+                        token_endpoint: "https://as/token".to_string(),
+                        scope: None,
+                    };
+                    save_tokens(
+                        Some(&path),
+                        &format!("https://s{i}.test/mcp"),
+                        Some(&tokens),
+                    );
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("save thread");
+        }
+        for i in 0..16 {
+            let stored = load_tokens(Some(&path), &format!("https://s{i}.test/mcp"))
+                .unwrap_or_else(|| panic!("server {i}'s grant survived the concurrent writes"));
+            assert_eq!(stored.access_token, format!("at-{i}"));
+            assert_eq!(stored.refresh_token.as_deref(), Some(&*format!("rt-{i}")));
+        }
     }
 
     #[test]

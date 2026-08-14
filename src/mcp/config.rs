@@ -90,6 +90,21 @@ impl McpServerConfig {
         matches!(self, Self::Http { .. } | Self::Sse { .. })
     }
 
+    /// Did the user write an `Authorization` header into the config? Such a
+    /// server is authenticated without OAuth ever running, so reporting it
+    /// as "not authenticated" is the same lie the public-server case was
+    /// (`docs/mcp.md`). The transport already prefers this header over a
+    /// stored bearer, so the two agree.
+    #[must_use]
+    pub fn has_auth_header(&self) -> bool {
+        match self {
+            Self::Stdio { .. } => false,
+            Self::Http { headers, .. } | Self::Sse { headers, .. } => headers
+                .keys()
+                .any(|key| key.eq_ignore_ascii_case("authorization")),
+        }
+    }
+
     /// The transport's display word (`stdio`/`http`/`sse`) — the CLI's
     /// `mcp list`/`get` label (`docs/mcp-cli.md`). The `sse_fallback` Http
     /// shape still *is* http; the retry is a resilience detail, not a

@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 use serde_json::Value;
 
 use crate::mcp::{
-    Incoming, RpcError, SseParser, header_value, notification, parse_incoming, request, with_meta,
+    Incoming, LEGACY_PROTOCOL_VERSION, RpcError, SseParser, header_value, initialize_params_for,
+    notification, parse_incoming, request, with_meta,
 };
 use crate::stream::CancelToken;
 
@@ -426,6 +427,11 @@ enum PostOutcome {
     Response(Result<Value, RpcError>),
     /// A notification-style acceptance (202/204/empty body).
     Accepted,
+    /// The server answered 404 to a request carrying our session id: the
+    /// session is gone (a restart, an idle timeout) and the spec's answer is
+    /// a fresh `initialize`. Only reachable in legacy mode — the modern era
+    /// has no sessions, so a 404 there is an unknown method.
+    SessionExpired,
     /// The captured session id rode along (initialize).
     Session(Option<String>, Box<PostOutcome>),
     Err(TransportError),
@@ -527,21 +533,50 @@ impl HttpTransport {
         deadline: Duration,
         cancel: &CancelToken,
     ) -> Result<Value, TransportError> {
-        let id = self.next_id;
-        self.next_id += 1;
         let params = match &self.modern {
             Some(version) => with_meta(params, version),
             None => params,
         };
-        let modern = self.modern_headers(method, &params);
+        let mut outcome = self.send_once(method, &params, deadline, cancel)?;
+        if matches!(outcome, PostOutcome::SessionExpired) {
+            // The session died under us. Start a new one and replay, so a
+            // server restart or an idle timeout costs a round trip instead
+            // of the whole connection.
+            self.reinitialize(deadline, cancel)?;
+            outcome = self.send_once(method, &params, deadline, cancel)?;
+        }
+        match outcome {
+            PostOutcome::Response(result) => result.map_err(TransportError::Rpc),
+            PostOutcome::Accepted => Err(TransportError::Failed(
+                "the server accepted the request but sent no response".to_string(),
+            )),
+            PostOutcome::SessionExpired => Err(TransportError::Failed(
+                "the server keeps expiring the session".to_string(),
+            )),
+            PostOutcome::Err(e) => Err(e),
+            PostOutcome::Session(..) => unreachable!("unwrapped in send_once"),
+        }
+    }
+
+    /// One POST of `method`, capturing any session id the server names.
+    fn send_once(
+        &mut self,
+        method: &str,
+        params: &Value,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<PostOutcome, TransportError> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let modern = self.modern_headers(method, params);
         let outcome = self.post(
-            request(id, method, params),
+            request(id, method, params.clone()),
             Some(id),
             modern,
             deadline,
             cancel,
         )?;
-        let outcome = match outcome {
+        Ok(match outcome {
             PostOutcome::Session(session, inner) => {
                 // The session id is captured whenever the server names one
                 // (initialize, per spec — but echoing whatever it says is
@@ -552,15 +587,41 @@ impl HttpTransport {
                 *inner
             }
             other => other,
-        };
-        match outcome {
-            PostOutcome::Response(result) => result.map_err(TransportError::Rpc),
-            PostOutcome::Accepted => Err(TransportError::Failed(
-                "the server accepted the request but sent no response".to_string(),
-            )),
-            PostOutcome::Err(e) => Err(e),
-            PostOutcome::Session(..) => unreachable!("unwrapped above"),
+        })
+    }
+
+    /// Open a fresh session: drop the dead id, handshake again at the
+    /// settled revision, and repeat `notifications/initialized` so the
+    /// server considers us initialized. The re-handshake's own failure is
+    /// returned intact — masking it would hide a 401 underneath, which is
+    /// exactly the signal the token refresh acts on.
+    fn reinitialize(
+        &mut self,
+        deadline: Duration,
+        cancel: &CancelToken,
+    ) -> Result<(), TransportError> {
+        self.session = None;
+        let version = self
+            .protocol_version
+            .clone()
+            .unwrap_or_else(|| LEGACY_PROTOCOL_VERSION.to_string());
+        match self.send_once(
+            "initialize",
+            &initialize_params_for(&version),
+            deadline,
+            cancel,
+        )? {
+            PostOutcome::Response(Ok(_)) | PostOutcome::Accepted => {}
+            PostOutcome::Response(Err(e)) => return Err(TransportError::Rpc(e)),
+            PostOutcome::Err(e) => return Err(e),
+            PostOutcome::SessionExpired => {
+                return Err(TransportError::Failed(
+                    "the server expired the session it just opened".to_string(),
+                ));
+            }
+            PostOutcome::Session(..) => unreachable!("unwrapped in send_once"),
         }
+        self.notify("notifications/initialized", Value::Null)
     }
 
     fn notify(&mut self, method: &str, params: Value) -> Result<(), TransportError> {
@@ -640,6 +701,13 @@ fn post_blocking(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string);
         return PostOutcome::Err(TransportError::NeedsAuth(challenge));
+    }
+    // A 404 to a request that carried a session id means that session is
+    // gone — the spec's cue to open a new one and replay. Gated on having
+    // sent one, because a modern (sessionless) server answers an unknown
+    // *method* with 404 and re-handshaking would be nonsense there.
+    if status.as_u16() == 404 && session.is_some() {
+        return PostOutcome::SessionExpired;
     }
     if !status.is_success() {
         let body = response.text().unwrap_or_default();
