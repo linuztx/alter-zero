@@ -862,5 +862,22 @@ impl App {
     }
 }
 
+/// One ↑/↓ step of a selection over `len` rows, **wrapping at the ends**:
+/// down from the last row lands on the first, up from the first on the last —
+/// the shared grammar of every selection list (the palette, the `@`/`$`
+/// pickers, the inline menus, the `/resume` picker, the permission/ask
+/// modals, the ↓ shell manager). An empty list pins 0, and a stale index past
+/// the end re-enters from the last real row. Only single steps wrap — the
+/// jump keys (PageUp/PageDown/Home/End) still clamp, and the history-style
+/// walks (↑ recall, Ctrl+R, the Esc-Esc backtrack, the footer's roster walk)
+/// keep their own saturating grammar.
+fn wrap_step(selected: usize, len: usize, delta: isize) -> usize {
+    let Some(last) = len.checked_sub(1) else {
+        return 0;
+    };
+    let current = selected.min(last) as isize;
+    (current + delta).rem_euclid(len as isize) as usize
+}
+
 #[cfg(test)]
 mod tests;

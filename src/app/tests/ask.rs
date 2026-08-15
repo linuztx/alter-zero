@@ -543,3 +543,23 @@ fn ctrl_c_on_the_modal_declines_like_esc() {
     );
     assert_eq!(app.input.text(), "draft", "the draft survives");
 }
+
+#[test]
+fn arrows_wrap_the_rows_at_both_ends() {
+    let mut app = App::new();
+    app.open_ask(request("ask_0", vec![coffee_question()]));
+    // Rows: the 3 options, the Other row, Chat about this.
+    let rows = ask_rows(&coffee_question()).len();
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.ask().unwrap().row,
+        rows - 1,
+        "Up from the first row wraps to the last"
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.ask().unwrap().row,
+        0,
+        "Down from the last row wraps back to the first"
+    );
+}

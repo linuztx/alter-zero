@@ -157,7 +157,7 @@ placeholder in the same frame.
 
 | Key | Effect |
 |---|---|
-| ↑/↓, PageUp/PageDown, Home/End | Move the selection (clamped) |
+| ↑/↓, PageUp/PageDown, Home/End | Move the selection (↑/↓ wrap at the ends — ↓ past the last row lands on the first, ↑ from the first on the last; the jumps clamp) |
 | **Enter** / **Space** | Cycle the highlighted setting to its next value |
 | printable characters | Type into the search (Space is *not* one of them — it's the cycle key) |
 | Backspace | Pop the search |

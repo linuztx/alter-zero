@@ -170,7 +170,7 @@ A third band sharing the palette's slot below the box:
   empty query.
 - `textarea` (unit): `replace_range` splices and seats the cursor after.
 - `app` (unit): `@` opens the picker and `file_search_query` tracks the token;
-  ↑/↓ move and clamp; Enter/Tab accept (the `@token` becomes `path ` with the
+  ↑/↓ move and wrap at the ends; Enter/Tab accept (the `@token` becomes `path ` with the
   cursor after); Esc dismisses and is sticky; `set_file_matches` drops stale
   results; the picker stays closed in shell mode and is suppressed in the
   tool view; submit/clear/recall close it.

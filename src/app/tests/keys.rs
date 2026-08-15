@@ -538,25 +538,29 @@ fn alt_up_does_not_clobber_a_draft() {
 }
 
 #[test]
-fn arrow_keys_move_the_palette_selection_within_bounds() {
+fn arrow_keys_move_the_palette_selection_wrapping_at_the_ends() {
     let mut app = App::new();
     app.on_key(key(KeyCode::Char('/'))); // all commands listed
     let n = COMMANDS.len();
-    for _ in 0..(n + 3) {
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.command_menu.as_ref().unwrap().selected,
+        n - 1,
+        "Up from the first command wraps to the last"
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.command_menu.as_ref().unwrap().selected,
+        0,
+        "Down from the last command wraps back to the first"
+    );
+    for _ in 0..n {
         app.on_key(key(KeyCode::Down));
     }
     assert_eq!(
         app.command_menu.as_ref().unwrap().selected,
-        n - 1,
-        "Down clamps at the last command"
-    );
-    for _ in 0..(n + 3) {
-        app.on_key(key(KeyCode::Up));
-    }
-    assert_eq!(
-        app.command_menu.as_ref().unwrap().selected,
         0,
-        "Up clamps at the first"
+        "a full lap of Downs comes back around"
     );
 }
 
@@ -835,14 +839,16 @@ fn tab_accepts_the_highlighted_file_too() {
 }
 
 #[test]
-fn up_down_move_the_file_selection_clamped() {
+fn up_down_move_the_file_selection_wrapping_at_the_ends() {
     let mut app = App::new();
     type_str(&mut app, "@x");
     app.set_file_matches("x", vec![fm("x1"), fm("x2")]);
     assert_eq!(app.file_search.as_ref().unwrap().selected, 0);
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.file_search.as_ref().unwrap().selected, 1);
-    app.on_key(key(KeyCode::Down)); // clamp at the last match
+    app.on_key(key(KeyCode::Down)); // wrap past the last match
+    assert_eq!(app.file_search.as_ref().unwrap().selected, 0);
+    app.on_key(key(KeyCode::Up)); // wrap back past the first
     assert_eq!(app.file_search.as_ref().unwrap().selected, 1);
     app.on_key(key(KeyCode::Up));
     assert_eq!(app.file_search.as_ref().unwrap().selected, 0);
@@ -1059,16 +1065,23 @@ fn tab_moves_the_toolbar_focus_and_arrows_toggle_the_sort() {
 }
 
 #[test]
-fn picker_up_down_moves_clamp_at_both_ends() {
+fn picker_up_down_moves_wrap_at_both_ends() {
     let mut app = picker_app(&[("a", "one"), ("b", "two"), ("c", "three")]);
-    for _ in 0..4 {
-        app.on_key(key(KeyCode::Down));
-    }
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.resume_picker.as_ref().unwrap().selected,
+        2,
+        "Up from the first row wraps to the last"
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.resume_picker.as_ref().unwrap().selected,
+        0,
+        "Down from the last row wraps back to the first"
+    );
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
     assert_eq!(app.resume_picker.as_ref().unwrap().selected, 2);
-    for _ in 0..5 {
-        app.on_key(key(KeyCode::Up));
-    }
-    assert_eq!(app.resume_picker.as_ref().unwrap().selected, 0);
 }
 
 #[test]
@@ -1129,16 +1142,16 @@ fn enter_does_nothing_when_no_provider_is_configured() {
 }
 
 #[test]
-fn arrows_move_the_selection_clamped() {
+fn arrows_move_the_selection_wrapping_at_the_ends() {
     let mut app = model_app(&sample_models());
     app.model_picker.as_mut().unwrap().selected = 0;
-    app.on_key(key(KeyCode::Up)); // clamps at top
+    app.on_key(key(KeyCode::Up)); // top → bottom
+    assert_eq!(app.model_picker.as_ref().unwrap().selected, 2);
+    app.on_key(key(KeyCode::Down)); // bottom → top
     assert_eq!(app.model_picker.as_ref().unwrap().selected, 0);
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.model_picker.as_ref().unwrap().selected, 1);
     app.on_key(key(KeyCode::End));
-    assert_eq!(app.model_picker.as_ref().unwrap().selected, 2);
-    app.on_key(key(KeyCode::Down)); // clamps at bottom
     assert_eq!(app.model_picker.as_ref().unwrap().selected, 2);
     app.on_key(key(KeyCode::Home));
     assert_eq!(app.model_picker.as_ref().unwrap().selected, 0);
@@ -1190,13 +1203,13 @@ fn enter_pins_the_index_from_the_filtered_matches() {
 }
 
 #[test]
-fn arrows_move_the_provider_selection_clamped() {
+fn arrows_move_the_provider_selection_wrapping_at_the_ends() {
     let mut app = login_app();
-    app.on_key(key(KeyCode::Up)); // clamp at top
+    app.on_key(key(KeyCode::Up)); // top → bottom
+    assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 2);
+    app.on_key(key(KeyCode::Down)); // bottom → top
     assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 0);
     app.on_key(key(KeyCode::End));
-    assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 2);
-    app.on_key(key(KeyCode::Down)); // clamp at bottom
     assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 2);
     app.on_key(key(KeyCode::Home));
     assert_eq!(app.key_onboarding.as_ref().unwrap().selected, 0);
@@ -1317,14 +1330,24 @@ fn esc_up_and_ctrl_c_clear_the_shell_highlight_without_quitting() {
 fn manager_list_keys_select_view_stop_and_close() {
     let mut app = app_with_shells(&["a", "b", "c"]);
     app.open_background_view();
-    // ↓/↑ move and clamp.
+    // ↓/↑ move, wrapping at the ends.
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.background_view,
+        Some(BackgroundView::List { selected: 2 }),
+        "Up from the top wraps to the last row"
+    );
     app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.background_view,
+        Some(BackgroundView::List { selected: 0 }),
+        "Down from the bottom wraps back to the first"
+    );
     app.on_key(key(KeyCode::Down));
     app.on_key(key(KeyCode::Down));
     assert_eq!(
         app.background_view,
-        Some(BackgroundView::List { selected: 2 }),
-        "the selection clamps at the last row"
+        Some(BackgroundView::List { selected: 2 })
     );
     // x stops the highlighted shell (the view stays).
     let action = app.on_key(key(KeyCode::Char('x')));

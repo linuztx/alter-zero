@@ -119,15 +119,12 @@ impl App {
         self.skill_matches().into_iter().nth(picker.selected)
     }
 
-    /// Move the picker highlight by `delta`, clamped to the current matches.
+    /// Move the picker highlight one step over the current matches, wrapping
+    /// at the ends (`wrap_step` — the palette's grammar).
     pub(super) fn move_skill_selection(&mut self, delta: isize) {
         let len = self.skill_matches().len();
-        if len == 0 {
-            return;
-        }
         if let Some(picker) = &mut self.skill_picker {
-            let last = (len - 1) as isize;
-            picker.selected = (picker.selected as isize + delta).clamp(0, last) as usize;
+            picker.selected = wrap_step(picker.selected, len, delta);
         }
     }
 

@@ -164,13 +164,14 @@ impl App {
             self.close_settings();
             return Action::CloseSettings;
         }
-        let last = self.setting_rows().len().saturating_sub(1);
+        let len = self.setting_rows().len();
+        let last = len.saturating_sub(1);
         let Some(picker) = self.settings_picker.as_mut() else {
             return Action::None;
         };
         match key.code {
-            KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
-            KeyCode::Down => picker.selected = (picker.selected + 1).min(last),
+            KeyCode::Up => picker.selected = wrap_step(picker.selected, len, -1),
+            KeyCode::Down => picker.selected = wrap_step(picker.selected, len, 1),
             KeyCode::PageUp => picker.selected = picker.selected.saturating_sub(SETTINGS_PAGE),
             KeyCode::PageDown => picker.selected = (picker.selected + SETTINGS_PAGE).min(last),
             KeyCode::Home => picker.selected = 0,

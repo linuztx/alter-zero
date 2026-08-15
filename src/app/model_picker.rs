@@ -315,11 +315,12 @@ impl App {
     }
 
     /// Keys while the inline `/model` picker is open. Mirrors the `/resume`
-    /// picker's grammar: ↑/↓ move (clamped), PageUp/PageDown jump by
-    /// [`MODEL_PAGE`], Home/End to the ends, Enter selects the highlighted
-    /// model, Esc clears a non-empty search before it closes, Backspace pops,
-    /// Ctrl+C closes, and any plain printable character types into the search.
-    /// Owns **every** key while open (routed at the top of [`on_key`]).
+    /// picker's grammar: ↑/↓ move (wrapping at the ends), PageUp/PageDown jump
+    /// by [`MODEL_PAGE`] (clamped), Home/End to the ends, Enter selects the
+    /// highlighted model, Esc clears a non-empty search before it closes,
+    /// Backspace pops, Ctrl+C closes, and any plain printable character types
+    /// into the search. Owns **every** key while open (routed at the top of
+    /// [`on_key`]).
     ///
     /// [`on_key`]: App::on_key
     pub(super) fn on_key_model_picker(&mut self, key: KeyEvent) -> Action {
@@ -332,10 +333,11 @@ impl App {
         let Some(picker) = self.model_picker.as_mut() else {
             return Action::None;
         };
-        let last = picker.matches().len().saturating_sub(1);
+        let len = picker.matches().len();
+        let last = len.saturating_sub(1);
         match key.code {
-            KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
-            KeyCode::Down => picker.selected = (picker.selected + 1).min(last),
+            KeyCode::Up => picker.selected = wrap_step(picker.selected, len, -1),
+            KeyCode::Down => picker.selected = wrap_step(picker.selected, len, 1),
             KeyCode::PageUp => picker.selected = picker.selected.saturating_sub(MODEL_PAGE),
             KeyCode::PageDown => picker.selected = (picker.selected + MODEL_PAGE).min(last),
             KeyCode::Home => picker.selected = 0,

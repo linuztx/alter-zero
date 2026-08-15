@@ -217,8 +217,9 @@ impl App {
     }
 
     /// Keys while the `/hooks` menu is open. Owns **every** key (routed at
-    /// the top of [`on_key`]): ↑/↓/Home/End move, digits 1–9 jump-activate,
-    /// Enter descends, Esc ascends (closing from the top), Ctrl+C closes.
+    /// the top of [`on_key`]): ↑/↓ move wrapping at the ends, Home/End jump,
+    /// digits 1–9 jump-activate, Enter descends, Esc ascends (closing from
+    /// the top), Ctrl+C closes.
     ///
     /// [`on_key`]: App::on_key
     pub(super) fn on_key_hooks(&mut self, key: KeyEvent) -> Action {
@@ -233,11 +234,11 @@ impl App {
         match key.code {
             KeyCode::Up => {
                 let selected = menu.selected().unwrap_or(0);
-                menu.select(selected.saturating_sub(1));
+                menu.select(wrap_step(selected, menu.row_count(), -1));
             }
             KeyCode::Down => {
                 let selected = menu.selected().unwrap_or(0);
-                menu.select(selected.saturating_add(1));
+                menu.select(wrap_step(selected, menu.row_count(), 1));
             }
             KeyCode::Home => menu.select(0),
             KeyCode::End => menu.select(usize::MAX),

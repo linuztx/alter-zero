@@ -216,3 +216,20 @@ fn the_session_off_note_rides_the_menu() {
     );
     assert!(!app.skills_menu.as_ref().expect("open").session_enabled);
 }
+
+#[test]
+fn arrows_wrap_the_selection_at_both_ends() {
+    let mut app = skills_app();
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.skills_menu.as_ref().unwrap().selected,
+        2,
+        "Up from the first row wraps to the last"
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.skills_menu.as_ref().unwrap().selected,
+        0,
+        "Down from the last row wraps back to the first"
+    );
+}

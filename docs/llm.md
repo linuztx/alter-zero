@@ -253,7 +253,7 @@ the bottom rule — the shape of the user's mock):
   staying put. Only when **every** provider fails (no models at all) does the
   picker go to `ModelLoad::Error`, showing one red `{provider}: {reason}` row each.
 - Type to filter (case-insensitive substring over `id`, provider, and name),
-  `↑/↓`/PgUp/PgDn/Home/End move, `Enter` selects →
+  `↑/↓` move wrapping at the ends, PgUp/PgDn/Home/End jump, `Enter` selects →
   `Action::SelectModel { provider, id }`, `Esc` clears the query then closes,
   `Ctrl+C` closes. A **bracketed paste** extends the filter too
   (`App::paste_into_model_filter`, routed from the loop's `Event::Paste` arm):
@@ -345,8 +345,9 @@ in place; unlike it, it is a **two-step** flow.
   provider-step hint names. The save confirmation is a transient toast
   (`Saved {ENV} — run /model to use {provider}`), not a committed message. See
   `docs/toast.md`.
-- **Provider step**: type-to-filter (id/name substring), `↑/↓`/PgUp/PgDn/Home/End
-  move, `Enter` advances to key entry for the highlighted provider (its index is
+- **Provider step**: type-to-filter (id/name substring), `↑/↓` move wrapping
+  at the ends, PgUp/PgDn/Home/End jump, `Enter` advances to key entry for the
+  highlighted provider (its index is
   pinned so the filter can't reorder it out from under you), `Esc` clears the
   filter then closes, `Ctrl+C` closes.
 - **Key step**: printable keys and Backspace edit the key, a **bracketed paste**

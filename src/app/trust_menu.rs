@@ -47,9 +47,10 @@ impl App {
     }
 
     /// Keys while the `/trust` menu is open. Owns **every** key (routed at
-    /// the top of [`on_key`]): ↑/↓/Home/End move over the option rows,
-    /// digits jump-apply, Enter applies the highlighted option (closing the
-    /// menu — the loop records/activates), Esc and Ctrl+C close.
+    /// the top of [`on_key`]): ↑/↓ move over the option rows wrapping at the
+    /// ends, Home/End jump, digits jump-apply, Enter applies the highlighted
+    /// option (closing the menu — the loop records/activates), Esc and
+    /// Ctrl+C close.
     ///
     /// [`on_key`]: App::on_key
     pub(super) fn on_key_trust(&mut self, key: KeyEvent) -> Action {
@@ -64,10 +65,8 @@ impl App {
         let options = menu.review.options();
         let apply = |index: usize| options.get(index).copied();
         match key.code {
-            KeyCode::Up => menu.selected = menu.selected.saturating_sub(1),
-            KeyCode::Down => {
-                menu.selected = (menu.selected + 1).min(options.len().saturating_sub(1));
-            }
+            KeyCode::Up => menu.selected = wrap_step(menu.selected, options.len(), -1),
+            KeyCode::Down => menu.selected = wrap_step(menu.selected, options.len(), 1),
             KeyCode::Home => menu.selected = 0,
             KeyCode::End => menu.selected = options.len().saturating_sub(1),
             KeyCode::Enter => {

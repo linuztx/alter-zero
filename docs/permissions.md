@@ -195,7 +195,8 @@ one).
 
 ## The options
 
-Every prompt offers three, selected with ↑/↓ + Enter or by typing `1`/`2`/`3`:
+Every prompt offers three, selected with ↑/↓ + Enter (the steps wrap — ↓ past
+**No** comes back to **Yes**) or by typing `1`/`2`/`3`:
 
 1. **Yes** — approve this call only.
 2. **Yes, allow all edits during this session (ctrl+a)** for `write`/`edit` —

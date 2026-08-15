@@ -490,9 +490,9 @@ impl App {
 
     /// Keys while the ↓ background manager band is open — it owns **every**
     /// key (routed at the top of [`on_key`](App::on_key)), like the `/model`
-    /// picker. List: ↑/↓ move, Enter views the highlighted shell, `x` stops
-    /// it, Esc/Ctrl+C close. Details: ← back to the list, Esc/Enter/Space
-    /// close, `x` stops. See `docs/background.md`.
+    /// picker. List: ↑/↓ move wrapping at the ends, Enter views the
+    /// highlighted shell, `x` stops it, Esc/Ctrl+C close. Details: ← back to
+    /// the list, Esc/Enter/Space close, `x` stops. See `docs/background.md`.
     pub(super) fn on_key_background(&mut self, key: KeyEvent) -> Action {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             self.close_background_view();
@@ -503,10 +503,10 @@ impl App {
         };
         match view {
             BackgroundView::List { selected } => {
-                let last = self.background.len().saturating_sub(1);
+                let len = self.background.len();
                 match key.code {
-                    KeyCode::Up => *selected = selected.saturating_sub(1),
-                    KeyCode::Down => *selected = (*selected + 1).min(last),
+                    KeyCode::Up => *selected = wrap_step(*selected, len, -1),
+                    KeyCode::Down => *selected = wrap_step(*selected, len, 1),
                     KeyCode::Enter => {
                         if let Some(shell) = self.background.get(*selected) {
                             let id = shell.id.clone();

@@ -64,10 +64,22 @@ fn opening_selects_the_first_option_and_abandons_the_composer_bands() {
 #[test]
 fn arrows_move_and_enter_applies_the_highlighted_option() {
     let mut app = trust_app();
-    // ↓ to the revoke row (clamped past the end), ↑ back, Enter applies.
-    app.on_key(key(KeyCode::Down));
+    // ↓ to the revoke row, past the end it wraps back to the top; ↑ from
+    // the top wraps to the bottom; Enter applies the highlighted row.
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.trust_menu.as_ref().unwrap().selected, 1);
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.trust_menu.as_ref().unwrap().selected,
+        0,
+        "Down from the last row wraps to the first"
+    );
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.trust_menu.as_ref().unwrap().selected,
+        1,
+        "Up from the first row wraps to the last"
+    );
     app.on_key(key(KeyCode::Up));
     assert_eq!(app.trust_menu.as_ref().unwrap().selected, 0);
     assert_eq!(

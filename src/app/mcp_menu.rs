@@ -14,7 +14,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::mcp::{McpAuthState, McpServerSnapshot, McpServerStatus};
 
-use super::{Action, App, McpOp};
+use super::{Action, App, McpOp, wrap_step};
 
 /// Which page the menu shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -289,8 +289,8 @@ impl App {
                 self.close_mcp_menu();
                 return Action::CloseMcpMenu;
             }
-            KeyCode::Up => menu.selected = menu.selected.saturating_sub(1),
-            KeyCode::Down if count > 0 => menu.selected = (menu.selected + 1).min(count - 1),
+            KeyCode::Up => menu.selected = wrap_step(menu.selected, count, -1),
+            KeyCode::Down => menu.selected = wrap_step(menu.selected, count, 1),
             KeyCode::Home => menu.selected = 0,
             KeyCode::End if count > 0 => menu.selected = count - 1,
             KeyCode::Char(c @ '1'..='9') => {
@@ -351,8 +351,8 @@ impl App {
                 menu.page = McpPage::List;
                 menu.selected = menu.server;
             }
-            KeyCode::Up => menu.selected = menu.selected.saturating_sub(1),
-            KeyCode::Down if count > 0 => menu.selected = (menu.selected + 1).min(count - 1),
+            KeyCode::Up => menu.selected = wrap_step(menu.selected, count, -1),
+            KeyCode::Down => menu.selected = wrap_step(menu.selected, count, 1),
             KeyCode::Char(c @ '1'..='9') => {
                 let index = (c as usize) - ('1' as usize);
                 if let Some(action) = actions.get(index).copied() {
@@ -379,8 +379,8 @@ impl App {
                 menu.page = McpPage::Server;
                 menu.selected = 0;
             }
-            KeyCode::Up => menu.selected = menu.selected.saturating_sub(1),
-            KeyCode::Down if count > 0 => menu.selected = (menu.selected + 1).min(count - 1),
+            KeyCode::Up => menu.selected = wrap_step(menu.selected, count, -1),
+            KeyCode::Down => menu.selected = wrap_step(menu.selected, count, 1),
             KeyCode::Home => menu.selected = 0,
             KeyCode::End if count > 0 => menu.selected = count - 1,
             KeyCode::Char(c @ '1'..='9') => {

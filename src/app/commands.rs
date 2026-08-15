@@ -285,15 +285,16 @@ impl App {
         }
     }
 
-    /// Move the palette highlight by `delta`, clamped to the current matches.
+    /// Move the palette highlight one step over the current matches, wrapping
+    /// at the ends (`wrap_step` — ↓ past the last command comes back to the
+    /// first, ↑ from the first to the last).
     pub(super) fn move_command_selection(&mut self, delta: isize) {
         let Some(query) = command_query(self.input.text()) else {
             return;
         };
         let matches = matching_commands(query).len();
         if let Some(menu) = &mut self.command_menu {
-            let last = matches.saturating_sub(1) as isize;
-            menu.selected = (menu.selected as isize + delta).clamp(0, last) as usize;
+            menu.selected = wrap_step(menu.selected, matches, delta);
         }
     }
 

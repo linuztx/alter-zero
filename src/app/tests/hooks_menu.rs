@@ -84,21 +84,25 @@ fn opening_lands_on_the_events_level_and_abandons_the_composer_bands() {
 }
 
 #[test]
-fn arrows_move_within_the_events_and_clamp_at_both_ends() {
+fn arrows_move_within_the_events_and_wrap_at_both_ends() {
     let mut app = hooks_app();
-    app.on_key(key(KeyCode::Up));
-    assert_eq!(level(&app), HooksLevel::Events { selected: 0 }, "clamped");
-    app.on_key(key(KeyCode::Down));
-    assert_eq!(level(&app), HooksLevel::Events { selected: 1 });
-    app.on_key(key(KeyCode::End));
     let last = HookEvent::ALL.len() - 1;
-    assert_eq!(level(&app), HooksLevel::Events { selected: last });
-    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Up));
     assert_eq!(
         level(&app),
         HooksLevel::Events { selected: last },
-        "clamped"
+        "Up from the first event wraps to the last"
     );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        level(&app),
+        HooksLevel::Events { selected: 0 },
+        "Down from the last event wraps back to the first"
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(level(&app), HooksLevel::Events { selected: 1 });
+    app.on_key(key(KeyCode::End));
+    assert_eq!(level(&app), HooksLevel::Events { selected: last });
     app.on_key(key(KeyCode::Home));
     assert_eq!(level(&app), HooksLevel::Events { selected: 0 });
 }
@@ -264,9 +268,18 @@ fn navigation_walks_the_matcher_and_hook_rows_too() {
         level(&app),
         HooksLevel::Matchers {
             event: 0,
+            selected: 0
+        },
+        "Down past the last matcher row wraps to the first"
+    );
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        level(&app),
+        HooksLevel::Matchers {
+            event: 0,
             selected: 1
         },
-        "clamped at the last matcher row"
+        "Up from the first wraps back to the last"
     );
     app.on_key(key(KeyCode::Enter)); // the (all) row → its one hook.
     app.on_key(key(KeyCode::Down));
@@ -277,7 +290,7 @@ fn navigation_walks_the_matcher_and_hook_rows_too() {
             matcher: Some(1),
             selected: 0
         },
-        "one row — ↓ clamps"
+        "one row — ↓ wraps onto itself"
     );
     // Digit 1 on the hooks level opens the detail page.
     app.on_key(key(KeyCode::Char('1')));

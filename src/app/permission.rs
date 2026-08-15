@@ -212,8 +212,8 @@ impl App {
 
     /// Keys while a permission prompt is open — it owns all of them.
     ///
-    /// Options: ↑/↓ move (clamped), Enter takes the highlighted one, and
-    /// `1`/`2`/`3` take one directly. **Ctrl+A** — the permission-mode toggle
+    /// Options: ↑/↓ move (wrapping at the ends), Enter takes the highlighted
+    /// one, and `1`/`2`/`3` take one directly. **Ctrl+A** — the permission-mode toggle
     /// — selects the remember row on a `write`/`edit` prompt (choosing it *is*
     /// the switch to edit mode), and on a `bash` prompt just flips the mode,
     /// the prompt staying open (the mode never covers commands). Esc aborts
@@ -261,13 +261,13 @@ impl App {
         match key.code {
             KeyCode::Up => {
                 if let Some(prompt) = self.permission.as_mut() {
-                    prompt.selected = prompt.selected.saturating_sub(1);
+                    prompt.selected = wrap_step(prompt.selected, OPTION_COUNT, -1);
                 }
                 Action::None
             }
             KeyCode::Down => {
                 if let Some(prompt) = self.permission.as_mut() {
-                    prompt.selected = (prompt.selected + 1).min(OPTION_COUNT - 1);
+                    prompt.selected = wrap_step(prompt.selected, OPTION_COUNT, 1);
                 }
                 Action::None
             }

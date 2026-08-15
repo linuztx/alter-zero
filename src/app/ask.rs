@@ -351,7 +351,8 @@ impl App {
     /// Keys while the ask modal is open — it owns all of them.
     ///
     /// Pages: ←/→ (and Tab/Shift+Tab) move between the question tabs and the
-    /// Submit page; ↑/↓ move rows; Enter activates the highlighted row;
+    /// Submit page; ↑/↓ move rows, wrapping at the ends; Enter activates the
+    /// highlighted row;
     /// digits jump-activate the numbered ones; `n` opens the notes field on a
     /// preview question; Esc **declines** the whole call (the turn continues —
     /// the model is told the user declined). In the Other/notes entry the
@@ -374,11 +375,11 @@ impl App {
         };
         match key.code {
             KeyCode::Up => {
-                prompt.row = prompt.row.saturating_sub(1);
+                prompt.row = wrap_step(prompt.row, prompt.row_count(), -1);
                 Action::None
             }
             KeyCode::Down => {
-                prompt.row = (prompt.row + 1).min(prompt.row_count() - 1);
+                prompt.row = wrap_step(prompt.row, prompt.row_count(), 1);
                 Action::None
             }
             KeyCode::Left | KeyCode::BackTab => {

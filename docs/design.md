@@ -800,7 +800,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - `app` (slash palette): `command_query` recognises a bare `/token` (rejecting
   past-a-space/newline and mid-line slashes); `matching_commands` prefix-filters
   case-insensitively; the registry has unique lowercase names. Typing `/` opens
-  the palette and filters/clamps the selection; ↑/↓ move within bounds; Backspace
+  the palette and filters/clamps the selection; ↑/↓ move, wrapping at the ends
+  (`wrap_step` — the shared step of every selection list); Backspace
   past the slash closes it; Esc dismisses (not quits) and is **sticky** within the
   same token (re-entering command mode reopens it); Enter/Tab run the highlighted
   command, returning the right `Action` (`/clear`→`Clear` + history emptied,
@@ -951,7 +952,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
 - `app` (`/resume` picker): the palette runs `/resume` to `OpenResumePicker`
   idle and the red busy notice mid-turn; opening disarms a primed backtrack
   and seats codex's defaults (filter `Cwd`, sort `Updated`, focus `Filter`);
-  ↑/↓/PageUp/PageDown/Home/End move with clamping; typing filters
+  ↑/↓ move wrapping at the ends, PageUp/PageDown/Home/End jump with
+  clamping; typing filters
   (case-insensitive) and reseats the selection, Backspace pops, a paste
   joins the query flattened, Esc clears the query first and closes second,
   Ctrl+C closes (never quits), Ctrl+O is inert; the `Cwd` filter hides other

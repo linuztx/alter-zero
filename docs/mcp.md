@@ -508,7 +508,7 @@ to point at, and a kitty cursor animation blinks at whatever seat it picks
 — the reported artifact under the bottom rule), the *seat* instead tracking
 the highlighted `❯` row (`ui::layout`'s marker scan; the Auth page's
 `URL >` field is typed into, so its caret comes back — the amend-field
-exception) — ↑/↓/digits/Enter/Esc, a selection-centred
+exception) — ↑/↓ (wrapping at the ends)/digits/Enter/Esc, a selection-centred
 window with `↑ N more above` / `↓ N more below` overflow markers, working
 mid-turn (the strip stays above it). Pages:
 

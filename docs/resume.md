@@ -59,7 +59,8 @@ The picker (`resume_picker.rs`) — an alternate-screen overlay:
 - Ages are single-unit relative times — `now`, `{N}s ago`, `{N}m ago`,
   `{N}h ago`, `{N}d ago` (`format_relative_time`) — computed against a
   reference **frozen when the picker opens**, so the list doesn't tick.
-- Keys: ↑/↓ move (clamped), PageUp/PageDown jump by a viewport, Home/End jump
+- Keys: ↑/↓ move (wrapping at the ends), PageUp/PageDown jump by a viewport
+  (clamped), Home/End jump
   to the ends, Enter resumes the selection, and **any plain printable char is
   search input** (case-insensitive substring filter; selection resets to the
   top match), Backspace pops the query. **Esc clears the query first**; only
@@ -179,7 +180,7 @@ A `SessionRecorder` owns the root dir, the active file path + meta, and a
   `docs/toast.md`). Idle it returns `Action::OpenResumePicker` — the *loop* scans
   the disk and calls `App::open_resume_picker(sessions)` (sets the view, resets
   the backtrack prime, like `toggle_tool_view`).
-- `on_key_resume_picker`: ↑/↓ clamped moves; PageUp/PageDown by
+- `on_key_resume_picker`: ↑/↓ wrapping moves (`wrap_step`); PageUp/PageDown by
   `RESUME_PAGE` (10 — the tool view's page); Home/End; **Tab/BackTab swap the
   toolbar focus and ←/→ toggle the focused control's value** (Filter
   Cwd↔All, Sort Updated↔Created — reseating the selection); plain chars
@@ -325,7 +326,7 @@ and the list height; no stored scroll offset).
   `Toast(RESUME_BUSY_NOTICE)` mid-turn (2026-07-08; was `ErrorNotice`);
   `open_resume_picker` enters the view (and resets a
   primed backtrack) with codex's defaults (filter `Cwd`, sort `Updated`,
-  focus `Filter`); picker keys — ↑/↓ clamp, PageUp/PageDown/Home/End,
+  focus `Filter`); picker keys — ↑/↓ wrap, PageUp/PageDown/Home/End,
   type-to-filter narrows and reseats the selection, Backspace pops, a paste
   joins the query flattened, Esc clears-then-closes, Ctrl+C closes, Ctrl+O
   is swallowed, Enter yields `ResumeSession` with the selected (filtered)

@@ -151,3 +151,30 @@ fn load_session_installs_history_and_returns_to_the_conversation() {
     assert!(!app.is_streaming(), "no stream survives the swap");
     assert!(app.status().is_none(), "no status survives the swap");
 }
+
+// ===== wrap_step (the shared ↑/↓ selection step) =====
+
+#[test]
+fn wrap_step_steps_and_wraps_at_both_ends() {
+    assert_eq!(wrap_step(0, 3, 1), 1, "an ordinary step");
+    assert_eq!(
+        wrap_step(2, 3, 1),
+        0,
+        "down from the last wraps to the first"
+    );
+    assert_eq!(
+        wrap_step(0, 3, -1),
+        2,
+        "up from the first wraps to the last"
+    );
+    assert_eq!(wrap_step(0, 1, 1), 0, "a lone row wraps onto itself");
+    assert_eq!(wrap_step(0, 1, -1), 0);
+    assert_eq!(wrap_step(0, 0, 1), 0, "an empty list pins the selection");
+    assert_eq!(wrap_step(3, 0, -1), 0);
+    assert_eq!(
+        wrap_step(9, 3, 1),
+        0,
+        "a stale index steps from the last real row"
+    );
+    assert_eq!(wrap_step(9, 3, -1), 1);
+}

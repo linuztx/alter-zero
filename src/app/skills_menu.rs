@@ -167,13 +167,14 @@ impl App {
             self.close_skills_menu();
             return Action::CloseSkillsMenu;
         }
-        let last = self.skill_menu_rows().len().saturating_sub(1);
+        let len = self.skill_menu_rows().len();
+        let last = len.saturating_sub(1);
         let Some(menu) = self.skills_menu.as_mut() else {
             return Action::None;
         };
         match key.code {
-            KeyCode::Up => menu.selected = menu.selected.saturating_sub(1),
-            KeyCode::Down => menu.selected = (menu.selected + 1).min(last),
+            KeyCode::Up => menu.selected = wrap_step(menu.selected, len, -1),
+            KeyCode::Down => menu.selected = wrap_step(menu.selected, len, 1),
             KeyCode::PageUp => menu.selected = menu.selected.saturating_sub(SKILLS_PAGE),
             KeyCode::PageDown => menu.selected = (menu.selected + SKILLS_PAGE).min(last),
             KeyCode::Home => menu.selected = 0,

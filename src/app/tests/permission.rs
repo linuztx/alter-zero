@@ -75,20 +75,25 @@ fn the_prompt_owns_every_key_while_it_is_open() {
 }
 
 #[test]
-fn the_arrows_move_the_selection_and_clamp_at_the_ends() {
+fn the_arrows_move_the_selection_and_wrap_at_the_ends() {
     let mut app = App::new();
     app.open_permission(write_request("p1"));
     assert_eq!(app.permission().unwrap().selected, 0, "Yes is preselected");
     app.on_key(key(KeyCode::Up));
-    assert_eq!(app.permission().unwrap().selected, 0, "clamped at the top");
-    app.on_key(key(KeyCode::Down));
-    app.on_key(key(KeyCode::Down));
-    app.on_key(key(KeyCode::Down));
     assert_eq!(
         app.permission().unwrap().selected,
         2,
-        "clamped at the bottom"
+        "Up from the top wraps to No"
     );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.permission().unwrap().selected,
+        0,
+        "Down from the bottom wraps back to Yes"
+    );
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.permission().unwrap().selected, 2);
 }
 
 #[test]

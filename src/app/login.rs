@@ -126,9 +126,10 @@ impl App {
     /// Keys while the inline `/login` flow is open. The two steps have distinct
     /// grammars:
     ///
-    /// - **Provider** (a filterable list): ↑/↓/PageUp/PageDown/Home/End move,
-    ///   Enter advances to key entry for the highlighted provider, type-to-filter
-    ///   with Backspace, Esc clears a non-empty filter then closes, Ctrl+C closes.
+    /// - **Provider** (a filterable list): ↑/↓ move wrapping at the ends,
+    ///   PageUp/PageDown/Home/End jump (clamped), Enter advances to key entry
+    ///   for the highlighted provider, type-to-filter with Backspace, Esc
+    ///   clears a non-empty filter then closes, Ctrl+C closes.
     /// - **Key** (masked entry): printable keys and Backspace edit the key, Enter
     ///   saves a non-empty key ([`Action::SaveApiKey`]) and closes, Esc steps
     ///   *back* to the provider list, Ctrl+C closes.
@@ -147,10 +148,11 @@ impl App {
         };
         match onboarding.step {
             KeyStep::Provider => {
-                let last = onboarding.matches().len().saturating_sub(1);
+                let len = onboarding.matches().len();
+                let last = len.saturating_sub(1);
                 match key.code {
-                    KeyCode::Up => onboarding.selected = onboarding.selected.saturating_sub(1),
-                    KeyCode::Down => onboarding.selected = (onboarding.selected + 1).min(last),
+                    KeyCode::Up => onboarding.selected = wrap_step(onboarding.selected, len, -1),
+                    KeyCode::Down => onboarding.selected = wrap_step(onboarding.selected, len, 1),
                     KeyCode::PageUp => {
                         onboarding.selected = onboarding.selected.saturating_sub(LOGIN_PAGE);
                     }

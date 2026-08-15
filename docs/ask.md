@@ -69,7 +69,8 @@ park until the user decides.
   `App::input`, like Tab's amend field), and queues cross-modal arrivals — a
   permission request landing while a question is open waits its turn, and
   vice versa (`open_next_pending`). Navigation: ←/→/Tab/Shift+Tab move
-  between question tabs (and the Submit tab), ↑/↓ move rows, digits
+  between question tabs (and the Submit tab), ↑/↓ move rows wrapping at the
+  ends, digits
   jump-activate, Enter selects/toggles/activates, `n` opens the notes field
   on a preview question, Esc **declines** (the whole call resolves declined —
   the turn continues; the model is told to stop and wait). A single-select

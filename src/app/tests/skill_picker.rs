@@ -146,18 +146,26 @@ fn clear_conversation_closes_the_picker() {
 // ===== selection =====
 
 #[test]
-fn arrows_move_the_selection_and_clamp() {
+fn arrows_move_the_selection_and_wrap_at_the_ends() {
     let mut app = skilled_app();
     type_str(&mut app, "$");
     assert_eq!(app.skill_picker.as_ref().unwrap().selected, 0);
     app.on_key(key(KeyCode::Down));
     assert_eq!(app.skill_picker.as_ref().unwrap().selected, 1);
     app.on_key(key(KeyCode::Down));
-    assert_eq!(app.skill_picker.as_ref().unwrap().selected, 1, "clamped");
+    assert_eq!(
+        app.skill_picker.as_ref().unwrap().selected,
+        0,
+        "Down from the last match wraps to the first"
+    );
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.skill_picker.as_ref().unwrap().selected,
+        1,
+        "Up from the first wraps back to the last"
+    );
     app.on_key(key(KeyCode::Up));
     assert_eq!(app.skill_picker.as_ref().unwrap().selected, 0);
-    app.on_key(key(KeyCode::Up));
-    assert_eq!(app.skill_picker.as_ref().unwrap().selected, 0, "clamped");
 }
 
 #[test]

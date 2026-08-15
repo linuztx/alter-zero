@@ -283,3 +283,43 @@ fn digits_jump_to_a_server_on_the_list() {
     assert_eq!(menu.page, McpPage::Server);
     assert_eq!(menu.server, 1);
 }
+
+#[test]
+fn arrows_wrap_at_the_ends_on_every_page() {
+    // List: 3 servers.
+    let mut app = mcp_app();
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.mcp_menu.as_ref().unwrap().selected,
+        2,
+        "Up from the first server wraps to the last"
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.mcp_menu.as_ref().unwrap().selected,
+        0,
+        "Down from the last wraps back to the first"
+    );
+    // Server page: deepwiki's action rows.
+    app.on_key(key(KeyCode::Enter));
+    let actions = server_actions(&snapshot("deepwiki", McpServerStatus::Connected, 3)).len();
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.mcp_menu.as_ref().unwrap().selected,
+        actions - 1,
+        "the action rows wrap too"
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.mcp_menu.as_ref().unwrap().selected, 0);
+    // Tools page: deepwiki's 3 tools.
+    app.on_key(key(KeyCode::Enter)); // View tools is the first action
+    assert_eq!(app.mcp_menu.as_ref().unwrap().page, McpPage::Tools);
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(
+        app.mcp_menu.as_ref().unwrap().selected,
+        2,
+        "the tool rows wrap too"
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.mcp_menu.as_ref().unwrap().selected, 0);
+}

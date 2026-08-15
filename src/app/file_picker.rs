@@ -100,15 +100,11 @@ impl App {
         }
     }
 
-    /// Move the file-picker highlight by `delta`, clamped to the current matches.
+    /// Move the file-picker highlight one step over the current matches,
+    /// wrapping at the ends (`wrap_step` — the palette's grammar).
     pub(super) fn move_file_selection(&mut self, delta: isize) {
         if let Some(fs) = &mut self.file_search {
-            let len = fs.matches.len();
-            if len == 0 {
-                return;
-            }
-            let last = (len - 1) as isize;
-            fs.selected = (fs.selected as isize + delta).clamp(0, last) as usize;
+            fs.selected = wrap_step(fs.selected, fs.matches.len(), delta);
         }
     }
 

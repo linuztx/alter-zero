@@ -83,13 +83,19 @@ fn the_rows_show_the_live_values() {
 }
 
 #[test]
-fn up_and_down_move_the_selection_clamped() {
+fn up_and_down_move_the_selection_wrapping_at_the_ends() {
     let mut app = settings_app();
     assert_eq!(app.on_key(key(KeyCode::Up)), Action::None);
     assert_eq!(
         app.highlighted_setting().map(|r| r.key),
+        SettingKey::ALL.last().copied(),
+        "Up from the first row wraps to the last"
+    );
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.highlighted_setting().map(|r| r.key),
         Some(SettingKey::HideThinking),
-        "clamped at the top"
+        "Down from the last row wraps back to the first"
     );
     app.on_key(key(KeyCode::Down));
     assert_eq!(
@@ -101,17 +107,24 @@ fn up_and_down_move_the_selection_clamped() {
         app.highlighted_setting().map(|r| r.key),
         SettingKey::ALL.last().copied()
     );
-    app.on_key(key(KeyCode::Down));
-    assert_eq!(
-        app.highlighted_setting().map(|r| r.key),
-        SettingKey::ALL.last().copied(),
-        "clamped at the bottom"
-    );
     app.on_key(key(KeyCode::Home));
     assert_eq!(
         app.highlighted_setting().map(|r| r.key),
         Some(SettingKey::HideThinking)
     );
+}
+
+#[test]
+fn arrows_on_an_empty_filtered_list_do_nothing() {
+    let mut app = settings_app();
+    for c in "zzzz".chars() {
+        app.on_key(key(KeyCode::Char(c)));
+    }
+    assert!(app.setting_rows().is_empty(), "nothing matches zzzz");
+    app.on_key(key(KeyCode::Up));
+    app.on_key(key(KeyCode::Down));
+    assert!(app.highlighted_setting().is_none());
+    assert_eq!(app.settings_picker.as_ref().unwrap().selected, 0);
 }
 
 #[test]

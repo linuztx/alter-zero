@@ -182,7 +182,7 @@ whole round trip with no network.
   bare `$`), the shell-flavored predicate, ranking (fuzzy on names, stable
   ties, empty query = discovery order).
 - `app` (unit): open/close/sticky-Esc/shell-mode suppression/no-skills
-  inertness; selection move+clamp+reset; Tab/Enter accept (sigil kept,
+  inertness; selection move+wrap+reset; Tab/Enter accept (sigil kept,
   space reused, cursor seat) vs fall-through on a miss; mutual exclusion
   with the palette and the file picker; every consuming path closes it.
 - `ui` (unit): row counts (closed/placeholder/capped), the aligned

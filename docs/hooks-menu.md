@@ -72,7 +72,8 @@ A tiny stack machine (`app::HooksLevel`), Esc popping one frame at a time:
    readable and the hint/rule stay on screen (`docs/view-flow.md`;
    `smoke.sh` Phase 85).
 
-Levels 1–3 share the select grammar: ↑/↓ move (clamped), Home/End jump,
+Levels 1–3 share the select grammar: ↑/↓ move (wrapping at the ends), Home/End
+jump,
 **digits 1–9 jump-activate** their row (the `AskUserQuestion` modal's rule),
 Enter descends, Esc ascends (at Events it closes), Ctrl+C closes outright
 (the picker family's rule — never quits). Rows past

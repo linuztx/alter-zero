@@ -151,10 +151,10 @@ impl App {
     }
 
     /// Keys while the `/resume` session picker is showing — codex's picker
-    /// key handling, sized down: ↑/↓ move the highlight (clamped),
-    /// PageUp/PageDown jump by [`RESUME_PAGE`], Home/End jump to the ends,
-    /// Enter resumes the highlighted session, and Esc clears a non-empty
-    /// search before it closes anything. Any plain printable character types
+    /// key handling, sized down: ↑/↓ move the highlight (wrapping at the
+    /// ends), PageUp/PageDown jump by [`RESUME_PAGE`] (clamped), Home/End
+    /// jump to the ends, Enter resumes the highlighted session, and Esc
+    /// clears a non-empty search before it closes anything. Any plain printable character types
     /// into the search (Backspace pops) — navigation lives on the
     /// non-printable keys, codex's `allow_plain_char_navigation`. Ctrl+C and
     /// Ctrl+O are handled globally in [`on_key`] (close / inert).
@@ -164,10 +164,11 @@ impl App {
         let Some(picker) = self.resume_picker.as_mut() else {
             return Action::None;
         };
-        let last = picker.matches().len().saturating_sub(1);
+        let len = picker.matches().len();
+        let last = len.saturating_sub(1);
         match key.code {
-            KeyCode::Up => picker.selected = picker.selected.saturating_sub(1),
-            KeyCode::Down => picker.selected = (picker.selected + 1).min(last),
+            KeyCode::Up => picker.selected = wrap_step(picker.selected, len, -1),
+            KeyCode::Down => picker.selected = wrap_step(picker.selected, len, 1),
             KeyCode::PageUp => picker.selected = picker.selected.saturating_sub(RESUME_PAGE),
             KeyCode::PageDown => picker.selected = (picker.selected + RESUME_PAGE).min(last),
             KeyCode::Home => picker.selected = 0,
