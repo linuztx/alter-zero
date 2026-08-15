@@ -99,8 +99,10 @@ fn a_page_taller_than_the_terminal_flows_its_top() {
 #[test]
 fn a_covering_modal_suppresses_the_flow() {
     // Eligibility mirrors the render precedence: an open permission prompt
-    // paints INSTEAD of the menu, so nothing of the menu may flow while it
-    // covers it (the prompt keeps its own cap-and-pad layout).
+    // paints INSTEAD of the menu, so nothing of the *menu* may flow while it
+    // covers it. The prompt is flow-eligible itself now (docs/view-flow.md),
+    // but this short bash prompt fits the terminal whole — so the flow the
+    // menu had established must simply clean up, with nothing in its place.
     let mut app = tall_mcp_app();
     assert!(view_flow(&app, 60, 20, NO_CAP).is_some());
     app.open_permission(PermissionRequest {
@@ -113,7 +115,7 @@ fn a_covering_modal_suppresses_the_flow() {
     });
     assert!(
         view_flow(&app, 60, 20, NO_CAP).is_none(),
-        "the prompt covers the menu"
+        "the fitting prompt covers the menu and flows nothing"
     );
 }
 
@@ -203,4 +205,51 @@ fn a_picker_taller_than_the_terminal_flows_like_the_menus() {
         flow.lines.iter().map(plain).any(|r| r.contains('❯')),
         "the flowed rows are the settings page's, not the mcp list's"
     );
+}
+
+#[test]
+fn a_screen_tall_permission_prompt_flows_its_top() {
+    // The permission prompt is a framed view like the rest now
+    // (docs/view-flow.md): a page taller than the terminal flows its static
+    // top — the opening rule, the title, the body's first rows — while the
+    // tail block stays painted. Stepping the selection restyles option rows
+    // near the page's end, so the flowed top holds its signature and ↑/↓
+    // never purge-rebuilds.
+    let body: String = (1..=200).map(|n| format!("{n:>3} line {n}\n")).collect();
+    let mut app = App::new();
+    app.open_permission(PermissionRequest {
+        id: "perm_flow".to_string(),
+        kind: PermissionKind::Write,
+        target: "big.py".to_string(),
+        body: body.trim_end().to_string(),
+        detail: None,
+        agent: None,
+    });
+    let (width, height) = (70u16, 24u16);
+    let flow = view_flow(&app, width, height, NO_CAP).expect("the prompt overflows");
+    let top: Vec<String> = flow.lines.iter().map(plain).collect();
+    assert!(
+        top[0].starts_with('─'),
+        "the flow opens at the rule: {top:?}"
+    );
+    assert!(
+        top.iter().any(|r| r.contains("Create file")),
+        "the title flowed: {top:?}"
+    );
+    let before = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let after = view_flow_signature(&app, width, height, NO_CAP).expect("still overflows");
+    assert_eq!(before, after, "a selection step keeps the flowed top");
+
+    // A prompt that fits keeps the ordinary modal geometry — no flow.
+    let mut small = App::new();
+    small.open_permission(PermissionRequest {
+        id: "perm_small".to_string(),
+        kind: PermissionKind::Bash,
+        target: "echo hi".to_string(),
+        body: String::new(),
+        detail: None,
+        agent: None,
+    });
+    assert!(view_flow(&small, width, height, NO_CAP).is_none());
 }

@@ -1563,6 +1563,15 @@ pub(super) const PERMISSION_OPTION_MAX_ROWS: usize = 4;
 /// reserves only what it needs.
 pub(super) const PERMISSION_MIN_BODY_ROWS: usize = 10;
 
+/// The prompt body's safety ceiling. The body is shown **whole** — a page
+/// taller than the terminal flows into scrollback rather than capping
+/// (`docs/view-flow.md`) — but the page is rebuilt (and its body
+/// syntax-highlighted) every draw tick while the prompt is open, so a
+/// pathological multi-megabyte write must not turn each frame into an
+/// unbounded build. Past this many body rows the familiar `… +N lines` tail
+/// returns — far beyond anything a human reviews, bounded for the loop.
+pub const PERMISSION_BODY_MAX_ROWS: usize = 2_000;
+
 // --- the inline AskUserQuestion modal (docs/ask.md) ---
 
 /// One-space inset on every text row — the permission prompt's, so the two

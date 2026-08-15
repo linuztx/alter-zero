@@ -397,24 +397,29 @@ fn more_row(hidden: usize, width: u16) -> Line<'static> {
 /// `width` on a `term_height`-row terminal.
 ///
 /// The body — a `write`'s numbered contents, an `edit`'s numbered diff hunks,
-/// a `bash` command and its description — is shown **whole**: the point of the
-/// prompt is that you read what you are approving. It is capped only when the
-/// prompt would not otherwise fit, and then by exactly enough that the
-/// question, the options, and the hint row stay on screen — the budget is
-/// whatever the terminal has left once the rows *around* the body are built,
-/// so it stays right as those rows change (Tab's amend field is taller than
-/// three options) — with a `… +N lines` tail saying what was left out.
+/// a `bash` command and its description — is shown **whole**: the point of
+/// the prompt is that you read what you are approving, all of it. The prompt
+/// is a framed view like the menus and pickers (`docs/view-flow.md`): a page
+/// taller than the terminal is painted bottom-anchored — the question, the
+/// options and the hints close the page, so the anchor keeps them on screen
+/// — and the skipped top flows into the terminal's real scrollback, where
+/// the terminal's own scrolling reads the whole diff. (The retired
+/// cap-and-pad layout hid the body's middle behind a `… +N lines` tail; the
+/// tail survives only past `PERMISSION_BODY_MAX_ROWS`, the safety ceiling
+/// for a pathological body rebuilt every draw tick.)
 ///
-/// A capped prompt is padded to fill `term_height` exactly. That is what keeps
-/// [`permission_height`](super::layout::permission_height) — which sizes the
-/// region from the *terminal* — and [`render_permission`] — which only ever
-/// sees the sized *region* — in agreement: at both heights the builder is a
-/// fixpoint, so the rows reserved are the rows painted. The padding goes
-/// **above** the question, so the question/options/hint block keeps a fixed
-/// seat against the bottom rule however tall the body is — which is what lets
-/// [`cursor_position`](super::layout::cursor_position) find the highlighted
-/// option (and the amend field) from that edge, `PERMISSION_TAIL_ROWS` up,
-/// without re-deriving the body.
+/// The context cells above the frame — the asked-about call, a live agent
+/// tree — are kept only while the **whole page fits** the terminal: a live
+/// tree's counters tick, and a flowed row is frozen in scrollback, so
+/// ticking content must never flow. When even the collapsed context cannot
+/// make the page fit, it drops whole and only the static frame flows.
+///
+/// The builder is a **fixpoint at its own height**:
+/// [`permission_height`](super::layout::permission_height) sizes the region
+/// from the terminal, [`render_permission`] rebuilds from the sized region,
+/// and both produce the same rows — the keep-context decision re-derives
+/// identically at either height (pinned by
+/// `the_reserved_height_equals_the_painted_rows`).
 ///
 /// Returns an empty vec when no prompt is open, so the callers can treat "no
 /// prompt" and "no rows" alike.
@@ -426,10 +431,10 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     let request = &prompt.request;
     let file_change = matches!(request.kind, PermissionKind::Write | PermissionKind::Edit);
 
-    // Everything below the body, built FIRST so both budgets can see its
-    // height: the standing notice (commands only), the question, the options —
-    // or Tab's amend field, which is as tall as the feedback typed — the hint
-    // row, and the closing frame.
+    // Everything below the body, built FIRST so the context budget can see
+    // its height: the standing notice (commands only), the question, the
+    // options — or Tab's amend field, which is as tall as the feedback typed
+    // — the hint row, and the closing frame.
     let mut below = Vec::new();
     if request.kind == PermissionKind::Bash {
         below.push(Line::default());
@@ -451,112 +456,73 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
         below.push(Line::default());
         below.push(hint_row(&hints(request)));
     }
+    let below_len = below.len();
 
-    // The live cells that raised this — kept visible above the modal so the
-    // question reads as being *about* something on screen — then the frame, the
-    // title, and (for a file change) the path it targets; a `bash` prompt gaps
-    // instead, its command being the body. The cells get whatever the terminal
-    // has left once the prompt's fixed rows AND a floor for the body are set
-    // aside — the head is the 5 rows this function adds around them (the blank
-    // after the cells, the rule, its gap, the title, the target/gap row) — so
-    // a big parallel batch collapses its excess `⎿ Waiting…` siblings into the
-    // summary row instead of squeezing the body out (see [`context_lines`]).
-    // A framed body (a file change's numbered rows) carries its two dashed
-    // rules; a command's — and an MCP call's, which reads like one — does not.
+    // The prompt's own frame, rule to rule, with the body whole (up to the
+    // `PERMISSION_BODY_MAX_ROWS` ceiling). A framed body (a file change's
+    // numbered rows) carries its two dashed rules; a command's — and an MCP
+    // call's, which reads like one — does not.
     let framed = file_change;
     let framing = if framed { 2 } else { 0 };
-    let context_budget = usize::from(term_height).saturating_sub(
-        5 + below.len() + framing + 2 /* the gap + rule */ + body_reserve(request, file_change),
-    );
-    let mut out = context_lines(app, width, context_budget);
-    if !out.is_empty() {
-        out.push(Line::default());
-    }
-    out.extend([rule(width), Line::default(), title_row(request, width)]);
+    let mut frame = vec![rule(width), Line::default(), title_row(request, width)];
     if file_change {
-        out.push(text_row(&request.target, PERMISSION_TARGET_COLOR, width));
+        frame.push(text_row(&request.target, PERMISSION_TARGET_COLOR, width));
     } else {
         // A command — and an MCP call, whose body names the tool the same way
         // (`docs/mcp.md`) — gaps here instead: its target *is* the body.
-        out.push(Line::default());
+        frame.push(Line::default());
     }
-
-    // The body's row budget: whatever the terminal has left once those rows
-    // (and, for a file change, its two dashed rules, plus the trailing gap and
-    // rule) are accounted for — at least the reserve the context cap held
-    // back, and everything the (possibly shorter) context did not use. Too
-    // small for even one numbered row beside the `… +N lines` tail means the
-    // terminal is too short for a preview at all — the body and its rules
-    // drop out entirely rather than pushing the options off screen (the
-    // numbered builder always emits its first row, so handing it a zero
-    // budget would overflow the terminal by the tail's row).
-    let budget = usize::from(term_height).saturating_sub(
-        out.len() + below.len() + framing + 2, /* the gap + rule */
-    );
-
-    let mut capped = false;
-    let body_rows = if budget == 0 {
-        None
-    } else if file_change {
-        let fits = body_fits(&request.body, budget);
-        if !fits && budget < 2 {
-            None
-        } else {
-            Some(numbered_body_lines(
-                &request.body,
-                file_lang(&request.target),
-                request.kind == PermissionKind::Edit,
-                cols(PERMISSION_INDENT),
-                width,
-                if fits {
-                    budget
-                } else {
-                    budget - 1 // room for the `… +N lines` tail
-                },
-            ))
-        }
+    let (body, hidden) = if file_change {
+        numbered_body_lines(
+            &request.body,
+            file_lang(&request.target),
+            request.kind == PermissionKind::Edit,
+            cols(PERMISSION_INDENT),
+            width,
+            PERMISSION_BODY_MAX_ROWS,
+        )
     } else if request.kind == PermissionKind::Mcp {
-        Some(mcp_rows(request, width, budget))
+        mcp_rows(request, width, PERMISSION_BODY_MAX_ROWS)
     } else {
-        Some(command_rows(request, width, budget))
+        command_rows(request, width, PERMISSION_BODY_MAX_ROWS)
     };
-    if let Some((body, hidden)) = body_rows {
-        capped = hidden > 0;
-        if framed {
-            out.push(body_rule(width));
-        }
-        out.extend(body);
-        if hidden > 0 {
-            out.push(more_row(hidden, width));
-        }
-        if framed {
-            out.push(body_rule(width));
-        }
+    if framed {
+        frame.push(body_rule(width));
     }
-
-    // A capped body means the prompt is meant to fill the terminal: pad the
-    // shortfall (whole source rows can leave a row or two unused) so the count
-    // is exactly `term_height` and the builder is a fixpoint — see above. The
-    // padding goes here, above the question, so `below` stays flush against the
-    // closing rule and the cursor can be seated from that edge.
-    if capped {
-        let target = usize::from(term_height).saturating_sub(below.len() + 2); // + blank + rule
-        while out.len() < target {
-            out.push(Line::default());
-        }
+    frame.extend(body);
+    if hidden > 0 {
+        frame.push(more_row(hidden, width));
     }
-    out.extend(below);
-    out.push(Line::default());
-    out.push(rule(width));
-    out
-}
+    if framed {
+        frame.push(body_rule(width));
+    }
+    frame.extend(below);
+    frame.push(Line::default());
+    frame.push(rule(width));
 
-/// A cheap "does the body fit" check so a body that exactly fills the budget
-/// isn't shortened to make room for a `… +0 lines` tail that isn't needed. It
-/// counts *source* rows, an under-estimate of display rows for wrapped
-/// content — which only ever errs toward reserving the tail row.
-fn body_fits(body: &str, budget: usize) -> bool {
-    body.lines().count() <= budget
+    // The live cells that raised this — kept visible above the modal so the
+    // question reads as being *about* something on screen. Their budget is
+    // whatever the terminal has left once the prompt's fixed rows AND a floor
+    // for the body are set aside — the head is the 5 rows the frame opens
+    // with (the blank after the cells, the rule, its gap, the title, the
+    // target/gap row) — so a big parallel batch collapses its excess
+    // `⎿ Waiting…` siblings into the summary row instead of squeezing the
+    // body out (see [`context_lines`]). And they ride only a page that
+    // **fits**: past that the page flows into scrollback, where a ticking
+    // agent tree would freeze — the frame is static per prompt, the context
+    // is not, so the context gives way whole (`docs/view-flow.md`).
+    let context_budget = usize::from(term_height).saturating_sub(
+        5 + below_len + framing + 2 /* the gap + rule */ + body_reserve(request, file_change),
+    );
+    let context = context_lines(app, width, context_budget);
+    if !context.is_empty() && context.len() + 1 + frame.len() <= usize::from(term_height) {
+        let mut out = context;
+        out.push(Line::default());
+        out.extend(frame);
+        out
+    } else {
+        frame
+    }
 }
 
 /// The body rows the context cap must leave free: the body's own natural
@@ -587,14 +553,18 @@ fn file_lang(path: &str) -> Option<&str> {
     (!stem.is_empty() && !ext.is_empty() && !ext.contains(' ')).then_some(ext)
 }
 
-/// Paint the open permission prompt over the whole live region. Pure —
+/// Paint the open permission prompt over the whole live region —
+/// bottom-anchored, so a page taller than the region keeps its tail (the
+/// question, the options, the hints, the closing rule) on screen while the
+/// skipped top flows into scrollback (`docs/view-flow.md`). Pure —
 /// [`render_live`] calls this in place of the composer. The region is sized
-/// to exactly these rows ([`permission_height`](super::layout::permission_height)),
-/// and the conversation above it is the *real* screen — the prompt grew by
-/// scrolling like any other region, so what the user just read stays put
-/// (and stays reachable in the terminal's scrollback — `docs/permissions.md`).
+/// from the same builder
+/// ([`permission_height`](super::layout::permission_height), the fixpoint),
+/// and the conversation above a fitting prompt is the *real* screen — the
+/// prompt grew by scrolling like any other region, so what the user just
+/// read stays put (`docs/permissions.md`).
 pub fn render_permission(area: Rect, buf: &mut Buffer, app: &App) {
-    Paragraph::new(permission_lines(app, area.width, area.height)).render(area, buf);
+    super::view_flow::render_framed_tail(area, buf, permission_lines(app, area.width, area.height));
 }
 
 /// The `bash` "don't ask again" label — the stored rule as the option showed

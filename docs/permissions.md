@@ -51,10 +51,16 @@ the whole file, exactly as the resulting `Updated {path} (+A -D)` cell will.
 The body is the same numbered, syntax-highlighted, `+`/`-`-tinted block the
 finished `write`/`edit` cell renders (`ui/file_cell.rs`'s
 `numbered_body_lines`, shared by both) — the whole file/diff, not a peek: the
-point of the prompt is that you read what you are approving. Only when the
-prompt would not fit the terminal is the body capped, with the familiar
-`… +N lines` tail; the cap is derived from the terminal height so the options
-and the hint row are always visible.
+point of the prompt is that you read what you are approving, **all of it**.
+The prompt is a framed view like the menus and pickers (`docs/view-flow.md`):
+a page taller than the terminal paints bottom-anchored — the question, the
+options and the hints close the page, so they are always on screen — and the
+skipped top flows into the terminal's real scrollback, where the terminal's
+own scrolling reads the whole diff. The retired cap hid the body's middle
+behind a `… +N lines` tail; the tail survives only past the
+`PERMISSION_BODY_MAX_ROWS` safety ceiling (the page is rebuilt and
+highlighted every draw tick, so a pathological multi-megabyte write must not
+turn each frame into an unbounded build).
 
 A request raised by a **subagent** (`docs/agent-tool.md`) says so in the title:
 `Create file · from the general-purpose agent`.
@@ -90,10 +96,15 @@ cells are budgeted: `permission_lines` sets aside its fixed rows *and* a
 floor for the body (the body's own height when short, else
 `PERMISSION_MIN_BODY_ROWS` — the inline peek size), and the context keeps
 whole cells in queue order while they fit, collapsing the excess into one dim
-`… +N more waiting` row. The first chunk — the agent tree that asked, else
-the asked-about call itself — is never dropped, so the prompt stays a
-question about something on screen; a body naturally shorter than the floor
-reserves only what it needs, handing the rest back to the siblings.
+`… +N more waiting` row; a body naturally shorter than the floor reserves
+only what it needs, handing the rest back to the siblings. And the context
+rides only a page that **fits the terminal**: a live agent tree's counters
+tick, and a flowed row is frozen in scrollback, so when even the collapsed
+context cannot make the page fit — a body tall enough to flow — the context
+drops whole and only the static frame flows (`docs/view-flow.md`). On a
+fitting page the first chunk — the agent tree that asked, else the
+asked-about call itself — is never dropped, so the prompt stays a question
+about something on screen.
 
 ## The screen it scrolls, and gives back
 
@@ -539,10 +550,10 @@ one column past the `❯` marker, tracking ↑/↓ — so its return starts from
 meaningful row rather than wherever the last scroll left it (and a terminal
 that ignores the hide still looks right). Both seats, the option row and the
 amend field, are found from the region's bottom edge, `PERMISSION_TAIL_ROWS` up
-(gap, hint, gap, rule), so the cursor never has to re-derive the body. That is
-why a capped prompt's padding goes **above** the question rather than below the
-hint: it keeps the question/options/hint block flush against the closing rule
-at every body size.
+(gap, hint, gap, rule), so the cursor never has to re-derive the body. The
+tail block closes the page, so the bottom anchor keeps it flush against the
+closing rule at every body size — a flowing page and a fitting one seat the
+cursor identically.
 
 ## Turning it off
 
@@ -602,12 +613,15 @@ explains itself with a toast instead of pretending to toggle anything.
   alike, a genuinely running call's `⎿ Running…`, the whole tree for a
   subagent's), the plain render painting exactly the prompt's rows, that
   `permission_height` equals the painted
-  rows — at every height, the context rows included — and the big-batch cap:
+  rows clamped to the terminal — the builder a fixpoint at the region's own
+  height — and the big-batch rules:
   fifteen queued edits still leave the body its rows and the options on
   screen (the excess siblings collapse into `… +N more waiting`, the
   asked-about call survives at the top, the height contract holds), a tall
-  body under the same batch keeps its guaranteed peek + `… +N lines` tail,
-  and a small batch shows every sibling with no summary row.
+  body under the same batch flows whole with the ticking context dropped,
+  a small batch shows every sibling with no summary row, and a body past
+  the `PERMISSION_BODY_MAX_ROWS` ceiling still caps with the `… +N lines`
+  tail.
 - `ui/tests/layout.rs` — `region_is_modal` is a prompt and nothing else (the
   predicate the boundary reads to note one-way moves for the close's purge);
   and `modal_needs_rebuild`, the draw tick's whole rebuild decision: it fires
@@ -639,7 +653,8 @@ explains itself with a toast instead of pretending to toggle anything.
 - `ui/tests/permission_view.rs` — the options show no cursor while the amend
   field and the composer do; and the seat, pinned to the rendered rows: it
   lands on whichever row carries the `❯` marker and steps down with each ↓, on
-  a capped prompt as well as one that fits.
+  a flowing prompt (mapped through the bottom anchor's skip) as well as one
+  that fits.
 - `smoke.sh` Phase 55 — the whole round trip against the dummy backend in a real
   terminal: draft typed, prompt shown, `2` approving, draft restored — the
   footer's right-edge mode flipping to `edit` and the project's entry landing

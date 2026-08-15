@@ -225,29 +225,12 @@ fn the_whole_file_shows_when_it_fits() {
 }
 
 #[test]
-fn a_body_too_tall_for_the_terminal_is_capped_so_the_options_stay_visible() {
-    let body: String = (1..=200)
-        .map(|n| format!("{n:>3} line {n}\n"))
-        .collect::<String>();
-    let app = app_with(request(PermissionKind::Write, "big.py", body.trim_end()));
-    let lines = rows(&app, 70, 24);
-    assert!(
-        lines.len() <= 24,
-        "the prompt fits the terminal: {}",
-        lines.len()
-    );
-    assert!(
-        lines.iter().any(|l| l.contains("… +")),
-        "the tail says how much is hidden: {lines:?}"
-    );
-    // Everything below the body still shows.
-    assert!(lines.iter().any(|l| l.contains("Do you want to create")));
-    assert!(lines.iter().any(|l| l.contains("3. No")));
-    assert!(lines.iter().any(|l| l.contains("Esc to cancel")));
-}
-
-#[test]
 fn the_reserved_height_equals_the_painted_rows() {
+    // The region is the page clamped to the terminal, and the builder is a
+    // **fixpoint at the height the region actually gets** — the renderer only
+    // ever sees the sized region, so both must produce the same page whether
+    // the page fits (region = page) or flows (region = terminal). The
+    // (WRITE_BODY, 12) case flows: its page overflows a 12-row terminal.
     for (kind, target, body, height) in [
         (PermissionKind::Write, "hello.py", WRITE_BODY, 40u16),
         (PermissionKind::Edit, "script.py", EDIT_BODY, 40),
@@ -256,17 +239,16 @@ fn the_reserved_height_equals_the_painted_rows() {
     ] {
         let app = app_with(request(kind, target, body));
         let painted = permission_lines(&app, 70, height).len();
+        let region = painted.min(usize::from(height)) as u16;
         assert_eq!(
             permission_height(&app, 70, height),
-            Some(painted as u16),
+            Some(region),
             "{target} at height {height}"
         );
-        // …and the builder is a fixpoint at the height it just reported, so
-        // the renderer (which only sees the sized region) paints the same rows.
         assert_eq!(
-            permission_lines(&app, 70, painted as u16).len(),
+            permission_lines(&app, 70, region).len(),
             painted,
-            "{target} at height {height} is stable"
+            "{target} at height {height} is stable at the region's height"
         );
     }
 }
@@ -510,21 +492,31 @@ fn the_cursor_seat_follows_the_highlighted_option() {
 }
 
 #[test]
-fn the_cursor_seat_follows_the_option_on_a_capped_prompt() {
-    // A body too tall for the terminal is capped and the prompt padded to fill
-    // it exactly. The padding sits *above* the question — never between the
-    // options and the closing rule — so the option block keeps its fixed seat
-    // at the bottom and the cursor can be found from that edge.
+fn the_cursor_seat_follows_the_option_on_a_flowing_prompt() {
+    // A page taller than the terminal bottom-anchors (docs/view-flow.md): the
+    // tail block — question, options, hints, rule — closes the page, so the
+    // anchor keeps it flush at the region's bottom and the cursor is still
+    // found from that edge. The marker's *page* row maps to its screen row by
+    // the skipped top (`view_body_skip`).
     let body: String = (1..=200).map(|n| format!("{n} line {n}\n")).collect();
     let mut app = app_with(request(PermissionKind::Write, "big.py", &body));
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-    let (marker, (x, y)) = marker_row_and_cursor(&app, 70, 30);
+    let (width, height) = (70u16, 30u16);
+    let lines = permission_lines(&app, width, height);
+    let skip = lines.len() - usize::from(height);
+    assert!(skip > 0, "the page flows: {} rows", lines.len());
+    let marker = lines
+        .iter()
+        .position(|l| plain(l).starts_with(" ❯ "))
+        .expect("the selected option row");
+    assert!(marker >= skip, "the option block is in the painted tail");
+    let area = Rect::new(0, 0, width, permission_height(&app, width, height).unwrap());
+    let (x, y) = cursor_position(area, &app);
     assert_eq!(
-        permission_lines(&app, 70, 30).len(),
-        30,
-        "it fills the screen"
+        y,
+        (marker - skip) as u16,
+        "the seat lands on the painted ❯ row"
     );
-    assert_eq!(y, marker, "still on the highlighted option row");
     assert_eq!(x, 3);
 }
 
@@ -685,26 +677,8 @@ fn a_big_batch_of_waiting_siblings_never_squeezes_out_the_body() {
     assert_eq!(permission_lines(&app, 80, painted as u16).len(), painted);
 }
 
-#[test]
-fn a_big_batch_keeps_a_minimum_body_even_when_the_body_is_tall() {
-    // A tall body under a big batch: the guaranteed floor shows several
-    // numbered rows plus the `… +N lines` tail, never nothing.
-    let body: String = (1..=120).map(|n| format!("{n:>3} line {n}\n")).collect();
-    let app = pending_batch_with(15, body.trim_end());
-    let lines = rows(&app, 80, 44);
-    assert!(lines.len() <= 44, "{}", lines.len());
-    let shown = lines.iter().filter(|l| l.contains(" line ")).count();
-    assert!(
-        shown >= 5,
-        "a real slice of the body shows ({shown} rows): {lines:?}"
-    );
-    assert!(
-        lines
-            .iter()
-            .any(|l| l.contains("… +") && l.contains("lines")),
-        "the body's own tail says what was cut: {lines:?}"
-    );
-}
+// (A tall body under a big batch is `an_overflowing_prompt_drops_its_context_cells`
+// below: the page flows whole and the context gives way — docs/view-flow.md.)
 
 #[test]
 fn a_small_batch_keeps_every_sibling_with_no_summary() {
@@ -935,5 +909,84 @@ fn a_parallel_mcp_batch_shows_one_context_cell_above_the_prompt() {
     assert!(
         !text.iter().any(|r| r.contains("Waiting…")),
         "one line for the batch, not one per call: {text:?}"
+    );
+}
+
+// --- the view flow (docs/view-flow.md): the body shows whole and the page
+// flows into scrollback instead of capping with a `… +N lines` tail ---
+
+#[test]
+fn a_body_too_tall_for_the_terminal_flows_instead_of_capping() {
+    // The point of the prompt is that you read what you are approving — ALL
+    // of it. A body taller than the terminal no longer caps: the page builds
+    // whole (the tail block at its end, where the bottom anchor keeps it on
+    // screen) and the top flows into real scrollback like every framed view.
+    let body: String = (1..=200)
+        .map(|n| format!("{n:>3} line {n}\n"))
+        .collect::<String>();
+    let app = app_with(request(PermissionKind::Write, "big.py", body.trim_end()));
+    let lines = rows(&app, 70, 24);
+    assert!(
+        lines.len() > 24,
+        "the page overflows the terminal instead of capping: {}",
+        lines.len()
+    );
+    assert!(lines.iter().any(|l| l.contains("line 1")), "{lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("line 200")),
+        "the whole body is present: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("… +")),
+        "no `… +N lines` tail below the ceiling: {lines:?}"
+    );
+    // The tail block closes the page, so the anchor keeps it on screen: the
+    // last 24 rows must hold the question, the options and the hints.
+    let tail: Vec<&String> = lines[lines.len() - 24..].iter().collect();
+    assert!(tail.iter().any(|l| l.contains("Do you want to create")));
+    assert!(tail.iter().any(|l| l.contains("3. No")));
+    assert!(tail.iter().any(|l| l.contains("Esc to cancel")));
+    assert!(tail.last().unwrap().starts_with('─'), "the closing rule");
+}
+
+#[test]
+fn an_overflowing_prompt_drops_its_context_cells() {
+    // The context above the frame (the asked-about cell, a live agent tree)
+    // can tick — a flowed row is frozen in scrollback, so ticking content
+    // must never flow. When even the collapsed context cannot make the page
+    // fit, the context drops whole and only the static frame flows.
+    let body: String = (1..=120).map(|n| format!("{n:>3} line {n}\n")).collect();
+    let app = pending_batch_with(15, body.trim_end());
+    let lines = rows(&app, 80, 44);
+    assert!(lines.len() > 44, "the page flows: {}", lines.len());
+    assert!(
+        !lines.iter().any(|l| l.contains("Waiting…")),
+        "no context cell on an overflowing prompt: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("more waiting")),
+        "no collapsed-context summary either: {lines:?}"
+    );
+    assert!(
+        lines[0].starts_with('─'),
+        "the page opens at the frame's rule: {:?}",
+        lines[0]
+    );
+    let shown = lines.iter().filter(|l| l.contains(" line ")).count();
+    assert_eq!(shown, 120, "the whole body shows: {shown}");
+}
+
+#[test]
+fn a_pathological_body_still_caps_at_the_ceiling() {
+    // Unbounded is not a goal: the page is rebuilt every draw tick, so a
+    // multi-megabyte write caps at PERMISSION_BODY_MAX_ROWS with the familiar
+    // tail — far past anything a human reviews, bounded for the render loop.
+    let over = crate::ui::theme::PERMISSION_BODY_MAX_ROWS + 50;
+    let body: String = (1..=over).map(|n| format!("line {n}\n")).collect();
+    let app = app_with(request(PermissionKind::Write, "big.py", body.trim_end()));
+    let lines = rows(&app, 70, 24);
+    assert!(
+        lines.iter().any(|l| l.contains("… +50 lines")),
+        "the ceiling's tail counts the excess: {lines:?}"
     );
 }

@@ -320,8 +320,11 @@ permission requests** (Claude-Code's ask-before-you-change: the `approve` seam
 `llm::agent::run_agent` consults before every `write`/`edit`/`bash` call's
 `ToolStart` raises an inline modal — a coloured `Create file`/`Edit file`/`Bash
 command` title (`· from the {type} agent` when a subagent asked), the target,
-the **whole** numbered content/diff framed by `╌` rules (capped only to fit the
-terminal, with a `… +N lines` tail), the question, and `❯ 1. Yes` / `2. Yes,
+the **whole** numbered content/diff framed by `╌` rules (shown whole — a page
+taller than the terminal bottom-anchors and flows its top into real
+scrollback like every framed view, `docs/view-flow.md`; the `… +N lines`
+tail survives only past the `PERMISSION_BODY_MAX_ROWS` per-tick-build safety
+ceiling), the question, and `❯ 1. Yes` / `2. Yes,
 allow all edits during this session (ctrl+a)` — for `bash`, `2. Yes, and don't
 ask again for: {rule}` where the rule reads `python3 *` for a prefix scope
 (the star = any arguments; an exact-only scope shows the whole command, no
@@ -350,7 +353,10 @@ with no content) and push the options off the bottom, so `permission_lines`
 reserves its fixed rows plus a body floor (`PERMISSION_MIN_BODY_ROWS`, the
 peek size; a shorter body reserves only its own height) and collapses the
 cells that don't fit into one dim `… +N more waiting` row, the first chunk —
-the asked-about call, or the tree that asked — never dropped); the region
+the asked-about call, or the tree that asked — never dropped on a fitting
+page, while a page that **flows** drops the context whole (a live tree's
+counters tick, and a flowed row is frozen in scrollback — only the static
+frame flows, `docs/view-flow.md`)); the region
 **grows like any other** (ordinary `ui::repin`, invariant 3): the chat above
 the prompt scrolls into the terminal's **real scrollback**, so the newest
 messages sit right above the question — Claude Code's picture — and the user

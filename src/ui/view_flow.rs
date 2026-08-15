@@ -55,19 +55,29 @@ pub struct ViewFlow {
 
 /// The full page lines of the flow-eligible framed view currently **painted**
 /// — `None` when none is. Eligibility mirrors `render_live_with_preview`'s
-/// precedence exactly: a view flows only while it is the one on screen, so an
-/// ask/permission modal (which paints *instead* of everything below it, with
-/// its own cap-and-pad layout) suppresses the flow, and the boundary's
-/// signature check then cleans any flowed rows up. Every content-driven
-/// framed view flows — the windowed pickers included: their pages are line
-/// builders like the menus' (`docs/view-flow.md`), and though their search
-/// line sits in the page top, a keystroke re-signs the flow so the typed
-/// query re-flows with it. The one stay-out is the ↓ background manager,
-/// whose details page live-tails a running shell — per-frame content would
-/// churn the flow's purge rebuild every tick, so it bottom-anchors only.
-fn flow_view_lines(app: &App, width: u16) -> Option<Vec<Line<'static>>> {
-    if app.ask().is_some() || app.permission().is_some() {
+/// precedence exactly: a view flows only while it is the one on screen, so
+/// the ask modal (which paints *instead* of everything below it, with its
+/// own paging layout) suppresses the flow, and the boundary's signature
+/// check then cleans any flowed rows up. Every content-driven framed view
+/// flows — the permission prompt and the windowed pickers included: their
+/// pages are line builders like the menus' (`docs/view-flow.md`). The
+/// prompt's builder needs `term_height` for its keep-context decision (a
+/// ticking agent tree rides only a page that fits — never the flow); a
+/// picker's search line sits in the page top, and a keystroke re-signs the
+/// flow so the typed query re-flows with it. The one stay-out is the ↓
+/// background manager, whose details page live-tails a running shell —
+/// per-frame content would churn the flow's purge rebuild every tick, so it
+/// bottom-anchors only.
+fn flow_view_lines(app: &App, width: u16, term_height: u16) -> Option<Vec<Line<'static>>> {
+    if app.ask().is_some() {
         return None;
+    }
+    if app.permission().is_some() {
+        return Some(super::permission_view::permission_lines(
+            app,
+            width,
+            term_height,
+        ));
     }
     if let Some(picker) = &app.model_picker {
         return Some(super::model_view::model_view_lines(picker, width));
@@ -103,7 +113,7 @@ fn flow_view_lines(app: &App, width: u16) -> Option<Vec<Line<'static>>> {
 /// so a pathological page can't turn one navigation into an unbounded write.
 #[must_use]
 pub fn view_flow(app: &App, width: u16, term_height: u16, max_rows: usize) -> Option<ViewFlow> {
-    let mut lines = flow_view_lines(app, width)?;
+    let mut lines = flow_view_lines(app, width, term_height)?;
     // The region is clamped to the terminal and the body is bottom-pinned
     // (`view_split` squeezes the strip first), so the painted tail is the
     // page's last `term_height` rows — anything above them flows.

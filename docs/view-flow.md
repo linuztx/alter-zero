@@ -79,14 +79,28 @@ pathological page can't turn one navigation into an unbounded write.
   body top (`anchored_view_row`, the seat's skip subtraction). Their pages
   are bounded by construction (windowed lists, ~15–18 rows), so this regime
   only exists on terminals shorter than that.
+- **Flow + bottom anchor, with a context rule**: the tool-permission prompt
+  (`docs/permissions.md`). Its body — the numbered write/diff, the command —
+  shows **whole** now (the retired cap hid the middle behind a `… +N lines`
+  tail; the tail survives only past the `PERMISSION_BODY_MAX_ROWS` safety
+  ceiling, since the page is rebuilt and highlighted every draw tick). The
+  tail block — question, options, hints — closes the page, so the anchor
+  keeps it on screen; ↑/↓ restyle rows inside the painted tail, so the
+  flowed top holds its signature. The one extra rule: the **context cells**
+  above the frame (the asked-about call, a live agent tree) ride only a page
+  that *fits* — a live tree's counters tick, and a flowed row is frozen in
+  scrollback, so when even the collapsed context cannot make the page fit it
+  drops whole and only the static frame flows. The builder stays a fixpoint
+  at the height the region actually gets, so `permission_height` and
+  `render_permission` can never disagree.
 - **Bottom anchor only**: the ↓ background manager. Its details page
   live-tails a running shell — per-frame content whose flow signature would
   churn a purge rebuild every tick — and it is bounded by design
   (`BG_OUTPUT_ROWS`), so anchoring alone keeps its interactive tail visible
   on a squeezed terminal.
-- **Unchanged**: the permission/ask modals keep their own engineered
-  cap-and-pad layout, whose options are already pinned against the bottom
-  rule (`docs/permissions.md`, `docs/ask.md`).
+- **Unchanged**: the ask modal keeps its own paging layout — its question
+  tabs are pages of their own, and its preview panels are side-by-side
+  geometry a line flow has no answer for (`docs/ask.md`).
 
 ## Why not…
 
