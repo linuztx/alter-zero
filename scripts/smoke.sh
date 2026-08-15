@@ -352,9 +352,9 @@ printf '%s\n' "$overlay_stream"
 tmux kill-session -t "$S_OVL" 2>/dev/null
 
 # --- Phase 4: the slash-command palette. Typing "/" opens the command list below
-# the box, capped at 8 rows (/quit, the registry's last, starts off-window); ↓ walks the
-# selection down and the window scrolls /quit in (menu_window); running /help
-# posts a system notice listing them. ---
+# the box, capped at 8 rows (/quit, the registry's last, starts off-window); ↑
+# wraps the selection to the last row and the window scrolls /quit in
+# (menu_window); running /help posts a system notice listing them. ---
 # Clear the leftover "AAA\nBBB" draft from Phase 2 first — the palette only opens
 # when the input *starts* with "/".
 for _ in $(seq 1 12); do
@@ -367,29 +367,24 @@ palette_open="$(tmux capture-pane -t "$S" -p)"
 echo "==== captured pane (slash palette open) ===="
 printf '%s\n' "$palette_open"
 
-# ↓ to the last command: the 8-row window scrolls (the top rows leave, /quit
-# arrives) instead of the band growing. Press ↓ far MORE times than there are
-# commands rather than exactly enough — the selection clamps at the last row,
-# so this reaches /quit whatever the registry's length is. Counting presses
-# pinned the command count here, and every later feature that added one failed
-# in this phase instead of its own (docs/settings.md's /settings, then
-# docs/hooks-menu.md's /hooks, then docs/skills.md's /skills) — the same
-# lesson the (n/total) counter below already learned.
-for _ in $(seq 1 40); do
-	tmux send-keys -t "$S" Down
-done
+# ↑ once to the last command: the selection WRAPS at the ends (↑ from the
+# first row lands on the last, ↓ from the last on the first — every menu's
+# grammar now), so a single ↑ from the top row is the count-independent "go
+# to /quit, the registry's last" — no pinned command count for a later
+# feature's new command to break (docs/settings.md's /settings, then
+# docs/hooks-menu.md's /hooks, then docs/skills.md's /skills each broke the
+# old counted walk; the over-press-↓-and-clamp idiom that replaced it died
+# with the clamp — 40 ↓ now land at 40 % n). The 8-row window follows the
+# selection, so the top rows leave and /quit scrolls in (menu_window).
+tmux send-keys -t "$S" Up
 sleep 0.3
 palette_scrolled="$(tmux capture-pane -t "$S" -p)"
 echo "==== captured pane (slash palette scrolled to /quit) ===="
 printf '%s\n' "$palette_scrolled"
 
-# Back to the top (the window follows the selection up again) so Enter runs
-# /help, not /quit. At LEAST as many ↑ as the ↓ above, or the highlight lands
-# short of the top and Enter runs the wrong command — the selection clamps at
-# row 0, so over-pressing is the count-independent way to say "go to the top".
-for _ in $(seq 1 40); do
-	tmux send-keys -t "$S" Up
-done
+# Back to the top the same way — one ↓ from the last row wraps to row 0 (the
+# window follows the selection up again) so Enter runs /help, not /quit.
+tmux send-keys -t "$S" Down
 sleep 0.3
 
 # Run /help (highlighted first) → posts a system notice listing the commands.
