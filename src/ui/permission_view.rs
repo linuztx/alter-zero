@@ -507,22 +507,62 @@ pub fn permission_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'st
     // with (the blank after the cells, the rule, its gap, the title, the
     // target/gap row) — so a big parallel batch collapses its excess
     // `⎿ Waiting…` siblings into the summary row instead of squeezing the
-    // body out (see [`context_lines`]). And they ride only a page that
-    // **fits**: past that the page flows into scrollback, where a ticking
-    // agent tree would freeze — the frame is static per prompt, the context
-    // is not, so the context gives way whole (`docs/view-flow.md`).
+    // body out (see [`context_lines`]).
     let context_budget = usize::from(term_height).saturating_sub(
         5 + below_len + framing + 2 /* the gap + rule */ + body_reserve(request, file_change),
     );
-    let context = context_lines(app, width, context_budget);
-    if !context.is_empty() && context.len() + 1 + frame.len() <= usize::from(term_height) {
-        let mut out = context;
-        out.push(Line::default());
-        out.extend(frame);
-        out
+    let budgeted = context_lines(app, width, context_budget);
+    let context = if budgeted.is_empty() {
+        Vec::new()
+    } else if budgeted.len() + 1 + frame.len() <= usize::from(term_height) {
+        // The page fits with the (possibly collapsed) context above it.
+        budgeted
+    } else if context_is_stable(app) {
+        // The page flows. A queued cell is static text while the prompt
+        // blocks — nothing has started, the approve seam runs *before*
+        // `ToolStart` — so it rides the flow into scrollback safely, and
+        // dropping it instead is pure loss: the prompt becomes a box out of
+        // nowhere (the reported bug). It rides **whole**, uncollapsed: there
+        // is no screenful left to compete for once the page flows, so hiding
+        // siblings behind a summary row would lose them for nothing. Building
+        // it without the budget also keeps the page independent of
+        // `term_height` here, which is what keeps the builder a fixpoint at
+        // the region's own height (`docs/view-flow.md`).
+        context_lines(app, width, usize::MAX)
     } else {
-        frame
+        // …unless it **ticks**: a live agent group's bullet breathes at the
+        // frame pulse and its counters advance as the agents work. A flowed
+        // row is frozen in scrollback, so ticking content would either go
+        // stale there or re-sign the flow into a purge rebuild per tick. It
+        // gives way, and only the static frame flows.
+        Vec::new()
+    };
+    if context.is_empty() {
+        return frame;
     }
+    let mut out = context;
+    out.push(Line::default());
+    out.extend(frame);
+    out
+}
+
+/// Whether the context cells above the prompt are **static** for as long as
+/// it is open — the test for whether they may ride a flowing page into the
+/// terminal's frozen scrollback (`docs/view-flow.md`).
+///
+/// A queued call is: the approve seam runs before its `ToolStart`, so a
+/// `⎿ Waiting…` cell cannot change while the answer is pending. Two things
+/// are not, and both are about something still *moving*: a **live agent
+/// group** (its bullet breathes at the frame pulse, its `{n} tool uses ·
+/// {tokens} tokens` counters advance) and a **running call** — the main
+/// turn's own, under a subagent's request — whose streamed output grows the
+/// cell's peek. Either one is enough to hold the whole context back.
+fn context_is_stable(app: &App) -> bool {
+    app.agent_group().is_none()
+        && app
+            .tool_queue()
+            .iter()
+            .all(|tool| tool.status != ToolStatus::Running)
 }
 
 /// The body rows the context cap must leave free: the body's own natural

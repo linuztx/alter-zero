@@ -86,13 +86,23 @@ pathological page can't turn one navigation into an unbounded write.
   ceiling, since the page is rebuilt and highlighted every draw tick). The
   tail block — question, options, hints — closes the page, so the anchor
   keeps it on screen; ↑/↓ restyle rows inside the painted tail, so the
-  flowed top holds its signature. The one extra rule: the **context cells**
-  above the frame (the asked-about call, a live agent tree) ride only a page
-  that *fits* — a live tree's counters tick, and a flowed row is frozen in
-  scrollback, so when even the collapsed context cannot make the page fit it
-  drops whole and only the static frame flows. The builder stays a fixpoint
-  at the height the region actually gets, so `permission_height` and
-  `render_permission` can never disagree.
+  flowed top holds its signature. The **context cells** above the frame ride
+  the flow like everything else, on one condition — they must be *static*
+  (`context_is_stable`): a queued `⎿ Waiting…` cell is, since the approve
+  seam runs before its `ToolStart` and nothing can change while the answer
+  is pending, so it flows into scrollback whole and uncollapsed (there is no
+  screenful left to compete for, so a `… +N more waiting` summary would hide
+  siblings for nothing). A **live agent group** or a **running call** is not
+  — the tree's bullet breathes at the frame pulse and its counters advance,
+  a running call's streamed output grows its peek — and a flowed row is
+  frozen in scrollback, so ticking content would go stale there or re-sign
+  the flow into a purge rebuild per tick; that context gives way and only
+  the static frame flows. Dropping the static cell instead was the reported
+  regression: it left the prompt a box out of nowhere, with the cell in no
+  buffer at all. The builder stays a fixpoint at the height the region
+  actually gets — building the flowed context without the budget is what
+  keeps the page independent of `term_height` there — so
+  `permission_height` and `render_permission` can never disagree.
 - **Bottom anchor only**: the ↓ background manager. Its details page
   live-tails a running shell — per-frame content whose flow signature would
   churn a purge rebuild every tick — and it is bounded by design

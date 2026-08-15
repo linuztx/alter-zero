@@ -796,18 +796,27 @@ fn the_render_paints_exactly_the_prompt_rows() {
 
 #[test]
 fn the_context_rows_count_against_the_body_budget() {
-    // The reserved height must still equal the painted rows once the cell
-    // above the prompt takes its share of the terminal.
+    // The height contract holds once the cell above the prompt takes its
+    // share of the terminal: the region is the page clamped to the terminal,
+    // and the builder is a fixpoint at that region's own height — including
+    // the short terminals where the page (context and all) flows.
     let app = pending_write();
     for height in [40u16, 24, 18] {
         let painted = permission_lines(&app, 70, height).len();
-        assert_eq!(permission_height(&app, 70, height), Some(painted as u16));
+        let region = painted.min(usize::from(height)) as u16;
+        assert_eq!(permission_height(&app, 70, height), Some(region));
         assert_eq!(
-            permission_lines(&app, 70, painted as u16).len(),
+            permission_lines(&app, 70, region).len(),
             painted,
             "stable at height {height}"
         );
-        assert!(painted <= usize::from(height), "fits at height {height}");
+        // The cell rides the page at every height — dropping it would leave
+        // the prompt a box out of nowhere (docs/permissions.md).
+        let text: Vec<String> = permission_lines(&app, 70, height)
+            .iter()
+            .map(plain)
+            .collect();
+        assert_eq!(text[0], "● Write(tt.py)", "at height {height}: {text:?}");
     }
 }
 
@@ -950,30 +959,67 @@ fn a_body_too_tall_for_the_terminal_flows_instead_of_capping() {
 }
 
 #[test]
-fn an_overflowing_prompt_drops_its_context_cells() {
-    // The context above the frame (the asked-about cell, a live agent tree)
-    // can tick — a flowed row is frozen in scrollback, so ticking content
-    // must never flow. When even the collapsed context cannot make the page
-    // fit, the context drops whole and only the static frame flows.
+fn an_overflowing_prompt_keeps_its_static_context_cells() {
+    // The reported regression: on a terminal too short for the page, the
+    // `● Write(…)` / `⎿ Waiting…` cell vanished entirely — not on screen, not
+    // in scrollback — so the prompt read as a box out of nowhere. A queued
+    // cell is *static text* while the prompt blocks (nothing has started —
+    // the approve seam runs before `ToolStart`), so it flows into scrollback
+    // safely like the rest of the page. It rides **whole**, uncollapsed:
+    // there is no screenful to compete for once the page flows, so hiding
+    // siblings behind a `… +N more waiting` summary would lose them for
+    // nothing.
     let body: String = (1..=120).map(|n| format!("{n:>3} line {n}\n")).collect();
     let app = pending_batch_with(15, body.trim_end());
     let lines = rows(&app, 80, 44);
     assert!(lines.len() > 44, "the page flows: {}", lines.len());
-    assert!(
-        !lines.iter().any(|l| l.contains("Waiting…")),
-        "no context cell on an overflowing prompt: {lines:?}"
+    assert_eq!(lines[0], "● Write(nexgrad/viz.py)", "the asked-about call");
+    assert_eq!(lines[1], "  ⎿  Waiting…", "…keeps its cell: {lines:?}");
+    assert_eq!(
+        lines.iter().filter(|l| l.contains("Waiting…")).count(),
+        15,
+        "every queued sibling rides the flow: {lines:?}"
     );
     assert!(
         !lines.iter().any(|l| l.contains("more waiting")),
-        "no collapsed-context summary either: {lines:?}"
+        "nothing is collapsed on a flowing page: {lines:?}"
+    );
+    let shown = lines.iter().filter(|l| l.contains(" line ")).count();
+    assert_eq!(shown, 120, "the whole body shows: {shown}");
+}
+
+#[test]
+fn an_overflowing_prompt_drops_a_ticking_agent_tree() {
+    // The one context that may NOT flow: a live agent group. Its bullet
+    // breathes at the frame pulse and its `{n} tool uses · {tokens} tokens`
+    // counters advance as the agents work — and a flowed row is frozen in
+    // scrollback, so it would either go stale there or re-sign the flow into
+    // a purge rebuild per tick. When the page cannot fit it, it gives way and
+    // only the static frame flows.
+    let body: String = (1..=120).map(|n| format!("{n:>3} line {n}\n")).collect();
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "audit the tests", false)]);
+    let mut req = request(PermissionKind::Write, "nexgrad/viz.py", body.trim_end());
+    req.agent = Some("general-purpose".to_string());
+    app.open_permission(req);
+    let lines = rows(&app, 80, 44);
+    assert!(lines.len() > 44, "the page flows: {}", lines.len());
+    assert!(
+        !lines.iter().any(|l| l.contains("audit the tests")),
+        "the ticking tree gave way: {lines:?}"
     );
     assert!(
         lines[0].starts_with('─'),
         "the page opens at the frame's rule: {:?}",
         lines[0]
     );
-    let shown = lines.iter().filter(|l| l.contains(" line ")).count();
-    assert_eq!(shown, 120, "the whole body shows: {shown}");
+    // …and it is kept whole on a terminal that fits the page.
+    let tall = rows(&app, 80, 200);
+    assert!(
+        tall.iter().any(|l| l.contains("audit the tests")),
+        "a fitting page keeps the tree: {tall:?}"
+    );
 }
 
 #[test]

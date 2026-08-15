@@ -353,10 +353,14 @@ with no content) and push the options off the bottom, so `permission_lines`
 reserves its fixed rows plus a body floor (`PERMISSION_MIN_BODY_ROWS`, the
 peek size; a shorter body reserves only its own height) and collapses the
 cells that don't fit into one dim `… +N more waiting` row, the first chunk —
-the asked-about call, or the tree that asked — never dropped on a fitting
-page, while a page that **flows** drops the context whole (a live tree's
-counters tick, and a flowed row is frozen in scrollback — only the static
-frame flows, `docs/view-flow.md`)); the region
+the asked-about call, or the tree that asked — never dropped; on a page that
+**flows** the context rides along whole and uncollapsed when it is *static*
+(a queued `⎿ Waiting…` cell cannot change — the approve seam runs before its
+`ToolStart`), and gives way only when it **ticks** (a live agent tree's
+breathing bullet and advancing counters, a running call's streamed peek —
+a flowed row is frozen in scrollback, so ticking content would go stale
+there or re-sign the flow into a purge rebuild per tick;
+`context_is_stable`, `docs/view-flow.md`)); the region
 **grows like any other** (ordinary `ui::repin`, invariant 3): the chat above
 the prompt scrolls into the terminal's **real scrollback**, so the newest
 messages sit right above the question — Claude Code's picture — and the user

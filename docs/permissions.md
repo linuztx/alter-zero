@@ -97,14 +97,25 @@ floor for the body (the body's own height when short, else
 `PERMISSION_MIN_BODY_ROWS` — the inline peek size), and the context keeps
 whole cells in queue order while they fit, collapsing the excess into one dim
 `… +N more waiting` row; a body naturally shorter than the floor reserves
-only what it needs, handing the rest back to the siblings. And the context
-rides only a page that **fits the terminal**: a live agent tree's counters
-tick, and a flowed row is frozen in scrollback, so when even the collapsed
-context cannot make the page fit — a body tall enough to flow — the context
-drops whole and only the static frame flows (`docs/view-flow.md`). On a
-fitting page the first chunk — the agent tree that asked, else the
-asked-about call itself — is never dropped, so the prompt stays a question
-about something on screen.
+only what it needs, handing the rest back to the siblings. The first chunk —
+the agent tree that asked, else the asked-about call itself — is never
+dropped, so the prompt stays a question about something on screen.
+
+When the page **flows** (a body taller than the terminal), the context flows
+with it — provided it is *static*. A queued `⎿ Waiting…` cell is: the approve
+seam runs before its `ToolStart`, so nothing can change while the answer is
+pending, and it rides into scrollback **whole and uncollapsed** (there is no
+screenful left to compete for, so hiding siblings behind the summary row
+would lose them for nothing). A **live agent group** or a **running call** is
+not — the tree's bullet breathes at the frame pulse and its `{n} tool uses ·
+{tokens} tokens` counters advance, a running call's streamed output grows its
+peek — and a flowed row is frozen in scrollback, so ticking content would go
+stale there or re-sign the flow into a purge rebuild every tick
+(`context_is_stable`, `docs/view-flow.md`). That context gives way and only
+the static frame flows. Dropping the *static* cell too was a regression: on a
+short terminal the `● Write(…)` header vanished from screen **and**
+scrollback, leaving exactly the box out of nowhere this section exists to
+prevent.
 
 ## The screen it scrolls, and gives back
 
