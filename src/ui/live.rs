@@ -404,21 +404,21 @@ pub fn render_live_with_preview(
     // reported bug; the ↓ manager band's rule — `docs/llm.md`,
     // `docs/background.md`). `model_picker_height` reserves the same sum.
     if let Some(picker) = &app.model_picker {
-        let [strip, body] = view_split(area, model_picker_rows(picker));
+        let [strip, body] = view_split(area, model_picker_rows(picker, area.width));
         render_strip_above(strip, buf, app, stream_preview);
         render_model_picker(body, buf, picker);
         return;
     }
     // The inline `/login` onboarding flow sits under the same strip.
     if let Some(onboarding) = &app.key_onboarding {
-        let [strip, body] = view_split(area, key_onboarding_rows(onboarding));
+        let [strip, body] = view_split(area, key_onboarding_rows(onboarding, area.width));
         render_strip_above(strip, buf, app, stream_preview);
         render_key_onboarding(body, buf, onboarding);
         return;
     }
     // …and so does the inline `/settings` menu. See `docs/settings.md`.
     if app.settings_picker.is_some() {
-        let [strip, body] = view_split(area, super::settings_view::settings_rows(app));
+        let [strip, body] = view_split(area, super::settings_view::settings_rows(app, area.width));
         render_strip_above(strip, buf, app, stream_preview);
         render_settings(body, buf, app);
         return;

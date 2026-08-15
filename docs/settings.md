@@ -144,9 +144,12 @@ The layout is the `/model` picker's plus one hint row:
 rule · gap · ❯ search · gap · [rows] · (n/total) · gap · description · gap · hint · gap · rule
 ```
 
-— eleven fixed rows (`SETTINGS_CHROME_ROWS`) around a list capped at
+— eleven fixed chrome rows around a list capped at
 `SETTINGS_MENU_MAX_ROWS`, windowed by the shared `centered_window` so the
-selection stays centred. Unlike `/model` the chrome never collapses: there is
+selection stays centred; the whole page is one line builder
+(`settings_view_lines` — the `/mcp` family's shape, its height the built line
+count, painted bottom-anchored with the skipped top flowing into scrollback,
+`docs/view-flow.md`). Unlike `/model` the chrome never collapses: there is
 always at least one setting, and a search that matches nothing still shows its
 placeholder in the same frame.
 

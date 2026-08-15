@@ -85,16 +85,6 @@ fn skills_empty_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     }
 }
 
-/// How many rows the menu's **list** occupies: the row count capped at
-/// [`SETTINGS_MENU_MAX_ROWS`], else the placeholder block's height. Must equal
-/// `skills_list_lines(..).len()`.
-fn skills_list_rows(app: &App, rows: usize, width: u16) -> u16 {
-    if rows == 0 {
-        return u16::try_from(skills_empty_lines(app, width).len()).unwrap_or(1);
-    }
-    (rows as u16).min(SETTINGS_MENU_MAX_ROWS)
-}
-
 /// The menu's list lines: the rows windowed ([`centered_window`]) to keep the
 /// selection **centered** and capped at [`SETTINGS_MENU_MAX_ROWS`], else the
 /// placeholder block.
@@ -135,11 +125,58 @@ fn skills_counter_line(rows: &[SkillMenuRow], selected: usize) -> Line<'static> 
     ])
 }
 
-/// The rows the menu's own frame occupies: the fixed chrome plus the (possibly
-/// scrolled) list. What [`skills_menu_height`] reserves under the strip, and
-/// what [`render_live`] hands [`render_skills_menu`].
+/// The whole framed page as lines: a top rule, the `❯` search line, the
+/// session-off note (blank when skills are on — always emitted, so the frame
+/// doesn't jump), the windowed skill rows, the `(n/total)` counter, the
+/// highlighted skill's description, the key hint, and a bottom rule —
+/// blank-gapped exactly as the retired internal `Layout` stacked them. What
+/// [`render_skills_menu`] paints (bottom-anchored) and [`skills_menu_rows`]
+/// counts, so the two can never disagree (`docs/view-flow.md`). Empty when
+/// the menu is closed.
+pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(menu) = app.skills_menu.as_ref() else {
+        return Vec::new();
+    };
+    let rows = app.skill_menu_rows();
+    let selected = menu.selected;
+    let search_line = Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
+        Span::raw(menu.query.clone()),
+    ]);
+    let note_line = if menu.session_enabled {
+        Line::default()
+    } else {
+        model_placeholder_row(SKILLS_SESSION_OFF, TOAST_ERROR_COLOR, width)
+    };
+    let description_line = rows
+        .get(selected.min(rows.len().saturating_sub(1)))
+        .map_or_else(Line::default, |row| {
+            model_placeholder_row(&row.description, MODEL_META_COLOR, width)
+        });
+    let mut lines = vec![
+        model_rule(width),
+        Line::default(),
+        search_line,
+        note_line,
+        Line::default(),
+    ];
+    lines.extend(skills_list_lines(app, &rows, selected, width));
+    lines.push(skills_counter_line(&rows, selected));
+    lines.push(Line::default());
+    lines.push(description_line);
+    lines.push(Line::default());
+    lines.push(model_placeholder_row(SKILLS_HINT, MODEL_META_COLOR, width));
+    lines.push(Line::default());
+    lines.push(model_rule(width));
+    lines
+}
+
+/// The rows the menu's own frame occupies — the built page's line count
+/// ([`skills_view_lines`]). What [`skills_menu_height`] reserves under the
+/// strip, and what [`render_live`] hands [`render_skills_menu`].
 pub(super) fn skills_menu_rows(app: &App, width: u16) -> u16 {
-    SKILLS_CHROME_ROWS + skills_list_rows(app, app.skill_menu_rows().len(), width)
+    u16::try_from(skills_view_lines(app, width).len()).unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/skills` menu is open, or `None`
@@ -162,74 +199,10 @@ pub fn skills_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16
 /// composer: a top rule, the `❯` search line, the session-off note (blank when
 /// skills are on), the skill rows (`→ {name}  {enabled|disabled}`), a
 /// `(n/total)` counter, the highlighted skill's description, the key hint, and
-/// a bottom rule. Pure — `render_live` paints this. See `docs/skills.md`.
+/// a bottom rule — bottom-anchored, so a squeezed area keeps the list and the
+/// closing chrome on screen while the skipped top flows into scrollback
+/// (`docs/view-flow.md`). Pure — `render_live` paints this. See
+/// `docs/skills.md`.
 pub fn render_skills_menu(area: Rect, buf: &mut Buffer, app: &App) {
-    let Some(menu) = app.skills_menu.as_ref() else {
-        return;
-    };
-    let rows = app.skill_menu_rows();
-    let selected = menu.selected;
-
-    let [
-        top_rule,
-        _gap1,
-        search,
-        note,
-        _gap2,
-        list,
-        counter,
-        _gap3,
-        description,
-        _gap4,
-        hint,
-        _gap5,
-        bottom_rule,
-    ] = Layout::vertical([
-        Constraint::Length(1), // top rule
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // search
-        Constraint::Length(1), // the session-off note (blank when on)
-        Constraint::Length(1), // gap
-        Constraint::Min(0),    // skill list
-        Constraint::Length(1), // counter
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // description of the highlighted row
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // key hint
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // bottom rule
-    ])
-    .areas(area);
-
-    let search_line = Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
-        Span::raw(menu.query.clone()),
-    ]);
-    // The row is always reserved, so turning the session switch off doesn't
-    // make the frame jump — it just fills in.
-    let note_line = if menu.session_enabled {
-        Line::default()
-    } else {
-        model_placeholder_row(SKILLS_SESSION_OFF, TOAST_ERROR_COLOR, area.width)
-    };
-    let description_line = rows
-        .get(selected.min(rows.len().saturating_sub(1)))
-        .map_or_else(Line::default, |row| {
-            model_placeholder_row(&row.description, MODEL_META_COLOR, area.width)
-        });
-
-    Paragraph::new(model_rule(area.width)).render(top_rule, buf);
-    Paragraph::new(search_line).render(search, buf);
-    Paragraph::new(note_line).render(note, buf);
-    Paragraph::new(skills_list_lines(app, &rows, selected, area.width)).render(list, buf);
-    Paragraph::new(skills_counter_line(&rows, selected)).render(counter, buf);
-    Paragraph::new(description_line).render(description, buf);
-    Paragraph::new(model_placeholder_row(
-        SKILLS_HINT,
-        MODEL_META_COLOR,
-        area.width,
-    ))
-    .render(hint, buf);
-    Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
+    super::view_flow::render_framed_tail(area, buf, skills_view_lines(app, area.width));
 }

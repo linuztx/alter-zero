@@ -61,24 +61,32 @@ pathological page can't turn one navigation into an unbounded write.
 
 ## Scope — which views flow
 
-- **Flow + bottom anchor**: `/mcp`, `/hooks`, `/trust` — content pages whose
-  interaction sits at the bottom of the frame (action rows, `Esc to go back`)
-  and whose content is **static per state**: it changes only on a user
+- **Flow + bottom anchor**: every content-driven framed view — the browsing
+  menus (`/mcp`, `/hooks`, `/trust`) *and* the windowed pickers (`/model`,
+  `/login`, `/settings`, `/skills`), all of them line builders now
+  (`*_view_lines` / `key_onboarding_lines`, their heights the built line
+  count). Their content is **static per state**: it changes only on a user
   keystroke, so the frozen rows in scrollback can never go stale between
   signature checks. Eligibility mirrors `render_live_with_preview`'s
   precedence: a view flows only while it is the one actually painted (an ask
-  or permission modal, or an earlier picker in the chain, covers it).
+  or permission modal covers everything below it).
+
+  The pickers' one wrinkle: their `❯` search line sits in the page **top**,
+  so on a terminal shorter than their page it is part of the flow. That
+  stays correct because a keystroke changes the flowed rows and re-signs the
+  flow — the purge rebuild re-flows the typed query with the page — while
+  the hardware cursor, which cannot sit on a scrollback row, clamps at the
+  body top (`anchored_view_row`, the seat's skip subtraction). Their pages
+  are bounded by construction (windowed lists, ~15–18 rows), so this regime
+  only exists on terminals shorter than that.
 - **Bottom anchor only**: the ↓ background manager. Its details page
   live-tails a running shell — per-frame content whose flow signature would
   churn a purge rebuild every tick — and it is bounded by design
   (`BG_OUTPUT_ROWS`), so anchoring alone keeps its interactive tail visible
   on a squeezed terminal.
-- **Unchanged**: the windowed pickers (`/model`, `/login`, `/settings`,
-  `/skills`) are bounded by construction (their lists window to a handful of
-  rows) and their interaction — the search line — sits at the *top* of the
-  frame, which anchoring would hide; and the permission/ask modals keep their
-  own engineered cap-and-pad layout, whose options are already pinned against
-  the bottom rule (`docs/permissions.md`, `docs/ask.md`).
+- **Unchanged**: the permission/ask modals keep their own engineered
+  cap-and-pad layout, whose options are already pinned against the bottom
+  rule (`docs/permissions.md`, `docs/ask.md`).
 
 ## Why not…
 

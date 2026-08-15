@@ -124,103 +124,60 @@ fn login_key_field(onboarding: &KeyOnboarding, width: u16) -> Line<'static> {
     login_prompt_line(Line::from(vec![body]))
 }
 
-/// Render the **inline** `/login` API-key onboarding flow into the live region,
-/// in place of the composer. Two steps sharing the `/model` picker's framed
-/// look: the provider list ([`KeyStep::Provider`]) and the masked key field
-/// ([`KeyStep::Key`]). Pure — `render_live` paints this. See `docs/llm.md`.
-pub fn render_key_onboarding(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {
+/// The whole framed page as lines, per step. The provider step (headerless,
+/// like `/model`): top rule, gap, `❯` filter, gap, the windowed provider
+/// list, a `(n/total)` counter, gap, a dim `Keys are saved to {.env path}`
+/// hint, gap, bottom rule. The key step: top rule, gap, a periwinkle
+/// `Enter your {provider} API key` prompt, gap, the masked `❯` field, gap, a
+/// dim `Enter to save · Esc to go back` hint, gap, bottom rule. What
+/// [`render_key_onboarding`] paints (bottom-anchored) and
+/// `layout::key_onboarding_rows` counts, so the reserved height and the
+/// painted rows can never disagree (`docs/view-flow.md`).
+pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Vec<Line<'static>> {
     match onboarding.step {
-        KeyStep::Provider => render_login_provider_step(area, buf, onboarding),
-        KeyStep::Key => render_login_key_step(area, buf, onboarding),
+        KeyStep::Provider => {
+            let mut lines = vec![
+                model_rule(width),
+                Line::default(),
+                login_prompt_line(Line::from(onboarding.query.clone())),
+                Line::default(),
+            ];
+            lines.extend(login_provider_list_lines(onboarding, width));
+            lines.push(login_counter_line(onboarding));
+            lines.push(Line::default());
+            lines.push(model_placeholder_row(
+                &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),
+                MODEL_META_COLOR,
+                width,
+            ));
+            lines.push(Line::default());
+            lines.push(model_rule(width));
+            lines
+        }
+        KeyStep::Key => {
+            let name = onboarding
+                .chosen_provider()
+                .map_or("the provider", |c| c.name.as_str());
+            vec![
+                model_rule(width),
+                Line::default(),
+                model_placeholder_row(&login_key_prompt(name), LOGIN_KEY_PROMPT_COLOR, width),
+                Line::default(),
+                login_key_field(onboarding, width),
+                Line::default(),
+                model_placeholder_row(LOGIN_KEY_HINT, MODEL_META_COLOR, width),
+                Line::default(),
+                model_rule(width),
+            ]
+        }
     }
 }
 
-/// The provider-selection step (headerless, like `/model`): top rule, gap, `❯`
-/// filter, gap, the provider list, a `(n/total)` counter, gap, a dim
-/// `Keys are saved to {.env path}` hint, gap, bottom rule.
-fn render_login_provider_step(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {
-    let [
-        top_rule,
-        _gap1,
-        search,
-        _gap2,
-        list,
-        counter,
-        _gap3,
-        hint,
-        _gap4,
-        bottom_rule,
-    ] = Layout::vertical([
-        Constraint::Length(1), // top rule
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // search
-        Constraint::Length(1), // gap
-        Constraint::Min(0),    // provider list
-        Constraint::Length(1), // counter
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // hint
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // bottom rule
-    ])
-    .areas(area);
-
-    Paragraph::new(model_rule(area.width)).render(top_rule, buf);
-    Paragraph::new(login_prompt_line(Line::from(onboarding.query.clone()))).render(search, buf);
-    Paragraph::new(login_provider_list_lines(onboarding, area.width)).render(list, buf);
-    Paragraph::new(login_counter_line(onboarding)).render(counter, buf);
-    Paragraph::new(model_placeholder_row(
-        &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),
-        MODEL_META_COLOR,
-        area.width,
-    ))
-    .render(hint, buf);
-    Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
-}
-
-/// The key-entry step: top rule, gap, a periwinkle `Enter your {provider} API
-/// key` prompt, gap, the masked `❯` field, gap, a dim
-/// `Enter to save · Esc to go back` hint, gap, bottom rule.
-fn render_login_key_step(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {
-    let [
-        top_rule,
-        _gap1,
-        prompt,
-        _gap2,
-        field,
-        _gap3,
-        hint,
-        _gap4,
-        bottom_rule,
-    ] = Layout::vertical([
-        Constraint::Length(1), // top rule
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // prompt
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // masked field
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // hint
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // bottom rule
-    ])
-    .areas(area);
-
-    let name = onboarding
-        .chosen_provider()
-        .map_or("the provider", |c| c.name.as_str());
-
-    Paragraph::new(model_rule(area.width)).render(top_rule, buf);
-    Paragraph::new(model_placeholder_row(
-        &login_key_prompt(name),
-        LOGIN_KEY_PROMPT_COLOR,
-        area.width,
-    ))
-    .render(prompt, buf);
-    Paragraph::new(login_key_field(onboarding, area.width)).render(field, buf);
-    Paragraph::new(model_placeholder_row(
-        LOGIN_KEY_HINT,
-        MODEL_META_COLOR,
-        area.width,
-    ))
-    .render(hint, buf);
-    Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
+/// Render the **inline** `/login` API-key onboarding flow into the live region,
+/// in place of the composer. Two steps sharing the `/model` picker's framed
+/// look: the provider list ([`KeyStep::Provider`]) and the masked key field
+/// ([`KeyStep::Key`]) — bottom-anchored like every framed view
+/// (`docs/view-flow.md`). Pure — `render_live` paints this. See `docs/llm.md`.
+pub fn render_key_onboarding(area: Rect, buf: &mut Buffer, onboarding: &KeyOnboarding) {
+    super::view_flow::render_framed_tail(area, buf, key_onboarding_lines(onboarding, area.width));
 }

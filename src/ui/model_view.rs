@@ -46,8 +46,7 @@ fn model_row(entry: &ModelEntry, selected: bool, active: bool, width: u16) -> Li
 
 /// The picker's list lines: a single placeholder while loading / errored /
 /// empty, else the model rows windowed ([`centered_window`]) to keep the
-/// selection **centered** and capped at [`MODEL_MENU_MAX_ROWS`]. Its length
-/// equals [`model_list_rows`] so the reserved height and painted rows agree.
+/// selection **centered** and capped at [`MODEL_MENU_MAX_ROWS`].
 fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     match &picker.status {
         ModelLoad::Loading => vec![model_placeholder_row(
@@ -187,72 +186,45 @@ pub(super) fn model_rule(width: u16) -> Line<'static> {
     ))
 }
 
-/// Render the **inline** `/model` picker into the live region — the shape of the
-/// user's mock: a top rule, the `❯` search line, the scrolling model list (each
-/// row `→ id [provider] ✓`), a `(n/total)` counter, the `Model Name:` line, and
-/// a bottom rule. Headerless (the "Showing models…" banner was dropped). Pure —
-/// `render_live` paints this in place of the composer. See `docs/llm.md`.
-pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
-    // The `❯` search line and the list are the same in both layouts; only the
-    // rows *below* the list differ (see the branch). Each arm moves these — a
-    // value may be moved once per mutually-exclusive branch.
+/// The whole framed page as lines — the shape of the user's mock: a top rule,
+/// the `❯` search line, the scrolling model list (each row `→ id [provider]
+/// ✓`), and — when a real model is highlighted — the `(n/total)` counter and
+/// the `Model Name:` line above the bottom rule (a placeholder page collapses
+/// them to a single gap). Headerless (the "Showing models…" banner was
+/// dropped). What [`render_model_picker`] paints (bottom-anchored) and
+/// `layout::model_picker_rows` counts, so the reserved height and the painted
+/// rows can never disagree (`docs/view-flow.md`).
+pub(super) fn model_view_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
     let search_line = Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
         Span::raw(picker.query.clone()),
     ]);
-    let list_lines = model_list_lines(picker, area.width);
-
+    let mut lines = vec![
+        model_rule(width),
+        Line::default(),
+        search_line,
+        Line::default(),
+    ];
+    lines.extend(model_list_lines(picker, width));
     if model_has_detail(picker) {
-        // A real model is highlighted: counter, gap, name, gap below the list.
-        let [
-            top_rule,
-            _gap1,
-            search,
-            _gap2,
-            list,
-            counter,
-            _gap3,
-            name,
-            _gap4,
-            bottom_rule,
-        ] = Layout::vertical([
-            Constraint::Length(1), // top rule
-            Constraint::Length(1), // gap
-            Constraint::Length(1), // search
-            Constraint::Length(1), // gap
-            Constraint::Min(0),    // model list
-            Constraint::Length(1), // counter
-            Constraint::Length(1), // gap
-            Constraint::Length(1), // model name
-            Constraint::Length(1), // gap
-            Constraint::Length(1), // bottom rule
-        ])
-        .areas(area);
-
-        Paragraph::new(model_rule(area.width)).render(top_rule, buf);
-        Paragraph::new(search_line).render(search, buf);
-        Paragraph::new(list_lines).render(list, buf);
-        Paragraph::new(model_counter_line(picker)).render(counter, buf);
-        Paragraph::new(model_name_line(picker, area.width)).render(name, buf);
-        Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
+        lines.push(model_counter_line(picker));
+        lines.push(Line::default());
+        lines.push(model_name_line(picker, width));
+        lines.push(Line::default());
     } else {
         // A placeholder (loading / error / needs-login / no match): the blank
         // counter + name collapse to a single gap above the bottom rule.
-        let [top_rule, _gap1, search, _gap2, list, _gap3, bottom_rule] = Layout::vertical([
-            Constraint::Length(1), // top rule
-            Constraint::Length(1), // gap
-            Constraint::Length(1), // search
-            Constraint::Length(1), // gap
-            Constraint::Min(0),    // placeholder list
-            Constraint::Length(1), // gap
-            Constraint::Length(1), // bottom rule
-        ])
-        .areas(area);
-
-        Paragraph::new(model_rule(area.width)).render(top_rule, buf);
-        Paragraph::new(search_line).render(search, buf);
-        Paragraph::new(list_lines).render(list, buf);
-        Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
+        lines.push(Line::default());
     }
+    lines.push(model_rule(width));
+    lines
+}
+
+/// Render the **inline** `/model` picker into the live region, in place of the
+/// composer — bottom-anchored, so a squeezed area keeps the list and closing
+/// chrome on screen while the skipped top flows into scrollback
+/// (`docs/view-flow.md`). Pure — `render_live` paints this. See `docs/llm.md`.
+pub fn render_model_picker(area: Rect, buf: &mut Buffer, picker: &ModelPicker) {
+    super::view_flow::render_framed_tail(area, buf, model_view_lines(picker, area.width));
 }

@@ -719,17 +719,9 @@ pub(super) const LOGIN_NO_MATCH: &str = "No matching providers";
 /// selection **centered**, like the `/model` list — `centered_window`).
 pub(super) const LOGIN_MENU_MAX_ROWS: u16 = 8;
 
-/// Fixed rows framing the **provider** step (headerless): top rule, gap, search,
-/// gap, (list), counter, gap, hint, gap, bottom rule.
-pub(super) const LOGIN_PROVIDER_CHROME_ROWS: u16 = 9;
-
 /// The row the provider-step `❯` filter sits on — top(0) gap(1) search(2).
 /// Shared by [`render_key_onboarding`] and [`cursor_position`].
 pub(super) const LOGIN_SEARCH_ROW: u16 = 2;
-
-/// Total rows of the **key** step (no list): top rule, gap, prompt, gap, input,
-/// gap, hint, gap, bottom rule.
-pub(super) const LOGIN_KEY_ROWS: u16 = 9;
 
 /// The row the key-entry `❯` field sits on — top(0) gap(1) prompt(2) gap(3)
 /// input(4).
@@ -766,12 +758,6 @@ pub(super) const SETTINGS_HINT: &str = "Type to search · Enter/Space to change 
 /// The list placeholder when the search matches no setting.
 pub(super) const SETTINGS_NO_MATCH: &str = "No matching settings";
 
-/// The fixed rows framing the menu: top rule, gap, search, gap (4 above the
-/// list), then counter, gap, description, gap, hint, gap, bottom rule (7
-/// below). Unlike the `/model` picker's these never collapse — there is always
-/// a description row and always a hint. See [`settings_height`].
-pub(super) const SETTINGS_CHROME_ROWS: u16 = 11;
-
 /// The row (within the menu's framed area) the `❯` search line sits on — top
 /// rule (0), gap (1), search (2). Shared by [`render_settings`] and
 /// [`cursor_position`] so the cursor lands on the query.
@@ -794,12 +780,6 @@ pub(super) const SKILLS_HINT: &str =
 
 /// The list placeholder when the search matches no skill.
 pub(super) const SKILLS_NO_MATCH: &str = "No matching skills";
-
-/// The fixed rows framing the menu: top rule, gap, search, note, gap (5 above
-/// the list), then counter, gap, description, gap, hint, gap, bottom rule (7
-/// below). One more than [`SETTINGS_CHROME_ROWS`] — the note row, always
-/// reserved so the frame doesn't jump when it fills in.
-pub(super) const SKILLS_CHROME_ROWS: u16 = 12;
 
 /// The row (within the menu's framed area) the `❯` search line sits on — top
 /// rule (0), gap (1), search (2). Shared by `render_skills_menu` and
@@ -1425,19 +1405,6 @@ pub(super) const STREAM_PREVIEW_RESERVED_ROWS: u16 =
 /// The forming-table preview never shrinks below this many rows, however small
 /// the terminal — enough to see the newest row or two plus the border.
 pub(super) const STREAM_PREVIEW_MIN_ROWS: usize = 3;
-
-/// The fixed rows framing the inline `/model` picker's list when a real model
-/// is highlighted: the top rule, a gap, the search line, a gap (4 above), then
-/// below the list a counter, a gap, the model-name line, a gap, and the bottom
-/// rule (5 below — headerless, the "Showing models…" banner was dropped). The
-/// list rows sit between them (see [`model_list_rows`]).
-pub(super) const MODEL_CHROME_ROWS: u16 = 9;
-
-/// The framing rows when the picker shows a **placeholder** instead of a model
-/// (loading / error / needs-login / no match): the same 4 above the list, then
-/// a single gap and the bottom rule. The blank counter + name rows collapse to
-/// that one gap so the box hugs the placeholder. See [`model_chrome_rows`].
-pub(super) const MODEL_CHROME_ROWS_COLLAPSED: u16 = 6;
 
 /// The `/compact` marker cell's text — codex's "Context compacted" info cell,
 /// verbatim. See `docs/compact.md`.

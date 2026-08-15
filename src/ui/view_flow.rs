@@ -56,22 +56,30 @@ pub struct ViewFlow {
 /// The full page lines of the flow-eligible framed view currently **painted**
 /// — `None` when none is. Eligibility mirrors `render_live_with_preview`'s
 /// precedence exactly: a view flows only while it is the one on screen, so an
-/// ask/permission modal or an earlier picker in the chain (which paints
-/// *instead* of the menu) suppresses the flow, and the boundary's signature
-/// check then cleans any flowed rows up. The windowed pickers (`/model`,
-/// `/login`, `/settings`, `/skills`) are bounded by construction and their
-/// interaction sits at the top of their frame, and the ↓ background manager's
-/// details page live-tails a running shell — none of them flow
-/// (`docs/view-flow.md`).
+/// ask/permission modal (which paints *instead* of everything below it, with
+/// its own cap-and-pad layout) suppresses the flow, and the boundary's
+/// signature check then cleans any flowed rows up. Every content-driven
+/// framed view flows — the windowed pickers included: their pages are line
+/// builders like the menus' (`docs/view-flow.md`), and though their search
+/// line sits in the page top, a keystroke re-signs the flow so the typed
+/// query re-flows with it. The one stay-out is the ↓ background manager,
+/// whose details page live-tails a running shell — per-frame content would
+/// churn the flow's purge rebuild every tick, so it bottom-anchors only.
 fn flow_view_lines(app: &App, width: u16) -> Option<Vec<Line<'static>>> {
-    if app.ask().is_some()
-        || app.permission().is_some()
-        || app.model_picker.is_some()
-        || app.key_onboarding.is_some()
-        || app.settings_picker.is_some()
-        || app.skills_menu.is_some()
-    {
+    if app.ask().is_some() || app.permission().is_some() {
         return None;
+    }
+    if let Some(picker) = &app.model_picker {
+        return Some(super::model_view::model_view_lines(picker, width));
+    }
+    if let Some(onboarding) = &app.key_onboarding {
+        return Some(super::login_view::key_onboarding_lines(onboarding, width));
+    }
+    if app.settings_picker.is_some() {
+        return Some(super::settings_view::settings_view_lines(app, width));
+    }
+    if app.skills_menu.is_some() {
+        return Some(super::skills_view::skills_view_lines(app, width));
     }
     if app.hooks_menu.is_some() {
         return Some(super::hooks_view::hooks_view_lines(app, width));

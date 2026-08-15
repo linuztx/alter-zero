@@ -1,8 +1,13 @@
 //! Live-region geometry: height, re-pin, and the cursor seat.
 
 use super::*;
+
+/// The `/login` key step's whole page: top rule, gap, prompt, gap, input,
+/// gap, hint, gap, bottom rule — pinned here so a builder change that adds
+/// or drops a row fails a height test (`key_onboarding_lines`).
+const LOGIN_KEY_ROWS: u16 = 9;
 use crate::ui::theme::{
-    GAP_ROWS, LOGIN_KEY_ROWS, MENU_MAX_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS,
+    GAP_ROWS, MENU_MAX_ROWS, MODEL_SEARCH_ROW, STATUS_GAP_ROWS, STATUS_ROWS,
     STREAM_PREVIEW_MIN_ROWS, STREAM_PREVIEW_RESERVED_ROWS,
 };
 
@@ -936,5 +941,24 @@ fn the_menu_cursor_seat_follows_a_bottom_anchored_body() {
         (x, y),
         (2, (marker_at - skip) as u16),
         "the seat lands on the painted ❯ row"
+    );
+}
+
+#[test]
+fn the_picker_cursor_seat_subtracts_the_bottom_anchor_skip() {
+    // A /settings page one row taller than the region paints from its second
+    // row (view_body_skip = 1), so the `❯` search line sits one row higher on
+    // screen than its page row — and the hardware cursor must sit on the
+    // painted line, not one below it (docs/view-flow.md).
+    let mut app = App::new();
+    app.open_settings();
+    let width = 78u16;
+    let page = crate::ui::settings_height(&app, width, 200).expect("open");
+    let area = Rect::new(0, 0, width, page - 1);
+    let (_, y) = cursor_position(area, &app);
+    assert_eq!(
+        y,
+        crate::ui::theme::SETTINGS_SEARCH_ROW - 1,
+        "the seat follows the anchored paint"
     );
 }

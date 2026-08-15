@@ -1,9 +1,12 @@
 //! The inline `/login` onboarding (`docs/llm.md`).
 
 use super::*;
+
+/// The key step's whole page height (see `key_onboarding_lines`).
+const LOGIN_KEY_ROWS: u16 = 9;
 use crate::ui::login_view::login_key_prompt;
 use crate::ui::theme::{
-    ERROR_COLOR, LOGIN_KEY_INPUT_ROW, LOGIN_KEY_PROMPT_COLOR, LOGIN_KEY_ROWS, LOGIN_SEARCH_ROW,
+    ERROR_COLOR, LOGIN_KEY_INPUT_ROW, LOGIN_KEY_PROMPT_COLOR, LOGIN_SEARCH_ROW,
     MODEL_SELECTED_COLOR,
 };
 

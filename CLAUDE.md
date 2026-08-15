@@ -650,12 +650,20 @@ flow** (`docs/view-flow.md`: a content-driven framed view's page taller than
 the terminal — an `/mcp` tool detail's long description, a `/hooks` detail's
 wrapped command box, a `/trust` review's verbatim listing — no longer clips
 at the bottom: every framed body paints **bottom-anchored**
-(`ui::view_body_skip`, the seat's `menu_marker_seat` subtracting the same
-skip) so the hint and closing rule stay on screen, and the skipped top
-**flows into the terminal's real scrollback** directly above the region
-(`ui::view_flow` — eligibility mirrors the render precedence, so a covering
-modal suppresses it; the ↓ manager anchors but never flows, its details page
-live-tails) where the terminal's own scrolling reads the whole page; the
+(`ui::view_body_skip`; the seat's `menu_marker_seat` and the pickers'
+`anchored_view_row` subtract the same skip) so the hint and closing rule
+stay on screen, and the skipped top **flows into the terminal's real
+scrollback** directly above the region (`ui::view_flow` — eligibility
+mirrors the render precedence, so a covering ask/permission modal
+suppresses it; the ↓ manager anchors but never flows, its details page
+live-tails) where the terminal's own scrolling reads the whole page — and
+the four windowed pickers (`/model`, `/login`, `/settings`, `/skills`) are
+the same shape now: each render is one **line builder**
+(`model_view_lines`/`key_onboarding_lines`/`settings_view_lines`/
+`skills_view_lines`, the retired internal `Layout` stacks), its height the
+built line count so the reserved rows and the painted rows can never
+disagree, flow-eligible like the menus (their top-of-frame `❯` search line
+re-flows per keystroke, since a keystroke re-signs the flow); the
 boundary keeps the flowed rows' signature (`Session::flowed_view`) and
 answers any mismatch — navigation, resize, close — with the standard purge
 rebuild (`repaint_conversation`/`repaint_agent_view` append the flow to the
@@ -1513,8 +1521,9 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   (`SETTINGS_VALUE_COLOR` for a live value, `SETTINGS_VALUE_OFF_COLOR` for the
   `SETTINGS_OFF_VALUES` — `false`/`default`/`0`/`disabled` — and anything
   unavailable), the `SETTINGS_HINT` key line, `SETTINGS_NO_MATCH`,
-  `SETTINGS_MENU_MAX_ROWS`, and the `SETTINGS_CHROME_ROWS`/`SETTINGS_SEARCH_ROW`
-  geometry `settings_height`/`cursor_position` share — see `docs/settings.md`), the queued entries (the `QUEUED_INDENT` two-space
+  `SETTINGS_MENU_MAX_ROWS`, and the `SETTINGS_SEARCH_ROW` cursor seat the
+  `settings_view_lines` builder and `cursor_position` share (the page height
+  is the built line count — `docs/view-flow.md`) — see `docs/settings.md`), the queued entries (the `QUEUED_INDENT` two-space
   inset, `queued_rows`/`queued_lines` — uncapped; a text `Messages` batch
   rendered by `message_lines(Role::User…)` and a standalone `Shell` command by
   `message_lines(Role::Shell…)` (the red `! ` header), so they reuse the

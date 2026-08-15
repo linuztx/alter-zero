@@ -161,3 +161,46 @@ fn the_flow_keeps_its_newest_rows_under_the_cap() {
     let expected: Vec<String> = lines[full - cap..full].iter().map(plain).collect();
     assert_eq!(kept, expected, "the rows nearest the region are kept");
 }
+
+#[test]
+fn a_picker_taller_than_the_terminal_flows_like_the_menus() {
+    // The windowed pickers are framed bodies too (docs/view-flow.md): on a
+    // terminal shorter than their page the skipped top flows, and their spot
+    // in the precedence chain sits ahead of the browsing menus — a /settings
+    // menu open over an /mcp one is the painted view, so it is the one that
+    // flows.
+    let mut app = App::new();
+    app.open_settings();
+    let width = 78u16;
+    let page = crate::ui::settings_height(&app, width, 200).expect("open");
+    let height = page - 3;
+    let flow = view_flow(&app, width, height, NO_CAP).expect("the page overflows");
+    assert_eq!(flow.lines.len(), 3, "exactly the skipped top rows flow");
+    let top: Vec<String> = flow.lines.iter().map(plain).collect();
+    assert!(
+        top[0].starts_with("──"),
+        "the flow starts at the page top (the opening rule): {top:?}"
+    );
+    assert!(
+        top.iter().any(|r| r.contains('❯')),
+        "the search line is in the flowed top, re-flowed per keystroke: {top:?}"
+    );
+
+    // Typing re-signs the flow (the search line lives in it).
+    let before = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
+    let mut typed = App::new();
+    typed.open_settings();
+    typed.on_key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE));
+    let after = view_flow_signature(&typed, width, height, NO_CAP).expect("still overflows");
+    assert_ne!(before, after, "the typed query re-signs the flow");
+
+    // Precedence: the picker wins over a simultaneously-open menu.
+    let mut both = App::new();
+    both.open_mcp_menu(Vec::new());
+    both.open_settings();
+    let flow = view_flow(&both, width, height, NO_CAP).expect("the settings page flows");
+    assert!(
+        flow.lines.iter().map(plain).any(|r| r.contains('❯')),
+        "the flowed rows are the settings page's, not the mcp list's"
+    );
+}

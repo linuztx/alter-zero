@@ -242,52 +242,30 @@ fn view_cursor_y(area: Rect, body: Rect, row: u16) -> u16 {
         .min(area.y + area.height.saturating_sub(1))
 }
 
+/// A framed view page row's **on-screen** row under the bottom anchor: a page
+/// taller than its body paints from `view_body_skip` down, so every page row
+/// shifts up by the skip — clamped at the body top when the row itself is
+/// scrolled off (the flow holds it in scrollback then, where a hardware
+/// cursor cannot sit — `docs/view-flow.md`).
+fn anchored_view_row(page_rows: u16, body: Rect, row: u16) -> u16 {
+    let skip = super::view_flow::view_body_skip(usize::from(page_rows), body.height);
+    row.saturating_sub(u16::try_from(skip).unwrap_or(u16::MAX))
+}
+
 /// Whether the picker shows its counter + model-name detail rows below the
 /// list — only when a real model is listed (Ready with at least one match).
 /// The placeholder states have a blank counter and name, so those rows collapse
-/// to a single trailing gap ([`MODEL_CHROME_ROWS_COLLAPSED`]).
+/// to a single trailing gap.
 pub(super) fn model_has_detail(picker: &ModelPicker) -> bool {
     picker.status == ModelLoad::Ready && !picker.matches().is_empty()
 }
 
-/// The fixed framing rows for the picker's current state — full when a model is
-/// highlighted, collapsed for a placeholder. Mirrors [`render_model_picker`]'s
-/// two layouts so [`model_picker_height`] reserves exactly what's painted.
-fn model_chrome_rows(picker: &ModelPicker) -> u16 {
-    if model_has_detail(picker) {
-        MODEL_CHROME_ROWS
-    } else {
-        MODEL_CHROME_ROWS_COLLAPSED
-    }
-}
-
-/// How many rows the inline `/model` picker's **list** occupies: one placeholder
-/// row while loading / errored / empty, else the match count capped at
-/// [`MODEL_MENU_MAX_ROWS`]. Must equal `model_list_lines(..).len()` so the
-/// reserved height and the painted rows agree.
-fn model_list_rows(picker: &ModelPicker) -> u16 {
-    match &picker.status {
-        ModelLoad::Ready => {
-            let n = picker.matches().len();
-            if n == 0 {
-                1
-            } else {
-                (n as u16).min(MODEL_MENU_MAX_ROWS)
-            }
-        }
-        // All providers failed → one row per failed provider (else a single
-        // placeholder for the legacy single-message error).
-        ModelLoad::Error(_) => (picker.errors.len() as u16).max(1),
-        // Loading / NeedsLogin → a single placeholder row.
-        _ => 1,
-    }
-}
-
-/// The rows the `/model` picker's own frame occupies: its chrome plus the
-/// (possibly scrolled) list. What [`model_picker_height`] reserves under the
-/// strip, and what [`render_live`] hands [`render_model_picker`].
-pub(super) fn model_picker_rows(picker: &ModelPicker) -> u16 {
-    model_chrome_rows(picker) + model_list_rows(picker)
+/// The rows the `/model` picker's own frame occupies — the built page's line
+/// count (`model_view_lines`), so the height and the paint agree by
+/// construction (`docs/view-flow.md`). What [`model_picker_height`] reserves
+/// under the strip, and what [`render_live`] hands [`render_model_picker`].
+pub(super) fn model_picker_rows(picker: &ModelPicker, width: u16) -> u16 {
+    u16::try_from(super::model_view::model_view_lines(picker, width).len()).unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/model` picker is open, or `None`
@@ -304,7 +282,7 @@ pub fn model_picker_height(app: &App, width: u16, term_height: u16) -> Option<u1
     Some(view_height(
         app,
         width,
-        model_picker_rows(picker),
+        model_picker_rows(picker, width),
         term_height,
     ))
 }
@@ -339,28 +317,13 @@ pub fn background_view_height(app: &App, width: u16, term_height: u16) -> Option
     Some(view_height(app, width, band, term_height))
 }
 
-/// How many rows the `/login` provider list occupies: the match count capped at
-/// [`LOGIN_MENU_MAX_ROWS`], or a single placeholder row when nothing matches.
-/// Must equal `login_provider_list_lines(..).len()` so the reserved height and
-/// the painted rows agree.
-fn login_provider_list_rows(onboarding: &KeyOnboarding) -> u16 {
-    let n = onboarding.matches().len();
-    if n == 0 {
-        1
-    } else {
-        (n as u16).min(LOGIN_MENU_MAX_ROWS)
-    }
-}
-
-/// The rows the `/login` flow's own frame occupies: the provider step grows
-/// with its list, the key step is a fixed height. What
-/// [`key_onboarding_height`] reserves under the strip, and what [`render_live`]
-/// hands [`render_key_onboarding`].
-pub(super) fn key_onboarding_rows(onboarding: &KeyOnboarding) -> u16 {
-    match onboarding.step {
-        KeyStep::Provider => LOGIN_PROVIDER_CHROME_ROWS + login_provider_list_rows(onboarding),
-        KeyStep::Key => LOGIN_KEY_ROWS,
-    }
+/// The rows the `/login` flow's own frame occupies — the built page's line
+/// count (`key_onboarding_lines`): the provider step grows with its list, the
+/// key step is a fixed height. What [`key_onboarding_height`] reserves under
+/// the strip, and what [`render_live`] hands [`render_key_onboarding`].
+pub(super) fn key_onboarding_rows(onboarding: &KeyOnboarding, width: u16) -> u16 {
+    u16::try_from(super::login_view::key_onboarding_lines(onboarding, width).len())
+        .unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/login` flow is open, or `None` when
@@ -374,7 +337,7 @@ pub fn key_onboarding_height(app: &App, width: u16, term_height: u16) -> Option<
     Some(view_height(
         app,
         width,
-        key_onboarding_rows(onboarding),
+        key_onboarding_rows(onboarding, width),
         term_height,
     ))
 }
@@ -760,30 +723,37 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
         return (x, y);
     }
     // The inline `/model` picker parks the cursor at the end of its `>` search
-    // line (see `render_model_picker`'s layout: top rule, header, gap, search)
-    // — inside the picker's own frame, which the streaming strip above it has
-    // pushed down ([`view_split`], the same split the paint uses).
+    // line (see `model_view_lines`' stack: top rule, gap, search) — inside the
+    // picker's own frame, which the streaming strip above it has pushed down
+    // ([`view_split`], the same split the paint uses) and the bottom anchor
+    // may have shifted up ([`anchored_view_row`]).
     if let Some(picker) = &app.model_picker {
-        let [_, body] = view_split(area, model_picker_rows(picker));
+        let rows = model_picker_rows(picker, area.width);
+        let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        return (x, view_cursor_y(area, body, MODEL_SEARCH_ROW));
+        let row = anchored_view_row(rows, body, MODEL_SEARCH_ROW);
+        return (x, view_cursor_y(area, body, row));
     }
     // The inline `/settings` menu parks the cursor at the end of its `❯`
     // search line, exactly like the `/model` picker (docs/settings.md).
     if let Some(picker) = &app.settings_picker {
-        let [_, body] = view_split(area, super::settings_view::settings_rows(app));
+        let rows = super::settings_view::settings_rows(app, area.width);
+        let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&picker.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        return (x, view_cursor_y(area, body, SETTINGS_SEARCH_ROW));
+        let row = anchored_view_row(rows, body, SETTINGS_SEARCH_ROW);
+        return (x, view_cursor_y(area, body, row));
     }
     // The inline `/skills` menu parks the cursor at the end of its `❯` search
     // line, exactly like the `/settings` menu (docs/skills.md).
     if let Some(menu) = &app.skills_menu {
-        let [_, body] = view_split(area, super::skills_view::skills_menu_rows(app, area.width));
+        let rows = super::skills_view::skills_menu_rows(app, area.width);
+        let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + cols(&menu.query);
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
-        return (x, view_cursor_y(area, body, SKILLS_SEARCH_ROW));
+        let row = anchored_view_row(rows, body, SKILLS_SEARCH_ROW);
+        return (x, view_cursor_y(area, body, row));
     }
     // The read-only `/hooks` menu has no text entry at all — the permission
     // prompt's rule: [`cursor_visible`] shows no hardware cursor over a menu
@@ -831,16 +801,18 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     }
     // The inline `/login` flow parks the cursor at the end of its active `>`
     // line: the provider filter (step 1) or the masked key field (step 2) —
-    // again inside its own frame, below the strip.
+    // again inside its own frame, below the strip, shifted by the anchor.
     if let Some(onboarding) = &app.key_onboarding {
         let (query_cols, row) = match onboarding.step {
             KeyStep::Provider => (cols(&onboarding.query), LOGIN_SEARCH_ROW),
             // One mask glyph per key character sits after the prompt.
             KeyStep::Key => (onboarding.key_input.chars().count(), LOGIN_KEY_INPUT_ROW),
         };
-        let [_, body] = view_split(area, key_onboarding_rows(onboarding));
+        let rows = key_onboarding_rows(onboarding, area.width);
+        let [_, body] = view_split(area, rows);
         let x = cols(MODEL_INDENT) + cols(MODEL_PROMPT) + query_cols;
         let x = area.x + (x.min(usize::from(area.width.saturating_sub(1))) as u16);
+        let row = anchored_view_row(rows, body, row);
         return (x, view_cursor_y(area, body, row));
     }
     // Laid out exactly as render_live lays the box out — the streaming strip

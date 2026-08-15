@@ -6,10 +6,15 @@ use super::*;
 use crate::permission::PermissionMode;
 use crate::settings::{SettingAvailability, SettingKey};
 use crate::ui::theme::{
-    GAP_ROWS, MODEL_SELECTED_COLOR, SETTINGS_CHROME_ROWS, SETTINGS_HINT, SETTINGS_MENU_MAX_ROWS,
-    SETTINGS_SEARCH_ROW, SETTINGS_VALUE_COLOR, SETTINGS_VALUE_OFF_COLOR, STATUS_GAP_ROWS,
-    STATUS_ROWS,
+    GAP_ROWS, MODEL_SELECTED_COLOR, SETTINGS_HINT, SETTINGS_MENU_MAX_ROWS, SETTINGS_SEARCH_ROW,
+    SETTINGS_VALUE_COLOR, SETTINGS_VALUE_OFF_COLOR, STATUS_GAP_ROWS, STATUS_ROWS,
 };
+
+/// The fixed rows framing the menu: top rule, gap, search, gap (4 above
+/// the list), then counter, gap, description, gap, hint, gap, bottom rule
+/// (7 below) — pinned here so a builder change that adds or drops a chrome
+/// row fails a height test (`settings_view_lines`).
+const SETTINGS_CHROME_ROWS: u16 = 11;
 
 /// How many setting rows the menu actually shows: every one, until there are
 /// more than the window holds — past [`SETTINGS_MENU_MAX_ROWS`] the list
@@ -275,4 +280,40 @@ fn a_narrow_terminal_truncates_rather_than_overflowing() {
             "row {y} is exactly the width"
         );
     }
+}
+
+#[test]
+fn a_squeezed_settings_menu_is_bottom_anchored() {
+    // The menu is a content-driven framed body like /mcp's now
+    // (docs/view-flow.md): an area shorter than the page paints the page's
+    // LAST rows — the same page a full-height render paints, minus its top —
+    // so the whole list, the hint and the closing rule stay on screen and the
+    // skipped top can flow into scrollback. (The old internal Layout squeezed
+    // the *list* instead, clipping rows out of its middle — a selection could
+    // sit under the clip while its description still showed.)
+    let app = settings_app();
+    let width = 78u16;
+    let natural = settings_height(&app, width, 200).expect("open");
+    let mut full = buffer(width, natural);
+    render_settings(full.area, &mut full, &app);
+    let height = natural - 4;
+    let mut buf = buffer(width, height);
+    render_settings(buf.area, &mut buf, &app);
+    for y in 0..height {
+        assert_eq!(
+            row(&buf, y, width),
+            row(&full, y + 4, width),
+            "squeezed row {y} is the full page's row {}",
+            y + 4
+        );
+    }
+    assert!(
+        row(&buf, height - 1, width).starts_with("──"),
+        "the bottom rule is the last row"
+    );
+    let all: Vec<String> = (0..height).map(|y| row(&buf, y, width)).collect();
+    assert!(
+        all.iter().any(|r| r.contains(SETTINGS_HINT)),
+        "the key hint stays on screen: {all:?}"
+    );
 }

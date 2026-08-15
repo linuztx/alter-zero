@@ -286,8 +286,10 @@ the bottom rule — the shape of the user's mock):
   A **placeholder** state (`Loading models…`, a red error, the `/login` hint, or
   `No matching models`) has no counter or name, so those rows collapse to a single
   gap above the bottom rule — the box hugs the placeholder instead of leaving four
-  blank rows (`model_has_detail`/`model_chrome_rows`; `MODEL_CHROME_ROWS` 9 →
-  `MODEL_CHROME_ROWS_COLLAPSED` 6).
+  blank rows (`model_has_detail`, branched inside the `model_view_lines` builder —
+  the picker is a content-driven framed body now, its height the built line
+  count, painted bottom-anchored with the skipped top flowing into scrollback
+  like every framed view; `docs/view-flow.md`).
 
 ### Styling
 

@@ -59,8 +59,7 @@ fn label_column(rows: &[&SettingRow]) -> usize {
 
 /// The menu's list lines: the rows windowed ([`centered_window`]) to keep the
 /// selection **centered** and capped at [`SETTINGS_MENU_MAX_ROWS`], or a single
-/// placeholder when the search matches nothing. Its length equals
-/// [`settings_list_rows`] so the reserved height and painted rows agree.
+/// placeholder when the search matches nothing.
 fn settings_list_lines(rows: &[SettingRow], selected: usize, width: u16) -> Vec<Line<'static>> {
     if rows.is_empty() {
         return vec![model_placeholder_row(
@@ -97,22 +96,59 @@ fn settings_counter_line(rows: &[SettingRow], selected: usize) -> Line<'static> 
     ])
 }
 
-/// How many rows the menu's **list** occupies: the row count capped at
-/// [`SETTINGS_MENU_MAX_ROWS`], or one placeholder row when nothing matches.
-/// Must equal `settings_list_lines(..).len()`.
-fn settings_list_rows(rows: usize) -> u16 {
-    if rows == 0 {
-        1
-    } else {
-        (rows as u16).min(SETTINGS_MENU_MAX_ROWS)
-    }
+/// The whole framed page as lines: a top rule, the `❯` search line, the
+/// windowed setting rows, the `(n/total)` counter, the highlighted row's
+/// description, the key hint, and a bottom rule — blank-gapped exactly as the
+/// retired internal `Layout` stacked them. What [`render_settings`] paints
+/// (bottom-anchored) and [`settings_rows`] counts, so the reserved height and
+/// the painted rows can never disagree — the `/mcp` family's rule
+/// (`docs/view-flow.md`). Empty when the menu is closed.
+pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    let Some(picker) = app.settings_picker.as_ref() else {
+        return Vec::new();
+    };
+    let rows = app.setting_rows();
+    let selected = picker.selected;
+    let search_line = Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
+        Span::raw(picker.query.clone()),
+    ]);
+    // The description names what the highlighted row does; with nothing
+    // matched the row stays blank (always emitted, so the frame doesn't jump
+    // as the search narrows).
+    let description_line = rows
+        .get(selected.min(rows.len().saturating_sub(1)))
+        .map_or_else(Line::default, |row| {
+            model_placeholder_row(row.description, MODEL_META_COLOR, width)
+        });
+    let mut lines = vec![
+        model_rule(width),
+        Line::default(),
+        search_line,
+        Line::default(),
+    ];
+    lines.extend(settings_list_lines(&rows, selected, width));
+    lines.push(settings_counter_line(&rows, selected));
+    lines.push(Line::default());
+    lines.push(description_line);
+    lines.push(Line::default());
+    lines.push(model_placeholder_row(
+        SETTINGS_HINT,
+        MODEL_META_COLOR,
+        width,
+    ));
+    lines.push(Line::default());
+    lines.push(model_rule(width));
+    lines
 }
 
-/// The rows the menu's own frame occupies: the fixed chrome plus the (possibly
-/// scrolled) list. What [`settings_height`] reserves under the strip, and what
+/// The rows the menu's own frame occupies — the built page's line count
+/// ([`settings_view_lines`]), so the height and the paint agree by
+/// construction. What [`settings_height`] reserves under the strip, and what
 /// [`render_live`] hands [`render_settings`].
-pub(super) fn settings_rows(app: &App) -> u16 {
-    SETTINGS_CHROME_ROWS + settings_list_rows(app.setting_rows().len())
+pub(super) fn settings_rows(app: &App, width: u16) -> u16 {
+    u16::try_from(settings_view_lines(app, width).len()).unwrap_or(u16::MAX)
 }
 
 /// The inline live-region height when the `/settings` menu is open, or `None`
@@ -129,7 +165,7 @@ pub fn settings_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     Some(super::layout::view_height(
         app,
         width,
-        settings_rows(app),
+        settings_rows(app, width),
         term_height,
     ))
 }
@@ -137,68 +173,10 @@ pub fn settings_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
 /// Render the **inline** `/settings` menu into the live region, in place of the
 /// composer: a top rule, the `❯` search line, the setting rows (`→ {label}
 /// {value}`), a `(n/total)` counter, the highlighted setting's description, the
-/// key hint, and a bottom rule. Pure — `render_live` paints this. See
-/// `docs/settings.md`.
+/// key hint, and a bottom rule — bottom-anchored, so a squeezed area keeps the
+/// whole list, the hint and the closing rule on screen while the skipped top
+/// flows into scrollback (`docs/view-flow.md`). Pure — `render_live` paints
+/// this. See `docs/settings.md`.
 pub fn render_settings(area: Rect, buf: &mut Buffer, app: &App) {
-    let Some(picker) = app.settings_picker.as_ref() else {
-        return;
-    };
-    let rows = app.setting_rows();
-    let selected = picker.selected;
-
-    let [
-        top_rule,
-        _gap1,
-        search,
-        _gap2,
-        list,
-        counter,
-        _gap3,
-        description,
-        _gap4,
-        hint,
-        _gap5,
-        bottom_rule,
-    ] = Layout::vertical([
-        Constraint::Length(1), // top rule
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // search
-        Constraint::Length(1), // gap
-        Constraint::Min(0),    // setting list
-        Constraint::Length(1), // counter
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // description of the highlighted row
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // key hint
-        Constraint::Length(1), // gap
-        Constraint::Length(1), // bottom rule
-    ])
-    .areas(area);
-
-    let search_line = Line::from(vec![
-        Span::raw(MODEL_INDENT),
-        Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
-        Span::raw(picker.query.clone()),
-    ]);
-    // The description names what the highlighted row does; with nothing
-    // matched the row stays blank (the layout still reserves it, so the frame
-    // doesn't jump as the search narrows).
-    let description_line = rows
-        .get(selected.min(rows.len().saturating_sub(1)))
-        .map_or_else(Line::default, |row| {
-            model_placeholder_row(row.description, MODEL_META_COLOR, area.width)
-        });
-
-    Paragraph::new(model_rule(area.width)).render(top_rule, buf);
-    Paragraph::new(search_line).render(search, buf);
-    Paragraph::new(settings_list_lines(&rows, selected, area.width)).render(list, buf);
-    Paragraph::new(settings_counter_line(&rows, selected)).render(counter, buf);
-    Paragraph::new(description_line).render(description, buf);
-    Paragraph::new(model_placeholder_row(
-        SETTINGS_HINT,
-        MODEL_META_COLOR,
-        area.width,
-    ))
-    .render(hint, buf);
-    Paragraph::new(model_rule(area.width)).render(bottom_rule, buf);
+    super::view_flow::render_framed_tail(area, buf, settings_view_lines(app, area.width));
 }
