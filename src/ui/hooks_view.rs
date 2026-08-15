@@ -489,7 +489,10 @@ pub fn hooks_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16>
 }
 
 /// Render the **inline** `/hooks` menu into the live region, in place of the
-/// composer. Pure — `render_live` paints this. See `docs/hooks-menu.md`.
+/// composer — bottom-anchored, so a detail page taller than the area keeps
+/// its hint and closing rule on screen while the skipped top flows into
+/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this. See
+/// `docs/hooks-menu.md`.
 pub fn render_hooks_menu(area: Rect, buf: &mut Buffer, app: &App) {
-    Paragraph::new(hooks_view_lines(app, area.width)).render(area, buf);
+    super::view_flow::render_framed_tail(area, buf, hooks_view_lines(app, area.width));
 }

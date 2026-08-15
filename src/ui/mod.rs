@@ -66,6 +66,7 @@ mod theme;
 mod tool;
 mod transcript;
 mod trust_view;
+mod view_flow;
 mod wrap;
 
 pub use self::agent::{
@@ -117,6 +118,7 @@ pub use self::transcript::{
     transcript_lines, transcript_selection,
 };
 pub use self::trust_view::{render_trust_menu, trust_menu_height, trust_view_lines};
+pub use self::view_flow::{ViewFlow, view_body_skip, view_flow, view_flow_signature};
 pub use self::wrap::wrap_text;
 
 #[cfg(test)]

@@ -640,7 +640,10 @@ pub fn mcp_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
 }
 
 /// Render the inline `/mcp` manager into the live region, in place of the
-/// composer. Pure — `render_live` paints this. See `docs/mcp.md`.
+/// composer — bottom-anchored, so a page taller than the area keeps its tail
+/// (the hint, the bottom rule) on screen while the skipped top flows into
+/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this. See
+/// `docs/mcp.md`.
 pub fn render_mcp_menu(area: Rect, buf: &mut Buffer, app: &App) {
-    Paragraph::new(mcp_view_lines(app, area.width)).render(area, buf);
+    super::view_flow::render_framed_tail(area, buf, mcp_view_lines(app, area.width));
 }

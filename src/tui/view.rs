@@ -100,6 +100,36 @@ impl Session<'_> {
         }
     }
 
+    /// The framed-view rows that must be **flowed** into scrollback for the
+    /// current state — a screen-tall `/mcp`/`/hooks`/`/trust` page's top —
+    /// or `None` when nothing flows (`ui::view_flow`, `docs/view-flow.md`).
+    /// Capped like every purge-rebuild write.
+    pub(crate) fn current_view_flow(&self) -> Option<ui::ViewFlow> {
+        let screen = self.term.screen();
+        ui::view_flow(
+            &self.app,
+            screen.width,
+            screen.height,
+            RESIZE_REFLOW_MAX_ROWS,
+        )
+    }
+
+    /// Whether the flow committed to scrollback no longer matches the current
+    /// state — the page navigated, the search narrowed, the menu closed, a
+    /// modal covered it — so this draw tick must purge-rebuild instead of
+    /// painting in place: the rebuild re-establishes the current flow, or
+    /// clears it and returns the composer (`docs/view-flow.md`). Cheap when
+    /// no framed view is open and nothing is flowed (both sides `None`).
+    pub(crate) fn view_flow_stale(&self) -> bool {
+        let screen = self.term.screen();
+        ui::view_flow_signature(
+            &self.app,
+            screen.width,
+            screen.height,
+            RESIZE_REFLOW_MAX_ROWS,
+        ) != self.flowed_view
+    }
+
     /// Whether this draw tick must purge-rebuild the conversation instead of
     /// painting the live region in place — the boundary read behind the pure
     /// `ui::modal_needs_rebuild`: the just-closed prompt's noted one-way move,
@@ -270,7 +300,14 @@ impl Session<'_> {
             // (An open agent session view rebuilds itself —
             // `repaint_active_view` routes there.) See
             // `InlineViewport::take_modal_scrolled` and `docs/permissions.md`.
-            View::Conversation if self.modal_rebuild_due() => {
+            // …or a framed view's FLOW went stale — its page navigated, its
+            // menu closed, a modal covered it, or a page that must flow has
+            // no flow committed yet: the same purge rebuild re-establishes
+            // the current flow, or clears it and returns the composer
+            // (`docs/view-flow.md`; the flow check runs first so a prompt
+            // opening over a flowed menu cleans the flow in the very rebuild
+            // that seats the prompt).
+            View::Conversation if self.view_flow_stale() || self.modal_rebuild_due() => {
                 let _ = self.term.take_modal_scrolled();
                 self.repaint_active_view()
             }
@@ -362,7 +399,19 @@ impl Session<'_> {
         );
         // Re-emit the header banner atop the rebuilt tail — it lives outside
         // `history` and would otherwise be lost (docs/header.md).
-        let tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
+        let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
+        // A screen-tall framed view flows its page top into scrollback: the
+        // rows ride the tail's very end, so they land directly above the live
+        // region — the page reads whole across the seam. Recomputed here, at
+        // the one place every purge rebuild goes through, so a resize or a
+        // rewind under an open menu re-flows at the new state for free; the
+        // stored signature is what the draw tick compares
+        // (`docs/view-flow.md`).
+        let flow = self.current_view_flow();
+        self.flowed_view = flow.as_ref().map(|flow| flow.signature);
+        if let Some(flow) = flow {
+            tail.extend(flow.lines);
+        }
         let app = &self.app;
         self.term.reflow(
             tail,
@@ -372,8 +421,14 @@ impl Session<'_> {
         )?;
         // Catch scrollback up on the in-flight partial the purge dropped:
         // exactly the rows live streaming would have committed, queued for
-        // the next draw.
-        if let Some(text) = self.app.streaming_text().filter(|text| !text.is_empty()) {
+        // the next draw. Suppressed while a flow is active — the queued rows
+        // would flush between the flowed page and the region, tearing it
+        // (commits pause under a flow, `Session::commits_allowed`); the
+        // partial stays in the streaming buffer and the first un-flowed
+        // rebuild re-commits it whole.
+        if self.flowed_view.is_none()
+            && let Some(text) = self.app.streaming_text().filter(|text| !text.is_empty())
+        {
             let lines = self.render.commit(text, screen.width);
             self.term.insert_before(lines);
         }
@@ -401,7 +456,15 @@ impl Session<'_> {
         if let Some(text) = &streaming {
             tail.extend(self.agent_render.committed_rows(text, screen.width));
         }
-        let tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
+        let mut tail = ui::banner_tail(ui::header_lines(&self.app, screen.width), tail);
+        // A framed view opened from the agent view's own palette renders over
+        // it and flows the same way (`docs/view-flow.md`) — the rebuild is
+        // this view's, so the flow rides this tail.
+        let flow = self.current_view_flow();
+        self.flowed_view = flow.as_ref().map(|flow| flow.signature);
+        if let Some(flow) = flow {
+            tail.extend(flow.lines);
+        }
         let app = &self.app;
         self.term.reflow(
             tail,

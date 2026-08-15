@@ -66,7 +66,11 @@ A tiny stack machine (`app::HooksLevel`), Esc popping one frame at a time:
    (`ui::wrap_output`, spaces preserved — `statusMessage` never stands in
    here), a `Status message:` line when one is set, and the closing
    direction to edit `hooks.json`. The hint row reads `Esc to go back` —
-   Enter does nothing at the bottom of the stack.
+   Enter does nothing at the bottom of the stack. A detail whose wrapped
+   command box outgrows the terminal renders **bottom-anchored** with its
+   skipped top **flowed into real scrollback**, so the whole page stays
+   readable and the hint/rule stay on screen (`docs/view-flow.md`;
+   `smoke.sh` Phase 85).
 
 Levels 1–3 share the select grammar: ↑/↓ move (clamped), Home/End jump,
 **digits 1–9 jump-activate** their row (the `AskUserQuestion` modal's rule),

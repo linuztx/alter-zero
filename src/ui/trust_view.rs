@@ -188,7 +188,9 @@ pub fn trust_menu_height(app: &App, width: u16, term_height: u16) -> Option<u16>
 }
 
 /// Render the **inline** `/trust` menu into the live region, in place of the
-/// composer. Pure — `render_live` paints this.
+/// composer — bottom-anchored, so a review taller than the area keeps its
+/// options and closing rule on screen while the skipped top flows into
+/// scrollback (`docs/view-flow.md`). Pure — `render_live` paints this.
 pub fn render_trust_menu(area: Rect, buf: &mut Buffer, app: &App) {
-    Paragraph::new(trust_view_lines(app, area.width)).render(area, buf);
+    super::view_flow::render_framed_tail(area, buf, trust_view_lines(app, area.width));
 }

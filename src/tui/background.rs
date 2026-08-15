@@ -79,6 +79,7 @@ impl Session<'_> {
                             // rebuild regenerates it (docs/permissions.md).
                             if self.app.view == View::Conversation
                                 && self.app.agent_view.as_deref() == Some(agent_id.as_str())
+                                && self.flowed_view.is_none()
                             {
                                 let width = self.term.screen().width;
                                 self.term.insert_before(ui::message_lines(

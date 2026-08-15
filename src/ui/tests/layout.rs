@@ -895,3 +895,46 @@ fn size_sweep_apps() -> Vec<(&'static str, App)> {
         ("file_picker", file_picker),
     ]
 }
+
+#[test]
+fn the_menu_cursor_seat_follows_a_bottom_anchored_body() {
+    // A `/trust` review taller than the region bottom-anchors
+    // (docs/view-flow.md): the options — and the `❯` the hidden cursor seats
+    // on — sit near the page's end, inside the painted tail. The seat must
+    // subtract the same skipped rows the paint does, instead of falling back
+    // to the far corner because the marker's *page* row is past the region.
+    let mut app = App::new();
+    app.open_trust_menu(crate::trust::TrustReview {
+        root: "~/repo".into(),
+        trusted: false,
+        files: vec![crate::trust::TrustFileReview {
+            label: "Hooks".into(),
+            path: "~/repo/.alter-zero/hooks.json".into(),
+            items: (0..40)
+                .map(|i| format!("PreToolUse (bash): ./guard-{i}.sh"))
+                .collect(),
+            error: None,
+            pending: true,
+        }],
+    });
+    let (width, height) = (60u16, 20u16);
+    let lines = crate::ui::trust_view_lines(&app, width);
+    let skip = lines.len() - usize::from(height);
+    assert!(skip > 0, "the review overflows the region");
+    let marker_at = lines
+        .iter()
+        .position(|l| {
+            l.spans
+                .iter()
+                .any(|s| s.content.as_ref() == crate::ui::theme::HOOKS_MARKER)
+        })
+        .expect("an option row carries the ❯");
+    assert!(marker_at >= skip, "the marker sits inside the painted tail");
+    let area = Rect::new(0, 0, width, height);
+    let (x, y) = cursor_position(area, &app);
+    assert_eq!(
+        (x, y),
+        (2, (marker_at - skip) as u16),
+        "the seat lands on the painted ❯ row"
+    );
+}

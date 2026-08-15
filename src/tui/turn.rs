@@ -73,10 +73,12 @@ impl Session<'_> {
         let mut per_text = paste::distribute_images(&texts, images);
         // Committing is suppressed while an agent session view covers the screen
         // (a queued main turn can dispatch there) — the return's purge-rebuild
-        // regenerates the bubbles from history (docs/agent-tool.md). Under the
-        // Ctrl+O overlay the inserts merely queue and the return's draw flushes
-        // them (invariant 4).
-        let committing = self.app.agent_view.is_none();
+        // regenerates the bubbles from history (docs/agent-tool.md) — and while
+        // a framed view's flow does (a queued turn can dispatch at a turn end
+        // under an open screen-tall menu; docs/view-flow.md). Under the Ctrl+O
+        // overlay the inserts merely queue and the return's draw flushes them
+        // (invariant 4).
+        let committing = self.commits_allowed();
         for (text, attached) in texts.iter().zip(&mut per_text) {
             self.app
                 .record_user_message_with_images(text, std::mem::take(attached));
@@ -144,9 +146,10 @@ impl Session<'_> {
         // history; commit it with NO trailing blank — the `⎿ Running…` preview
         // (and later the committed `⎿` output) sits flush below it, forming the
         // codex-style exec cell (docs/shell-command.md). Suppressed under an
-        // agent session view like every main commit (docs/agent-tool.md).
+        // agent session view — and an active view flow — like every main
+        // commit (docs/agent-tool.md, docs/view-flow.md).
         self.app.begin_shell(&command);
-        if self.app.agent_view.is_none() {
+        if self.commits_allowed() {
             self.term
                 .insert_before(ui::message_lines(Role::Shell, &command, width));
         }

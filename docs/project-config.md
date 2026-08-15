@@ -56,7 +56,10 @@ until the user approves them.
   composer-replacing inline view, works mid-turn, Esc closes): the project
   root, then every hook command and every MCP server target **verbatim** —
   what you approve is exactly what will run — over
-  `❯ 1. Trust this project's config` / `2. Revoke trust` (`3. Close`).
+  `❯ 1. Trust this project's config` / `2. Revoke trust` (`3. Close`). A
+  review taller than the terminal bottom-anchors (the options and the
+  closing rule stay on screen) and flows its top into real scrollback, so
+  a long listing is still reviewable whole (`docs/view-flow.md`).
 - Approval records the fingerprints of the **reviewed snapshot** — the
   content loaded at startup, which is also exactly what activates — never a
   fresh re-read, so a file swapped on disk mid-review can't get approved

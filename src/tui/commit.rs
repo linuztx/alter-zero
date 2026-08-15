@@ -46,9 +46,14 @@ impl Session<'_> {
     /// Whether finished lines may be committed (queued for the terminal's
     /// scrollback) right now (invariant 4 — see the module doc). Under an
     /// alternate-screen overlay the queued lines merely wait for the return's
-    /// flush; only an open agent session view defers to a history rebuild.
+    /// flush; an open agent session view defers to a history rebuild, and so
+    /// does an active **view flow** — a screen-tall `/mcp`/`/hooks`/`/trust`
+    /// page whose top sits in scrollback directly above the region: a commit
+    /// flushed now would land *between* the flowed page and its painted tail,
+    /// tearing it, so it waits in history for the flow-exit rebuild
+    /// (`docs/view-flow.md`).
     pub(crate) fn commits_allowed(&self) -> bool {
-        self.app.agent_view.is_none()
+        self.app.agent_view.is_none() && self.flowed_view.is_none()
     }
 
     /// Raise a transient toast and arm its expiry: set the text, stamp the
@@ -101,7 +106,7 @@ impl Session<'_> {
     /// alternate screen.
     fn commit_notice(&mut self, role: Role, record: fn(&mut App, &str), text: &str) {
         let width = self.term.screen().width;
-        let committing = self.app.agent_view.is_none();
+        let committing = self.commits_allowed();
         if let Some(segment) = self.app.flush_streaming_segment()
             && committing
         {
@@ -154,6 +159,13 @@ impl Session<'_> {
         agents: Option<AgentGroup>,
         notice: Option<&str>,
     ) {
+        // The caller guarantees the conversation view, but a backend error can
+        // still land while a framed view's flow covers the screen — the
+        // remains are recorded in history either way, and the flow-exit
+        // rebuild regenerates them (`docs/view-flow.md`).
+        if !self.commits_allowed() {
+            return;
+        }
         let width = self.term.screen().width;
         let height = self.live_region_height();
         self.term.set_view_height(height);

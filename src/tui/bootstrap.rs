@@ -372,6 +372,7 @@ impl<'t> Session<'t> {
             reaping: Vec::new(),
             clipboard_lease: None,
             overlay_resized: false,
+            flowed_view: None,
             cwd,
             cwd_display,
         };

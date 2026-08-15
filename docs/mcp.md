@@ -632,6 +632,15 @@ Both pages, annotated:
 ────────────────────────────────────────────────────────────────
 ```
 
+A page taller than the terminal — a real `query-docs` description plus its
+parameter prose easily is — used to clip at the **bottom**, losing the hint
+and the closing rule with no sign there was more. It now renders
+**bottom-anchored** and its skipped top **flows into the terminal's real
+scrollback** directly above the region, so the whole page reads via the
+terminal's own scrolling and the interactive tail stays put; navigating away
+or closing purge-rebuilds so no stale page text survives
+(`docs/view-flow.md`).
+
 Ops dispatch as `Action::McpOp(op)` to `tui::mcp::Session::apply_mcp_op`,
 which runs connection work on worker threads and persists disabled state
 via the user-file read-modify-write; every completion reports on the MCP

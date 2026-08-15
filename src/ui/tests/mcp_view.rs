@@ -7,9 +7,9 @@ use crate::mcp::{
 };
 use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
-    MCP_DESCRIPTION_COLOR, MCP_DETAIL_LABEL_COLOR, MCP_DETAIL_STATE_COLOR, MCP_DETAIL_VALUE_COLOR,
-    MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TITLE_COLOR, MCP_TOOL_FIELD_GAP,
-    TOOL_FAIL_COLOR, TOOL_OK_COLOR,
+    HOOKS_DETAIL_HINT, MCP_DESCRIPTION_COLOR, MCP_DETAIL_LABEL_COLOR, MCP_DETAIL_STATE_COLOR,
+    MCP_DETAIL_VALUE_COLOR, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TITLE_COLOR,
+    MCP_TOOL_FIELD_GAP, TOOL_FAIL_COLOR, TOOL_OK_COLOR,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -493,5 +493,49 @@ fn a_long_list_windows_with_overflow_markers() {
     assert_eq!(
         server_actions(&app.mcp_menu.as_ref().unwrap().servers[0]).len(),
         3
+    );
+}
+
+#[test]
+fn a_tool_page_taller_than_its_area_is_bottom_anchored() {
+    // The framed body paints its LAST rows when the area is shorter than the
+    // page, so the interactive tail — the `Esc to go back` hint and the bottom
+    // rule — is always on screen; the skipped top flows into scrollback
+    // instead (docs/view-flow.md). The old top-aligned paint clipped exactly
+    // the rows that say the page has ended.
+    let mut app = mcp_app();
+    {
+        let menu = app.mcp_menu.as_mut().unwrap();
+        menu.servers[0].tools[0].description = "word ".repeat(400);
+        menu.page = McpPage::Tool { tool: 0 };
+    }
+    let (width, height) = (60u16, 12u16);
+    let lines = mcp_view_lines(&app, width);
+    assert!(
+        lines.len() > usize::from(height),
+        "the page overflows the area: {} rows",
+        lines.len()
+    );
+    let area = Rect::new(0, 0, width, height);
+    let mut buf = Buffer::empty(area);
+    render_mcp_menu(area, &mut buf, &app);
+    // Painted rows == the page's tail, row for row.
+    let expected: Vec<String> = lines[lines.len() - usize::from(height)..]
+        .iter()
+        .map(plain)
+        .collect();
+    for (y, want) in expected.iter().enumerate() {
+        let got = row(&buf, y as u16, width);
+        assert_eq!(got.trim_end(), want.trim_end(), "row {y} is the tail's");
+    }
+    let all: Vec<String> = (0..height).map(|y| row(&buf, y, width)).collect();
+    assert!(
+        all.iter().any(|r| r.contains(HOOKS_DETAIL_HINT)),
+        "the Esc hint stays on screen: {all:?}"
+    );
+    assert!(
+        all.last().unwrap().contains("──"),
+        "the bottom rule stays on screen: {:?}",
+        all.last()
     );
 }

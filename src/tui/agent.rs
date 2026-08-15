@@ -50,8 +50,13 @@ impl Session<'_> {
             self.app.open_permission(request);
             return;
         }
-        let viewing =
-            self.app.view == View::Conversation && self.app.agent_view.as_deref() == Some(id);
+        // Screen commits pause while a framed view's flow covers the agent
+        // session view (a menu opened from its palette, `docs/view-flow.md`)
+        // — the flow-exit rebuild regenerates the agent transcript from its
+        // history, exactly like the view's own returns.
+        let viewing = self.app.view == View::Conversation
+            && self.app.agent_view.as_deref() == Some(id)
+            && self.flowed_view.is_none();
         // Freeze the entry's runtime at its live value before a settling event
         // (the per-frame injection stops once the status is final).
         if let Some(elapsed) = self.agent_clocks.get(id).map(Instant::elapsed) {
@@ -214,9 +219,11 @@ impl Session<'_> {
     pub(crate) fn agent_chat(&mut self, id: &str, text: &str) {
         if self.models.backend().spawn_agent_chat(id, text) {
             let width = self.term.screen().width;
-            self.term
-                .insert_before(ui::message_lines(Role::User, text, width));
-            self.term.insert_before(vec![Line::default()]);
+            if self.flowed_view.is_none() {
+                self.term
+                    .insert_before(ui::message_lines(Role::User, text, width));
+                self.term.insert_before(vec![Line::default()]);
+            }
             self.agent_clocks
                 .entry(id.to_string())
                 .or_insert_with(Instant::now);

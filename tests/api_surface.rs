@@ -203,6 +203,7 @@ use alter_zero::ui::{
     Repin,
     StreamRender,
     TranscriptCache,
+    ViewFlow,
     COMPACTED_NOTICE,
     LIVE_MIN_HEIGHT,
     agent_group_lines,
@@ -301,6 +302,9 @@ use alter_zero::ui::{
     transcript_selection,
     trust_menu_height,
     trust_view_lines,
+    view_body_skip,
+    view_flow,
+    view_flow_signature,
     wrap_text,
 };
 

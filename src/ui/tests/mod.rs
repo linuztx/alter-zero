@@ -37,6 +37,7 @@ mod tasks;
 mod tool;
 mod transcript;
 mod trust_view;
+mod view_flow;
 mod wrap;
 
 /// Concatenate a line's span contents into its plain text.

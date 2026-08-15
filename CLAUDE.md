@@ -55,7 +55,7 @@ the test tree keeps its private-field access), `src/ui/` (`theme`, `wrap`,
 `layout`, `assistant`, `inline`, `table`, `message`, `conversation`, `tool`,
 `file_cell`, `status`, `agent`, `menu`, `footer`, `header`, `hooks_view`, `live`, `transcript`,
 `context_view`, `resume_view`, `model_view`, `login_view`, `background_view`,
-`permission_view`, `settings_view`, `mcp_view`, `trust_view`, `stream_render`), and **`src/stream/`** — the backend seam
+`permission_view`, `settings_view`, `mcp_view`, `trust_view`, `view_flow`, `stream_render`), and **`src/stream/`** — the backend seam
 kept apart from the offline demo that used to crowd it: `event` (the whole
 `StreamEvent` wire format), `source` (the `ReplySource` trait), `cancel`
 (`CancelToken`), `stall` (`StallAi`), and the self-contained **`dummy/`**
@@ -645,7 +645,24 @@ with ↑/↓ overflow markers, per-event summaries/descriptions stating **this**
 runner's exit-code semantics, matcher level only for the events whose
 dispatch matches on something (`hooks::event_has_matchers` — `Stop` and
 `UserPromptSubmit` skip it), the detail page's rounded box holding the real
-command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the
+command word-wrapped, works mid-turn, `smoke.sh` Phase 75); and the **view
+flow** (`docs/view-flow.md`: a content-driven framed view's page taller than
+the terminal — an `/mcp` tool detail's long description, a `/hooks` detail's
+wrapped command box, a `/trust` review's verbatim listing — no longer clips
+at the bottom: every framed body paints **bottom-anchored**
+(`ui::view_body_skip`, the seat's `menu_marker_seat` subtracting the same
+skip) so the hint and closing rule stay on screen, and the skipped top
+**flows into the terminal's real scrollback** directly above the region
+(`ui::view_flow` — eligibility mirrors the render precedence, so a covering
+modal suppresses it; the ↓ manager anchors but never flows, its details page
+live-tails) where the terminal's own scrolling reads the whole page; the
+boundary keeps the flowed rows' signature (`Session::flowed_view`) and
+answers any mismatch — navigation, resize, close — with the standard purge
+rebuild (`repaint_conversation`/`repaint_agent_view` append the flow to the
+reflow tail), while scrollback commits pause under an active flow
+(`Session::commits_allowed`, the agent-view pattern — a queued turn
+dispatching under an open screen-tall menu regenerates from history at
+flow-exit instead of tearing the page), `smoke.sh` Phase 85); and the
 **project-level `.alter-zero` config layer behind the `/trust` gate**
 (`docs/project-config.md`: a project's own `{root}/.alter-zero/hooks.json`
 (union-merged after the user file — `HooksFile::merged`, the pre-committed

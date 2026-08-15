@@ -268,6 +268,16 @@ pub(crate) struct Session<'t> {
     /// view, which upgrades that return's repaint to a purge rebuild
     /// (invariant 3).
     overlay_resized: bool,
+    /// The signature of the framed-view rows currently **flowed** into
+    /// scrollback — a screen-tall `/mcp`/`/hooks`/`/trust` page's top,
+    /// committed above the live region so the terminal's own scrolling reads
+    /// the whole page (`ui::view_flow`, `docs/view-flow.md`). `None` when
+    /// nothing is flowed. The draw tick compares it against the current
+    /// state's signature and answers any mismatch — a navigation, a resize,
+    /// the close — with the standard purge rebuild, which re-establishes (or
+    /// clears) the flow; while it is `Some`, scrollback commits pause
+    /// ([`Session::commits_allowed`]) so nothing tears the flowed page.
+    flowed_view: Option<u64>,
     /// The working directory: the tasks root, the permissions project key, the
     /// checkpoint store, the `/resume` filter, and the footer's `~`-relative
     /// form all key off it.

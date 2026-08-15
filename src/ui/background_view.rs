@@ -211,5 +211,9 @@ pub fn background_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 /// place of the composer — the `/model` picker pattern (see
 /// `docs/background.md`). Pure — `render_live` paints this.
 pub fn render_background_view(area: Rect, buf: &mut Buffer, app: &App) {
-    Paragraph::new(background_view_lines(app, area.width)).render(area, buf);
+    // Bottom-anchored so a squeezed terminal keeps the band's interactive
+    // tail on screen — anchor only, never the scrollback flow: the details
+    // page live-tails a running shell, and per-frame content would churn the
+    // flow's purge rebuild every tick (`docs/view-flow.md`).
+    super::view_flow::render_framed_tail(area, buf, background_view_lines(app, area.width));
 }

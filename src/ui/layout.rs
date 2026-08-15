@@ -654,9 +654,12 @@ pub fn cursor_visible(app: &App) -> bool {
 /// `❯` row's marker column, found by scanning the built lines for the
 /// selection marker span — the views are content-driven, so the row is
 /// wherever the content put it. The [`view_split`] the paint uses seats the
-/// body under any streaming strip; a marker-less page (a detail view) and a
-/// marker clamped off a short terminal fall back to the far corner, where
-/// the seat reads as chrome (the manager band's old rule).
+/// body under any streaming strip, and a body taller than its area is
+/// painted **bottom-anchored** ([`view_body_skip`], `docs/view-flow.md`), so
+/// the marker's page row is shifted by the same skipped top rows; a
+/// marker-less page (a detail view) and a marker whose row the anchor
+/// scrolled off fall back to the far corner, where the seat reads as chrome
+/// (the manager band's old rule).
 fn menu_marker_seat(lines: &[ratatui::text::Line<'_>], area: Rect) -> (u16, u16) {
     let corner = (
         area.x + area.width.saturating_sub(1),
@@ -664,15 +667,19 @@ fn menu_marker_seat(lines: &[ratatui::text::Line<'_>], area: Rect) -> (u16, u16)
     );
     let body_h = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let [_, body] = view_split(area, body_h);
+    let skip = super::view_flow::view_body_skip(lines.len(), body.height);
     for (i, line) in lines.iter().enumerate() {
         let mut before = 0usize;
         for span in &line.spans {
             if span.content.as_ref() == HOOKS_MARKER {
-                let Ok(row) = u16::try_from(i) else {
+                // The bottom anchor paints `lines[skip..]`: a marker above the
+                // skip has no on-screen row.
+                let Some(row) = i.checked_sub(skip) else {
                     return corner;
                 };
-                // A body clamped shorter than the content truncates the
-                // tail — a marker past the clamp has no on-screen row.
+                let Ok(row) = u16::try_from(row) else {
+                    return corner;
+                };
                 if row >= body.height {
                     return corner;
                 }
