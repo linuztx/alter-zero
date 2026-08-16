@@ -3,8 +3,8 @@
 use super::*;
 use crate::hooks::{HooksFile, HooksOverview};
 use crate::ui::theme::{
-    AI_COLOR, HOOKS_DETAIL_HINT, HOOKS_DISABLED_NOTE, HOOKS_EMPTY, HOOKS_HINT, HOOKS_MARKER,
-    HOOKS_MENU_MAX_ROWS, MODEL_META_COLOR, MODEL_SELECTED_COLOR,
+    HOOKS_DETAIL_HINT, HOOKS_DISABLED_NOTE, HOOKS_EMPTY, HOOKS_HINT, HOOKS_MARKER,
+    HOOKS_MENU_MAX_ROWS, HOOKS_TITLE_COLOR, MODEL_META_COLOR, MODEL_SELECTED_COLOR,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -378,7 +378,11 @@ fn the_selection_and_chrome_wear_the_picker_familys_colours() {
     let app = hooks_app();
     let lines = hooks_view_lines(&app, 78);
     let title = &lines[2];
-    assert_eq!(title.spans[1].style.fg, Some(AI_COLOR), "the title");
+    assert_eq!(
+        title.spans[1].style.fg,
+        Some(HOOKS_TITLE_COLOR),
+        "the title is cyan, like /mcp's"
+    );
     let selected = lines
         .iter()
         .find(|l| plain(l).contains("PreToolUse (3)"))

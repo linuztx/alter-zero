@@ -144,6 +144,12 @@ The layout is the `/model` picker's plus one hint row:
 rule · gap · ❯ search · gap · [rows] · (n/total) · gap · description · gap · hint · gap · rule
 ```
 
+A search that matches **nothing** has no count and nothing to describe, so
+those slots collapse to a single gap — `rule · gap · ❯ search · gap ·
+No matching settings · gap · hint · gap · rule` — instead of painting four
+blank rows mid-frame (the `/model` picker's `model_has_detail` rule, shared
+now by `/mascot`, `/skills` and `/login`).
+
 — eleven fixed chrome rows around a list capped at
 `SETTINGS_MENU_MAX_ROWS`, windowed by the shared `centered_window` so the
 selection stays centred; the whole page is one line builder

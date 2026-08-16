@@ -114,14 +114,7 @@ pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
         Span::raw(picker.query.clone()),
     ]);
-    // The description names what the highlighted row does; with nothing
-    // matched the row stays blank (always emitted, so the frame doesn't jump
-    // as the search narrows).
-    let description_line = rows
-        .get(selected.min(rows.len().saturating_sub(1)))
-        .map_or_else(Line::default, |row| {
-            model_placeholder_row(row.description, MODEL_META_COLOR, width)
-        });
+    let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
     let mut lines = vec![
         model_rule(width),
         Line::default(),
@@ -129,10 +122,24 @@ pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Line::default(),
     ];
     lines.extend(settings_list_lines(&rows, selected, width));
-    lines.push(settings_counter_line(&rows, selected));
-    lines.push(Line::default());
-    lines.push(description_line);
-    lines.push(Line::default());
+    match highlighted {
+        // A real row: the counter and the description name what it does.
+        Some(row) => {
+            lines.push(settings_counter_line(&rows, selected));
+            lines.push(Line::default());
+            lines.push(model_placeholder_row(
+                row.description,
+                MODEL_META_COLOR,
+                width,
+            ));
+            lines.push(Line::default());
+        }
+        // Nothing matched: there is no count and nothing to describe, so the
+        // two slots collapse to ONE blank gap carrying the placeholder to the
+        // hint — the `/model` picker's placeholder rule. Painting them as
+        // empty rows opened a band of blank lines mid-frame.
+        None => lines.push(Line::default()),
+    }
     lines.push(model_placeholder_row(
         SETTINGS_HINT,
         MODEL_META_COLOR,

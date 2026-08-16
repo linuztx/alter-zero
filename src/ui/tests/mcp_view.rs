@@ -9,7 +9,7 @@ use crate::ui::mcp_view_lines;
 use crate::ui::theme::{
     HOOKS_DETAIL_HINT, MCP_DESCRIPTION_COLOR, MCP_DETAIL_LABEL_COLOR, MCP_DETAIL_STATE_COLOR,
     MCP_DETAIL_VALUE_COLOR, MCP_FIELD_COL, MCP_PARAM_BULLET, MCP_PARAM_INDENT, MCP_TITLE_COLOR,
-    MCP_TOOL_FIELD_GAP, TOOL_FAIL_COLOR, TOOL_OK_COLOR,
+    MCP_TOOL_FIELD_GAP, MODEL_META_COLOR, TOOL_FAIL_COLOR, TOOL_OK_COLOR,
 };
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -537,5 +537,46 @@ fn a_tool_page_taller_than_its_area_is_bottom_anchored() {
         all.last().unwrap().contains("──"),
         "the bottom rule stays on screen: {:?}",
         all.last()
+    );
+}
+
+// --- the row separators stay dim at every status (docs/mcp.md) ---
+
+#[test]
+fn a_row_paints_only_its_glyph_in_the_status_colour() {
+    // ` · ` is chrome, not status: a connected row used to paint its first
+    // separator green (it rode the glyph's span) while the second stayed dim,
+    // so one row carried two colours of the same mark. Only the glyph is
+    // coloured now; both separators read dim at every status.
+    let app = mcp_app();
+    let lines = mcp_view_lines(&app, 78);
+    let connected = lines
+        .iter()
+        .find(|l| plain(l).contains("deepwiki"))
+        .expect("the connected row");
+    for span in &connected.spans {
+        if span.content.contains('·') {
+            assert_eq!(
+                span.style.fg,
+                Some(MODEL_META_COLOR),
+                "a separator span is dim: {:?}",
+                span.content
+            );
+        }
+    }
+    let glyph = connected
+        .spans
+        .iter()
+        .find(|s| s.content.contains('✔'))
+        .expect("the ✔ glyph span");
+    assert_eq!(
+        glyph.style.fg,
+        Some(TOOL_OK_COLOR),
+        "the glyph keeps the connected green"
+    );
+    assert_eq!(
+        glyph.content.as_ref(),
+        "✔",
+        "the glyph span carries the glyph alone"
     );
 }

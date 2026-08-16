@@ -113,14 +113,20 @@ fn server_row(server: &McpServerSnapshot, selected: bool, width: u16) -> Line<'s
         marker,
         Span::styled(name, name_style),
     ];
-    let status = format!(" · {}", server.status_line());
+    let status = format!("{MCP_ROW_SEPARATOR}{}", server.status_line());
     if used + cols(&status) <= room {
-        // ` · {glyph}` in the state colour, the words dim — the two-tone the
-        // reference paints (the glyph ends right before its trailing space).
-        let glyph_end = " · ".len() + server.status.glyph().len();
-        let (lead, words) = status.split_at(glyph_end);
+        // Three spans, not two: the separator is **chrome**, so it stays dim
+        // at every state and only the glyph carries the status colour. Riding
+        // it along with the glyph painted a connected row's first `·` green
+        // while the `·` before its tool count stayed dim.
+        let glyph = server.status.glyph();
+        let words = &status[MCP_ROW_SEPARATOR.len() + glyph.len()..];
         spans.push(Span::styled(
-            lead.to_string(),
+            MCP_ROW_SEPARATOR.to_string(),
+            Style::new().fg(MODEL_META_COLOR),
+        ));
+        spans.push(Span::styled(
+            glyph.to_string(),
             Style::new().fg(status_color(&server.status)),
         ));
         spans.push(Span::styled(

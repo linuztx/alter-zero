@@ -143,7 +143,12 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
                 Line::default(),
             ];
             lines.extend(login_provider_list_lines(onboarding, width));
-            lines.push(login_counter_line(onboarding));
+            // The counter takes a row only when something is selectable;
+            // with nothing matched it collapsed to a blank line stacked on
+            // the gap below it (the `/model` picker's placeholder rule).
+            if !onboarding.matches().is_empty() {
+                lines.push(login_counter_line(onboarding));
+            }
             lines.push(Line::default());
             lines.push(model_placeholder_row(
                 &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),

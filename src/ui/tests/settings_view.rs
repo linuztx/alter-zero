@@ -317,3 +317,50 @@ fn a_squeezed_settings_menu_is_bottom_anchored() {
         "the key hint stays on screen: {all:?}"
     );
 }
+
+// --- the no-match page collapses its empty slots (docs/settings.md) ---
+
+#[test]
+fn an_unmatched_search_collapses_to_placeholder_and_hint() {
+    // Nothing matched means there is no count and no description, so those
+    // slots collapse to ONE blank gap instead of a band of empty rows (the
+    // `/model` picker's placeholder rule). The whole page is rule, blank,
+    // search, blank, placeholder, blank, hint, blank, rule.
+    let mut app = App::new();
+    app.open_settings();
+    app.settings_picker.as_mut().expect("open").query = "zzz".to_string();
+    let texts: Vec<String> = crate::ui::settings_view::settings_view_lines(&app, 78)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
+    assert_eq!(texts.len(), 9, "the collapsed page is 9 rows: {texts:?}");
+    assert!(is_rule(&texts[0]), "{texts:?}");
+    assert_eq!(texts[1], "", "{texts:?}");
+    assert!(texts[2].contains('❯'), "{texts:?}");
+    assert_eq!(texts[3], "", "{texts:?}");
+    assert!(texts[4].contains("No matching settings"), "{texts:?}");
+    assert_eq!(texts[5], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[6].contains("Type to search"), "{texts:?}");
+    assert_eq!(texts[7], "", "{texts:?}");
+    assert!(is_rule(&texts[8]), "{texts:?}");
+}
+
+#[test]
+fn no_settings_page_ever_stacks_two_blank_rows() {
+    let mut app = App::new();
+    app.open_settings();
+    for query in ["", "tool", "zzz"] {
+        app.settings_picker.as_mut().expect("open").query = query.to_string();
+        let texts: Vec<String> = crate::ui::settings_view::settings_view_lines(&app, 78)
+            .iter()
+            .map(|l| plain(l).trim_end().to_string())
+            .collect();
+        for pair in texts.windows(2) {
+            assert!(
+                !(pair[0].is_empty() && pair[1].is_empty()),
+                "query {query:?} stacked two blank rows: {texts:?}"
+            );
+        }
+    }
+}

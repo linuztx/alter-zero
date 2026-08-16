@@ -821,8 +821,15 @@ pub(super) const MASCOT_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
 
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — MODEL_SELECTED_COLOR for the selection, MODEL_ID_COLOR
-// for unselected labels, MODEL_META_COLOR for everything dim, AI_COLOR for
-// the titles, BORDER_COLOR for the frame and the detail page's command box. ---
+// for unselected labels, MODEL_META_COLOR for everything dim,
+// HOOKS_TITLE_COLOR for the titles, BORDER_COLOR for the frame and the
+// detail page's command box. ---
+
+/// Every level's title colour — the **cyan** its `/mcp` twin wears
+/// ([`MCP_TITLE_COLOR`]). The headline is the row that answers "where am I?"
+/// in a menu you walk several levels deep, so both menus land the eye the
+/// same way.
+pub(super) const HOOKS_TITLE_COLOR: Color = MODEL_SELECTED_COLOR;
 
 /// The events-level title.
 pub(super) const HOOKS_TITLE: &str = "Hooks";
@@ -933,12 +940,17 @@ pub(super) const MCP_NONE_FOUND: &str = "No MCP servers configured. Add one at:"
 /// The detail page's field column (`Config location:  ` is the widest).
 pub(super) const MCP_FIELD_COL: usize = 18;
 
-/// Every page's headline — **cyan**, the one place the manager parts company
-/// with its white-titled `/hooks` twin. The twin is a browser you read
-/// top-down; this is a *walk* four pages deep, and the headline is the only
-/// row that answers "where am I?", so it is the row the eye must land on
-/// first (`docs/mcp.md`).
+/// Every page's headline — **cyan**, shared with its `/hooks` twin
+/// ([`HOOKS_TITLE_COLOR`]). This is a *walk* four pages deep, and the
+/// headline is the only row that answers "where am I?", so it is the row the
+/// eye must land on first (`docs/mcp.md`).
 pub(super) const MCP_TITLE_COLOR: Color = MODEL_SELECTED_COLOR;
+
+/// The separator between a server row's name, status and tool count. It is
+/// **chrome, not status**, so it stays [`MODEL_META_COLOR`] dim at every
+/// state — only the glyph carries the status colour. Painting it with the
+/// glyph made a connected row's first `·` green while its second stayed dim.
+pub(super) const MCP_ROW_SEPARATOR: &str = " · ";
 
 /// Both detail pages' two-tone: **every field label is bright** (`Status:`,
 /// `Tool name:`, `Description:`, `Parameters:`, a parameter's `● name`), and

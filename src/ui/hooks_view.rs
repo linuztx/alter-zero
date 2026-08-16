@@ -33,7 +33,9 @@ fn dim_line(text: &str, width: u16) -> Line<'static> {
 fn title_line(text: &str, width: u16) -> Line<'static> {
     hooks_line(
         text,
-        Style::new().fg(AI_COLOR).add_modifier(Modifier::BOLD),
+        Style::new()
+            .fg(HOOKS_TITLE_COLOR)
+            .add_modifier(Modifier::BOLD),
         width,
     )
 }

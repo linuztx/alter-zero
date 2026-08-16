@@ -144,28 +144,35 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Span::styled(MODEL_PROMPT, Style::new().fg(MODEL_SELECTED_COLOR)),
         Span::raw(menu.query.clone()),
     ]);
-    let note_line = if menu.session_enabled {
-        Line::default()
-    } else {
-        model_placeholder_row(SKILLS_SESSION_OFF, TOAST_ERROR_COLOR, width)
-    };
-    let description_line = rows
-        .get(selected.min(rows.len().saturating_sub(1)))
-        .map_or_else(Line::default, |row| {
-            model_placeholder_row(&row.description, MODEL_META_COLOR, width)
-        });
-    let mut lines = vec![
-        model_rule(width),
-        Line::default(),
-        search_line,
-        note_line,
-        Line::default(),
-    ];
+    let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
+    let mut lines = vec![model_rule(width), Line::default(), search_line];
+    // The session-off note takes a row only when there IS one to show —
+    // emitting it blank stacked an empty line on the gap below it.
+    if !menu.session_enabled {
+        lines.push(model_placeholder_row(
+            SKILLS_SESSION_OFF,
+            TOAST_ERROR_COLOR,
+            width,
+        ));
+    }
+    lines.push(Line::default());
     lines.extend(skills_list_lines(app, &rows, selected, width));
-    lines.push(skills_counter_line(&rows, selected));
-    lines.push(Line::default());
-    lines.push(description_line);
-    lines.push(Line::default());
+    match highlighted {
+        // A real row: the counter and the skill's own description.
+        Some(row) => {
+            lines.push(skills_counter_line(&rows, selected));
+            lines.push(Line::default());
+            lines.push(model_placeholder_row(
+                &row.description,
+                MODEL_META_COLOR,
+                width,
+            ));
+            lines.push(Line::default());
+        }
+        // Nothing matched: one gap carries the placeholder to the hint (the
+        // `/settings` menu's collapse — the two menus stay twins).
+        None => lines.push(Line::default()),
+    }
     lines.push(model_placeholder_row(SKILLS_HINT, MODEL_META_COLOR, width));
     lines.push(Line::default());
     lines.push(model_rule(width));

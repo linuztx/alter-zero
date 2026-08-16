@@ -516,8 +516,13 @@ mid-turn (the strip stays above it). Pages:
    under dim scope headings that name the config file
    (`Project MCPs ({root}/.mcp.json)`, `User MCPs (~/.alter-zero/mcp.json)`),
    each row `{name} · {glyph} {status}` (`✔ connected · 3 tools`,
-   `△ needs authentication`, `◯ disabled`, `✘ failed`). An empty list names
-   both file paths — "why isn't my server here?" is its only question.
+   `△ needs authentication`, `◯ disabled`, `✘ failed`). The ` · `
+   separators are **chrome, not status**, so they stay dim at every state
+   (`MCP_ROW_SEPARATOR`) and only the glyph carries the state colour —
+   riding it along with the glyph painted a connected row's first `·` green
+   while the one before its tool count stayed dim, two colours of the same
+   mark on one row. An empty list names both file paths — "why isn't my
+   server here?" is its only question.
 2. **Server detail** — the fact rows the state affords: `Status:`, `Auth:`
    (only when auth matters — the `auth_state` rule above), `Protocol:` (the
    revision the era detection settled — `2026-07-28` on a modern server,
@@ -567,7 +572,10 @@ first. Three rules, all of them `MCP_*` consts in `ui/theme.rs`:
   parameter's type and `(required)` — all quiet.
 
 Two exceptions, one per page, and both are the same rule: *the value that is
-itself the answer keeps the light*.
+itself the answer keeps the light*. The page **headline** is cyan, shared
+with the `/hooks` browser (`HOOKS_TITLE_COLOR` = `MCP_TITLE_COLOR`): both
+menus are walks several levels deep, and the headline is the row that
+answers "where am I?".
 
 - On the **server page** (`MCP_DETAIL_STATE_COLOR`) that is `Status:`,
   `Auth:` and `Capabilities:` — "is this working, and what can it do?" —

@@ -315,8 +315,8 @@ Two rows the `/settings` menu has no need of:
 
 - a **session-off note** under the search line when the `/settings` **Skills**
   row is off, so browsing and toggling with the master switch down never reads
-  as "my toggles do nothing" (the row is always reserved, so the frame doesn't
-  jump when it appears);
+  as "my toggles do nothing" (it costs a row only when shown — reserving it
+  blank stacked an empty line on the gap beneath it);
 - an empty list that **names the roots** rather than just saying "none" —
   `No skills found. Add one at:` over `~/.claude/skills/<name>/SKILL.md` — since
   "why isn't my skill here?" is the only question an empty list ever raises.

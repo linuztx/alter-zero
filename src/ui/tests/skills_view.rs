@@ -83,17 +83,18 @@ fn colour_at(buf: &Buffer, y: u16, width: u16, needle: &str) -> ratatui::style::
 #[test]
 fn an_on_value_and_an_off_value_are_coloured_apart() {
     // A glance down the value column has to show what is live — the
-    // `/settings` menu's two-tone rule, reused wholesale. Rows start at 5:
-    // top rule (0), gap (1), search (2), note (3), gap (4).
+    // `/settings` menu's two-tone rule, reused wholesale. Rows start at 4:
+    // top rule (0), gap (1), search (2), gap (3) — the session-off note
+    // takes a row only when it applies.
     let buf = render(&skills_app(), 78);
-    assert_eq!(colour_at(&buf, 5, 78, "enabled"), SETTINGS_VALUE_COLOR);
-    assert_eq!(colour_at(&buf, 6, 78, "disabled"), SETTINGS_VALUE_OFF_COLOR);
+    assert_eq!(colour_at(&buf, 4, 78, "enabled"), SETTINGS_VALUE_COLOR);
+    assert_eq!(colour_at(&buf, 5, 78, "disabled"), SETTINGS_VALUE_OFF_COLOR);
 }
 
 #[test]
 fn the_selected_row_lights_up_like_every_sibling_picker() {
     let buf = render(&skills_app(), 78);
-    assert_eq!(colour_at(&buf, 5, 78, "→"), MODEL_SELECTED_COLOR);
+    assert_eq!(colour_at(&buf, 4, 78, "→"), MODEL_SELECTED_COLOR);
 }
 
 #[test]
@@ -152,8 +153,7 @@ fn an_empty_list_names_where_a_skill_would_go() {
 
 #[test]
 fn the_session_off_note_shows_only_when_it_applies() {
-    // On: the row is reserved but blank, so the frame doesn't jump when the
-    // note appears.
+    // On: no note — and no row spent reserving one.
     let on = render(&skills_app(), 78);
     let on_text = (0..on.area.height)
         .map(|y| row(&on, y, 78))
@@ -161,13 +161,10 @@ fn the_session_off_note_shows_only_when_it_applies() {
         .join("\n");
     assert!(!on_text.contains(SKILLS_SESSION_OFF), "{on_text}");
 
-    let mut app = App::new();
-    app.open_skills_menu(
-        vec![meta("commit-helper", "d")],
-        Default::default(),
-        false,
-        Vec::new(),
-    );
+    // Off over the SAME skills: the note appears and costs exactly its own
+    // row (it used to be reserved blank, stacking an empty line on the gap).
+    let mut app = skills_app();
+    app.skills_menu.as_mut().expect("open").session_enabled = false;
     let off = render(&app, 78);
     let off_text = (0..off.area.height)
         .map(|y| row(&off, y, 78))
@@ -176,8 +173,8 @@ fn the_session_off_note_shows_only_when_it_applies() {
     assert!(off_text.contains(SKILLS_SESSION_OFF), "{off_text}");
     assert_eq!(
         off.area.height,
-        on.area.height - 1,
-        "the note row is reserved either way; only the list length differs"
+        on.area.height + 1,
+        "the note costs exactly one row, and only when shown"
     );
 }
 
@@ -193,4 +190,74 @@ fn the_menu_reserves_the_running_turn_strip_above_it() {
     assert!(preview > 0, "the running tool previews mid-turn");
     let strip = preview + GAP_ROWS + STATUS_ROWS + STATUS_GAP_ROWS;
     assert_eq!(skills_menu_height(&app, 78, 200), Some(idle + strip));
+}
+
+// --- the no-match page collapses its empty slots (docs/skills.md) ---
+
+/// The menu's page as trimmed plain rows.
+fn page(app: &App, width: u16) -> Vec<String> {
+    crate::ui::skills_view::skills_view_lines(app, width)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn an_unmatched_search_collapses_to_placeholder_and_hint() {
+    // No skill matched: no count, no description — one blank gap carries the
+    // placeholder to the hint (the `/model` picker's placeholder rule).
+    let mut app = skills_app();
+    app.skills_menu.as_mut().expect("open").query = "zzz".to_string();
+    let texts = page(&app, 78);
+    let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
+    assert_eq!(texts.len(), 9, "the collapsed page is 9 rows: {texts:?}");
+    assert!(is_rule(&texts[0]), "{texts:?}");
+    assert_eq!(texts[1], "", "{texts:?}");
+    assert!(texts[2].contains('❯'), "{texts:?}");
+    assert_eq!(texts[3], "", "{texts:?}");
+    assert!(texts[4].contains(SKILLS_NO_MATCH), "{texts:?}");
+    assert_eq!(texts[5], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[6].contains("Type to search"), "{texts:?}");
+    assert_eq!(texts[7], "", "{texts:?}");
+    assert!(is_rule(&texts[8]), "{texts:?}");
+}
+
+#[test]
+fn the_session_off_note_takes_no_row_when_skills_are_on() {
+    // The note row is emitted only when there IS a note: with skills on it
+    // used to render as a blank line stacked on the gap below it.
+    let on = skills_app();
+    let texts = page(&on, 78);
+    assert!(texts[2].contains('❯'), "{texts:?}");
+    assert_eq!(texts[3], "", "one gap under the search line: {texts:?}");
+    assert!(!texts[4].is_empty(), "the list starts here: {texts:?}");
+
+    // Off, the note takes its row back — right under the search line.
+    let mut off = App::new();
+    off.open_skills_menu(
+        vec![meta(
+            "commit-helper",
+            "Write a commit message in house style",
+        )],
+        Default::default(),
+        false,
+        vec!["~/.claude/skills".to_string()],
+    );
+    let texts = page(&off, 78);
+    assert!(texts[3].contains(SKILLS_SESSION_OFF), "{texts:?}");
+}
+
+#[test]
+fn no_skills_page_ever_stacks_two_blank_rows() {
+    let mut app = skills_app();
+    for query in ["", "commit", "zzz"] {
+        app.skills_menu.as_mut().expect("open").query = query.to_string();
+        let texts = page(&app, 78);
+        for pair in texts.windows(2) {
+            assert!(
+                !(pair[0].is_empty() && pair[1].is_empty()),
+                "query {query:?} stacked two blank rows: {texts:?}"
+            );
+        }
+    }
 }

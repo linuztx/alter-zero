@@ -289,7 +289,9 @@ the bottom rule — the shape of the user's mock):
   blank rows (`model_has_detail`, branched inside the `model_view_lines` builder —
   the picker is a content-driven framed body now, its height the built line
   count, painted bottom-anchored with the skipped top flowing into scrollback
-  like every framed view; `docs/view-flow.md`).
+  like every framed view; `docs/view-flow.md`). The `/login` provider step
+  follows the same rule: with no provider matched its counter takes no row, so
+  one gap carries `No matching providers` to the hint.
 
 ### Styling
 
