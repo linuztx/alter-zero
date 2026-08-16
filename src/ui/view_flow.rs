@@ -88,6 +88,9 @@ fn flow_view_lines(app: &App, width: u16, term_height: u16) -> Option<Vec<Line<'
     if app.settings_picker.is_some() {
         return Some(super::settings_view::settings_view_lines(app, width));
     }
+    if app.mascot_picker.is_some() {
+        return Some(super::mascot_view::mascot_view_lines(app, width));
+    }
     if app.skills_menu.is_some() {
         return Some(super::skills_view::skills_view_lines(app, width));
     }

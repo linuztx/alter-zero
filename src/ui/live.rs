@@ -423,6 +423,14 @@ pub fn render_live_with_preview(
         render_settings(body, buf, app);
         return;
     }
+    // …and the inline `/mascot` picker, the `/settings` menu's twin. See
+    // `docs/mascot.md`.
+    if app.mascot_picker.is_some() {
+        let [strip, body] = view_split(area, super::mascot_view::mascot_menu_rows(app, area.width));
+        render_strip_above(strip, buf, app, stream_preview);
+        render_mascot_picker(body, buf, app);
+        return;
+    }
     // …and the inline `/skills` menu, the `/settings` menu's twin. See
     // `docs/skills.md`.
     if app.skills_menu.is_some() {

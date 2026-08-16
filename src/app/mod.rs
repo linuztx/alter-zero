@@ -37,6 +37,7 @@ mod hooks_menu;
 mod input_history;
 mod keys;
 mod login;
+mod mascot;
 mod mcp_menu;
 mod model_picker;
 mod permission;
@@ -72,6 +73,7 @@ pub use self::file_picker::FileSearch;
 pub use self::hooks_menu::{HooksLevel, HooksMenu};
 pub use self::input_history::{HistorySearch, InputHistory, SearchState};
 pub use self::login::{KeyOnboarding, KeyStep, ProviderChoice};
+pub use self::mascot::{Mascot, MascotPicker, MascotRow, mascot_file_json, parse_mascot_file};
 pub use self::mcp_menu::{McpAuthView, McpMenu, McpPage, McpServerAction, server_actions};
 pub use self::model_picker::{ModelFetchError, ModelLoad, ModelPicker};
 pub use self::permission::PermissionPrompt;
@@ -352,6 +354,15 @@ pub struct App {
     /// sibling (no text entry) over the boundary-injected project-config
     /// review. See `docs/project-config.md`.
     pub trust_menu: Option<TrustMenu>,
+    /// The open inline `/mascot` picker; `None` when closed. The eighth
+    /// composer-replacing picker, the [`settings_picker`](Self::settings_picker)'s
+    /// twin — same frame, same grammar — over the mascot catalog, previewing
+    /// the highlighted mascot's banner live. See `docs/mascot.md`.
+    pub mascot_picker: Option<MascotPicker>,
+    /// The banner mascot the startup header draws ([`Mascot::Crest`] by
+    /// default) — chosen in the `/mascot` picker, seeded at the boundary from
+    /// `mascot.json` before the first frame. See `docs/mascot.md`.
+    mascot: Mascot,
     /// The session's togglable knobs — what `/settings` shows and what the
     /// boundary reads before it streams thinking, offers tools, snapshots the
     /// tree, or auto-compacts. Seeded at bootstrap from `settings.json` + the

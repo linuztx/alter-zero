@@ -109,6 +109,10 @@ pub enum CommandEffect {
     /// replaces the composer, and a toggle binds the *next* turn's request.
     /// See `docs/skills.md`.
     Skills,
+    /// Open the inline `/mascot` picker: the banner mascots, previewed live.
+    /// Works **mid-turn** like `/settings` — it only replaces the composer.
+    /// See `docs/mascot.md`.
+    Mascot,
     /// Open the inline `/mcp` manager: every declared MCP server, its live
     /// status, tools, and the authenticate/reconnect/disable operations.
     /// Works **mid-turn** like `/hooks` — it only replaces the composer;
@@ -187,6 +191,11 @@ pub const COMMANDS: &[SlashCommand] = &[
         name: "settings",
         description: "Open settings menu",
         effect: CommandEffect::Settings,
+    },
+    SlashCommand {
+        name: "mascot",
+        description: "Choose the banner mascot",
+        effect: CommandEffect::Mascot,
     },
     SlashCommand {
         name: "hooks",
@@ -418,6 +427,14 @@ impl App {
                 // over it, so the rows can never disagree with what the model
                 // is offered. docs/skills.md.
                 Action::OpenSkillsMenu
+            }
+            CommandEffect::Mascot => {
+                // /mascot works mid-turn like /settings: it only replaces the
+                // composer, and a switch repaints the banner without touching
+                // the running turn. The catalog is a const — nothing to
+                // fetch, so the pure open happens right here. docs/mascot.md.
+                self.open_mascot_picker();
+                Action::OpenMascotPicker
             }
             CommandEffect::Mcp => {
                 // /mcp works mid-turn too — it only replaces the composer,

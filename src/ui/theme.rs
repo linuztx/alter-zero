@@ -798,6 +798,27 @@ pub(super) const SKILLS_NONE_FOUND: &str = "No skills found. Add one at:";
 pub(super) const SKILLS_SESSION_OFF: &str =
     "Skills are off for this session — turn them on in /settings";
 
+// --- the inline /mascot picker (docs/mascot.md). The /settings menu's twin
+// again: it reuses the family's frame, marker, prompt and colours, adding
+// only its own words — the page's centre is the live banner preview, drawn
+// by the header's own builder so it can never disagree with the real thing. ---
+
+/// The key hint pinned under the preview — the picker's whole grammar.
+pub(super) const MASCOT_HINT: &str = "Type to search · Enter to choose · Esc to cancel";
+
+/// The list placeholder when the search matches no mascot.
+pub(super) const MASCOT_NO_MATCH: &str = "No matching mascots";
+
+/// The row (within the picker's framed area) the `❯` search line sits on —
+/// top rule (0), gap (1), search (2). Shared by `render_mascot_picker` and
+/// [`cursor_position`](super::layout::cursor_position) so the caret lands on
+/// the line drawn.
+pub(super) const MASCOT_SEARCH_ROW: u16 = 2;
+
+/// The cap on the picker's visible list rows (the settings window's size —
+/// the eight-mascot catalog never actually windows today).
+pub(super) const MASCOT_MENU_MAX_ROWS: u16 = SETTINGS_MENU_MAX_ROWS;
+
 // --- the read-only /hooks menu (docs/hooks-menu.md). It reuses the picker
 // family's accents — MODEL_SELECTED_COLOR for the selection, MODEL_ID_COLOR
 // for unselected labels, MODEL_META_COLOR for everything dim, AI_COLOR for
@@ -1325,47 +1346,30 @@ pub(super) const SHELL_MODE_COLOR: Color = ERROR_COLOR;
 /// absorbed bang rendered back; same two columns as [`PROMPT`]).
 pub(super) const SHELL_BULLET: &str = "! ";
 
-// --- The startup header banner (docs/header.md): an ASCII wordmark + version +
-// cwd + hint, committed to scrollback at launch and re-emitted atop every full
-// repaint (resize, `/clear`) so it survives the scrollback purge. Pure chrome,
-// like the footer — never in `history`, so it never reaches the model, the
-// `/resume` rollout, or the Ctrl+O transcript. Borderless (no `─` rule row, no
-// bare prompt, no model name) so the smoke resize counters don't see it. ---
+// --- The startup header banner (docs/header.md, docs/mascot.md): the
+// gradient mascot beside the title + cwd + hint, committed to scrollback at
+// launch and re-emitted atop every full repaint (resize, `/clear`, a /mascot
+// switch) so it survives the scrollback purge. Pure chrome, like the footer —
+// never in `history`, so it never reaches the model or the `/resume` rollout.
+// Borderless (no `─` rule row, no bare prompt, no model name) so the smoke
+// resize counters don't see it. The art itself lives on `app::Mascot`. ---
 
-/// The full ANSI-Shadow wordmark, shown when the terminal is wide enough
-/// ([`header_lines`] falls back to [`HEADER_LOGO_COMPACT`], then a text badge).
-/// One `&str` per row so the leading spaces survive verbatim — a `\`-continued
-/// string literal would strip them and shift the `A`'s crown a column left.
-pub(super) const HEADER_LOGO_FULL: &[&str] = &[
-    " █████╗ ██╗  ████████╗███████╗██████╗   ███████╗███████╗██████╗  ██████╗",
-    "██╔══██╗██║  ╚══██╔══╝██╔════╝██╔══██╗  ╚══███╔╝██╔════╝██╔══██╗██╔═══██╗",
-    "███████║██║     ██║   █████╗  ██████╔╝    ███╔╝ █████╗  ██████╔╝██║   ██║",
-    "██╔══██║██║     ██║   ██╔══╝  ██╔══██╗   ███╔╝  ██╔══╝  ██╔══██╗██║   ██║",
-    "██║  ██║███████╗██║   ███████╗██║  ██║  ███████╗███████╗██║  ██║╚██████╔╝",
-    "╚═╝  ╚═╝╚══════╝╚═╝   ╚══════╝╚═╝  ╚═╝  ╚══════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ",
-];
+/// The product name — bold in the banner's title row, gradient-washed in the
+/// narrow one-line badge. Also the smoke suite's tier-independent banner
+/// marker (`scripts/smoke.sh` Phase 45), so every tier must carry it.
+pub(super) const HEADER_NAME: &str = "Alter Zero";
 
-/// The compact half-block wordmark, shown on mid-width terminals (too narrow for
-/// [`HEADER_LOGO_FULL`], wide enough to still show art).
-pub(super) const HEADER_LOGO_COMPACT: &[&str] = &[
-    "▄▀█ █   ▀█▀ █▀▀ █▀▄  ▀▀█ █▀▀ █▀▄ █▀█",
-    "█▀█ █▄▄  █  ██▄ █▀▄  █▄▄ ██▄ █▀▄ █▄█",
-];
+/// The command hint beside the mascot — bare `/token`s in the accent colour,
+/// three-space separated. Deliberately prose-free so it can't collide with
+/// the smoke suite's `for commands` / footer markers.
+pub(super) const HEADER_HINT: &[&str] = &["/login", "/model", "/resume"];
 
-/// The plain-text name for the one-line badge (a very narrow terminal, too small
-/// for either wordmark).
-pub(super) const HEADER_NAME: &str = "ALTER ZERO";
+/// Columns between the mascot art's right edge and the metadata column —
+/// two, per the user's spec (a wider gap read as detached).
+pub(super) const HEADER_ART_GAP: usize = 2;
 
-/// The tagline under the logo — the persona, echoing `prompts/alter_zero.md`.
-pub(super) const HEADER_TAGLINE: &str = "autonomous ai agent · terminal ui";
-
-/// The command hint under the metadata — bare `/token`s (the slashes accented,
-/// separators dim). Deliberately prose-free so it can't collide with the smoke
-/// suite's `for commands` / footer markers.
-pub(super) const HEADER_HINT: &[&str] = &["/help", "/model", "/resume"];
-
-/// Indent shared with the footer and messages — the whole metadata block sits
-/// two columns in. The logo art is drawn flush-left.
+/// Indent shared with the footer and messages — the badge tier's rows sit
+/// two columns in. The mascot art is drawn flush-left.
 pub(super) const HEADER_INDENT: &str = "  ";
 
 /// The logo gradient's left endpoint — the inline-code cyan ([`INLINE_CODE_COLOR`]).

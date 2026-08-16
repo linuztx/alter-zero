@@ -92,6 +92,8 @@ cleanup() {
 	tmux kill-session -t "${S}_bgkill" 2>/dev/null
 	tmux kill-session -t "${S}_notty" 2>/dev/null
 	tmux kill-session -t "${S}_header" 2>/dev/null
+	tmux kill-session -t "${S}_mascot" 2>/dev/null
+	[ -n "${MASC_CFG:-}" ] && rm -rf "$MASC_CFG" 2>/dev/null
 	tmux kill-session -t "${S}_ctrlofast" 2>/dev/null
 	tmux kill-session -t "${S}_compact" 2>/dev/null
 	tmux kill-session -t "${S}_autocompact" 2>/dev/null
@@ -275,7 +277,7 @@ printf '%s\n' "$returned"
 # commits beneath it and never rebuilds — docs/header.md; Phase 81 pins the
 # stronger property, that nothing an overlay-covered turn produced is lost).
 returned_full="$(tmux capture-pane -t "$S" -p -S -80)"
-returned_banner_count=$(printf '%s\n' "$returned_full" | grep -cF "autonomous ai agent")
+returned_banner_count=$(printf '%s\n' "$returned_full" | grep -cF "Alter Zero")
 
 # --- Phase 38: PARALLEL tool-call batch — the not-yet-run calls show `⎿ Waiting…`
 # (docs/parallel-tools.md). A prompt mentioning "parallel" makes the dummy announce
@@ -2380,7 +2382,7 @@ if ! printf '%s' "$overlay_deep" | grep -qF 'if __name__ == "__main__":'; then
 	status=1
 fi
 if [ "${returned_banner_count:-0}" -gt 1 ]; then
-	echo "FAIL: the Ctrl+O return duplicated the header banner over a long conversation — expected at most 1 'autonomous ai agent' in screen+scrollback, got ${returned_banner_count:-0}" >&2
+	echo "FAIL: the Ctrl+O return duplicated the header banner over a long conversation — expected at most 1 'Alter Zero' in screen+scrollback, got ${returned_banner_count:-0}" >&2
 	status=1
 fi
 # Stamps in the tool view: only the USER message shows one — alone on its own
@@ -3477,13 +3479,15 @@ if printf '%s' "$notty_pane" | grep -qF "LEAK_MARK"; then
 fi
 
 # Phase 45: the startup header banner (docs/header.md). A fresh session shows the
-# ASCII wordmark + version + cwd + hint at the top of scrollback. It is chrome
+# gradient mascot + title + cwd + hint at the top of scrollback. It is chrome
 # (never in `history`), re-emitted on every full repaint — so it survives a
 # resize (a width change purges scrollback and rebuilds from history, which the
 # header is NOT part of, so it must be re-emitted) and re-shows after /clear (a
-# fresh-start banner). The tier-independent tagline is the marker; the borderless
-# design adds no `─` rule / bare prompt / footer, so Phases 16/17 stay green.
-HEADER_MARK="autonomous ai agent"
+# fresh-start banner). The tier-independent title word is the marker (both the
+# mascot tier and the narrow badge carry the literal "Alter Zero"); the
+# borderless design adds no `─` rule / bare prompt / footer, so Phases 16/17
+# stay green.
+HEADER_MARK="Alter Zero"
 S_HEADER="${S}_header"
 tmux new-session -d -s "$S_HEADER" -x 80 -y 24 "$APP"
 sleep 0.5
@@ -7642,6 +7646,111 @@ done
 tmux kill-session -t "$S85" 2>/dev/null || true
 rm -rf "$FL_CFG"
 
+
+# --- Phase 86: the `/mascot` picker (docs/mascot.md). The `/settings`
+# family's frame over the mascot catalog with a LIVE banner preview: the page
+# previews the highlighted mascot through the header's own builder, Enter
+# switches the startup banner in place (the selection purge-rebuilds, so the
+# chrome at the top of scrollback redraws at once), the switch is confirmed
+# with a toast and persisted to {config}/mascot.json — and a second process
+# against the same config home must LAUNCH with the switched mascot. ---
+S86="${S}_mascot"
+MASC_CFG="$(mktemp -d)"
+APP_MASCOT="env ALTER_ZERO_PROJECT_CONFIG=0 ALTER_ZERO_CONFIG_DIR=$MASC_CFG ALTER_ZERO_CHECKPOINTS=0 ALTER_ZERO_SKILLS_DIR=$SMOKE_SKILLS ALTER_ZERO_HISTORY_FILE=/dev/null ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+tmux new-session -d -s "$S86" -x 80 -y 30 "$APP_MASCOT"
+sleep 0.8
+mascot_boot="$(tmux capture-pane -t "$S86" -p)"
+echo "==== Phase 86: the startup banner (default crest) ===="
+printf '%s\n' "$mascot_boot"
+# The default banner: crest's crown row beside the bold title row.
+if ! printf '%s' "$mascot_boot" | grep -qF "▙▄▙▄▟▄▟"; then
+	echo "FAIL: Phase 86 — the default crest mascot is missing from the startup banner" >&2
+	status=1
+fi
+if ! printf '%s' "$mascot_boot" | grep -qF "Alter Zero (v"; then
+	echo "FAIL: Phase 86 — the banner's title row is missing" >&2
+	status=1
+fi
+tmux send-keys -t "$S86" -l "/mascot"
+sleep 0.4
+mascot_palette="$(tmux capture-pane -t "$S86" -p)"
+echo "==== Phase 86: the palette filtered to /mascot ===="
+printf '%s\n' "$mascot_palette"
+if ! printf '%s' "$mascot_palette" | grep -qF "Choose the banner mascot"; then
+	echo "FAIL: Phase 86 — /mascot is missing from the slash-command palette" >&2
+	status=1
+fi
+tmux send-keys -t "$S86" Enter
+sleep 0.5
+mascot_open="$(tmux capture-pane -t "$S86" -p)"
+echo "==== Phase 86: the picker open (crest highlighted + previewed) ===="
+printf '%s\n' "$mascot_open"
+for expect in "→ crest ✓" "sprout" "gem" "(1/6)" \
+	"A crested hatchling flaring its frill" \
+	"Type to search · Enter to choose · Esc to cancel"; do
+	if ! printf '%s' "$mascot_open" | grep -qF "$expect"; then
+		echo "FAIL: Phase 86 — the open picker is missing '$expect'" >&2
+		status=1
+	fi
+done
+# ↓ to bloom: the preview follows the selection live (bloom's petal row shows,
+# crest's crown row leaves the preview slot — the startup banner above keeps
+# its own crest, so the check is scoped to the picker's preview rows).
+tmux send-keys -t "$S86" Down
+sleep 0.4
+mascot_bloom="$(tmux capture-pane -t "$S86" -p)"
+echo "==== Phase 86: ↓ previews bloom ===="
+printf '%s\n' "$mascot_bloom"
+if ! printf '%s' "$mascot_bloom" | grep -qF "▀█▄███▄█▀"; then
+	echo "FAIL: Phase 86 — moving the selection did not preview bloom's art" >&2
+	status=1
+fi
+if ! printf '%s' "$mascot_bloom" | grep -qF "(2/6)"; then
+	echo "FAIL: Phase 86 — the counter did not follow the selection" >&2
+	status=1
+fi
+# Type-to-search narrows to sprout; Enter switches the banner.
+tmux send-keys -t "$S86" -l "spr"
+sleep 0.3
+tmux send-keys -t "$S86" Enter
+sleep 0.8
+mascot_after="$(tmux capture-pane -t "$S86" -p -S -40)"
+echo "==== Phase 86: after Enter — the banner redrawn + the toast ===="
+printf '%s\n' "$mascot_after"
+if ! printf '%s' "$mascot_after" | grep -qF "▝▛▛▀▜▜▘"; then
+	echo "FAIL: Phase 86 — the banner did not redraw with sprout after Enter" >&2
+	status=1
+fi
+if printf '%s' "$mascot_after" | grep -qF "▙▄▙▄▟▄▟"; then
+	echo "FAIL: Phase 86 — the old crest banner survived the switch's purge rebuild" >&2
+	status=1
+fi
+if ! printf '%s' "$mascot_after" | grep -qF "Mascot: sprout"; then
+	echo "FAIL: Phase 86 — the switch was not confirmed with a toast" >&2
+	status=1
+fi
+if ! grep -qF '"mascot": "sprout"' "$MASC_CFG/mascot.json" 2>/dev/null; then
+	echo "FAIL: Phase 86 — mascot.json was not written (or holds the wrong mascot)" >&2
+	status=1
+fi
+tmux send-keys -t "$S86" -l "/quit"
+sleep 0.2
+tmux send-keys -t "$S86" Enter
+sleep 0.6
+tmux kill-session -t "$S86" 2>/dev/null
+# The persistence half: a fresh process against the same config home boots
+# with sprout in the banner (the bootstrap seed, docs/mascot.md).
+tmux new-session -d -s "$S86" -x 80 -y 30 "$APP_MASCOT"
+sleep 0.8
+mascot_relaunch="$(tmux capture-pane -t "$S86" -p)"
+echo "==== Phase 86: a fresh launch keeps the saved mascot ===="
+printf '%s\n' "$mascot_relaunch"
+if ! printf '%s' "$mascot_relaunch" | grep -qF "▝▛▛▀▜▜▘"; then
+	echo "FAIL: Phase 86 — the saved mascot did not survive a relaunch" >&2
+	status=1
+fi
+tmux kill-session -t "$S86" 2>/dev/null
+rm -rf "$MASC_CFG"
 
 
 if [ "$status" -eq 0 ]; then

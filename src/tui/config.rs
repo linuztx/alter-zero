@@ -496,6 +496,35 @@ pub(crate) fn skills_json_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("skills.json"))
 }
 
+/// The banner-mascot file — `{config_home}/mascot.json`, its own file beside
+/// the rest (one file per feature that owns it, `docs/mascot.md`). `None`
+/// (no config home) disables persistence: the `/mascot` switch still works,
+/// it just doesn't survive a restart.
+pub(crate) fn mascot_json_path() -> Option<PathBuf> {
+    config_home().map(|dir| dir.join("mascot.json"))
+}
+
+/// Read the saved mascot. Best-effort like [`load_permissions`] — an absent,
+/// unreadable, or corrupt file reads as `None` and the session keeps the
+/// default mascot rather than failing startup.
+pub(crate) fn load_mascot(path: Option<&Path>) -> Option<alter_zero::app::Mascot> {
+    path.and_then(|p| std::fs::read_to_string(p).ok())
+        .as_deref()
+        .and_then(alter_zero::app::parse_mascot_file)
+}
+
+/// Persist the chosen mascot. Best-effort like [`save_settings`] — a
+/// read-only home must never kill the TUI — and a `None` path no-ops.
+pub(crate) fn save_mascot(path: Option<&Path>, mascot: alter_zero::app::Mascot) {
+    let Some(path) = path else {
+        return;
+    };
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(path, alter_zero::app::mascot_file_json(mascot));
+}
+
 /// Read the skill on/off file. Best-effort like [`load_permissions`] — a
 /// corrupt file reads as "nothing disabled" rather than costing the session
 /// its skills.

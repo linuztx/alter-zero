@@ -49,6 +49,10 @@ impl App {
         if self.view == View::Conversation && self.settings_picker.is_some() {
             return self.on_key_settings(key);
         }
+        // …and the inline `/mascot` picker, its twin. See `docs/mascot.md`.
+        if self.view == View::Conversation && self.mascot_picker.is_some() {
+            return self.on_key_mascot_picker(key);
+        }
         // …and the inline `/skills` menu. See `docs/skills.md`.
         if self.view == View::Conversation && self.mcp_menu.is_some() {
             return self.on_key_mcp(key);

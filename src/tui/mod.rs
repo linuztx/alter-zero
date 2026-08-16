@@ -83,6 +83,7 @@ pub(crate) mod config;
 pub(crate) mod event_loop;
 pub(crate) mod history_store;
 pub(crate) mod host;
+pub(crate) mod mascot;
 pub(crate) mod mcp;
 pub(crate) mod mcp_cli;
 pub(crate) mod models;

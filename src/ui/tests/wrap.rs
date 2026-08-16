@@ -639,13 +639,13 @@ fn bullet_prefixes_all_occupy_bullet_width_columns() {
 }
 
 #[test]
-fn header_falls_back_to_the_compact_wordmark_when_mid_width() {
+fn header_keeps_the_mascot_at_mid_width() {
+    // 50 columns is the smoke suite's resize target (Phase 45): the mascot
+    // tier still fits there — art + gap + a clamped metadata column.
     let width = 50;
     let lines = header_lines(&with_session(), width);
     let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
-    // The compact half-block wordmark uses `▀`, which the full block art
-    // never does — so its presence proves the mid-width tier was chosen.
-    assert!(text.contains('▀'), "compact half-block wordmark: {text:?}");
+    assert!(text.contains('█'), "mascot art kept: {text:?}");
     assert!(
         text.contains(env!("CARGO_PKG_VERSION")),
         "version kept: {text:?}"

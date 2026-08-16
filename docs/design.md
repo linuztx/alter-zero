@@ -164,7 +164,8 @@ unit-tested must be unit-tested.
   space/newline — a scrollable command **palette opens below the input box** (a
   third band in the live region). It lists a registry of `SlashCommand`s
   (`app::COMMANDS`: name + description + effect — currently `/help`, `/clear`,
-  `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, and `/quit`),
+  `/copy`, `/init`, `/compact`, `/resume`, `/model`, `/login`, `/settings`,
+  `/mascot`, `/hooks`, `/skills`, `/mcp`, `/trust`, and `/quit`),
   filtered by name-prefix as you type after the `/`; `/` alone matches everything.
   ↑/↓ move the highlight, and the list shows at most `MENU_MAX_ROWS` (8) rows at a
   time — the registry has outgrown the window, so a bare `/` shows the first eight

@@ -1,7 +1,7 @@
-//! The startup banner (`docs/header.md`).
+//! The startup banner (`docs/header.md`, `docs/mascot.md`).
 
 use super::*;
-use crate::ui::theme::HEADER_LOGO_FULL;
+use crate::app::Mascot;
 use crate::ui::wrap::cols;
 
 #[test]
@@ -30,32 +30,184 @@ fn transcript_opens_with_the_header_banner() {
 }
 
 #[test]
-fn header_full_shows_logo_version_cwd_tagline_and_hint() {
+fn header_shows_mascot_title_cwd_and_hint() {
     let text = header_text(&with_session(), 90);
-    assert!(text.contains('█'), "block wordmark art: {text:?}");
+    // The default mascot (crest) draws flush-left.
+    assert!(text.contains("▙▄▙▄▟▄▟"), "crest art: {text:?}");
+    assert!(text.contains("Alter Zero"), "name: {text:?}");
     assert!(
-        text.contains(env!("CARGO_PKG_VERSION")),
+        text.contains(&format!("(v{})", env!("CARGO_PKG_VERSION"))),
         "version: {text:?}"
     );
     assert!(
         text.contains("~/alter-zero"),
         "cwd from the session: {text:?}"
     );
-    assert!(text.contains("autonomous ai agent"), "tagline: {text:?}");
-    assert!(text.contains("terminal ui"), "tagline: {text:?}");
-    for token in ["/help", "/model", "/resume"] {
+    for token in ["/login", "/model", "/resume"] {
         assert!(text.contains(token), "hint token {token}: {text:?}");
+    }
+    // The retired wordmark tiers and tagline are gone.
+    assert!(!text.contains("autonomous ai agent"), "tagline: {text:?}");
+    assert!(!text.contains("╗"), "ANSI-Shadow art: {text:?}");
+}
+
+#[test]
+fn header_rows_compose_art_beside_the_metadata() {
+    // Row for row: `{art padded to the art width}{2-space gap}{meta}` — the
+    // metadata column aligned down the block, two columns off the art's
+    // right edge (the user's spec). Crest (the default) is 3 rows beside 3
+    // metadata rows, so every row pairs.
+    let lines = header_lines(&with_session(), 90);
+    let crest = Mascot::Crest;
+    let art = crest.art();
+    let w = crest.art_width();
+    let pad = |row: &str| format!("{row}{}", " ".repeat(w - cols(row) + 2));
+    assert_eq!(
+        plain(&lines[0]),
+        format!("{}Alter Zero (v{})", pad(art[0]), env!("CARGO_PKG_VERSION"))
+    );
+    assert_eq!(plain(&lines[1]), format!("{}~/alter-zero", pad(art[1])));
+    assert_eq!(
+        plain(&lines[2]),
+        format!("{}/login   /model   /resume", pad(art[2]))
+    );
+    assert_eq!(lines.len(), art.len());
+}
+
+#[test]
+fn header_meta_block_seats_lower_beside_a_taller_mascot() {
+    // A mascot with more rows than the metadata seats the block **centered,
+    // ties resolving downward** — the text sits low rather than hanging off
+    // the art's top. A session-less banner is the live case: it carries only
+    // the title and the hint (no cwd row), so every 3-row mascot puts them on
+    // rows 1–2 with the art's first row standing alone above.
+    for mascot in Mascot::ALL {
+        let mut app = App::new();
+        app.set_mascot(mascot);
+        let lines = header_lines(&app, 90);
+        let art = mascot.art();
+        assert_eq!(
+            plain(&lines[0]),
+            art[0],
+            "{}: row 0 is art alone, unpadded",
+            mascot.name()
+        );
+        assert!(
+            plain(&lines[1]).contains("Alter Zero"),
+            "{}: title on row 1",
+            mascot.name()
+        );
+        assert!(
+            plain(&lines[2]).contains("/login"),
+            "{}: hint on row 2",
+            mascot.name()
+        );
+        assert_eq!(lines.len(), art.len(), "{}", mascot.name());
+    }
+}
+
+#[test]
+fn header_uses_the_selected_mascot() {
+    let mut app = with_session();
+    app.set_mascot(Mascot::Sprout);
+    let text = header_text(&app, 90);
+    assert!(text.contains("▝▛▛▀▜▜▘"), "sprout art: {text:?}");
+    assert!(!text.contains("▙▄▙▄▟▄▟"), "crest art gone: {text:?}");
+    // A three-row mascot beside three metadata rows: no fourth row.
+    assert_eq!(header_lines(&app, 90).len(), 3);
+}
+
+#[test]
+fn header_title_is_bold_name_over_dim_version() {
+    let lines = header_lines(&with_session(), 90);
+    let name = lines[0]
+        .spans
+        .iter()
+        .find(|s| s.content.contains("Alter Zero"))
+        .expect("the name span");
+    assert!(
+        name.style.add_modifier.contains(Modifier::BOLD),
+        "the name is bold"
+    );
+    let version = lines[0]
+        .spans
+        .iter()
+        .find(|s| s.content.contains("(v"))
+        .expect("the version span");
+    assert_eq!(
+        version.style.fg,
+        Some(crate::ui::theme::HEADER_META_COLOR),
+        "the version is dim"
+    );
+}
+
+#[test]
+fn header_cwd_is_dim_and_hint_is_cyan() {
+    let lines = header_lines(&with_session(), 90);
+    let cwd = lines[1]
+        .spans
+        .iter()
+        .find(|s| s.content.contains("~/alter-zero"))
+        .expect("the cwd span");
+    assert_eq!(cwd.style.fg, Some(crate::ui::theme::HEADER_META_COLOR));
+    let hint = lines[2]
+        .spans
+        .iter()
+        .find(|s| s.content.contains("/login"))
+        .expect("a hint token span");
+    assert_eq!(hint.style.fg, Some(crate::ui::theme::HEADER_ACCENT_COLOR));
+}
+
+#[test]
+fn header_mascot_carries_the_banner_gradient() {
+    let lines = header_lines(&with_session(), 90);
+    // Row 0 starts at column 0 (gradient t=0) → the exact cyan endpoint.
+    let first = lines[0].spans.first().expect("an art span");
+    assert_eq!(
+        first.style.fg,
+        Some(Color::Rgb(0x56, 0xB6, 0xC2)),
+        "the art starts cyan"
+    );
+    // Some art cell reaches the block's far edge (t=1) → the exact blue
+    // endpoint.
+    let has_blue = lines.iter().any(|l| {
+        l.spans
+            .iter()
+            .any(|s| s.style.fg == Some(Color::Rgb(0x61, 0xAF, 0xEF)))
+    });
+    assert!(has_blue, "the art ends blue");
+}
+
+#[test]
+fn header_art_rows_render_verbatim() {
+    // Leading spaces survive (a `\`-continued literal would strip them and
+    // shift the glyphs left) — each line's art prefix is the row exactly,
+    // whatever rows the centered metadata block lands beside.
+    for mascot in Mascot::ALL {
+        let mut app = with_session();
+        app.set_mascot(mascot);
+        let lines = header_lines(&app, 90);
+        for (i, art) in mascot.art().iter().enumerate() {
+            assert!(
+                plain(&lines[i]).starts_with(art),
+                "{} art row {i} rendered verbatim: {:?}",
+                mascot.name(),
+                plain(&lines[i])
+            );
+        }
     }
 }
 
 #[test]
 fn header_falls_back_to_a_text_badge_when_very_narrow() {
-    let width = 24;
+    let width = 20;
     let lines = header_lines(&with_session(), width);
     let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
-    // Neither wordmark spells the name in literal letters — a literal
-    // "ALTER ZERO" can only be the one-line text badge.
-    assert!(text.contains("ALTER ZERO"), "text badge: {text:?}");
+    assert!(
+        !text.contains('█'),
+        "no room for the mascot at {width}: {text:?}"
+    );
+    assert!(text.contains("Alter Zero"), "text badge: {text:?}");
     assert!(
         text.contains(env!("CARGO_PKG_VERSION")),
         "version: {text:?}"
@@ -69,46 +221,18 @@ fn header_falls_back_to_a_text_badge_when_very_narrow() {
 }
 
 #[test]
-fn header_logo_carries_the_cyan_to_blue_gradient() {
-    let lines = header_lines(&with_session(), 90);
-    // Row 0 starts at column 0 (gradient t=0) → the exact cyan endpoint.
-    let first = lines[0].spans.first().expect("a logo span");
-    assert_eq!(
-        first.style.fg,
-        Some(Color::Rgb(0x56, 0xB6, 0xC2)),
-        "logo starts cyan"
-    );
-    // Some cell reaches the far edge (t=1) → the exact blue endpoint.
-    let has_blue = lines.iter().take(6).any(|l| {
-        l.spans
-            .iter()
-            .any(|s| s.style.fg == Some(Color::Rgb(0x61, 0xAF, 0xEF)))
-    });
-    assert!(has_blue, "logo ends blue");
-}
-
-#[test]
-fn header_logo_rows_match_the_wordmark_art_verbatim() {
-    // The `A`'s crown row leads with a space; a `\`-continued string literal
-    // strips it and shifts the glyph a column left — regression guard.
-    let lines = header_lines(&with_session(), 90);
-    for (i, art) in HEADER_LOGO_FULL.iter().enumerate() {
-        assert_eq!(&plain(&lines[i]), art, "logo row {i} rendered verbatim");
-    }
-    assert!(
-        plain(&lines[0]).starts_with(' '),
-        "the A's crown keeps its leading indent"
-    );
-}
-
-#[test]
-fn header_without_a_session_still_shows_logo_and_version() {
+fn header_without_a_session_still_shows_mascot_and_version() {
     let text = header_text(&App::new(), 90);
-    assert!(text.contains('█'), "logo still drawn: {text:?}");
+    assert!(text.contains('█'), "art still drawn: {text:?}");
     assert!(
         text.contains(env!("CARGO_PKG_VERSION")),
         "version: {text:?}"
     );
+    assert!(
+        !text.contains("~/"),
+        "no cwd row without a session: {text:?}"
+    );
+    assert!(text.contains("/login"), "the hint still shows: {text:?}");
 }
 
 #[test]
@@ -116,28 +240,33 @@ fn header_avoids_the_smoke_reserved_strings() {
     // The banner shares the screen with the smoke suite's structural
     // counters (docs/header.md, smoke Phases 11/16/17): it must never carry
     // these markers, nor a full `─` rule / bare `❯` row.
-    for width in [24u16, 50, 90] {
-        let lines = header_lines(&with_session(), width);
-        let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
-        for banned in [
-            "for commands",
-            "dummy_model_name",
-            "Happy",
-            "Done for",
-            "esc to interrupt",
-            "Conversation interrupted",
-        ] {
-            assert!(
-                !text.contains(banned),
-                "width {width} leaks {banned:?}: {text:?}"
-            );
-        }
-        for line in &lines {
-            let row = plain(line);
-            let trimmed = row.trim();
-            let is_rule = !trimmed.is_empty() && trimmed.chars().all(|c| c == '─');
-            assert!(!is_rule, "width {width} drew a rule row: {row:?}");
-            assert_ne!(trimmed, "❯", "width {width} drew a bare prompt row");
+    for width in [16u16, 24, 50, 90] {
+        for mascot in Mascot::ALL {
+            let mut app = with_session();
+            app.set_mascot(mascot);
+            let lines = header_lines(&app, width);
+            let text = lines.iter().map(plain).collect::<Vec<_>>().join("\n");
+            for banned in [
+                "for commands",
+                "dummy_model_name",
+                "Happy",
+                "Done for",
+                "esc to interrupt",
+                "Conversation interrupted",
+            ] {
+                assert!(
+                    !text.contains(banned),
+                    "width {width} {} leaks {banned:?}: {text:?}",
+                    mascot.name()
+                );
+            }
+            for line in &lines {
+                let row = plain(line);
+                let trimmed = row.trim();
+                let is_rule = !trimmed.is_empty() && trimmed.chars().all(|c| c == '─');
+                assert!(!is_rule, "width {width} drew a rule row: {row:?}");
+                assert_ne!(trimmed, "❯", "width {width} drew a bare prompt row");
+            }
         }
     }
 }

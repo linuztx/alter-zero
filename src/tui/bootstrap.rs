@@ -81,6 +81,12 @@ impl<'t> Session<'t> {
         // appended per loop iteration (`take_unpersisted_inputs`).
         let hist_store = InputHistoryStore::new();
         app.seed_input_history(hist_store.load());
+        // The banner mascot (docs/mascot.md): the saved `/mascot` choice,
+        // seeded before the first frame commits the header so the banner
+        // draws it from launch. An absent or corrupt file keeps the default.
+        if let Some(mascot) = config::load_mascot(config::mascot_json_path().as_deref()) {
+            app.set_mascot(mascot);
+        }
 
         let cwd = std::env::current_dir().unwrap_or_default();
         let home = std::env::var_os("HOME").map(std::path::PathBuf::from);
@@ -558,7 +564,7 @@ impl<'t> Session<'t> {
     /// transcript) and schedule the first paint — then, for a bare `--resume`,
     /// open the session picker over it.
     fn paint_first_frame(&mut self, picker: bool) -> io::Result<()> {
-        // The startup header banner (docs/header.md): the ASCII wordmark +
+        // The startup header banner (docs/header.md): the gradient mascot +
         // version + cwd, committed to scrollback once here and re-emitted atop
         // every full repaint (resize, `/clear`) by the repaint. Pure chrome — it
         // never enters `history`, so it reaches neither the model nor the

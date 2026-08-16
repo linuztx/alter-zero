@@ -181,6 +181,20 @@ pub enum Action {
     /// listing, the backend rebuild, this project's `skills.json` entry — and
     /// confirms with a toast. See `docs/skills.md`.
     SkillToggled { name: String, enabled: bool },
+    /// `/mascot`: open the inline mascot picker. Like `/settings` it works
+    /// mid-turn — it only replaces the composer; a switch repaints the banner
+    /// at the next purge rebuild. The loop has nothing to fetch (the catalog
+    /// is a const); it just repaints. See `docs/mascot.md`.
+    OpenMascotPicker,
+    /// The mascot picker was dismissed (Esc on an empty query, or Ctrl+C):
+    /// [`App::mascot_picker`] is already cleared; the loop repaints the
+    /// collapsed region.
+    CloseMascotPicker,
+    /// Enter/Space in the mascot picker: [`App::mascot`] already moved. The
+    /// loop persists `mascot.json`, purge-rebuilds so the banner at the top
+    /// of scrollback redraws with the new mascot at once, and confirms with
+    /// a toast. See `docs/mascot.md`.
+    SelectMascot(Mascot),
     /// `/mcp`: open the inline MCP manager. Like `/hooks` it works mid-turn —
     /// it only replaces the composer. The *loop* snapshots the live
     /// [`crate::llm::mcp::McpManager`] and hands it to

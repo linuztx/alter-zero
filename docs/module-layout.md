@@ -52,6 +52,7 @@ widened for the split.
 | `resume.rs` | The `/resume` picker. |
 | `model_picker.rs` | The inline `/model` picker. |
 | `login.rs` | The inline `/login` onboarding. |
+| `mascot.rs` | The banner-mascot catalog, the `/mascot` picker's state, the `mascot.json` format (`docs/mascot.md`). |
 | `permission.rs` | The inline tool-permission prompt: the stashed draft, the option/amend key map (`docs/permissions.md`). |
 | `ask.rs` | The inline `AskUserQuestion` modal: the tab/row state, answers under construction, the Other/notes entries, the queue against the permission prompt (`docs/ask.md`). |
 | `background.rs` | Background shells and the ↓ manager band. |
@@ -77,7 +78,8 @@ widened for the split.
 | `agent.rs` | Subagent trees, cells, and the footer roster. |
 | `menu.rs` | The palette / `@` picker / `?` shortcuts bands. |
 | `footer.rs` | The footer row, the toast, the queued rows, and what displaces the footer. |
-| `header.rs` | The startup banner. |
+| `header.rs` | The startup banner — the gradient mascot beside the metadata column (`docs/mascot.md`). |
+| `mascot_view.rs` | The inline `/mascot` picker with its live banner preview (`docs/mascot.md`). |
 | `live.rs` | `render_live` — the streaming strip, the box, the band. |
 | `transcript.rs` | The Ctrl+O overlay and `TranscriptCache`. |
 | `context_view.rs` | The Ctrl+D context-debug overlay. |
@@ -118,6 +120,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `recorder.rs` | `SessionRecorder`: mirroring history to a rollout file (`docs/resume.md`). |
 | `resume.rs` | Finding recorded sessions on disk, and the `/resume` + backtrack arms. |
 | `history_store.rs` | `InputHistoryStore` (`docs/history-persistence.md`). |
+| `mascot.rs` | Applying a `/mascot` selection: the `mascot.json` write + banner repaint (`docs/mascot.md`). |
 | `shell.rs` | The `!` command runner and its drain/cap unit tests (`docs/shell-command.md`). |
 | `workers.rs` | The off-thread file-search / clipboard / model-list jobs. |
 | `host.rs` | Clocks, dates, the OS string, the uid, ids — the raw impurities. |

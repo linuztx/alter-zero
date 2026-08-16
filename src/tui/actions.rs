@@ -174,6 +174,15 @@ impl Session<'_> {
                 // collapses back to the composer on the next draw.
             }
             Action::SettingChanged(key) => self.apply_setting(key),
+            Action::OpenMascotPicker => {
+                // The pure open already happened (the catalog is a const —
+                // nothing to fetch or inject); after_key schedules the frame.
+            }
+            Action::CloseMascotPicker => {
+                // Esc/Ctrl+C dismissed the picker: nothing to reap; the
+                // region collapses back to the composer on the next draw.
+            }
+            Action::SelectMascot(mascot) => self.select_mascot(mascot)?,
             Action::OpenHooksMenu => self.open_hooks_menu(),
             Action::OpenSkillsMenu => self.open_skills_menu(),
             Action::CloseSkillsMenu => {
@@ -427,6 +436,8 @@ impl Session<'_> {
             // pastes is a setting name — swallow it rather than letting it
             // reach the composer draft underneath (docs/settings.md).
             View::Conversation if self.app.settings_picker.is_some() => {}
+            // …and neither is a mascot name (docs/mascot.md).
+            View::Conversation if self.app.mascot_picker.is_some() => {}
             // The `/mcp` manager: the auth page's `URL >` field takes pastes
             // (the redirect URL is always pasted — that is the field's whole
             // point); every other page swallows them (docs/mcp.md).
