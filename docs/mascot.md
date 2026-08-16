@@ -58,6 +58,22 @@ never jump as ↑/↓ move — today's catalog is uniform, but the padding is wh
 keeps that true of any mascot added later (the `/settings` always-emit rule). The `→ {name}` rows carry the `/model` picker's green `✓`
 on the session's current mascot, and the open seats the highlight on it.
 
+A search that matches **nothing** collapses to its essentials — the
+placeholder, one blank gap, the hint — because there is no count, no banner
+to preview and no description to show, and painting those slots as empty
+rows left a band of blank lines mid-frame. It is the `/model` picker's
+placeholder rule (`model_has_detail`), and the page is then exactly:
+
+```
+────────────────────────────────────────────────────────────────
+  ❯ ?
+
+  No matching mascots
+
+  Type to search · Enter to choose · Esc to cancel
+────────────────────────────────────────────────────────────────
+```
+
 Keys: ↑/↓ move, **wrapping at the ends** (the shared `wrap_step` grammar
 every menu follows); PageUp/PageDown/Home/End jump (clamping); printable
 keys filter (Backspace pops); **Enter or Space chooses and closes**; Esc

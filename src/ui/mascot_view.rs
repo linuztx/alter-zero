@@ -117,6 +117,11 @@ fn preview_slot(app: &App, width: u16) -> usize {
 /// (bottom-anchored) and [`mascot_menu_rows`] counts, so the reserved height
 /// and the painted rows can never disagree (`docs/view-flow.md`). Empty when
 /// the picker is closed.
+///
+/// A search that matched **nothing** has no count, no banner to preview and
+/// no description, so those three slots collapse to a single blank gap
+/// rather than painting as a band of empty rows — the `/model` picker's
+/// placeholder rule ([`model_has_detail`](super::layout::model_has_detail)).
 pub(super) fn mascot_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(picker) = app.mascot_picker.as_ref() else {
         return Vec::new();
@@ -131,17 +136,6 @@ pub(super) fn mascot_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let highlighted = rows
         .get(selected.min(rows.len().saturating_sub(1)))
         .map(|row| row.mascot);
-    // The preview slot: the highlighted mascot's banner, or blank rows when
-    // the search matched nothing — always the same height, so the frame
-    // holds still while the user types and moves.
-    let slot = preview_slot(app, width);
-    let preview = match highlighted {
-        Some(mascot) => preview_lines(app, mascot, slot, width),
-        None => vec![Line::default(); slot],
-    };
-    let description_line = highlighted.map_or_else(Line::default, |mascot| {
-        model_placeholder_row(mascot.description(), MODEL_META_COLOR, width)
-    });
     let mut lines = vec![
         model_rule(width),
         Line::default(),
@@ -149,12 +143,26 @@ pub(super) fn mascot_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         Line::default(),
     ];
     lines.extend(mascot_list_lines(&rows, selected, width));
-    lines.push(mascot_counter_line(&rows, selected));
-    lines.push(Line::default());
-    lines.extend(preview);
-    lines.push(Line::default());
-    lines.push(description_line);
-    lines.push(Line::default());
+    match highlighted {
+        // A real selection: the counter, the live banner preview and the
+        // description sit between the list and the hint. The preview slot is
+        // padded to the tallest banner any mascot would draw, so the frame
+        // holds still as ↑/↓ move.
+        Some(mascot) => {
+            lines.push(mascot_counter_line(&rows, selected));
+            lines.push(Line::default());
+            lines.extend(preview_lines(app, mascot, preview_slot(app, width), width));
+            lines.push(Line::default());
+            lines.push(model_placeholder_row(
+                mascot.description(),
+                MODEL_META_COLOR,
+                width,
+            ));
+            lines.push(Line::default());
+        }
+        // Nothing matched: one gap carries the placeholder to the hint.
+        None => lines.push(Line::default()),
+    }
     lines.push(model_placeholder_row(MASCOT_HINT, MODEL_META_COLOR, width));
     lines.push(Line::default());
     lines.push(model_rule(width));

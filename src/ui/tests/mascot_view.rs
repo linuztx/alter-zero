@@ -127,18 +127,59 @@ fn the_highlighted_description_shows() {
 }
 
 #[test]
-fn an_unmatched_search_shows_the_placeholder() {
+fn an_unmatched_search_collapses_to_placeholder_and_hint() {
+    // Nothing matched means there is no count, no banner to preview and no
+    // description — so those three slots collapse to ONE blank gap instead
+    // of a band of empty rows (the `/model` picker's placeholder rule). The
+    // whole page is rule, blank, search, blank, placeholder, blank, hint,
+    // blank, rule.
     let mut app = open_app();
     app.mascot_picker.as_mut().expect("open").query = "zzz".to_string();
-    let texts = texts(&app, 80);
+    let texts: Vec<String> = texts(&app, 80)
+        .iter()
+        .map(|t| t.trim_end().to_string())
+        .collect();
+    let is_rule = |t: &str| !t.is_empty() && t.chars().all(|c| c == '─');
+    assert_eq!(texts.len(), 9, "the collapsed page is 9 rows: {texts:?}");
+    assert!(is_rule(&texts[0]), "{texts:?}");
+    assert_eq!(texts[1], "", "{texts:?}");
+    assert!(texts[2].contains('❯'), "the search line: {texts:?}");
+    assert_eq!(texts[3], "", "{texts:?}");
     assert!(
-        texts.iter().any(|t| t.contains("No matching mascots")),
-        "{texts:?}"
+        texts[4].contains("No matching mascots"),
+        "the placeholder: {texts:?}"
     );
+    assert_eq!(texts[5], "", "one gap under the placeholder: {texts:?}");
+    assert!(texts[6].contains("Type to search"), "the hint: {texts:?}");
+    assert_eq!(texts[7], "", "{texts:?}");
+    assert!(is_rule(&texts[8]), "{texts:?}");
     assert!(
         !texts.iter().any(|t| t.contains("/6)")),
         "no counter over an empty list: {texts:?}"
     );
+}
+
+#[test]
+fn no_page_ever_stacks_two_blank_rows() {
+    // The reported wart: a run of empty rows in the middle of the frame. No
+    // state of the picker — a real selection, a narrowed search, a search
+    // that matched nothing — may stack blanks.
+    let mut app = open_app();
+    for query in ["", "cr", "zzz"] {
+        let picker = app.mascot_picker.as_mut().expect("open");
+        picker.query = query.to_string();
+        picker.selected = 0;
+        let texts: Vec<String> = texts(&app, 80)
+            .iter()
+            .map(|t| t.trim_end().to_string())
+            .collect();
+        for pair in texts.windows(2) {
+            assert!(
+                !(pair[0].is_empty() && pair[1].is_empty()),
+                "query {query:?} stacked two blank rows: {texts:?}"
+            );
+        }
+    }
 }
 
 #[test]
