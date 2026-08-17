@@ -169,12 +169,19 @@ unit-tested must be unit-tested.
   filtered by name-prefix as you type after the `/`; `/` alone matches everything.
   ↑/↓ move the highlight, and the list shows at most `MENU_MAX_ROWS` (8) rows at a
   time — the registry has outgrown the window, so a bare `/` shows the first eight
-  and the window scrolls (`menu_window`) as the selection walks past its bottom
+  and the window scrolls as the selection walks past its bottom
   edge, `/quit` arriving as `/help` leaves;
-  descriptions line up in a column (names padded to `MENU_DESC_COL`), and
+  descriptions line up in a column (names padded to `MENU_DESC_COL`), **wrap**
+  onto continuation rows indented to that same column when the terminal is too
+  narrow for them (nothing the palette says is ever silently cut; the
+  descriptions themselves stay concise and product-name-free, ≤ 55 columns, so
+  the standard 80-column terminal shows one row per command), the cap acting as
+  a **row budget** — where descriptions wrap, the window (`menu_window_rows`,
+  the variable-height `menu_window`) shows fewer *whole* commands rather than
+  growing under the box or clipping text — and
   the selection is shown **by colour** — the whole highlighted row lights up cyan
-  (name *and* description the same colour) while the others are dimmed grey — **no
-  caret/arrow**.
+  (name *and* description the same colour, continuation rows included) while the
+  others are dimmed grey — **no caret/arrow**.
   **Tab/Enter run** the highlighted command; **Esc** dismisses the palette (instead
   of quitting) and stays dismissed within the same token (delete the `/` and retype
   to reopen). The box's top is unchanged when the palette opens — it's reserved

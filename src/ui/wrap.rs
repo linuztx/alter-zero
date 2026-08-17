@@ -240,6 +240,24 @@ pub(super) fn clamp_spans(spans: Vec<Span<'static>>, width: usize) -> Line<'stat
     Line::from(out)
 }
 
+/// `text` cut to `max` display columns with a trailing `…` when anything was
+/// cut — the **honest** [`truncate_cols`]: a row that had to lose text says
+/// so in its last column instead of just ending, so a clipped path, command,
+/// name, or description is never mistaken for the whole thing. The shared
+/// primitive every single-row truncation in the inline views routes through
+/// (wrapping is preferred where the page's height is content-driven —
+/// `docs/view-flow.md`; this is the floor for the rows that must stay one
+/// row).
+pub(super) fn ellipsize(text: &str, max: usize) -> String {
+    if cols(text) <= max {
+        text.to_string()
+    } else if max == 0 {
+        String::new()
+    } else {
+        format!("{}…", truncate_cols(text, max - 1))
+    }
+}
+
 /// Truncate `s` to at most `max` display columns (column-aware, so wide glyphs
 /// count as two), returning the kept prefix. Measured per **grapheme cluster**
 /// with [`cols`] — the same str-level width every fit-check, pad, and ratatui

@@ -532,7 +532,7 @@ fn live_region_height(app: &App, screen: ratatui::layout::Rect) -> u16 {
     if let Some(height) = ui::background_view_height(app, screen.width, screen.height) {
         return height;
     }
-    let band = ui::band_rows(app);
+    let band = ui::band_rows(app, screen.width);
     ui::live_height(
         &app.input,
         screen.width,

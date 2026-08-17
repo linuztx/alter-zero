@@ -414,7 +414,7 @@ fn render_pipeline_survives_extreme_terminal_sizes() {
             for &h in &heights {
                 let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     // mirror main.rs::draw
-                    let band = band_rows(app);
+                    let band = band_rows(app, w);
                     let lh = live_height(
                         &app.input,
                         w,

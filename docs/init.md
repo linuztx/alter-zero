@@ -35,8 +35,9 @@ The port mirrors that shape exactly; every piece rides existing machinery.
   markdown, not a Rust string).
 - **The palette entry** — a one-line `COMMANDS` addition
   (`CommandEffect::Init`), listed right before `/compact` (codex's
-  Init-then-Compact adjacency). Description adapted like `/quit`'s "Exit
-  alter-zero": "create an AGENTS.md file with instructions for alter-zero".
+  Init-then-Compact adjacency). Description reworded concise and
+  product-name-free like `/quit`'s: "Create an AGENTS.md contributor guide"
+  (codex says "…with instructions for Codex").
   `help_text()` walks `COMMANDS`, so `/help` lists it for free.
 - **Dispatch** (`App::run_selected_command`):
   - idle → `Action::Submit(INIT_PROMPT.trim_end().to_string())`. The loop's

@@ -161,15 +161,17 @@ pub const COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "init",
-        // Codex's description, its product name swapped for ours (the /quit
-        // "Exit alter-zero" pattern).
-        description: "create an AGENTS.md file with instructions for alter-zero",
+        // Codex says "…with instructions for Codex" — the palette keeps its
+        // descriptions concise and product-name-free.
+        description: "Create an AGENTS.md contributor guide",
         effect: CommandEffect::Init,
     },
     SlashCommand {
         name: "compact",
-        // Codex's description, verbatim.
-        description: "summarize conversation to prevent hitting the context limit",
+        // Codex's wording ("summarize conversation to prevent hitting the
+        // context limit") was the palette's longest row; this says the same
+        // thing inside the standard 80-column description room.
+        description: "Summarize the conversation to free up context",
         effect: CommandEffect::Compact,
     },
     SlashCommand {
@@ -214,12 +216,12 @@ pub const COMMANDS: &[SlashCommand] = &[
     },
     SlashCommand {
         name: "trust",
-        description: "Review and approve this project's .alter-zero config",
+        description: "Review and approve this project's config",
         effect: CommandEffect::Trust,
     },
     SlashCommand {
         name: "quit",
-        description: "Exit alter-zero",
+        description: "Exit the app",
         effect: CommandEffect::Quit,
     },
 ];

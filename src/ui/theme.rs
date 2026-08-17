@@ -1132,6 +1132,12 @@ pub(super) const SHIMMER_MAX_BLEND: f32 = 0.9;
 /// registry has outgrown the window — a bare `/` shows the first eight and ↓
 /// scrolls the rest in (the `the_palette_shows_at_most_eight_commands` /
 /// `the_palette_scrolls_down_to_the_last_command` tests pin both halves).
+/// The cap is a **row budget**, not a match count: at widths where every
+/// description fits its row the two are the same eight, and where a
+/// description *wraps* (`menu_row_lines` — narrow terminals continue it on
+/// rows indented to the description column instead of clipping it) the
+/// window shows fewer whole commands so the band never outgrows the budget
+/// (`menu_window_rows`).
 pub(super) const MENU_MAX_ROWS: u16 = 8;
 
 /// The column descriptions start at — names are padded out to here so the

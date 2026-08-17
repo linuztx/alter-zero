@@ -7,7 +7,28 @@ use crate::ui::theme::{
     TOOL_HEADER_MAX_ROWS, USER_BG_COLOR, USER_BULLET,
 };
 use crate::ui::tool::{running_command_lines, tool_full_lines};
-use crate::ui::wrap::{cols, truncate_cols, wrap_output, wrap_verbatim};
+use crate::ui::wrap::{cols, ellipsize, truncate_cols, wrap_output, wrap_verbatim};
+
+#[test]
+fn ellipsize_marks_a_cut_and_keeps_fitting_text_whole() {
+    // The honest truncate: text that fits is untouched, text that doesn't
+    // ends in a `…` occupying the last column — the marker every silent
+    // truncate_cols call site upgrades to, so a user always knows a row was
+    // cut (docs/design.md).
+    assert_eq!(ellipsize("fits", 10), "fits");
+    assert_eq!(ellipsize("exactly ten", 11), "exactly ten");
+    assert_eq!(ellipsize("this is too long", 7), "this i…");
+    assert_eq!(
+        cols(&ellipsize("this is too long", 7)),
+        7,
+        "never overflows"
+    );
+    // Wide glyphs: the budget is columns, so the … replaces a whole CJK cell.
+    assert_eq!(ellipsize("你好世界", 5), "你好…");
+    // Degenerate budgets never panic and never overflow.
+    assert_eq!(ellipsize("text", 0), "");
+    assert_eq!(ellipsize("text", 1), "…");
+}
 
 #[test]
 fn inline_emphasis_survives_a_wrap_boundary() {

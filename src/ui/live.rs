@@ -489,7 +489,7 @@ pub fn render_live_with_preview(
     // in the strip *above* the box instead; the session-context footer takes
     // the very last row unless a band displaces it, and the agent roster's
     // rows sit below it (docs/agent-tool.md).
-    let band = band_rows(app);
+    let band = band_rows(app, area.width);
     let queued = queued_rows(app, area.width);
     let toast = toast_rows(app);
     let footer = footer_rows(app, band);
@@ -575,7 +575,7 @@ pub fn render_live_with_preview(
     // The palette, the shortcuts overview, the file picker, or the skill
     // picker, pinned in the band below the box (at most one is open —
     // band_rows).
-    if menu_rows(app) > 0 {
+    if menu_rows(app, area.width) > 0 {
         Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
     } else if shortcuts_rows(app) > 0 {
         Paragraph::new(shortcuts_lines(

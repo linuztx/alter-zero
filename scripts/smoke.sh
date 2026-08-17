@@ -2416,11 +2416,11 @@ if ! printf '%s' "$palette_open" | grep -qF "Add or update a provider API key"; 
 	echo "FAIL: the command palette did not list /login (the 8th command, the window's last row)" >&2
 	status=1
 fi
-if printf '%s' "$palette_open" | grep -qF "Exit alter-zero"; then
+if printf '%s' "$palette_open" | grep -qF "Exit the app"; then
 	echo "FAIL: the palette shows /quit (the registry's last command) in its first window — the 8-row cap is gone" >&2
 	status=1
 fi
-if ! printf '%s' "$palette_scrolled" | grep -qF "Exit alter-zero"; then
+if ! printf '%s' "$palette_scrolled" | grep -qF "Exit the app"; then
 	echo "FAIL: ↓ to the last command did not scroll /quit into the palette window" >&2
 	status=1
 fi

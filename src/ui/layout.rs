@@ -829,7 +829,7 @@ pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // and queued rows above, the band and footer below — so the cursor sits on
     // the prompt row even mid-turn (codex keeps the composer focused while a
     // task runs: typing edits the draft, Enter queues it).
-    let band = band_rows(app);
+    let band = band_rows(app, area.width);
     let footer = footer_rows(app, band);
     let preview = preview_rows(app, area.width);
     let has_status = strip_has_status(app);

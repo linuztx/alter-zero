@@ -3,29 +3,21 @@
 //! See `docs/file-search.md` and `docs/shortcuts.md`.
 
 use super::theme::*;
-use super::wrap::{cols, truncate_cols};
+use super::wrap::{cols, truncate_cols, wrap_text};
 use super::*;
 
-/// How many rows the command palette occupies for `app`: 0 when closed, otherwise
-/// the match count capped at `MENU_MAX_ROWS` (or a single placeholder row when
-/// the query matches nothing). [`live_height`] adds this; [`render_live`] paints
-/// exactly this many rows — the two must agree.
+/// How many rows the command palette occupies for `app` at `width`: 0 when
+/// closed, otherwise **the built line count** of [`command_menu_lines`] — the
+/// row-budget window over the matches, wrapped-description continuation rows
+/// included, never more than `MENU_MAX_ROWS` (or a single placeholder row
+/// when the query matches nothing). Height-is-the-line-count is the
+/// settings/model pickers' rule (`docs/view-flow.md`): the reserved rows and
+/// the painted rows agree by construction, which is what lets a long
+/// description *wrap* instead of clipping at the width. [`live_height`] adds
+/// this; [`render_live`] paints exactly this many rows.
 #[must_use]
-pub fn menu_rows(app: &App) -> u16 {
-    if app.command_menu.is_none() {
-        return 0;
-    }
-    match command_query(app.input.text()) {
-        None => 0,
-        Some(query) => {
-            let matches = matching_commands(query).len();
-            if matches == 0 {
-                1
-            } else {
-                (matches as u16).min(MENU_MAX_ROWS)
-            }
-        }
-    }
+pub fn menu_rows(app: &App, width: u16) -> u16 {
+    u16::try_from(command_menu_lines(app, width).len()).unwrap_or(u16::MAX)
 }
 
 /// The scroll offset (first visible match index) so a window of `max` rows keeps
@@ -39,6 +31,39 @@ pub fn menu_window(len: usize, selected: usize, max: usize) -> usize {
     } else {
         (selected + 1 - max).min(len - max)
     }
+}
+
+/// The window of variable-height entries (entry `i` painting `heights[i]`
+/// rows) that keeps `selected` visible inside a budget of `max_rows` painted
+/// rows — [`menu_window`] for the palette's wrapped entries, returned as the
+/// visible `(start, end)` entry range. The window grows **upward** from the
+/// selection first (the fixed window follows the selection toward the end,
+/// pinning it at the window's bottom edge), then fills any leftover budget
+/// downward (the tail clamp: near the end the fixed window shows rows below
+/// the selection too). With uniform heights of 1 this reproduces
+/// [`menu_window`] exactly; a lone entry taller than the whole budget still
+/// windows alone (the caller trims its rows to the budget).
+pub(super) fn menu_window_rows(
+    heights: &[usize],
+    selected: usize,
+    max_rows: usize,
+) -> (usize, usize) {
+    if heights.is_empty() || max_rows == 0 {
+        return (0, 0);
+    }
+    let selected = selected.min(heights.len() - 1);
+    let mut start = selected;
+    let mut rows = heights[selected];
+    while start > 0 && rows + heights[start - 1] <= max_rows {
+        start -= 1;
+        rows += heights[start];
+    }
+    let mut end = selected + 1;
+    while end < heights.len() && rows + heights[end] <= max_rows {
+        rows += heights[end];
+        end += 1;
+    }
+    (start, end)
 }
 
 /// The scroll offset (first visible match index) that keeps `selected`
@@ -64,18 +89,17 @@ pub fn centered_window(len: usize, selected: usize, max: usize) -> usize {
     selected.saturating_sub(max / 2).min(len - max)
 }
 
-/// One palette row: `/name` padded out to [`MENU_DESC_COL`] columns, then its
-/// description. The selection is shown by **colour** — the selected row lights up
-/// whole in cyan (name *and* description the same colour, name bold), the others
-/// are dimmed grey. No caret, no background bar.
-fn menu_row(cmd: &SlashCommand, selected: bool, width: u16) -> Line<'static> {
+/// One palette entry's rows: `/name` padded out to [`MENU_DESC_COL`] columns,
+/// then its description **word-wrapped** to the room past that column — a
+/// description wider than the terminal continues on rows indented to the same
+/// column instead of being silently cut (nothing the palette says is lost at a
+/// narrow width). The selection is shown by **colour** — the selected entry
+/// lights up whole in cyan, continuation rows included (name bold), the others
+/// are dimmed grey. No caret, no background bar. A width with no description
+/// room at all degrades to the name alone.
+fn menu_row_lines(cmd: &SlashCommand, selected: bool, width: u16) -> Vec<Line<'static>> {
     let name = format!("/{}", cmd.name);
-    let cw = width as usize;
-    // Pad the name out to the description column so descriptions line up; truncate
-    // the description to whatever room is left.
-    let pad = " ".repeat(MENU_DESC_COL.saturating_sub(cols(&name)).max(1));
-    let desc = truncate_cols(cmd.description, cw.saturating_sub(MENU_DESC_COL));
-    // Name and description share one colour per row, for consistency.
+    // Name and description share one colour per entry, for consistency.
     let color = if selected {
         MENU_SELECTED_COLOR
     } else {
@@ -86,17 +110,43 @@ fn menu_row(cmd: &SlashCommand, selected: bool, width: u16) -> Line<'static> {
     } else {
         Style::new().fg(color)
     };
-    Line::from(vec![
+    let desc_style = Style::new().fg(color);
+    // Pad the name out to the description column so descriptions line up.
+    let pad = " ".repeat(MENU_DESC_COL.saturating_sub(cols(&name)).max(1));
+    let desc_width = (width as usize).saturating_sub(MENU_DESC_COL);
+    if desc_width == 0 {
+        // Too narrow for a description column at all: the name alone (the
+        // file picker's marker-and-name degradation), `…`-cut to the width
+        // — codex's popup ellipsizes the name the same way (`/statuslin…`).
+        return vec![Line::from(Span::styled(
+            super::wrap::ellipsize(&name, (width as usize).max(1)),
+            name_style,
+        ))];
+    }
+    let mut rows = wrap_text(cmd.description, desc_width as u16).into_iter();
+    let first = rows.next().unwrap_or_default();
+    let mut lines = vec![Line::from(vec![
         Span::styled(name, name_style),
         Span::raw(pad),
-        Span::styled(desc, Style::new().fg(color)),
-    ])
+        Span::styled(first, desc_style),
+    ])];
+    lines.extend(rows.map(|row| {
+        Line::from(vec![
+            Span::raw(" ".repeat(MENU_DESC_COL)),
+            Span::styled(row, desc_style),
+        ])
+    }));
+    lines
 }
 
-/// The styled lines for the open command palette: the filtered commands, windowed
-/// to keep the selection visible and capped at `MENU_MAX_ROWS`, with the
-/// highlighted row marked; or a single dim placeholder when nothing matches.
-/// Empty when the palette is closed.
+/// The styled lines for the open command palette: the filtered commands with
+/// their descriptions **wrapped** to the width, windowed by
+/// `menu_window_rows` to keep the selection visible inside the
+/// `MENU_MAX_ROWS` **row budget** — at widths where every description fits
+/// its row that is the familiar eight commands, and where descriptions wrap
+/// the band shows fewer *whole* commands (scrolling reveals the rest) rather
+/// than clipping text or growing under the box; or a single dim placeholder
+/// when nothing matches. Empty when the palette is closed.
 #[must_use]
 pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(menu) = &app.command_menu else {
@@ -113,13 +163,21 @@ pub fn command_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         ))];
     }
     let max = MENU_MAX_ROWS as usize;
-    let offset = menu_window(matches.len(), menu.selected, max);
-    matches
+    let blocks: Vec<Vec<Line<'static>>> = matches
         .iter()
         .enumerate()
-        .skip(offset)
+        .map(|(i, cmd)| menu_row_lines(cmd, i == menu.selected, width))
+        .collect();
+    let heights: Vec<usize> = blocks.iter().map(Vec::len).collect();
+    let (start, end) = menu_window_rows(&heights, menu.selected, max);
+    // `take(max)` only ever bites on a lone entry taller than the whole
+    // budget (a degenerately narrow terminal): its first rows show.
+    blocks
+        .into_iter()
+        .skip(start)
+        .take(end.saturating_sub(start))
+        .flatten()
         .take(max)
-        .map(|(i, cmd)| menu_row(cmd, i == menu.selected, width))
         .collect()
 }
 
@@ -384,12 +442,13 @@ pub fn shortcuts_rows(app: &App) -> u16 {
 /// `?` shortcuts overview, the `@` file picker, *or* the `$` skill picker
 /// (mutually exclusive — the palette needs a `/token`, the shortcuts an empty
 /// composer, and each picker its own sigil opening the token, so at most one
-/// term is non-zero). The **one** band-height sum shared by [`render_live`],
+/// term is non-zero). `width` sizes the palette's wrapped descriptions
+/// ([`menu_rows`]). The **one** band-height sum shared by [`render_live`],
 /// [`cursor_position`], and the boundary's `live_region_height`, so the three
 /// can never drift.
 #[must_use]
-pub fn band_rows(app: &App) -> u16 {
-    menu_rows(app) + shortcuts_rows(app) + file_menu_rows(app) + skill_menu_rows(app)
+pub fn band_rows(app: &App, width: u16) -> u16 {
+    menu_rows(app, width) + shortcuts_rows(app) + file_menu_rows(app) + skill_menu_rows(app)
 }
 
 /// The styled lines for the open shortcuts band: the `SHORTCUTS` entries two

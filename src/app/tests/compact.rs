@@ -5,14 +5,17 @@ use super::*;
 // --- /compact (docs/compact.md) ---
 
 #[test]
-fn the_palette_lists_compact_with_codexs_description() {
+fn the_palette_lists_compact_with_a_concise_description() {
+    // Codex's verbatim description was the palette's longest row (59 columns
+    // — the first to wrap at the default width); the concise rewording says
+    // the same thing inside the standard 80-column description room.
     let cmd = COMMANDS
         .iter()
         .find(|c| c.name == "compact")
         .expect("/compact is registered");
     assert_eq!(
         cmd.description,
-        "summarize conversation to prevent hitting the context limit"
+        "Summarize the conversation to free up context"
     );
     assert_eq!(cmd.effect, CommandEffect::Compact);
 }

@@ -46,6 +46,38 @@ fn the_command_registry_is_non_empty_with_unique_lowercase_names() {
 }
 
 #[test]
+fn palette_descriptions_are_concise_and_product_name_free() {
+    // The palette's descriptions never carry the product name — "Exit
+    // alter-zero" said nothing "Exit the app" doesn't — and stay inside the
+    // 55 columns a standard 80-column terminal leaves past the description
+    // column, so the default view shows each command on one row (narrower
+    // terminals wrap instead of clipping — `ui::command_menu_lines`).
+    for cmd in COMMANDS {
+        assert!(
+            !cmd.description.to_lowercase().contains("alter-zero"),
+            "/{} mentions the product name: {:?}",
+            cmd.name,
+            cmd.description
+        );
+        assert!(
+            cmd.description.len() <= 55,
+            "/{}'s description outgrows the 80-column room: {:?}",
+            cmd.name,
+            cmd.description
+        );
+    }
+    let desc = |name: &str| {
+        COMMANDS
+            .iter()
+            .find(|c| c.name == name)
+            .unwrap_or_else(|| panic!("/{name} is registered"))
+            .description
+    };
+    assert_eq!(desc("quit"), "Exit the app");
+    assert_eq!(desc("trust"), "Review and approve this project's config");
+}
+
+#[test]
 fn matching_commands_filters_by_name_prefix_case_insensitively() {
     assert_eq!(
         matching_commands("").len(),
@@ -106,16 +138,16 @@ fn leaving_and_re_entering_command_mode_reopens_the_palette() {
 // --- /init (docs/init.md) ---
 
 #[test]
-fn the_palette_lists_init_with_codexs_description() {
+fn the_palette_lists_init_with_a_concise_description() {
+    // Codex's description carried the product name ("…instructions for
+    // alter-zero"); the palette keeps its descriptions concise and
+    // product-name-free.
     let init = COMMANDS
         .iter()
         .position(|c| c.name == "init")
         .expect("/init is registered");
     let cmd = &COMMANDS[init];
-    assert_eq!(
-        cmd.description,
-        "create an AGENTS.md file with instructions for alter-zero"
-    );
+    assert_eq!(cmd.description, "Create an AGENTS.md contributor guide");
     assert_eq!(cmd.effect, CommandEffect::Init);
     // Codex's palette adjacency: Init lists immediately before Compact
     // (its enum order) — the documented order, pinned like MENU_MAX_ROWS.
