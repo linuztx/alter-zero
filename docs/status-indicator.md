@@ -80,8 +80,11 @@ real backend's own latency plays the same role.
   generates** (its streamed `name`/`arguments` fragments — counted like reasoning
   so the tally keeps ticking *while the model produces the call*, before it runs),
   and tool output), counted
-  app-side by a real `tiktoken` tokenizer (`o200k_base` — the count seam is
-  `app::count_tokens` → [`tokenizer::count`], see `src/tokenizer.rs`). Exact for
+  app-side by a real `o200k_base` byte-pair tokenizer (the count seam is
+  `app::count_tokens` → [`tokenizer::count`] — the crate's own compact,
+  count-only store over tiktoken's vocabulary, proven count-identical to
+  `tiktoken-rs` by differential tests and an order of magnitude lighter in
+  memory; see `docs/tokenizer.md`). Exact for
   current OpenAI models and close for the other models the providers serve. Each
   input/chunk/tool-output is tokenized as it arrives and **added** to the tally
   (`↑`/`↓` per source); a token straddling a chunk boundary can nudge the live

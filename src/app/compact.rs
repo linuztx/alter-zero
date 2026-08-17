@@ -151,7 +151,7 @@ impl App {
     /// disagree about whether anything is there.
     #[must_use]
     fn estimate_context_tokens(&self) -> u64 {
-        if crate::context::context_messages(&self.history).is_empty() {
+        if !crate::context::derives_conversation(&self.history) {
             return 0;
         }
         let mut total = self.system_prompt.as_deref().map_or(0, count_tokens);
@@ -198,7 +198,7 @@ impl App {
         if self.context_used <= threshold {
             return false;
         }
-        !crate::context::context_messages(&self.history).is_empty()
+        crate::context::derives_conversation(&self.history)
     }
 }
 

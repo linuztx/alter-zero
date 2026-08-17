@@ -30,6 +30,7 @@ dependencies = [
  "arboard",
  "chrono",
  "crossterm",
+ "fancy-regex 0.17.0",
  "getrandom 0.3.4",
  "image",
  "ratatui",

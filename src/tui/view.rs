@@ -581,6 +581,11 @@ impl Session<'_> {
             self.term.enter_overlay()?;
             self.draw_context_view()
         } else {
+            // Return the rendered window's memory with the view: the cache
+            // makes redraws cheap while it is up, but kept past the close it
+            // is a second full rendered copy of the conversation resident
+            // for the rest of the session. The next Ctrl+D rebuilds once.
+            self.context.release();
             self.term.exit_overlay()?;
             self.overlay_return_repaint()
         }

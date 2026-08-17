@@ -375,7 +375,7 @@ fn run_bash(
     let combined = String::from_utf8_lossy(&combined).into_owned();
     // `combined` is already byte-capped; truncate_output only trims to a clean
     // char boundary (and re-confirms the flag) so the framed body is valid UTF-8.
-    let (combined, extra_trunc) = tools::truncate_output(&combined, cap);
+    let (combined, extra_trunc) = tools::truncate_output(combined, cap);
     let truncated = truncated || extra_trunc;
 
     if timed_out {
@@ -485,7 +485,7 @@ fn run_read(arguments: &str, vision: Option<bool>) -> ToolOutcome {
         return ToolOutcome::ok(format!("(file {} is empty)", args.path));
     }
     let numbered = tools::format_read(&content, args.offset, args.limit);
-    let (output, truncated) = tools::truncate_output(&numbered, TOOL_OUTPUT_MAX_BYTES);
+    let (output, truncated) = tools::truncate_output(numbered, TOOL_OUTPUT_MAX_BYTES);
     ToolOutcome::ok(output).with_truncated(truncated)
 }
 

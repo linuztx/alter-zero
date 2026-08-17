@@ -842,7 +842,7 @@ impl McpManager {
             Ok(result) => {
                 let outcome = parse_call_result(&result);
                 let (text, truncated) = crate::llm::tools::truncate_output(
-                    &outcome.text,
+                    outcome.text,
                     crate::llm::tools::TOOL_OUTPUT_MAX_BYTES,
                 );
                 let mut out = if outcome.ok {

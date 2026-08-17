@@ -284,6 +284,27 @@ fn context_cache_rebuilds_on_new_history_a_width_change_and_a_rewind() {
 }
 
 #[test]
+fn context_cache_release_frees_the_window_and_the_next_open_rebuilds() {
+    // Ctrl+D's close calls `release` so a large rendered window (a second
+    // full copy of the conversation as owned rows) doesn't sit resident for
+    // the rest of the session after one peek at the debug view. The next
+    // open simply rebuilds — same rows, one build.
+    let app = context_fixture();
+    let mut cache = ContextCache::new();
+    let fresh: Vec<String> = cache.lines(&app, 60).iter().map(plain).collect();
+    assert_eq!(cache.builds, 1);
+    cache.release();
+    assert_eq!(
+        cache.retained_rows(),
+        0,
+        "release drops the rendered window"
+    );
+    let reopened: Vec<String> = cache.lines(&app, 60).iter().map(plain).collect();
+    assert_eq!(reopened, fresh, "a reopened view serves the same rows");
+    assert_eq!(cache.builds, 2, "the reopen is one rebuild");
+}
+
+#[test]
 fn context_cache_rebuilds_when_the_leading_fragments_change() {
     // The AGENTS.md fragment reloads at turn starts and the `/settings`
     // Project-docs knob drops it with no history append — the signature must

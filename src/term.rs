@@ -643,7 +643,11 @@ impl InlineViewport {
         app: &App,
     ) -> io::Result<()> {
         let height = height.clamp(1, self.screen.height.max(1));
-        self.pending.clear();
+        // Take, don't clear: `clear` keeps the Vec's high-water capacity for
+        // the rest of the session (a turn that streamed under an overlay can
+        // queue thousands of rows), while the flush path's `mem::take` already
+        // releases it — the rebuild drops the stale queue the same way.
+        drop(std::mem::take(&mut self.pending));
         // A modal open right now takes its seat by this rebuild's real write —
         // note it (`modal_scrolled`): the close must purge-rebuild or its
         // collapse strands the box above the rows it vacates. Recording this

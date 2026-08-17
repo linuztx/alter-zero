@@ -588,8 +588,9 @@ any block wins, the first reason is kept, contexts concatenate, `deny` >
 format + `select`, which dedups by command and warns rather than failing on a
 handler type or event name we don't model; `matcher` — both references'
 non-regex fast path for `bash|write`, exact-equality so `bash` never matches
-`bashoutput`, else a real regex (free: `tiktoken-rs` already puts `regex` in
-every build, so warn-and-skipping `^Bash$` would have been a footgun with no
+`bashoutput`, else a real regex (cheap: `regex` is a thin wrapper over the
+`regex-automata` engine `fancy-regex` already puts in every build, so
+warn-and-skipping `^Bash$` would have been a footgun with no offsetting
 saving); `event`; `payload`; `verdict`; `overview` — the display tree the
 read-only `/hooks` menu browses), taking a handler's stdout **as a
 string** so every rule is unit-testable with no process anywhere. The boundary

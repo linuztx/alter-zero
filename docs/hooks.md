@@ -98,12 +98,13 @@ Both references share one implementation, and so do we
 - anything else — compiled as a regex.
 
 The original design proposed warn-and-skipping real regexes to avoid taking a
-`regex` dependency. That turned out to be a cost that does not exist:
-`tiktoken-rs` (a direct dependency, for the status-line tally) already pulls
-`regex` into every build, so the crate is compiled either way. Since `^Bash$`
-is a common matcher in real Claude Code configs, silently skipping it would be
-a footgun with no offsetting saving, and we compile it instead. A matcher that
-fails to compile is warned about and skipped.
+`regex` dependency. That turned out to be a cost that barely exists: `regex`
+is a thin wrapper over the `regex-automata` engine that `fancy-regex` (a
+direct dependency, for the status-line tally's split pattern —
+docs/tokenizer.md) already pulls into every build. Since `^Bash$` is a common
+matcher in real Claude Code configs, silently skipping it would be a footgun
+with no offsetting saving, and we compile it instead. A matcher that fails to
+compile is warned about and skipped.
 
 **Tool names answer to both spellings.** The match query for the tool events
 is this app's own tool name — `bash`, `read`, `write`, `edit`, `agent` —

@@ -90,10 +90,10 @@ getrandom = "0.3"
 url = "2"
 # Hook matchers (docs/hooks.md). Both Claude Code and codex take a non-regex
 # fast path for `Bash`-style names and compile anything else as a regex; we
-# match that contract. This costs **nothing** to build: `tiktoken-rs` above
-# already pulls `regex` into every build, so the crate is compiled either way —
-# which is why warn-and-skipping real regexes (the original plan, to avoid a
-# dependency) would have been a footgun with no offsetting saving.
+# match that contract — warn-and-skipping real regexes would silently break
+# any hooks file either reference accepts. Cheap in practice: `regex` is a
+# thin wrapper over `regex-automata`, which `fancy-regex` below already pulls
+# into every build.
 regex = "1"
 # The detached-exec helper mode (src/subprocess.rs): the safe `setsid()`
 # wrapper that severs a shell child from the TUI's controlling terminal, so a
@@ -105,9 +105,15 @@ regex = "1"
 # just enables its setsid wrapper.
 rustix = { version = "1", features = ["process"] }
 # Real token counting for the status-line tally (`tokenizer` module): the
-# `o200k_base` BPE ranks ship embedded in the crate, so counting is offline and
-# deterministic — no runtime fetch. See docs/status-indicator.md.
-tiktoken-rs = "0.12.0"
+# o200k_base split pattern's `(?i:…)` groups and `(?!\S)` lookahead need a
+# backtracking engine — the same one `tiktoken-rs` uses for it. The vocabulary
+# itself ships embedded in the crate (`assets/o200k_base.cbpe`), so counting is
+# offline and deterministic — no runtime fetch. The counter is the crate's own
+# compact store because `tiktoken-rs`'s `CoreBPE` costs 45.5 MB resident (three
+# heap copies of all ~200k tokens + 128 thread-local regex clones) versus ~4 MB
+# for the same counts — see docs/tokenizer.md; `tiktoken-rs` remains below as
+# the dev-dependency the differential tests prove parity against.
+fancy-regex = "0.17"
 # Grammar-accurate syntax highlighting for fenced code blocks (`highlight`
 # module, docs/markdown.md) — a port of codex's stack. `two-face` bundles ~250
 # TextMate grammars + 32 themes; `syntect` is the highlighting engine. We use the
@@ -124,6 +130,16 @@ tiktoken-rs = "0.12.0"
 # incrementally so streaming stays prefix-stable (CLAUDE.md invariant 2).
 two-face = { version = "0.5", default-features = false, features = ["syntect-default-onig"] }
 syntect = { version = "5", default-features = false, features = ["default-onig"] }
+
+[dev-dependencies]
+# The REFERENCE tokenizer for `tokenizer`'s differential tests (tests only):
+# the shipped counter is the compact in-house o200k_base store (~4 MB resident;
+# docs/tokenizer.md), and every change to it is proven against tiktoken-rs's
+# CoreBPE — rank-by-rank over the whole embedded vocabulary and count-by-count
+# over a broad corpus — which is exactly the implementation the compact store
+# replaced (its CoreBPE holds three heap copies of all ~200k tokens plus 128
+# thread-local regex clones: 45.5 MB measured, the bulk of the old startup RSS).
+tiktoken-rs = "0.12.0"
 
 # Bake the project's pre-commit gate into every build so it can't silently
 # regress (there is no CI yet). Mirrors `clippy --all-targets -- -D warnings`.

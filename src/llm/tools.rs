@@ -1042,22 +1042,29 @@ pub fn format_read(content: &str, offset: Option<usize>, limit: Option<usize>) -
     let start = offset.unwrap_or(1).max(1); // 1-based
     let limit = limit.unwrap_or(READ_DEFAULT_LIMIT);
     // `lines()` drops a single trailing newline, which is what we want (an empty
-    // final line isn't a real line to number).
-    let all: Vec<&str> = content.lines().collect();
-    if start > all.len() {
+    // final line isn't a real line to number). Counted, never collected: a
+    // `Vec<&str>` of every line cost 16 bytes per line on top of the file
+    // bytes — 32 MB of pure slice headers on a 2M-line log — just to take a
+    // window; two cheap scans need nothing beyond the numbered window itself.
+    let total = content.lines().count();
+    if start > total {
         return format!(
-            "(file has {} line{}; offset {start} is past the end)",
-            all.len(),
-            if all.len() == 1 { "" } else { "s" }
+            "(file has {total} line{}; offset {start} is past the end)",
+            if total == 1 { "" } else { "s" }
         );
     }
-    let end = start.saturating_add(limit).min(all.len() + 1);
+    let end = start.saturating_add(limit).min(total + 1);
     // Right-align every number to the last (largest) one shown, so the gutter
     // is exactly as wide as it needs to be — the same rule as the write/edit
     // body, and what lets the two render identically.
     let width = (end - 1).max(1).to_string().len();
     let mut out = String::new();
-    for (i, line) in all[start - 1..end - 1].iter().enumerate() {
+    for (i, line) in content
+        .lines()
+        .skip(start - 1)
+        .take(end - start)
+        .enumerate()
+    {
         let n = start + i;
         out.push_str(&format!("{n:>width$} {line}\n"));
     }
@@ -1404,14 +1411,20 @@ pub fn format_exec_output(exit_code: Option<i32>, output: &str) -> String {
 /// retained head and whether anything was dropped. Used to bound a tool's
 /// output before it goes back to the model.
 #[must_use]
-pub fn truncate_output(s: &str, max_bytes: usize) -> (String, bool) {
+pub fn truncate_output(s: String, max_bytes: usize) -> (String, bool) {
     if s.len() <= max_bytes {
-        return (s.to_string(), false);
+        // The common case (most outputs are under the cap): hand the input
+        // back untouched — every tool result flows through here, so a copy on
+        // this path taxed each bash/read/MCP call one whole-output duplicate.
+        return (s, false);
     }
     let mut cut = max_bytes;
     while cut > 0 && !s.is_char_boundary(cut) {
         cut -= 1;
     }
+    // Allocate the (small) kept head and drop the big original, rather than
+    // truncating in place — `String::truncate` would keep the oversized
+    // capacity alive for as long as the output is retained.
     (s[..cut].to_string(), true)
 }
 
@@ -1959,15 +1972,32 @@ mod tests {
 
     #[test]
     fn truncate_output_cuts_on_a_char_boundary() {
-        let (head, cut) = truncate_output("hello world", 5);
+        let (head, cut) = truncate_output("hello world".to_string(), 5);
         assert_eq!(head, "hello");
         assert!(cut);
-        let (whole, uncut) = truncate_output("short", 100);
+        let (whole, uncut) = truncate_output("short".to_string(), 100);
         assert_eq!(whole, "short");
         assert!(!uncut);
         // A multi-byte char at the boundary is not split.
-        let (h, _) = truncate_output("aé", 2);
+        let (h, _) = truncate_output("aé".to_string(), 2);
         assert_eq!(h, "a", "the 2-byte é is dropped rather than split");
+    }
+
+    #[test]
+    fn truncate_output_under_the_cap_hands_back_the_same_allocation() {
+        // The no-op path is every tool call's common case (most outputs are
+        // under the 64 KiB cap) — it must move the String through, not copy
+        // it, or every bash/read/MCP result pays one whole-output copy.
+        let s = "well under the cap".to_string();
+        let ptr = s.as_ptr();
+        let (out, cut) = truncate_output(s, 1024);
+        assert!(!cut);
+        assert_eq!(out, "well under the cap");
+        assert_eq!(
+            out.as_ptr(),
+            ptr,
+            "the under-cap path must return the input allocation itself"
+        );
     }
 
     #[test]

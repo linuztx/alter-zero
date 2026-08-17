@@ -359,6 +359,39 @@ pub fn context_messages(history: &[HistoryItem]) -> Vec<ContextMessage> {
     context_messages_with(None, history)
 }
 
+/// Whether `history` derives any conversation at all — i.e. whether
+/// [`context_messages`] would return anything — without building it. The
+/// gates that only need the yes/no (the context gauge's zero state, the
+/// auto-compact "anything to summarize" check, `/compact`'s `Nothing to
+/// compact` rejection) used to derive the whole window — every message text,
+/// tool output, and shell transcript cloned into fresh `String`s — just to
+/// test `.is_empty()`; on a long conversation that is hundreds of kilobytes
+/// of transient allocation per check, and `should_auto_compact` runs at the
+/// loop bottom. The match is deliberately exhaustive (no wildcard): adding a
+/// history variant forces this answer to be decided alongside its
+/// [`context_messages`] arm, and the equivalence test sweeps every kind so
+/// the two can never quietly disagree.
+#[must_use]
+pub fn derives_conversation(history: &[HistoryItem]) -> bool {
+    history.iter().any(|item| match item {
+        // A `Role::Shell` header derives either itself (dangling) or through
+        // the shell tool right after it — a Message always means conversation.
+        HistoryItem::Message(_)
+        | HistoryItem::Tool(_)
+        | HistoryItem::TaskCall(_)
+        | HistoryItem::Background(_)
+        | HistoryItem::AgentNotice(_)
+        | HistoryItem::HookNote(_)
+        // The compacted shape always pushes the summary bridge, even over an
+        // empty summary ("(no summary available)").
+        | HistoryItem::Compaction(_) => true,
+        // One `agent` call per entry — an entryless group derives nothing.
+        HistoryItem::AgentGroup(group) => !group.agents.is_empty(),
+        // TUI chrome / private chain-of-thought — never conversation.
+        HistoryItem::Summary(_) | HistoryItem::Reasoning(_) => false,
+    })
+}
+
 /// [`context_messages_with`] plus the **skill listing** (`docs/skills.md`) —
 /// the `<system-reminder>` naming every discovered skill, injected right
 /// after the project's instructions and in front of the conversation.
@@ -1206,6 +1239,173 @@ mod tests {
         let messages = context_messages(&history);
         assert_eq!(messages.len(), 1, "only the reply is conversation");
         assert_eq!(messages[0].text, "the answer");
+    }
+
+    #[test]
+    fn derives_conversation_agrees_with_the_full_derivation_for_every_item_kind() {
+        // The cheap predicate must answer exactly what
+        // `context_messages(history).is_empty()` would — the gates that only
+        // need the yes/no (the gauge's zero state, auto-compact's
+        // anything-to-summarize check, `/compact`'s `Nothing to compact`)
+        // must never disagree with the derivation itself. One singleton per
+        // history-item kind, plus the edges: empty history, chrome-only
+        // histories, and the entryless agent group that derives nothing.
+        use crate::agents::AgentStatus;
+        let agent_entry = || crate::app::AgentGroupEntry {
+            id: "a1".to_string(),
+            description: "Fetch Warsaw".to_string(),
+            agent_type: "general-purpose".to_string(),
+            prompt: "weather in Warsaw?".to_string(),
+            status: AgentStatus::Done,
+            tool_uses: 1,
+            tokens: 10,
+            secs: 2,
+            result: "19°C".to_string(),
+            tool_headers: Vec::new(),
+            output: "19°C".to_string(),
+        };
+        let cases: Vec<(&str, Vec<HistoryItem>)> = vec![
+            ("empty history", Vec::new()),
+            ("user message", vec![message(Role::User, "hi")]),
+            ("assistant message", vec![message(Role::Assistant, "hello")]),
+            ("error notice", vec![message(Role::Error, "boom")]),
+            ("system notice", vec![message(Role::System, "note")]),
+            ("dangling shell header", vec![message(Role::Shell, "pwd")]),
+            (
+                "resolved shell run",
+                vec![
+                    message(Role::Shell, "pwd"),
+                    tool("pwd", "", "/home", ToolStatus::Ok, true),
+                ],
+            ),
+            (
+                "backend tool",
+                vec![tool("bash", "ls", "ok", ToolStatus::Ok, false)],
+            ),
+            (
+                "turn summary",
+                vec![HistoryItem::Summary(TurnSummary {
+                    verb: "Done",
+                    tokens: 0,
+                    cached: 0,
+                    secs: 3,
+                    timestamp: String::new(),
+                    shells: 0,
+                })],
+            ),
+            (
+                "settled reasoning",
+                vec![HistoryItem::Reasoning(crate::app::Reasoning {
+                    text: "private deliberation".to_string(),
+                    secs: 5,
+                    tokens: 100,
+                    timestamp: String::new(),
+                })],
+            ),
+            ("compaction marker", vec![compaction("handoff")]),
+            (
+                "hook note",
+                vec![HistoryItem::HookNote(crate::app::HookNote {
+                    label: "Stop hook".into(),
+                    text: "tests are red".into(),
+                    timestamp: String::new(),
+                })],
+            ),
+            (
+                "background notice",
+                vec![HistoryItem::Background(crate::app::BackgroundNotice {
+                    description: "Ping".to_string(),
+                    id: "bash_1".to_string(),
+                    code: Some(0),
+                    killed: false,
+                    output_tail: "pong".to_string(),
+                    origin: None,
+                    timestamp: String::new(),
+                })],
+            ),
+            (
+                "agent group",
+                vec![HistoryItem::AgentGroup(crate::app::AgentGroup {
+                    background: false,
+                    agents: vec![agent_entry()],
+                    timestamp: String::new(),
+                })],
+            ),
+            (
+                "entryless agent group",
+                vec![HistoryItem::AgentGroup(crate::app::AgentGroup {
+                    background: false,
+                    agents: Vec::new(),
+                    timestamp: String::new(),
+                })],
+            ),
+            (
+                "agent notice",
+                vec![HistoryItem::AgentNotice(crate::app::AgentNotice {
+                    id: "a1".into(),
+                    description: "Fetch Warsaw".into(),
+                    status: AgentStatus::Done,
+                    secs: 35,
+                    result: "19°C".into(),
+                    timestamp: String::new(),
+                })],
+            ),
+            (
+                "task call",
+                vec![{
+                    let mut store = crate::tasks::TaskStore::new();
+                    let arguments = r#"{"subject":"Add tests","description":"d"}"#;
+                    let output = store.run_create(arguments).unwrap();
+                    HistoryItem::TaskCall(crate::app::TaskCallRecord {
+                        name: "TaskCreate".to_string(),
+                        args: "Add tests".to_string(),
+                        arguments: arguments.to_string(),
+                        output,
+                        ok: true,
+                        timestamp: String::new(),
+                        tasks: store,
+                    })
+                }],
+            ),
+            (
+                "chrome-only history",
+                vec![
+                    HistoryItem::Summary(TurnSummary {
+                        verb: "Done",
+                        tokens: 0,
+                        cached: 0,
+                        secs: 3,
+                        timestamp: String::new(),
+                        shells: 0,
+                    }),
+                    HistoryItem::Reasoning(crate::app::Reasoning {
+                        text: "thoughts".to_string(),
+                        secs: 1,
+                        tokens: 10,
+                        timestamp: String::new(),
+                    }),
+                ],
+            ),
+            (
+                "chrome around one real message",
+                vec![
+                    HistoryItem::Reasoning(crate::app::Reasoning {
+                        text: "thoughts".to_string(),
+                        secs: 1,
+                        tokens: 10,
+                        timestamp: String::new(),
+                    }),
+                    message(Role::Assistant, "the answer"),
+                ],
+            ),
+        ];
+        for (label, history) in cases {
+            assert_eq!(
+                derives_conversation(&history),
+                !context_messages(&history).is_empty(),
+                "predicate disagrees with the derivation for: {label}"
+            );
+        }
     }
 
     #[test]

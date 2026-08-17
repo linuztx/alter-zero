@@ -369,7 +369,7 @@ impl App {
                 // docs/compact.md / docs/toast.md.
                 if self.turn_active() {
                     Action::Toast(COMPACT_BUSY_NOTICE.to_string())
-                } else if crate::context::context_messages(&self.history).is_empty() {
+                } else if !crate::context::derives_conversation(&self.history) {
                     Action::Toast(COMPACT_EMPTY_NOTICE.to_string())
                 } else {
                     Action::Compact

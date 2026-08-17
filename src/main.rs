@@ -52,8 +52,9 @@ fn main() -> io::Result<()> {
 
 #[tokio::main(flavor = "current_thread")]
 async fn tui_main(startup: Option<Startup>) -> io::Result<()> {
-    // Build the tiktoken tokenizer (~125 ms of one-time rank parsing) off the
-    // interactive path, concurrently with terminal init, so the first turn's
+    // Build the o200k_base token counter (a one-time vocabulary scan + hash
+    // table + split-regex compile, docs/tokenizer.md) off the interactive
+    // path, concurrently with terminal init, so the first turn's
     // `count_tokens` doesn't freeze the loop. Detached; it never touches stdin
     // or the terminal (invariant 1 safe), and `tokenizer::warm` is idempotent.
     std::thread::spawn(alter_zero::tokenizer::warm);

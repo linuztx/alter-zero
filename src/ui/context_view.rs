@@ -229,6 +229,24 @@ impl ContextCache {
             self.builds += 1;
         }
     }
+
+    /// Drop the rendered window (allocation included). The cache exists to
+    /// make redraws O(viewport) *while the view is up* — retained past the
+    /// close it is a second full rendered copy of the conversation sitting
+    /// resident for the rest of the session after one Ctrl+D peek, so the
+    /// close releases it and the next open rebuilds once.
+    pub fn release(&mut self) {
+        self.sig = None;
+        self.lines = Vec::new();
+    }
+
+    /// Test-only: how many rendered rows the cache is holding right now —
+    /// what [`ContextCache::release`] promises to return to zero.
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn retained_rows(&self) -> usize {
+        self.lines.len()
+    }
 }
 
 /// Render the full-screen Ctrl+D context-debug view — the transcript pager's
