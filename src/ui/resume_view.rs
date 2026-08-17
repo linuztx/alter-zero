@@ -2,7 +2,7 @@
 
 use super::theme::*;
 use super::transcript::{overlay_header, rule_with_label};
-use super::wrap::{cols, spans_cols, truncate_cols};
+use super::wrap::{cols, ellipsize, spans_cols, truncate_cols};
 use super::*;
 
 /// One dense session row: the `❯ ` marker (spaces when unselected), the age
@@ -29,7 +29,9 @@ fn resume_row(
         age.push(' ');
     }
     let room = (width as usize).saturating_sub(cols(marker) + RESUME_AGE_WIDTH);
-    let preview = truncate_cols(&session.preview, room);
+    // `…`-cut: the preview is how sessions are told apart in this dense
+    // one-row picker, so a cut one must say it was cut.
+    let preview = ellipsize(&session.preview, room);
     let mut text = format!("{marker}{age}{preview}");
     let style = if selected {
         // Pad to the full width in *columns* so the tint spans the row even

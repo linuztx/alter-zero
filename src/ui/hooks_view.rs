@@ -8,18 +8,19 @@
 
 use super::model_view::model_rule;
 use super::theme::*;
-use super::wrap::{cols, truncate_cols, wrap_output};
+use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
 
 use crate::app::{HooksLevel, HooksMenu};
 use crate::hooks::{EventOverview, event_description, event_has_matchers, event_summary};
 
-/// A `MODEL_INDENT`-inset single line in `style`, truncated to the width.
+/// A `MODEL_INDENT`-inset single line in `style`, `…`-cut to the width
+/// ([`ellipsize`] — a cut row says so, never a silent clip).
 fn hooks_line(text: &str, style: Style, width: u16) -> Line<'static> {
     let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1);
     Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(truncate_cols(text, room), style),
+        Span::styled(ellipsize(text, room), style),
     ])
 }
 
@@ -40,30 +41,21 @@ fn title_line(text: &str, width: u16) -> Line<'static> {
     )
 }
 
-/// `text` word-wrapped to inset dim rows — the read-only banner, an event
-/// description's lines, the detail page's closing note.
-fn dim_wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
+/// `text` word-wrapped to inset rows in `style` — informational text is
+/// never clipped at the width; the page's height is content-driven, so the
+/// continuation rows are free (`docs/view-flow.md`).
+fn wrapped(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
     let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
     text.split('\n')
         .flat_map(|part| wrap_text(part, room))
-        .map(|row| {
-            Line::from(vec![
-                Span::raw(MODEL_INDENT),
-                Span::styled(row, Style::new().fg(MODEL_META_COLOR)),
-            ])
-        })
+        .map(|row| Line::from(vec![Span::raw(MODEL_INDENT), Span::styled(row, style)]))
         .collect()
 }
 
-/// `text` cut to `max` columns with a trailing `…` when anything was cut.
-fn ellipsize(text: &str, max: usize) -> String {
-    if cols(text) <= max {
-        text.to_string()
-    } else if max == 0 {
-        String::new()
-    } else {
-        format!("{}…", truncate_cols(text, max - 1))
-    }
+/// `text` word-wrapped to inset dim rows — the read-only banner, an event
+/// description's lines, the detail page's closing note.
+fn dim_wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
+    wrapped(text, Style::new().fg(MODEL_META_COLOR), width)
 }
 
 /// One list level's row: the label spans (styled by the caller) and the dim
@@ -145,8 +137,14 @@ fn list_lines(rows: &[MenuRow], selected: usize, width: u16) -> Vec<Line<'static
             spans.push(Span::raw(
                 " ".repeat(label_col.saturating_sub(used) + HOOKS_DESC_GAP),
             ));
+            // The description takes only the room actually left on the row —
+            // pushed raw it paint-clipped at the buffer edge with no marker
+            // when the width ran out before the reserved seat.
+            let desc_room = (width as usize)
+                .saturating_sub(fixed + label_col + HOOKS_DESC_GAP)
+                .max(1);
             spans.push(Span::styled(
-                row.desc.clone(),
+                ellipsize(&row.desc, desc_room),
                 Style::new().fg(MODEL_META_COLOR),
             ));
             Line::from(spans)
@@ -191,7 +189,10 @@ fn events_lines(menu: &HooksMenu, selected: usize, width: u16) -> Vec<Line<'stat
         Line::default(),
     ];
     if !menu.enabled && menu.overview.total() > 0 {
-        lines.push(hooks_line(
+        // Wrapped, not clipped: the note's tail ("enable them in /settings")
+        // is the actionable half, and a narrow terminal used to cut it
+        // silently.
+        lines.extend(wrapped(
             HOOKS_DISABLED_NOTE,
             Style::new().fg(ERROR_COLOR),
             width,
@@ -234,13 +235,12 @@ fn events_lines(menu: &HooksMenu, selected: usize, width: u16) -> Vec<Line<'stat
     lines
 }
 
-/// The two dim empty-state lines — an event with nothing configured.
+/// The dim empty-state lines — an event with nothing configured. The how-to
+/// hint is an instruction, so it wraps rather than losing its tail.
 fn empty_state_lines(width: u16) -> Vec<Line<'static>> {
-    vec![
-        dim_line(HOOKS_EMPTY, width),
-        Line::default(),
-        dim_line(HOOKS_EMPTY_HINT, width),
-    ]
+    let mut lines = vec![dim_line(HOOKS_EMPTY, width), Line::default()];
+    lines.extend(dim_wrapped(HOOKS_EMPTY_HINT, width));
+    lines
 }
 
 /// Levels 2 and 3 share this frame: a title, the event's description, then
@@ -340,7 +340,9 @@ fn hook_list_lines(
     )
 }
 
-/// One `{label:<10}{value}` field row of the detail page.
+/// One `{label:<10}{value}` field row of the detail page — the value stays
+/// one row by design (a field block, not prose), so a value that can't fit
+/// (the user's matcher regex, the source path) marks its cut with a `…`.
 fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<'static> {
     let room = (width as usize)
         .saturating_sub(cols(MODEL_INDENT) + HOOKS_FIELD_COL)
@@ -351,7 +353,7 @@ fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<
             format!("{label:<HOOKS_FIELD_COL$}"),
             Style::new().fg(MODEL_META_COLOR),
         ),
-        Span::styled(truncate_cols(value, room), value_style),
+        Span::styled(ellipsize(value, room), value_style),
     ])
 }
 
@@ -430,7 +432,9 @@ fn detail_lines(
 
     if let Some(message) = &hook.status_message {
         lines.push(Line::default());
-        lines.push(dim_line(&format!("Status message: {message}"), width));
+        // User-authored text on a page that already wraps the command and
+        // the closing note — it wraps too.
+        lines.extend(dim_wrapped(&format!("Status message: {message}"), width));
     }
     lines.push(Line::default());
     lines.extend(dim_wrapped(HOOKS_MODIFY_NOTE, width));

@@ -580,3 +580,84 @@ fn a_row_paints_only_its_glyph_in_the_status_colour() {
         "the glyph span carries the glyph alone"
     );
 }
+
+/// Rejoin rows squashing all whitespace, for needles that wrap mid-token.
+fn squashed(rows: &[String]) -> String {
+    rows.join("").replace(' ', "")
+}
+
+/// The built body as plain rows at `width` (the shared `texts` is 100-wide).
+fn texts_at(app: &App, width: u16) -> Vec<String> {
+    mcp_view_lines(app, width)
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect()
+}
+
+#[test]
+fn the_server_detail_wraps_the_target_and_config_paths() {
+    // A remote URL / stdio command and the config path are exactly what the
+    // user opens the page to read — they wrap whole under their labels.
+    let mut app = App::new();
+    app.open_mcp_menu(vec![snapshot(
+        "a-very-long-subdomain-for-the-docs-server",
+        McpScope::User,
+        McpServerStatus::Connected,
+    )]);
+    app.on_key(key(KeyCode::Enter)); // the server's detail page
+    let rows = texts_at(&app, 40);
+    for row in &rows {
+        assert!(
+            crate::ui::wrap::cols(row) <= 40,
+            "no row leaks past the width: {row:?}"
+        );
+    }
+    let all = squashed(&rows);
+    assert!(
+        all.contains("test/mcp"),
+        "the URL's tail survives: {rows:#?}"
+    );
+    assert!(
+        all.contains("mcp.json"),
+        "the config path's filename survives: {rows:#?}"
+    );
+}
+
+#[test]
+fn a_narrow_server_row_keeps_its_status_glyph() {
+    // The `· {glyph} {status}` suffix used to be dropped whole when it did
+    // not fit — a Failed server's red state vanished at narrow widths. The
+    // glyph (the state) now survives with the words `…`-cut.
+    let mut app = App::new();
+    app.open_mcp_menu(vec![snapshot(
+        "a-server-with-a-fairly-long-name",
+        McpScope::User,
+        McpServerStatus::Failed("boom".into()),
+    )]);
+    let rows = texts_at(&app, 44);
+    let glyph = crate::mcp::McpServerStatus::Failed(String::new()).glyph();
+    let row = rows
+        .iter()
+        .find(|r| r.contains("a-server"))
+        .expect("the server row");
+    assert!(
+        row.contains(glyph),
+        "the failure glyph survives the squeeze: {row:?}"
+    );
+    assert!(
+        crate::ui::wrap::cols(row) <= 44,
+        "and the row still fits: {row:?}"
+    );
+}
+
+#[test]
+fn the_empty_list_paths_wrap_instead_of_clipping() {
+    let mut app = App::new();
+    app.open_mcp_menu(vec![]);
+    let rows = texts_at(&app, 30);
+    let all = squashed(&rows);
+    assert!(
+        all.contains("mcp.json"),
+        "the add-one-at paths keep their filenames: {rows:#?}"
+    );
+}

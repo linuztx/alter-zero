@@ -7,19 +7,41 @@
 
 use super::model_view::model_rule;
 use super::theme::*;
-use super::wrap::{cols, truncate_cols, wrap_text};
+use super::wrap::{cols, ellipsize, wrap_text};
 use super::*;
 
 use crate::app::TrustMenu;
 use crate::trust::{TrustAction, TrustFileReview};
 
-/// A `MODEL_INDENT`-inset single line in `style`, truncated to the width.
+/// A `MODEL_INDENT`-inset single line in `style`, `…`-cut to the width
+/// ([`ellipsize`] — a cut row says so, never a silent clip).
 fn line(text: &str, style: Style, width: u16) -> Line<'static> {
     let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1);
     Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(truncate_cols(text, room), style),
+        Span::styled(ellipsize(text, room), style),
     ])
+}
+
+/// A config item's rows: two-space-inset under its file head and
+/// **word-wrapped whole** — the review's purpose is showing verbatim what
+/// approval would let run, so a long hook command's tail (`| sh`, redirects,
+/// arguments — the dangerous part) must never hide past the terminal edge.
+fn item_lines(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
+    let inset = "  ";
+    let room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + cols(inset))
+        .max(1) as u16;
+    wrap_text(text, room)
+        .into_iter()
+        .map(|row| {
+            Line::from(vec![
+                Span::raw(MODEL_INDENT),
+                Span::raw(inset),
+                Span::styled(row, style),
+            ])
+        })
+        .collect()
 }
 
 fn dim_line(text: &str, width: u16) -> Line<'static> {
@@ -53,7 +75,8 @@ fn file_lines(file: &TrustFileReview, width: u16) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(
-            truncate_cols(&head, room),
+            // `…`-cut so the badge keeps its seat and the cut path says so.
+            ellipsize(&head, room),
             Style::new().fg(MODEL_ID_COLOR).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
@@ -66,7 +89,7 @@ fn file_lines(file: &TrustFileReview, width: u16) -> Vec<Line<'static>> {
     let shown = file.items.iter().take(TRUST_MENU_MAX_ITEMS);
     let item_style = Style::new().fg(MODEL_META_COLOR);
     for item in shown {
-        lines.push(line(&format!("  {item}"), item_style, width));
+        lines.extend(item_lines(item, item_style, width));
     }
     let hidden = file.items.len().saturating_sub(TRUST_MENU_MAX_ITEMS);
     if hidden > 0 {
@@ -118,16 +141,25 @@ pub fn trust_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ));
     lines.push(Line::default());
     if review.files.is_empty() {
+        // The paths wrap: clipped, the three rows differed only in the tail
+        // being cut off, leaving three identical-looking truncated roots.
+        let dim = Style::new().fg(MODEL_META_COLOR);
         lines.push(dim_line(TRUST_EMPTY, width));
-        lines.push(dim_line(
-            &format!("  {}/.alter-zero/hooks.json", review.root),
+        lines.extend(item_lines(
+            &format!("{}/.alter-zero/hooks.json", review.root),
+            dim,
             width,
         ));
-        lines.push(dim_line(
-            &format!("  {}/.alter-zero/mcp.json", review.root),
+        lines.extend(item_lines(
+            &format!("{}/.alter-zero/mcp.json", review.root),
+            dim,
             width,
         ));
-        lines.push(dim_line(&format!("  {}/.mcp.json", review.root), width));
+        lines.extend(item_lines(
+            &format!("{}/.mcp.json", review.root),
+            dim,
+            width,
+        ));
     } else {
         for (i, file) in review.files.iter().enumerate() {
             if i > 0 {

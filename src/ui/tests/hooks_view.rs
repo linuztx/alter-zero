@@ -374,6 +374,107 @@ fn the_disabled_note_shows_only_when_configured_hooks_are_off() {
 }
 
 #[test]
+fn narrow_widths_wrap_the_disabled_note_instead_of_clipping() {
+    // The red note's actionable tail ("enable them in /settings") used to
+    // silently clip below ~60 columns; it word-wraps like the info banner
+    // now, so the fix instruction always survives.
+    let mut off = App::new();
+    off.open_hooks_menu(overview(), None, false);
+    let rows = texts(&off, 40);
+    assert!(
+        rows.join(" ").contains("/settings"),
+        "the actionable tail survives a 40-col terminal: {rows:#?}"
+    );
+}
+
+#[test]
+fn the_empty_state_hint_wraps_at_narrow_widths() {
+    // "To add hooks, edit hooks.json directly…" is an instruction, not
+    // chrome — it wraps instead of losing its tail.
+    let file = HooksFile::parse(
+        r#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"./x.sh"}]}]}}"#,
+    )
+    .unwrap();
+    let mut app = App::new();
+    app.open_hooks_menu(HooksOverview::from_file(&file), None, true);
+    press(&mut app, KeyCode::Char('1')); // PreToolUse — nothing configured
+    let rows = texts(&app, 40);
+    find(&rows, HOOKS_EMPTY);
+    // Rejoin the wrapped rows word-by-word — the continuation indent would
+    // otherwise break the needle.
+    let all = rows
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        all.contains("directly or ask"),
+        "the how-to-fix tail survives: {rows:#?}"
+    );
+}
+
+#[test]
+fn the_detail_page_wraps_the_status_message_and_marks_a_cut_source() {
+    let message = "Checking the sandbox policy for recursive deletes before \
+                   the command is allowed to run";
+    let file = HooksFile::parse(&format!(
+        r#"{{"hooks":{{"PreToolUse":[{{"matcher":"bash","hooks":[
+             {{"type":"command","command":"./guard.sh","statusMessage":{msg}}}]}}]}}}}"#,
+        msg = serde_json::to_string(message).unwrap()
+    ))
+    .unwrap();
+    let mut app = App::new();
+    app.open_hooks_menu(
+        HooksOverview::from_file(&file),
+        Some("~/.config/deeply/nested/path/to/alter-zero/hooks.json".into()),
+        true,
+    );
+    press(&mut app, KeyCode::Enter); // matchers
+    press(&mut app, KeyCode::Enter); // bash hooks
+    press(&mut app, KeyCode::Enter); // the hook's details
+    let rows = texts(&app, 44);
+    // The user-authored status message wraps whole instead of clipping…
+    let all = rows
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        all.contains("allowed to run"),
+        "the status message's tail survives: {rows:#?}"
+    );
+    // …and the Source path — one row by design — marks its cut with a `…`.
+    let source = &rows[find(&rows, "Source:")];
+    assert!(source.ends_with('…'), "a cut field says so: {source:?}");
+}
+
+#[test]
+fn every_built_hooks_row_fits_its_width() {
+    // A Line wider than the area silently paint-clips at the buffer's right
+    // edge, so the builder never emits one: single-row text ellipsizes and
+    // informational text wraps (docs/view-flow.md).
+    use crate::ui::wrap::cols;
+    for width in [26u16, 30, 40, 60, 78] {
+        let mut app = App::new();
+        app.open_hooks_menu(
+            overview(),
+            Some("~/.config/deeply/nested/path/to/alter-zero/hooks.json".into()),
+            false,
+        );
+        for step in 0..4 {
+            for row in texts(&app, width) {
+                assert!(
+                    cols(&row) <= width as usize,
+                    "a {}-col row leaked past width {width} at level {step}: {row:?}",
+                    cols(&row)
+                );
+            }
+            press(&mut app, KeyCode::Enter); // walk events → matchers → hooks → detail
+        }
+    }
+}
+
+#[test]
 fn the_selection_and_chrome_wear_the_picker_familys_colours() {
     let app = hooks_app();
     let lines = hooks_view_lines(&app, 78);

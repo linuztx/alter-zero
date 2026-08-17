@@ -263,3 +263,54 @@ fn no_login_page_ever_stacks_two_blank_rows() {
         }
     }
 }
+
+#[test]
+fn the_env_path_hint_wraps_at_narrow_widths() {
+    // "Keys are saved to {path}" names where the secret lives — the path is
+    // the tail, so it was the first thing a narrow terminal lost. It sits
+    // below the cursor's search row, so wrapping it moves nothing above.
+    use crate::ui::login_view::key_onboarding_lines;
+    let mut app = login_app_provider();
+    let onboarding = app.key_onboarding.as_mut().unwrap();
+    onboarding.env_path = "~/.config/alter-zero/deeply/nested/credentials.env".into();
+    let lines = key_onboarding_lines(onboarding, 40);
+    for line in &lines {
+        assert!(
+            crate::ui::wrap::cols(plain(line).trim_end()) <= 40,
+            "no row leaks past the width: {:?}",
+            plain(line)
+        );
+    }
+    // A path is one long word, so the wrap hard-breaks it mid-token;
+    // stripping spaces reassembles the pieces regardless of where they broke.
+    let all = lines
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("")
+        .replace(' ', "");
+    assert!(
+        all.contains("credentials.env"),
+        "the path's tail survives: {lines:#?}"
+    );
+}
+
+#[test]
+fn a_cut_provider_name_ends_with_an_ellipsis() {
+    use crate::ui::login_view::key_onboarding_lines;
+    let mut app = login_app_provider();
+    let onboarding = app.key_onboarding.as_mut().unwrap();
+    onboarding.providers[0].name = "An Extremely Long Provider Display Name".into();
+    let lines = key_onboarding_lines(onboarding, 30);
+    // The `[OPENROUTER_API_KEY]` tag reserves 21 columns, so at width 30 the
+    // name keeps only its first few — the row must still mark the cut.
+    let row = lines
+        .iter()
+        .map(plain)
+        .find(|l| l.contains("An E"))
+        .expect("the provider row");
+    assert!(
+        row.contains('…') && row.contains('['),
+        "the name marks its cut and the tag keeps its seat: {row:?}"
+    );
+}

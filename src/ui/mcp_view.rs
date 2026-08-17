@@ -7,18 +7,19 @@
 use super::menu::centered_window;
 use super::model_view::model_rule;
 use super::theme::*;
-use super::wrap::{cols, truncate_cols, wrap_output};
+use super::wrap::{cols, ellipsize, wrap_output};
 use super::*;
 
 use crate::app::{McpMenu, McpPage, server_actions};
 use crate::mcp::{McpServerSnapshot, McpServerStatus, tool_parameters, tool_wire_name};
 
-/// A `MODEL_INDENT`-inset single line in `style`, truncated to the width.
+/// A `MODEL_INDENT`-inset single line in `style`, `…`-cut to the width
+/// ([`ellipsize`] — a cut row says so, never a silent clip).
 fn mcp_line(text: &str, style: Style, width: u16) -> Line<'static> {
     let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1);
     Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(truncate_cols(text, room), style),
+        Span::styled(ellipsize(text, room), style),
     ])
 }
 
@@ -64,6 +65,25 @@ fn dim_wrapped(text: &str, width: u16) -> Vec<Line<'static>> {
     wrapped(text, Style::new().fg(MODEL_META_COLOR), width)
 }
 
+/// `text` word-wrapped to rows carrying a two-space inset past
+/// `MODEL_INDENT` — list-item body text (the empty state's config paths).
+fn inset_wrapped(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
+    let inset = "  ";
+    let room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + cols(inset))
+        .max(1) as u16;
+    wrap_text(text, room)
+        .into_iter()
+        .map(|row| {
+            Line::from(vec![
+                Span::raw(MODEL_INDENT),
+                Span::raw(inset),
+                Span::styled(row, style),
+            ])
+        })
+        .collect()
+}
+
 /// `{n} server(s)` / `{n} tool(s)`.
 fn count_noun(n: usize, noun: &str) -> String {
     if n == 1 {
@@ -106,21 +126,24 @@ fn server_row(server: &McpServerSnapshot, selected: bool, width: u16) -> Line<'s
     let room = (width as usize)
         .saturating_sub(cols(MODEL_INDENT) + cols(HOOKS_MARKER))
         .max(1);
-    let name = truncate_cols(&server.name, room);
+    let name = ellipsize(&server.name, room);
     let used = cols(&name);
     let mut spans = vec![
         Span::raw(MODEL_INDENT),
         marker,
         Span::styled(name, name_style),
     ];
-    let status = format!("{MCP_ROW_SEPARATOR}{}", server.status_line());
-    if used + cols(&status) <= room {
-        // Three spans, not two: the separator is **chrome**, so it stays dim
-        // at every state and only the glyph carries the status colour. Riding
-        // it along with the glyph painted a connected row's first `·` green
-        // while the `·` before its tool count stayed dim.
-        let glyph = server.status.glyph();
-        let words = &status[MCP_ROW_SEPARATOR.len() + glyph.len()..];
+    // Three spans, not two: the separator is **chrome**, so it stays dim
+    // at every state and only the glyph carries the status colour. Riding
+    // it along with the glyph painted a connected row's first `·` green
+    // while the `·` before its tool count stayed dim. When the row is too
+    // narrow for the whole status the words `…`-cut but the **glyph
+    // survives** — dropping the suffix whole made a Failed server's red
+    // state vanish at narrow widths.
+    let glyph = server.status.glyph();
+    let words = server.status_line()[glyph.len()..].to_string();
+    let avail = room.saturating_sub(used);
+    if avail >= cols(MCP_ROW_SEPARATOR) + cols(glyph) {
         spans.push(Span::styled(
             MCP_ROW_SEPARATOR.to_string(),
             Style::new().fg(MODEL_META_COLOR),
@@ -129,8 +152,9 @@ fn server_row(server: &McpServerSnapshot, selected: bool, width: u16) -> Line<'s
             glyph.to_string(),
             Style::new().fg(status_color(&server.status)),
         ));
+        let words_room = avail - cols(MCP_ROW_SEPARATOR) - cols(glyph);
         spans.push(Span::styled(
-            words.to_string(),
+            ellipsize(&words, words_room),
             Style::new().fg(MODEL_META_COLOR),
         ));
     }
@@ -150,8 +174,10 @@ fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
     ];
     if menu.servers.is_empty() {
         lines.push(dim_line(MCP_NONE_FOUND, width));
-        lines.push(mcp_line(
-            "  {project}/.mcp.json · ~/.alter-zero/mcp.json",
+        // Wrapped: the paths are the instruction, and the clip used to eat
+        // exactly the actionable tail (`~/.alter-zero/mcp.json`).
+        lines.extend(inset_wrapped(
+            "{project}/.mcp.json · ~/.alter-zero/mcp.json",
             Style::new().fg(AI_COLOR),
             width,
         ));
@@ -203,7 +229,10 @@ fn list_lines(menu: &McpMenu, width: u16) -> Vec<Line<'static>> {
 /// One `{label:<18}{value}` field row of the server detail page — the label
 /// always bright, the value styled by what it *is*
 /// ([`MCP_DETAIL_VALUE_COLOR`] for an address or a count,
-/// [`MCP_DETAIL_STATE_COLOR`] for a value that is itself the answer).
+/// [`MCP_DETAIL_STATE_COLOR`] for a value that is itself the answer). The
+/// value stays one row (`…`-cut when it can't fit) — bounded values only;
+/// the fields a user opens the page to *read whole* go through
+/// [`field_lines`].
 fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<'static> {
     let room = (width as usize)
         .saturating_sub(cols(MODEL_INDENT) + MCP_FIELD_COL)
@@ -214,8 +243,37 @@ fn field_line(label: &str, value: &str, value_style: Style, width: u16) -> Line<
             format!("{label:<MCP_FIELD_COL$}"),
             Style::new().fg(MCP_DETAIL_LABEL_COLOR),
         ),
-        Span::styled(truncate_cols(value, room), value_style),
+        Span::styled(ellipsize(value, room), value_style),
     ])
+}
+
+/// [`field_line`]'s multi-row sibling: the value **wrapped** with a hanging
+/// indent at the field column, for the values the user opens the page to
+/// read whole — the server's URL or launch command and its config path
+/// routinely outrun a narrow terminal, and the tail is the distinguishing
+/// part.
+fn field_lines(label: &str, value: &str, value_style: Style, width: u16) -> Vec<Line<'static>> {
+    let room = (width as usize)
+        .saturating_sub(cols(MODEL_INDENT) + MCP_FIELD_COL)
+        .max(1) as u16;
+    let mut rows = wrap_text(value, room).into_iter();
+    let first = rows.next().unwrap_or_default();
+    let mut lines = vec![Line::from(vec![
+        Span::raw(MODEL_INDENT),
+        Span::styled(
+            format!("{label:<MCP_FIELD_COL$}"),
+            Style::new().fg(MCP_DETAIL_LABEL_COLOR),
+        ),
+        Span::styled(first, value_style),
+    ])];
+    lines.extend(rows.map(|row| {
+        Line::from(vec![
+            Span::raw(MODEL_INDENT),
+            Span::raw(" ".repeat(MCP_FIELD_COL)),
+            Span::styled(row, value_style),
+        ])
+    }));
+    lines
 }
 
 /// A `{label:<18}{glyph} {words}` state row — `Status:` and `Auth:`, the two
@@ -241,32 +299,42 @@ fn state_field_line(
         ),
         Span::styled(format!("{glyph} "), Style::new().fg(glyph_color)),
         Span::styled(
-            truncate_cols(words, room),
+            ellipsize(words, room),
             Style::new().fg(MCP_DETAIL_STATE_COLOR),
         ),
     ])
 }
 
-/// One `{label} {value}` row of the **tool** detail page — the compact
-/// sibling of [`field_line`]: one space instead of the server page's
+/// The `{label} {value}` rows of the **tool** detail page — the compact
+/// sibling of [`field_lines`]: one space instead of the server page's
 /// [`MCP_FIELD_COL`] pad (its two labels are the same width, so they line up
 /// on their own), and the two-tone reversed — the label bright, the value it
-/// introduces dim.
-fn tool_field_line(label: &str, value: &str, width: u16) -> Line<'static> {
+/// introduces dim. The value **wraps** under the label's column: the
+/// `{server}__{tool}` wire name is what the user copies for allowlisting and
+/// debugging, so a clipped one is unusable.
+fn tool_field_lines(label: &str, value: &str, width: u16) -> Vec<Line<'static>> {
+    let lead = cols(label) + cols(MCP_TOOL_FIELD_GAP);
     let room = (width as usize)
-        .saturating_sub(cols(MODEL_INDENT) + cols(label) + cols(MCP_TOOL_FIELD_GAP))
-        .max(1);
-    Line::from(vec![
+        .saturating_sub(cols(MODEL_INDENT) + lead)
+        .max(1) as u16;
+    let mut rows = wrap_text(value, room).into_iter();
+    let first = rows.next().unwrap_or_default();
+    let mut lines = vec![Line::from(vec![
         Span::raw(MODEL_INDENT),
         Span::styled(
             format!("{label}{MCP_TOOL_FIELD_GAP}"),
             Style::new().fg(MCP_DETAIL_LABEL_COLOR),
         ),
-        Span::styled(
-            truncate_cols(value, room),
-            Style::new().fg(MCP_DETAIL_VALUE_COLOR),
-        ),
-    ])
+        Span::styled(first, Style::new().fg(MCP_DETAIL_VALUE_COLOR)),
+    ])];
+    lines.extend(rows.map(|row| {
+        Line::from(vec![
+            Span::raw(MODEL_INDENT),
+            Span::raw(" ".repeat(lead)),
+            Span::styled(row, Style::new().fg(MCP_DETAIL_VALUE_COLOR)),
+        ])
+    }));
+    lines
 }
 
 /// The numbered action rows (`❯ 1. Authenticate`).
@@ -295,7 +363,7 @@ fn action_rows(labels: &[&'static str], selected: usize, width: u16) -> Vec<Line
                 Span::raw(MODEL_INDENT),
                 marker,
                 Span::styled(format!("{}. ", i + 1), style),
-                Span::styled(truncate_cols(label, room), style),
+                Span::styled(ellipsize(label, room), style),
             ])
         })
         .collect()
@@ -357,13 +425,15 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
     } else {
         "Command:"
     };
-    lines.push(field_line(
+    // The two values the user opens the page to read whole — the `/trust`
+    // review's verbatim rule: they wrap under their labels, never clip.
+    lines.extend(field_lines(
         target_label,
         &server.config.target(),
         value,
         width,
     ));
-    lines.push(field_line(
+    lines.extend(field_lines(
         "Config location:",
         &server.config_path,
         value,
@@ -442,11 +512,13 @@ fn tools_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Li
         let room = (width as usize)
             .saturating_sub(cols(MODEL_INDENT) + cols(HOOKS_MARKER) + 4)
             .max(1);
+        // `…`-cut: MCP tool names are long and prefix-heavy (search_x,
+        // search_y) — silently clipped, two rows read as the same tool.
         lines.push(Line::from(vec![
             Span::raw(MODEL_INDENT),
             marker,
             Span::styled(format!("{}. ", i + 1), style),
-            Span::styled(truncate_cols(&tool.name, room), style),
+            Span::styled(ellipsize(&tool.name, room), style),
         ]));
     }
     if end < server.tools.len() {
@@ -481,13 +553,13 @@ fn tool_lines_page(
         title_line(&tool.name, width),
         dim_line(&server.name, width),
         Line::default(),
-        tool_field_line("Tool name:", &tool.name, width),
-        tool_field_line(
-            "Full name:",
-            &tool_wire_name(&server.name, &tool.name),
-            width,
-        ),
     ];
+    lines.extend(tool_field_lines("Tool name:", &tool.name, width));
+    lines.extend(tool_field_lines(
+        "Full name:",
+        &tool_wire_name(&server.name, &tool.name),
+        width,
+    ));
     if !tool.description.trim().is_empty() {
         lines.push(Line::default());
         lines.push(mcp_line("Description:", label, width));
@@ -563,9 +635,10 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
         Line::default(),
         title_line(&format!("Authenticating with {}…", server.name), width),
         Line::default(),
-        dim_line(MCP_AUTH_BROWSER_NOTE, width),
-        Line::default(),
     ];
+    // Wrapped like its sibling notes — the three narrate one flow.
+    lines.extend(dim_wrapped(MCP_AUTH_BROWSER_NOTE, width));
+    lines.push(Line::default());
     match &menu.auth.url {
         Some(url) => {
             lines.extend(dim_wrapped(MCP_AUTH_COPY_NOTE, width));
@@ -601,12 +674,11 @@ fn auth_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<Lin
     if menu.auth.submitted {
         lines.push(dim_line(MCP_AUTH_SUBMITTED, width));
     }
-    lines.extend([
-        Line::default(),
-        dim_line(MCP_AUTH_RETURN_NOTE, width),
-        Line::default(),
-        model_rule(width),
-    ]);
+    lines.push(Line::default());
+    // Wrapped: "Press Esc to go back" is the note's actionable tail.
+    lines.extend(dim_wrapped(MCP_AUTH_RETURN_NOTE, width));
+    lines.push(Line::default());
+    lines.push(model_rule(width));
     lines
 }
 

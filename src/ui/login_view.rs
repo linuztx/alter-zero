@@ -1,8 +1,8 @@
 //! The inline `/login` API-key onboarding. See `docs/llm.md`.
 
-use super::model_view::{model_placeholder_row, model_rule};
+use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
 use super::theme::*;
-use super::wrap::{cols, truncate_cols};
+use super::wrap::{cols, ellipsize, truncate_cols};
 use super::*;
 
 /// The `/login` `>` line: the cyan prompt then `text` (the provider filter, or
@@ -30,7 +30,8 @@ fn login_provider_row(choice: &ProviderChoice, selected: bool, width: u16) -> Li
     };
     let reserved = cols(marker) + cols(&tag) + cols(check);
     let name_room = (width as usize).saturating_sub(reserved).max(1);
-    let name = truncate_cols(&choice.name, name_room);
+    // `…`-cut like the model id: the tag keeps its seat and the cut shows.
+    let name = ellipsize(&choice.name, name_room);
 
     let (marker_style, name_style) = if selected {
         (
@@ -112,7 +113,7 @@ fn login_key_field(onboarding: &KeyOnboarding, width: u16) -> Line<'static> {
         .max(1);
     let body = if onboarding.key_input.is_empty() {
         Span::styled(
-            truncate_cols(LOGIN_KEY_PLACEHOLDER, room),
+            ellipsize(LOGIN_KEY_PLACEHOLDER, room),
             Style::new().fg(MODEL_META_COLOR),
         )
     } else {
@@ -150,7 +151,10 @@ pub(super) fn key_onboarding_lines(onboarding: &KeyOnboarding, width: u16) -> Ve
                 lines.push(login_counter_line(onboarding));
             }
             lines.push(Line::default());
-            lines.push(model_placeholder_row(
+            // Wrapped, not clipped: the path — where the secret is stored —
+            // is the tail, so it was the first thing a narrow terminal lost.
+            // It sits below the cursor's search row, so nothing moves above.
+            lines.extend(model_wrapped_rows(
                 &format!("{LOGIN_PROVIDER_HINT_PREFIX}{}", onboarding.env_path),
                 MODEL_META_COLOR,
                 width,

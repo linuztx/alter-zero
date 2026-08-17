@@ -8,16 +8,18 @@
 //! one note row this menu has and that one doesn't: the session-off banner,
 //! and the where-to-put-one answer for an empty list.
 
-use super::model_view::{model_placeholder_row, model_rule};
+use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
 use super::theme::*;
-use super::wrap::{cols, truncate_cols};
+use super::wrap::{cols, ellipsize};
 use super::*;
 
 use crate::app::SkillMenuRow;
 
 /// One skill row: `{marker}{name}{pad}{enabled|disabled}` — the `/settings`
 /// row's shape exactly, so the two menus read as one family. `name_width` is
-/// the widest visible name, so the value column lines up down the list.
+/// the (capped) widest visible name, so the value column lines up down the
+/// list; a name wider than it `…`-cuts rather than paint-clipping at the
+/// buffer edge and shoving the value off the row.
 fn skills_row(row: &SkillMenuRow, selected: bool, name_width: usize, width: u16) -> Line<'static> {
     let marker = if selected { MODEL_MARKER } else { "  " };
     let (marker_style, name_style) = if selected {
@@ -30,8 +32,9 @@ fn skills_row(row: &SkillMenuRow, selected: bool, name_width: usize, width: u16)
     } else {
         (Style::default(), Style::new().fg(MODEL_ID_COLOR))
     };
-    let pad = name_width.saturating_sub(cols(&row.name)) + SETTINGS_VALUE_GAP;
-    let reserved = cols(marker) + cols(&row.name) + pad;
+    let name = ellipsize(&row.name, name_width.max(1));
+    let pad = name_width.saturating_sub(cols(&name)) + SETTINGS_VALUE_GAP;
+    let reserved = cols(marker) + cols(&name) + pad;
     let value_room = (width as usize).saturating_sub(reserved).max(1);
     let (value, value_color) = if row.enabled {
         (SKILLS_ON_VALUE, SETTINGS_VALUE_COLOR)
@@ -40,18 +43,25 @@ fn skills_row(row: &SkillMenuRow, selected: bool, name_width: usize, width: u16)
     };
     Line::from(vec![
         Span::styled(marker.to_string(), marker_style),
-        Span::styled(row.name.clone(), name_style),
+        Span::styled(name, name_style),
         Span::raw(" ".repeat(pad)),
-        Span::styled(
-            truncate_cols(value, value_room),
-            Style::new().fg(value_color),
-        ),
+        Span::styled(ellipsize(value, value_room), Style::new().fg(value_color)),
     ])
 }
 
-/// The widest visible name, so [`skills_row`] can align the value column.
-fn name_column(rows: &[&SkillMenuRow]) -> usize {
-    rows.iter().map(|r| cols(&r.name)).max().unwrap_or(0)
+/// The widest visible name — capped so the value column always keeps a seat
+/// on the row (`width` minus the marker, the gap, and the widest value) —
+/// so [`skills_row`] can align the value column.
+fn name_column(rows: &[&SkillMenuRow], width: u16) -> usize {
+    let widest_value = cols(SKILLS_ON_VALUE).max(cols(SKILLS_OFF_VALUE));
+    let cap = (width as usize)
+        .saturating_sub(cols(MODEL_MARKER) + SETTINGS_VALUE_GAP + widest_value)
+        .max(1);
+    rows.iter()
+        .map(|r| cols(&r.name))
+        .max()
+        .unwrap_or(0)
+        .min(cap)
 }
 
 /// The placeholder lines shown in place of the list: one row saying nothing
@@ -64,15 +74,16 @@ fn skills_empty_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .as_ref()
         .map(|menu| (menu.skills.is_empty(), menu.roots.clone()));
     match roots {
-        // Nothing discovered: name where one would go.
+        // Nothing discovered: name where one would go — the path rows ARE
+        // the instruction, so they wrap rather than losing their tails.
         Some((true, roots)) if !roots.is_empty() => {
             let mut lines = vec![model_placeholder_row(
                 SKILLS_NONE_FOUND,
                 MODEL_META_COLOR,
                 width,
             )];
-            lines.extend(roots.iter().map(|root| {
-                model_placeholder_row(&format!("{root}/<name>/SKILL.md"), MODEL_ID_COLOR, width)
+            lines.extend(roots.iter().flat_map(|root| {
+                model_wrapped_rows(&format!("{root}/<name>/SKILL.md"), MODEL_ID_COLOR, width)
             }));
             lines
         }
@@ -101,7 +112,7 @@ fn skills_list_lines(
     let selected = selected.min(rows.len() - 1);
     let offset = centered_window(rows.len(), selected, max);
     let visible: Vec<&SkillMenuRow> = rows.iter().skip(offset).take(max).collect();
-    let name_width = name_column(&visible);
+    let name_width = name_column(&visible, width);
     visible
         .iter()
         .enumerate()
@@ -146,10 +157,11 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ]);
     let highlighted = rows.get(selected.min(rows.len().saturating_sub(1)));
     let mut lines = vec![model_rule(width), Line::default(), search_line];
-    // The session-off note takes a row only when there IS one to show —
-    // emitting it blank stacked an empty line on the gap below it.
+    // The session-off note takes rows only when there IS one to show —
+    // emitting it blank stacked an empty line on the gap below it. Wrapped:
+    // its "/settings" tail is the fix, and a narrow terminal used to cut it.
     if !menu.session_enabled {
-        lines.push(model_placeholder_row(
+        lines.extend(model_wrapped_rows(
             SKILLS_SESSION_OFF,
             TOAST_ERROR_COLOR,
             width,
@@ -158,11 +170,14 @@ pub(super) fn skills_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     lines.push(Line::default());
     lines.extend(skills_list_lines(app, &rows, selected, width));
     match highlighted {
-        // A real row: the counter and the skill's own description.
+        // A real row: the counter and the skill's own description — wrapped
+        // whole, because this picker doubles as the browser that answers
+        // "what is this skill for?" and a SKILL.md description routinely
+        // outruns the terminal width.
         Some(row) => {
             lines.push(skills_counter_line(&rows, selected));
             lines.push(Line::default());
-            lines.push(model_placeholder_row(
+            lines.extend(model_wrapped_rows(
                 &row.description,
                 MODEL_META_COLOR,
                 width,

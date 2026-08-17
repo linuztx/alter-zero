@@ -223,3 +223,14 @@ fn resume_app(previews: &[&str]) -> App {
     );
     app
 }
+
+#[test]
+fn a_cut_session_preview_ends_with_an_ellipsis() {
+    // The preview is how the user tells sessions apart in the dense one-row
+    // picker — a cut one must say it was cut instead of ending mid-word.
+    let app = resume_app(&["a very long preview that cannot possibly fit"]);
+    let mut buf = buffer(24, 12);
+    render_resume_picker(buf.area, &mut buf, &app);
+    let line = row(&buf, 4, 24);
+    assert!(line.trim_end().ends_with('…'), "{line:?}");
+}

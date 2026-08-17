@@ -154,3 +154,117 @@ fn cursor_sits_at_the_end_of_the_model_search_query() {
     // indent(2) + prompt("❯ " = 2) + "hai"(3) = 7.
     assert_eq!((x, y), (7, MODEL_SEARCH_ROW));
 }
+
+/// Rejoin built rows word-by-word so a wrapped needle matches across rows.
+fn joined(lines: &[Line<'_>]) -> String {
+    lines
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn provider_errors_wrap_instead_of_clipping() {
+    // The error text is the only diagnostic the user gets — at a narrow
+    // width it wraps whole instead of losing its tail to a silent clip.
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(vec![], 0, "x");
+    picker.status = ModelLoad::Error("legacy".into());
+    picker.errors.push(ModelFetchError {
+        provider: "openrouter".into(),
+        message: "HTTP 429 too many requests — retry after sixty seconds".into(),
+    });
+    let lines = model_view_lines(&picker, 40);
+    for line in &lines {
+        assert!(
+            crate::ui::wrap::cols(plain(line).trim_end()) <= 40,
+            "no row leaks past the width: {:?}",
+            plain(line)
+        );
+    }
+    assert!(
+        joined(&lines).contains("retry after sixty seconds"),
+        "the error's tail survives: {lines:#?}"
+    );
+}
+
+#[test]
+fn the_needs_login_hint_wraps_keeping_its_actionable_tail() {
+    // "No API key yet — run /login to add one": the tail IS the fix; a
+    // 30-column terminal keeps it by wrapping.
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(vec![], 0, "x");
+    picker.status = ModelLoad::NeedsLogin;
+    let lines = model_view_lines(&picker, 30);
+    assert!(
+        joined(&lines).contains("run /login to add one"),
+        "{lines:#?}"
+    );
+}
+
+#[test]
+fn a_cut_model_id_ends_with_an_ellipsis() {
+    // One row per entry is the window's shape, so a long id can't wrap — but
+    // the cut must be visible before the user picks between two clipped twins.
+    let models = vec![model_entry(
+        "anthropic/claude-3.5-sonnet-20241022-preview-long",
+        "openrouter",
+        "Sonnet",
+    )];
+    let picker = model_picker(models, 0, "x");
+    let mut buf = buffer(40, 14);
+    render_model_picker(buf.area, &mut buf, &picker);
+    let first = row(&buf, 4, 40);
+    assert!(
+        first.contains('…') && first.contains("[openrouter]"),
+        "the id marks its cut and the tag keeps its seat: {first:?}"
+    );
+}
+
+#[test]
+fn the_counter_suffix_clamps_to_the_width() {
+    // The red "{provider} unavailable" note used to paint-clip past the
+    // buffer edge; the assembled counter line now clamps with a dim `…`.
+    use crate::ui::model_view::model_view_lines;
+    let mut picker = model_picker(three_models(), 0, "x");
+    picker.errors.push(ModelFetchError {
+        provider: "a-very-long-provider-name-indeed".into(),
+        message: "boom".into(),
+    });
+    let lines = model_view_lines(&picker, 30);
+    for line in &lines {
+        assert!(
+            crate::ui::wrap::cols(plain(line).trim_end()) <= 30,
+            "no row leaks past the width: {:?}",
+            plain(line)
+        );
+    }
+    let counter = lines
+        .iter()
+        .map(plain)
+        .find(|l| l.contains("(1/3)"))
+        .expect("the counter row");
+    assert!(counter.trim_end().ends_with('…'), "{counter:?}");
+}
+
+#[test]
+fn a_cut_model_name_detail_ends_with_an_ellipsis() {
+    let models = vec![model_entry(
+        "m/id",
+        "openrouter",
+        "A Very Long Friendly Display Name For A Model",
+    )];
+    let picker = model_picker(models, 0, "x");
+    use crate::ui::model_view::model_view_lines;
+    let lines = model_view_lines(&picker, 30);
+    let name = lines
+        .iter()
+        .map(plain)
+        .find(|l| l.contains("Model Name:"))
+        .expect("the name row");
+    assert!(name.trim_end().ends_with('…'), "{name:?}");
+}

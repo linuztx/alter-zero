@@ -2,29 +2,51 @@
 
 use super::layout::model_has_detail;
 use super::theme::*;
-use super::wrap::{cols, truncate_cols};
+use super::wrap::{clamp_spans, cols, ellipsize};
 use super::*;
 
-/// A dim two-space-inset placeholder row (loading / empty / error) in the
-/// picker's list area, truncated to `width`.
+/// A two-space-inset single-row line (placeholder / hint / description) in
+/// the picker family's list area, `…`-cut to `width` ([`ellipsize`]) — the
+/// shared single-row primitive of `/model`, `/login`, `/settings`, `/skills`
+/// and `/mascot`, so a cut row always says so. Text the user must read whole
+/// (errors, paths, descriptions) goes through [`model_wrapped_rows`] instead.
 pub(super) fn model_placeholder_row(text: &str, color: Color, width: u16) -> Line<'static> {
     let room = (width as usize).saturating_sub(cols(MODEL_INDENT));
     Line::from(vec![
         Span::raw(MODEL_INDENT),
-        Span::styled(truncate_cols(text, room), Style::new().fg(color)),
+        Span::styled(ellipsize(text, room), Style::new().fg(color)),
     ])
+}
+
+/// `text` word-wrapped to two-space-inset rows in `color` — the multi-row
+/// sibling of [`model_placeholder_row`] for informational text (an error's
+/// diagnostic, an actionable hint, a path, a description): the picker pages
+/// derive their height from the built line count (`docs/view-flow.md`), so
+/// continuation rows are free and nothing the user must read is ever cut.
+pub(super) fn model_wrapped_rows(text: &str, color: Color, width: u16) -> Vec<Line<'static>> {
+    let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
+    text.split('\n')
+        .flat_map(|part| super::wrap::wrap_text(part, room))
+        .map(|row| {
+            Line::from(vec![
+                Span::raw(MODEL_INDENT),
+                Span::styled(row, Style::new().fg(color)),
+            ])
+        })
+        .collect()
 }
 
 /// One model row: `{marker}{id} [{provider}]{✓}` — the selected row's marker and
 /// id light up cyan (the palette accent), the `[provider]` tag is dim, and the
-/// active model carries a green ✓. The id is truncated so the tag stays visible.
+/// active model carries a green ✓. The id is `…`-cut so the tag stays visible
+/// *and* the cut shows — two long ids clipped silently read as twins.
 fn model_row(entry: &ModelEntry, selected: bool, active: bool, width: u16) -> Line<'static> {
     let marker = if selected { MODEL_MARKER } else { "  " };
     let tag = format!(" [{}]", entry.provider);
     let active_mark = if active { MODEL_ACTIVE_MARK } else { "" };
     let reserved = cols(marker) + cols(&tag) + cols(active_mark);
     let id_room = (width as usize).saturating_sub(reserved).max(1);
-    let id = truncate_cols(&entry.id, id_room);
+    let id = ellipsize(&entry.id, id_room);
 
     let (marker_style, id_style) = if selected {
         (
@@ -54,21 +76,19 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
             MODEL_META_COLOR,
             width,
         )],
-        // Every provider failed: one red row each (`{provider}: {reason}`), or a
-        // single legacy message when there are no per-provider errors.
+        // Every provider failed: red rows (`{provider}: {reason}`), or a
+        // single legacy message when there are no per-provider errors —
+        // **wrapped**, because the error text is the only diagnostic the
+        // user gets and a silent clip hid the cause at narrow widths.
         ModelLoad::Error(msg) => {
             if picker.errors.is_empty() {
-                vec![model_placeholder_row(
-                    &format!("Error: {msg}"),
-                    ERROR_COLOR,
-                    width,
-                )]
+                model_wrapped_rows(&format!("Error: {msg}"), ERROR_COLOR, width)
             } else {
                 picker
                     .errors
                     .iter()
-                    .map(|e| {
-                        model_placeholder_row(
+                    .flat_map(|e| {
+                        model_wrapped_rows(
                             &format!("{}: {}", e.provider, e.message),
                             ERROR_COLOR,
                             width,
@@ -78,11 +98,8 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
             }
         }
         // No key configured yet — an inviting cyan hint, not a red error.
-        ModelLoad::NeedsLogin => vec![model_placeholder_row(
-            MODEL_LOGIN_HINT,
-            MODEL_SELECTED_COLOR,
-            width,
-        )],
+        // Wrapped: the actionable "run /login" tail must survive any width.
+        ModelLoad::NeedsLogin => model_wrapped_rows(MODEL_LOGIN_HINT, MODEL_SELECTED_COLOR, width),
         ModelLoad::Ready => {
             let matches = picker.matches();
             if matches.is_empty() {
@@ -108,8 +125,10 @@ fn model_list_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The `(selected+1/total)` counter line under the list, or a blank line when
-/// there's nothing selectable (loading / error / empty).
-fn model_counter_line(picker: &ModelPicker) -> Line<'static> {
+/// there's nothing selectable (loading / error / empty). Clamped to the width
+/// with a dim `…` ([`clamp_spans`]) — the red `{provider} unavailable` suffix
+/// used to paint-clip past the buffer edge, an error the user never saw.
+fn model_counter_line(picker: &ModelPicker, width: u16) -> Line<'static> {
     if picker.status != ModelLoad::Ready {
         return Line::default();
     }
@@ -133,7 +152,7 @@ fn model_counter_line(picker: &ModelPicker) -> Line<'static> {
             Style::new().fg(color),
         ));
     }
-    Line::from(spans)
+    clamp_spans(spans, width as usize)
 }
 
 /// The trailing status shown beside the `(n/total)` counter during a
@@ -171,7 +190,7 @@ fn model_name_line(picker: &ModelPicker, width: u16) -> Line<'static> {
         Span::raw(MODEL_INDENT),
         Span::styled(MODEL_NAME_LABEL, Style::new().fg(MODEL_META_COLOR)),
         Span::styled(
-            truncate_cols(&entry.display_name, room),
+            ellipsize(&entry.display_name, room),
             Style::new().fg(MODEL_META_COLOR),
         ),
     ])
@@ -208,7 +227,7 @@ pub(super) fn model_view_lines(picker: &ModelPicker, width: u16) -> Vec<Line<'st
     ];
     lines.extend(model_list_lines(picker, width));
     if model_has_detail(picker) {
-        lines.push(model_counter_line(picker));
+        lines.push(model_counter_line(picker, width));
         lines.push(Line::default());
         lines.push(model_name_line(picker, width));
         lines.push(Line::default());

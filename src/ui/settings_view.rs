@@ -5,9 +5,9 @@
 //! the description. It renders from [`App`] rather than from a picker struct,
 //! because the rows *are* the live session state ([`App::setting_rows`]).
 
-use super::model_view::{model_placeholder_row, model_rule};
+use super::model_view::{model_placeholder_row, model_rule, model_wrapped_rows};
 use super::theme::*;
-use super::wrap::{cols, truncate_cols};
+use super::wrap::{cols, ellipsize};
 use super::*;
 
 use crate::app::SettingRow;
@@ -16,7 +16,12 @@ use crate::app::SettingRow;
 /// and label light up cyan (the picker family's accent), the value is light
 /// grey when it's doing something and dim when it isn't. `label_width` is the
 /// widest visible label, so the value column lines up down the list.
-fn settings_row(row: &SettingRow, selected: bool, label_width: usize, width: u16) -> Line<'static> {
+pub(super) fn settings_row(
+    row: &SettingRow,
+    selected: bool,
+    label_width: usize,
+    width: u16,
+) -> Line<'static> {
     let marker = if selected { MODEL_MARKER } else { "  " };
     let (marker_style, label_style) = if selected {
         (
@@ -42,7 +47,9 @@ fn settings_row(row: &SettingRow, selected: bool, label_width: usize, width: u16
         Span::styled(marker.to_string(), marker_style),
         Span::styled(row.label.to_string(), label_style),
         Span::raw(" ".repeat(pad)),
-        Span::styled(truncate_cols(&row.value, value_room), value_style),
+        // `…`-cut, never silent: "false (unavailable)" clipped to "false"
+        // would misrepresent an unavailable knob as a live false.
+        Span::styled(ellipsize(&row.value, value_room), value_style),
     ])
 }
 
@@ -123,15 +130,14 @@ pub(super) fn settings_view_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     ];
     lines.extend(settings_list_lines(&rows, selected, width));
     match highlighted {
-        // A real row: the counter and the description name what it does.
+        // A real row: the counter and the description name what it does —
+        // the description **wrapped**, not clipped: it is why the row exists
+        // (type-to-search even matches on it), and the page's height is the
+        // built line count, so the continuation rows are free.
         Some(row) => {
             lines.push(settings_counter_line(&rows, selected));
             lines.push(Line::default());
-            lines.push(model_placeholder_row(
-                row.description,
-                MODEL_META_COLOR,
-                width,
-            ));
+            lines.extend(model_wrapped_rows(row.description, MODEL_META_COLOR, width));
             lines.push(Line::default());
         }
         // Nothing matched: there is no count and nothing to describe, so the

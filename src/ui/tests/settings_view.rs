@@ -364,3 +364,52 @@ fn no_settings_page_ever_stacks_two_blank_rows() {
         }
     }
 }
+
+#[test]
+fn the_highlighted_description_wraps_instead_of_clipping() {
+    // The description is why the row exists (type-to-search even matches on
+    // it) — at a narrow width it wraps whole below the counter; the page's
+    // height is the built line count, so the extra rows are safe.
+    let app = settings_app();
+    let lines = crate::ui::settings_view::settings_view_lines(&app, 34);
+    for line in &lines {
+        assert!(
+            crate::ui::wrap::cols(plain(line).trim_end()) <= 34,
+            "no row leaks past the width: {:?}",
+            plain(line)
+        );
+    }
+    // The first row's description survives whole (word-joined across rows).
+    let desc = app.setting_rows()[0].description;
+    let all = lines
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let tail = desc.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(all.contains(&tail), "nothing clipped: {all:?}");
+}
+
+#[test]
+fn a_cut_value_ends_with_an_ellipsis() {
+    // "false (unavailable)" clipped to "false" misrepresents an unavailable
+    // knob as a live false — a cut value must say it was cut.
+    use crate::app::SettingRow;
+    use crate::settings::SettingKey;
+    use crate::ui::theme::SETTINGS_VALUE_GAP;
+    let row = SettingRow {
+        key: SettingKey::Checkpoints,
+        label: "Checkpoints",
+        value: "false (unavailable)".into(),
+        description: "d",
+        available: false,
+    };
+    // marker(2) + label(11) + gap → value room too small for the tail.
+    let width = (2 + 11 + SETTINGS_VALUE_GAP + 8) as u16;
+    let line = crate::ui::settings_view::settings_row(&row, false, 11, width);
+    let text = plain(&line);
+    assert!(text.trim_end().ends_with('…'), "{text:?}");
+}

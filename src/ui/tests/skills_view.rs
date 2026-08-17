@@ -261,3 +261,110 @@ fn no_skills_page_ever_stacks_two_blank_rows() {
         }
     }
 }
+
+#[test]
+fn the_highlighted_skill_description_wraps_instead_of_clipping() {
+    // The picker doubles as the browser answering "what is this skill for?"
+    // — a SKILL.md description routinely runs past 100 columns, so it wraps
+    // whole under the counter instead of silently ending at the width.
+    let mut app = App::new();
+    app.open_skills_menu(
+        vec![meta(
+            "dataviz",
+            "Generate or edit charts, graphs and dashboards for websites, \
+             games and applications with a validated accessible palette",
+        )],
+        Default::default(),
+        true,
+        vec!["~/.claude/skills".to_string()],
+    );
+    let lines = crate::ui::skills_view::skills_view_lines(&app, 40);
+    for line in &lines {
+        assert!(
+            crate::ui::wrap::cols(plain(line).trim_end()) <= 40,
+            "no row leaks past the width: {:?}",
+            plain(line)
+        );
+    }
+    let all = lines
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(
+        all.contains("validated accessible palette"),
+        "the description's tail survives: {all:?}"
+    );
+}
+
+#[test]
+fn the_empty_state_skill_paths_wrap_instead_of_clipping() {
+    // The `{root}/<name>/SKILL.md` row IS the instruction — a long root must
+    // not eat the `/SKILL.md` tail.
+    let mut app = App::new();
+    app.open_skills_menu(
+        vec![],
+        Default::default(),
+        true,
+        vec!["~/.config/some/deeply/nested/alter-zero/project/skills".to_string()],
+    );
+    let lines = crate::ui::skills_view::skills_view_lines(&app, 40);
+    let all = lines
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join("")
+        .replace(' ', "");
+    assert!(
+        all.contains("SKILL.md"),
+        "the path's tail survives: {lines:#?}"
+    );
+}
+
+#[test]
+fn the_session_off_note_wraps_instead_of_clipping() {
+    // The note explains why every toggle does nothing; its actionable tail
+    // ("/settings") must survive a narrow terminal.
+    let mut app = App::new();
+    app.open_skills_menu(vec![meta("s", "d")], Default::default(), false, vec![]);
+    let lines = crate::ui::skills_view::skills_view_lines(&app, 40);
+    let all = lines
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert!(all.contains("/settings"), "the fix survives: {all:?}");
+}
+
+#[test]
+fn a_long_skill_name_marks_its_cut_and_keeps_the_value_seated() {
+    // An over-wide (user-controlled) name used to paint-clip at the buffer
+    // edge and shove the enabled/disabled value off the row entirely.
+    let mut app = App::new();
+    app.open_skills_menu(
+        vec![meta("an-extremely-long-skill-directory-name-indeed", "d")],
+        Default::default(),
+        true,
+        vec![],
+    );
+    let lines = crate::ui::skills_view::skills_view_lines(&app, 36);
+    let row = lines
+        .iter()
+        .map(plain)
+        .find(|l| l.contains("an-extremely"))
+        .expect("the skill row");
+    assert!(
+        crate::ui::wrap::cols(row.trim_end()) <= 36,
+        "the row fits: {row:?}"
+    );
+    assert!(
+        row.contains('…') && row.trim_end().ends_with("enabled"),
+        "the name marks its cut and the value keeps its seat: {row:?}"
+    );
+}
