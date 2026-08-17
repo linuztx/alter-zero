@@ -68,7 +68,7 @@ bindings, codex's phrasing and two-column layout, keys cyan and labels dim
 (`SHORTCUTS_*` consts):
 
 ```
-/ for commands               ! for shell command
+/ for commands               ! for shell command          $ for skills
 ↑ for input history          ctrl+r to search history
 shift+enter for newline      ctrl+o for tool output
 esc to quit                  ctrl+c to quit
@@ -79,7 +79,14 @@ shift+tab to cycle thinking  ctrl+a for permission mode
 
 (The `SHORTCUTS` const in `ui/theme.rs` is the single source of truth — entries laid
 out two per row in declaration order, so the band is
-`SHORTCUTS.len().div_ceil(2)` rows tall; currently 14 entries → 7 rows.)
+`SHORTCUTS.len().div_ceil(2)` rows tall; currently 14 entries → 7 rows. The
+`$` skill-mention sigil (`docs/skill-mentions.md`) is the one exception —
+`SHORTCUTS_SKILLS`, rendered as a **third column** on the first row at
+`SHORTCUTS_THIRD_COL` (2 × `SHORTCUTS_COL`) so the three composer sigils
+read as one aligned grid; on a terminal too narrow to hold it whole it
+drops to its own last row instead — the band never clips what it teaches,
+and `shortcuts_rows` counts the extra row so the reserved and painted
+heights agree.)
 
 The second column starts at `SHORTCUTS_COL` (30), sized so the **widest**
 first-column variant keeps a readable gutter: the ctrl+a entry paired

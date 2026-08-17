@@ -399,7 +399,7 @@ fn the_status_verb_prefers_the_active_form_and_reverts_when_done() {
         true,
         store,
     );
-    let line = status_line_with_verb(app.status().unwrap(), app.task_verb());
+    let line = status_line_with_verb(app.status().unwrap(), app.task_verb(), 200);
     let text = plain(&line);
     assert!(
         text.contains("Running tests…"),
@@ -417,7 +417,7 @@ fn the_status_verb_prefers_the_active_form_and_reverts_when_done() {
         true,
         done,
     );
-    let line = status_line_with_verb(app.status().unwrap(), app.task_verb());
+    let line = status_line_with_verb(app.status().unwrap(), app.task_verb(), 200);
     let text = plain(&line);
     assert!(
         text.contains("Working…"),

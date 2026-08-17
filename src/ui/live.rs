@@ -261,12 +261,12 @@ fn render_strip(
     // instead of the main turn's (docs/agent-tool.md).
     if has_status {
         let line = if let Some(run) = app.viewed_agent() {
-            Some(status_line(&agent_view_status(run)))
+            Some(status_line(&agent_view_status(run), strip.width))
         } else {
             // While some task is in progress the spinner wears its
             // activeForm instead of the turn's verb (docs/task-tools.md).
             app.status()
-                .map(|status| status_line_with_verb(status, app.task_verb()))
+                .map(|status| status_line_with_verb(status, app.task_verb(), strip.width))
         };
         if let Some(line) = line {
             let status_y = strip.y + preview_slot;
@@ -577,10 +577,11 @@ pub fn render_live_with_preview(
     // band_rows).
     if menu_rows(app, area.width) > 0 {
         Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
-    } else if shortcuts_rows(app) > 0 {
+    } else if shortcuts_rows(app, area.width) > 0 {
         Paragraph::new(shortcuts_lines(
             app.turn_active(),
             app.has_backtrack_target(),
+            band_area.width,
         ))
         .render(band_area, buf);
     } else if file_menu_rows(app) > 0 {

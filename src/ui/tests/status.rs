@@ -72,7 +72,7 @@ fn transcript_shows_no_stamp_on_assistant_tool_or_summary_items() {
 
 #[test]
 fn status_line_just_submitted_shows_only_the_verb_and_seconds() {
-    let line = status_line(&status(0, TokenArrow::Down, 0, None));
+    let line = status_line(&status(0, TokenArrow::Down, 0, None), 200);
     let text = plain(&line);
     assert_eq!(
         text, "(●•·   ) Working… (0s · esc to interrupt)",
@@ -113,7 +113,7 @@ fn format_elapsed_combines_hours_and_minutes_past_an_hour() {
 
 #[test]
 fn status_line_humanizes_a_long_elapsed_into_minutes_and_seconds() {
-    let text = plain(&status_line(&status(100, TokenArrow::Down, 90, None)));
+    let text = plain(&status_line(&status(100, TokenArrow::Down, 90, None), 200));
     assert!(
         text.contains("(1m 30s · ↓ 100 tokens"),
         "the elapsed reads m/s past a minute: {text:?}"
@@ -127,7 +127,10 @@ fn status_line_humanizes_a_long_elapsed_into_minutes_and_seconds() {
 #[test]
 fn status_line_humanizes_the_thinking_clause_too() {
     // elapsed 200s → 3m 20s, thinking 75s → 1m 15s.
-    let text = plain(&status_line(&status(150, TokenArrow::Down, 200, Some(75))));
+    let text = plain(&status_line(
+        &status(150, TokenArrow::Down, 200, Some(75)),
+        200,
+    ));
     assert!(text.contains("(3m 20s "), "elapsed humanized: {text:?}");
     assert!(
         text.contains("Thinking for 1m 15s"),
@@ -150,7 +153,7 @@ fn summary_humanizes_a_long_turn() {
 
 #[test]
 fn status_line_shows_the_token_tally_with_a_down_arrow() {
-    let text = plain(&status_line(&status(100, TokenArrow::Down, 1, None)));
+    let text = plain(&status_line(&status(100, TokenArrow::Down, 1, None), 200));
     assert!(
         text.ends_with("Working… (1s · ↓ 100 tokens · esc to interrupt)"),
         "{text:?}"
@@ -175,7 +178,7 @@ fn format_token_count_humanizes_thousands_and_millions() {
 fn status_line_humanizes_a_large_token_tally() {
     // Once the real usage snaps the tally past a thousand, the status
     // shows the compact form (the small-estimate case stays bare).
-    let text = plain(&status_line(&status(8_063, TokenArrow::Down, 1, None)));
+    let text = plain(&status_line(&status(8_063, TokenArrow::Down, 1, None), 200));
     assert!(
         text.contains("↓ 8.1k tokens"),
         "the tally reads compact: {text:?}"
@@ -214,7 +217,7 @@ fn summary_lines_append_the_real_token_usage() {
 
 #[test]
 fn status_line_flips_to_an_up_arrow_after_a_tool() {
-    let text = plain(&status_line(&status(200, TokenArrow::Up, 1, None)));
+    let text = plain(&status_line(&status(200, TokenArrow::Up, 1, None), 200));
     assert!(
         text.contains("↑ 200 tokens"),
         "up arrow after a tool: {text:?}"
@@ -224,12 +227,15 @@ fn status_line_flips_to_an_up_arrow_after_a_tool() {
 
 #[test]
 fn status_line_shows_thinking_only_while_thinking() {
-    let thinking = plain(&status_line(&status(150, TokenArrow::Down, 1, Some(0))));
+    let thinking = plain(&status_line(
+        &status(150, TokenArrow::Down, 1, Some(0)),
+        200,
+    ));
     assert!(
         thinking.ends_with("Working… (1s · ↓ 150 tokens · Thinking for 0s · esc to interrupt)"),
         "{thinking:?}"
     );
-    let not = plain(&status_line(&status(150, TokenArrow::Down, 1, None)));
+    let not = plain(&status_line(&status(150, TokenArrow::Down, 1, None), 200));
     assert!(
         !not.contains("Thinking"),
         "dropped once thinking ends: {not:?}"
@@ -238,7 +244,7 @@ fn status_line_shows_thinking_only_while_thinking() {
 
 #[test]
 fn status_line_shows_the_retry_count_between_tokens_and_the_hint() {
-    let text = plain(&status_line(&status_retrying(2, 3, 42)));
+    let text = plain(&status_line(&status_retrying(2, 3, 42), 200));
     assert!(
         text.ends_with("Working… (5s · ↑ 42 tokens · retrying 2/3 · esc to interrupt)"),
         "the retry clause sits after the tokens and before the hint: {text:?}"
@@ -249,19 +255,19 @@ fn status_line_shows_the_retry_count_between_tokens_and_the_hint() {
 fn status_line_shows_the_retry_count_even_with_no_tokens_yet() {
     // A connection that fails before the first byte has only the input
     // counted; the clause still shows.
-    let text = plain(&status_line(&status_retrying(1, 3, 0)));
+    let text = plain(&status_line(&status_retrying(1, 3, 0), 200));
     assert!(text.contains("· retrying 1/3 ·"), "{text:?}");
 }
 
 #[test]
 fn status_line_has_no_retry_clause_when_not_retrying() {
-    let text = plain(&status_line(&status(42, TokenArrow::Down, 5, None)));
+    let text = plain(&status_line(&status(42, TokenArrow::Down, 5, None), 200));
     assert!(!text.contains("retrying"), "{text:?}");
 }
 
 #[test]
 fn the_retry_clause_stands_out_in_its_own_colour() {
-    let line = status_line(&status_retrying(1, 3, 0));
+    let line = status_line(&status_retrying(1, 3, 0), 200);
     let retry = line
         .spans
         .iter()
@@ -287,7 +293,7 @@ fn status_line_always_ends_with_the_interrupt_hint() {
         status(100, TokenArrow::Down, 1, None),
         status(150, TokenArrow::Down, 1, Some(0)),
     ] {
-        let text = plain(&status_line(&status));
+        let text = plain(&status_line(&status, 200));
         assert!(text.ends_with(" · esc to interrupt)"), "{text:?}");
     }
 }
@@ -301,7 +307,7 @@ fn status_spinner_comet_sweeps_between_the_walls_and_its_tail_whips() {
     let frame_at = |ms: u64| {
         let mut s = status(0, TokenArrow::Down, 0, None);
         s.elapsed = Duration::from_millis(ms);
-        let text = plain(&status_line(&s));
+        let text = plain(&status_line(&s, 200));
         text.chars().take_while(|&c| c != 'W').collect::<String>()
     };
     assert_eq!(
@@ -343,7 +349,7 @@ fn status_spinner_comet_sweeps_between_the_walls_and_its_tail_whips() {
 
 #[test]
 fn status_line_has_a_white_comet_fading_tail_shimmering_verb_and_dim_metrics() {
-    let line = status_line(&status(0, TokenArrow::Down, 0, None));
+    let line = status_line(&status(0, TokenArrow::Down, 0, None), 200);
     // The spinner: a white bold comet head dragging a tail that fades
     // through mid grey to the dim detail grey, between dim walls.
     let head = line
@@ -434,7 +440,7 @@ fn status_verb_wave_peaks_where_the_band_is_and_moves_with_time() {
     // band, so at the base colour).
     let mut at_crest = status(0, TokenArrow::Down, 0, None);
     at_crest.elapsed = Duration::from_millis(715);
-    let crest_on_first = status_line(&at_crest);
+    let crest_on_first = status_line(&at_crest, 200);
     let first = span_rgb(&crest_on_first.spans[VERB_START]);
     let last = span_rgb(&crest_on_first.spans[VERB_START + 7]);
     assert!(
@@ -446,7 +452,7 @@ fn status_verb_wave_peaks_where_the_band_is_and_moves_with_time() {
     // Half a sweep later the band has moved on: char 0 is no longer the peak.
     let mut moved_on = status(0, TokenArrow::Down, 0, None);
     moved_on.elapsed = Duration::from_millis(715 + 1000);
-    let first_later = span_rgb(&status_line(&moved_on).spans[VERB_START]);
+    let first_later = span_rgb(&status_line(&moved_on, 200).spans[VERB_START]);
     assert!(
         first_later.0 < first.0,
         "the wave moved off char 0 as time advanced: {first_later:?} vs {first:?}"
@@ -599,4 +605,68 @@ fn status_retrying(attempt: u32, max: u32, tokens: usize) -> TurnStatus {
     let mut s = status(tokens, TokenArrow::Up, 5, None);
     s.retry = Some(RetryInfo { attempt, max });
     s
+}
+
+#[test]
+fn the_status_line_clamps_to_the_width_with_an_ellipsis() {
+    // The status line is one animated strip row by design (STATUS_ROWS is
+    // fixed, and its shimmer/spinner spans must never commit) — so instead
+    // of wrapping it degrades with a dim `…`, never a silent paint-clip
+    // that swallowed the thinking clause and the esc hint at narrow widths.
+    let wide = status_line(&status(12_345, TokenArrow::Down, 150, Some(75)), 200);
+    assert!(
+        plain(&wide).contains("esc to interrupt"),
+        "a wide terminal keeps the whole line: {:?}",
+        plain(&wide)
+    );
+    let narrow = status_line(&status(12_345, TokenArrow::Down, 150, Some(75)), 40);
+    let text = plain(&narrow);
+    assert!(
+        crate::ui::wrap::cols(&text) <= 40,
+        "never overflows the width: {text:?}"
+    );
+    assert!(text.ends_with('…'), "the cut says so: {text:?}");
+    assert!(text.contains("Working"), "the verb survives: {text:?}");
+}
+
+#[test]
+fn the_turn_summary_wraps_to_the_width() {
+    // The committed summary is permanent scrollback — its token/cache/shell
+    // clauses are the turn's receipts, so a narrow terminal wraps them whole
+    // instead of losing the tail (the old `_width` was ignored).
+    let summary = TurnSummary {
+        verb: "Done",
+        secs: 95,
+        timestamp: String::new(),
+        shells: 2,
+        tokens: 1_500_000,
+        cached: 1_200_000,
+    };
+    let lines = summary_lines(&summary, 30);
+    assert!(lines.len() > 1, "the summary wrapped: {lines:?}");
+    for line in &lines {
+        assert!(
+            crate::ui::wrap::cols(plain(line).trim_end()) <= 30,
+            "no row leaks past the width: {:?}",
+            plain(line)
+        );
+        assert!(
+            line.spans
+                .iter()
+                .all(|s| s.style.fg == Some(STATUS_DONE_COLOR)),
+            "every row keeps the summary's dim dress: {line:?}"
+        );
+    }
+    let all = lines
+        .iter()
+        .map(plain)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    assert_eq!(
+        all, "Done for 1m 35s · 1.5M tokens (1.2M cached) · 2 shells still running",
+        "nothing lost, nothing reordered"
+    );
 }

@@ -425,14 +425,26 @@ pub fn skill_menu_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// How many rows the `?` shortcuts band occupies for `app`: 0 when closed,
-/// otherwise the entry list two-per-row. [`live_height`] adds this (via its
-/// band parameter); [`render_live`] paints exactly this many rows — the two
-/// must agree, like [`menu_rows`].
+/// Whether the first row has room for the [`SHORTCUTS_SKILLS`] third column
+/// at `width`: the entry must fit whole past [`SHORTCUTS_THIRD_COL`] — the
+/// band never clips what it teaches, so a narrow terminal moves the entry to
+/// its own row instead ([`shortcuts_lines`] / [`shortcuts_rows`] share this
+/// verdict, which is what keeps the reserved and painted rows agreeing).
+fn shortcuts_third_column_fits(width: u16) -> bool {
+    let (key, label) = SHORTCUTS_SKILLS;
+    SHORTCUTS_THIRD_COL + cols(key) + cols(label) <= width as usize
+}
+
+/// How many rows the `?` shortcuts band occupies for `app` at `width`: 0 when
+/// closed, otherwise the entry list two-per-row — plus one when the terminal
+/// is too narrow for the first row's `SHORTCUTS_SKILLS` third column, which
+/// then takes its own row. [`live_height`] adds this (via its band
+/// parameter); [`render_live`] paints exactly this many rows — the two must
+/// agree, like [`menu_rows`].
 #[must_use]
-pub fn shortcuts_rows(app: &App) -> u16 {
+pub fn shortcuts_rows(app: &App, width: u16) -> u16 {
     if app.shortcuts_open {
-        SHORTCUTS.len().div_ceil(2) as u16
+        SHORTCUTS.len().div_ceil(2) as u16 + u16::from(!shortcuts_third_column_fits(width))
     } else {
         0
     }
@@ -448,18 +460,21 @@ pub fn shortcuts_rows(app: &App) -> u16 {
 /// can never drift.
 #[must_use]
 pub fn band_rows(app: &App, width: u16) -> u16 {
-    menu_rows(app, width) + shortcuts_rows(app) + file_menu_rows(app) + skill_menu_rows(app)
+    menu_rows(app, width) + shortcuts_rows(app, width) + file_menu_rows(app) + skill_menu_rows(app)
 }
 
 /// The styled lines for the open shortcuts band: the `SHORTCUTS` entries two
 /// per row — the second column starting at `SHORTCUTS_COL` — with keys cyan
-/// and labels dim. The `esc` entry is three-way context-sensitive (codex's
-/// quit entry): ` to interrupt` while a turn is in flight, the
-/// `SHORTCUTS_BACKTRACK` `esc esc` edit hint when idle with a previous user
-/// message to edit, and ` to quit` only with nothing to backtrack to
-/// (docs/backtrack.md).
+/// and labels dim, and the `SHORTCUTS_SKILLS` `$` entry as a **third
+/// column** on the first row (at `SHORTCUTS_THIRD_COL`, beside its sibling
+/// composer sigils `/` and `!`) when `width` has room for it whole — else on
+/// its own last row (the band never clips what it teaches). The `esc` entry
+/// is three-way context-sensitive (codex's quit entry): ` to interrupt`
+/// while a turn is in flight, the `SHORTCUTS_BACKTRACK` `esc esc` edit hint
+/// when idle with a previous user message to edit, and ` to quit` only with
+/// nothing to backtrack to (docs/backtrack.md).
 #[must_use]
-pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'static>> {
+pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool, width: u16) -> Vec<Line<'static>> {
     let entry = |key: &'static str, label: &'static str| {
         let (key, label) = if key == "esc" && turn_active {
             (key, " to interrupt")
@@ -473,9 +488,12 @@ pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'stat
             Span::styled(label, Style::new().fg(SHORTCUTS_TEXT_COLOR)),
         ]
     };
-    SHORTCUTS
+    let third_fits = shortcuts_third_column_fits(width);
+    let (skills_key, skills_label) = SHORTCUTS_SKILLS;
+    let mut lines: Vec<Line<'static>> = SHORTCUTS
         .chunks(2)
-        .map(|pair| {
+        .enumerate()
+        .map(|(row, pair)| {
             let [key, label] = entry(pair[0].0, pair[0].1);
             let mut spans = vec![key, label];
             if let Some(&(key2, label2)) = pair.get(1) {
@@ -487,7 +505,19 @@ pub fn shortcuts_lines(turn_active: bool, can_backtrack: bool) -> Vec<Line<'stat
                 ));
                 spans.extend(entry(key2, label2));
             }
+            if row == 0 && third_fits {
+                let used: usize = spans.iter().map(|s| cols(s.content.as_ref())).sum();
+                spans.push(Span::raw(
+                    " ".repeat(SHORTCUTS_THIRD_COL.saturating_sub(used).max(1)),
+                ));
+                spans.extend(entry(skills_key, skills_label));
+            }
             Line::from(spans)
         })
-        .collect()
+        .collect();
+    if !third_fits {
+        let [key, label] = entry(skills_key, skills_label);
+        lines.push(Line::from(vec![key, label]));
+    }
+    lines
 }

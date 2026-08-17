@@ -412,19 +412,24 @@ fn cursor_stays_in_the_box_when_the_palette_opens() {
 #[test]
 fn shortcuts_rows_is_zero_closed_and_counts_the_band_open() {
     let mut app = App::new();
-    assert_eq!(shortcuts_rows(&app), 0);
+    assert_eq!(shortcuts_rows(&app, 80), 0);
     app.shortcuts_open = true;
     assert_eq!(
-        shortcuts_rows(&app),
+        shortcuts_rows(&app, 80),
         SHORTCUTS.len().div_ceil(2) as u16,
-        "two entries per row"
+        "two entries per row; the $ entry rides the first row's third column"
+    );
+    assert_eq!(
+        shortcuts_rows(&app, 60),
+        SHORTCUTS.len().div_ceil(2) as u16 + 1,
+        "too narrow for the third column: the $ entry takes its own row"
     );
 }
 
 #[test]
 fn shortcuts_band_advertises_ctrl_v_image_paste() {
     // The `?` overlay lists Ctrl+V image paste (docs/image-paste.md).
-    let texts: Vec<String> = shortcuts_lines(false, false)
+    let texts: Vec<String> = shortcuts_lines(false, false, 80)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -436,7 +441,7 @@ fn shortcuts_band_advertises_ctrl_v_image_paste() {
 
 #[test]
 fn shortcuts_lines_list_the_bindings_in_two_columns() {
-    let texts: Vec<String> = shortcuts_lines(false, false)
+    let texts: Vec<String> = shortcuts_lines(false, false, 80)
         .iter()
         .map(|l| plain(l).trim_end().to_string())
         .collect();
@@ -477,7 +482,7 @@ fn shortcuts_lines_list_the_alt_up_queue_edit_binding() {
     // Alt+Up (pull the last queued batch back into the composer,
     // docs/queue.md) is discoverable in the `?` band like every other
     // binding.
-    let all: String = shortcuts_lines(false, false)
+    let all: String = shortcuts_lines(false, false, 80)
         .iter()
         .map(plain)
         .collect::<Vec<_>>()
@@ -489,7 +494,7 @@ fn shortcuts_lines_list_the_alt_up_queue_edit_binding() {
 fn shortcuts_lines_list_the_shift_tab_thinking_binding() {
     // Shift+Tab (cycle the thinking mode, docs/reasoning.md) is
     // discoverable in the `?` band like every other binding.
-    let all: String = shortcuts_lines(false, false)
+    let all: String = shortcuts_lines(false, false, 80)
         .iter()
         .map(plain)
         .collect::<Vec<_>>()
@@ -501,11 +506,11 @@ fn shortcuts_lines_list_the_shift_tab_thinking_binding() {
 fn shortcuts_lines_flip_the_esc_entry_while_a_turn_runs() {
     // codex's quit entry is context-sensitive: "to interrupt" while a task
     // runs. Our Esc entry flips the same way.
-    let idle: Vec<String> = shortcuts_lines(false, false)
+    let idle: Vec<String> = shortcuts_lines(false, false, 80)
         .iter()
         .map(|l| plain(l))
         .collect();
-    let busy: Vec<String> = shortcuts_lines(true, false)
+    let busy: Vec<String> = shortcuts_lines(true, false, 80)
         .iter()
         .map(|l| plain(l))
         .collect();
@@ -527,7 +532,7 @@ fn the_shortcuts_columns_keep_a_readable_gutter_in_every_state() {
     // line). Adding a wide entry later must widen SHORTCUTS_COL with it.
     for (turn_active, can_backtrack) in [(false, false), (true, false), (false, true), (true, true)]
     {
-        for line in shortcuts_lines(turn_active, can_backtrack) {
+        for line in shortcuts_lines(turn_active, can_backtrack, 80) {
             if line.spans.len() < 4 {
                 continue; // a lone trailing entry has no second column
             }
@@ -553,7 +558,7 @@ fn the_shortcuts_columns_keep_a_readable_gutter_in_every_state() {
 
 #[test]
 fn shortcuts_lines_style_keys_cyan_and_labels_dim() {
-    for line in shortcuts_lines(false, false) {
+    for line in shortcuts_lines(false, false, 80) {
         // spans = [key, label, pad, key, label] — keys cyan, labels dim.
         assert_eq!(line.spans[0].style.fg, Some(SHORTCUTS_KEY_COLOR));
         assert_eq!(line.spans[1].style.fg, Some(SHORTCUTS_TEXT_COLOR));
@@ -574,11 +579,11 @@ fn live_height_adds_the_shortcuts_band() {
         0,
         0,
         0,
-        shortcuts_rows(&app),
+        shortcuts_rows(&app, 40),
         0,
         0,
     );
-    assert_eq!(open, closed + shortcuts_rows(&app));
+    assert_eq!(open, closed + shortcuts_rows(&app, 40));
 }
 
 #[test]
@@ -594,7 +599,7 @@ fn render_live_draws_the_shortcuts_band_below_the_box() {
         0,
         0,
         0,
-        shortcuts_rows(&app),
+        shortcuts_rows(&app, 60),
         0,
         0,
     );
@@ -606,7 +611,7 @@ fn render_live_draws_the_shortcuts_band_below_the_box() {
         .join("\n");
     assert!(all.contains("/ for commands"), "band rendered: {all:?}");
     assert!(
-        row(&buf, h - 1, 60).contains("shift+tab to cycle thinking"),
+        row(&buf, h - 1, 60).contains("$ for skills"),
         "the last band row sits on the last region row"
     );
 }
@@ -635,7 +640,7 @@ fn cursor_stays_in_the_box_when_the_shortcuts_band_opens() {
             0,
             0,
             0,
-            shortcuts_rows(&app),
+            shortcuts_rows(&app, 40),
             0,
             0,
         ),
@@ -662,7 +667,7 @@ fn the_queue_and_the_shortcuts_band_show_in_their_own_slots() {
         0,
         q,
         0,
-        shortcuts_rows(&app),
+        shortcuts_rows(&app, 40),
         0,
         0,
     );
@@ -718,7 +723,10 @@ fn the_palette_replaces_the_footer() {
 
 #[test]
 fn the_shortcuts_band_lists_ctrl_r() {
-    let texts: Vec<String> = shortcuts_lines(false, false).iter().map(plain).collect();
+    let texts: Vec<String> = shortcuts_lines(false, false, 80)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(
         texts.iter().any(|t| t.contains("ctrl+r to search history")),
         "band lists the search binding: {texts:?}"
@@ -727,7 +735,10 @@ fn the_shortcuts_band_lists_ctrl_r() {
 
 #[test]
 fn the_shortcuts_band_lists_the_bang() {
-    let texts: Vec<String> = shortcuts_lines(false, false).iter().map(plain).collect();
+    let texts: Vec<String> = shortcuts_lines(false, false, 80)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(
         texts.iter().any(|t| t.contains("! for shell command")),
         "band lists the shell binding: {texts:?}"
@@ -1067,11 +1078,14 @@ fn cursor_stays_in_the_box_when_the_file_picker_opens() {
 fn shortcuts_esc_entry_is_three_way_context_sensitive() {
     // Interrupt while a turn runs (as before); the Esc-Esc edit hint when
     // idle with a previous user message; quit only with nothing to edit.
-    let idle: String = shortcuts_lines(false, false).iter().map(plain).collect();
+    let idle: String = shortcuts_lines(false, false, 80)
+        .iter()
+        .map(plain)
+        .collect();
     assert!(idle.contains("esc to quit"), "{idle:?}");
-    let busy: String = shortcuts_lines(true, true).iter().map(plain).collect();
+    let busy: String = shortcuts_lines(true, true, 80).iter().map(plain).collect();
     assert!(busy.contains("esc to interrupt"), "{busy:?}");
-    let target: String = shortcuts_lines(false, true).iter().map(plain).collect();
+    let target: String = shortcuts_lines(false, true, 80).iter().map(plain).collect();
     assert!(target.contains("esc esc to edit previous"), "{target:?}");
     assert!(!target.contains("esc to quit"), "{target:?}");
 }
@@ -1085,4 +1099,51 @@ fn fmatch(path: &str) -> FileMatch {
         score: 0,
         indices: Vec::new(),
     }
+}
+
+#[test]
+fn the_skill_entry_rides_the_first_row_as_a_third_column() {
+    // The `$` skill picker (docs/skill-mentions.md) is discoverable beside
+    // its sibling composer sigils — `/` and `!` — as a third column on the
+    // band's first row (starting at 2 × SHORTCUTS_COL), so the band keeps
+    // its seven paired rows:
+    //   / for commands    ! for shell command    $ for skills
+    let lines = shortcuts_lines(false, false, 80);
+    assert_eq!(lines.len(), SHORTCUTS.len().div_ceil(2), "no extra row");
+    let first = plain(&lines[0]);
+    assert!(
+        first.contains("/ for commands")
+            && first.contains("! for shell command")
+            && first.contains("$ for skills"),
+        "the three sigils share the first row: {first:?}"
+    );
+    let col = cols(&first[..first.find('$').expect("the $ entry")]);
+    assert_eq!(col, SHORTCUTS_COL * 2, "third column aligned: {first:?}");
+    assert!(
+        !lines[1..].iter().any(|l| plain(l).contains("$ for skills")),
+        "listed once"
+    );
+}
+
+#[test]
+fn a_narrow_band_drops_the_skill_entry_to_its_own_row() {
+    // Below ~72 columns the third column would clip at the buffer edge —
+    // there the `$` entry takes its own last row instead (nothing the band
+    // teaches is ever cut).
+    let lines = shortcuts_lines(false, false, 60);
+    assert_eq!(
+        lines.len(),
+        SHORTCUTS.len().div_ceil(2) + 1,
+        "one fallback row"
+    );
+    let last = plain(lines.last().expect("a band row"));
+    assert!(
+        last.trim_end().ends_with("$ for skills"),
+        "the entry survives whole: {last:?}"
+    );
+    assert!(
+        !plain(&lines[0]).contains('$'),
+        "no clipped third column: {:?}",
+        plain(&lines[0])
+    );
 }

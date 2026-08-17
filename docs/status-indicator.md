@@ -114,6 +114,21 @@ real backend's own latency plays the same role.
   the committed `Conversation interrupted` notice is its terminal state, like a
   backend error.
 
+## Width: the live line clamps, the summary wraps
+
+The two ends of a turn degrade differently at a narrow terminal, each by what
+it *is*. The **live line clamps** to the width with a dim `…`
+(`ui::clamp_spans`, threaded through `status_line`/`status_line_with_verb`):
+it is one animated strip row by design — `STATUS_ROWS` is fixed, and its
+spinner/shimmer spans carry per-frame colours that must never reach
+scrollback — so the tail clauses (the amber retry warning, the thinking
+clause, the esc hint) give way visibly instead of paint-clipping at the
+buffer edge with no cue. The **committed summary wraps**
+(`summary_lines` word-wraps to its width): its token/cache/shell clauses are
+the turn's receipts in permanent scrollback, where extra rows cost nothing —
+the old single-line render was written before the usage-frame token clause
+outgrew it.
+
 ## Where the impurity lives (boundary, not the pure core)
 
 Time is impure, so — exactly like `docs/timestamps.md` — it stays in `main.rs`:

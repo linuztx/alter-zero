@@ -3,7 +3,7 @@
 //! See `docs/status-indicator.md`.
 
 use super::theme::*;
-use super::wrap::blend;
+use super::wrap::{blend, clamp_spans};
 use super::*;
 
 /// One bold span per char of `text`, shimmered codex-style: a raised-cosine
@@ -145,11 +145,16 @@ pub fn format_token_count(tokens: usize) -> String {
 /// (`shimmer_spans`) — both animations phase-driven by the boundary-supplied
 /// `elapsed`; the parenthesised metrics are dim. The token clause is omitted
 /// while the tally is 0 (the "just submitted" state), and the thinking clause
-/// only while `thinking` is `Some`. Pure — it formats the (already
-/// boundary-stamped) [`TurnStatus`], so it is unit-tested with explicit values.
+/// only while `thinking` is `Some`. Clamped to `width` with a dim `…`
+/// (`clamp_spans`): the line is one animated strip row by design
+/// (`STATUS_ROWS` is fixed, and its per-frame shimmer colours must never
+/// reach scrollback), so a narrow terminal degrades it honestly instead of
+/// paint-clipping the retry warning, the thinking clause, and the esc hint
+/// with no cue. Pure — it formats the (already boundary-stamped)
+/// [`TurnStatus`], so it is unit-tested with explicit values.
 #[must_use]
-pub fn status_line(status: &TurnStatus) -> Line<'static> {
-    status_line_with_verb(status, None)
+pub fn status_line(status: &TurnStatus, width: u16) -> Line<'static> {
+    status_line_with_verb(status, None, width)
 }
 
 /// [`status_line`] with the verb **overridden** — the task checklist's
@@ -160,7 +165,7 @@ pub fn status_line(status: &TurnStatus) -> Line<'static> {
 /// the caller derives the override per frame ([`crate::app::App::task_verb`])
 /// so completing the task snaps it back mid-turn.
 #[must_use]
-pub fn status_line_with_verb(status: &TurnStatus, verb: Option<&str>) -> Line<'static> {
+pub fn status_line_with_verb(status: &TurnStatus, verb: Option<&str>, width: u16) -> Line<'static> {
     let dim = Style::new().fg(STATUS_DETAIL_COLOR);
     let mut spans = spinner_spans(status.elapsed);
     spans.extend(shimmer_spans(
@@ -197,17 +202,21 @@ pub fn status_line_with_verb(status: &TurnStatus, verb: Option<&str>) -> Line<'s
         ));
     }
     spans.push(Span::styled(format!(" · {STATUS_INTERRUPT_HINT})"), dim));
-    Line::from(spans)
+    clamp_spans(spans, width as usize)
 }
 
-/// The committed turn summary: a single dim, bullet-less `"{verb} for {elapsed}"`
+/// The committed turn summary: dim, bullet-less `"{verb} for {elapsed}"`
 /// (the seconds humanized by [`format_elapsed`] — `Done for 20s`, `Done for 1m 30s`)
-/// line — with a `· {n} shells still running` suffix when background shells
-/// were running at turn end (`docs/background.md`). Shown inline (it flows into
-/// scrollback) and in the transcript like any other [`HistoryItem`]; `width` is
-/// unused (the line never wraps) but kept for a uniform `*_lines` signature.
+/// — with a `· {n} tokens ({c} cached)` receipt and a `· {n} shells still
+/// running` suffix when either applies (`docs/background.md`,
+/// `docs/prompt-caching.md`). Shown inline (it flows into scrollback) and in
+/// the transcript like any other [`HistoryItem`]. **Word-wrapped** to
+/// `width`: the full chain runs past 60 columns and the rows are permanent
+/// scrollback, so a narrow terminal keeps the whole receipt instead of
+/// paint-clipping its tail (the old `_width` was ignored on a "the line
+/// never wraps" premise the token clause outgrew).
 #[must_use]
-pub fn summary_lines(summary: &TurnSummary, _width: u16) -> Vec<Line<'static>> {
+pub fn summary_lines(summary: &TurnSummary, width: u16) -> Vec<Line<'static>> {
     let mut text = format!("{} for {}", summary.verb, format_elapsed(summary.secs));
     if summary.tokens > 0 {
         // The turn's real billed tokens, with the cache-served share beside
@@ -226,10 +235,10 @@ pub fn summary_lines(summary: &TurnSummary, _width: u16) -> Vec<Line<'static>> {
             summary.shells
         ));
     }
-    vec![Line::from(Span::styled(
-        text,
-        Style::new().fg(STATUS_DONE_COLOR),
-    ))]
+    wrap_text(&text, width)
+        .into_iter()
+        .map(|row| Line::from(Span::styled(row, Style::new().fg(STATUS_DONE_COLOR))))
+        .collect()
 }
 
 /// A background shell's completion notice as committed lines: the coloured

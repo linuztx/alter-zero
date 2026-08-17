@@ -1237,6 +1237,24 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("ctrl+a", " for permission mode"),
 ];
 
+/// The `$` skill-mention entry (`docs/skill-mentions.md`) — rendered as a
+/// **third column** on the band's first row, beside its sibling composer
+/// sigils `/` and `!` (the user-requested layout), rather than as a
+/// [`SHORTCUTS`] pair slot:
+///
+/// ```text
+/// / for commands               ! for shell command          $ for skills
+/// ```
+///
+/// On a terminal too narrow for the third column it drops to its own last
+/// row instead — the band never clips what it teaches (`shortcuts_lines`).
+pub(super) const SHORTCUTS_SKILLS: (&str, &str) = ("$", " for skills");
+
+/// The display column where the first row's **third** entry starts — the
+/// second [`SHORTCUTS_COL`] stride, so the three sigil entries read as one
+/// aligned grid.
+pub(super) const SHORTCUTS_THIRD_COL: usize = SHORTCUTS_COL * 2;
+
 /// The display column where a row's second entry starts (the first entry is
 /// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
 /// **widest** first-column variant keeps a readable gutter: the ctrl+a entry
