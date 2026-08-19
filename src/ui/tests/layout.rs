@@ -962,3 +962,75 @@ fn the_picker_cursor_seat_subtracts_the_bottom_anchor_skip() {
         "the seat follows the anchored paint"
     );
 }
+
+// --- the overlay cursor seat (Ctrl+O / Ctrl+D, docs/tool-view-performance.md) ---
+
+#[test]
+fn overlay_cursor_seat_sits_just_after_the_last_glyph() {
+    // The overlays never *show* the cursor, but a terminal with a cursor-move
+    // animation still animates toward wherever it is seated — and a
+    // full-screen cell paint used to leave it at the blank bottom-right
+    // corner. The seat is the cell just past the frame's last non-blank
+    // glyph, so the jump lands on text.
+    let mut buf = buffer(20, 4);
+    buf.set_string(0, 0, "title", Style::default());
+    buf.set_string(0, 2, " q/esc to quit", Style::default());
+    assert_eq!(overlay_cursor_seat(&buf), (14, 2));
+}
+
+#[test]
+fn overlay_cursor_seat_clamps_inside_the_frame() {
+    // A row that runs to the edge keeps the seat on its last column…
+    let mut buf = buffer(6, 2);
+    buf.set_string(0, 1, "abcdef", Style::default());
+    assert_eq!(overlay_cursor_seat(&buf), (5, 1));
+    // …and an empty frame parks it at the origin.
+    assert_eq!(overlay_cursor_seat(&buffer(6, 2)), (0, 0));
+}
+
+#[test]
+fn overlay_cursor_seat_steps_over_a_wide_glyph() {
+    // A trailing emoji covers two columns; the seat lands after both, never
+    // on the shadow cell.
+    let mut buf = buffer(10, 1);
+    buf.set_string(0, 0, "a🔥", Style::default());
+    assert_eq!(overlay_cursor_seat(&buf), (3, 0));
+}
+
+#[test]
+fn the_transcript_overlay_seats_the_cursor_after_its_quit_hint() {
+    // The Ctrl+O pager's last text is the closing " q/esc/ctrl+o to quit"
+    // hint — the seat sits right after "quit" (the user-visible fix: the
+    // cursor animation jumps into that text, not to nowhere).
+    let app = App::new();
+    let area = Rect::new(0, 0, 60, 12);
+    let mut buf = Buffer::empty(area);
+    let lines = transcript_lines(&app, 60);
+    render_tool_view(area, &mut buf, &app, &lines);
+    let (x, y) = overlay_cursor_seat(&buf);
+    let hint = " q/esc/ctrl+o to quit";
+    assert!(
+        row(&buf, y, 60).starts_with(hint),
+        "the seat row is the closing hint: {:?}",
+        row(&buf, y, 60)
+    );
+    assert_eq!(usize::from(x), hint.len(), "the seat sits right after it");
+}
+
+#[test]
+fn the_context_overlay_seats_the_cursor_after_its_quit_hint() {
+    // Ctrl+D is the pager's sibling: same chrome, its own closing hint.
+    let app = App::new();
+    let area = Rect::new(0, 0, 60, 12);
+    let mut buf = Buffer::empty(area);
+    let lines = context_lines(&app, 60);
+    render_context_view(area, &mut buf, &app, &lines);
+    let (x, y) = overlay_cursor_seat(&buf);
+    let hint = " q/esc/ctrl+d to quit";
+    assert!(
+        row(&buf, y, 60).starts_with(hint),
+        "the seat row is the closing hint: {:?}",
+        row(&buf, y, 60)
+    );
+    assert_eq!(usize::from(x), hint.len(), "the seat sits right after it");
+}

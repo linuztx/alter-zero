@@ -613,6 +613,41 @@ pub fn cursor_visible(app: &App) -> bool {
     true
 }
 
+/// The hidden cursor's seat after a full-screen overlay paint (the Ctrl+O
+/// transcript, the Ctrl+D context view, the `/resume` picker): the cell just
+/// past the frame's **last non-blank glyph** — the end of the closing
+/// `q/esc/… to quit` hint — clamped inside the frame, or the origin of an
+/// empty one.
+///
+/// The overlay never *shows* the cursor (`term.rs` re-asserts the hide on
+/// every overlay frame), but the seat still matters: a terminal with a
+/// cursor-move animation (kitty's trail and kin) animates toward wherever
+/// the cursor sits, and a full-screen cell paint used to leave it at the
+/// blank bottom-right corner — the reported "the cursor animation jumps to
+/// nowhere" on Ctrl+O/Ctrl+D. Seating it after the last text keeps the jump
+/// on something readable — the same hidden-but-seated rule
+/// [`cursor_visible`] documents for the inline menus. A wide glyph's shadow
+/// cells are blank, so the scan lands on the glyph itself and steps past its
+/// full width.
+#[must_use]
+pub fn overlay_cursor_seat(buf: &Buffer) -> (u16, u16) {
+    let area = buf.area;
+    for y in (area.top()..area.bottom()).rev() {
+        for x in (area.left()..area.right()).rev() {
+            let Some(cell) = buf.cell((x, y)) else {
+                continue;
+            };
+            let symbol = cell.symbol();
+            if symbol.trim().is_empty() {
+                continue;
+            }
+            let after = x.saturating_add(cols(symbol).max(1) as u16);
+            return (after.min(area.right().saturating_sub(1)), y);
+        }
+    }
+    (area.left(), area.top())
+}
+
 /// The hidden cursor's seat inside a no-text-entry menu: the highlighted
 /// `❯` row's marker column, found by scanning the built lines for the
 /// selection marker span — the views are content-driven, so the row is

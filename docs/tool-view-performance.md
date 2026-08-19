@@ -39,6 +39,20 @@ cursor mid-hop (`draw_overlay` re-asserts the hide inside its synchronized
 update; the inline reflow re-seats and re-shows it on the prompt after
 `exit_overlay` — the term.rs module docs describe that discipline).
 
+Hidden is not enough on every terminal, though: some animate the cursor's
+**move** regardless of visibility, and a full-screen cell paint used to leave
+the (hidden) cursor wherever the last cell landed — the blank bottom-right
+corner — so opening Ctrl+O / Ctrl+D streaked the animation from the composer's
+`❯` to nowhere (the reported bug). `draw_overlay` therefore ends every frame by
+**seating** the cursor at the frame's last text — just past the closing
+`q/esc/… to quit` hint — via the pure `ui::overlay_cursor_seat` (the last
+non-blank glyph of the rendered buffer, wide-glyph aware, clamped inside the
+frame), exactly as the inline `paint_frame` seats it on the prompt via
+`ui::cursor_position` and as `cursor_visible`'s hidden-but-seated rule keeps a
+menu's seat sensible. The seat is a property of the frame, not the scroll, so
+paging the transcript never moves it — one jump in (onto the hint), one jump
+back out (onto the prompt).
+
 Verified A/B in tmux with the real session (old → new): overlay visible in
 273 ms → 14 ms (capture-poll floor), and a capture taken immediately after the
 keypress shows a blank screen on the old build vs the already-painted overlay

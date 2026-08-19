@@ -768,6 +768,9 @@ impl InlineViewport {
         }
         let mut buf = Buffer::empty(self.screen);
         render(self.screen, &mut buf);
+        // The policy seat for the hidden cursor: just past the frame's last
+        // glyph — the closing `q/esc/… to quit` hint (see below).
+        let (seat_x, seat_y) = ui::overlay_cursor_seat(&buf);
         let width = self.screen.width as usize;
         let iter = visible_cells(&buf.content, width, Position::new(0, 0));
         // Atomic frame (see `draw`): the overlay swaps in one shot, so scrolling it
@@ -780,8 +783,20 @@ impl InlineViewport {
         // returns to the inline view, whose reflow re-seats it on the prompt.
         queue!(self.backend, Hide)?;
         let drawn = self.backend.draw(iter);
+        // Seat the (hidden) cursor at the end of the overlay's last text —
+        // the closing `q/esc/… to quit` hint ([`ui::overlay_cursor_seat`])
+        // — instead of leaving it wherever the cell paint ended (the blank
+        // bottom-right corner). The hide keeps it invisible, but a terminal
+        // with a cursor-move animation still animates toward the seat, so
+        // opening Ctrl+O / Ctrl+D used to streak the animation to nowhere;
+        // now it lands on the hint. The inline `paint_frame` seats its
+        // cursor the same way, via [`ui::cursor_position`].
+        let seated = self
+            .backend
+            .set_cursor_position(Position::new(seat_x, seat_y));
         let ended = queue!(self.backend, EndSynchronizedUpdate);
         drawn?;
+        seated?;
         ended?;
         Backend::flush(&mut self.backend)
     }
