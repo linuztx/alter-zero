@@ -1380,6 +1380,46 @@ fn a_resolved_mcp_cell_is_the_bullet_less_called_line() {
 }
 
 #[test]
+fn a_resolved_mcp_cell_stays_quiet_without_the_classifier_note() {
+    // The reported noise: in auto mode every resolved MCP call's quiet
+    // `Called {server} (ctrl+o to expand)` line grew a
+    // `⎿ Allowed by auto mode classifier` row under it — doubling a cell
+    // that is deliberately one line (and that a parallel run's aggregated
+    // `Called deepwiki 2 times` line never showed anyway). Inline the note
+    // stays off the quiet cell; the Ctrl+O transcript keeps the record.
+    let mut cell = mcp_tool(ToolStatus::Ok, "done");
+    cell.approval_note = Some("Allowed by auto mode classifier".to_string());
+    let texts: Vec<String> = tool_lines(&cell, 100).iter().map(plain).collect();
+    assert_eq!(
+        texts,
+        vec![format!("{MCP_CALLED_PREFIX}deepwiki{EXPAND_HINT}")],
+        "the quiet line is the whole inline cell"
+    );
+    // The expanded transcript still closes with the note — the record that
+    // no human approved this call survives where the full story lives.
+    let full: Vec<String> = tool_full_lines(&cell, 100).iter().map(plain).collect();
+    assert_eq!(
+        full.last().map(String::as_str),
+        Some("  ⎿  Allowed by auto mode classifier"),
+        "got {full:?}"
+    );
+}
+
+#[test]
+fn a_failed_noted_mcp_cell_keeps_the_note() {
+    // A failed MCP call falls to the loud generic cell, where the note still
+    // explains why the call ran at all — only the quiet Ok line drops it.
+    let mut cell = mcp_tool(ToolStatus::Failed, "server exploded");
+    cell.approval_note = Some("Allowed by auto mode classifier".to_string());
+    let texts: Vec<String> = tool_lines(&cell, 120).iter().map(plain).collect();
+    assert_eq!(
+        texts.last().map(String::as_str),
+        Some("  ⎿  Allowed by auto mode classifier"),
+        "got {texts:?}"
+    );
+}
+
+#[test]
 fn a_failed_mcp_cell_keeps_the_loud_generic_form() {
     let lines = tool_lines(&mcp_tool(ToolStatus::Failed, "server exploded"), 120);
     // The full header — pretty-printed args, not the raw JSON — over the

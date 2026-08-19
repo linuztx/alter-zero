@@ -436,7 +436,9 @@ the call with a dim `⎿ Allowed by auto mode classifier` row appended to the
 resolved cell (the `Approval::AllowNoted` → `StreamEvent::ToolNote` →
 `ToolCall::approval_note` chain — rendered inline and in Ctrl+O, recorded in
 the rollout so a `/resume` keeps it, and on a subagent's own transcript via
-the same event), a **deny** rejects it red (`Denied by auto mode
+the same event; the one inline exception is the quiet resolved MCP cell,
+whose one-line `Called {server}` stays note-less — Ctrl+O and the rollout
+keep its record, `docs/mcp.md`), a **deny** rejects it red (`Denied by auto mode
 classifier` + `Reason: …`) through the ordinary `ToolRejected` path with a
 Claude-Code-style stop-or-adjust model text, and a classifier **failure**
 falls back to the ordinary prompt (never an allow); `master` runs

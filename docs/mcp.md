@@ -436,10 +436,12 @@ The backend follows the skills pattern:
   reads the tool named `{server} - {tool}`, the server's own description,
   and the arguments (`llm::classifier::classifier_request_prompt`'s MCP arm
   — the wire name alone would hide where the risk lives), the allowed call
-  runs with the dim `⎿ Allowed by auto mode classifier` row, a denial
-  rejects red with the classifier's reason, and a classifier *failure*
-  falls back to this prompt (`docs/permissions.md`) — and `master` runs it
-  unasked like everything else.
+  runs with the `Allowed by auto mode classifier` note on its record (shown
+  in Ctrl+O; the quiet inline `Called {server}` line stays one line — see
+  the rendering section below), a denial rejects red with the classifier's
+  reason, and a classifier *failure* falls back to this prompt
+  (`docs/permissions.md`) — and `master` runs it unasked like everything
+  else.
 
 ## Rendering — the collapsed inline cell vs the expanded transcript
 
@@ -465,10 +467,18 @@ quiet; Ctrl+O carries the full story:
   `Called {server} (ctrl+o to expand)` line — the settled thinking line's
   shape (`summary_lines`), because what is left is a fact about the turn,
   not output to read. The result text never reaches inline scrollback;
-  that is *why* the cell can collapse. A **parallel run** resolves to one
-  such line for the whole run — `Called deepwiki 2 times (ctrl+o to
-  expand)` — because two lines saying `Called deepwiki` describe the batch
-  no better than one that counts it.
+  that is *why* the cell can collapse. The auto mode classifier's
+  `⎿ Allowed by auto mode classifier` provenance row stays off it too
+  (`ui::tool::tool_cell_lines` skips the note for exactly this cell): in
+  auto mode **every** server call resolves noted, so the row doubled each
+  deliberately-one-line cell into noise — the reported `Called vercel` +
+  note pair — while a parallel run's aggregated line never carried it
+  anyway; the note still closes the expanded Ctrl+O cell and rides the
+  rollout, so the record that no human approved the call survives where
+  the full story lives (`docs/permissions.md`). A **parallel run**
+  resolves to one such line for the whole run — `Called deepwiki 2 times
+  (ctrl+o to expand)` — because two lines saying `Called deepwiki`
+  describe the batch no better than one that counts it.
 - **Failed**: the loud generic red cell (full header + error peek) — a
   failure must not whisper, and it ends the run it is part of (the ok cells
   before it commit as their own aggregated line, then the red cell).

@@ -717,7 +717,8 @@ file-search worker ► tokio mpsc ───┘                           draw ti
   carries what was really sent (`docs/permissions.md`). `approval_note` is the
   auto mode classifier's provenance (`Allowed by auto mode classifier`) — a
   dim `⎿` row the resolved cell appends, recorded so a `/resume` keeps it
-  (`docs/permissions.md`).
+  (`docs/permissions.md`; the quiet resolved MCP cell leaves the row to its
+  expanded Ctrl+O form — `docs/mcp.md`).
 - `TokenArrow { Down, Up }` + `TurnStatus { verb, done_verb, tokens, arrow,
   elapsed, thinking }` — the live status of the turn in flight (`App::status`);
   the `Duration`s are written by the boundary each frame (one value drives the

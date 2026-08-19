@@ -395,7 +395,12 @@ The note renders in the collapsed cell and the Ctrl+O transcript alike
 statuses — a running cell keeps its live look), rides the rollout as
 `ToolRecord::approval_note` (omitted when absent, so old files parse) and so
 survives a `/resume`, and a subagent's allowed call carries it onto its own
-transcript through the same `ToolNote` event (`AgentRun::apply`).
+transcript through the same `ToolNote` event (`AgentRun::apply`). One cell
+skips it inline: the **quiet resolved MCP cell** — its whole inline presence
+is the one dim `Called {server}` line, and in auto mode every server call
+resolves noted, so the row doubled each cell into noise (a parallel run's
+aggregated line never carried it anyway); the Ctrl+O transcript, the rollout
+and a failed MCP call's loud cell keep the record (`docs/mcp.md`).
 
 A **denied** call never runs: the seam returns `Approval::Reject` with
 `Denied by auto mode classifier` (+ `Reason: {…}` on a second line, the

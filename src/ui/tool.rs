@@ -372,9 +372,22 @@ pub(super) fn live_tool_lines(tool: &ToolCall, width: u16, pulse: Duration) -> V
 
 /// The shared body of [`tool_lines`] / [`live_tool_lines`] — `pulse` is `Some`
 /// only on a live frame.
+///
+/// The **quiet resolved MCP cell** skips the classifier's provenance note: its
+/// whole inline presence is the one dim `Called {server}` line (`docs/mcp.md`
+/// — a parallel run's aggregated line never carried the note either, and in
+/// auto mode every server call resolves noted, so the row doubled each cell
+/// into pure noise). The record survives where the full story lives — the
+/// Ctrl+O transcript ([`tool_full_lines`]), the rollout, a `/resume` — and a
+/// *failed* MCP call keeps the note on its loud generic cell, where it still
+/// explains why the call ran at all.
 fn tool_cell_lines(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<Line<'static>> {
     let mut lines = tool_cell_body(tool, width, pulse);
-    lines.extend(approval_note_row(tool));
+    let quiet_mcp =
+        tool.status == ToolStatus::Ok && crate::mcp::display_server(&tool.name).is_some();
+    if !quiet_mcp {
+        lines.extend(approval_note_row(tool));
+    }
     lines
 }
 
