@@ -39,12 +39,12 @@ impl App {
             }
             // Esc in a plain Ctrl+O view *begins* the preview in place when
             // idle with a target — codex's Ctrl+T → Esc path; without one
-            // (or mid-turn) it keeps closing the overlay below.
-            KeyCode::Esc
-                if !self.turn_active()
-                    && self.agent_view.is_none()
-                    && self.has_backtrack_target() =>
-            {
+            // (or mid-turn) it keeps closing the overlay below. The guard is
+            // the shared [`App::overlay_esc_backtracks`], which also decides
+            // the closing hint row's wording (`esc to edit prev` vs
+            // `q/esc/ctrl+o to quit`), so the hint and this arm agree by
+            // construction (docs/backtrack.md).
+            KeyCode::Esc if self.overlay_esc_backtracks() => {
                 self.begin_backtrack_preview();
                 Action::None
             }

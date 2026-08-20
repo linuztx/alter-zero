@@ -678,7 +678,13 @@ fn tool_view_hints_swap_while_previewing() {
     let tv_lines = transcript_lines(&app, buf.area.width);
     render_tool_view(buf.area, &mut buf, &app, &tv_lines);
     let idle: String = (0..16).map(|y| row(&buf, y, 80)).collect();
-    assert!(idle.contains("q/esc/ctrl+o to quit"), "normal pager hints");
+    // backtrack_app is idle with targets, so Esc would begin the preview —
+    // the closing hint says so instead of promising a quit
+    // (the_quit_hint_tells_the_truth_about_esc covers every state).
+    assert!(
+        idle.contains("q/ctrl+o to quit") && idle.contains("esc to edit prev"),
+        "normal pager hints: {idle:?}"
+    );
 
     app.backtrack.selected = Some(1);
     let mut buf = buffer(80, 16);
@@ -774,4 +780,59 @@ fn transcript_body(app: &App, width: u16) -> Vec<String> {
         .skip(chrome)
         .map(|l| plain(l).trim_end().to_string())
         .collect()
+}
+
+#[test]
+fn the_quit_hint_tells_the_truth_about_esc() {
+    // Esc closes the overlay ONLY when there is nothing to backtrack to, a
+    // turn is running, or an agent view is up; idle with a previous user
+    // message it *begins* the edit-previous preview instead
+    // (docs/backtrack.md). The closing hint used to promise
+    // `q/esc/ctrl+o to quit` in that state too — the reported surprise:
+    // "I tried to exit with Esc and got edit-previous-message". The row now
+    // tells the truth per state, driven by the same predicate the key
+    // handler uses (`App::overlay_esc_backtracks`).
+    let hint_row = |app: &App| {
+        let mut buf = buffer(60, 12);
+        let lines = transcript_lines(app, 60);
+        render_tool_view(buf.area, &mut buf, app, &lines);
+        row(&buf, 10, 60) // sep at 8, keys at 9, the closing hint at 10
+    };
+    // Idle with a previous user message: Esc edits, and the hint says so.
+    let app = backtrack_app();
+    assert!(app.overlay_esc_backtracks());
+    let hint = hint_row(&app);
+    assert!(
+        hint.contains("q/ctrl+o to quit") && hint.contains("esc to edit prev"),
+        "{hint:?}"
+    );
+    assert!(
+        !hint.contains("q/esc/ctrl+o"),
+        "esc is no longer promised as a quit key: {hint:?}"
+    );
+    // No previous user message: Esc quits, the classic hint stands.
+    let empty = App::new();
+    assert!(!empty.overlay_esc_backtracks());
+    assert!(
+        hint_row(&empty).contains("q/esc/ctrl+o to quit"),
+        "{:?}",
+        hint_row(&empty)
+    );
+    // Mid-turn Esc quits the overlay too (no preview over a running turn) —
+    // transcript_fixture never ends its turn, so it is exactly that state.
+    let streaming = transcript_fixture();
+    assert!(streaming.turn_active() && !streaming.overlay_esc_backtracks());
+    assert!(
+        hint_row(&streaming).contains("q/esc/ctrl+o to quit"),
+        "{:?}",
+        hint_row(&streaming)
+    );
+    // An active preview swaps in the backtrack keys (unchanged).
+    let mut preview = backtrack_app();
+    preview.backtrack.selected = Some(0);
+    assert!(
+        hint_row(&preview).contains("enter to edit message"),
+        "{:?}",
+        hint_row(&preview)
+    );
 }

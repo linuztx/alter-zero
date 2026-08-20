@@ -59,6 +59,19 @@ impl App {
             .any(|item| matches!(item, HistoryItem::Message(m) if m.role == Role::User))
     }
 
+    /// Would Esc in the Ctrl+O transcript overlay **begin** the backtrack
+    /// preview instead of closing the overlay? True exactly when idle (no
+    /// running turn), outside an agent session view, with a previous user
+    /// message to edit — codex's Ctrl+T → Esc path. The one predicate the
+    /// overlay's Esc key arm (`on_key_tool_view`) and its closing hint row
+    /// (`ui::render_tool_view` — `q/ctrl+o to quit   esc to edit prev` vs
+    /// `q/esc/ctrl+o to quit`) share, so what the hint promises and what the
+    /// key does can never drift. See `docs/backtrack.md`.
+    #[must_use]
+    pub fn overlay_esc_backtracks(&self) -> bool {
+        !self.turn_active() && self.agent_view.is_none() && self.has_backtrack_target()
+    }
+
     /// Start previewing with the newest user message highlighted, requesting
     /// a scroll to bring it into view. No-op with no target (the key arms
     /// guard, but a stale call must not underflow).

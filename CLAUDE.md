@@ -1190,7 +1190,9 @@ of bug:
    vi-style `~` filler past its end, a `─` separator carrying the scroll
    percentage right-aligned, and two dim key-hint rows (↑/↓, pgup/pgdn,
    home/end jump; q/esc/ctrl+o close — though Esc when idle with a previous
-   user message instead *begins the backtrack preview* in place, and while one
+   user message instead *begins the backtrack preview* in place, the closing
+   hint row saying so honestly (`q/ctrl+o to quit   esc to edit prev`, the
+   key arm and the row sharing `App::overlay_esc_backtracks`), and while one
    highlights a message the second hint row swaps to the backtrack keys;
    `docs/backtrack.md`) — showing the **full conversation
    transcript**: `ui::transcript_lines`

@@ -2373,6 +2373,12 @@ if ! printf '%s' "$overlay" | grep -qF "T R A N S C R I P T"; then
 	echo "FAIL: Ctrl+O did not open the tool-output view" >&2
 	status=1
 fi
+# Idle with a previous user message, Esc begins the backtrack preview — the
+# closing hint must say so instead of promising a quit (docs/backtrack.md).
+if ! printf '%s' "$overlay" | grep -qF "esc to edit prev"; then
+	echo "FAIL: the overlay's closing hint does not tell the truth about Esc (expected 'esc to edit prev' while idle with a previous user message)" >&2
+	status=1
+fi
 if ! printf '%s' "$overlay" | grep -qF "$USER_MSG"; then
 	echo "FAIL: tool-output view did not include the user/AI conversation" >&2
 	status=1

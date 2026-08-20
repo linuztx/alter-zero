@@ -518,6 +518,13 @@ pub(super) const TOOL_VIEW_HINT_KEYS: &str =
 /// Second key-hint row: every key that closes the overlay.
 pub(super) const TOOL_VIEW_HINT_QUIT: &str = " q/esc/ctrl+o to quit";
 
+/// Second key-hint row when idle Esc would instead **begin** the backtrack
+/// preview (`App::overlay_esc_backtracks` — `docs/backtrack.md`): Esc is not
+/// a quit key in that state, and promising it was ("I pressed Esc to exit
+/// and got edit-previous-message") is the reported surprise this hint fixes.
+/// Same three-space entry separator as [`TOOL_VIEW_HINT_KEYS`].
+pub(super) const TOOL_VIEW_HINT_QUIT_EDIT: &str = " q/ctrl+o to quit   esc to edit prev";
+
 /// Second key-hint row while a backtrack preview highlights a user message —
 /// codex's highlighted-pager footer (`docs/backtrack.md`); it replaces
 /// [`TOOL_VIEW_HINT_QUIT`], whose Esc meaning the preview takes over.

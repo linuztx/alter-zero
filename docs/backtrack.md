@@ -138,6 +138,15 @@ re-attach.
 - **Overlay hints** — while previewing, the overlay's second key-hint row
   swaps to the backtrack hints (`esc/← to edit prev · → to edit next ·
   enter to edit message · q to cancel`), codex's highlighted-pager footer.
+  Before a preview the same row already tells the truth about Esc: whenever
+  idle Esc would *begin* the preview it reads `q/ctrl+o to quit   esc to
+  edit prev` (`TOOL_VIEW_HINT_QUIT_EDIT`), and only when Esc genuinely
+  closes the overlay — no target, a running turn, an agent session view —
+  does the classic `q/esc/ctrl+o to quit` stand. Both the hint and the key
+  arm guard on the one shared predicate `App::overlay_esc_backtracks`, so
+  they can never disagree (the old always-`q/esc/ctrl+o` row promised a
+  quit Esc didn't do — the reported "I pressed Esc to exit and got
+  edit-previous-message").
 - **Shortcuts band** — the `esc` entry is now three-way context-sensitive:
   `esc to interrupt` while a turn runs (as before), `esc esc to edit
   previous` when idle with a target, `esc to quit` when idle without one.

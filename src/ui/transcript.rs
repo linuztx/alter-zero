@@ -640,8 +640,16 @@ pub fn render_tool_view(area: Rect, buf: &mut Buffer, app: &App, lines: &[Line<'
     // While a backtrack preview highlights a message, the close-hint row
     // shows the preview's keys instead (codex's highlighted-pager footer —
     // docs/backtrack.md); the scroll keys above keep working either way.
+    // Outside a preview the row tells the truth about Esc: when it would
+    // *begin* the preview (idle with a previous user message — the shared
+    // `App::overlay_esc_backtracks`, the very predicate the key arm guards
+    // on) the hint says `esc to edit prev` and drops Esc from the quit keys;
+    // only when Esc genuinely closes the overlay does the classic
+    // `q/esc/ctrl+o to quit` stand.
     let closing = if app.backtrack.selected.is_some() {
         TOOL_VIEW_HINT_BACKTRACK
+    } else if app.overlay_esc_backtracks() {
+        TOOL_VIEW_HINT_QUIT_EDIT
     } else {
         TOOL_VIEW_HINT_QUIT
     };

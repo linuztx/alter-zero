@@ -82,3 +82,26 @@ fn interrupt_undo_stops_at_a_backtrack_rewind_boundary() {
     assert_eq!(roles(&app), vec![Role::User]);
     assert_eq!(message_at(&app, 0).text, "first");
 }
+
+#[test]
+fn overlay_esc_backtracks_exactly_when_esc_would_not_quit() {
+    // The one predicate the Ctrl+O key handler's Esc arm AND the overlay's
+    // closing hint row share (`ui::render_tool_view`), so what the hint
+    // promises and what the key does can never drift: Esc begins the
+    // edit-previous preview only when idle, outside an agent session view,
+    // with a previous user message to edit — otherwise it keeps closing the
+    // overlay (and the hint keeps listing it as a quit key).
+    let mut app = App::new();
+    assert!(!app.overlay_esc_backtracks(), "nothing to edit yet");
+    app.record_user_message("hi");
+    app.begin_stream();
+    assert!(!app.overlay_esc_backtracks(), "a running turn wins");
+    app.finish_stream();
+    app.end_turn(1);
+    assert!(app.overlay_esc_backtracks(), "idle with a target");
+    app.agent_view = Some("a1".to_string());
+    assert!(
+        !app.overlay_esc_backtracks(),
+        "an agent session view has no backtrack"
+    );
+}
