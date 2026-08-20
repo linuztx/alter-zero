@@ -570,9 +570,12 @@ pub fn mention_token(text: &str, cursor: usize) -> Option<MentionToken> {
         .take_while(|&(_, c)| is_mention_name_char(c))
         .last()
         .map_or(cursor, |(i, _)| i);
-    // …the character just before the run must be the `$`…
-    let prefix_start = run_start.checked_sub(SKILL_MENTION_PREFIX.len_utf8())?;
-    if !text[prefix_start..].starts_with(SKILL_MENTION_PREFIX) {
+    // …the character just before the run must be the `$` — found by char
+    // boundary, never byte arithmetic: with a multi-byte char there (typing
+    // `—` puts the cursor right after one), `run_start - 1` lands inside it
+    // and the slice panics.
+    let (prefix_start, prefix) = text[..run_start].char_indices().next_back()?;
+    if prefix != SKILL_MENTION_PREFIX {
         return None;
     }
     // …and the `$` itself must open the word (start of text or after
@@ -1360,6 +1363,25 @@ mod tests {
         // Hyphens and underscores are name characters (skill names use them).
         let t = mention_token("$skill-crea", 11).expect("token");
         assert_eq!(t.query, "skill-crea");
+    }
+
+    #[test]
+    fn mention_token_survives_a_multibyte_char_before_the_cursor() {
+        // The scanner runs on every composer keystroke, cursor right after
+        // the char just typed. With a multi-byte char there (an em-dash, an
+        // accent, CJK), `run_start - 1` landed INSIDE it and the prefix slice
+        // panicked — typing any non-ASCII character crashed the TUI.
+        assert!(mention_token("links.md —", 12).is_none()); // cursor after '—'
+        assert!(mention_token("café", 5).is_none()); // cursor after 'é'
+        assert!(mention_token("日本語", 9).is_none()); // cursor after '語'
+        // The mention itself still parses right after a multi-byte char's
+        // word boundary… (`→` is 3 bytes: the `$` sits at byte 4)
+        let t = mention_token("→ $ski", 8).expect("token");
+        assert_eq!(t.query, "ski");
+        assert_eq!(t.range, 4..8);
+        // …and a `$` glued to a multi-byte char stays a non-mention (the
+        // word-boundary rule), never a panic.
+        assert!(mention_token("é$ski", 6).is_none());
     }
 
     #[test]
