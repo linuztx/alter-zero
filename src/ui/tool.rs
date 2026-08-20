@@ -392,7 +392,7 @@ fn tool_cell_lines(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<
 }
 
 /// A resolved `AskUserQuestion` cell (`docs/ask.md`): the output's first line
-/// **is** the headline (`User answered Claude's questions:` /
+/// **is** the headline (`User answered Alter Zero's questions:` /
 /// `User declined…` / `User wants to chat…`), promoted to the `●` header —
 /// green or red by outcome — with the `· Q → A` rows in the `⎿` gutter.
 /// `None` while the call runs (the generic header stands) or for any other

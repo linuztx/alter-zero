@@ -39,7 +39,9 @@ park until the user decides.
   - `AskAnswer`/`AskDecision` — what the user produced: `Submitted(answers)`,
     `Declined`, or `Chat` (the "Chat about this" row);
   - the two texts of every resolution: the **cell display**
-    (`answered_display` — `User answered Claude's questions:` over `· Q → A`
+    (`answered_display` — `User answered Alter Zero's questions:`, the
+    headline naming *this* agent through the single `alter_zero::APP_NAME`,
+    over `· Q → A`
     rows; `declined_display`/`chat_display` — the headline over
     `· Q (opt / opt / …)` rows) and the **model-facing result**
     (`answered_result` — the schema's `{"answers": {question: labels}}` JSON
@@ -106,10 +108,10 @@ park until the user decides.
   the Other/notes text fields (`ask_cursor`, sharing the builder's geometry).
 
 - **The resolved cell** — `ui::tool` special-cases the ask tool: the
-  first output line ("User answered Claude's questions:") becomes the `●`
+  first output line ("User answered Alter Zero's questions:") becomes the `●`
   header (green for a submission, red for a decline/chat) and the `· Q → A`
-  rows render in the `⎿` gutter, wrapped — the committed transcript from the
-  reference. While the call runs the generic `● AskUserQuestion(…)` header
+  rows render in the `⎿` gutter, wrapped — the reference's committed
+  transcript, in this agent's name. While the call runs the generic `● AskUserQuestion(…)` header
   stands (visible only in Ctrl+O — the modal covers the live region).
 
 - **The loop** — `Session.ask: AskGate`, always attached (bootstrap →

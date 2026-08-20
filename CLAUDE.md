@@ -1621,6 +1621,13 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   message. `render_live` and `cursor_position` share the `input_box` helper, which
   reserves the band and footer so the cursor stays put when they open; `tool_lines`
   and `tool_view_lines` share `tool_header`). Retheme or re-size there, not inline.
+- **The agent's own name is one constant** — `alter_zero::APP_NAME`. Every
+  string in which the app speaks its name reads it: the startup banner's title
+  (`ui::theme::HEADER_NAME`) and the `AskUserQuestion` cell's headline
+  (`ask::ANSWERED_HEADLINE`, pinned to it by a test). Wording ported from a
+  reference tool arrives carrying **that** tool's product name — `User answered
+  Claude's questions:` was exactly that — so when you port a user-facing
+  sentence, re-read it for whose name it says.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly. Measuring right
   is only half of it: a **wide glyph occupies one `Buffer` cell plus a blank

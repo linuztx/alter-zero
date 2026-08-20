@@ -145,8 +145,12 @@ pub enum AskDecision {
 }
 
 /// The committed cell's headline for a submission — the first output line,
-/// which the renderer promotes to the `●` header (`docs/ask.md`).
-pub const ANSWERED_HEADLINE: &str = "User answered Claude's questions:";
+/// which the renderer promotes to the `●` header (`docs/ask.md`). It names
+/// **this** agent ([`crate::APP_NAME`], pinned by the test below): the
+/// reference tool's wording was ported with its own product name in it, so
+/// the cell used to credit a different agent for the questions the user had
+/// just answered.
+pub const ANSWERED_HEADLINE: &str = "User answered Alter Zero's questions:";
 
 /// The headline for a decline.
 pub const DECLINED_HEADLINE: &str = "User declined to answer questions";
@@ -438,6 +442,20 @@ mod tests {
     }
 
     #[test]
+    fn the_answered_headline_speaks_the_products_own_name() {
+        assert_eq!(
+            ANSWERED_HEADLINE,
+            format!("User answered {}'s questions:", crate::APP_NAME),
+            "the cell speaks for THIS agent: the reference tool's own product \
+             name must not survive the port"
+        );
+        assert!(
+            !ANSWERED_HEADLINE.contains("Claude"),
+            "got {ANSWERED_HEADLINE}"
+        );
+    }
+
+    #[test]
     fn the_answered_cell_lists_each_question_and_its_labels() {
         let display = answered_display(&[
             answer("What's your favorite way to drink coffee?", &["Black"]),
@@ -448,7 +466,7 @@ mod tests {
         ]);
         assert_eq!(
             display,
-            "User answered Claude's questions:\n\
+            "User answered Alter Zero's questions:\n\
              · What's your favorite way to drink coffee? → Black\n\
              · Which of these tool features would you like to see demoed next? (pick any \
              number) → Preview panel, Custom 'Other' input"

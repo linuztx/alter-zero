@@ -88,6 +88,15 @@
 //!   region), split one module per area with every styling constant in
 //!   `ui::theme` (see `docs/module-layout.md`).
 
+/// The product's own name — what the agent is called wherever the app speaks
+/// about itself to the user: the startup banner's title
+/// (`ui::theme::HEADER_NAME`) and the `AskUserQuestion` cell's headline
+/// (`ask::ANSWERED_HEADLINE`, `docs/ask.md`). One place, because a name that
+/// lives in several literals is a name that ends up disagreeing with itself —
+/// the ported reference's `User answered Claude's questions:` being exactly
+/// that bug.
+pub const APP_NAME: &str = "Alter Zero";
+
 pub mod agents;
 pub mod app;
 pub mod ask;

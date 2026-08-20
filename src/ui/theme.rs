@@ -1399,8 +1399,10 @@ pub(super) const SHELL_BULLET: &str = "! ";
 
 /// The product name — bold in the banner's title row, gradient-washed in the
 /// narrow one-line badge. Also the smoke suite's tier-independent banner
-/// marker (`scripts/smoke.sh` Phase 45), so every tier must carry it.
-pub(super) const HEADER_NAME: &str = "Alter Zero";
+/// marker (`scripts/smoke.sh` Phase 45), so every tier must carry it. Read
+/// from [`crate::APP_NAME`], the one place the agent's name lives, so the
+/// banner and every sentence the app speaks its name in can't drift apart.
+pub(super) const HEADER_NAME: &str = crate::APP_NAME;
 
 /// The command hint beside the mascot — bare `/token`s in the accent colour,
 /// three-space separated. Deliberately prose-free so it can't collide with

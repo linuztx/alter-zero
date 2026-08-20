@@ -81,8 +81,8 @@ pub struct ToolOutcome {
     pub tasks: Option<crate::tasks::TaskStore>,
     /// `Some(text)` when the **model-facing result differs from the displayed
     /// cell text** — the `AskUserQuestion` tool's split (`docs/ask.md`):
-    /// `output` is then the committed cell's text (`User answered Claude's
-    /// questions:` over the `· Q → A` rows) while this is what the tool call
+    /// `output` is then the committed cell's text (`User answered Alter
+    /// Zero's questions:` over the `· Q → A` rows) while this is what the tool call
     /// returns to the model (the answers JSON, or the declined/chat
     /// stop-and-wait instruction). The agent loop surfaces the pair as
     /// `StreamEvent::ToolAnswered` (ok) / `ToolRejected` (not ok) instead of

@@ -132,7 +132,7 @@ pub enum StreamEvent {
     /// **submitted answers** (`docs/ask.md`) — sent **in place of**
     /// [`StreamEvent::ToolEnd`], the green twin of
     /// [`StreamEvent::ToolRejected`]: `display` is the committed cell's text
-    /// (`User answered Claude's questions:` over the `· Q → A` rows) while
+    /// (`User answered Alter Zero's questions:` over the `· Q → A` rows) while
     /// `result` is the model-facing answers JSON the tool call returns. The
     /// loop keeps both on the recorded call
     /// ([`crate::app::App::answer_tool`]) so the derived context replays what

@@ -1410,7 +1410,7 @@ mod tests {
             (
                 true,
                 StreamEvent::ToolAnswered {
-                    display: "User answered Claude's questions:\n· Q → A".to_string(),
+                    display: "User answered Alter Zero's questions:\n· Q → A".to_string(),
                     result: r#"{"answers":{"Q":"A"}}"#.to_string(),
                     truncated: false,
                 },
@@ -1418,7 +1418,7 @@ mod tests {
             (
                 false,
                 StreamEvent::ToolRejected {
-                    display: "User answered Claude's questions:\n· Q → A".to_string(),
+                    display: "User answered Alter Zero's questions:\n· Q → A".to_string(),
                     result: r#"{"answers":{"Q":"A"}}"#.to_string(),
                     truncated: false,
                 },
@@ -1450,7 +1450,7 @@ mod tests {
                 },
                 |_c, _sink| {
                     let outcome = ToolOutcome {
-                        output: "User answered Claude's questions:\n· Q → A".to_string(),
+                        output: "User answered Alter Zero's questions:\n· Q → A".to_string(),
                         ok,
                         truncated: false,
                         background: None,

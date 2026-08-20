@@ -36,14 +36,14 @@ fn tool_lines_header_omits_the_parens_when_args_are_empty() {
 
 #[test]
 fn an_answered_ask_cell_promotes_the_headline_to_the_header() {
-    // The reference transcript: `● User answered Claude's questions:` over the
+    // The reference transcript: `● User answered Alter Zero's questions:` over the
     // `⎿ · Q → A` rows — the tool name never shows on a resolved cell.
-    let output = "User answered Claude's questions:\n\
+    let output = "User answered Alter Zero's questions:\n\
                   · What's your favorite way to drink coffee? → Black\n\
                   · Pick a snack → Chips, Fruit";
     let cell = tool("AskUserQuestion", "ignored", ToolStatus::Ok, output);
     let lines = tool_lines(&cell, 100);
-    assert_eq!(plain(&lines[0]), "● User answered Claude's questions:");
+    assert_eq!(plain(&lines[0]), "● User answered Alter Zero's questions:");
     let bullet = &lines[0].spans[0];
     assert_eq!(
         bullet.style.fg,
@@ -64,7 +64,7 @@ fn an_answered_ask_cell_promotes_the_headline_to_the_header() {
     );
     // The Ctrl+O transcript renders the same header with the rows uncapped.
     let full = tool_full_lines(&cell, 100);
-    assert_eq!(plain(&full[0]), "● User answered Claude's questions:");
+    assert_eq!(plain(&full[0]), "● User answered Alter Zero's questions:");
     assert!(plain(&full[2]).contains("· Pick a snack → Chips, Fruit"));
 }
 

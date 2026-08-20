@@ -165,7 +165,7 @@ impl App {
 
     /// Resolve the in-flight call as **answered by the user** — the
     /// `AskUserQuestion` submission (`docs/ask.md`): green, with the
-    /// `User answered Claude's questions:` cell text on `display` and the
+    /// `User answered Alter Zero's questions:` cell text on `display` and the
     /// model-facing answers JSON kept beside it as
     /// [`ToolCall::context_output`], [`reject_tool`](Self::reject_tool)'s
     /// green twin. The boundary's handler for

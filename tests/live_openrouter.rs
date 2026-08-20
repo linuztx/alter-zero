@@ -2060,7 +2060,7 @@ fn live_ask_user_question_round_trip() {
     assert!(asked_questions >= 1, "the model used the ask tool");
     let (display, result) = answered.expect("the submission resolved the call");
     println!("display:\n{display}\nresult: {result}\nreply: {reply}");
-    assert!(display.starts_with("User answered Claude's questions:"));
+    assert!(display.starts_with("User answered Alter Zero's questions:"));
     assert!(display.contains("→ Casual"));
     let value: serde_json::Value = serde_json::from_str(&result).expect("the answers JSON");
     assert!(value["answers"].is_object());
