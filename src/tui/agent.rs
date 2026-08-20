@@ -31,7 +31,7 @@ use std::time::Instant;
 use ratatui::text::Line;
 
 use alter_zero::agents::{AGENT_LINGER, AgentEvent};
-use alter_zero::app::{Role, ToastKind, View};
+use alter_zero::app::{AgentStop, Role, ToastKind, View};
 use alter_zero::stream::StreamEvent;
 use alter_zero::ui;
 
@@ -96,10 +96,15 @@ impl Session<'_> {
             self.registry.post_notice(notice.context_text(), true);
             self.app.defer_agent_notice(notice);
         }
-        if self.app.agent(id).is_some_and(|run| run.status.is_final()) {
+        if let Some(linger) = self
+            .app
+            .agent(id)
+            .filter(|run| run.status.is_final())
+            .map(|run| run.linger())
+        {
             self.agent_clocks.remove(id);
             self.agent_expiry
-                .insert(id.to_string(), Instant::now() + AGENT_LINGER);
+                .insert(id.to_string(), Instant::now() + linger);
         }
     }
 
@@ -169,35 +174,67 @@ impl Session<'_> {
     /// A foreground group's members are settled — arm their linger sweeps (a
     /// background group's keep running).
     pub(crate) fn settle_group_members(&mut self, ids: Vec<String>) {
+        let now = Instant::now();
         for id in ids {
             self.agent_clocks.remove(&id);
-            if self.app.agent(&id).is_some_and(|run| run.status.is_final()) {
-                self.agent_expiry.insert(id, Instant::now() + AGENT_LINGER);
+            // `or_insert`: a member the user already stopped is counting down
+            // its own (longer) linger — the group's resolution must not
+            // restart it, let alone shorten it to the natural one.
+            if let Some(linger) = self
+                .app
+                .agent(&id)
+                .filter(|run| run.status.is_final())
+                .map(|run| run.linger())
+            {
+                self.agent_expiry.entry(id).or_insert(now + linger);
             }
         }
     }
 
-    /// `x` on a roster row: cancel the subagent thread and settle the entry as
-    /// interrupted — the row leaves the footer at once. A background agent's
-    /// stopped notice settles like a completion (a foreground one resolves with
-    /// its group when the backend's wait loop sees the kill), and with nothing in
-    /// flight it starts the follow-up turn.
-    pub(crate) fn stop_agent(&mut self, id: &str) {
-        let _ = self.agent_registry.kill(id);
-        self.agent_clocks.remove(id);
-        self.agent_expiry.remove(id);
-        if let Some(notice) = self.app.stop_agent(id).flatten() {
-            self.registry.post_notice(notice.context_text(), true);
-            self.app.defer_agent_notice(notice);
-            // The stopped background agent is done for good — drop it from the
-            // roster now (the user's `x` removes the row right away).
-            self.app.remove_agent(id);
-            self.agent_registry.remove(id);
-            if !self.app.turn_active() {
-                self.dispatch_after_turn();
+    /// `x` on a roster row — the stop, then the clear (`docs/agent-tool.md`).
+    ///
+    /// The **first** `x` cancels the subagent thread and settles the entry as
+    /// interrupted; the row stays, red, for `AGENT_STOPPED_LINGER` (the
+    /// entry's own [`linger`](alter_zero::agents::AgentRun::linger)) so the
+    /// user sees what they stopped. A background agent's stopped notice
+    /// settles like a completion (a foreground one resolves with its group
+    /// when the backend's wait loop sees the kill), and with nothing in flight
+    /// it starts the follow-up turn. The **second** `x` clears that row: the
+    /// app hides it and the sweep collects the entry at the next tick.
+    pub(crate) fn stop_agent(&mut self, id: &str) -> std::io::Result<()> {
+        let viewing = self.app.agent_view.as_deref() == Some(id);
+        match self.app.stop_agent(id) {
+            Some(AgentStop::Stopped(notice)) => {
+                let _ = self.agent_registry.kill(id);
+                self.agent_clocks.remove(id);
+                let linger = self.app.agent(id).map_or(AGENT_LINGER, |run| run.linger());
+                self.agent_expiry
+                    .insert(id.to_string(), Instant::now() + linger);
+                if let Some(notice) = notice {
+                    self.registry.post_notice(notice.context_text(), true);
+                    self.app.defer_agent_notice(notice);
+                    if !self.app.turn_active() {
+                        self.dispatch_after_turn();
+                    }
+                }
             }
+            // Cleared: the row is already off the roster — expire the entry
+            // now so the sweep (which also unregisters it) collects it on the
+            // next tick, deferring only while its session view is open.
+            Some(AgentStop::Cleared) => {
+                self.agent_clocks.remove(id);
+                self.agent_expiry.insert(id.to_string(), Instant::now());
+                // The cleared agent was the session on screen — `App` closed
+                // the view with the row, so take the screen back to the main
+                // conversation (the Esc-from-the-view repaint).
+                if viewing {
+                    self.leave_agent_view()?;
+                }
+            }
+            None => {}
         }
         self.frame.schedule_frame();
+        Ok(())
     }
 
     /// Enter on a roster row: swap the screen to that agent's own inline session
@@ -247,15 +284,15 @@ impl Session<'_> {
             self.app.set_agent_runtime(id, started.elapsed());
         }
         let now = Instant::now();
-        let settled: Vec<String> = self
+        let settled: Vec<(String, std::time::Duration)> = self
             .app
             .agents()
             .iter()
             .filter(|run| run.status.is_final())
-            .map(|run| run.id.clone())
+            .map(|run| (run.id.clone(), run.linger()))
             .collect();
-        for id in settled {
-            self.agent_expiry.entry(id).or_insert(now + AGENT_LINGER);
+        for (id, linger) in settled {
+            self.agent_expiry.entry(id).or_insert(now + linger);
         }
         // Sweep finished agents whose linger expired — deferred while the user is
         // inside that agent's session view (the deadline pushes forward, so
@@ -272,7 +309,7 @@ impl Session<'_> {
                 return false;
             }
             if app.agent_view.as_deref() == Some(id.as_str()) {
-                *deadline = now + AGENT_LINGER;
+                *deadline = now + app.agent(id).map_or(AGENT_LINGER, |run| run.linger());
                 return true;
             }
             if now >= *deadline {

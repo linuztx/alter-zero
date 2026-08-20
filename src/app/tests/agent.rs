@@ -222,8 +222,12 @@ fn enter_on_main_from_an_agent_view_returns_to_the_main_session() {
     app.begin_stream();
     app.start_agent_group(false, &agent_specs(false));
     app.open_agent_view("a1");
-    // ↓ inside the view opens the roster selection on the `● main` row.
+    // ↓ inside the view opens the roster selection on the **viewed** agent's
+    // row (entering it was a pick — `docs/agent-tool.md`); ↑ steps up to
+    // `● main`, whose Enter leaves the view.
     app.on_key(key(KeyCode::Down));
+    assert_eq!(app.agent_selection(), Some(1));
+    app.on_key(key(KeyCode::Up));
     assert_eq!(app.agent_selection(), Some(0));
     assert_eq!(app.on_key(key(KeyCode::Enter)), Action::LeaveAgentView);
     assert!(app.agent_view.is_none());
@@ -231,7 +235,66 @@ fn enter_on_main_from_an_agent_view_returns_to_the_main_session() {
 }
 
 #[test]
-fn stop_agent_hides_the_row_and_a_background_stop_owes_a_notice() {
+fn down_reopens_the_roster_on_the_last_picked_agent() {
+    // The roster remembers where the user was: ↓ walks onto an agent, Enter
+    // opens its session — and the next ↓ comes back to *that* row rather
+    // than restarting at `● main` (the user-reported flow: stepping between
+    // several agents shouldn't cost two keys every time).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.agent_selection(), Some(0), "the first ↓ opens on main");
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(
+        app.agent_selection(),
+        Some(2),
+        "…and walks to the 2nd agent"
+    );
+    assert_eq!(
+        app.on_key(key(KeyCode::Enter)),
+        Action::ViewAgent("a2".to_string())
+    );
+    assert_eq!(app.agent_selection(), None, "Enter hands back the keys");
+    // The remembered row is where ↓ resumes.
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.agent_selection(), Some(2));
+    // Esc leaves it remembered too — the selection is a cursor, not a mode.
+    app.on_key(key(KeyCode::Esc));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.agent_selection(), Some(2));
+    // Walking back onto `● main` forgets it: ↓ opens on main again.
+    app.on_key(key(KeyCode::Up));
+    app.on_key(key(KeyCode::Up));
+    assert_eq!(app.agent_selection(), Some(0));
+    app.on_key(key(KeyCode::Esc));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.agent_selection(), Some(0));
+}
+
+#[test]
+fn the_remembered_row_falls_back_to_main_when_its_agent_is_gone() {
+    // A remembered agent that has been swept off the roster can't be
+    // selected — ↓ falls back to the `● main` row instead of a stale index.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &agent_specs(false));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.agent_selection(), Some(2));
+    app.on_key(key(KeyCode::Esc));
+    app.remove_agent("a2");
+    app.on_key(key(KeyCode::Down));
+    assert_eq!(app.agent_selection(), Some(0));
+}
+
+#[test]
+fn x_interrupts_the_agent_and_a_second_x_clears_the_lingering_row() {
+    // `x` on a running agent stops it — and the row **stays**, red, for the
+    // stopped linger (30s) so the user sees what they stopped; a second `x`
+    // is the clear that removes it. See `docs/agent-tool.md`.
     let mut app = App::new();
     app.begin_stream();
     app.start_agent_group(true, &agent_specs(true));
@@ -250,13 +313,66 @@ fn stop_agent_hides_the_row_and_a_background_stop_owes_a_notice() {
             },
         ],
     );
-    let notice = app
-        .stop_agent("a1")
-        .expect("a live agent was stopped")
-        .expect("a background stop owes a notice");
+    let Some(AgentStop::Stopped(notice)) = app.stop_agent("a1") else {
+        panic!("a live agent was stopped");
+    };
+    let notice = notice.expect("a background stop owes a notice");
     assert_eq!(notice.status, crate::agents::AgentStatus::Interrupted);
     assert!(notice.headline().contains("was stopped by user"));
-    assert_eq!(app.visible_agents().len(), 1, "the row left at once");
+    let run = app.agent("a1").expect("the stopped row stays listed");
+    assert_eq!(run.status, crate::agents::AgentStatus::Interrupted);
+    assert_eq!(
+        run.linger(),
+        crate::agents::AGENT_STOPPED_LINGER,
+        "a user stop lingers longer than a natural finish"
+    );
+    assert_eq!(app.visible_agents().len(), 2, "the red row stays");
+    // The second `x` clears it.
+    assert_eq!(app.stop_agent("a1"), Some(AgentStop::Cleared));
+    assert_eq!(app.visible_agents().len(), 1, "the cleared row left");
+    assert_eq!(app.stop_agent("a1"), None, "nothing left to stop or clear");
+}
+
+#[test]
+fn clearing_the_viewed_agent_closes_its_session_view() {
+    // The session view renders *from* the roster entry, so a clear that drops
+    // the entry takes the screen with it (the boundary repaints the main
+    // conversation) — leaving the agent's transcript up over a roster that no
+    // longer lists it, and marks no session as in view, is the broken middle
+    // state. The stop before it changes nothing: that row is still there.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(true, &agent_specs(true));
+    app.open_agent_view("a1");
+    assert!(matches!(app.stop_agent("a1"), Some(AgentStop::Stopped(_))));
+    assert_eq!(
+        app.agent_view.as_deref(),
+        Some("a1"),
+        "the stop leaves the view open on the red row"
+    );
+    assert_eq!(app.stop_agent("a1"), Some(AgentStop::Cleared));
+    assert!(app.agent_view.is_none(), "the clear closed the view");
+    assert_eq!(app.visible_agents().len(), 1);
+}
+
+#[test]
+fn x_clears_a_naturally_finished_row_too() {
+    // A done agent lingers green; `x` on it is the same clear (the hint
+    // reads `x to clear` for every settled row).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(true, &agent_specs(true));
+    app.apply_agent_event("a1", &StreamEvent::Chunk("done".into()));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    let run = app.agent("a1").expect("listed");
+    assert!(run.status.is_final());
+    assert_eq!(
+        run.linger(),
+        crate::agents::AGENT_LINGER,
+        "a natural finish keeps the short linger"
+    );
+    assert_eq!(app.stop_agent("a1"), Some(AgentStop::Cleared));
+    assert_eq!(app.visible_agents().len(), 1);
 }
 
 #[test]

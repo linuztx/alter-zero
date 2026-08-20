@@ -507,8 +507,10 @@ unit-tested must be unit-tested.
   nothing (`docs/cli.md`).
 - **Subagents** (`docs/agent-tool.md`): the model's `agent` tool launches
   autonomous side-agents — a live tree cell while a foreground group runs, a
-  persistent `● main` + `◯ …` roster under the footer (↓ selects, Enter opens
-  an agent's own inline session view the user can chat in, `x` stops),
+  persistent `● main` + `◯ …` roster under the footer (↓ selects — resuming on
+  the last picked row — Enter opens an agent's own inline session view the
+  user can chat in, `x` stops it and a second `x` clears the red row it
+  leaves behind),
   background completions noticing + auto-following-up like background shells,
   and per-agent `● Agent(…)` expansions in the Ctrl+O transcript.
 - **Task tools** (`docs/task-tools.md`): Claude Code's structured task list —

@@ -26,8 +26,15 @@ pub const GENERAL_PURPOSE: &str = "general-purpose";
 
 /// How long a naturally finished agent lingers in the footer roster with its
 /// coloured `◯` before the boundary sweeps it (`main.rs`, the toast-deadline
-/// pattern). A user `x` removes the entry immediately instead.
+/// pattern).
 pub const AGENT_LINGER: Duration = Duration::from_secs(5);
+
+/// How long an agent the user **stopped** (`x` on its roster row) lingers
+/// with its red `◯` before the same sweep. Far longer than a natural finish:
+/// a row that vanishes on the keypress leaves no evidence of what was
+/// stopped, so the stopped agent stays put — and the row's `x` becomes the
+/// *clear* that removes it at once (`docs/agent-tool.md`).
+pub const AGENT_STOPPED_LINGER: Duration = Duration::from_secs(30);
 
 /// A subagent's lifecycle — the tree row / footer `◯` colour and the
 /// `⎿ Done` / `⎿ Interrupted` footers key off it.
@@ -110,9 +117,14 @@ pub struct AgentRun {
     pub result: Option<String>,
     /// The error message when it failed.
     pub error: Option<String>,
-    /// Set by the user's `x` — the footer roster hides the row at once
-    /// (while the entry's data stays for its group's resolution).
+    /// Set by the user's **second** `x` (the clear) — the footer roster drops
+    /// the row at once, while the entry's data stays for its group's
+    /// resolution until the boundary's sweep collects it.
     pub hidden: bool,
+    /// Set by the user's **first** `x` (the stop) — it buys the row the
+    /// longer [`AGENT_STOPPED_LINGER`] so the red `◯` is there to be read
+    /// (and cleared) instead of vanishing under the keypress.
+    pub stopped_by_user: bool,
     /// The **sticky** activity line — `{Name}: {detail}` from the newest
     /// [`StreamEvent::ToolStart`] (a `bash` call's model-supplied
     /// `description`, else its args summary). Kept until the *next* tool
@@ -155,6 +167,7 @@ impl AgentRun {
             result: None,
             error: None,
             hidden: false,
+            stopped_by_user: false,
             last_activity: None,
         }
     }
@@ -408,6 +421,19 @@ impl AgentRun {
         true
     }
 
+    /// How long this entry lingers on the roster once it settles, before the
+    /// boundary's sweep drops it. A user stop earns the long
+    /// [`AGENT_STOPPED_LINGER`] (the red row is there to be read and
+    /// cleared); everything else keeps the brief [`AGENT_LINGER`].
+    #[must_use]
+    pub const fn linger(&self) -> Duration {
+        if self.stopped_by_user {
+            AGENT_STOPPED_LINGER
+        } else {
+            AGENT_LINGER
+        }
+    }
+
     /// A user chat message sent into the agent's session — recorded into its
     /// transcript (the registry delivers the same text to the running loop).
     pub fn push_user_message(&mut self, text: &str) {
@@ -424,6 +450,7 @@ impl AgentRun {
     /// agent so new events fold in again.
     pub fn reopen(&mut self) {
         self.status = AgentStatus::Running;
+        self.stopped_by_user = false;
         self.result = None;
         self.error = None;
     }

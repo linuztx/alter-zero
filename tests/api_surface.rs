@@ -20,6 +20,7 @@ use alter_zero::app::{
     AgentGroupEntry,
     AgentGroupLive,
     AgentNotice,
+    AgentStop,
     App,
     AskAnswerState,
     AskInput,

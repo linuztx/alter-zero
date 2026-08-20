@@ -117,11 +117,23 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
 ## App state
 
 - `App::agents: Vec<agents::AgentRun>` — the roster. Fed by `AgentBatch`
-  (create) and the agent channel (update). A finished agent **lingers** a few
-  seconds with a coloured `◯` (green done / red stopped/failed), then the
-  boundary sweeps it (`AGENT_LINGER`, timed in `main.rs` like the toast) —
-  deferred while the user is inside that agent's session. A user `x` removes
-  it immediately.
+  (create) and the agent channel (update). A finished agent **lingers** with a
+  coloured `◯` (green done / red stopped/failed), then the boundary sweeps it
+  (timed in `main.rs` like the toast) — deferred while the user is inside that
+  agent's session. How long is the entry's own
+  `AgentRun::linger()`: `AGENT_LINGER` (5s) for a natural finish, the far
+  longer `AGENT_STOPPED_LINGER` (30s) once the user's `x` stopped it
+  (`AgentRun::stopped_by_user`), because a row that vanishes under the
+  keypress leaves no evidence of what was stopped. Every arming site reads
+  that method — the settling event, the group resolution (`or_insert`, so a
+  group resolving *after* a stop can't restart or shorten its countdown), the
+  per-frame re-arm — so no path can downgrade a stop to the short linger. A
+  second `x` **clears** the row before either deadline (`AgentStop::Cleared`
+  → `hidden`, the entry itself collected by the next sweep so a live group's
+  resolution can still snapshot it) — and clearing the agent whose **session
+  view** is open closes that view too: the view renders from the entry the
+  sweep is about to drop, and a transcript left up over a roster that no
+  longer lists it (marking no session as in view) is the broken middle state.
 - `App::agent_group: Option<AgentGroupLive>` — the live group cell (ids +
   background flag), shown in the preview strip while the parent turn runs.
   Esc-interrupt / `fail_stream` resolve it locally (statuses → Interrupted)
@@ -134,11 +146,27 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   row it lands on the shell indicator when a shell is running (a second ↑
   there returns to the composer), else exits directly — so ↑/↓ traverse
   composer ⇄ indicator ⇄ roster symmetrically. ↑/↓ move, `Enter` views
-  (main = leave the view / close), `x` stops the selected agent, Esc
+  (main = leave the view / close), `x` **stops** the selected agent — and,
+  on a row that has already settled, **clears** it (below), Esc
   dismisses, any other key falls through after clearing (the
   `background_focus` contract). The footer line swaps to the hint
-  (`↑/↓ to select · Enter to view` on main, `Enter to view · x to stop` on
-  an agent) while the selection is active.
+  (`↑/↓ to select · Enter to view` on main, `Enter to view · x to stop` on a
+  running agent, `x to clear` once it has settled) while the selection is
+  active.
+- `App::agent_selection_memory: Option<String>` — the **last picked** row, so
+  the roster is a cursor rather than a menu that reopens at the top: ↓ lands
+  on the remembered agent (`App::agent_selection_start`, consulted by both
+  entry points — the composer's ↓ and the shell indicator's second ↓)
+  instead of walking from `● main` every time. Both halves of the walk write
+  it: the ↑/↓ steps, and `open_agent_view` (entering a session **is** a pick,
+  which is the reported flow — Enter to read an agent, ↓ to come straight
+  back to its row). It holds the **id**, not the index, so a roster that grew
+  or shrank underneath still resumes on the same agent, and a remembered
+  agent that is gone falls back to `● main`. Walking the `❯` onto `● main` is
+  how you forget one (`remember_agent_selection(0)` clears it) — an explicit
+  move to `main` must not be overridden by a memory, which is also why the
+  open session view is *not* a second fallback: it already set the memory
+  when it opened.
 - `App::agent_view: Option<String>` — the **agent session view**: the whole
   inline screen shows that agent's own conversation (banner + its transcript,
   Purge-rebuilt like `/clear`), the input box's top rule carries the agent's
@@ -213,8 +241,10 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   the highlight used to stick on `main`). The `❯ ` marker belongs to the
   active ↑/↓ selection alone and leaves with it when Enter/Esc hand the keys
   back to the composer. A finished agent's bullet turns green/red for the
-  linger window. The rows are a fifth `live_layout` area, so `live_height`,
-  the cursor seat, and the overlays are untouched.
+  linger window — a user `x` is what turns it red, and the row stays there
+  (with the hint's `x to clear`) until the second `x` or the 30s sweep. The
+  rows are a fifth `live_layout` area, so `live_height`, the cursor seat, and
+  the overlays are untouched.
 
 ## Invariant notes
 

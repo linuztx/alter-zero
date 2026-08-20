@@ -515,10 +515,11 @@ impl App {
                     return Action::None;
                 }
                 // With no shell to land on, ↓ opens the agent roster's
-                // selection directly when agents are listed — the `❯` lands
-                // on the `● main` row first (`docs/agent-tool.md`).
+                // selection directly when agents are listed — on the `● main`
+                // row, or straight back onto the **last picked** agent when
+                // the user has been in the roster before (`docs/agent-tool.md`).
                 if self.agent_selectable() {
-                    self.agent_selection = Some(0);
+                    self.agent_selection = Some(self.agent_selection_start());
                     return Action::None;
                 }
                 self.input.move_down();

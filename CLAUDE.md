@@ -313,9 +313,17 @@ completion auto-starts the follow-up turn — the background-shell pattern) and
 its green/red `● Agent "…" finished · Ns` cell settling at the same safe
 boundaries; the footer gains a persistent roster — `● main` over
 `◯ {type}  {description} {elapsed} · ↓ {tokens} tokens` rows — that ↓ steps
-into **after** the shell indicator (`❯` selection, Enter views, `x` stops
-immediately, hint lines in the footer slot; finished agents linger coloured
-`AGENT_LINGER` then sweep); Enter on an agent opens its **inline session
+into **after** the shell indicator (`❯` selection, Enter views, hint lines in
+the footer slot; **`x` stops, then `x` clears** — the stop interrupts the
+agent and leaves its row in place wearing a red `◯` for the long
+`AGENT_STOPPED_LINGER` (30s, `AgentRun::linger` — a row that vanished under
+the keypress left no evidence of what was stopped) while the hint swaps to
+`x to clear`, and that second `x` takes it off at once; a naturally finished
+agent lingers green for the brief `AGENT_LINGER` and answers the same clear;
+and the `❯` **resumes where it left off** — `App::agent_selection_memory`
+holds the last picked agent's *id*, so ↓ comes back to that row instead of
+restarting at `● main`, with entering a session view counting as the pick and
+a walk back onto `main` the way to forget one); Enter on an agent opens its **inline session
 view** — a purge-rebuild showing the agent's own transcript under the banner,
 the composer's top rule labelled with its description, typing **chats with
 the agent** (queued into its running loop at the next round boundary via the

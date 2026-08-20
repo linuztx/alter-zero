@@ -1520,6 +1520,12 @@ pub(super) const AGENT_HINT_MAIN: &[(&str, &str)] = &[("↑/↓", " to select"),
 
 pub(super) const AGENT_HINT_AGENT: &[(&str, &str)] = &[("Enter", " to view"), ("x", " to stop")];
 
+/// The same hint on a **settled** row (a user stop, or a finished agent still
+/// lingering): the key is the same, its job isn't — `x` clears the row it
+/// stopped rather than stopping it twice (`docs/agent-tool.md`).
+pub(super) const AGENT_HINT_AGENT_DONE: &[(&str, &str)] =
+    &[("Enter", " to view"), ("x", " to clear")];
+
 /// The row (within the picker's framed area) the `>` search line sits on — top
 /// rule (0), gap (1), search (2). Shared by [`render_model_picker`] and
 /// [`cursor_position`] so the cursor lands on the query.

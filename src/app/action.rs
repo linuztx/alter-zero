@@ -235,11 +235,13 @@ pub enum Action {
     /// resulting `Exited` event removes the row / commits the stopped notice.
     /// See `docs/background.md`.
     KillBackground(String),
-    /// `x` on an agent in the footer roster: stop the subagent with this id.
-    /// [`App::stop_agent`] has already settled the roster entry (and hidden
-    /// it — the user's `x` removes the row right away); the loop cancels the
-    /// subagent thread via the `agents::AgentRegistry` and commits/settles
-    /// whatever the resolution produced. See `docs/agent-tool.md`.
+    /// `x` on an agent in the footer roster: stop the subagent with this id —
+    /// or, on a row that has already settled, clear it.
+    /// [`App::stop_agent`] has decided which (a stop leaves the red row on
+    /// the roster for its longer linger; the clear takes it off); the loop
+    /// cancels the subagent thread via the `agents::AgentRegistry`, arms the
+    /// sweep, and commits/settles whatever the resolution produced. See
+    /// `docs/agent-tool.md`.
     StopAgent(String),
     /// Enter on an agent in the footer roster: open that agent's own inline
     /// session view ([`App::agent_view`] is already set). The loop

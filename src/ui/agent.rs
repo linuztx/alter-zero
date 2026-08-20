@@ -724,15 +724,25 @@ pub fn agent_list_lines(app: &App, width: u16) -> Vec<Line<'static>> {
 }
 
 /// The roster selection's footer hint line — `↑/↓ to select · Enter to view`
-/// on the `● main` row, `Enter to view · x to stop` on an agent row — taking
-/// the footer's slot while the selection is active (the shell-mode-line
-/// pattern).
+/// on the `● main` row, `Enter to view · x to stop` on a running agent, and
+/// `x to clear` once that agent has settled (a stop leaves the red row on the
+/// roster; the same key is what takes it off) — taking the footer's slot
+/// while the selection is active (the shell-mode-line pattern).
 #[must_use]
 pub fn agent_hint_line(app: &App) -> Line<'static> {
-    let entries = if app.agent_selection() == Some(0) {
-        AGENT_HINT_MAIN
-    } else {
-        AGENT_HINT_AGENT
+    let entries = match app.agent_selection() {
+        None | Some(0) => AGENT_HINT_MAIN,
+        Some(row) => {
+            let settled = app
+                .visible_agents()
+                .get(row - 1)
+                .is_some_and(|run| run.status.is_final());
+            if settled {
+                AGENT_HINT_AGENT_DONE
+            } else {
+                AGENT_HINT_AGENT
+            }
+        }
     };
     let mut spans = vec![Span::raw(FOOTER_INDENT)];
     for (i, (key, label)) in entries.iter().enumerate() {

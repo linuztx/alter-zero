@@ -4203,8 +4203,12 @@ fi
 # the roster keeps the two running rows, ↓ opens the selection (`❯` on
 # `● main`, the `↑/↓ to select · Enter to view` hint in the footer slot), a
 # second ↓ moves onto an agent (`Enter to view · x to stop`), and `x` stops it
-# — the row leaves at once and the red `Agent "…" was stopped by user` notice
-# commits. ---
+# — the red `Agent "…" was stopped by user` notice commits AND the row stays
+# put, red, for its long stopped linger with the hint swapped to
+# `x to clear`; the second `x` is what takes it off. Then the selection's
+# **memory**: Esc + ↓ comes back to the row the user last picked instead of
+# restarting on `● main`, and Enter into an agent's session view is a pick too
+# — the ↓ after it lands on that agent (`docs/agent-tool.md`). ---
 S54="${S}_bgagents"
 tmux new-session -d -s "$S54" -x 100 -y 44 "$APP"
 sleep 0.4
@@ -4231,6 +4235,28 @@ printf '%s\n' "$bg_sel_main"
 tmux send-keys -t "$S54" Down
 sleep 0.3
 bg_sel_agent="$(tmux capture-pane -t "$S54" -p)"
+# Enter opens that agent's session view, and the ↓ after it must come back to
+# the SAME row — the roster remembers the last picked agent.
+tmux send-keys -t "$S54" Enter
+sleep 0.6
+bg_view="$(tmux capture-pane -t "$S54" -p)"
+echo "==== Phase 54: captured pane (the agent session view) ===="
+printf '%s\n' "$bg_view"
+tmux send-keys -t "$S54" Down
+sleep 0.4
+bg_resumed="$(tmux capture-pane -t "$S54" -p)"
+echo "==== Phase 54: captured pane (↓ resumes on the last picked agent) ===="
+printf '%s\n' "$bg_resumed"
+# Esc back to the main session, then ↓ again — still the remembered row.
+tmux send-keys -t "$S54" Escape
+sleep 0.3
+tmux send-keys -t "$S54" Escape
+sleep 0.6
+tmux send-keys -t "$S54" Down
+sleep 0.4
+bg_resumed_main="$(tmux capture-pane -t "$S54" -p)"
+echo "==== Phase 54: captured pane (back in the main session, ↓ still resumes) ===="
+printf '%s\n' "$bg_resumed_main"
 tmux send-keys -t "$S54" -l "x"
 bg_stopped=""
 for _ in $(seq 1 100); do
@@ -4243,6 +4269,19 @@ for _ in $(seq 1 100); do
 done
 echo "==== Phase 54: captured pane (x stopped the agent) ===="
 printf '%s\n' "$bg_stopped"
+# The stopped row does NOT leave: it lingers red (30s) with the hint swapped
+# to the clear, so the user can see what they stopped.
+sleep 2
+bg_lingering="$(tmux capture-pane -t "$S54" -p)"
+echo "==== Phase 54: captured pane (the stopped row lingers · x to clear) ===="
+printf '%s\n' "$bg_lingering"
+bg_rows_before="$(printf '%s' "$bg_lingering" | grep -cF "general-purpose  Fetch")"
+tmux send-keys -t "$S54" -l "x"
+sleep 0.6
+bg_cleared="$(tmux capture-pane -t "$S54" -p)"
+echo "==== Phase 54: captured pane (the second x cleared the row) ===="
+printf '%s\n' "$bg_cleared"
+bg_rows_after="$(printf '%s' "$bg_cleared" | grep -cF "general-purpose  Fetch")"
 tmux kill-session -t "$S54" 2>/dev/null
 echo "==== Phase 54: background agents — launch cell, roster selection, x stop ===="
 if [ -z "$bg_launched" ]; then
@@ -4267,6 +4306,30 @@ if ! printf '%s' "$bg_sel_agent" | grep -qF "❯ ◯ general-purpose"; then
 fi
 if [ -z "$bg_stopped" ]; then
 	echo "FAIL: Phase 54 — x did not stop the agent with the red notice" >&2
+	status=1
+fi
+if ! printf '%s' "$bg_view" | grep -qF "Fetch current weather and time in"; then
+	echo "FAIL: Phase 54 — Enter did not open the agent session view" >&2
+	status=1
+fi
+if ! printf '%s' "$bg_resumed" | grep -qF "❯ ● general-purpose"; then
+	echo "FAIL: Phase 54 — ↓ inside the view did not resume on the picked agent" >&2
+	status=1
+fi
+if ! printf '%s' "$bg_resumed_main" | grep -qF "❯ ◯ general-purpose"; then
+	echo "FAIL: Phase 54 — ↓ in the main session did not resume on the picked agent" >&2
+	status=1
+fi
+if ! printf '%s' "$bg_lingering" | grep -qF "Enter to view · x to clear"; then
+	echo "FAIL: Phase 54 — the stopped row did not swap its hint to the clear" >&2
+	status=1
+fi
+if [ "$bg_rows_before" != "2" ]; then
+	echo "FAIL: Phase 54 — the stopped row left the roster instead of lingering (rows: $bg_rows_before)" >&2
+	status=1
+fi
+if [ "$bg_rows_after" != "1" ]; then
+	echo "FAIL: Phase 54 — the second x did not clear the stopped row (rows: $bg_rows_after)" >&2
 	status=1
 fi
 

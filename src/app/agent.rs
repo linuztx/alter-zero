@@ -142,6 +142,21 @@ pub struct AgentGroupLive {
     pub background: bool,
 }
 
+/// What the user's `x` on a roster row did — the two halves of the
+/// stop-then-clear grammar ([`App::stop_agent`], `docs/agent-tool.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentStop {
+    /// A **running** agent was interrupted. Its row stays, red, for the
+    /// longer [`crate::agents::AGENT_STOPPED_LINGER`] — the boundary kills
+    /// the thread and arms that sweep. Carries the completion notice a
+    /// *background* agent owes (a foreground one resolves with its group).
+    Stopped(Option<AgentNotice>),
+    /// An already-settled row was **cleared** — the second `x`. It leaves the
+    /// roster at once (the entry's data stays for its group's resolution
+    /// until the sweep collects it).
+    Cleared,
+}
+
 /// The model-facing tool result for an `agent` call the user (or an Esc
 /// interrupt) stopped before completion — what the recorded group entry's
 /// `output` replays into later contexts.
@@ -212,9 +227,9 @@ impl App {
         self.agent_selection
     }
 
-    /// The roster rows the footer list shows — every entry a user `x` hasn't
-    /// hidden (a stopped entry leaves the list at once; a naturally finished
-    /// one lingers coloured until the boundary sweeps it).
+    /// The roster rows the footer list shows — every entry the user's `x`
+    /// hasn't *cleared* (a stopped agent lingers red, a finished one green,
+    /// until the boundary sweeps it or that second `x` takes it off).
     #[must_use]
     pub fn visible_agents(&self) -> Vec<&AgentRun> {
         self.agents.iter().filter(|agent| !agent.hidden).collect()
@@ -386,23 +401,41 @@ impl App {
         Some(group)
     }
 
-    /// `x` on a roster entry: settle it as interrupted and **hide** it (the
-    /// user's `x` removes the row right away — no linger). For a background
-    /// agent (its group already committed) this also returns its stopped
-    /// notice for the boundary to settle; a foreground one resolves with its
-    /// group (the registry kill unblocks the backend's wait loop). `None`
-    /// when the id isn't listed or was already final.
-    pub fn stop_agent(&mut self, id: &str) -> Option<Option<AgentNotice>> {
+    /// `x` on a roster entry — the stop/clear pair (`docs/agent-tool.md`).
+    ///
+    /// On a **running** agent it settles the entry as interrupted and leaves
+    /// the row in place: the red `◯` lingers for
+    /// [`AGENT_STOPPED_LINGER`](crate::agents::AGENT_STOPPED_LINGER) so the
+    /// user can see what they stopped ([`AgentStop::Stopped`], carrying the
+    /// notice a *background* agent owes — a foreground one resolves with its
+    /// group when the registry kill unblocks the backend's wait loop). On an
+    /// already-settled row — the user's second `x`, or a naturally finished
+    /// agent still lingering — it is the **clear**: the row leaves the roster
+    /// at once ([`AgentStop::Cleared`]). `None` when the id isn't listed.
+    pub fn stop_agent(&mut self, id: &str) -> Option<AgentStop> {
         let stamp = self.now_stamp();
-        let agent = self.agents.iter_mut().find(|agent| agent.id == id)?;
+        // A cleared row is off the roster: there is nothing left for `x` to
+        // act on, even while the entry waits for its group's resolution.
+        let agent = self
+            .agents
+            .iter_mut()
+            .find(|agent| agent.id == id && !agent.hidden)?;
         if !agent.interrupt() {
-            // Already settled — `x` on a lingering row just dismisses it.
+            // Already settled — this `x` is the clear.
             agent.hidden = true;
+            // A cleared agent can't be the one in view: the session view
+            // renders from this entry, and the sweep is about to drop it.
+            // (`remove_agent`'s rule; the boundary repaints the main
+            // conversation, so the screen goes back with the row.)
+            if self.agent_view.as_deref() == Some(id) {
+                self.agent_view = None;
+            }
+            self.forget_agent_selection(id);
             self.clamp_agent_selection();
             self.agents_generation += 1;
-            return None;
+            return Some(AgentStop::Cleared);
         }
-        agent.hidden = true;
+        agent.stopped_by_user = true;
         let notice = agent.background.then(|| AgentNotice {
             id: agent.id.clone(),
             description: agent.description.clone(),
@@ -412,8 +445,7 @@ impl App {
             timestamp: stamp,
         });
         self.agents_generation += 1;
-        self.clamp_agent_selection();
-        Some(notice)
+        Some(AgentStop::Stopped(notice))
     }
 
     /// Inject one agent's runtime before a draw (the
@@ -439,6 +471,7 @@ impl App {
         if self.agent_view.as_deref() == Some(id) {
             self.agent_view = None;
         }
+        self.forget_agent_selection(id);
         self.clamp_agent_selection();
     }
 
@@ -505,9 +538,11 @@ impl App {
         self.agent(self.agent_view.as_deref()?)
     }
 
-    /// Enter an agent's session view (the roster selection's Enter).
+    /// Enter an agent's session view (the roster selection's Enter) — and the
+    /// pick the next ↓ comes back to (`agent_selection_start`).
     pub fn open_agent_view(&mut self, id: &str) {
         self.agent_view = Some(id.to_string());
+        self.agent_selection_memory = Some(id.to_string());
         self.shortcuts_open = false;
         self.backtrack = Backtrack::default();
         self.command_menu = None;
@@ -544,6 +579,38 @@ impl App {
             && self.file_search.is_none()
     }
 
+    /// Where ↓ opens the roster selection: the **last picked** agent's row
+    /// when it is still listed, else `0` (the `● main` row). Stepping between
+    /// several agents is what this buys — the second visit resumes where the
+    /// first left off instead of restarting at `main` (`docs/agent-tool.md`).
+    /// Entering an agent's session view is a pick, so Enter-then-↓ comes back
+    /// to that agent; walking the `❯` onto `● main` is the way to forget one.
+    pub(super) fn agent_selection_start(&self) -> usize {
+        let Some(id) = self.agent_selection_memory.as_deref() else {
+            return 0;
+        };
+        self.visible_agents()
+            .iter()
+            .position(|agent| agent.id == id)
+            .map_or(0, |index| index + 1)
+    }
+
+    /// Remember the row the selection just landed on (the `● main` row
+    /// forgets — ↓ then opens on `main` again, as it always did).
+    fn remember_agent_selection(&mut self, selected: usize) {
+        self.agent_selection_memory = selected
+            .checked_sub(1)
+            .and_then(|index| self.visible_agents().get(index).map(|a| a.id.clone()));
+    }
+
+    /// Drop the memory when it points at `id` (that agent is leaving the
+    /// roster — ↓ falls back to the `● main` row).
+    fn forget_agent_selection(&mut self, id: &str) {
+        if self.agent_selection_memory.as_deref() == Some(id) {
+            self.agent_selection_memory = None;
+        }
+    }
+
     /// Keep the selection on a real row as the roster shrinks.
     fn clamp_agent_selection(&mut self) {
         let rows = self.visible_agents().len();
@@ -573,7 +640,9 @@ impl App {
         let rows = self.visible_agents().len();
         match key.code {
             KeyCode::Down => {
-                self.agent_selection = Some((selected + 1).min(rows));
+                let next = (selected + 1).min(rows);
+                self.agent_selection = Some(next);
+                self.remember_agent_selection(next);
                 Some(Action::None)
             }
             KeyCode::Up => {
@@ -588,6 +657,7 @@ impl App {
                     }
                 } else {
                     self.agent_selection = Some(selected - 1);
+                    self.remember_agent_selection(selected - 1);
                 }
                 Some(Action::None)
             }

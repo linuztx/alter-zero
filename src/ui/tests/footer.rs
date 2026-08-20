@@ -756,6 +756,13 @@ fn the_roster_selection_marks_rows_and_swaps_the_footer_hint() {
     let texts: Vec<String> = agent_list_lines(&app, 100).iter().map(plain).collect();
     assert!(texts[2].starts_with("❯ ◯ "), "{}", texts[2]);
     assert_eq!(plain(&agent_hint_line(&app)), "  Enter to view · x to stop");
+    // Once that agent has settled (here: the user's own `x`), the same key
+    // means something else — the red row is cleared, not stopped again.
+    app.stop_agent("a1");
+    assert_eq!(
+        plain(&agent_hint_line(&app)),
+        "  Enter to view · x to clear"
+    );
 }
 
 // --- the `!` shell mode + its exec cell (docs/shell-command.md) ---

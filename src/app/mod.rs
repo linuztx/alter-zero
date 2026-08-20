@@ -57,7 +57,7 @@ mod views;
 
 pub use self::action::{Action, McpOp};
 pub use self::agent::{
-    AGENT_STOPPED_OUTPUT, AgentGroup, AgentGroupEntry, AgentGroupLive, AgentNotice,
+    AGENT_STOPPED_OUTPUT, AgentGroup, AgentGroupEntry, AgentGroupLive, AgentNotice, AgentStop,
 };
 pub use self::ask::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
 pub use self::background::{BackgroundNotice, BackgroundShell, BackgroundView, BgCompletion};
@@ -523,8 +523,10 @@ pub struct App {
     /// announcement and updated from the dedicated agent channel
     /// ([`apply_agent_event`](App::apply_agent_event)). Drives the footer
     /// list, the live group cell's tree rows, and the agent session view. A
-    /// finished agent lingers a few seconds (the boundary sweeps it via
-    /// [`remove_agent`](App::remove_agent)); a user `x` hides it at once.
+    /// settled agent lingers coloured (the boundary sweeps it via
+    /// [`remove_agent`](App::remove_agent)) — briefly when it finished on its
+    /// own, far longer when the user's `x` stopped it, and not at all once a
+    /// second `x` clears the row.
     agents: Vec<AgentRun>,
     /// Bumped on every roster mutation — what the Ctrl+O transcript cache's
     /// signature fingerprints so a streaming agent invalidates it.
@@ -536,6 +538,12 @@ pub struct App {
     /// `Some(i+1)` the i-th **visible** roster entry. The footer line swaps
     /// to the selection hints while it is `Some`. See `docs/agent-tool.md`.
     agent_selection: Option<usize>,
+    /// The **last picked** roster row's agent id — where the next ↓ reopens
+    /// the selection (an id, not an index, so a roster that grew or shrank
+    /// underneath still resumes on the same agent; `None` = the `● main`
+    /// row). Set by the ↑/↓ walk and by entering an agent's session view.
+    /// See `docs/agent-tool.md`.
+    agent_selection_memory: Option<String>,
     /// The agent session view: `Some(id)` while the inline screen shows that
     /// agent's own conversation (the composer chats with it; Esc returns).
     /// See `docs/agent-tool.md`.
@@ -861,6 +869,7 @@ impl App {
         self.agents_generation += 1;
         self.agent_group = None;
         self.agent_selection = None;
+        self.agent_selection_memory = None;
         self.agent_view = None;
         self.pending_agents.clear();
         // The blocked tool threads are reaped by the loop's Clear arm (their

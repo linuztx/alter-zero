@@ -433,7 +433,8 @@ fn the_roster_highlight_follows_the_viewed_session_and_the_marker_the_selection(
     assert_eq!(lines[1].spans[1].style.fg, Some(TOOL_DIM_COLOR));
     assert_eq!(lines[2].spans[1].style.fg, Some(TOOL_OUTPUT_COLOR));
     // An active ↓ selection still shows its ❯ (and cyan) on the selected row
-    // (two ↓ from the empty composer: main, then the agent).
+    // — inside the view the first ↓ lands straight on the viewed agent (the
+    // remembered pick), and a second ↓ has nowhere further to go.
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
     app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));

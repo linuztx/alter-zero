@@ -476,12 +476,14 @@ impl App {
                 Some(Action::None)
             }
             // A second ↓ steps past the shell indicator into the agent
-            // roster's selection when one is listed (`docs/agent-tool.md`);
-            // with no roster it keeps the highlight (the one indicator).
+            // roster's selection when one is listed (`docs/agent-tool.md`) —
+            // onto the last picked agent's row when there is one, else
+            // `● main`; with no roster it keeps the highlight (the one
+            // indicator).
             KeyCode::Down => {
                 if self.agent_selectable() {
                     self.background_focus = false;
-                    self.agent_selection = Some(0);
+                    self.agent_selection = Some(self.agent_selection_start());
                 }
                 Some(Action::None)
             }

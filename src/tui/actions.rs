@@ -127,7 +127,7 @@ impl Session<'_> {
             Action::Clear => self.clear_conversation()?,
             Action::KillBackground(id) => self.kill_background(&id),
             Action::MoveToBackground => self.move_to_background(),
-            Action::StopAgent(id) => self.stop_agent(&id),
+            Action::StopAgent(id) => self.stop_agent(&id)?,
             Action::ViewAgent(_) => self.enter_agent_view()?,
             Action::LeaveAgentView => self.leave_agent_view()?,
             Action::AgentChat { id, text } => self.agent_chat(&id, &text),
