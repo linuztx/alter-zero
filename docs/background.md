@@ -234,9 +234,15 @@ permission-prompt rule — since Ctrl+B would not reach the runner from
 inside the band.
 
 - **Enter on the lit footer indicator** opens the list — the only way in, so
-  the band never appears without a running shell behind it. Its
-  `No tasks currently running` empty state is what remains on screen when the
-  last listed shell exits *while the band is open*.
+  the band never appears without a running shell behind it. It leaves the same
+  way: when the **last** listed shell exits *while the band is open*
+  (`App::bg_exited`), the band closes and the composer comes back, because a
+  manager with nothing left to manage is a dead end — every key it owns
+  (`↑/↓`, `Enter`, `x`) has nothing to act on, so the page's only remaining
+  purpose is to be dismissed. The renderer keeps a
+  `No tasks currently running` page as the defensive fallback for a band
+  opened with no shells behind it (`App::open_background_view` is public; the
+  app's own entry gate, `background_focusable`, can't reach it).
 - List: `Background` title, `{n} active shells`, `❯`-marked selectable rows
   (`{command} (running)`), hints
   `↑/↓ to select · Enter to view · x to stop · Esc to close`.
@@ -254,7 +260,7 @@ inside the band.
   ticks).
 - `x` returns `Action::KillBackground(id)`; the loop kills via the registry
   and the resulting `Exited` event removes the row (details falls back to the
-  list; the list falls back to the empty state).
+  list; stopping the last shell closes the band — see above).
 - The footer gains a running count: `{model} · {cwd} · {n} shell(s)` — which
   doubles as the band's entry point (see above).
 

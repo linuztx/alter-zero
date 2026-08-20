@@ -25,6 +25,11 @@ fn background_notice_lines_render_the_headline_with_outcome_colours() {
     );
 }
 
+/// The empty page is the renderer's defensive fallback, not a page the app
+/// walks to: a live band closes with its last shell (`App::bg_exited`), and
+/// the footer indicator that opens one needs a shell to light. Only the
+/// public `open_background_view` can reach it — so that is how it is driven
+/// here.
 #[test]
 fn the_manager_empty_state_says_no_tasks_running() {
     let mut app = App::new();

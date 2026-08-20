@@ -278,7 +278,11 @@ counts `· N shells` — and that count is the band's **entry point**: **↓ fro
 empty composer lights the indicator on cyan** (`App::background_focus`, the
 rest of the footer untouched; Esc/↑/Ctrl+C dismiss it, any other key clears it
 and acts) and **Enter opens the inline manager band**
-(list → per-shell details with a live-tailing output box → `x` stops), and a
+(list → per-shell details with a live-tailing output box → `x` stops) — a band
+that both opens *and* closes with the shells: the indicator needs a running one
+to light, and the **last** shell exiting (or being `x`-stopped) closes the band
+outright rather than leaving an empty page whose every key has nothing to act
+on (`App::bg_exited`), and a
 completion is **immediate feedback**: its model-facing note posts onto the
 registry's notice board the moment it exits (the in-flight agent takes the
 board before each round, so a shell the model just `kill`ed is known to it

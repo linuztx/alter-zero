@@ -205,15 +205,20 @@ impl BgCompletion {
 /// `docs/background.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BackgroundView {
-    /// The shell list (`Background` / `{n} active shells` / selectable rows),
-    /// or the `No tasks currently running` empty state.
+    /// The shell list (`Background` / `{n} active shells` / selectable rows).
+    /// Always over at least one running shell in the app: the band opens from
+    /// the footer indicator (which needs one) and closes with the last one
+    /// ([`bg_exited`](App::bg_exited)) — the renderer's
+    /// `No tasks currently running` page is the defensive fallback for a band
+    /// opened with an empty list.
     List {
         /// The highlighted row (clamped as shells exit).
         selected: usize,
     },
     /// One shell's details: status/runtime/command fields over a live output
     /// box. Keyed by id so a *different* shell exiting never retargets the
-    /// view; when this shell exits the view falls back to the list.
+    /// view; when this shell exits the view falls back to the list — or, when
+    /// it was the last one, the band closes.
     Details { id: String },
 }
 
@@ -330,26 +335,34 @@ impl App {
     /// deferred to the next safe boundary while a turn is in flight
     /// ([`defer_bg_completion`](App::defer_bg_completion)), else settled at
     /// once. A details view watching this shell falls back to the list (and
-    /// the list selection re-clamps); `None` for an unknown id (already
-    /// swept — e.g. by `/clear` — so no notice is owed).
+    /// the list selection re-clamps), and the **last** shell exiting closes
+    /// the band outright — the manager only ever shows while something is
+    /// running, so with nothing left to manage the composer comes back
+    /// instead of an empty page (docs/background.md); `None` for an unknown
+    /// id (already swept — e.g. by `/clear` — so no notice is owed).
     pub fn bg_exited(&mut self, id: &str, code: Option<i32>, killed: bool) -> Option<BgCompletion> {
         let index = self.background.iter().position(|shell| shell.id == id)?;
         let shell = self.background.remove(index);
-        // The footer's indicator goes with the last shell — nothing left to
-        // keep lit (docs/background.md).
         if self.background.is_empty() {
+            // The footer's indicator goes with the last shell — nothing left
+            // to keep lit — and so does the band it is the entry point for:
+            // the manager is a view onto *running* shells, so the page that
+            // outlives them all is just a dead end asking to be dismissed
+            // (docs/background.md).
             self.background_focus = false;
-        }
-        match &mut self.background_view {
-            Some(BackgroundView::Details { id: watched }) if *watched == id => {
-                self.background_view = Some(BackgroundView::List {
-                    selected: index.min(self.background.len().saturating_sub(1)),
-                });
+            self.background_view = None;
+        } else {
+            match &mut self.background_view {
+                Some(BackgroundView::Details { id: watched }) if *watched == id => {
+                    self.background_view = Some(BackgroundView::List {
+                        selected: index.min(self.background.len() - 1),
+                    });
+                }
+                Some(BackgroundView::List { selected }) => {
+                    *selected = (*selected).min(self.background.len() - 1);
+                }
+                _ => {}
             }
-            Some(BackgroundView::List { selected }) => {
-                *selected = (*selected).min(self.background.len().saturating_sub(1));
-            }
-            _ => {}
         }
         Some(BgCompletion {
             id: shell.id,

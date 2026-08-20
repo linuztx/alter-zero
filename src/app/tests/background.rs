@@ -421,12 +421,10 @@ fn a_details_view_falls_back_to_the_list_when_its_shell_exits() {
         Some(BackgroundView::List { selected: 0 }),
         "the watched shell exited — back to the (re-clamped) list"
     );
-    // The last shell exiting leaves the empty-state list open.
+    // …and the last shell exiting closes the band: there is no empty list to
+    // fall back to.
     app.bg_exited("bash_2", Some(0), false);
-    assert!(matches!(
-        app.background_view,
-        Some(BackgroundView::List { .. })
-    ));
+    assert!(app.background_view.is_none());
 }
 
 #[test]
@@ -612,4 +610,32 @@ fn a_live_foreground_group_enables_ctrl_b() {
     // A background group never offers the hand-off (it is already there).
     app.start_agent_group(true, &agent_specs(true));
     assert!(!app.can_move_to_background());
+}
+
+#[test]
+fn the_last_shell_exiting_closes_the_manager_band() {
+    let mut app = app_with_shells(&["a", "b"]);
+    app.open_background_view();
+    app.bg_exited("bash_1", Some(0), false);
+    assert!(
+        app.background_view.is_some(),
+        "one shell still runs — the band stays open on the (re-clamped) list"
+    );
+    app.bg_exited("bash_2", Some(0), false);
+    assert!(
+        app.background_view.is_none(),
+        "nothing left to manage — the band closes and the composer returns"
+    );
+}
+
+#[test]
+fn the_details_page_of_the_last_shell_closes_the_band() {
+    let mut app = app_with_shells(&["a"]);
+    app.open_background_view();
+    app.on_key(key(KeyCode::Enter)); // details of bash_1
+    app.bg_exited("bash_1", None, true);
+    assert!(
+        app.background_view.is_none(),
+        "the only shell it was watching is gone — no empty list to fall back to"
+    );
 }
