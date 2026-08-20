@@ -2,6 +2,8 @@
 //! and emphasis turned into styled [`Span`]s, and the word-wrap that keeps those
 //! spans intact across a row boundary. See `docs/markdown.md`.
 
+use crate::links;
+
 use super::theme::*;
 use super::wrap::cols;
 use super::*;
@@ -9,11 +11,15 @@ use super::*;
 /// Flatten a parsed inline tree ([`markdown::parse_inline`]) into styled text
 /// segments under `base`. Emphasis adds a modifier, `code` a colour, a link its
 /// text plus a ` (url)` suffix, an image its alt text. Nesting composes styles.
+/// URLs — a `[text](url)` target and every bare `http(s)://…` in plain text —
+/// additionally carry the link **carrier** ([`links::linked`]), so each
+/// wrapped fragment of a URL still opens the whole target at the paint
+/// boundary (`docs/links.md`); `code` stays verbatim, never linked.
 pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(String, Style)> {
     let mut out = Vec::new();
     for node in nodes {
         match node {
-            markdown::Inline::Text(t) => out.push((t.clone(), base)),
+            markdown::Inline::Text(t) => autolink_text(t, base, &mut out),
             markdown::Inline::Bold(inner) => {
                 out.extend(inline_spans(inner, base.add_modifier(Modifier::BOLD)));
             }
@@ -28,16 +34,44 @@ pub(super) fn inline_spans(nodes: &[markdown::Inline], base: Style) -> Vec<(Stri
             }
             markdown::Inline::Code(c) => out.push((c.clone(), base.fg(INLINE_CODE_COLOR))),
             markdown::Inline::Link { text, url } => {
-                out.extend(inline_spans(text, base));
-                out.push((
-                    format!(" ({url})"),
-                    base.fg(LINK_URL_COLOR).add_modifier(Modifier::UNDERLINED),
-                ));
+                // The text keeps its own dress and gains the target; the
+                // ` (url)` suffix splits so exactly the URL carries it (the
+                // decoration parens stay prose).
+                out.extend(
+                    inline_spans(text, base)
+                        .into_iter()
+                        .map(|(t, s)| (t, links::linked(s, url))),
+                );
+                let url_style = base.fg(LINK_URL_COLOR).add_modifier(Modifier::UNDERLINED);
+                out.push((" (".to_string(), url_style));
+                out.push((url.clone(), links::linked(url_style, url)));
+                out.push((")".to_string(), url_style));
             }
             markdown::Inline::Image { alt } => out.push((alt.clone(), base)),
         }
     }
     out
+}
+
+/// Append a plain-text node's segments under `base`, autolinking bare URLs
+/// (`docs/links.md`): each detected URL takes the markdown-target dress —
+/// [`LINK_URL_COLOR`] + underline, a URL is a URL — plus the carrier that
+/// keeps every wrapped fragment opening the whole target; the prose around it
+/// is untouched.
+fn autolink_text(text: &str, base: Style, out: &mut Vec<(String, Style)>) {
+    let mut at = 0;
+    for range in links::find_urls(text) {
+        if range.start > at {
+            out.push((text[at..range.start].to_string(), base));
+        }
+        let url = &text[range.clone()];
+        let style = base.fg(LINK_URL_COLOR).add_modifier(Modifier::UNDERLINED);
+        out.push((url.to_string(), links::linked(style, url)));
+        at = range.end;
+    }
+    if at < text.len() {
+        out.push((text[at..].to_string(), base));
+    }
 }
 
 /// Word-wrap styled inline `segments` to `width` columns, preserving each run's

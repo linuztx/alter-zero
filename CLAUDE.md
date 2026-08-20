@@ -38,7 +38,7 @@ build (`unsafe_code = "forbid"`, plus `warnings` and `clippy::all` denied).
 ## Architecture
 
 A **library** (`src/lib.rs` → `app`, `stream`, `ui`, `term`, `frame`, `paste`,
-`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `tasks`, `skills`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`) holds the logic; **`src/main.rs`** is a 77-line shell —
+`session`, `subprocess`, `history`, `textarea`, `file_search`, `clipboard`, `context`, `background`, `agents`, `ask`, `tasks`, `skills`, `mcp`, `trust`, `checkpoint`, `project_doc`, `permission`, `settings`, `cli`, `links`) holds the logic; **`src/main.rs`** is a 77-line shell —
 the detached-exec hook, the CLI resolution, the viewport, the loop — over
 **`src/tui/`**, the binary-private tree that drives the codex-style **async
 (tokio) `select!`** loop (`event_loop`, `actions`, `turn`, `stream`, `agent`,
@@ -169,7 +169,15 @@ a scrollback commit can never freeze a frame mid-breath, and the Ctrl+O
 transcript stays still to keep its cache's signature clock-free) in
 `docs/tool-pulse.md`; the flicker-free frame pipeline
 (scrollback commits deferred into the draw's synchronized update) in
-`docs/flicker.md`; the `@` file-path picker (async walk+rank file search below
+`docs/flicker.md`; the **clickable OSC 8 links** (every URL an assistant
+reply shows — a bare URL in prose/lists/table cells, a `[text](url)` target —
+is painted inside an OSC 8 hyperlink carrying the whole URL, so a wrapped
+URL's every fragment opens the full target instead of the truncated row text
+the terminal's own detection saw: the pure `links` module detects/interns and
+stamps the id into `Style::underline_color`, `ui::inline` marks, and
+`term::draw_cells` — the choke point all four cell-write paths share — strips
+the carrier and brackets marked runs, `ALTER_ZERO_HYPERLINKS` gating emission)
+in `docs/links.md`; the `@` file-path picker (async walk+rank file search below
 the box) in `docs/file-search.md`; the large-paste `[Pasted Content N chars]`
 placeholder (bracketed paste → a compact placeholder, expanded back on send) in
 `docs/paste.md`; the **Ctrl+V image paste** (clipboard image → temp PNG → an

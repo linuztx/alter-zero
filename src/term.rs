@@ -65,10 +65,12 @@ use ratatui::crossterm::terminal::{
 };
 use ratatui::crossterm::{execute, queue};
 use ratatui::layout::{Position, Rect};
+use ratatui::style::Color;
 use ratatui::text::Line;
 use ratatui::widgets::{Paragraph, Widget};
 
 use crate::app::App;
+use crate::links;
 use crate::ui;
 
 /// A content-anchored inline viewport whose height can change between draws (its
@@ -146,6 +148,15 @@ pub struct InlineViewport {
     /// [`init`]: InlineViewport::init
     /// [`restore`]: InlineViewport::restore
     keyboard_enhanced: bool,
+    /// Whether link-marked cells are bracketed with the OSC 8 hyperlink
+    /// escape so a wrapped URL opens whole (`docs/links.md`). Read from
+    /// `ALTER_ZERO_HYPERLINKS` at [`init`] (default on; the
+    /// keyboard-enhancement pattern). Off, the emitter still strips the link
+    /// carrier — the interned id must never paint as a real underline colour
+    /// — it just writes no escapes.
+    ///
+    /// [`init`]: InlineViewport::init
+    hyperlinks: bool,
 }
 
 impl InlineViewport {
@@ -228,6 +239,9 @@ impl InlineViewport {
             modal_scrolled: false,
             painted_bottom: top.saturating_add(height),
             keyboard_enhanced,
+            hyperlinks: !links::hyperlinks_disabled(
+                std::env::var(links::HYPERLINKS_ENV).ok().as_deref(),
+            ),
         })
     }
 
@@ -424,7 +438,7 @@ impl InlineViewport {
             {
                 let updates = prev.diff(buf);
                 if !updates.is_empty() {
-                    self.backend.draw(updates.into_iter())?;
+                    self.draw_cells(updates.into_iter())?;
                 }
             }
             _ => self.blit(buf)?,
@@ -782,7 +796,7 @@ impl InlineViewport {
         // the full-screen redraw. The overlay never re-shows it; [`exit_overlay`]
         // returns to the inline view, whose reflow re-seats it on the prompt.
         queue!(self.backend, Hide)?;
-        let drawn = self.backend.draw(iter);
+        let drawn = self.draw_cells(iter);
         // Seat the (hidden) cursor at the end of the overlay's last text —
         // the closing `q/esc/… to quit` hint ([`ui::overlay_cursor_seat`])
         // — instead of leaving it wherever the cell paint ended (the blank
@@ -858,6 +872,78 @@ impl InlineViewport {
         Backend::flush(&mut self.backend)
     }
 
+    /// Emit cells to the backend, bracketing link-marked runs with the OSC 8
+    /// hyperlink escape so a wrapped URL opens whole (`docs/links.md`). The
+    /// single choke point **every** cell-writing path goes through —
+    /// scrollback commits + `reflow` ([`draw_lines`]), the live-region blit
+    /// and diff ([`paint_frame`]), and the alt-screen overlay
+    /// ([`draw_overlay`]) — so a link stays clickable wherever its cells are
+    /// painted, and the id carrier is *always* stripped before the terminal
+    /// could show it as a real underline colour (the `visible_cells` rule:
+    /// missing one path leaves the bug alive in that view alone). Unmarked
+    /// runs pass through untouched.
+    ///
+    /// [`draw_lines`]: InlineViewport::draw_lines
+    /// [`paint_frame`]: InlineViewport::paint_frame
+    /// [`draw_overlay`]: InlineViewport::draw_overlay
+    fn draw_cells<'a>(
+        &mut self,
+        content: impl Iterator<Item = (u16, u16, &'a Cell)>,
+    ) -> io::Result<()> {
+        let mut run: Vec<(u16, u16, &'a Cell)> = Vec::new();
+        let mut run_id: Option<u32> = None;
+        for item in content {
+            let id = links::carrier_id(item.2.underline_color);
+            if id != run_id {
+                self.flush_cell_run(&run, run_id)?;
+                run.clear();
+                run_id = id;
+            }
+            run.push(item);
+        }
+        self.flush_cell_run(&run, run_id)
+    }
+
+    /// One grouped run of [`draw_cells`]: a plain run goes straight to the
+    /// backend (no copies); a marked run's cells are re-emitted with the
+    /// carrier cleared between an [`links::osc8_open`]/[`links::OSC8_CLOSE`]
+    /// pair. Hyperlinks attach per printed cell in every terminal, so
+    /// re-painting any subset of a link (the diff path) re-links exactly
+    /// those cells and the rest keep theirs. With hyperlinks off — the env
+    /// gate, or an id this process never interned — the strip still happens;
+    /// only the escapes are skipped.
+    ///
+    /// [`draw_cells`]: InlineViewport::draw_cells
+    fn flush_cell_run(&mut self, run: &[(u16, u16, &Cell)], id: Option<u32>) -> io::Result<()> {
+        if run.is_empty() {
+            return Ok(());
+        }
+        let Some(id) = id else {
+            return self.backend.draw(run.iter().copied());
+        };
+        let url = links::link_url(id).filter(|_| self.hyperlinks);
+        if let Some(url) = &url {
+            write!(self.backend, "{}", links::osc8_open(id, url))?;
+        }
+        let cleaned: Vec<Cell> = run
+            .iter()
+            .map(|(_, _, cell)| {
+                let mut cell = (*cell).clone();
+                cell.underline_color = Color::Reset;
+                cell
+            })
+            .collect();
+        self.backend.draw(
+            run.iter()
+                .zip(&cleaned)
+                .map(|(&(x, y, _), cell)| (x, y, cell)),
+        )?;
+        if url.is_some() {
+            write!(self.backend, "{}", links::OSC8_CLOSE)?;
+        }
+        Ok(())
+    }
+
     // --- low-level helpers (ports of ratatui's inline-viewport primitives) ---
 
     /// Scroll the whole screen up `n` rows by appending lines at the bottom, so
@@ -894,8 +980,7 @@ impl InlineViewport {
         let width = self.screen.width as usize;
         let (head, tail) = cells.split_at(width * n as usize);
         if n > 0 {
-            self.backend
-                .draw(visible_cells(head, width, Position::new(0, y)))?;
+            self.draw_cells(visible_cells(head, width, Position::new(0, y)))?;
         }
         Ok(tail)
     }
@@ -909,7 +994,7 @@ impl InlineViewport {
         if width == 0 {
             return Ok(());
         }
-        self.backend.draw(visible_cells(
+        self.draw_cells(visible_cells(
             &buffer.content,
             width,
             Position::new(area.x, area.y),

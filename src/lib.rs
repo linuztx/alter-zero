@@ -31,6 +31,9 @@
 //! - [`highlight`]   — grammar-accurate syntax highlighting for code blocks:
 //!   syntect + two_face (~250 TextMate grammars, Catppuccin Mocha theme — codex
 //!   parity), driven incrementally per line so it stays prefix-stable.
+//! - [`links`]       — clickable links: bare-URL detection, the URL interner,
+//!   the per-cell link carrier, and the OSC 8 escape framing that lets a
+//!   wrapped URL open whole (see `docs/links.md`).
 //! - [`llm`]         — the real OpenAI-compatible backend: provider config, the
 //!   streaming client, the `/v1/models` listing, and the `ReplySource` bridge
 //!   (the I/O boundary for a real model; pure cores unit-tested).
@@ -98,6 +101,7 @@ pub mod frame;
 pub mod highlight;
 pub mod history;
 pub mod hooks;
+pub mod links;
 pub mod llm;
 pub mod markdown;
 pub mod mcp;

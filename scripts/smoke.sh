@@ -94,6 +94,8 @@ cleanup() {
 	tmux kill-session -t "${S}_header" 2>/dev/null
 	tmux kill-session -t "${S}_mascot" 2>/dev/null
 	[ -n "${MASC_CFG:-}" ] && rm -rf "$MASC_CFG" 2>/dev/null
+	tmux kill-session -t "${S}_links" 2>/dev/null
+	rm -f /tmp/alter-zero-smoke-links-* 2>/dev/null
 	tmux kill-session -t "${S}_ctrlofast" 2>/dev/null
 	tmux kill-session -t "${S}_compact" 2>/dev/null
 	tmux kill-session -t "${S}_autocompact" 2>/dev/null
@@ -7757,6 +7759,100 @@ if ! printf '%s' "$mascot_relaunch" | grep -qF "▝▛▛▀▜▜▘"; then
 fi
 tmux kill-session -t "$S86" 2>/dev/null
 rm -rf "$MASC_CFG"
+
+
+# --- Phase 87: CLICKABLE LINKS (docs/links.md). A URL wider than its row
+# hard-breaks across display rows — this 26-col pane splits the reply's
+# https://github.com/linuztx exactly like the report — and the terminal's own
+# per-row URL detection then opened only the first fragment on click. Every
+# painted fragment must ride an OSC 8 hyperlink carrying the FULL target. The
+# escape renders as nothing, so the assertion reads the RAW byte stream
+# (pipe-pane, captured before tmux interprets it); the link-id carrier must
+# never leak as a real underline colour (SGR 58); and a falsy
+# ALTER_ZERO_HYPERLINKS must emit no escape while the visible wrap stays
+# identical. ---
+S87="${S}_links"
+LINKS_RAW="$(mktemp /tmp/alter-zero-smoke-links-XXXXXX)"
+tmux new-session -d -s "$S87" -x 26 -y 40 "$APP"
+tmux pipe-pane -t "$S87" -o "cat >> $LINKS_RAW"
+sleep 0.4
+tmux send-keys -t "$S87" -l "$USER_MSG"
+sleep 0.2
+tmux send-keys -t "$S87" Enter
+# Poll the raw stream for the hyperlink open — it lands when the reply's URL
+# commits — then give the rest of the turn a beat to settle.
+for _ in $(seq 1 120); do
+	if grep -aqF "]8;id=az" "$LINKS_RAW"; then
+		break
+	fi
+	sleep 0.1
+done
+sleep 1.0
+links_pane="$(tmux capture-pane -t "$S87" -p -S -200)"
+echo "==== Phase 87: the 26-col pane wraps the URL (tail) ===="
+printf '%s\n' "$links_pane" | tail -30
+# The visible text is what it always was: the URL hard-breaks at the 24-col
+# content width, so NO single row holds it whole — the split prefix row is
+# there and the unbroken URL is not.
+if ! printf '%s' "$links_pane" | grep -qF "https://github.com/linuz"; then
+	echo "FAIL: Phase 87 — the reply's wrapped URL prefix is missing from the pane" >&2
+	status=1
+fi
+if printf '%s' "$links_pane" | grep -qF "https://github.com/linuztx"; then
+	echo "FAIL: Phase 87 — the URL fits one row; narrow the pane so this phase tests the split" >&2
+	status=1
+fi
+# The raw stream carries what the screen cannot show: an OSC 8 open whose URI
+# is the WHOLE URL (ESC ] 8 ; id=azN ; url ESC \), plus its close.
+if ! grep -aqE $']8;id=az[0-9]+;https://github\\.com/linuztx\x1b' "$LINKS_RAW"; then
+	echo "FAIL: Phase 87 — no OSC 8 open carries the full URL in the raw stream" >&2
+	status=1
+fi
+if ! grep -aqF $'\x1b]8;;\x1b' "$LINKS_RAW"; then
+	echo "FAIL: Phase 87 — the OSC 8 close is missing from the raw stream" >&2
+	status=1
+fi
+# The id carrier (an RGB underline colour) is stripped at the paint boundary —
+# a leaked SGR 58 would draw garbage underlines on supporting terminals.
+if grep -aqF $'\x1b[58;' "$LINKS_RAW"; then
+	echo "FAIL: Phase 87 — the link-id carrier leaked as an SGR 58 underline colour" >&2
+	status=1
+fi
+tmux kill-session -t "$S87" 2>/dev/null
+
+# The env gate: ALTER_ZERO_HYPERLINKS=0 emits no escapes — and the visible
+# wrap is identical, so turning links off can never change the layout.
+LINKS_RAW_OFF="$(mktemp /tmp/alter-zero-smoke-links-XXXXXX)"
+tmux new-session -d -s "$S87" -x 26 -y 40 "env ALTER_ZERO_HYPERLINKS=0 $CFG_ENV_NOHIST ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN"
+tmux pipe-pane -t "$S87" -o "cat >> $LINKS_RAW_OFF"
+sleep 0.4
+tmux send-keys -t "$S87" -l "$USER_MSG"
+sleep 0.2
+tmux send-keys -t "$S87" Enter
+links_off_pane=""
+for _ in $(seq 1 120); do
+	links_off_pane="$(tmux capture-pane -t "$S87" -p -S -200)"
+	if printf '%s' "$links_off_pane" | grep -qF "https://github.com/linuz"; then
+		break
+	fi
+	sleep 0.1
+done
+echo "==== Phase 87: gate off — same wrap, no escapes ===="
+printf '%s\n' "$links_off_pane" | tail -12
+if ! printf '%s' "$links_off_pane" | grep -qF "https://github.com/linuz"; then
+	echo "FAIL: Phase 87 — the wrapped URL is missing with the gate off" >&2
+	status=1
+fi
+if grep -aqF "]8;" "$LINKS_RAW_OFF"; then
+	echo "FAIL: Phase 87 — ALTER_ZERO_HYPERLINKS=0 still emitted OSC 8" >&2
+	status=1
+fi
+if grep -aqF $'\x1b[58;' "$LINKS_RAW_OFF"; then
+	echo "FAIL: Phase 87 — the carrier leaked as SGR 58 with the gate off" >&2
+	status=1
+fi
+tmux kill-session -t "$S87" 2>/dev/null
+rm -f "$LINKS_RAW" "$LINKS_RAW_OFF"
 
 
 if [ "$status" -eq 0 ]; then

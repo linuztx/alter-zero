@@ -57,6 +57,37 @@ fn assistant_inline_link_shows_text_then_url() {
 }
 
 #[test]
+fn a_hard_wrapped_url_carries_its_whole_target_on_every_row() {
+    // The reported bug (docs/links.md): in a narrow terminal the reply's URL
+    // hard-breaks — `https://github.com/linuz` on one row, `tx.` on the next
+    // — and clicking the first fragment opened the truncated URL. Every
+    // rendered fragment must carry the FULL target through the whole
+    // message pipeline (renderer, bullet/indent stamping, wrap).
+    let url = "https://github.com/linuztx";
+    let lines = message_lines(
+        Role::Assistant,
+        "created by linuztx · https://github.com/linuztx. That is the loop",
+        26,
+    );
+    let fragments: Vec<(String, String)> = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .filter_map(|s| {
+            crate::links::style_link(&s.style).map(|u| (s.content.to_string(), u.to_string()))
+        })
+        .collect();
+    assert!(
+        fragments.len() >= 2,
+        "the URL hard-breaks across rows at width 26: {lines:?}"
+    );
+    for (_, target) in &fragments {
+        assert_eq!(target, url, "every fragment opens the whole URL");
+    }
+    let rejoined: String = fragments.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(rejoined, url, "the marked fragments are exactly the URL");
+}
+
+#[test]
 fn assistant_renders_bullet_and_ordered_lists() {
     // Bullets keep the `-`, ordered items keep `N.`, and nesting indent
     // survives (the earlier wrap_text-collapses-whitespace bug).

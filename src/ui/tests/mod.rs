@@ -18,6 +18,7 @@ mod context_view;
 mod footer;
 mod header;
 mod hooks_view;
+mod inline;
 mod layout;
 mod live;
 mod login_view;
