@@ -75,7 +75,18 @@ pub(super) fn tool_header_lines(
         .fg(TOOL_NAME_COLOR)
         .add_modifier(Modifier::BOLD);
     let bullet = || Span::styled(TOOL_BULLET.to_string(), bullet_style);
-    let name = || Span::styled(tool.name.clone(), name_style);
+    // An MCP header wears its server capitalized (`Deepwiki - ask_question
+    // (MCP)`) while the record keeps the configured spelling — the context
+    // replay inverts `tool.name`, so the capitalization lives only at this
+    // render seam (`docs/mcp.md`). The same string feeds the width math
+    // below: `to_uppercase` can widen a non-ASCII first char, and the
+    // painted row and the reserved indent must agree.
+    let display = if crate::mcp::is_mcp_display_name(&tool.name) {
+        crate::mcp::capitalize_display(&tool.name)
+    } else {
+        tool.name.clone()
+    };
+    let name = || Span::styled(display.clone(), name_style);
     // An MCP call stores its **raw arguments JSON** (what makes the record
     // replayable — `docs/mcp.md`); the header derives the pretty
     // `key: "value"` form at render time instead.
@@ -103,7 +114,7 @@ pub(super) fn tool_header_lines(
     // (`docs/mcp.md`). The two rows then have **different** budgets — the first
     // is what is left beside `● {name}`, the rest what is left beside the
     // indent — which is exactly [`wrap_inline_hanging`].
-    let aligned = cols(TOOL_BULLET) + cols(&tool.name);
+    let aligned = cols(TOOL_BULLET) + cols(&display);
     let indent_cols = if aligned > (width as usize) / TOOL_HEADER_ALIGN_SHARE {
         cols(TOOL_BULLET)
     } else {
@@ -474,7 +485,14 @@ fn mcp_cell_lines(
     let server = crate::mcp::display_server(&tool.name)?.to_string();
     match tool.status {
         ToolStatus::Waiting | ToolStatus::Running => {
-            let mut lines = vec![mcp_calling_header(&server, tool.status, pulse, width)];
+            // The lone-call header bypasses `batch_label`, so it capitalizes
+            // its one server itself (the aggregated forms get it there).
+            let mut lines = vec![mcp_calling_header(
+                &crate::mcp::capitalize_server(&server),
+                tool.status,
+                pulse,
+                width,
+            )];
             if tool.status == ToolStatus::Waiting {
                 lines.push(result_row(0, TOOL_WAITING.to_string()));
             }

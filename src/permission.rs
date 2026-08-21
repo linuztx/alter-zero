@@ -203,18 +203,30 @@ pub fn question(request: &PermissionRequest) -> String {
     }
 }
 
-/// The `{server} - {tool} (MCP)` display form for an MCP request's wire-name
-/// `target` — what the rejected cell names.
+/// The `{Server} - {tool} (MCP)` display form for an MCP request's wire-name
+/// `target` — what the rejected cell names, the server capitalized like
+/// every other rendered surface (`docs/mcp.md`).
 fn mcp_display(wire: &str) -> String {
-    crate::mcp::display_from_wire(wire).unwrap_or_else(|| wire.to_string())
+    crate::mcp::display_from_wire(wire)
+        .map_or_else(|| wire.to_string(), |d| crate::mcp::capitalize_display(&d))
 }
 
 /// The `{server} - {tool}` label — the display name without its ` (MCP)`
-/// suffix — for an MCP request's wire-name `target`. What the prompt's body
-/// puts the arguments after, and what its "don't ask again" rule names.
+/// suffix — for an MCP request's wire-name `target`, verbatim. What the auto
+/// mode classifier's model-facing prompt names; the *rendered* prompt rows
+/// read [`mcp_display_label`] instead, so a display-only capitalization can
+/// never rewrite what the classifier is asked about.
 #[must_use]
 pub fn mcp_label(wire: &str) -> String {
     crate::mcp::label_from_wire(wire).unwrap_or_else(|| wire.to_string())
+}
+
+/// [`mcp_label`] with its server half capitalized — the prompt body's
+/// headline and the "don't ask again" row's spelling (the rule still stores
+/// the exact wire name, `docs/mcp.md`).
+#[must_use]
+pub fn mcp_display_label(wire: &str) -> String {
+    crate::mcp::capitalize_display(&mcp_label(wire))
 }
 
 /// How many options every prompt offers (Yes / remember / No) — the length of
@@ -232,7 +244,7 @@ pub const OPTION_COUNT: usize = 3;
 /// remember row carries its shortcut: **Ctrl+A**, the permission-mode toggle,
 /// because choosing it *is* the switch to [`PermissionMode::Edit`].
 ///
-/// An MCP row names the tool the way the user knows it (`deepwiki -
+/// An MCP row names the tool the way the user knows it (`Deepwiki -
 /// read_wiki_structure`, not the `mcp__…` wire name it stores) **and the
 /// project the rule is remembered for** — `project`, the directory the
 /// footer names, since the allowlist is per project (`docs/mcp.md`). `None`
@@ -247,7 +259,7 @@ pub fn options(request: &PermissionRequest, project: Option<&str>) -> [String; O
         // An MCP rule remembers the exact wire name (`docs/mcp.md`); the row
         // shows the display label, which is the same tool said out loud.
         PermissionKind::Mcp => {
-            let label = mcp_label(&request.target);
+            let label = mcp_display_label(&request.target);
             match project {
                 Some(dir) => format!("Yes, and don't ask again for {label} commands in {dir}"),
                 None => format!("Yes, and don't ask again for {label} commands"),
@@ -1661,16 +1673,16 @@ mod tests {
         let opts = options(&req, Some("~/Codes/tests"));
         assert_eq!(
             opts[1],
-            "Yes, and don't ask again for deepwiki - ask_question commands in ~/Codes/tests"
+            "Yes, and don't ask again for Deepwiki - ask_question commands in ~/Codes/tests"
         );
         assert_eq!(
             options(&req, None)[1],
-            "Yes, and don't ask again for deepwiki - ask_question commands",
+            "Yes, and don't ask again for Deepwiki - ask_question commands",
             "no session info yet: the clause simply drops"
         );
         assert_eq!(
             denied_display(&req, None),
-            "User rejected deepwiki - ask_question (MCP)"
+            "User rejected Deepwiki - ask_question (MCP)"
         );
         // No Ctrl+E hint — explain is a command affordance.
         assert!(!hints(&req).iter().any(|(k, _)| *k == "ctrl+e"));

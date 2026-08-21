@@ -113,8 +113,17 @@ in **`src/llm/mcp/`**.
   `{server} - {tool} (MCP)`, `tool_label`/`label_from_wire` is that name
   without the suffix (the permission prompt renders the arguments *between*
   the two, and names the label in its rule), `batch_label` is the aggregated
-  `deepwiki, context7 3 times` form, and `wire_from_display` inverts the
-  display name for the context replay.
+  `Deepwiki, Context7 3 times` form, and `wire_from_display` inverts the
+  display name for the context replay. `capitalize_server`/
+  `capitalize_display` upcase the server's first character (`deepwiki` →
+  `Deepwiki`) for the **render seams only** — the cell header, the
+  `Calling`/`Called` lines, the permission prompt's label and the `/mcp`
+  detail headline: the recorded `ToolCall::name` keeps the configured
+  spelling because `wire_from_display` preserves case, so a capitalized
+  record would replay as `mcp__Deepwiki__…`, a tool the model was never
+  offered (the `the_display_capitalization_never_reaches_the_wire` test is
+  the guard). The rule keys (`permissions.json`) and the model-facing
+  classifier prompt stay on the raw spelling for the same reason.
 - `mcp::protocol` — JSON-RPC 2.0 framing (`request`/`notification` builders,
   `Response` parse with `result`/`error` split, `RpcError` keeping the
   error's `data` whole — `-32022` names the server's versions there), **both
@@ -448,12 +457,12 @@ The backend follows the skills pattern:
   ```text
    Tool use
 
-     deepwiki - read_wiki_structure(repoName: "linuztx/flaredantic") (MCP)
+     Deepwiki - read_wiki_structure(repoName: "linuztx/flaredantic") (MCP)
      Get a list of documentation topics for a GitHub repository.
 
    Do you want to proceed?
    ❯ 1. Yes
-     2. Yes, and don't ask again for deepwiki - read_wiki_structure commands
+     2. Yes, and don't ask again for Deepwiki - read_wiki_structure commands
         in ~/Codes/tests
      3. No
 
@@ -471,7 +480,11 @@ The backend follows the skills pattern:
   exact-command allowlist (`mcp__deepwiki__read_wiki_structure` — persisted
   in `permissions.json` like any exact rule) while *saying* the display
   label and the project the rule is kept for (`App::project_dir`, the
-  footer's cwd — the allowlist is per project). `edit` mode still asks (a
+  footer's cwd — the allowlist is per project). One asymmetry to know: a
+  rejection's `User rejected Deepwiki - … (MCP)` text is **recorded** into
+  the cell's output (nothing parses it), so a session resumed from before
+  the capitalization shows its old lowercase text while the re-derived
+  headers around it capitalize. `edit` mode still asks (a
   remote tool is not a file edit), `auto` mode sends an uncovered call to
   the **auto mode classifier** instead of the user — exactly as it does a
   `bash` command, and exactly as the reference feeds MCP calls to its
@@ -497,8 +510,8 @@ quiet; Ctrl+O carries the full story:
   carry a `⎿ "{question}"` peek row; a fragment of one argument, wrapped at
   the width, says what the header already said and costs the row.
 - **A batch**: when **every** queued call is MCP, the batch is one act and
-  shows as one cell — `● Calling deepwiki 2 times…`, `● Calling deepwiki,
-  context7 4 times…` (`mcp::names::batch_label`: distinct servers in call
+  shows as one cell — `● Calling Deepwiki 2 times…`, `● Calling Deepwiki,
+  Context7 4 times…` (`mcp::names::batch_label`: distinct servers in call
   order, the total when there is more than one) — in the live strip *and*
   above a permission prompt asking about one of its calls, where the
   per-call rendering used to stack a screenful of identical `⎿ Waiting…`
@@ -519,8 +532,8 @@ quiet; Ctrl+O carries the full story:
   anyway; the note still closes the expanded Ctrl+O cell and rides the
   rollout, so the record that no human approved the call survives where
   the full story lives (`docs/permissions.md`). A **parallel run**
-  resolves to one such line for the whole run — `Called deepwiki 2 times
-  (ctrl+o to expand)` — because two lines saying `Called deepwiki`
+  resolves to one such line for the whole run — `Called Deepwiki 2 times
+  (ctrl+o to expand)` — because two lines saying `Called Deepwiki`
   describe the batch no better than one that counts it.
 - **Failed**: the loud generic red cell (full header + error peek) — a
   failure must not whisper, and it ends the run it is part of (the ok cells
@@ -610,13 +623,18 @@ first. Three rules, all of them `MCP_*` consts in `ui/theme.rs`:
 - **Every page's headline is cyan** (`MCP_TITLE_COLOR`, the picker family's
   selection accent) and bold — `Manage MCP servers`, `Deepwiki MCP Server`,
   `Tools for deepwiki`, `ask_question`, `Authenticating with deepwiki…`.
-- **The server detail's headline capitalises the name** — `deepwiki` →
-  `Deepwiki MCP Server`. A config key is lower-case by convention, which
-  reads as a typo the moment it opens a sentence; everywhere the name is an
-  *identity* rather than a headline (the list rows, `Tools for …`, the
-  `Tool name:`/`Full name:` values, the wire name) it stays verbatim,
-  because those are strings the user has to match against a file or a tool
-  call.
+- **A headline capitalises the name** — `deepwiki` → `Deepwiki MCP Server`
+  (`mcp::capitalize_server`, the one spelling of the helper). A config key
+  is lower-case by convention, which reads as a typo the moment it opens a
+  sentence — and the rule now covers **every tool-cell surface** too: the
+  `● Deepwiki - ask_question (MCP)(…)` header, the `Calling`/`Called`
+  lines (via `batch_label`), and the permission prompt's label
+  (`permission::mcp_display_label`). Everywhere the name is an *identity*
+  rather than a headline (the `/mcp` list rows, `Tools for …`, the
+  `Tool name:`/`Full name:` values, the wire name, the stored
+  `ToolCall::name`, the rule keys, the classifier's model-facing prompt) it
+  stays verbatim, because those are strings the user — or the replay — has
+  to match against a file or a tool call.
 - **Every field label on both detail pages is bright, and values are quiet
   by default** (`MCP_DETAIL_LABEL_COLOR` / `MCP_DETAIL_VALUE_COLOR`). The
   labels are the column the eye runs *down*; the value is what it stops on
@@ -754,6 +772,6 @@ OPENROUTER_API_KEY=sk-or-… cargo test --test live_mcp -- --ignored --nocapture
 
 The second one folds the turn's real `StreamEvent`s into `App` the way
 `tui::stream` does and asserts on the lines a terminal would show: the strip's
-one `● Calling deepwiki 2 times…` cell, the single committed
-`Called deepwiki 2 times`, and the per-call Ctrl+O headers with the model's own
+one `● Calling Deepwiki 2 times…` cell, the single committed
+`Called Deepwiki 2 times`, and the per-call Ctrl+O headers with the model's own
 argument order.

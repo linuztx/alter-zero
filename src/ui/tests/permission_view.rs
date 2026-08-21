@@ -849,14 +849,14 @@ fn an_mcp_prompt_reads_as_the_call_it_is_about() {
         .iter()
         .position(|r| {
             r.trim_start()
-                .starts_with("deepwiki - read_wiki_structure(")
+                .starts_with("Deepwiki - read_wiki_structure(")
         })
         .expect("the call names the tool, the server and its arguments");
     // The title is the act, the call is the body — no framed JSON.
     assert_eq!(text[body - 2].trim_end(), " Tool use");
     assert_eq!(
         text[body],
-        "   deepwiki - read_wiki_structure(repoName: \"linuztx/flaredantic\") (MCP)"
+        "   Deepwiki - read_wiki_structure(repoName: \"linuztx/flaredantic\") (MCP)"
     );
     assert_eq!(
         text[body + 1],
@@ -872,7 +872,7 @@ fn an_mcp_prompt_reads_as_the_call_it_is_about() {
     assert_eq!(text[body + 4].trim_end(), " ❯ 1. Yes");
     assert_eq!(
         text[body + 5].trim_end(),
-        "   2. Yes, and don't ask again for deepwiki - read_wiki_structure commands"
+        "   2. Yes, and don't ask again for Deepwiki - read_wiki_structure commands"
     );
     assert_eq!(text[body + 6].trim_end(), "      in ~/Codes/tests");
     assert_eq!(text[body + 7].trim_end(), "   3. No");
@@ -914,7 +914,7 @@ fn a_parallel_mcp_batch_shows_one_context_cell_above_the_prompt() {
         },
     ]);
     let text = rows(&app, 76, 30);
-    assert_eq!(text[0], "● Calling deepwiki 2 times… (ctrl+o to expand)");
+    assert_eq!(text[0], "● Calling Deepwiki 2 times… (ctrl+o to expand)");
     assert!(
         !text.iter().any(|r| r.contains("Waiting…")),
         "one line for the batch, not one per call: {text:?}"

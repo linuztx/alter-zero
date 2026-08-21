@@ -1348,14 +1348,14 @@ fn a_running_mcp_cell_collapses_to_calling_server() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
-        format!("● {MCP_CALLING_PREFIX}deepwiki…{EXPAND_HINT}")
+        format!("● {MCP_CALLING_PREFIX}Deepwiki…{EXPAND_HINT}")
     );
 }
 
 #[test]
 fn a_waiting_mcp_sibling_shows_the_waiting_row() {
     let lines = tool_lines(&mcp_tool(ToolStatus::Waiting, ""), 100);
-    assert!(plain(&lines[0]).starts_with(&format!("● {MCP_CALLING_PREFIX}deepwiki…")));
+    assert!(plain(&lines[0]).starts_with(&format!("● {MCP_CALLING_PREFIX}Deepwiki…")));
     assert!(plain(&lines[1]).contains("Waiting…"));
 }
 
@@ -1370,7 +1370,7 @@ fn a_resolved_mcp_cell_is_the_bullet_less_called_line() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
-        format!("{MCP_CALLED_PREFIX}deepwiki{EXPAND_HINT}")
+        format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")
     );
     assert_eq!(lines[0].spans[0].style.fg, Some(REASONING_LABEL_COLOR));
     assert!(
@@ -1385,14 +1385,14 @@ fn a_resolved_mcp_cell_stays_quiet_without_the_classifier_note() {
     // `Called {server} (ctrl+o to expand)` line grew a
     // `⎿ Allowed by auto mode classifier` row under it — doubling a cell
     // that is deliberately one line (and that a parallel run's aggregated
-    // `Called deepwiki 2 times` line never showed anyway). Inline the note
+    // `Called Deepwiki 2 times` line never showed anyway). Inline the note
     // stays off the quiet cell; the Ctrl+O transcript keeps the record.
     let mut cell = mcp_tool(ToolStatus::Ok, "done");
     cell.approval_note = Some("Allowed by auto mode classifier".to_string());
     let texts: Vec<String> = tool_lines(&cell, 100).iter().map(plain).collect();
     assert_eq!(
         texts,
-        vec![format!("{MCP_CALLED_PREFIX}deepwiki{EXPAND_HINT}")],
+        vec![format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")],
         "the quiet line is the whole inline cell"
     );
     // The expanded transcript still closes with the note — the record that
@@ -1426,7 +1426,7 @@ fn a_failed_mcp_cell_keeps_the_loud_generic_form() {
     // error peek, red bullet.
     let head = plain(&lines[0]);
     assert!(
-        head.starts_with("● deepwiki - ask_question (MCP)("),
+        head.starts_with("● Deepwiki - ask_question (MCP)("),
         "got {head:?}"
     );
     assert!(head.contains("question: \"What is this?\""), "got {head:?}");
@@ -1437,7 +1437,7 @@ fn a_failed_mcp_cell_keeps_the_loud_generic_form() {
 
 #[test]
 fn a_wide_mcp_header_wraps_to_the_bullets_own_hanging_indent() {
-    // `● deepwiki - ask_question (MCP)` is 31 columns: aligning the wrapped
+    // `● Deepwiki - ask_question (MCP)` is 31 columns: aligning the wrapped
     // arguments under the opening `(` would spend 40% of the terminal on
     // indent, so a header that wide falls back to the bullet's two columns
     // and the args get the whole width (`docs/mcp.md`).
@@ -1446,7 +1446,7 @@ fn a_wide_mcp_header_wraps_to_the_bullets_own_hanging_indent() {
     let lines = tool_full_lines(&cell, 76);
     assert_eq!(
         plain(&lines[0]),
-        "● deepwiki - ask_question (MCP)(repoName: \"linuztx/flaredantic\", question:"
+        "● Deepwiki - ask_question (MCP)(repoName: \"linuztx/flaredantic\", question:"
     );
     assert_eq!(
         plain(&lines[1]),
@@ -1476,7 +1476,7 @@ fn the_ctrl_o_view_shows_the_full_mcp_story() {
     let lines = tool_full_lines(&cell, 120);
     let head = plain(&lines[0]);
     assert!(
-        head.starts_with("● deepwiki - ask_question (MCP)("),
+        head.starts_with("● Deepwiki - ask_question (MCP)("),
         "got {head:?}"
     );
     assert!(head.contains("repoName: \"linuztx/flaredantic\""));
@@ -1513,7 +1513,7 @@ fn an_all_mcp_batch_collapses_the_strip_to_one_aggregated_cell() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
-        format!("● {MCP_CALLING_PREFIX}deepwiki, plugin:context7:context7 3 times…{EXPAND_HINT}")
+        format!("● {MCP_CALLING_PREFIX}Deepwiki, Plugin:context7:context7 3 times…{EXPAND_HINT}")
     );
 }
 
@@ -1529,7 +1529,7 @@ fn the_aggregated_label_counts_the_whole_batch_not_what_is_left_of_it() {
     let lines = mcp_batch_lines(&app, Some(Duration::ZERO), 120).expect("still an all-MCP batch");
     assert_eq!(
         plain(&lines[0]),
-        format!("● {MCP_CALLING_PREFIX}deepwiki 2 times…{EXPAND_HINT}")
+        format!("● {MCP_CALLING_PREFIX}Deepwiki 2 times…{EXPAND_HINT}")
     );
 }
 
@@ -1542,7 +1542,7 @@ fn a_mixed_batch_keeps_the_ordinary_per_cell_strip() {
     let lines = mcp_batch_lines(&lone, Some(Duration::ZERO), 120).expect("a lone MCP call");
     assert_eq!(
         plain(&lines[0]),
-        format!("● {MCP_CALLING_PREFIX}deepwiki…{EXPAND_HINT}")
+        format!("● {MCP_CALLING_PREFIX}Deepwiki…{EXPAND_HINT}")
     );
     // Nothing in flight is nothing to aggregate.
     assert!(mcp_batch_lines(&App::new(), Some(Duration::ZERO), 120).is_none());
@@ -1569,7 +1569,7 @@ fn a_finished_parallel_mcp_run_commits_one_aggregated_line() {
     assert_eq!(lines.len(), 1);
     assert_eq!(
         plain(&lines[0]),
-        format!("{MCP_CALLED_PREFIX}deepwiki 2 times{EXPAND_HINT}")
+        format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}")
     );
     // And the repaint from history agrees, line for line.
     let repaint = crate::ui::conversation_lines(&app.history, 100);
@@ -1582,9 +1582,9 @@ fn a_rebuild_mid_run_leaves_the_held_cell_to_the_strip() {
     // The bug a live run caught: the first call of a parallel batch resolves,
     // its line is held (the run isn't over) — and then the permission prompt
     // for the *second* call closes, which purge-rebuilds the screen from
-    // history. Painting the held cell there wrote a `Called deepwiki` line
-    // that the run's own `Called deepwiki 2 times` then followed. Until the
-    // run ends the strip's `● Calling deepwiki 2 times…` speaks for it, so a
+    // history. Painting the held cell there wrote a `Called Deepwiki` line
+    // that the run's own `Called Deepwiki 2 times` then followed. Until the
+    // run ends the strip's `● Calling Deepwiki 2 times…` speaks for it, so a
     // rebuild must skip exactly the held cells (`docs/mcp.md`).
     let mut app = app_calling(&[
         "deepwiki - ask_question (MCP)",
@@ -1610,7 +1610,7 @@ fn a_rebuild_mid_run_leaves_the_held_cell_to_the_strip() {
     assert_eq!(
         rebuilt,
         vec![
-            format!("{MCP_CALLED_PREFIX}deepwiki 2 times{EXPAND_HINT}"),
+            format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}"),
             String::new()
         ]
     );
@@ -1632,10 +1632,10 @@ fn a_failed_call_still_flushes_the_run_it_ends() {
     let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(
         texts[0],
-        format!("{MCP_CALLED_PREFIX}deepwiki{EXPAND_HINT}")
+        format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")
     );
     assert_eq!(texts[1], "");
-    assert!(texts[2].starts_with("● deepwiki - read_wiki_structure (MCP)("));
+    assert!(texts[2].starts_with("● Deepwiki - read_wiki_structure (MCP)("));
     assert!(texts.iter().any(|t| t.contains("server exploded")));
     let repaint: Vec<String> = crate::ui::conversation_lines(&app.history, 100)
         .iter()
@@ -1657,7 +1657,7 @@ fn two_sequential_mcp_calls_are_not_one_parallel_run() {
         .iter()
         .map(plain)
         .collect();
-    let called = format!("{MCP_CALLED_PREFIX}deepwiki{EXPAND_HINT}");
+    let called = format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}");
     assert_eq!(
         repaint,
         vec![called.clone(), String::new(), called, String::new()]
@@ -1668,6 +1668,6 @@ fn two_sequential_mcp_calls_are_not_one_parallel_run() {
 fn a_narrow_terminal_drops_the_mcp_hint_before_the_label() {
     let lines = tool_lines(&mcp_tool(ToolStatus::Running, ""), 20);
     let head = plain(&lines[0]);
-    assert!(head.starts_with("● Calling deepwiki…"), "got {head:?}");
+    assert!(head.starts_with("● Calling Deepwiki…"), "got {head:?}");
     assert!(!head.contains("ctrl+o"), "no room for the hint at 20 cols");
 }

@@ -39,18 +39,6 @@ fn title_line(text: &str, width: u16) -> Line<'static> {
     )
 }
 
-/// A server name with its first character upper-cased — `deepwiki` →
-/// `Deepwiki` — for the detail page's headline alone. A config key is
-/// lower-case by convention, which reads as a typo once it opens a sentence;
-/// everywhere the name is an *identity* rather than a headline (the list
-/// rows, `Tools for …`, the wire name) it stays verbatim.
-fn capitalize_first(name: &str) -> String {
-    let mut chars = name.chars();
-    chars.next().map_or_else(String::new, |first| {
-        first.to_uppercase().chain(chars).collect()
-    })
-}
-
 /// `text` word-wrapped to inset rows in `style`.
 fn wrapped(text: &str, style: Style, width: u16) -> Vec<Line<'static>> {
     let room = (width as usize).saturating_sub(cols(MODEL_INDENT)).max(1) as u16;
@@ -380,7 +368,11 @@ fn server_lines(menu: &McpMenu, server: &McpServerSnapshot, width: u16) -> Vec<L
         model_rule(width),
         Line::default(),
         title_line(
-            &format!("{} MCP Server", capitalize_first(&server.name)),
+            // A config key is lower-case by convention, which reads as a
+            // typo once it opens a sentence; everywhere the name is an
+            // *identity* rather than a headline (the list rows, `Tools for
+            // …`, the wire name) it stays verbatim (`docs/mcp.md`).
+            &format!("{} MCP Server", crate::mcp::capitalize_server(&server.name)),
             width,
         ),
         Line::default(),

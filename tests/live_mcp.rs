@@ -256,7 +256,7 @@ fn live_deepwiki_tool_descriptions_drive_the_permission_prompt() {
     assert_eq!(title(PermissionKind::Mcp), "Tool use");
     assert!(
         rows.iter().any(|r| r.trim_start().starts_with(&format!(
-            "deepwiki - read_wiki_structure(repoName: \"{REPO}\") (MCP)"
+            "Deepwiki - read_wiki_structure(repoName: \"{REPO}\") (MCP)"
         ))),
         "the call reads as the cell will: {rows:?}"
     );
@@ -270,7 +270,7 @@ fn live_deepwiki_tool_descriptions_drive_the_permission_prompt() {
     );
     assert_eq!(
         options(&request, Some("~/Codes/tests"))[1],
-        "Yes, and don't ask again for deepwiki - read_wiki_structure commands in ~/Codes/tests"
+        "Yes, and don't ask again for Deepwiki - read_wiki_structure commands in ~/Codes/tests"
     );
     manager.shutdown();
 }
@@ -336,13 +336,13 @@ fn live_a_parallel_deepwiki_batch_renders_as_one_cell() {
     assert!(
         strips
             .iter()
-            .any(|row| row.starts_with("● Calling deepwiki 2 times…")),
+            .any(|row| row.starts_with("● Calling Deepwiki 2 times…")),
         "{strips:?}"
     );
     // …and one committed line when the run ends, with nothing else between.
     assert_eq!(
         committed,
-        vec!["Called deepwiki 2 times (ctrl+o to expand)".to_string()],
+        vec!["Called Deepwiki 2 times (ctrl+o to expand)".to_string()],
         "the parallel run commits once"
     );
     // The Ctrl+O story is still per call, with the model's own argument
@@ -352,7 +352,7 @@ fn live_a_parallel_deepwiki_batch_renders_as_one_cell() {
     assert!(
         expanded
             .iter()
-            .any(|row| row.contains("deepwiki - read_wiki_structure (MCP)(repoName:")),
+            .any(|row| row.contains("Deepwiki - read_wiki_structure (MCP)(repoName:")),
         "{expanded:?}"
     );
     // …and every resolved call is green, not a failure.

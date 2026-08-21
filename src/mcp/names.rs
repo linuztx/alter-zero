@@ -160,10 +160,43 @@ pub fn wire_from_display(name: &str) -> Option<String> {
     Some(tool_wire_name(server, tool))
 }
 
+/// A server name with its first character upper-cased for **display** —
+/// `deepwiki` → `Deepwiki`, the way Claude Code titles a server. Display
+/// only: [`normalize_name`] preserves case, so a capitalized name that
+/// entered the record would invert ([`wire_from_display`]) to
+/// `mcp__Deepwiki__…`, a tool the model was never offered. The wire name,
+/// the permission-rule key and the `/mcp` identity rows keep the configured
+/// spelling (`docs/mcp.md`).
+#[must_use]
+pub fn capitalize_server(server: &str) -> String {
+    let mut chars = server.chars();
+    chars.next().map_or_else(String::new, |first| {
+        first.to_uppercase().chain(chars).collect()
+    })
+}
+
+/// A display name or label with its **server half** capitalized for display
+/// — `deepwiki - ask_question (MCP)` → `Deepwiki - ask_question (MCP)`, the
+/// suffix-less permission label the same way. Anything without the
+/// `{server} - …` shape comes back verbatim, so `Bash` and an unknown tool
+/// name are untouched. Applied at the render seams only, never to the
+/// recorded name (see [`capitalize_server`]).
+#[must_use]
+pub fn capitalize_display(name: &str) -> String {
+    match name.split_once(" - ") {
+        Some((server, rest)) if !server.is_empty() => {
+            format!("{} - {rest}", capitalize_server(server))
+        }
+        _ => name.to_string(),
+    }
+}
+
 /// The aggregated live-strip label for a batch of MCP calls
 /// (`docs/mcp.md`): the **distinct servers in call order**, then the total
-/// call count when there is more than one call — `deepwiki`,
-/// `deepwiki 2 times`, `deepwiki, context7 3 times`.
+/// call count when there is more than one call — `Deepwiki`,
+/// `Deepwiki 2 times`, `Deepwiki, Context7 3 times`. Display-only (only the
+/// `Calling …`/`Called …` cells read it), so the servers come back through
+/// [`capitalize_server`]; the dedup still keys on the raw name.
 #[must_use]
 pub fn batch_label(servers: &[&str]) -> String {
     let mut distinct: Vec<&str> = Vec::new();
@@ -172,7 +205,11 @@ pub fn batch_label(servers: &[&str]) -> String {
             distinct.push(server);
         }
     }
-    let names = distinct.join(", ");
+    let names = distinct
+        .iter()
+        .map(|server| capitalize_server(server))
+        .collect::<Vec<_>>()
+        .join(", ");
     match servers.len() {
         0 | 1 => names,
         n => format!("{names} {n} times"),
@@ -294,12 +331,65 @@ mod tests {
 
     #[test]
     fn batch_label_names_distinct_servers_and_counts_calls() {
-        assert_eq!(batch_label(&["deepwiki"]), "deepwiki");
-        assert_eq!(batch_label(&["deepwiki", "deepwiki"]), "deepwiki 2 times");
+        // Display-only (the `Calling …`/`Called …` cells), so the servers
+        // read capitalized; the dedup still keys on the raw name.
+        assert_eq!(batch_label(&["deepwiki"]), "Deepwiki");
+        assert_eq!(batch_label(&["deepwiki", "deepwiki"]), "Deepwiki 2 times");
         assert_eq!(
             batch_label(&["deepwiki", "deepwiki", "context7"]),
-            "deepwiki, context7 3 times"
+            "Deepwiki, Context7 3 times"
         );
         assert_eq!(batch_label(&[]), "");
+    }
+
+    #[test]
+    fn capitalize_server_upcases_only_the_first_character() {
+        assert_eq!(capitalize_server("deepwiki"), "Deepwiki");
+        assert_eq!(capitalize_server("context7"), "Context7");
+        assert_eq!(
+            capitalize_server("plugin_context7_context7"),
+            "Plugin_context7_context7"
+        );
+        assert_eq!(capitalize_server("Already"), "Already");
+        assert_eq!(capitalize_server(""), "");
+        // Unicode-aware, not `to_ascii_uppercase`: é upcases (and ß expands).
+        assert_eq!(capitalize_server("élan"), "Élan");
+        assert_eq!(capitalize_server("ßerver"), "SServer");
+    }
+
+    #[test]
+    fn capitalize_display_names_the_server_and_leaves_the_rest() {
+        assert_eq!(
+            capitalize_display("deepwiki - read_wiki_structure (MCP)"),
+            "Deepwiki - read_wiki_structure (MCP)"
+        );
+        // The suffix-less permission label capitalizes the same way.
+        assert_eq!(
+            capitalize_display("deepwiki - ask_question"),
+            "Deepwiki - ask_question"
+        );
+        // Anything without the `{server} - …` shape comes back verbatim.
+        assert_eq!(capitalize_display("Bash"), "Bash");
+        assert_eq!(capitalize_display("mystery"), "mystery");
+    }
+
+    #[test]
+    fn the_display_capitalization_never_reaches_the_wire() {
+        // The stored `ToolCall::name` keeps the configured spelling: the
+        // context replay inverts it with `wire_from_display`, whose
+        // `normalize_name` preserves case — a capitalized record would
+        // replay as `mcp__Deepwiki__…`, a tool the model was never offered.
+        let display = tool_display_name("deepwiki", "ask_question");
+        assert!(display.starts_with("deepwiki"), "the record stays raw");
+        assert_eq!(
+            wire_from_display(&display).as_deref(),
+            Some("mcp__deepwiki__ask_question")
+        );
+        // Inverting the capitalized form names a *different* wire tool —
+        // exactly why it is applied at the render seams and never stored.
+        assert_eq!(
+            wire_from_display(&capitalize_display(&display)).as_deref(),
+            Some("mcp__Deepwiki__ask_question")
+        );
     }
 }

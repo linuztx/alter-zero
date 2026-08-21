@@ -29,9 +29,10 @@ pub use self::config::{
     record_server, remove_server, render_server,
 };
 pub use self::names::{
-    MCP_DISPLAY_SUFFIX, MCP_TOOL_PREFIX, batch_label, display_from_wire, display_server,
-    is_mcp_display_name, is_mcp_tool, label_from_wire, normalize_name, parse_wire_name,
-    tool_display_name, tool_label, tool_wire_name, validate_server_name, wire_from_display,
+    MCP_DISPLAY_SUFFIX, MCP_TOOL_PREFIX, batch_label, capitalize_display, capitalize_server,
+    display_from_wire, display_server, is_mcp_display_name, is_mcp_tool, label_from_wire,
+    normalize_name, parse_wire_name, tool_display_name, tool_label, tool_wire_name,
+    validate_server_name, wire_from_display,
 };
 pub use self::protocol::{
     CallOutcome, Incoming, LEGACY_PROTOCOL_VERSION, MAX_TOOL_DESCRIPTION_CHARS, McpToolInfo,
