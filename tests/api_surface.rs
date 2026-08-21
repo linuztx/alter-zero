@@ -294,6 +294,7 @@ use alter_zero::ui::{
     idle_task_lines,
     shortcuts_lines,
     shortcuts_rows,
+    startup_notice_lines,
     status_line,
     status_line_with_verb,
     stream_preview_max_rows,

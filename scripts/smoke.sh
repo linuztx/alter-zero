@@ -6352,8 +6352,15 @@ if git --git-dir="$ck71_dir" rev-parse HEAD >/dev/null 2>&1; then
 	echo "FAIL: Phase 71 — an over-budget tree was snapshot anyway (the probe must refuse before 'git add -A')" >&2
 	status=1
 fi
+if printf '%s' "$ck71_pane" | grep -qF "Snapshotting"; then
+	echo "FAIL: Phase 71 — a refused tree announced a snapshot it will not take" >&2
+	status=1
+fi
 
-# (d) the control: the same directory under the default budget checkpoints.
+# (d) the control: the same directory under the default budget checkpoints —
+# and, cold, its session-start snapshot ANNOUNCES itself above the banner
+# (`Snapshotting 1 file (12 B) for checkpoints…`, docs/checkpoint.md
+# "Saying so").
 ck71_launch "in-budget project (control)" "$WORK71" "$CKAPP71"
 if ! git --git-dir="$ck71_dir" rev-parse HEAD >/dev/null 2>&1; then
 	echo "FAIL: Phase 71 — an ordinary project did not snapshot (the guards must be scoped, not a blanket disable)" >&2
@@ -6361,6 +6368,10 @@ if ! git --git-dir="$ck71_dir" rev-parse HEAD >/dev/null 2>&1; then
 fi
 if printf '%s' "$ck71_pane" | grep -qF "Checkpoints off"; then
 	echo "FAIL: Phase 71 — an ordinary project raised a refusal toast" >&2
+	status=1
+fi
+if ! printf '%s' "$ck71_pane" | grep -qF "Snapshotting 1 file ("; then
+	echo "FAIL: Phase 71 — the cold session-start snapshot never announced itself (docs/checkpoint.md 'Saying so')" >&2
 	status=1
 fi
 
@@ -6375,7 +6386,17 @@ printf 'print("hi")\n' >"$WORK71B/app.py"
 CK71B="$WORK71B/.ck"
 CKAPP71B="env $CFG_ENV ALTER_ZERO_CHECKPOINTS=1 ALTER_ZERO_CHECKPOINTS_DIR=$CK71B ALTER_ZERO_SESSIONS_DIR=$CK_SESS ALTER_ZERO_STARTUP_DELAY_MS=$SMOKE_STARTUP_MS $BIN_ABS"
 CK71="$CK71B" ck71_launch "store inside the project" "$WORK71B" "$CKAPP71B"
+if ! printf '%s' "$ck71_pane" | grep -qF "Snapshotting 1 file ("; then
+	echo "FAIL: Phase 71 — the cold first launch never announced its snapshot" >&2
+	status=1
+fi
 CK71="$CK71B" ck71_launch "store inside the project (2)" "$WORK71B" "$CKAPP71B"
+# The relaunch finds a warm store with nothing new: the probe reports zero,
+# so there is nothing to announce (the files>0 gate keeps relaunches quiet).
+if printf '%s' "$ck71_pane" | grep -qF "Snapshotting"; then
+	echo "FAIL: Phase 71 — a warm store announced a snapshot with nothing new" >&2
+	status=1
+fi
 ck71b_dir="$CK71B/$(printf '%s' "$WORK71B" | sed 's/[^a-zA-Z0-9]/-/g')"
 ck71b_tracked="$(git --git-dir="$ck71b_dir" --work-tree="$WORK71B" ls-files 2>/dev/null)"
 echo "==== Phase 71 (store inside the project): tracked=$(printf '%s' "$ck71b_tracked" | tr '\n' ' ') ===="

@@ -199,6 +199,25 @@ impl std::fmt::Display for CheckpointRefusal {
     }
 }
 
+/// The one-row line shown while the session-start snapshot hashes the tree —
+/// `Snapshotting 326 files (7.9 MB) for checkpoints…` — or `None` when there
+/// is nothing worth saying: a warm store with nothing new, or a disabled one,
+/// both of which probe as zero. Built from the pre-flight probe's
+/// [`SnapshotCost`], so the numbers are the ones `git add -A` is about to
+/// pay; the refusal toast's own pluralisation and byte formatting, so the
+/// pair reads as one family of message (`docs/checkpoint.md`).
+#[must_use]
+pub fn snapshot_notice(cost: &SnapshotCost) -> Option<String> {
+    (cost.files > 0).then(|| {
+        format!(
+            "Snapshotting {} file{} ({}) for checkpoints…",
+            cost.files,
+            if cost.files == 1 { "" } else { "s" },
+            human_bytes(cost.bytes)
+        )
+    })
+}
+
 /// A byte count in the largest unit that keeps it short — the toast has one
 /// row, so `470 MB` beats `493000000`. Binary units under the familiar
 /// `du -h` labels, so the number matches what `du -sh` prints for the same
@@ -1263,6 +1282,43 @@ mod tests {
             .to_string(),
             "Checkpoints off — 1 file / 900 B is too big to snapshot per turn",
         );
+    }
+
+    #[test]
+    fn snapshot_notice_names_what_the_snapshot_will_hash() {
+        // The pre-flight announcement (docs/checkpoint.md): `git add -A` is
+        // O(bytes) and the session-start snapshot runs before the first frame
+        // paints, so the coming seconds are named before they are paid.
+        let cost = SnapshotCost {
+            files: 326,
+            bytes: 8_336_000,
+            outcome: ProbeOutcome::WithinBudget,
+        };
+        assert_eq!(
+            snapshot_notice(&cost).as_deref(),
+            Some("Snapshotting 326 files (7.9 MB) for checkpoints…")
+        );
+    }
+
+    #[test]
+    fn a_single_file_snapshot_notice_is_not_pluralised() {
+        let cost = SnapshotCost {
+            files: 1,
+            bytes: 11,
+            outcome: ProbeOutcome::WithinBudget,
+        };
+        assert_eq!(
+            snapshot_notice(&cost).as_deref(),
+            Some("Snapshotting 1 file (11 B) for checkpoints…")
+        );
+    }
+
+    #[test]
+    fn a_warm_store_with_nothing_new_says_nothing() {
+        // A relaunch in an unchanged cwd probes as zero (the store already
+        // holds everything) — and a disabled store's probe returns the same
+        // default — so ordinary relaunches stay quiet.
+        assert_eq!(snapshot_notice(&SnapshotCost::default()), None);
     }
 
     // ===== the pre-flight cost budget =====

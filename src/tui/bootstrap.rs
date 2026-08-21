@@ -383,7 +383,7 @@ impl<'t> Session<'t> {
             cwd_display,
         };
         session.seed_app(settings);
-        session.seed_checkpoints(refusal, checkpoints_wanted);
+        session.seed_checkpoints(refusal, checkpoints_wanted)?;
         // After the checkpoint toast, so a session with both problems ends up
         // showing the hooks one — the actionable typo beats the size refusal.
         session.report_hooks_error(hooks_error);
@@ -447,17 +447,28 @@ impl<'t> Session<'t> {
     /// would actually cost — enumerating with `git ls-files` instead of hashing,
     /// ~800× cheaper — and retires the store when a tree is past the budget.
     /// Either way the reason is toasted once, so the feature never goes quiet
-    /// without saying why. See `docs/checkpoint.md`.
-    fn seed_checkpoints(&mut self, scoped_out: Option<CheckpointRefusal>, wanted: bool) {
+    /// without saying why. And a snapshot that *does* run announces itself
+    /// first — the `Snapshotting …` row committed above the banner — because
+    /// hashing is O(bytes) and a cold store's first snapshot can hold the
+    /// first frame for seconds. See `docs/checkpoint.md`.
+    fn seed_checkpoints(
+        &mut self,
+        scoped_out: Option<CheckpointRefusal>,
+        wanted: bool,
+    ) -> io::Result<()> {
         if self.checkpoints.init().is_err() {
-            return;
+            return Ok(());
         }
-        let refusal = scoped_out.or_else(|| {
-            self.checkpoints
-                .probe(&config::checkpoint_budget())
-                .refusal()
-                .inspect(|_| self.checkpoints.disable())
-        });
+        // Bind the probe's cost instead of feeding it straight into
+        // `.refusal()`: the measurement that decides whether to snapshot also
+        // says what the snapshot will hash. A scoped-out cwd still never
+        // spawns git.
+        let cost = if scoped_out.is_some() {
+            checkpoint::SnapshotCost::default()
+        } else {
+            self.checkpoints.probe(&config::checkpoint_budget())
+        };
+        let refusal = scoped_out.or_else(|| cost.refusal().inspect(|_| self.checkpoints.disable()));
         if let Some(reason) = refusal {
             // The `/settings` **Checkpoints** row was seeded from the store's
             // capability a moment ago; a probe refusal changes that answer.
@@ -467,12 +478,27 @@ impl<'t> Session<'t> {
             if wanted {
                 self.toast(reason.to_string(), ToastKind::Info);
             }
-            return;
+            return Ok(());
+        }
+        // Say what the coming seconds are for *before* paying them. The
+        // notice needs its own forced frame: `insert_before` only queues, and
+        // the loop's first draw tick sits on the far side of the snapshot.
+        // Committed ahead of `paint_first_frame`'s banner it lands above it
+        // in scrollback — chrome like the banner, never in `history`, and (a
+        // one-time startup fact) not re-emitted by a purge rebuild. A warm
+        // store with nothing new probes as zero and stays quiet, so ordinary
+        // relaunches cost no extra frame.
+        if let Some(notice) = checkpoint::snapshot_notice(&cost) {
+            let width = self.term.screen().width;
+            self.term
+                .insert_before(ui::startup_notice_lines(&notice, width));
+            self.draw_conversation()?;
         }
         if let Some(commit) = self.checkpoints.snapshot("session start") {
             self.recorder
                 .record_checkpoint(checkpoint::Checkpoint { after: 0, commit });
         }
+        Ok(())
     }
 
     /// Say once, at startup, that the `hooks.json` could not be read — the

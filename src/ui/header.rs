@@ -64,6 +64,25 @@ fn meta_rows(app: &App) -> Vec<Vec<Span<'static>>> {
     rows
 }
 
+/// A one-row startup notice as scrollback chrome — the checkpoint
+/// pre-flight's `Snapshotting …` line (`docs/checkpoint.md`), committed
+/// above the banner by the boundary. The banner's own indent and dim meta
+/// colour, so the two read as one block; clamped with a trailing `…` at a
+/// narrow width (a status row, not prose), like every banner metadata row.
+/// Chrome like the banner, it never enters `history` — but unlike the
+/// banner it is a one-time startup fact, so a purge rebuild (resize,
+/// `/clear`) does not re-emit it.
+#[must_use]
+pub fn startup_notice_lines(text: &str, width: u16) -> Vec<Line<'static>> {
+    vec![clamp_spans(
+        vec![
+            Span::raw(HEADER_INDENT),
+            Span::styled(text.to_string(), Style::new().fg(HEADER_META_COLOR)),
+        ],
+        width as usize,
+    )]
+}
+
 /// The startup header banner as scrollback rows (docs/header.md): the
 /// session's mascot in the banner gradient, the metadata column beside it.
 /// Pure chrome — the boundary commits it once at launch and restores it atop

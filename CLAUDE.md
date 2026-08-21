@@ -256,7 +256,13 @@ the row unavailable). Running out of *time* is its own verdict
 that timed out learned nothing about the size. Every refusal raises a one-row `Checkpoints off —
 {reason}` toast, suppressed only when the user had already turned checkpoints
 off: going quiet is what made "alter0 takes seconds to boot in `/tmp`" and
-"checkpoints do nothing here" read as two unrelated bugs) in
+"checkpoints do nothing here" read as two unrelated bugs — and a session-start
+snapshot that *does* run announces itself the same way: the probe's bound
+`SnapshotCost` becomes the pure `checkpoint::snapshot_notice` row
+(`Snapshotting 326 files (7.9 MB) for checkpoints…`), committed above the
+banner via `ui::startup_notice_lines` with one forced frame before the
+O(bytes) `git add -A` blocks, quiet on a warm relaunch since a store with
+nothing new probes as zero) in
 `docs/checkpoint.md`; the **parallel tool-call batch** (the model's several tool
 calls in one round announced up front so the running one shows live while the
 not-yet-run ones show `⎿ Waiting…`, executed sequentially) in

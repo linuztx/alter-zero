@@ -230,6 +230,28 @@ Disabling itself in silence is what made this hard to place: "alter0 takes
 seconds to boot in `/tmp`" and "checkpoints do nothing here" were the same
 fact seen from two sides.
 
+The refusal toast has a sibling for the snapshot that **does** run: the
+pre-flight **announcement**. The session-start snapshot hashes the whole cwd
+before the first frame paints, so on a big cold tree the terminal sits frozen
+for seconds with nothing saying why. `seed_checkpoints` now binds the probe's
+`SnapshotCost` (it used to feed straight into `.refusal()` and drop the
+numbers) and, when the tree fits the budget, commits the pure
+`checkpoint::snapshot_notice` line — `Snapshotting 326 files (7.9 MB) for
+checkpoints…`, `human_bytes` and the refusal's own pluralisation, so the pair
+reads as one family — through `ui::startup_notice_lines` (the banner's indent
+and dim meta colour) and **forces one frame** (`draw_conversation`) before
+`snapshot("session start")` blocks: `insert_before` only queues, and the
+loop's first draw tick sits on the far side of the snapshot. Committed ahead
+of `paint_first_frame`'s banner, the row lands **above the banner** in
+scrollback. It is chrome (never in `history`, never re-emitted by a purge
+rebuild — a one-time startup fact, so it disappears on the first resize or
+`/clear`, deliberately unlike the banner's `banner_tail`), and it is gated on
+the probe's `files > 0`: a warm store with nothing new — every ordinary
+relaunch — probes as zero and stays quiet, costing no extra frame
+(`probe_shrinks_once_the_store_is_warm` is what makes that gate honest).
+Turn-end snapshots stay unannounced: a warm store only hashes what changed,
+and naming that would cost a per-turn probe.
+
 ### Boundary (`CheckpointStore`)
 
 An isolated git object store. Every git command runs with a private `GIT_DIR`

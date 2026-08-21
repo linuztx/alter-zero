@@ -30,6 +30,23 @@ fn transcript_opens_with_the_header_banner() {
 }
 
 #[test]
+fn startup_notice_is_one_dim_indented_row() {
+    // The checkpoint pre-flight's `Snapshotting …` line
+    // (docs/checkpoint.md): scrollback chrome committed above the banner,
+    // wearing the banner's indent and dim meta colour so the two read as one
+    // block; a narrow width truncates rather than wrapping, because the row
+    // is a status, not prose.
+    let notice = "Snapshotting 326 files (7.9 MB) for checkpoints…";
+    let lines = startup_notice_lines(notice, 90);
+    assert_eq!(lines.len(), 1);
+    assert_eq!(plain(&lines[0]), format!("  {notice}"));
+    let narrow = startup_notice_lines(notice, 24);
+    assert_eq!(narrow.len(), 1, "truncated, never wrapped");
+    assert!(cols(&plain(&narrow[0])) <= 24, "{:?}", plain(&narrow[0]));
+    assert!(plain(&narrow[0]).ends_with('…'), "{:?}", plain(&narrow[0]));
+}
+
+#[test]
 fn header_shows_mascot_title_cwd_and_hint() {
     let text = header_text(&with_session(), 90);
     // The default mascot (crest) draws flush-left.

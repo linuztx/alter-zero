@@ -84,7 +84,7 @@ pub use self::footer::{
     backtrack_hint_line, display_cwd, footer_line, footer_rows, queued_lines, queued_rows,
     search_line, shell_mode_line, toast_line, toast_rows,
 };
-pub use self::header::header_lines;
+pub use self::header::{header_lines, startup_notice_lines};
 pub use self::hooks_view::{hooks_menu_height, hooks_view_lines, render_hooks_menu};
 pub use self::layout::{
     Repin, background_view_height, cursor_position, cursor_visible, key_onboarding_height,
