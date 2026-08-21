@@ -9,8 +9,10 @@ use serde_json::{Value, json};
 /// current spec: **stateless**, no `initialize` handshake, the version and
 /// the client's capabilities riding every request's `_meta`, and
 /// `server/discover` as the identity/negotiation surface. Era detection is
-/// the spec's own recipe: probe modern first, fall back to the legacy
-/// handshake when the server answers with anything but a modern error.
+/// the spec's own recipe and runs at **every** connect: probe modern first,
+/// fall back to the legacy handshake when the server answers with anything
+/// but a modern error. This is what the probe *proposes*; what a connect
+/// settles on is whatever the server names back (`docs/mcp.md`).
 pub const PROTOCOL_VERSION: &str = "2026-07-28";
 
 /// The newest handshake-based ("legacy") revision — what the `initialize`
@@ -35,90 +37,6 @@ pub const SUPPORTED_VERSIONS: [&str; 5] = [
 /// Claude Code's `MAX_MCP_DESCRIPTION_LENGTH`: a wiki-length description
 /// would spend the context budget the schemas share.
 pub const MAX_TOOL_DESCRIPTION_CHARS: usize = 2048;
-
-/// Which era a server turned out to speak — the cached verdict of the
-/// probe. The spec says a client SHOULD cache this per server and MAY
-/// persist it across restarts, and the reason is measurable: era detection
-/// costs a round trip against every legacy server (which today is nearly
-/// all of them), and against one that *ignores* unknown methods instead of
-/// erroring them it costs the whole probe timeout, at every launch.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ServerEra {
-    /// Stateless 2026-07-28+: `_meta` per request, `server/discover`.
-    Modern(String),
-    /// Handshake-based: `initialize` at the recorded revision.
-    Legacy(String),
-}
-
-impl ServerEra {
-    /// The revision this era settled on.
-    #[must_use]
-    pub fn version(&self) -> &str {
-        match self {
-            Self::Modern(version) | Self::Legacy(version) => version,
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            Self::Modern(_) => "modern",
-            Self::Legacy(_) => "legacy",
-        }
-    }
-}
-
-/// Parse the era cache document into `server key → era`.
-#[must_use]
-pub fn parse_era_store(contents: &str) -> std::collections::BTreeMap<String, ServerEra> {
-    let Ok(value) = serde_json::from_str::<Value>(contents.trim()) else {
-        return Default::default();
-    };
-    let Some(servers) = value.get("servers").and_then(Value::as_object) else {
-        return Default::default();
-    };
-    servers
-        .iter()
-        .filter_map(|(key, entry)| {
-            let version = entry.get("version").and_then(Value::as_str)?.to_string();
-            // An unrecognised era is *no* cache entry rather than a guess:
-            // the probe is always the safe answer.
-            let era = match entry.get("era").and_then(Value::as_str)? {
-                "modern" => ServerEra::Modern(version),
-                "legacy" => ServerEra::Legacy(version),
-                _ => return None,
-            };
-            Some((key.clone(), era))
-        })
-        .collect()
-}
-
-/// Re-render the era cache with one server's verdict replaced (`None`
-/// forgets it) — the read-modify-write core.
-#[must_use]
-pub fn record_era(contents: &str, key: &str, era: Option<&ServerEra>) -> String {
-    let mut value: Value = serde_json::from_str(contents.trim())
-        .ok()
-        .filter(Value::is_object)
-        .unwrap_or_else(|| Value::Object(Default::default()));
-    let root = value.as_object_mut().expect("object ensured above");
-    let servers = root
-        .entry("servers")
-        .or_insert_with(|| Value::Object(Default::default()));
-    if let Some(servers) = servers.as_object_mut() {
-        match era {
-            Some(era) => {
-                servers.insert(
-                    key.to_string(),
-                    json!({"era": era.label(), "version": era.version()}),
-                );
-            }
-            None => {
-                servers.remove(key);
-            }
-        }
-    }
-    serde_json::to_string_pretty(&value).unwrap_or_else(|_| contents.to_string())
-}
 
 /// A JSON-RPC 2.0 **request** — `id` pairs the eventual response.
 #[must_use]
@@ -731,40 +649,6 @@ mod tests {
         let (bare, none) = parse_discover(&json!({"supportedVersions": []}), PROTOCOL_VERSION);
         assert_eq!(bare.name, "");
         assert!(none.is_empty());
-    }
-
-    #[test]
-    fn the_era_cache_round_trips_and_refuses_to_guess() {
-        let store = record_era(
-            "",
-            "sh /srv.sh",
-            Some(&ServerEra::Legacy("2025-11-25".into())),
-        );
-        let store = record_era(
-            &store,
-            "https://x.test/mcp",
-            Some(&ServerEra::Modern("2026-07-28".into())),
-        );
-        let parsed = parse_era_store(&store);
-        assert_eq!(
-            parsed.get("sh /srv.sh"),
-            Some(&ServerEra::Legacy("2025-11-25".to_string()))
-        );
-        assert_eq!(
-            parsed.get("https://x.test/mcp"),
-            Some(&ServerEra::Modern("2026-07-28".to_string()))
-        );
-        assert_eq!(parsed["sh /srv.sh"].version(), "2025-11-25");
-        // Forgetting one leaves the other.
-        let store = record_era(&store, "sh /srv.sh", None);
-        let parsed = parse_era_store(&store);
-        assert!(!parsed.contains_key("sh /srv.sh"));
-        assert_eq!(parsed.len(), 1);
-        // Junk, a missing version, and an era we don't know are all "no
-        // cached verdict" — probing is always the safe answer.
-        assert!(parse_era_store("not json").is_empty());
-        assert!(parse_era_store(r#"{"servers":{"a":{"era":"legacy"}}}"#).is_empty());
-        assert!(parse_era_store(r#"{"servers":{"a":{"era":"future","version":"x"}}}"#).is_empty());
     }
 
     #[test]

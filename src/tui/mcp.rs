@@ -80,6 +80,9 @@ pub(crate) fn load_mcp_sources(
             .map(|(file, display, trusted)| (file, display.as_str(), *trusted)),
         user_file.as_ref().map(|file| (file, user_display.as_str())),
     );
+    // The era cache is retired — a connect re-derives the verdict every
+    // time now, so the file only ever misleads (`docs/mcp.md`).
+    config::remove_retired_mcp_era_cache();
     McpSources {
         entries,
         errors,
@@ -88,7 +91,6 @@ pub(crate) fn load_mcp_sources(
         project,
         user_file: user_path,
         auth_path: config::mcp_auth_path(),
-        era_path: config::mcp_era_path(),
         cwd: Some(cwd.to_path_buf()),
         startup_timeout: config::mcp_startup_timeout(),
         tool_timeout: config::mcp_tool_timeout(),

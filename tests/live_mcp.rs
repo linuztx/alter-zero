@@ -58,7 +58,6 @@ fn connected_deepwiki() -> McpManager {
             project: ".".to_string(),
             user_file: None,
             auth_path: None,
-            era_path: None,
             cwd: None,
             startup_timeout: Duration::from_secs(30),
             tool_timeout: Duration::from_secs(120),

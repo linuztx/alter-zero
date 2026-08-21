@@ -701,10 +701,15 @@ pub(crate) fn mcp_auth_path() -> Option<PathBuf> {
     config_home().map(|dir| dir.join("mcp-auth.json"))
 }
 
-/// The remembered protocol-era verdict per server — a plain cache beside the
-/// token store, holding no secrets (`docs/mcp.md`).
-pub(crate) fn mcp_era_path() -> Option<PathBuf> {
-    config_home().map(|dir| dir.join("mcp-era.json"))
+/// Sweep away the **retired** era cache (`{config_home}/mcp-era.json`).
+/// Nothing reads it any more — the era and the protocol revision are
+/// re-derived from the server at every connect (`docs/mcp.md`) — and a file
+/// left behind implies a feature that no longer exists, with a stale
+/// revision written in it. Best-effort: our own cache, our own to drop.
+pub(crate) fn remove_retired_mcp_era_cache() {
+    if let Some(path) = config_home().map(|dir| dir.join("mcp-era.json")) {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 /// One MCP timeout knob in milliseconds, defaulting when unset/unparseable.

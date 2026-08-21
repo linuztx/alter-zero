@@ -35,11 +35,10 @@ pub use self::names::{
 };
 pub use self::protocol::{
     CallOutcome, Incoming, LEGACY_PROTOCOL_VERSION, MAX_TOOL_DESCRIPTION_CHARS, McpToolInfo,
-    PROTOCOL_VERSION, RpcError, SUPPORTED_VERSIONS, ServerEra, ServerIdentity, call_params,
-    choose_version, discover_params, header_value, initialize_params, initialize_params_for,
-    is_modern_error, notification, parse_call_result, parse_discover, parse_era_store,
-    parse_incoming, parse_initialize, parse_tools_page, record_era, request, request_meta,
-    tools_list_params, unsupported_versions, with_meta,
+    PROTOCOL_VERSION, RpcError, SUPPORTED_VERSIONS, ServerIdentity, call_params, choose_version,
+    discover_params, header_value, initialize_params, initialize_params_for, is_modern_error,
+    notification, parse_call_result, parse_discover, parse_incoming, parse_initialize,
+    parse_tools_page, request, request_meta, tools_list_params, unsupported_versions, with_meta,
 };
 pub use self::sse::{SseEvent, SseParser};
 pub use self::status::{

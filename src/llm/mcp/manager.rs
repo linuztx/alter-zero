@@ -19,7 +19,7 @@ use crate::mcp::{
 };
 use crate::stream::CancelToken;
 
-use super::client::{ConnectError, connect_with_era};
+use super::client::{ConnectError, connect};
 use super::oauth::{self, AuthProgress};
 use super::transport::{Transport, TransportError};
 use crate::llm::tools::{ToolCallRequest, ToolOutcome};
@@ -60,10 +60,6 @@ pub struct McpSources {
     pub user_file: Option<PathBuf>,
     /// The OAuth token store (`{config_home}/mcp-auth.json`).
     pub auth_path: Option<PathBuf>,
-    /// The era cache (`{config_home}/mcp-era.json`) — the remembered
-    /// protocol-era verdict per server, so the probe runs once rather than
-    /// at every launch (`docs/mcp.md`).
-    pub era_path: Option<PathBuf>,
     /// The session cwd stdio children run in.
     pub cwd: Option<PathBuf>,
     pub startup_timeout: Duration,
@@ -79,29 +75,6 @@ pub const DEFAULT_TOOL_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The cancel-poll cadence every blocking wait shares with the transports.
 const POLL: Duration = Duration::from_millis(20);
-
-/// The remembered era for one server, if any. Best-effort: an unreadable or
-/// unrecognised cache simply means "probe".
-fn load_era(path: Option<&PathBuf>, key: &str) -> Option<crate::mcp::ServerEra> {
-    let contents = std::fs::read_to_string(path?).ok()?;
-    crate::mcp::parse_era_store(&contents).remove(key)
-}
-
-/// Remember one server's era, so the next launch skips the probe. Written
-/// only when the verdict actually changed — a connect per launch per server
-/// otherwise rewrites the file for nothing.
-fn save_era(path: Option<&PathBuf>, key: &str, era: &crate::mcp::ServerEra) {
-    let Some(path) = path else { return };
-    if load_era(Some(path), key).as_ref() == Some(era) {
-        return;
-    }
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let updated = crate::mcp::record_era(&existing, key, Some(era));
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::write(path, updated);
-}
 
 /// Run blocking work on a worker thread while polling `cancel` on the 20 ms
 /// cadence — the transport's own contract (`docs/mcp.md`), which anything
@@ -160,7 +133,6 @@ struct Inner {
     project: String,
     user_file: Option<PathBuf>,
     auth_path: Option<PathBuf>,
-    era_path: Option<PathBuf>,
     cwd: Option<PathBuf>,
     startup_timeout: Duration,
     tool_timeout: Duration,
@@ -227,7 +199,6 @@ impl McpManager {
                 project: sources.project,
                 user_file: sources.user_file,
                 auth_path,
-                era_path: sources.era_path,
                 cwd: sources.cwd,
                 startup_timeout: if sources.startup_timeout.is_zero() {
                     DEFAULT_STARTUP_TIMEOUT
@@ -285,11 +256,10 @@ impl McpManager {
 
     /// Connect (or re-connect) one server on a worker thread.
     fn spawn_connect(&self, name: &str) {
-        let (config, auth_path, era_path, cwd, timeout, generation) = {
+        let (config, auth_path, cwd, timeout, generation) = {
             let mut inner = self.lock();
-            let (auth_path, era_path, cwd, timeout) = (
+            let (auth_path, cwd, timeout) = (
                 inner.auth_path.clone(),
-                inner.era_path.clone(),
                 inner.cwd.clone(),
                 inner.startup_timeout,
             );
@@ -300,8 +270,14 @@ impl McpManager {
             server.generation += 1;
             let generation = server.generation;
             // Drop the old transport now (kills a stdio child) — the new
-            // connect starts clean.
+            // connect starts clean, and so does what we say about the
+            // server: the revision, capabilities and tools on the `/mcp`
+            // page are the *live* connection's facts, so a reconnect that
+            // never initializes must not leave the last one's behind.
             server.transport = None;
+            server.identity = None;
+            server.tools.clear();
+            server.wire_map.clear();
             server.has_tokens = server
                 .entry
                 .config
@@ -310,7 +286,6 @@ impl McpManager {
             (
                 server.entry.config.clone(),
                 auth_path,
-                era_path,
                 cwd,
                 timeout,
                 generation,
@@ -330,18 +305,7 @@ impl McpManager {
             let bearer = config
                 .url()
                 .and_then(|url| oauth::connect_bearer(auth_path.as_deref(), url));
-            // The remembered era, so a legacy server is not re-probed at
-            // every launch (`docs/mcp.md`).
-            let era_key = config.target();
-            let cached_era = load_era(era_path.as_ref(), &era_key);
-            let mut result = connect_with_era(
-                &config,
-                bearer,
-                cwd.as_deref(),
-                cached_era.clone(),
-                timeout,
-                &cancel,
-            );
+            let mut result = connect(&config, bearer, cwd.as_deref(), timeout, &cancel);
             // A 401 with a stored grant gets one forced refresh and one
             // retry before anyone is asked to re-authenticate — an access
             // token expiring between sessions is ordinary, not an auth
@@ -359,11 +323,10 @@ impl McpManager {
                     oauth::load_tokens(auth_path.as_deref(), url).map(|t| t.access_token);
                 match oauth::refresh_grant(auth_path.as_deref(), url, presented.as_deref()) {
                     Ok(tokens) => {
-                        result = connect_with_era(
+                        result = connect(
                             &config,
                             Some(tokens.access_token),
                             cwd.as_deref(),
-                            cached_era.clone(),
                             timeout,
                             &cancel,
                         );
@@ -383,7 +346,6 @@ impl McpManager {
             }
             match result {
                 Ok(connection) => {
-                    save_era(era_path.as_ref(), &era_key, &connection.era);
                     server.identity = Some(connection.identity);
                     server.wire_map = connection
                         .tools
@@ -1005,6 +967,132 @@ mod tests {
         let outcome = manager.call_tool(&call, &CancelToken::new());
         assert!(outcome.ok, "{}", outcome.output);
         assert_eq!(outcome.output, "echoed");
+        manager.shutdown();
+    }
+
+    /// A stdio fixture that **changes era between launches**: the first
+    /// process answers the modern probe with the classic legacy error and
+    /// serves the `initialize` handshake at 2025-11-25; every later process
+    /// serves `server/discover` at 2026-07-28 — a server whose owner shipped
+    /// modern support since the last launch. The marker file in `dir` is
+    /// what the runs share.
+    fn upgrading_entry(name: &str, dir: &std::path::Path) -> McpServerEntry {
+        let script =
+            SERVER_THAT_UPGRADES.replace("MARK", &dir.join("upgraded").display().to_string());
+        McpServerEntry {
+            name: name.to_string(),
+            config: McpServerConfig::Stdio {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), script],
+                env: Default::default(),
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        }
+    }
+
+    const SERVER_THAT_UPGRADES: &str = r#"
+if [ -f 'MARK' ]; then modern=1; else modern=0; : > 'MARK'; fi
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*)
+      if [ "$modern" = 1 ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"upgraded","version":"2"}}}}\n' "$id"
+      else
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found"}}\n' "$id"
+      fi ;;
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"upgraded","version":"2"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Echo.","inputSchema":{"type":"object","properties":{}}}]}}\n' "$id" ;;
+  esac
+done
+"#;
+
+    /// The reported bug: a dual-era server reads `2025-11-25` forever. The
+    /// era verdict must be re-detected at every connect — a server that
+    /// speaks the modern revision today is reported at it today, whatever
+    /// it answered the last time we asked.
+    #[test]
+    fn a_server_that_gained_the_modern_era_is_re_detected_at_the_next_connect() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let manager = McpManager::new(
+            tx,
+            McpSources {
+                entries: vec![upgrading_entry("fix", dir.path())],
+                project: "/proj".to_string(),
+                ..Default::default()
+            },
+        );
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        let first = manager.snapshot()[0].identity.clone().unwrap();
+        assert_eq!(
+            first.protocol_version, "2025-11-25",
+            "the launch it was legacy at"
+        );
+        // The server has shipped modern support since. Nothing about the
+        // previous connect may decide this one. (`reconnect` flips the row
+        // to Pending under the lock before it returns, so the wait below
+        // cannot read the connection this one replaces.)
+        manager.reconnect("fix");
+        wait_connected(&manager, "fix");
+        let second = manager.snapshot()[0].identity.clone().unwrap();
+        assert_eq!(second.protocol_version, "2026-07-28");
+        manager.shutdown();
+    }
+
+    /// A fixture that serves one good launch and then refuses to start —
+    /// the reconnect that fails.
+    fn one_launch_entry(name: &str, dir: &std::path::Path) -> McpServerEntry {
+        let script = SERVER_THAT_DIES.replace("MARK", &dir.join("launched").display().to_string());
+        McpServerEntry {
+            name: name.to_string(),
+            config: McpServerConfig::Stdio {
+                command: "sh".to_string(),
+                args: vec!["-c".to_string(), script],
+                env: Default::default(),
+            },
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        }
+    }
+
+    const SERVER_THAT_DIES: &str = r#"
+if [ -f 'MARK' ]; then echo 'the server is gone' >&2; exit 3; fi
+: > 'MARK'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"server/discover"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found"}}\n' "$id" ;;
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-06-18","capabilities":{"tools":{}},"serverInfo":{"name":"once","version":"1"}}}\n' "$id" ;;
+    *'"method":"tools/list"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","inputSchema":{"type":"object","properties":{}}}]}}\n' "$id" ;;
+  esac
+done
+"#;
+
+    /// The facts a connection reported are that connection's — a reconnect
+    /// that never initializes must not leave the previous one's protocol
+    /// revision and tool list on the detail page under a red `✘ failed`.
+    #[test]
+    fn a_failed_reconnect_drops_the_previous_connections_facts() {
+        let dir = tempfile::tempdir().unwrap();
+        let (manager, _rx) = manager_with(vec![one_launch_entry("fix", dir.path())]);
+        manager.start_connections();
+        wait_connected(&manager, "fix");
+        assert!(manager.snapshot()[0].identity.is_some());
+        manager.reconnect("fix");
+        wait_status(&manager, "fix", |status| {
+            matches!(status, McpServerStatus::Failed(_))
+        });
+        let snapshot = manager.snapshot();
+        assert_eq!(snapshot[0].identity, None);
+        assert!(snapshot[0].tools.is_empty());
         manager.shutdown();
     }
 
