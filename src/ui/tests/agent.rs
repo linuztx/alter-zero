@@ -443,6 +443,46 @@ fn the_roster_highlight_follows_the_viewed_session_and_the_marker_the_selection(
     assert!(texts[2].starts_with("❯ ● general-purpose"), "{}", texts[2]);
 }
 
+#[test]
+fn a_finished_roster_rows_bullet_is_green_for_its_linger() {
+    // The linger window (docs/agent-tool.md) exists so the row can be *read*
+    // — a finished agent's `◯` wears the tool green (red for a stop) while
+    // it waits out the sweep, and the green wins even over the selection.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
+    app.apply_agent_event("a1", &crate::stream::StreamEvent::Chunk("19°C".into()));
+    app.apply_agent_event("a1", &crate::stream::StreamEvent::StreamDone);
+    let lines = agent_list_lines(&app, 100);
+    assert!(plain(&lines[2]).starts_with("  ◯ general-purpose"));
+    assert_eq!(
+        lines[2].spans[1].style.fg,
+        Some(TOOL_OK_COLOR),
+        "a done agent's bullet turns green"
+    );
+    // Selecting the row keeps the verdict colour on the bullet.
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    app.on_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+    let lines = agent_list_lines(&app, 100);
+    assert!(plain(&lines[2]).starts_with("❯ ◯ general-purpose"));
+    assert_eq!(lines[2].spans[1].style.fg, Some(TOOL_OK_COLOR));
+    // An x-stopped sibling wears the fail red instead.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
+    assert!(matches!(
+        app.stop_agent("a1"),
+        Some(crate::app::AgentStop::Stopped(_))
+    ));
+    let lines = agent_list_lines(&app, 100);
+    assert_eq!(
+        lines[2].spans[1].style.fg,
+        Some(TOOL_FAIL_COLOR),
+        "a stopped agent's bullet turns red"
+    );
+}
+
 // ===== The Agent tool's cells + roster (docs/agent-tool.md) =====
 
 fn agent_entry(

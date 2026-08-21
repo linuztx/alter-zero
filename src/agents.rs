@@ -25,15 +25,21 @@ use crate::stream::{CancelToken, StreamEvent};
 pub const GENERAL_PURPOSE: &str = "general-purpose";
 
 /// How long a naturally finished agent lingers in the footer roster with its
-/// coloured `◯` before the boundary sweeps it (`main.rs`, the toast-deadline
-/// pattern).
-pub const AGENT_LINGER: Duration = Duration::from_secs(5);
+/// green `◯` before the boundary sweeps it (`main.rs`, the toast-deadline
+/// pattern). The same 30s window as a stop, for the same reason: the row is
+/// the roster's only evidence the agent ran, and swept in a few seconds it
+/// could vanish before the user had read it — mid-group, even before its
+/// group cell committed. `x` clears it sooner (`docs/agent-tool.md`).
+pub const AGENT_LINGER: Duration = Duration::from_secs(30);
 
 /// How long an agent the user **stopped** (`x` on its roster row) lingers
-/// with its red `◯` before the same sweep. Far longer than a natural finish:
-/// a row that vanishes on the keypress leaves no evidence of what was
-/// stopped, so the stopped agent stays put — and the row's `x` becomes the
-/// *clear* that removes it at once (`docs/agent-tool.md`).
+/// with its red `◯` before the same sweep. Its own constant, not a reuse of
+/// [`AGENT_LINGER`]: a stop's countdown must never be restarted or shortened
+/// by the group resolving after it (`or_insert` at the arming sites keys off
+/// this intent), and a row that vanished on the keypress would leave no
+/// evidence of what was stopped — so the stopped agent stays put, and the
+/// row's `x` becomes the *clear* that removes it at once
+/// (`docs/agent-tool.md`).
 pub const AGENT_STOPPED_LINGER: Duration = Duration::from_secs(30);
 
 /// A subagent's lifecycle — the tree row / footer `◯` colour and the
@@ -422,9 +428,12 @@ impl AgentRun {
     }
 
     /// How long this entry lingers on the roster once it settles, before the
-    /// boundary's sweep drops it. A user stop earns the long
+    /// boundary's sweep drops it. A user stop earns
     /// [`AGENT_STOPPED_LINGER`] (the red row is there to be read and
-    /// cleared); everything else keeps the brief [`AGENT_LINGER`].
+    /// cleared); everything else keeps [`AGENT_LINGER`]. Both windows are
+    /// 30s today — only the *reason* differs, and the stop's constant stays
+    /// separate so its countdown can never be restarted by a later group
+    /// resolution.
     #[must_use]
     pub const fn linger(&self) -> Duration {
         if self.stopped_by_user {

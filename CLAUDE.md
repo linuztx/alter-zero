@@ -319,7 +319,8 @@ agent and leaves its row in place wearing a red `◯` for the long
 `AGENT_STOPPED_LINGER` (30s, `AgentRun::linger` — a row that vanished under
 the keypress left no evidence of what was stopped) while the hint swaps to
 `x to clear`, and that second `x` takes it off at once; a naturally finished
-agent lingers green for the brief `AGENT_LINGER` and answers the same clear;
+agent lingers green for the same 30s `AGENT_LINGER` window — a row swept in
+seconds vanished before it could be read — and answers the same clear;
 and the `❯` **resumes where it left off** — `App::agent_selection_memory`
 holds the last picked agent's *id*, so ↓ comes back to that row instead of
 restarting at `● main`, with entering a session view counting as the pick and

@@ -4164,9 +4164,9 @@ echo "==== Phase 53: captured pane (Ctrl+O agent cells) ===="
 printf '%s\n' "$agents_overlay"
 tmux send-keys -t "$S53" q
 sleep 0.4
-# The roster lingers a few seconds after the group settles, then sweeps.
+# The roster lingers after the group settles, then sweeps.
 agents_swept=""
-for _ in $(seq 1 160); do # AGENT_LINGER is 5s
+for _ in $(seq 1 900); do # AGENT_LINGER is 30s
 	cap="$(tmux capture-pane -t "$S53" -p)"
 	if ! printf '%s' "$cap" | grep -qF "● main"; then
 		agents_swept="$cap"

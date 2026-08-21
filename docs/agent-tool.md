@@ -121,10 +121,12 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   coloured `◯` (green done / red stopped/failed), then the boundary sweeps it
   (timed in `main.rs` like the toast) — deferred while the user is inside that
   agent's session. How long is the entry's own
-  `AgentRun::linger()`: `AGENT_LINGER` (5s) for a natural finish, the far
-  longer `AGENT_STOPPED_LINGER` (30s) once the user's `x` stopped it
-  (`AgentRun::stopped_by_user`), because a row that vanishes under the
-  keypress leaves no evidence of what was stopped. Every arming site reads
+  `AgentRun::linger()`: `AGENT_LINGER` (30s) for a natural finish — a row
+  swept in a few seconds could vanish before the user had read it, and (the
+  expiry being armed from the agent's *own* settle) even before its group
+  cell committed — and `AGENT_STOPPED_LINGER` (also 30s) once the user's `x`
+  stopped it (`AgentRun::stopped_by_user`), because a row that vanishes under
+  the keypress leaves no evidence of what was stopped. Every arming site reads
   that method — the settling event, the group resolution (`or_insert`, so a
   group resolving *after* a stop can't restart or shorten its countdown), the
   per-frame re-arm — so no path can downgrade a stop to the short linger. A
@@ -241,8 +243,9 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   the highlight used to stick on `main`). The `❯ ` marker belongs to the
   active ↑/↓ selection alone and leaves with it when Enter/Esc hand the keys
   back to the composer. A finished agent's bullet turns green/red for the
-  linger window — a user `x` is what turns it red, and the row stays there
-  (with the hint's `x to clear`) until the second `x` or the 30s sweep. The
+  30s linger window — a user `x` is what turns it red, and the row stays
+  there (with the hint's `x to clear`) until the second `x` or the 30s
+  sweep. The
   rows are a fifth `live_layout` area, so `live_height`, the cursor seat, and
   the overlays are untouched.
 

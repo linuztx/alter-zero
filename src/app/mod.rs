@@ -523,9 +523,9 @@ pub struct App {
     /// announcement and updated from the dedicated agent channel
     /// ([`apply_agent_event`](App::apply_agent_event)). Drives the footer
     /// list, the live group cell's tree rows, and the agent session view. A
-    /// settled agent lingers coloured (the boundary sweeps it via
-    /// [`remove_agent`](App::remove_agent)) — briefly when it finished on its
-    /// own, far longer when the user's `x` stopped it, and not at all once a
+    /// settled agent lingers coloured for 30s (the boundary sweeps it via
+    /// [`remove_agent`](App::remove_agent)) — green when it finished on its
+    /// own, red when the user's `x` stopped it — and not at all once a
     /// second `x` clears the row.
     agents: Vec<AgentRun>,
     /// Bumped on every roster mutation — what the Ctrl+O transcript cache's

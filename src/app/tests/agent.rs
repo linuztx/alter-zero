@@ -324,7 +324,7 @@ fn x_interrupts_the_agent_and_a_second_x_clears_the_lingering_row() {
     assert_eq!(
         run.linger(),
         crate::agents::AGENT_STOPPED_LINGER,
-        "a user stop lingers longer than a natural finish"
+        "a user stop keeps its own 30s window"
     );
     assert_eq!(app.visible_agents().len(), 2, "the red row stays");
     // The second `x` clears it.
@@ -369,10 +369,31 @@ fn x_clears_a_naturally_finished_row_too() {
     assert_eq!(
         run.linger(),
         crate::agents::AGENT_LINGER,
-        "a natural finish keeps the short linger"
+        "a natural finish wears its own linger window"
     );
     assert_eq!(app.stop_agent("a1"), Some(AgentStop::Cleared));
     assert_eq!(app.visible_agents().len(), 1);
+}
+
+#[test]
+fn a_naturally_finished_agent_lingers_long_enough_to_be_read() {
+    // The green row is the roster's only evidence the agent ran until its
+    // group cell commits — swept in a few seconds it can vanish before the
+    // user has read it (and, mid-group, before the group cell exists). A
+    // natural finish keeps the same 30s window a user stop earns; only the
+    // reason differs. See `docs/agent-tool.md`.
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(true, &agent_specs(true));
+    app.apply_agent_event("a1", &StreamEvent::Chunk("done".into()));
+    app.apply_agent_event("a1", &StreamEvent::StreamDone);
+    let run = app.agent("a1").expect("listed");
+    assert!(run.status.is_final(), "the run settled");
+    assert!(
+        run.linger() >= std::time::Duration::from_secs(30),
+        "a finished row must stay long enough to be read, got {:?}",
+        run.linger()
+    );
 }
 
 #[test]
