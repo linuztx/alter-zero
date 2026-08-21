@@ -518,7 +518,14 @@ quiet; Ctrl+O carries the full story:
   cells in the rows the question needed. The count is the **batch's**: the
   resolved siblings are read back off the history (`ui::tool::
   mcp_batch_lines`), so a running batch's label doesn't count itself down.
-  A mixed batch keeps the ordinary per-cell strip, `⎿ Waiting…` rows and all.
+  A mixed batch keeps the ordinary per-cell strip, `⎿ Waiting…` rows and all
+  — and per-cell **commits**: its MCP cell is never held (`held_run_len`
+  and the flush in `tool_commit_lines` share the one predicate — the call
+  that runs *next* is a same-batch MCP call by name), because a cell held
+  by one end of the mechanism and flushed by the other printed its
+  `Called {server}` line twice (the reported mixed-batch duplicate: the
+  bash sibling's commit re-emitted the deepwiki line that had already
+  committed at its own ToolEnd).
 - **Resolved ok**: the bullet-less dim two-tone
   `Called {server} (ctrl+o to expand)` line — the settled thinking line's
   shape (`summary_lines`), because what is left is a fact about the turn,

@@ -611,9 +611,21 @@ pub fn tool_commit_lines(
     if held_run_len(history, queue) > 0 {
         return None;
     }
-    // The run this call ends: the cells held before it (its collapsible
-    // batch siblings) plus this call itself, whatever it resolved as.
-    let before = trailing_run_len(&history[..history.len() - 1], last.batch);
+    // The run this call ends: the cells **held** before it plus this call
+    // itself, whatever it resolved as. Held is not merely "trailing member
+    // of the batch": a cell was held exactly when the call that ran next —
+    // this one, `last` — is another collapsible member of its batch *by
+    // name* (an MCP call, whatever it resolved as), the same predicate
+    // [`held_run_len`] applied at that cell's own resolution. A resolved
+    // MCP cell whose batch continued with a NON-MCP sibling was never held
+    // (a mixed batch keeps per-cell rendering): it committed its own
+    // `Called {server}` line at its own ToolEnd, and counting it into this
+    // flush printed it twice — the reported duplicate.
+    let before = if crate::mcp::display_server(&last.name).is_some() {
+        trailing_run_len(&history[..history.len() - 1], last.batch)
+    } else {
+        0
+    };
     let items = &history[history.len() - 1 - before..];
     let mut lines = Vec::new();
     let mut i = 0;

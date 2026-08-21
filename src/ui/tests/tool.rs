@@ -1549,6 +1549,92 @@ fn a_mixed_batch_keeps_the_ordinary_per_cell_strip() {
 }
 
 #[test]
+fn a_mixed_batchs_mcp_cell_commits_exactly_once() {
+    // The user-reported duplicate: a mixed batch — one deepwiki call, one
+    // bash call — printed `Called Deepwiki` twice. The MCP cell was never
+    // held (its batch continued with a NON-MCP sibling, so it committed its
+    // own line at its own ToolEnd), but the bash sibling's commit still
+    // counted it into "the run this call ends" and re-emitted it. The hold
+    // decision and the flush must agree on what was held (`docs/mcp.md`).
+    let mut app = app_calling(&["deepwiki - ask_question (MCP)", "Bash"]);
+    app.end_tool("{\"answer\":\"…\"}", true);
+    let first = tool_commit_lines(&app.history, app.tool_queue(), 100)
+        .expect("a mixed batch's MCP cell is never held");
+    assert_eq!(
+        first.iter().map(plain).collect::<Vec<_>>(),
+        vec![format!("{MCP_CALLED_PREFIX}Deepwiki{EXPAND_HINT}")]
+    );
+    app.start_tool("Bash", "ls");
+    app.end_tool("ok", true);
+    let second: Vec<String> = tool_commit_lines(&app.history, app.tool_queue(), 100)
+        .expect("the bash cell commits")
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        !second.iter().any(|row| row.contains(MCP_CALLED_PREFIX)),
+        "the bash commit re-emitted the already-committed MCP line: {second:?}"
+    );
+    assert!(second[0].starts_with("● Bash("), "{second:?}");
+    // And the repaint from history shows the line exactly once.
+    let repaint: Vec<String> = crate::ui::conversation_lines(&app.history, 100)
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        repaint
+            .iter()
+            .filter(|row| row.contains(MCP_CALLED_PREFIX))
+            .count(),
+        1,
+        "{repaint:?}"
+    );
+}
+
+#[test]
+fn a_non_mcp_sibling_never_reflushes_the_committed_run() {
+    // The same disagreement, one deeper: [mcp, mcp, bash]. The two MCP calls
+    // are a genuine run — the first held, the pair committing as one
+    // aggregated line when the SECOND resolves (the batch's next call being
+    // bash, the run is over there) — and the bash sibling's own commit must
+    // then be the bash cell alone, not a re-flush of the run before it.
+    let mut app = app_calling(&[
+        "deepwiki - ask_question (MCP)",
+        "deepwiki - read_wiki_structure (MCP)",
+        "Bash",
+    ]);
+    app.end_tool("{\"answer\":\"…\"}", true);
+    assert_eq!(
+        tool_commit_lines(&app.history, app.tool_queue(), 100),
+        None,
+        "the first call holds: the batch's next call is still MCP"
+    );
+    app.start_tool("deepwiki - read_wiki_structure (MCP)", "");
+    app.end_tool("{\"topics\":[]}", true);
+    let run: Vec<String> = tool_commit_lines(&app.history, app.tool_queue(), 100)
+        .expect("the MCP run ends here — the batch continues non-MCP")
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(
+        run,
+        vec![format!("{MCP_CALLED_PREFIX}Deepwiki 2 times{EXPAND_HINT}")]
+    );
+    app.start_tool("Bash", "ls");
+    app.end_tool("ok", true);
+    let second: Vec<String> = tool_commit_lines(&app.history, app.tool_queue(), 100)
+        .expect("the bash cell commits")
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        !second.iter().any(|row| row.contains(MCP_CALLED_PREFIX)),
+        "the bash commit re-flushed the committed run: {second:?}"
+    );
+    assert!(second[0].starts_with("● Bash("), "{second:?}");
+}
+
+#[test]
 fn a_finished_parallel_mcp_run_commits_one_aggregated_line() {
     // Two calls of one batch resolve: the first holds its line (the run is
     // still going), the second commits both as one `Called … 2 times` line —
