@@ -271,7 +271,14 @@ a scripted `sh` stdio server, `std::net::TcpListener` HTTP servers):
   `2025-11-25` for good. (The cache's own escape hatch — "a server that
   changed era simply fails once and re-probes" — only fires against a
   modern-**only** server; the servers that actually gain modern support
-  keep their handshake, which is exactly what makes them upgradable.) The
+  keep their handshake, which is exactly what makes them upgradable.)
+
+  And the wrong verdict did not even need a wrong *server*: the fallback
+  arm is "anything that is not a modern error", so a probe that timed out,
+  met a proxy blip, or reached a server still finishing its boot wrote
+  `legacy` just as confidently as one that got `-32601` — permanently,
+  from a single unlucky first contact. A cache whose only correction
+  mechanism is a failure it has just made impossible is not a cache. The
   era is a fact about the server *now*, so it is re-derived at every
   connect, and the file is swept away at startup
   (`config::remove_retired_mcp_era_cache`) rather than left holding a stale

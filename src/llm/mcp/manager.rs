@@ -970,77 +970,162 @@ mod tests {
         manager.shutdown();
     }
 
-    /// A stdio fixture that **changes era between launches**: the first
-    /// process answers the modern probe with the classic legacy error and
-    /// serves the `initialize` handshake at 2025-11-25; every later process
-    /// serves `server/discover` at 2026-07-28 — a server whose owner shipped
-    /// modern support since the last launch. The marker file in `dir` is
-    /// what the runs share.
-    fn upgrading_entry(name: &str, dir: &std::path::Path) -> McpServerEntry {
-        let script =
-            SERVER_THAT_UPGRADES.replace("MARK", &dir.join("upgraded").display().to_string());
-        McpServerEntry {
-            name: name.to_string(),
-            config: McpServerConfig::Stdio {
-                command: "sh".to_string(),
-                args: vec!["-c".to_string(), script],
-                env: Default::default(),
-            },
-            scope: McpScope::User,
-            config_path: "~/.alter-zero/mcp.json".to_string(),
-        }
+    /// A dual-era HTTP fixture that can be **upgraded** mid-test: it starts
+    /// legacy-only (`server/discover` answered with the classic `-32601`),
+    /// and once `upgraded` flips it answers the probe with a modern
+    /// (2026-07-28) discover result — while **still serving the legacy
+    /// `initialize`**, exactly like a real server that added the modern
+    /// revision without dropping the handshake its old clients need. That
+    /// last part is the whole bug: it is why a stale `legacy` verdict kept
+    /// succeeding instead of failing into a re-probe. `probes` counts the
+    /// `server/discover` requests, so a test can assert the probe *ran*
+    /// rather than inferring it from the revision.
+    fn spawn_upgradable_http_fixture(
+        upgraded: Arc<std::sync::atomic::AtomicBool>,
+        probes: Arc<std::sync::atomic::AtomicUsize>,
+    ) -> String {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::sync::atomic::Ordering;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                if reader.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let mut content_length = 0usize;
+                loop {
+                    let mut header = String::new();
+                    if reader.read_line(&mut header).is_err() || header.trim().is_empty() {
+                        break;
+                    }
+                    if let Some(rest) = header.to_ascii_lowercase().strip_prefix("content-length:")
+                    {
+                        content_length = rest.trim().parse().unwrap_or(0);
+                    }
+                }
+                let mut body = vec![0u8; content_length];
+                let _ = reader.read_exact(&mut body);
+                let parsed = serde_json::from_str::<Value>(&String::from_utf8_lossy(&body))
+                    .unwrap_or_default();
+                let id = parsed.get("id").and_then(Value::as_u64);
+                let method = parsed
+                    .get("method")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                let respond = |stream: &mut std::net::TcpStream, body: &str| {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes());
+                };
+                match method.as_str() {
+                    "server/discover" => {
+                        probes.fetch_add(1, Ordering::SeqCst);
+                        let body = if upgraded.load(Ordering::SeqCst) {
+                            serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "result": {
+                                    "resultType": "complete",
+                                    "supportedVersions": ["2026-07-28", "2025-11-25"],
+                                    "capabilities": {"tools": {}},
+                                    "_meta": {"io.modelcontextprotocol/serverInfo":
+                                        {"name": "upgradable", "version": "2"}}
+                                }
+                            })
+                        } else {
+                            serde_json::json!({
+                                "jsonrpc": "2.0", "id": id,
+                                "error": {"code": -32601, "message": "method not found"}
+                            })
+                        }
+                        .to_string();
+                        respond(&mut stream, &body);
+                    }
+                    "initialize" => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "protocolVersion": "2025-11-25",
+                                "capabilities": {"tools": {}},
+                                "serverInfo": {"name": "upgradable", "version": "1"}
+                            }
+                        })
+                        .to_string();
+                        respond(&mut stream, &body);
+                    }
+                    "notifications/initialized" => {
+                        let _ = stream.write_all(
+                            b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        );
+                    }
+                    _ => {
+                        let body = serde_json::json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {"tools": [{"name": "ping",
+                                "inputSchema": {"type": "object", "properties": {}}}]}
+                        })
+                        .to_string();
+                        respond(&mut stream, &body);
+                    }
+                }
+            }
+        });
+        format!("http://127.0.0.1:{port}/mcp")
     }
-
-    const SERVER_THAT_UPGRADES: &str = r#"
-if [ -f 'MARK' ]; then modern=1; else modern=0; : > 'MARK'; fi
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
-  case "$line" in
-    *'"method":"server/discover"'*)
-      if [ "$modern" = 1 ]; then
-        printf '{"jsonrpc":"2.0","id":%s,"result":{"resultType":"complete","supportedVersions":["2026-07-28"],"capabilities":{"tools":{}},"_meta":{"io.modelcontextprotocol/serverInfo":{"name":"upgraded","version":"2"}}}}\n' "$id"
-      else
-        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"method not found"}}\n' "$id"
-      fi ;;
-    *'"method":"initialize"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":"2025-11-25","capabilities":{"tools":{}},"serverInfo":{"name":"upgraded","version":"2"}}}\n' "$id" ;;
-    *'"method":"tools/list"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"tools":[{"name":"echo","description":"Echo.","inputSchema":{"type":"object","properties":{}}}]}}\n' "$id" ;;
-  esac
-done
-"#;
 
     /// The reported bug: a dual-era server reads `2025-11-25` forever. The
     /// era verdict must be re-detected at every connect — a server that
     /// speaks the modern revision today is reported at it today, whatever
-    /// it answered the last time we asked.
+    /// it answered the last time we asked. The probe counter is the half
+    /// the revision alone doesn't prove: that the question was asked again.
     #[test]
     fn a_server_that_gained_the_modern_era_is_re_detected_at_the_next_connect() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let manager = McpManager::new(
-            tx,
-            McpSources {
-                entries: vec![upgrading_entry("fix", dir.path())],
-                project: "/proj".to_string(),
-                ..Default::default()
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let upgraded = Arc::new(AtomicBool::new(false));
+        let probes = Arc::new(AtomicUsize::new(0));
+        let url = spawn_upgradable_http_fixture(Arc::clone(&upgraded), Arc::clone(&probes));
+        let entry = McpServerEntry {
+            name: "up".to_string(),
+            config: McpServerConfig::Http {
+                url,
+                headers: Default::default(),
+                sse_fallback: false,
             },
-        );
+            scope: McpScope::User,
+            config_path: "~/.alter-zero/mcp.json".to_string(),
+        };
+        let (manager, _rx) = manager_with(vec![entry]);
         manager.start_connections();
-        wait_connected(&manager, "fix");
+        wait_connected(&manager, "up");
         let first = manager.snapshot()[0].identity.clone().unwrap();
         assert_eq!(
             first.protocol_version, "2025-11-25",
             "the launch it was legacy at"
         );
-        // The server has shipped modern support since. Nothing about the
-        // previous connect may decide this one. (`reconnect` flips the row
-        // to Pending under the lock before it returns, so the wait below
-        // cannot read the connection this one replaces.)
-        manager.reconnect("fix");
-        wait_connected(&manager, "fix");
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+        // The server ships modern support (a redeploy between sessions).
+        // Nothing about the previous connect may decide this one.
+        // (`reconnect` flips the row to Pending under the lock before it
+        // returns, so the wait below cannot read the connection it replaces.)
+        upgraded.store(true, Ordering::SeqCst);
+        manager.reconnect("up");
+        wait_connected(&manager, "up");
+        assert_eq!(
+            probes.load(Ordering::SeqCst),
+            2,
+            "every connect must run era detection afresh"
+        );
         let second = manager.snapshot()[0].identity.clone().unwrap();
-        assert_eq!(second.protocol_version, "2026-07-28");
+        assert_eq!(
+            second.protocol_version, "2026-07-28",
+            "the Protocol row must show what the server returned this connect"
+        );
         manager.shutdown();
     }
 

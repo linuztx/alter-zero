@@ -10,7 +10,10 @@
 //! facts about the server *now*: a remembered `legacy` verdict skipped the
 //! probe against a dual-era server, which answers the handshake happily —
 //! so the revision it reported (and the `/mcp` page showed) stayed a
-//! revision behind the server it was talking to, for good.
+//! revision behind the server it was talking to, for good. And since the
+//! fallback arm is "anything that is not a modern error", one probe that
+//! merely timed out — a proxy blip, a server still booting — wrote that
+//! verdict just as permanently.
 
 use std::time::Duration;
 

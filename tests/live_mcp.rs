@@ -30,7 +30,14 @@ use alter_zero::stream::{CancelToken, ReplySource, StreamEvent, ToolCallSummary}
 use alter_zero::{mcp, ui};
 
 /// The public DeepWiki MCP server — streamable HTTP, no authentication.
+/// A **legacy** (handshake) server: it settles at `2025-11-25`.
 const DEEPWIKI_URL: &str = "https://mcp.deepwiki.com/mcp";
+
+/// A public **dual-era** server — it serves the modern `server/discover`
+/// *and* still answers the legacy `initialize`, which is precisely the shape
+/// that a remembered era verdict used to pin a revision behind
+/// (`docs/mcp.md`). No authentication.
+const DUAL_ERA_URL: &str = "https://docs.mcp.cloudflare.com/mcp";
 
 /// The repository the prompts ask about (the user's own, in the report this
 /// work came from).
@@ -38,14 +45,19 @@ const REPO: &str = "linuztx/flaredantic";
 
 /// A manager holding just DeepWiki, connected (or panicking with why).
 fn connected_deepwiki() -> McpManager {
+    connected_server("deepwiki", DEEPWIKI_URL)
+}
+
+/// A manager holding one remote server, connected (or panicking with why).
+fn connected_server(name: &str, url: &str) -> McpManager {
     let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
     let manager = McpManager::new(
         tx,
         McpSources {
             entries: vec![mcp::McpServerEntry {
-                name: "deepwiki".to_string(),
+                name: name.to_string(),
                 config: mcp::McpServerConfig::Http {
-                    url: DEEPWIKI_URL.to_string(),
+                    url: url.to_string(),
                     headers: Default::default(),
                     sse_fallback: false,
                 },
@@ -72,7 +84,7 @@ fn connected_deepwiki() -> McpManager {
         std::thread::sleep(Duration::from_millis(100));
     }
     panic!(
-        "deepwiki never connected: {:?}",
+        "{name} never connected: {:?}",
         manager.snapshot().first().map(|s| s.status_line())
     );
 }
@@ -169,6 +181,47 @@ fn live_strip_top(app: &App, width: u16) -> String {
         .collect::<String>()
         .trim_end()
         .to_string()
+}
+
+/// The revision on the `/mcp` page is whatever the server settled on in
+/// **this** connect (`docs/mcp.md`). Two live servers, two eras, so the pair
+/// can tell a working client from the one this replaced: a remembered
+/// `legacy` verdict reported the dual-era server at the legacy revision it
+/// still serves, and every offline fixture in the world agreed with it
+/// because a fixture is written by whoever writes the test.
+#[test]
+#[ignore = "hits the network (docs.mcp.cloudflare.com, mcp.deepwiki.com)"]
+fn live_each_server_reports_the_revision_it_settled_on() {
+    let dual = connected_server("cfdocs", DUAL_ERA_URL);
+    let modern = dual.snapshot()[0]
+        .identity
+        .clone()
+        .expect("the dual-era server initialized");
+    println!("{DUAL_ERA_URL} -> {}", modern.protocol_version);
+    assert_eq!(
+        modern.protocol_version,
+        mcp::PROTOCOL_VERSION,
+        "a server serving `server/discover` must be reported at the modern \
+         revision, not the legacy one it also still answers"
+    );
+    dual.shutdown();
+
+    // The other half of the claim: a legacy server is not simply reported at
+    // whatever we propose. DeepWiki has no `server/discover`, so the
+    // handshake settles the revision — a revision we speak, from its answer.
+    let legacy = connected_deepwiki();
+    let identity = legacy.snapshot()[0]
+        .identity
+        .clone()
+        .expect("deepwiki initialized");
+    println!("{DEEPWIKI_URL} -> {}", identity.protocol_version);
+    assert_ne!(identity.protocol_version, mcp::PROTOCOL_VERSION);
+    assert!(
+        mcp::SUPPORTED_VERSIONS.contains(&identity.protocol_version.as_str()),
+        "a settled revision is one we speak, never blank or invented: {:?}",
+        identity.protocol_version
+    );
+    legacy.shutdown();
 }
 
 #[test]
