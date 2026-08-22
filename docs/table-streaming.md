@@ -164,18 +164,28 @@ control rather than pretending to solve it.
 
 `StreamRender::commit` withholds the trailing line while the renderer is inside
 an open table (`AssistantRenderer::in_table`, every table state) or while the
-trailing line is a table-row candidate (`markdown::is_table_row`). Since the
-buffering states emit **no rows**, `frozen` simply doesn't grow while the table
-accumulates — there is no committed table row to invalidate. The whole block
-lands in `frozen` at the close (or `finish`), after which it commits like any
-settled rows. Batch (`assistant_lines`) and streaming drive the one
-`AssistantRenderer`, so scrollback, the strip, the resize repaint, and the
-Ctrl+O transcript agree by construction.
+trailing line is a header candidate (`markdown::is_table_header_candidate` — a
+**leading pipe**). Since the buffering states emit **no rows**, `frozen` simply
+doesn't grow while the table accumulates — there is no committed table row to
+invalidate. The whole block lands in `frozen` at the close (or `finish`), after
+which it commits like any settled rows. Batch (`assistant_lines`) and streaming
+drive the one `AssistantRenderer`, so scrollback, the strip, the resize
+repaint, and the Ctrl+O transcript agree by construction.
+
+The leading pipe is what makes candidacy *decidable while streaming*: under
+GFM's optional-leading-pipe (headerless) form, any growing prose line could
+turn into a table header the moment a later `|` streamed in — with a delimiter
+on the next line, the batch render would re-draw as a grid the prose rows the
+committer had already frozen into scrollback (a fuzz-caught divergence). A
+`|`-led header decides at the line's first character instead; the rare
+headerless table renders as prose, identically in batch and stream. Data rows
+inside a confirmed block keep the loose `is_table_row`, so the hard-wrapped
+tail re-join below is untouched.
 
 ## The state machine (`ui::AssistantRenderer` / `TableState`)
 
 ```
-None ──(a table-row candidate)──▶ PendingHeader(header)
+None ──(a |-led header candidate)──▶ PendingHeader(header)
 PendingHeader ──(matching delimiter)──▶ Buffering{header, aligns, rows: []}
              ──(not a delimiter)──────▶ render the header as prose, reprocess the line
 Buffering    ──(data row)─────────────▶ rows.push(line)            // emits nothing
@@ -362,8 +372,10 @@ render fallback keep the old single-row behaviour), and the strip's
 ## What's unchanged
 
 A table wrapped in a code fence is still verbatim code (a `CodeStart` flushes
-any open table first). Detection is still `markdown::is_table_row` /
-`table_delimiter`; a pipe-less or column-mismatched "table" is still prose.
+any open table first). Row/delimiter parsing is still `markdown::is_table_row`
+/ `table_delimiter` (a block *opens* only on a `|`-led header,
+`is_table_header_candidate` — see the prefix-stability section); a pipe-less or
+column-mismatched "table" is still prose.
 Cells are still inline-parsed and columns sized to *rendered* widths
 (`docs/markdown.md`). Verified end-to-end against a real model via OpenRouter:
 the issue's weather table streams as a live forming grid and commits with

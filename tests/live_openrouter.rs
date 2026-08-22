@@ -2974,3 +2974,91 @@ fn live_mcp_deepwiki_tool_call_round_trips() {
     println!("reply: {text}");
     assert!(!text.trim().is_empty(), "the model answered after the call");
 }
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_streamed_reply_render_is_prefix_stable_at_real_chunk_boundaries() {
+    // The whole streaming display pipeline against REAL provider chunking
+    // (docs/markdown.md, CLAUDE.md invariant 2): ask a live model for a
+    // torture reply — heading, emphasis + inline code + a bare URL, a fenced
+    // code block, a GFM table with emoji/CJK cells, a list — capture the
+    // actual `StreamEvent::Chunk` boundaries the wire produced, and replay
+    // that exact chunk sequence through `ui::StreamRender` at several widths.
+    // The committed rows must extend a stable prefix of the batch render
+    // after every real chunk (immutable scrollback), and commits + `finish`
+    // must reconstruct the reply exactly. The offline stress suite proves
+    // this over synthetic chunkings; this proves nothing about the real
+    // wire's framing (multi-byte splits, blank keep-alives, provider
+    // batching) breaks it.
+    use alter_zero::app::Role;
+    use alter_zero::ui::{StreamRender, message_lines};
+
+    let prompt = "Produce one markdown reply containing, in order: a level-2 \
+                  heading; a 40+ word paragraph with one **bold** phrase, one \
+                  `inline code` span, and the bare URL https://example.com/stress ; \
+                  a fenced rust code block of at least 8 lines; a GFM pipe table \
+                  (leading pipes) with 3 columns and 3 data rows, one cell holding \
+                  the emoji 🎮 and one the CJK text 世界; a bulleted list of 3 \
+                  items; and a closing paragraph. No other commentary.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend().spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+    let mut chunks: Vec<String> = Vec::new();
+    let mut done = false;
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(c) => chunks.push(c),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => {
+                done = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    assert!(done, "the stream completed");
+    let full: String = chunks.concat();
+    println!("streamed {} chunks, {} bytes", chunks.len(), full.len());
+    assert!(
+        chunks.len() > 5,
+        "the reply really streamed in pieces: {} chunks",
+        chunks.len()
+    );
+    assert!(full.contains("```"), "a fenced block arrived: {full}");
+    assert!(full.contains('|'), "a table arrived: {full}");
+
+    let styled = |l: &ratatui::text::Line| -> Vec<(String, Option<ratatui::style::Color>)> {
+        l.spans
+            .iter()
+            .map(|s| (s.content.to_string(), s.style.fg))
+            .collect()
+    };
+    for width in [24u16, 40, 80] {
+        let expected: Vec<Vec<(String, Option<ratatui::style::Color>)>> =
+            message_lines(Role::Assistant, &full, width)
+                .iter()
+                .map(styled)
+                .collect();
+        let mut render = StreamRender::new();
+        let mut committed: Vec<Vec<(String, Option<ratatui::style::Color>)>> = Vec::new();
+        let mut acc = String::new();
+        for chunk in &chunks {
+            acc.push_str(chunk);
+            committed.extend(render.commit(&acc, width).iter().map(styled));
+            assert!(
+                committed.len() <= expected.len() && committed[..] == expected[..committed.len()],
+                "a committed row diverged mid-stream (w={width}) after {:?}",
+                chunk
+            );
+            // The strip redraw between chunks — must never disturb commits.
+            let _ = render.preview(&acc, width, 12);
+        }
+        committed.extend(render.finish(&acc, width).iter().map(styled));
+        assert_eq!(
+            committed, expected,
+            "streamed commits reconstruct the live reply (w={width})"
+        );
+    }
+}
