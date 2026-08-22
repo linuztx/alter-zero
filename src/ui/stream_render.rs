@@ -299,24 +299,43 @@ impl StreamRender {
         rows
     }
 
-    /// The strip's streaming preview for the current buffer — normally the last
-    /// rendered row (one line), but **while a table is open** the entire
-    /// uncommitted tail of the batch render: the forming block re-rendered from
-    /// the rows seen so far, so the grid visibly streams row-by-row with its
-    /// columns re-fitting as wider cells arrive, Claude Code-style, while
-    /// nothing of it touches immutable scrollback (docs/table-streaming.md).
-    /// Capped to the **newest** `max_rows` rows so a table taller than the
-    /// screen tail-follows its frontier. O(new complete lines since the last
-    /// call + the trailing line + the open table), so redrawing it every
-    /// animation frame stays cheap (a table is bounded, unlike the reply).
+    /// The strip's streaming preview for the current buffer: **every rendered
+    /// row [`commit`](Self::commit) has not handed to scrollback** — the
+    /// uncommitted tail of the same virtual `frozen ++ tail` sequence the
+    /// commit frontier indexes.
+    ///
+    /// Sharing that one frontier is what makes `committed ++ preview` the whole
+    /// reply at every instant — the strip shows exactly what scrollback is
+    /// still missing. Both halves of that were reachable when the preview
+    /// chose a row of its own: `commit` withholds by **source line** (a fenced
+    /// code line, whose colour isn't final until it ends; a line with an open
+    /// `**`/`` ` ``/`[`; a forming table), so a withheld line wrapping to N
+    /// rows previewed only its last and the other N-1 were simply absent from
+    /// the screen until the line settled (28 rows of a wide `vec![…]` literal
+    /// at width 40), while a withheld line rendering to **no** rows — a
+    /// closing ``` — fell back to the last frozen row, which was already
+    /// committed, drawing the block's last code line twice.
+    ///
+    /// A **forming table** needs no special case any more, only its flush: its
+    /// rows are buffered on the clone rather than in `frozen`, and none of them
+    /// has committed, so they are uncommitted tail like everything else — the
+    /// grid still streams row-by-row with its columns re-fitting as wider cells
+    /// arrive (docs/table-streaming.md).
+    ///
+    /// Capped to the **newest** `max_rows` rows so a tail taller than the strip
+    /// (a big table, a very long withheld code line) tail-follows its frontier.
+    /// O(new complete lines since the last call + the trailing line + the open
+    /// table): the uncommitted range is bounded by what `commit` withholds — a
+    /// paragraph break, one source line, or the open table — so redrawing it
+    /// every animation frame stays cheap.
     #[must_use]
     pub fn preview(&mut self, text: &str, width: u16, max_rows: usize) -> Vec<Line<'static>> {
         self.advance(text, width);
-        // Feed the trailing line on a clone (not disturbing the resumable state)
-        // and keep the clone so its *post-tail* fence state decides trimming —
-        // the same state `finish`/`assistant_lines` see once the whole prefix is
-        // rendered (a trailing `` ``` `` opens a fence, so a blank before it is
-        // kept, not trimmed).
+        // Feed the trailing line on a clone (not disturbing the resumable
+        // state) and keep the clone so its *post-tail* fence state decides
+        // trimming — the same state `finish`/`assistant_lines` see once the
+        // whole prefix is rendered (a trailing ``` opens a fence, so a blank
+        // before it is kept, not trimmed).
         let mut clone = self.renderer.clone();
         // An empty trailing line (a chunk boundary that ended right after a
         // newline) is *not* fed: feeding it would close an open table on the
@@ -330,51 +349,45 @@ impl StreamRender {
             clone.feed_line(tail_src)
         };
         // A table is open — entering the trailing line (`self.renderer`), or
-        // opened/kept open by it (`clone`): preview the batch render's WHOLE
-        // uncommitted tail, so scrollback + strip always show the complete
-        // reply. That is the frozen rows past `committed` (e.g. the withheld
-        // blank between the pre-table prose and the table, or the block + a
-        // closing line the clone just rendered), then the forming block flushed
-        // on the clone — identical to what `assistant_lines` renders for this
-        // prefix, trailing blanks trimmed the same way.
+        // opened/kept open by it (`clone`): flush the buffered block off the
+        // clone so the forming grid renders whole. Nothing of it has committed,
+        // so it all falls inside the uncommitted range below.
         if self.renderer.in_table() || clone.in_table() {
             tail.extend(clone.flush());
-            let skip = self.committed.min(self.frozen.len());
-            let mut rows: Vec<Line<'static>> = self.frozen[skip..].to_vec();
-            rows.extend(
-                tail.into_iter()
-                    .skip(self.committed.saturating_sub(self.frozen.len())),
-            );
+        }
+        // The uncommitted rows of the virtual `frozen ++ tail`.
+        let skip = self.committed.min(self.frozen.len());
+        let mut rows: Vec<Line<'static>> = self.frozen[skip..].to_vec();
+        rows.extend(
+            tail.into_iter()
+                .skip(self.committed.saturating_sub(self.frozen.len())),
+        );
+        // Trailing blank rows are a paragraph break `commit` withholds too —
+        // the strip has no reason to show them. Inside a fence blank lines are
+        // content, so keep them there.
+        if !clone.in_code() {
             while rows.last().is_some_and(row_is_blank) {
                 rows.pop();
             }
-            // Tail-follow: keep the newest rows when the block outgrows the cap
-            // (the top border scrolls out of the strip and reappears when the
-            // closed block commits whole).
-            if rows.len() > max_rows {
-                rows.drain(..rows.len() - max_rows);
-            }
-            return rows;
         }
-        // No table: the last rendered row, skipping trailing blank rows so the
-        // strip shows content rather than a paragraph-break blank — matching the
-        // trimmed batch render. Inside a fence blank lines are content, so keep
-        // as-is.
-        let last_row = |rows: &[Line<'static>]| -> Option<Line<'static>> {
-            if clone.in_code() {
-                rows.last().cloned()
-            } else {
-                rows.iter().rev().find(|r| !row_is_blank(r)).cloned()
-            }
-        };
-        let row = last_row(&tail)
-            .or_else(|| last_row(&self.frozen))
-            .unwrap_or_else(|| {
-                // The reply-so-far renders to zero rows (only a code fence, or only
-                // whitespace): batch `assistant_lines` still emits the bullet home, so
-                // the preview must match it or the strip would diverge from a repaint.
-                empty_assistant_row(&self.renderer.bullet, self.renderer.color)
-            });
-        vec![row]
+        // The reply so far renders to zero rows and nothing has committed (only
+        // a code fence, or only whitespace): batch `assistant_lines` still
+        // emits the bullet home, so the preview must match it or the strip
+        // would diverge from a repaint. With rows already committed an empty
+        // tail means exactly that — everything is in scrollback and the strip
+        // has nothing to add.
+        if rows.is_empty() && self.committed == 0 && self.frozen.is_empty() {
+            return vec![empty_assistant_row(
+                &self.renderer.bullet,
+                self.renderer.color,
+            )];
+        }
+        // Tail-follow: keep the newest rows when the tail outgrows the cap (the
+        // top of a big table scrolls out of the strip and reappears when the
+        // closed block commits whole).
+        if rows.len() > max_rows {
+            rows.drain(..rows.len() - max_rows);
+        }
+        rows
     }
 }

@@ -92,15 +92,19 @@ pub fn preview_rows(app: &App, width: u16) -> u16 {
         )
         .unwrap_or(u16::MAX);
     }
-    // A streaming reply previews its last row — or, while a table is forming,
-    // the whole forming block: only the boundary's `StreamRender` knows that
-    // height, so it injects the count each frame via
-    // [`App::set_stream_preview_rows`] (the `set_status_times` pattern;
-    // docs/table-streaming.md). 1 when nothing was injected — the single-row
-    // preview every non-table reply (and the render fallback) uses. The
+    // A streaming reply previews the rows scrollback does not hold yet — its
+    // last row for ordinary prose, every wrapped row of a withheld source
+    // line, the whole forming table, or **none at all** when the frontier just
+    // committed clean (a closing ``` renders no rows of its own). Only the
+    // boundary's `StreamRender` knows that height, so it injects the count each
+    // frame via [`App::set_stream_preview_rows`] (the `set_status_times`
+    // pattern; docs/table-streaming.md) and this reports it verbatim — a floor
+    // here would reserve a row [`preview_lines`] does not draw, tripping its
+    // `debug_assert`. 1 until a draw injects one (`App::begin_stream`'s
+    // default), which is also what the `None` render fallback draws. The
     // pre-stream pause / idle reserve none.
     if app.streaming_text().is_some_and(|t| !t.is_empty()) {
-        app.stream_preview_rows().max(1)
+        app.stream_preview_rows()
     } else {
         0
     }

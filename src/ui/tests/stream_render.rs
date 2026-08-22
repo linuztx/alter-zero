@@ -504,31 +504,49 @@ fn preview_never_shows_a_committed_row_while_streaming() {
 }
 
 #[test]
-fn stream_render_preview_is_the_last_rendered_row() {
-    // The strip preview must equal the last row of the full render — but
-    // computed cheaply. Check it across a growing code reply.
+fn stream_render_preview_is_the_uncommitted_tail_of_the_render() {
+    // The strip preview is the batch render MINUS what scrollback already
+    // holds — computed cheaply. It used to be "the last rendered row", chosen
+    // independently of the commit frontier, which is what let a withheld
+    // multi-row line lose rows off the screen and a closing ``` re-show a
+    // committed one (see `preview_and_scrollback_together_show_the_whole_reply`).
+    // Checked across a growing code reply, the case where the two disagree.
     let full = "Here:\n```rust\nfn main() {\n    println!(\"hi\");\n}\n```";
     let width = 30;
     let mut render = StreamRender::new();
+    let mut committed: Vec<String> = Vec::new();
     for end in 1..=full.len() {
         if !full.is_char_boundary(end) {
             continue;
         }
         let acc = &full[..end];
-        let expected: Vec<String> = message_lines(Role::Assistant, acc, width)
-            .pop()
-            .map(|l| plain(&l))
-            .into_iter()
-            .collect();
+        committed.extend(render.commit(acc, width).iter().map(plain));
         let got: Vec<String> = render
             .preview(acc, width, usize::MAX)
             .iter()
             .map(plain)
             .collect();
+
+        let mut expected: Vec<String> = message_lines(Role::Assistant, acc, width)
+            .iter()
+            .map(plain)
+            .collect();
+        // No trimming here: `message_lines` already drops a reply-trailing
+        // blank run outside a fence, and keeps it inside one — exactly the
+        // rule the preview follows.
+        expected.drain(..committed.len().min(expected.len()));
         assert_eq!(got, expected, "preview mismatch at {acc:?}");
-        // Advancing the preview must not disturb a subsequent commit.
-        let _ = render.commit(acc, width);
     }
+    // Advancing the preview never disturbs the commits: the two together still
+    // reconstruct the whole reply exactly.
+    committed.extend(render.finish(full, width).iter().map(plain));
+    assert_eq!(
+        committed,
+        message_lines(Role::Assistant, full, width)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>()
+    );
 }
 
 #[test]
@@ -611,4 +629,207 @@ fn ends_in_open_table(prefix: &str) -> bool {
         .rev()
         .find(|l| !l.trim().is_empty())
         .is_some_and(markdown::is_table_row)
+}
+
+/// Drop trailing all-whitespace rows, so a comparison between the screen
+/// (scrollback + strip) and the batch render is not thrown by the paragraph
+/// break either side may still be holding back.
+fn trim_trailing_blank_rows(rows: &mut Vec<String>) {
+    while rows.last().is_some_and(|r| r.trim().is_empty()) {
+        rows.pop();
+    }
+}
+
+/// Every reply the differential invariant below is driven over. Each one ends
+/// its trailing source line in a state [`StreamRender::commit`] withholds —
+/// an open fence, an unclosed inline marker, a forming table — which is
+/// exactly where scrollback and the strip can disagree.
+const SPLIT_CORPUS: &[(&str, &str)] = &[
+    (
+        "prose",
+        "the quick brown fox jumps over the lazy dog repeatedly today ok",
+    ),
+    (
+        "paragraphs",
+        "first paragraph here that wraps a bit\n\nsecond paragraph follows along",
+    ),
+    (
+        "bold",
+        "some **bold text here** and more prose following along after it",
+    ),
+    (
+        "code span",
+        "you can call the `calculate_the_thing` helper to do that now",
+    ),
+    (
+        "link",
+        "please read [the official documentation](https://example.com/docs) first",
+    ),
+    (
+        "heading",
+        "## A rather long heading that wraps across several rows\nbody",
+    ),
+    (
+        "list",
+        "- first item here\n- second item that wraps a little\n- third",
+    ),
+    (
+        "fence",
+        "text\n```python\ndef calculate(a, b):\n    return a + b\n```\nafter",
+    ),
+    (
+        "long code line",
+        "```rust\nfn very_long_function_name_with_a_really_long_signature(input: &str) -> String {\n    todo!()\n}\n```",
+    ),
+    (
+        "table",
+        "intro\n\n| col | val |\n|-----|-----|\n| x | y |\n\noutro",
+    ),
+    ("rule", "para one here\n\n---\n\npara two here"),
+    ("quote", "> quoted line one here\n> quoted line two\nnormal"),
+    ("cjk", "中文测试内容这是一个很长的句子用来测试换行行为"),
+    (
+        "emoji",
+        "hello 👋 world 🌍 test 🎉 of emoji wrapping here now",
+    ),
+];
+
+#[test]
+fn preview_and_scrollback_together_show_the_whole_reply() {
+    // The invariant `table_commits_whole_and_previews_while_forming` states
+    // for a forming table, generalised to EVERY reply: at every instant the
+    // committed rows plus the strip's preview are exactly the batch render of
+    // the reply so far — nothing on screen twice, nothing missing.
+    //
+    // Both halves were reachable before this held. `commit` withholds by
+    // SOURCE LINE (a whole fenced code line, a line with an open `**`/`[`),
+    // while `preview` picked a single ROW on its own: a withheld line wrapping
+    // to N rows showed only its last (N-1 rows of the reply simply absent from
+    // the screen until the line settled), and a withheld line rendering to NO
+    // rows — a closing ``` — fell back to the last frozen row, which was
+    // already in scrollback (the last code line of every fenced block drawn
+    // twice at the moment the block closed).
+    for (name, full) in SPLIT_CORPUS {
+        for width in [20u16, 40, 80] {
+            let mut render = StreamRender::new();
+            let mut committed: Vec<String> = Vec::new();
+            for end in 1..=full.len() {
+                if !full.is_char_boundary(end) {
+                    continue;
+                }
+                let prefix = &full[..end];
+                committed.extend(render.commit(prefix, width).iter().map(plain));
+                let preview: Vec<String> = render
+                    .preview(prefix, width, usize::MAX)
+                    .iter()
+                    .map(plain)
+                    .collect();
+
+                let mut want: Vec<String> = message_lines(Role::Assistant, prefix, width)
+                    .iter()
+                    .map(plain)
+                    .collect();
+                trim_trailing_blank_rows(&mut want);
+                let mut have = committed.clone();
+                have.extend(preview.iter().cloned());
+                trim_trailing_blank_rows(&mut have);
+
+                assert_eq!(
+                    have, want,
+                    "[{name}] width {width}: screen != reply after {prefix:?}\n\
+                     committed: {committed:?}\npreview: {preview:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_wrapped_code_line_previews_every_row_not_just_its_last() {
+    // A long code line inside a fence is withheld from scrollback whole (its
+    // colour isn't final until the line ends), so the strip is the ONLY place
+    // its rows can appear. Previewing just the last one hid the rest until the
+    // line settled — 28 rows of a wide `vec![…]` literal missing from screen
+    // at width 40, then landing at once.
+    let full =
+        "```rust\nfn very_long_function_name_with_a_really_long_signature(x: &str) -> String {";
+    let width = 40;
+    let mut render = StreamRender::new();
+    let committed = render.commit(full, width);
+    assert!(
+        committed.is_empty(),
+        "the open code line is withheld from scrollback: {committed:?}"
+    );
+    let preview: Vec<String> = render
+        .preview(full, width, usize::MAX)
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        preview.len() > 1,
+        "every wrapped row of the withheld line previews, not just its last: {preview:?}"
+    );
+    assert_eq!(
+        preview,
+        message_lines(Role::Assistant, full, width)
+            .iter()
+            .map(plain)
+            .collect::<Vec<_>>(),
+        "the strip shows the whole reply while nothing has committed"
+    );
+}
+
+#[test]
+fn a_closing_fence_never_previews_an_already_committed_row() {
+    // The mirror case: the trailing line is a closing ``` , which renders to
+    // NO rows. The old fallback reached back to the last frozen row — already
+    // in scrollback — so the block's last code line was drawn twice, once
+    // committed and once in the strip, on every fenced code block.
+    let full = "```py\nx = 1\n```";
+    let width = 40;
+    let mut render = StreamRender::new();
+    let committed: Vec<String> = render.commit(full, width).iter().map(plain).collect();
+    assert_eq!(committed, vec!["● x = 1".to_string()]);
+    let preview: Vec<String> = render
+        .preview(full, width, usize::MAX)
+        .iter()
+        .map(plain)
+        .collect();
+    assert!(
+        preview.is_empty(),
+        "nothing is left uncommitted, so the strip previews nothing: {preview:?}"
+    );
+}
+
+#[test]
+fn a_tall_uncommitted_tail_tail_follows_the_row_cap() {
+    // `max_rows` used to bound only the forming-table preview, the one case
+    // that could outgrow the strip. Now any withheld source line can — a very
+    // long code line at a narrow width, or the whole partial reply right after
+    // a purge rebuild resets the frontier (`repaint_conversation`). The cap
+    // must bound those too, or `preview_rows` would reserve more rows than the
+    // terminal has and push the box off screen; `ui::stream_preview_max_rows`
+    // is what the boundary passes.
+    let full = format!("```py\nx = [{}]", "1234567890, ".repeat(60));
+    let width = 30;
+    let mut render = StreamRender::new();
+    let committed = render.commit(&full, width);
+    assert!(committed.is_empty(), "the open code line is withheld whole");
+    let uncapped = render.preview(&full, width, usize::MAX);
+    assert!(
+        uncapped.len() > 6,
+        "the withheld line really does wrap tall: {}",
+        uncapped.len()
+    );
+    let capped: Vec<String> = render.preview(&full, width, 6).iter().map(plain).collect();
+    assert_eq!(capped.len(), 6, "the cap bounds the strip");
+    assert_eq!(
+        capped,
+        uncapped
+            .iter()
+            .skip(uncapped.len() - 6)
+            .map(plain)
+            .collect::<Vec<_>>(),
+        "it tail-follows — the NEWEST rows survive, the top scrolls out"
+    );
 }

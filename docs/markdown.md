@@ -430,24 +430,53 @@ drives `StreamRender` over **every char-prefix** of a large corpus (tables,
 inline emphasis, nested lists, blockquotes, links, task lists, the marker-reveal
 flip) at widths 3–40 and asserts the committed rows are always a stable prefix of
 the batch render, the final flush reconstructs it exactly, and the preview is a
-**suffix** of the batch render — its last row outside tables, the whole
-uncommitted tail (with `committed + preview` spanning the entire render) while a
-table is open. It is the guardrail for every construct here — extend it, never
-weaken it, when touching the renderer.
+**suffix** of the batch render — the whole uncommitted tail, so
+`committed + preview` spans the entire render. It is the guardrail for every
+construct here — extend it, never weaken it, when touching the renderer.
 
-### The preview row is never also committed
+### Scrollback and the strip share one frontier
 
-The strip previews the reply's **last rendered row** while the box shows the
-input. That row must be exactly the row `commit` is *withholding* from scrollback
-— otherwise a line shows twice, once in scrollback and once in the strip, until
-the next chunk supersedes it (the **slow-stream duplicate-line bug**: a chunk
-ending in `\n` completes a line, and on a slow model the gap before the next
-chunk makes the duplicate linger). So `commit` withholds the **last non-blank
-row** (`StreamRender::stable_keeping_preview_row`), not merely the still-growing
-trailing line: a just-completed line stays in the preview and only commits once
-newer content arrives (or at `finish`). `preview` then always reports
-uncommitted rows — one outside a table, the whole forming block while one is
-open (`docs/table-streaming.md`).
-`ui::tests::preview_never_shows_a_committed_row_while_streaming` drives real
-streaming order (commit before the draw's preview) over every prefix and asserts
-no preview row is already committed.
+The strip previews **exactly the rows `commit` is withholding** from scrollback:
+`preview` returns the uncommitted tail of the same virtual `frozen ++ tail`
+sequence `committed` indexes. That one shared frontier is the whole contract —
+`committed ++ preview == assistant_lines(prefix)` at every instant, so the reply
+is always fully on screen, split between scrollback and the strip, with nothing
+shown twice.
+
+It has to be *derived* from the frontier rather than chosen alongside it. The
+preview used to pick its own row — "the last rendered row" — and both ways of
+disagreeing with `commit` were reachable, because `commit` withholds by **source
+line**, not by row:
+
+- A withheld line that wraps to **several** rows previewed only its last, and
+  the rest were simply absent from the screen until the line settled. Any line
+  `commit` holds back whole does this: a fenced code line (its colour isn't
+  final until the line ends), a line with an open `**`/`` ` ``/`[`, a partial
+  fence or heading run. Measured against a real OpenRouter reply, a wide
+  `vec![…]` literal at width 40 lost **28 rows** — the text visibly vanished as
+  the line grew, then landed at once.
+- A withheld line that renders to **no** rows — a closing ``` — left the
+  preview with nothing of its own, and the old fallback reached back to the last
+  `frozen` row, which was already in scrollback. Every fenced block drew its
+  last code line twice at the moment it closed.
+
+`commit` still withholds the **last non-blank row**
+(`StreamRender::stable_keeping_preview_row`) rather than merely the growing
+trailing line, so a just-completed line stays in the preview and commits only
+once newer content supersedes it (the **slow-stream duplicate-line bug**: a
+chunk ending in `\n` completes a line, and on a slow model the gap before the
+next chunk would make the duplicate linger).
+
+When the frontier is clean — everything rendered is committed — the preview is
+**empty** and the strip reserves no preview row, the pre-stream pause's shape.
+`ui::preview_rows` therefore reports the injected count verbatim; a floor there
+would reserve a row `preview_lines` does not draw and trip its `debug_assert`.
+
+`ui::tests::preview_and_scrollback_together_show_the_whole_reply` drives real
+streaming order (commit before the draw's preview) over every prefix of a corpus
+covering each withheld construct and asserts the equality above;
+`preview_never_shows_a_committed_row_while_streaming` pins the no-duplicate half,
+and `a_wrapped_code_line_previews_every_row_not_just_its_last` /
+`a_closing_fence_never_previews_an_already_committed_row` pin the two regressions
+by name. `live_streaming_never_loses_or_repeats_a_row` (tests/live_openrouter.rs)
+re-checks the same equality at **real** provider chunk boundaries.

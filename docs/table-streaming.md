@@ -235,25 +235,36 @@ never records. Nothing is ever `…`'d.
 
 ## The multi-row preview (`StreamRender::preview`)
 
-`preview(text, width, max_rows)` returns the strip's preview **lines**:
+`preview(text, width, max_rows)` returns the strip's preview **lines**: **every
+uncommitted row** — `frozen` past `committed` (e.g. the withheld blank between
+the pre-table prose and the table), then the trailing line fed to a clone. That
+is exactly the batch render's tail, so `committed ++ preview ==
+assistant_lines(prefix)` — the whole reply is visible at every moment, split
+between scrollback and the strip.
 
-- Outside a table: the old single row — the last non-blank rendered row (the one
-  `commit` withholds via `stable_keeping_preview_row`, so a completed line is
-  never in scrollback and the strip at once), with the bullet-home fallback for
-  a zero-row reply.
-- While a table is open (the renderer's state entering the trailing line, or the
-  clone's state after feeding it): **every uncommitted row** — `frozen` past
-  `committed` (e.g. the withheld blank between the pre-table prose and the
-  table), the trailing line fed to a clone, then the clone's `flush()` rendering
-  the block-so-far, closing border included. That is exactly the batch render's
-  tail, so `committed ++ preview == assistant_lines(prefix)` — the whole reply
-  is visible at every moment, split between scrollback and the strip.
-  An **empty** trailing line is *not* fed to the clone (a chunk boundary right
-  after a newline would close the block early); the flush renders the buffered
-  rows either way.
-- The result is capped to its **last** `max_rows` rows, so a table taller than
-  the screen tail-follows its frontier (the newest rows stay visible; the top
-  border scrolls out of the strip and reappears when the block commits whole).
+A table needs no branch of its own any more, only its **flush**: when one is
+open (the renderer's state entering the trailing line, or the clone's after
+feeding it) the clone's `flush()` renders the block-so-far, closing border
+included, and since none of it has committed it falls inside the uncommitted
+range like everything else. An **empty** trailing line is *not* fed to the clone
+(a chunk boundary right after a newline would close the block early); the flush
+renders the buffered rows either way.
+
+What generalised is the other direction: this used to be the table's *special*
+case, with every other construct keeping a single-row preview chosen
+independently of the commit frontier — which lost rows off the screen whenever a
+withheld source line wrapped past one row, and duplicated one when a withheld
+line rendered to none (see *Scrollback and the strip share one frontier* in
+`docs/markdown.md`). Trailing blank rows are trimmed (they are a paragraph break
+`commit` withholds too), except inside a fence where blank lines are content;
+a reply that renders to zero rows with nothing committed still previews the
+bullet home, matching `assistant_lines`.
+
+The result is capped to its **last** `max_rows` rows, so a tail taller than the
+screen — a big table, a very long withheld code line — tail-follows its frontier
+(the newest rows stay visible; a table's top border scrolls out of the strip and
+reappears when the block commits whole). When the frontier is clean the preview
+is **empty** and the strip reserves no preview row at all.
 
 ### The close-flush must not strand the box (the blank-band bug)
 

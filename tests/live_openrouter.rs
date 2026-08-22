@@ -2974,3 +2974,158 @@ fn live_mcp_deepwiki_tool_call_round_trips() {
     println!("reply: {text}");
     assert!(!text.trim().is_empty(), "the model answered after the call");
 }
+
+/// Stream one turn and return the reply's chunks **as the provider framed
+/// them** — the boundaries a synthetic test can't guess (one model emits 200
+/// two-character deltas, another 5 paragraph-sized ones). Panics on a backend
+/// error; an empty reply is returned as such for the caller to skip.
+fn stream_chunks(model: &str, prompt: &str) -> Vec<String> {
+    let backend = backend_for(model.to_string(), None);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], vec![], tx, CancelToken::new());
+    let mut chunks = Vec::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::Chunk(chunk) => chunks.push(chunk),
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    chunks
+}
+
+/// The replies this stress drives. Each one aims at a construct
+/// `ui::StreamRender::commit` withholds from scrollback **whole** — the place
+/// where the strip is the only thing showing those rows, and so the place a
+/// preview that disagreed with the commit frontier lost or repeated them.
+const STRESS_PROMPTS: &[(&str, &str)] = &[
+    (
+        "markdown mix",
+        "Write a technical note with an H2 heading, a **bold** word, an inline `code` span, \
+         a 3-item bulleted list, a fenced python block, and a 3-column markdown table. \
+         Under 200 words.",
+    ),
+    (
+        "table only",
+        "Output ONLY a markdown table comparing 4 programming languages across the columns \
+         Language, Typing, Year, Notable Use. No other text.",
+    ),
+    (
+        "long code lines",
+        "Output ONLY a fenced rust code block with three functions whose signatures each \
+         exceed 140 characters. No prose.",
+    ),
+    (
+        "inline heavy",
+        "Write two paragraphs that heavily use **bold**, *italic*, ~~strike~~, `code` and \
+         [links](https://example.com/a/b/c) mid-sentence, wrapping over many lines.",
+    ),
+    (
+        "cjk and emoji",
+        "Write two sentences in Chinese about programming, then a bulleted list of 4 items \
+         each opening with a different emoji, then a 2x2 markdown table with an emoji per cell.",
+    ),
+];
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY"]
+fn live_streaming_never_loses_or_repeats_a_row() {
+    // The end-to-end guard on what the user actually sees while a reply
+    // streams, driven at **real** provider chunk boundaries:
+    //
+    //  1. a committed row is never re-emitted or restyled (invariant 2), and
+    //  2. `committed ++ preview` is the whole reply-so-far at every instant —
+    //     nothing on screen twice, nothing missing, and
+    //  3. the committed rows plus the final flush reconstruct the batch render.
+    //
+    // (2) is the one a synthetic corpus can under-test: a provider splits its
+    // deltas mid-token in ways a hand-written fixture won't, and it is what
+    // caught the strip previewing a single row of a source line `commit`
+    // withholds whole — 28 rows of a wide `vec![…]` literal missing from the
+    // screen at width 40 (`docs/markdown.md`, *Scrollback and the strip share
+    // one frontier*).
+    let model =
+        std::env::var("ALTER_ZERO_LIVE_MODEL").unwrap_or_else(|_| "openai/gpt-4o-mini".to_string());
+    let styled = |line: &ratatui::text::Line<'_>| -> Vec<(String, Option<ratatui::style::Color>)> {
+        line.spans
+            .iter()
+            .map(|s| (s.content.to_string(), s.style.fg))
+            .collect()
+    };
+    let trimmed = |mut rows: Vec<String>| {
+        while rows.last().is_some_and(|r| r.trim().is_empty()) {
+            rows.pop();
+        }
+        rows
+    };
+
+    let mut checked = 0usize;
+    for (name, prompt) in STRESS_PROMPTS {
+        let chunks = stream_chunks(&model, prompt);
+        let full: String = chunks.concat();
+        if full.trim().is_empty() {
+            println!("[{name}] empty reply — skipped");
+            continue;
+        }
+        println!("[{name}] {} chunks, {} bytes", chunks.len(), full.len());
+        for width in [20u16, 40, 60, 80, 120] {
+            let expected: Vec<Vec<(String, Option<ratatui::style::Color>)>> =
+                alter_zero::ui::message_lines(alter_zero::app::Role::Assistant, &full, width)
+                    .iter()
+                    .map(styled)
+                    .collect();
+            let mut render = alter_zero::ui::StreamRender::new();
+            let mut committed: Vec<Vec<(String, Option<ratatui::style::Color>)>> = Vec::new();
+            let mut acc = String::new();
+            for chunk in &chunks {
+                acc.push_str(chunk);
+                for row in render.commit(&acc, width).iter().map(styled) {
+                    let index = committed.len();
+                    assert!(
+                        index < expected.len(),
+                        "[{name}] width {width}: committed more rows than the reply renders to"
+                    );
+                    assert_eq!(
+                        expected[index], row,
+                        "[{name}] width {width}: committed row #{index} is not what the \
+                         finished reply renders — a committed row changed under the user"
+                    );
+                    committed.push(row);
+                }
+                let mut have: Vec<String> = committed
+                    .iter()
+                    .map(|r| r.iter().map(|s| s.0.clone()).collect())
+                    .collect();
+                have.extend(
+                    render
+                        .preview(&acc, width, usize::MAX)
+                        .iter()
+                        .map(|l| plain(l)),
+                );
+                let want: Vec<String> =
+                    alter_zero::ui::message_lines(alter_zero::app::Role::Assistant, &acc, width)
+                        .iter()
+                        .map(plain)
+                        .collect();
+                assert_eq!(
+                    trimmed(have),
+                    trimmed(want),
+                    "[{name}] width {width}: scrollback + strip is not the reply so far, \
+                     after {:?}",
+                    &acc[acc.len().saturating_sub(40)..]
+                );
+            }
+            committed.extend(render.finish(&acc, width).iter().map(styled));
+            assert_eq!(
+                committed, expected,
+                "[{name}] width {width}: the streamed rows do not reconstruct the reply"
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 0, "no live reply was checked");
+    println!("checked {checked} (reply × width) combinations");
+}
