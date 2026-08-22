@@ -306,8 +306,12 @@ thread, reporting on a dedicated `agents::AgentEvent` channel (a seventh
 `select!` source — agents outlive turns); a foreground group shows the live
 breathing-grey `● Running {n} agents…` tree (per-agent description · tool uses · tokens
 · a **sticky** `{Name}: {detail}` activity — a bash call's own `description`,
-held between calls — Ctrl+B moves the group to the background; a **lone**
-agent renders `● Agent({description})` over its live tool header instead)
+held between calls, else the tool cell's own `{Name}({args})` header shape —
+Ctrl+B moves the group to the background; a **lone** agent renders
+`● Agent({description})` over that same one activity row instead, and **every**
+such row — tree and lone cell alike — is one **dim, clipped** line
+(`ui::agent`'s `agent_activity_row`/`clip_cols`), never the white multi-row
+tool header a running call used to wrap open here)
 committing as
 `● {n} agents finished (ctrl+o to expand)` with `⎿ Done`/`⎿ Interrupted` rows
 (a lone agent as `● Agent({description})` + `⎿ Done ({n} tool uses · {tokens}

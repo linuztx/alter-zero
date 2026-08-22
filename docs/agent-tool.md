@@ -204,17 +204,27 @@ zero new plumbing. The TUI cell is a new `HistoryItem::AgentNotice` —
   `(ctrl+b to run in background)` hint (foreground only). The activity is
   **sticky**: `Initializing…` until the first event, then the newest tool's
   `{Name}: {detail}` — a `bash` call's model-supplied `description`
-  (`Bash: Fetching current weather…`), else its args summary
-  (`Write: game.py`) — held between calls (never dropping to `Working…`)
+  (`Bash: Fetching current weather…`), else the tool cell's own header
+  shape (`Write(game.py)`), the spelling a call is printed in everywhere
+  else — held between calls (never dropping to `Working…`)
   so the row keeps its context while the agent reasons over a result
   (`StreamEvent::ToolStart` carries the `detail`;
   `AgentRun::last_activity`). A **lone** agent renders the tool-cell shape
-  instead of a one-row tree: `● Agent({description})` over
-  `⎿ Initializing…`, or the running tool's char-wrapped header
-  (`⎿ Bash(sleep 10 && curl -s "…`, capped rows, continuations aligned
-  under the `(`) with a dim `Running…` row, or the sticky
-  `⎿ {Name}: {detail}` line. The strip's `preview_rows`/`preview_lines`
-  size and draw it like the tool queue.
+  instead of a one-row tree: `● Agent({description})` over that same one
+  `⎿ {activity}` row — `⎿ Initializing…`, then
+  `⎿ Bash: Fetch public repos for linuztx` / `⎿ Bash(curl -s https://…)`.
+  The strip's `preview_rows`/`preview_lines` size and draw it like the tool
+  queue.
+
+  Every activity row — the tree's and the lone cell's alike — is **one dim
+  row, clipped at the width** (`agent_activity_row` over `clip_cols`, the
+  cut marked `…`; red via `agent_status_color` once an agent has failed or
+  been stopped). A lone agent's *running* call used to break that shape here
+  alone: its white `Bash(…)` header char-wrapped over up to
+  `TOOL_HEADER_MAX_ROWS` rows above a dim `Running…` line, which read as the
+  main turn's own running cell and grew the strip under counters that tick
+  every frame. The bullet's breathing grey already says the call is running,
+  so the row says *what* is running and nothing more.
 - **Committed cells**: `● {n} background agents launched (↓ to manage ·
   ctrl+o to expand)` over description-only tree rows (green); `● {n} agents
   finished (ctrl+o to expand)` over the counted tree rows with `⎿ Done` /

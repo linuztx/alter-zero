@@ -6,6 +6,7 @@ use crate::ui::theme::{
     TOOL_DIM_COLOR, TOOL_FAIL_COLOR, TOOL_OK_COLOR, TOOL_OUTPUT_COLOR, TOOL_PULSE_BRIGHT,
     TOOL_PULSE_DIM, TOOL_PULSE_PERIOD,
 };
+use crate::ui::wrap::cols;
 
 #[test]
 fn agent_group_lines_render_the_finished_tree() {
@@ -66,7 +67,9 @@ fn a_lone_live_agent_renders_the_tool_cell_shape() {
     assert_eq!(texts[1], "  ⎿  Initializing…");
     // The strip sizes from the same walk (the box/cursor geometry contract).
     assert_eq!(usize::from(preview_rows(&app, 80)), texts.len());
-    // A running tool shows its wrapped header + a dim Running… row.
+    // A running tool shows the **same one dim activity row** the tree rows do
+    // — the model's own description when it gave one — never a white wrapped
+    // `Bash(...)` header over a `Running…` row (`docs/agent-tool.md`).
     app.apply_agent_event(
         "a1",
         &crate::stream::StreamEvent::ToolStart {
@@ -75,19 +78,19 @@ fn a_lone_live_agent_renders_the_tool_cell_shape() {
             detail: Some("Fetching Warsaw weather".into()),
         },
     );
-    let texts: Vec<String> = live_agent_group_lines(&app, 44).iter().map(plain).collect();
+    let lines = live_agent_group_lines(&app, 44);
+    let texts: Vec<String> = lines.iter().map(plain).collect();
     assert_eq!(texts[0], "● Agent(Fetch Warsaw)");
+    assert_eq!(texts[1], "  ⎿  Bash: Fetching Warsaw weather");
+    assert_eq!(texts.len(), 2, "one row for the state: {texts:?}");
     assert!(
-        texts[1].starts_with("  ⎿  Bash(sleep 10 && curl"),
-        "{}",
-        texts[1]
+        lines[1]
+            .spans
+            .iter()
+            .all(|s| s.style.fg == Some(TOOL_DIM_COLOR)),
+        "the whole row is dim: {:?}",
+        lines[1]
     );
-    assert!(
-        texts[2].starts_with("         "),
-        "continuations align under the (: {}",
-        texts[2]
-    );
-    assert!(texts.iter().any(|t| t.trim() == "Running…"));
     assert_eq!(usize::from(preview_rows(&app, 44)), texts.len());
     // Between calls the sticky activity line holds — never `Working…`.
     app.apply_agent_event(
@@ -104,6 +107,43 @@ fn a_lone_live_agent_renders_the_tool_cell_shape() {
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
     render_live(area, &mut buf, &app);
+}
+
+#[test]
+fn a_lone_live_agents_tool_row_clips_instead_of_wrapping() {
+    // A description-less call wears the tool cell's own `Name(args)` shape,
+    // and a long one **clips at the width** rather than wrapping the cell
+    // open under a live counter — all of it dim (`docs/agent-tool.md`).
+    let mut app = App::new();
+    app.begin_stream();
+    app.start_agent_group(false, &[spec("a1", "Fetch Warsaw", false)]);
+    app.apply_agent_event(
+        "a1",
+        &crate::stream::StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "sleep 10 && curl -s https://api.open-meteo.com/v1/forecast?latitude=52".into(),
+            detail: None,
+        },
+    );
+    let lines = live_agent_group_lines(&app, 44);
+    let texts: Vec<String> = lines.iter().map(plain).collect();
+    assert_eq!(texts.len(), 2, "the header + one clipped row: {texts:?}");
+    assert!(
+        texts[1].starts_with("  ⎿  Bash(sleep 10 && curl"),
+        "{}",
+        texts[1]
+    );
+    assert!(texts[1].ends_with('…'), "the cut is marked: {}", texts[1]);
+    assert!(cols(&texts[1]) <= 44, "clipped at the width: {}", texts[1]);
+    assert!(
+        lines[1]
+            .spans
+            .iter()
+            .all(|s| s.style.fg == Some(TOOL_DIM_COLOR)),
+        "the whole row is dim: {:?}",
+        lines[1]
+    );
+    assert_eq!(usize::from(preview_rows(&app, 44)), texts.len());
 }
 
 #[test]
@@ -217,7 +257,8 @@ fn a_multi_agent_tree_keeps_the_sticky_tool_activity() {
         "{}",
         texts[2]
     );
-    assert!(texts[4].ends_with("⎿  Write: game.py"), "{}", texts[4]);
+    // No description on the call → the tool cell's own `Name(args)` shape.
+    assert!(texts[4].ends_with("⎿  Write(game.py)"), "{}", texts[4]);
 }
 
 #[test]

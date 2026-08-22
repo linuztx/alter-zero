@@ -64,6 +64,11 @@ fn backend() -> LlmBackend {
     backend_for(model, None)
 }
 
+/// The plain text of a rendered line.
+fn plain(line: &ratatui::text::Line<'_>) -> String {
+    line.spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
 /// Run one turn through the real `ReplySource::spawn` seam and collect the
 /// streamed reply text. Panics on a backend error.
 fn complete(prompt: &str, images: Vec<PathBuf>, context: Vec<ContextMessage>) -> String {
@@ -1579,6 +1584,135 @@ fn live_subagent_background_bash_stacks_into_the_shared_registry() {
         streamed.contains("live_subagent_bg_marker"),
         "the shell's output streamed on the shared channel: {streamed:?}"
     );
+}
+
+#[test]
+#[ignore = "hits the network; needs OPENROUTER_API_KEY; costs a few cents"]
+fn live_a_lone_subagents_running_tool_renders_one_dim_clipped_row() {
+    // The lone foreground subagent's live cell, on the real wire
+    // (docs/agent-tool.md). While its `bash` call runs, the cell is
+    // `● Agent({description})` over exactly **one** row: the model's own call
+    // description when it gave one (`⎿  Bash: Fetch public repos for
+    // linuztx`), else the tool cell's own `⎿  Bash(curl -s https://…)` shape
+    // — dim throughout and clipped at the width, never the white header that
+    // used to char-wrap over three rows above a `Running…` line.
+    const WIDTH: u16 = 60;
+
+    let (bg_tx, _bg_rx) = tokio::sync::mpsc::unbounded_channel();
+    let dir = std::env::temp_dir().join(format!("alter-zero-live-agdim-{}", std::process::id()));
+    let registry = alter_zero::background::BackgroundRegistry::new(bg_tx, dir);
+    let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let agent_registry = alter_zero::agents::AgentRegistry::new(agent_tx);
+    let backend = backend()
+        .with_background(registry)
+        .with_agents(agent_registry);
+
+    // One foreground agent, one long-ish `bash` call carrying a description —
+    // the exact shape the reported cell had.
+    let prompt = "Use the agent tool exactly once: description \"Fetch GitHub user linuztx \
+                  info\", subagent_type \"general-purpose\", run_in_background false, and this \
+                  exact prompt: \"Use the bash tool exactly once, passing the description \
+                  'Fetch public repos for linuztx', to run this command: \
+                  curl -s https://api.github.com/users/linuztx/repos?per_page=100 | head -c 120 \
+                  . Then reply with one word: done.\" \
+                  When the agent returns, reply with one word: done.";
+    let context = vec![ContextMessage::new(ContextRole::User, prompt)];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let handle = backend.spawn(prompt.to_string(), vec![], context, tx, CancelToken::new());
+
+    // The app the live region renders from — seeded by the round's own
+    // announcement, exactly as the loop seeds it.
+    let mut app = alter_zero::app::App::new();
+    app.begin_stream();
+    let mut agent_id = String::new();
+    while let Some(event) = rx.blocking_recv() {
+        match event {
+            StreamEvent::AgentBatch { background, agents } => {
+                assert_eq!(agents.len(), 1, "a lone subagent: {agents:?}");
+                assert!(!background, "launched in the foreground");
+                agent_id = agents[0].id.clone();
+                app.start_agent_group(background, &agents);
+            }
+            StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),
+            StreamEvent::Error(e) => panic!("backend error: {e}"),
+            StreamEvent::StreamDone => break,
+            _ => {}
+        }
+    }
+    handle.join().expect("backend thread joins");
+    assert!(!agent_id.is_empty(), "the round announced the agent");
+
+    // Replay the subagent's own stream into the roster in order, snapshotting
+    // the cell at each `ToolStart` — the frames the strip painted while its
+    // call ran. Rendering is a pure function of that state, so a replay is
+    // what the live loop showed.
+    let mut frames: Vec<(Option<String>, Vec<ratatui::text::Line<'static>>)> = Vec::new();
+    while let Ok(alter_zero::agents::AgentEvent::Stream { id, event }) = agent_rx.try_recv() {
+        if id != agent_id {
+            continue;
+        }
+        let started = match &event {
+            StreamEvent::ToolStart { name, detail, .. } => Some((name.clone(), detail.clone())),
+            _ => None,
+        };
+        app.apply_agent_event(&id, &event);
+        if let Some((name, detail)) = started {
+            assert_eq!(name.to_lowercase(), "bash", "the agent ran the bash tool");
+            frames.push((detail, alter_zero::ui::live_agent_group_lines(&app, WIDTH)));
+        }
+    }
+    assert!(
+        !frames.is_empty(),
+        "the subagent started at least one tool call"
+    );
+
+    for (detail, lines) in &frames {
+        let texts: Vec<String> = lines.iter().map(plain).collect();
+        println!("{texts:#?}");
+        assert_eq!(texts.len(), 2, "the header + one activity row: {texts:?}");
+        assert!(
+            texts[0].starts_with("● Agent("),
+            "the lone-agent cell header: {}",
+            texts[0]
+        );
+        assert!(
+            texts[1].starts_with("  ⎿  Bash"),
+            "the call in the gutter: {}",
+            texts[1]
+        );
+        // Clipped at the width — never wrapped onto a second row.
+        assert!(
+            texts[1].chars().count() <= usize::from(WIDTH),
+            "clipped at the width: {}",
+            texts[1]
+        );
+        // Dim: one colour across the whole row, and not the white the header
+        // paints `Agent` in (the colour the old wrapped header wore).
+        let colors: Vec<_> = lines[1].spans.iter().map(|s| s.style.fg).collect();
+        assert!(
+            colors.windows(2).all(|w| w[0] == w[1]),
+            "one colour across the row: {colors:?}"
+        );
+        assert_ne!(
+            colors[0], lines[0].spans[1].style.fg,
+            "dim, not the header's white"
+        );
+        // The description when the model gave one, else the `Name(args)` shape.
+        match detail {
+            Some(detail) => assert!(
+                texts[1].contains(&format!("Bash: {detail}"))
+                    || texts[1]
+                        .starts_with(&format!("  ⎿  Bash: {}", &detail[..8.min(detail.len())])),
+                "the description leads: {} vs {detail:?}",
+                texts[1]
+            ),
+            None => assert!(
+                texts[1].starts_with("  ⎿  Bash("),
+                "no description → the tool cell's own header shape: {}",
+                texts[1]
+            ),
+        }
+    }
 }
 
 // ===== the auto mode classifier (docs/permissions.md) =====

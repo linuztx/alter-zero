@@ -245,11 +245,14 @@ impl AgentRun {
                 self.tool_uses += 1;
                 // The sticky tree-row activity: the model's own description
                 // when it gave one (`Bash: Fetching current weather…`), else
-                // the args summary (`Write: game.py`).
-                self.last_activity = Some(format!(
-                    "{name}: {}",
-                    detail.as_deref().unwrap_or(args.as_str())
-                ));
+                // the tool cell's own header shape (`Write(game.py)`) — the
+                // spelling every other surface prints a call in, so a call
+                // with no description reads the same here as it does inline
+                // rather than in a second `Name: args` one.
+                self.last_activity = Some(match detail {
+                    Some(detail) => format!("{name}: {detail}"),
+                    None => format!("{name}({args})"),
+                });
                 match self.tool_queue.front_mut() {
                     Some(front) if front.status == ToolStatus::Waiting => {
                         front.status = ToolStatus::Running;
@@ -908,6 +911,27 @@ mod tests {
         // Late events after settling are dropped.
         assert!(!run.apply(&chunk("late")));
         assert_eq!(run.result.as_deref(), Some("It is 19°C."));
+    }
+
+    #[test]
+    fn the_sticky_activity_falls_back_to_the_tool_cells_own_header() {
+        // With a description the row reads it (`Bash: Fetching…`); with none it
+        // wears the tool cell's own `Name(args)` shape — the spelling every
+        // other surface uses — rather than a second `Name: args` one
+        // (`docs/agent-tool.md`).
+        let mut run = AgentRun::new("a1", "d", GENERAL_PURPOSE, "p", false);
+        assert!(!run.apply(&StreamEvent::ToolStart {
+            name: "Write".into(),
+            args: "game.py".into(),
+            detail: None,
+        }));
+        assert_eq!(run.activity(), "Write(game.py)");
+        assert!(!run.apply(&StreamEvent::ToolStart {
+            name: "Bash".into(),
+            args: "curl wttr.in".into(),
+            detail: Some("Fetching Warsaw weather".into()),
+        }));
+        assert_eq!(run.activity(), "Bash: Fetching Warsaw weather");
     }
 
     #[test]

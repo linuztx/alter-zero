@@ -31,6 +31,50 @@ fn agent_counters_clause(tool_uses: usize, tokens: u64) -> String {
     clause
 }
 
+/// Clip `text` to `max` display columns, marking a cut with
+/// [`TOOL_HEADER_ELLIPSIS`].
+///
+/// Every agent activity row **clips, never wraps**: what it shows can be a
+/// whole `bash` command or an MCP argument blob, and a wrapped one would grow
+/// the tree (or the lone agent's cell) taller under counters that tick every
+/// frame.
+fn clip_cols(text: &str, max: usize) -> String {
+    if cols(text) <= max {
+        return text.to_string();
+    }
+    let mut clipped = truncate_cols(text, max.saturating_sub(cols(TOOL_HEADER_ELLIPSIS)));
+    clipped.push_str(TOOL_HEADER_ELLIPSIS);
+    clipped
+}
+
+/// One `⎿  {activity}` row — the dim gutter (`prefix`: the tree's own
+/// indent + rail + corner, or the lone cell's [`TOOL_RESULT_PREFIX`]) and the
+/// clipped activity in `color`. The one row every agent's state is drawn as,
+/// so the tree and the lone cell can never drift apart.
+fn agent_activity_row(prefix: &str, activity: &str, color: Color, width: u16) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(prefix.to_string(), Style::new().fg(TOOL_DIM_COLOR)),
+        Span::styled(
+            clip_cols(
+                activity,
+                (width as usize).saturating_sub(cols(prefix)).max(1),
+            ),
+            Style::new().fg(color),
+        ),
+    ])
+}
+
+/// The activity row's colour: red once an agent has failed or been stopped,
+/// dim everywhere else (a status word is not news while it is working).
+fn agent_status_color(status: crate::agents::AgentStatus) -> Color {
+    match status {
+        crate::agents::AgentStatus::Failed | crate::agents::AgentStatus::Interrupted => {
+            TOOL_FAIL_COLOR
+        }
+        _ => TOOL_DIM_COLOR,
+    }
+}
+
 /// One agent's two tree rows: the connector + description + dim counters,
 /// then the rail + `⎿  {status}`. Rows truncate at the width (Claude Code's
 /// truncate-end), so the tree never wraps.
@@ -68,15 +112,12 @@ fn agent_tree_rows(
         } else {
             AGENT_TREE_PIPE
         };
-        lines.push(Line::from(vec![
-            Span::styled(AGENT_TREE_INDENT.to_string(), dim),
-            Span::styled(rail.to_string(), dim),
-            Span::styled(AGENT_TREE_CORNER.to_string(), dim),
-            Span::styled(
-                truncate_cols(status, budget.saturating_sub(cols(AGENT_TREE_CORNER))),
-                Style::new().fg(color),
-            ),
-        ]));
+        lines.push(agent_activity_row(
+            &format!("{AGENT_TREE_INDENT}{rail}{AGENT_TREE_CORNER}"),
+            status,
+            color,
+            width,
+        ));
     }
     lines
 }
@@ -125,100 +166,34 @@ fn agent_done_clause(tool_uses: usize, tokens: u64, secs: u64) -> String {
     )
 }
 
-/// A running tool's header **inside a `⎿` corner** — the single-agent live
-/// cell's `⎿  Bash(sleep 10 && curl -s "…` shape: the corner row leads,
-/// continuations char-wrap aligned under the opening `(`, capped at
-/// [`TOOL_HEADER_MAX_ROWS`] rows with a fitted `…)`.
-fn corner_tool_header_lines(name: &str, args: &str, width: u16) -> Vec<Line<'static>> {
-    let corner_cols = cols(TOOL_RESULT_PREFIX);
-    let indent = " ".repeat(corner_cols + cols(name) + 1); // under the `(`
-    let text = format!("{name}({args})");
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
-    let white = Style::new().fg(TOOL_ARGS_COLOR);
-    let mut rows: Vec<String> = Vec::new();
-    let mut current = String::new();
-    let mut budget = (width as usize).saturating_sub(corner_cols).max(1);
-    for ch in text.chars() {
-        let w = cols(&ch.to_string());
-        if cols(&current) + w > budget {
-            rows.push(std::mem::take(&mut current));
-            budget = (width as usize).saturating_sub(cols(&indent)).max(1);
-        }
-        current.push(ch);
-    }
-    if !current.is_empty() {
-        rows.push(current);
-    }
-    if rows.len() > TOOL_HEADER_MAX_ROWS {
-        rows.truncate(TOOL_HEADER_MAX_ROWS);
-        if let Some(last) = rows.last_mut() {
-            *last = truncate_cols(
-                last,
-                (width as usize)
-                    .saturating_sub(cols(&indent) + cols(TOOL_HEADER_ELLIPSIS) + 1)
-                    .max(1),
-            );
-            last.push_str(TOOL_HEADER_ELLIPSIS);
-            last.push(')');
-        }
-    }
-    rows.into_iter()
-        .enumerate()
-        .map(|(i, row)| {
-            if i == 0 {
-                Line::from(vec![
-                    Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
-                    Span::styled(row, white),
-                ])
-            } else {
-                Line::from(vec![Span::raw(indent.clone()), Span::styled(row, white)])
-            }
-        })
-        .collect()
-}
-
 /// The **live** cell of a lone agent — `● Agent({description})` over its
-/// current state instead of a one-row tree (`docs/agent-tool.md`): the
-/// running tool's wrapped header + a dim `Running…`, or the sticky
-/// `⎿ {activity}` line (`Initializing…` before any event, the last
-/// `{Name}: {detail}` between calls).
+/// sticky `⎿ {activity}` line (`Initializing…` before any event, then the
+/// newest call's `{Name}: {detail}` / `{Name}({args})`), instead of a
+/// one-row tree (`docs/agent-tool.md`).
+///
+/// The activity row is the *tree row's* row: **dim and clipped**, whatever
+/// the agent is doing. A running call used to break that shape here alone —
+/// its white `Bash(…)` header char-wrapped over up to
+/// [`TOOL_HEADER_MAX_ROWS`] rows above a `Running…` line — which read as the
+/// main turn's own running cell and grew the strip under a live counter.
 fn single_live_agent_lines(
     app: &App,
     run: &crate::agents::AgentRun,
     background: bool,
     width: u16,
 ) -> Vec<Line<'static>> {
-    let dim = Style::new().fg(TOOL_DIM_COLOR);
     // The same breathing grey a running tool cell has — this *is* the round's
     // running cell (`docs/tool-pulse.md`).
     let mut lines = vec![agent_cell_header(
         tool_pulse_color(app.pulse()),
         &run.description,
     )];
-    let running_tool = run
-        .tool_queue
-        .front()
-        .filter(|tool| tool.status == ToolStatus::Running);
-    if let Some(tool) = running_tool {
-        lines.extend(corner_tool_header_lines(&tool.name, &tool.args, width));
-        lines.push(Line::from(vec![
-            Span::raw(" ".repeat(cols(TOOL_RESULT_PREFIX))),
-            Span::styled(TOOL_RUNNING.to_string(), dim),
-        ]));
-    } else {
-        lines.push(Line::from(vec![
-            Span::styled(TOOL_RESULT_PREFIX.to_string(), dim),
-            Span::styled(
-                truncate_cols(
-                    &run.activity(),
-                    (width as usize)
-                        .saturating_sub(cols(TOOL_RESULT_PREFIX))
-                        .max(1),
-                ),
-                dim,
-            ),
-        ]));
-    }
+    lines.push(agent_activity_row(
+        TOOL_RESULT_PREFIX,
+        &run.activity(),
+        agent_status_color(run.status),
+        width,
+    ));
     if !background
         && app
             .command_elapsed()
@@ -306,18 +281,11 @@ pub fn agent_group_lines(group: &crate::app::AgentGroup, width: u16) -> Vec<Line
                 width,
             ));
         } else {
-            let status_color = match entry.status {
-                s if s.ok() => TOOL_DIM_COLOR,
-                crate::agents::AgentStatus::Running | crate::agents::AgentStatus::Pending => {
-                    TOOL_DIM_COLOR
-                }
-                _ => TOOL_FAIL_COLOR,
-            };
             lines.extend(agent_tree_rows(
                 is_last,
                 &entry.description,
                 &agent_counters_clause(entry.tool_uses, entry.tokens),
-                Some((entry.status.label(), status_color)),
+                Some((entry.status.label(), agent_status_color(entry.status))),
                 width,
             ));
         }
@@ -354,17 +322,11 @@ pub fn live_agent_group_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let count = runs.len();
     for (i, run) in runs.iter().enumerate() {
         let activity = run.activity();
-        let status_color = match run.status {
-            crate::agents::AgentStatus::Failed | crate::agents::AgentStatus::Interrupted => {
-                TOOL_FAIL_COLOR
-            }
-            _ => TOOL_DIM_COLOR,
-        };
         lines.extend(agent_tree_rows(
             i + 1 == count,
             &run.description,
             &agent_counters_clause(run.tool_uses, run.tokens),
-            Some((activity.as_str(), status_color)),
+            Some((activity.as_str(), agent_status_color(run.status))),
             width,
         ));
     }
