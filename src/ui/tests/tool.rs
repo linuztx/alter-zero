@@ -857,9 +857,10 @@ fn write_tool_full_view_colours_the_diff() {
 
 #[test]
 fn write_cell_shows_numbered_syntax_highlighted_rows() {
-    // A `Created …` body (llm::tools::render_numbered_content) renders as
-    // Claude-Code's Write preview: dim right-aligned line numbers, the
-    // content syntax-highlighted by the path's extension.
+    // A `Created …` head — the pre-rename spelling old rollouts still carry —
+    // keeps parsing as a numbered body (llm::tools::render_numbered_content)
+    // and renders as Claude-Code's Write preview: dim right-aligned line
+    // numbers, the content syntax-highlighted by the path's extension.
     let output = "Created hello.py (2 lines)\n1 def main():\n2     x = \"hi\"";
     let lines = tool_lines(&tool("Write", "hello.py", ToolStatus::Ok, output), 80);
     assert_eq!(plain(&lines[0]), "● Write(hello.py)");
@@ -884,6 +885,146 @@ fn write_cell_shows_numbered_syntax_highlighted_rows() {
     assert_ne!(
         kw.style.fg, s.style.fg,
         "keyword and string are distinct colours"
+    );
+}
+
+#[test]
+fn write_cell_parses_the_live_wrote_head() {
+    // The live executor's head (`llm::tools::write_report`): `Wrote {N} lines
+    // to {path}` — the path cwd-relative — over the same unsigned numbered
+    // body, rendered exactly like the legacy `Created` cells.
+    let output = "Wrote 2 lines to nested/hello.py\n1 def main():\n2     x = \"hi\"";
+    let lines = tool_lines(
+        &tool("Write", "/repo/nested/hello.py", ToolStatus::Ok, output),
+        80,
+    );
+    assert_eq!(plain(&lines[0]), "● Write(/repo/nested/hello.py)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Wrote 2 lines to nested/hello.py");
+    let row1 = &lines[2];
+    assert_eq!(plain(row1), "      1 def main():");
+    assert_eq!(
+        row1.spans[1].style.fg,
+        Some(TOOL_DIM_COLOR),
+        "line number is dim"
+    );
+    assert!(
+        row1.spans
+            .iter()
+            .find(|s| s.content.as_ref() == "def")
+            .is_some_and(|s| s.style.fg.is_some()),
+        "the body stays syntax-highlighted under the new head"
+    );
+}
+
+#[test]
+fn file_summary_head_wraps_under_the_corner_instead_of_clipping() {
+    // A long `Wrote {N} lines to {deep/../path}` head used to clip at the
+    // terminal edge; it now word-wraps with continuation rows indented under
+    // the corner content, so the whole path stays readable.
+    let head = "Wrote 12 lines to ../../nested/chain/readme.md";
+    let output = format!("{head}\n1 a\n2 b");
+    let width: u16 = 40;
+    let lines = tool_lines(
+        &tool("Write", "/x/readme.md", ToolStatus::Ok, &output),
+        width,
+    );
+    let head_rows: Vec<String> = lines[1..]
+        .iter()
+        .map(plain)
+        .take_while(|row| !row.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+        .collect();
+    assert!(head_rows.len() > 1, "the head wrapped: {head_rows:?}");
+    assert_eq!(head_rows[0], "  ⎿  Wrote 12 lines to");
+    assert_eq!(
+        head_rows[1], "     ../../nested/chain/readme.md",
+        "the continuation indents under the corner content"
+    );
+    for line in &lines {
+        assert!(
+            cols(&plain(line)) <= width as usize,
+            "every row fits the width: {:?}",
+            plain(line)
+        );
+    }
+}
+
+#[test]
+fn an_updated_head_keeps_its_count_colours_when_it_wraps() {
+    // The `(+A -D)` dress survives the head wrap: wherever the counts land,
+    // they stay green/red.
+    let output = "Updated ../../some/long/path/chain/into/the/tree/main.rs (+3 -1)\n1 +x";
+    let lines = tool_lines(&tool("Edit", "/x/main.rs", ToolStatus::Ok, output), 40);
+    let add = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.content.as_ref() == "+3")
+        .expect("the added count span survives the wrap");
+    assert_eq!(add.style.fg, Some(TOOL_DIFF_ADD_COLOR));
+    let del = lines
+        .iter()
+        .flat_map(|l| l.spans.iter())
+        .find(|s| s.content.as_ref() == "-1")
+        .expect("the removed count span survives the wrap");
+    assert_eq!(del.style.fg, Some(TOOL_DIFF_DEL_COLOR));
+}
+
+#[test]
+fn an_image_read_cell_is_one_concise_fact_row() {
+    // `⎿ Read image (PNG, 512x512, 17 KB)` — the executor's whole output, so
+    // the cell is the header plus exactly one output row, no hint.
+    let output = "Read image (PNG, 512x512, 17 KB)";
+    let lines = tool_lines(&tool("Read", "flower.png", ToolStatus::Ok, output), 80);
+    assert_eq!(plain(&lines[0]), "● Read(flower.png)");
+    assert_eq!(plain(&lines[1]), "  ⎿  Read image (PNG, 512x512, 17 KB)");
+    assert_eq!(lines.len(), 2, "no hint, no second row: {lines:?}");
+}
+
+#[test]
+fn a_generic_cell_peek_line_wraps_instead_of_clipping() {
+    // The single collapsed peek line (an image read's fact row, an error
+    // body, an unknown tool) word-wraps to the width like the command peek —
+    // the old render clipped its tail at the terminal edge.
+    let long = "could not read /home/linuztx/some/deeply/nested/missing/file.txt: No such file or directory (os error 2)";
+    let width: u16 = 40;
+    let lines = tool_lines(&tool("Read", "file.txt", ToolStatus::Failed, long), width);
+    let body: Vec<String> = lines[1..].iter().map(plain).collect();
+    assert!(body.len() > 1, "the peek wrapped: {body:?}");
+    // `wrap_output` keeps each boundary space at the end of its row, so
+    // stripping the gutter and concatenating reconstructs the line exactly.
+    let joined: String = body
+        .iter()
+        .map(|row| {
+            let bare = row.trim_start_matches(' ');
+            bare.strip_prefix('⎿')
+                .map_or(bare, |rest| rest.trim_start_matches(' '))
+                .to_string()
+        })
+        .collect();
+    assert_eq!(joined, long, "no character of the line is lost");
+    for line in &lines[1..] {
+        assert!(
+            cols(&plain(line)) <= width as usize,
+            "every row fits the width: {:?}",
+            plain(line)
+        );
+    }
+}
+
+#[test]
+fn a_generic_cell_still_hints_the_lines_behind_the_wrapped_peek() {
+    // Only the first source line peeks; the rest stay behind the accurate
+    // `… +N lines` hint, wrap or no wrap.
+    let output = "first line of the body that is long enough to wrap at this width\nsecond\nthird";
+    let lines = tool_lines(&tool("Teleport", "x", ToolStatus::Ok, output), 40);
+    let hint = plain(lines.last().unwrap());
+    assert!(
+        hint.contains("+2 lines") && hint.contains("ctrl+o"),
+        "got {hint:?}"
+    );
+    assert!(
+        lines.len() > 3,
+        "the first line wrapped into several rows: {:?}",
+        lines.iter().map(plain).collect::<Vec<_>>()
     );
 }
 

@@ -1014,7 +1014,7 @@ fn live_replayed_image_read_is_visible_on_the_next_turn() {
         HistoryItem::Tool(ToolCall {
             name: "Read".to_string(),
             args: path_str.clone(),
-            output: alter_zero::llm::tools::format_read_image(&path_str, "PNG", 64, 64, 200),
+            output: alter_zero::llm::tools::format_read_image("PNG", 64, 64, 200),
             status: ToolStatus::Ok,
             timestamp: String::new(),
             shell: false,

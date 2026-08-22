@@ -15,8 +15,9 @@ use crate::permission::{PermissionDecision, PermissionKind, PermissionRequest};
 
 use super::super::{StreamEvent, ToolCallSummary};
 use super::scenario::{AskStage, Stage};
-use super::script::{chunks, created_output as created, handoff};
+use super::script::{chunks, handoff};
 use super::{CHUNK_DELAY, nap};
+use crate::llm::tools::write_report as created;
 
 /// How a gated call resolved: `Ok(output)` ran, `Err((display, result))` was
 /// refused. The two texts of a refusal are deliberately different — `display`

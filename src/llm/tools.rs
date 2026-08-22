@@ -612,8 +612,7 @@ fn read_spec() -> Value {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file, absolute or relative to the \
-                        working directory."
+                    "description": "The absolute path to the file to read."
                 },
                 "offset": {
                     "type": "number",
@@ -642,7 +641,8 @@ fn write_spec() -> Value {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to write."
+                    "description": "The absolute path to the file to write \
+                        (must be absolute, not relative)."
                 },
                 "content": {
                     "type": "string",
@@ -667,7 +667,7 @@ fn edit_spec() -> Value {
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "Path to the file to edit."
+                    "description": "The absolute path to the file to modify."
                 },
                 "old_string": {
                     "type": "string",
@@ -1051,6 +1051,88 @@ pub fn format_read(content: &str, offset: Option<usize>, limit: Option<usize>) -
     out
 }
 
+/// The compact display form of a file tool's `path` for the summary line —
+/// Claude-Code's look: a file under `cwd` reads by its relative path
+/// (`src/main.rs`), one outside it climbs with `../` segments
+/// (`../../README.md`). The tool schemas ask the model for **absolute** paths
+/// and the `● Write({path})` header echoes the argument verbatim, so the
+/// corner row uses this shorter form instead of repeating the whole prefix.
+/// Purely lexical — `.`/`..` collapse, symlinks are never consulted; a
+/// relative input is already cwd-relative and only normalizes; an absolute
+/// path on a different root than `cwd` (a Windows drive mismatch) stays as
+/// given.
+#[must_use]
+pub fn display_path(path: &str, cwd: &std::path::Path) -> String {
+    use std::path::Component;
+    let p = std::path::Path::new(path);
+    if !p.is_absolute() {
+        // Already cwd-relative: collapse `.` and `x/..`, keep leading `..`s.
+        let mut parts: Vec<String> = Vec::new();
+        for component in p.components() {
+            match component {
+                Component::CurDir => {}
+                Component::ParentDir => {
+                    if parts.last().is_some_and(|last| last != "..") {
+                        parts.pop();
+                    } else {
+                        parts.push("..".to_string());
+                    }
+                }
+                other => parts.push(other.as_os_str().to_string_lossy().into_owned()),
+            }
+        }
+        return if parts.is_empty() {
+            ".".to_string()
+        } else {
+            parts.join("/")
+        };
+    }
+    let (Some((path_root, path_parts)), Some((cwd_root, cwd_parts))) =
+        (absolute_parts(p), absolute_parts(cwd))
+    else {
+        return path.to_string(); // a relative cwd — nothing to relate to
+    };
+    if path_root != cwd_root {
+        return path.to_string(); // different roots: keep the absolute path
+    }
+    let common = path_parts
+        .iter()
+        .zip(&cwd_parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out: Vec<String> = vec!["..".to_string(); cwd_parts.len() - common];
+    out.extend(path_parts[common..].iter().cloned());
+    if out.is_empty() {
+        ".".to_string()
+    } else {
+        out.join("/")
+    }
+}
+
+/// An absolute path split lexically into its root prefix (empty on Unix, the
+/// drive on Windows) and its normal components, `.` dropped and `..` collapsed
+/// (saturating at the root). `None` for a relative path.
+fn absolute_parts(p: &std::path::Path) -> Option<(String, Vec<String>)> {
+    use std::path::Component;
+    let mut root = String::new();
+    let mut absolute = false;
+    let mut parts: Vec<String> = Vec::new();
+    for component in p.components() {
+        match component {
+            Component::Prefix(prefix) => {
+                root.push_str(&prefix.as_os_str().to_string_lossy());
+            }
+            Component::RootDir => absolute = true,
+            Component::CurDir => {}
+            Component::ParentDir => {
+                parts.pop();
+            }
+            Component::Normal(seg) => parts.push(seg.to_string_lossy().into_owned()),
+        }
+    }
+    absolute.then_some((root, parts))
+}
+
 /// The raw-byte ceiling for an image `read` — 3.75 MB, so the base64 form
 /// (4/3 inflation) stays under the strictest mainstream provider's 5 MB
 /// per-image limit. Claude Code's Read uses the same bound. Past it the read
@@ -1080,21 +1162,17 @@ pub fn is_image_path(path: &str) -> bool {
     )
 }
 
-/// The model-facing (and cell-displayed) output of an image `read`: the
-/// `READ_IMAGE_HEAD` marker with the path, then the sniffed format, the
-/// pixel dimensions, and the humanized byte size — plus where the pixels are
-/// (the attachment note the agent loop appends; see `docs/tools.md`).
+/// The model-facing (and cell-displayed) output of an image `read`: one
+/// concise fact line — the `READ_IMAGE_HEAD` marker, then the sniffed format,
+/// the pixel dimensions, and the humanized byte size
+/// (`Read image (PNG, 512x512, 17 KB)`). The path is deliberately absent —
+/// the `● Read({path})` header already shows the argument verbatim, and the
+/// follow-up `[image] …` user note ([`image_attachment_note`]) names it for
+/// the model along with where the pixels are. See `docs/tools.md`.
 #[must_use]
-pub fn format_read_image(
-    path: &str,
-    format: &str,
-    width: u32,
-    height: u32,
-    bytes: usize,
-) -> String {
+pub fn format_read_image(format: &str, width: u32, height: u32, bytes: usize) -> String {
     format!(
-        "{READ_IMAGE_HEAD}{path} ({format}, {width}x{height}, {size})\n\
-         The image is attached as the next user message.",
+        "{READ_IMAGE_HEAD}({format}, {width}x{height}, {size})",
         size = human_size(bytes),
     )
 }
@@ -1300,7 +1378,7 @@ fn render_gutter_rows(rows: &[(Option<usize>, String)]) -> String {
 }
 
 /// Render a brand-new file's contents as numbered lines (`{n:>W} {text}`,
-/// Claude-Code's `Write` preview) — the body under the `Created …` head.
+/// Claude-Code's `Write` preview) — the body under the `Wrote …` head.
 /// Capped like the diff body; empty content renders as an empty string.
 #[must_use]
 pub fn render_numbered_content(content: &str) -> String {
@@ -1364,6 +1442,44 @@ pub fn render_numbered_diff(diff: &Diff) -> String {
         }
     }
     render_gutter_rows(&rows)
+}
+
+/// The `write` tool's report for brand-new content — Claude-Code's
+/// `Wrote {N} lines to {path}` head over the numbered contents
+/// ([`render_numbered_content`]). `path` is the display form the caller chose
+/// (the executor passes the cwd-relative [`display_path`]); the head doubles
+/// as the model-facing result, exactly what the cell shows. Shared with the
+/// offline dummy so a scripted `Write` cell is byte-for-byte the live one
+/// (`docs/dummy-backend.md`).
+#[must_use]
+pub fn write_report(path: &str, content: &str) -> String {
+    let lines = content.lines().count();
+    let head = format!(
+        "Wrote {lines} line{} to {path}",
+        if lines == 1 { "" } else { "s" }
+    );
+    let body = render_numbered_content(content);
+    if body.is_empty() {
+        head
+    } else {
+        format!("{head}\n{body}")
+    }
+}
+
+/// The `write`/`edit` report for a change to existing content — the
+/// `Updated {path} (+A -D)` head over the numbered diff hunks
+/// ([`render_numbered_diff`]), or `No changes to {path}` when the diff is
+/// empty. `path` is the display form the caller chose (the executor passes
+/// the cwd-relative [`display_path`]). The [`write_report`] twin, shared with
+/// the offline dummy for the same byte-parity.
+#[must_use]
+pub fn update_report(path: &str, old: &str, new: &str) -> String {
+    let diff = diff_lines(old, new);
+    if diff.added == 0 && diff.removed == 0 {
+        return format!("No changes to {path}");
+    }
+    let summary = diff_summary(diff.added, diff.removed);
+    format!("Updated {path} {summary}\n{}", render_numbered_diff(&diff))
 }
 
 /// Frame a `bash` command's captured output for the model the way codex does:
@@ -2009,38 +2125,144 @@ mod tests {
     }
 
     #[test]
-    fn format_read_image_reports_the_facts_and_the_attachment() {
-        let out = format_read_image("assets/logo.png", "PNG", 1920, 1080, 245_760);
-        assert!(
-            out.starts_with("Read image assets/logo.png"),
-            "the marker head leads: {out}"
-        );
-        assert!(out.contains("PNG"), "got {out}");
-        assert!(out.contains("1920x1080"), "got {out}");
-        assert!(out.contains("240 KB"), "got {out}");
-        assert!(
-            out.contains("attached"),
-            "the model is told where the pixels are: {out}"
-        );
+    fn format_read_image_is_one_concise_fact_line() {
+        // The Claude-Code look: `⎿ Read image (PNG, 512x512, 17 KB)` — the
+        // path stays out (the header shows the argument; the follow-up
+        // `[image]` note names it for the model), and there is no second
+        // line for the head peek to hide.
+        let out = format_read_image("PNG", 512, 512, 17 * 1024);
+        assert_eq!(out, "Read image (PNG, 512x512, 17 KB)");
     }
 
     #[test]
     fn format_read_image_humanizes_the_size() {
-        let bytes = format_read_image("a.png", "PNG", 1, 1, 512);
+        let bytes = format_read_image("PNG", 1, 1, 512);
         assert!(bytes.contains("512 B"), "got {bytes}");
-        let mb = format_read_image("a.png", "PNG", 1, 1, 2_621_440);
+        let kb = format_read_image("PNG", 1, 1, 245_760);
+        assert!(kb.contains("240 KB"), "got {kb}");
+        let mb = format_read_image("PNG", 1, 1, 2_621_440);
         assert!(mb.contains("2.5 MB"), "got {mb}");
     }
 
     #[test]
     fn is_image_read_output_matches_only_the_image_head() {
-        assert!(is_image_read_output(&format_read_image(
-            "a.png", "PNG", 1, 1, 10
-        )));
+        assert!(is_image_read_output(&format_read_image("PNG", 1, 1, 10)));
+        // Old rollouts carry the pre-rename spelling with the path between
+        // the marker and the facts — the marker still matches.
+        assert!(is_image_read_output(
+            "Read image a.png (PNG, 1x1, 10 B)\nThe image is attached as the next user message."
+        ));
         // A text read starts with a numbered gutter row — never the marker.
         assert!(!is_image_read_output("1 alpha\n2 beta"));
         assert!(!is_image_read_output("(file a.txt is empty)"));
         assert!(!is_image_read_output("could not read a.png: missing"));
+    }
+
+    // ===== path display (docs/tools.md) =====
+
+    #[test]
+    fn display_path_shows_a_file_under_the_cwd_by_its_relative_path() {
+        let cwd = std::path::Path::new("/home/linuztx/Codes/tests");
+        assert_eq!(
+            display_path("/home/linuztx/Codes/tests/readme.md", cwd),
+            "readme.md"
+        );
+        assert_eq!(
+            display_path("/home/linuztx/Codes/tests/src/app.rs", cwd),
+            "src/app.rs"
+        );
+    }
+
+    #[test]
+    fn display_path_climbs_out_of_the_cwd_with_parent_segments() {
+        // The user-visible contract: a target outside the cwd reads as a
+        // `../` climb, never the whole absolute path.
+        let cwd = std::path::Path::new("/home/linuztx/Codes/tests/a/b");
+        assert_eq!(
+            display_path("/home/linuztx/Codes/tests/readme.md", cwd),
+            "../../readme.md"
+        );
+        assert_eq!(
+            display_path("/etc/hosts", std::path::Path::new("/home/user")),
+            "../../etc/hosts"
+        );
+    }
+
+    #[test]
+    fn display_path_keeps_a_relative_input_and_normalizes_lexically() {
+        let cwd = std::path::Path::new("/repo");
+        assert_eq!(display_path("README.md", cwd), "README.md");
+        assert_eq!(display_path("./src/../README.md", cwd), "README.md");
+        assert_eq!(display_path("../other/file.txt", cwd), "../other/file.txt");
+    }
+
+    #[test]
+    fn display_path_resolves_dot_segments_in_an_absolute_path() {
+        let cwd = std::path::Path::new("/repo/sub");
+        assert_eq!(
+            display_path("/repo/./sub/../README.md", cwd),
+            "../README.md"
+        );
+        assert_eq!(display_path("/repo/sub/dir/", cwd), "dir");
+    }
+
+    // ===== the write/update reports (docs/tools.md) =====
+
+    #[test]
+    fn write_report_heads_with_wrote_n_lines_over_the_numbered_body() {
+        let out = write_report("nested/readme.md", "one\ntwo\n");
+        let mut lines = out.lines();
+        assert_eq!(lines.next(), Some("Wrote 2 lines to nested/readme.md"));
+        assert_eq!(lines.next(), Some("1 one"));
+        assert_eq!(lines.next(), Some("2 two"));
+        assert_eq!(
+            write_report("a.txt", "solo\n").lines().next(),
+            Some("Wrote 1 line to a.txt"),
+            "singular for one line"
+        );
+        assert_eq!(
+            write_report("empty.txt", ""),
+            "Wrote 0 lines to empty.txt",
+            "empty content is the bare head"
+        );
+    }
+
+    #[test]
+    fn update_report_heads_with_updated_counts_over_the_diff_hunks() {
+        let out = update_report("../../readme.md", "keep\nold\n", "keep\nnew\n");
+        assert!(
+            out.starts_with("Updated ../../readme.md (+1 -1)\n"),
+            "got {out}"
+        );
+        assert!(out.contains("2 -old"), "got {out}");
+        assert!(out.contains("2 +new"), "got {out}");
+        assert_eq!(
+            update_report("same.txt", "a\n", "a\n"),
+            "No changes to same.txt"
+        );
+    }
+
+    #[test]
+    fn file_tool_path_params_instruct_absolute_paths() {
+        // The user-facing summary shows the compact relative form, so the
+        // schema steers the model to *send* absolute paths (Claude Code's
+        // instruction) — a relative one still resolves. Each description is
+        // one short sentence: a parameter the model reads every call pays for
+        // every word, and "the absolute path to the file to X" says it all.
+        for spec in [read_spec(), write_spec(), edit_spec()] {
+            let name = spec["function"]["name"].as_str().unwrap().to_string();
+            let desc = spec["function"]["parameters"]["properties"]["path"]["description"]
+                .as_str()
+                .unwrap();
+            assert!(
+                desc.starts_with("The absolute path to the file to "),
+                "{name}'s path description must lead with the instruction: {desc}"
+            );
+            assert!(
+                desc.split_whitespace().count() <= 14,
+                "{name}'s path description must stay one short sentence: {desc}"
+            );
+        }
     }
 
     #[test]

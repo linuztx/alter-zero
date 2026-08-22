@@ -73,8 +73,8 @@ narrating the cells it is drawing, every user-facing one closes on the shared
 `handoff!()` sentence pointing at **`/login`** then **`/model`** (the suite fails
 a scenario that doesn't; `smoke.sh` settles on that sentence), and every scripted
 call resolves with **the real executor's output** — `tools::format_read`'s
-numbered gutter for `Read`, `Created …`/`Updated …` over
-`render_numbered_content`/`render_numbered_diff` for `Write`/`Edit`, and the
+numbered gutter for `Read`, `Wrote …`/`Updated …` via the shared
+`tools::write_report`/`update_report` for `Write`/`Edit`, and the
 `Exit code: N` frame for `Bash` (streamed body first, framed only at the
 `ToolEnd`, exactly as `llm::exec` does) — so the offline cells are numbered,
 syntax-highlighted and red-on-failure like the live ones instead of plain text
@@ -1649,6 +1649,18 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   reference tool arrives carrying **that** tool's product name — `User answered
   Claude's questions:` was exactly that — so when you port a user-facing
   sentence, re-read it for whose name it says.
+- **A tool schema's prose is short, concrete, and direct** — every word of a
+  `description` rides in *every* request that offers the tool, so the model
+  pays for it on each turn and a hedge buried in a clause is a hedge it may
+  skim. Say the one thing the parameter is and stop: `The absolute path to
+  the file to read.`, `The absolute path to the file to write (must be
+  absolute, not relative).`, `The absolute path to the file to modify.` — the
+  reference's own wording, one sentence, no restated fallback behaviour (a
+  relative path still resolves; saying so invites one). The `read`/`write`/
+  `edit` path params are pinned to that shape by a test
+  (`file_tool_path_params_instruct_absolute_paths`, which checks both the
+  lead-in and the length), and the same rule governs the tool descriptions
+  around them: state the capability and its sharp edges, drop the padding.
 - **All width math goes through `cols()`** (display columns via `unicode-width`),
   never `chars().count()` — so CJK/emoji wrap and pad correctly. Measuring right
   is only half of it: a **wide glyph occupies one `Buffer` cell plus a blank
@@ -1725,15 +1737,19 @@ but bug fixes still get a failing test first (TDD applies to fixes too).
   the executor's file/process I/O is boundary code. Tools are on by default,
   off via `ALTER_ZERO_TOOLS`. A `read`/`edit`/`write` cell renders its output as
   a **numbered file change** (codex's `diff_render` look in the `⎿` gutter —
-  `ui/file_cell.rs`'s `file_cell_lines`): the executor emits `Created {path} ({N} lines)`
+  `ui/file_cell.rs`'s `file_cell_lines`): the executor emits `Wrote {N} lines to {path}`
   over the numbered contents, `Updated {path} (+A -D)` over numbered diff
+  (both heads showing the cwd-relative `tools::display_path` — `../` climbs
+  outside the cwd — while the header keeps the argument verbatim; the legacy
+  `Created {path} ({N} lines)` head still parses for old rollouts)
   **hunks** (3 context lines, `⋮` between distant hunks — the pure
   `tools::render_numbered_content`/`render_numbered_diff`), or — for `read` —
   the file numbered by `tools::format_read` in the **same** `{n:>W} {text}`
   gutter (dynamic-width numbers + a space, not the old `cat -n` tab; the UI
   synthesizes the `Read {N} lines` corner; a `read` of an **image**
-  (png/jpg/jpeg/gif/webp) instead returns a small `Read image {path} (…)` fact
-  line while the pixels ride `ToolOutcome::image` as a base64 `data:` URL —
+  (png/jpg/jpeg/gif/webp) instead returns the concise
+  `Read image ({format}, {W}x{H}, {size})` fact line while the pixels ride
+  `ToolOutcome::image` as a base64 `data:` URL —
   `run_agent` attaches them after the round's tool results as a user-role parts
   message (tool-role content rejects image parts on most providers) and
   `context_messages` replays the same note on later turns from the output

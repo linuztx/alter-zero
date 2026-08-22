@@ -161,34 +161,6 @@ pub fn chunks(text: &str) -> Vec<String> {
     text.split_inclusive(' ').map(str::to_string).collect()
 }
 
-/// The output a real `write` of brand-new `content` reports (`llm::exec`'s
-/// `describe_change`): the `Created {path} ({N} lines)` head over the numbered
-/// contents. Built from the executor's own renderer, so a scripted `Write`
-/// cell is the live one — numbered, syntax-highlighted, capped at the file
-/// cell's peek (`docs/tools.md`).
-#[must_use]
-pub(super) fn created_output(path: &str, content: &str) -> String {
-    format!(
-        "Created {path} ({} lines)\n{}",
-        content.lines().count(),
-        crate::llm::tools::render_numbered_content(content),
-    )
-}
-
-/// The output a real `edit` from `old` to `new` reports (`llm::exec`'s
-/// `describe_change`): the `Updated {path} (+A -D)` head over the numbered
-/// diff hunks, whose `+`/`-` rows the cell tints green and red. The `write`
-/// twin of [`created_output`].
-#[must_use]
-pub(super) fn updated_output(path: &str, old: &str, new: &str) -> String {
-    let diff = crate::llm::tools::diff_lines(old, new);
-    format!(
-        "Updated {path} {}\n{}",
-        crate::llm::tools::diff_summary(diff.added, diff.removed),
-        crate::llm::tools::render_numbered_diff(&diff),
-    )
-}
-
 /// A canned tool output as per-line [`StreamEvent::ToolOutput`] chunks (each
 /// line keeping its `\n`), so the dummy streams a `Bash` cell's output the way
 /// the real executor does — the live cell **tails** it as it arrives, before the

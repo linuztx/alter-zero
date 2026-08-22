@@ -12,10 +12,7 @@ use std::time::Duration;
 
 use super::super::{AgentCallDone, AgentSpec, StreamEvent, ToolCallSummary};
 use super::scenario::Cue;
-use super::script::{
-    chunks, created_output, dummy_response, handoff, image_ack, reply_parts, tool_output_events,
-    updated_output,
-};
+use super::script::{chunks, dummy_response, handoff, image_ack, reply_parts, tool_output_events};
 
 /// The dummy's canned reasoning, streamed word-by-word as
 /// [`StreamEvent::ThinkingChunk`]s during its thinking phase — the offline
@@ -110,7 +107,7 @@ const DUMMY_ABOUT_OUTPUT: &str = "alter-zero — an autonomous AI agent that liv
 /// added by [`ScriptedCall::result`], the same place the real executor adds it
 /// (`llm::exec::run_bash` streams raw lines while the command runs and frames
 /// the result only at the end — which is why the live tail never shows the
-/// frame). A file tool's body is `llm::tools`' own numbered `Read`/`Created`/
+/// frame). A file tool's body is `llm::tools`' own numbered `Read`/`Wrote`/
 /// `Updated` output, so its cell renders as the real numbered,
 /// syntax-highlighted file change rather than a plain text peek
 /// (`docs/tools.md`).
@@ -145,23 +142,28 @@ impl ScriptedCall {
         }
     }
 
-    /// A `write` creating `path` with `content`.
+    /// A `write` creating `path` with `content` — resolving with the real
+    /// executor's report (`llm::exec::describe_change` calls the same
+    /// [`crate::llm::tools::write_report`]; the demo's paths are already
+    /// cwd-relative, so no `display_path` step is needed).
     fn write(path: &str, content: &str) -> Self {
         Self {
             name: "Write",
             args: path.to_string(),
-            output: created_output(path, content),
+            output: crate::llm::tools::write_report(path, content),
             exit: None,
             streams: false,
         }
     }
 
-    /// An `edit` of `path` from `old` to `new`, resolving with the diff hunks.
+    /// An `edit` of `path` from `old` to `new`, resolving with the diff hunks
+    /// — the executor's own [`crate::llm::tools::update_report`], the `write`
+    /// twin.
     fn edit(path: &str, old: &str, new: &str) -> Self {
         Self {
             name: "Edit",
             args: path.to_string(),
-            output: updated_output(path, old, new),
+            output: crate::llm::tools::update_report(path, old, new),
             exit: None,
             streams: false,
         }
@@ -247,7 +249,7 @@ const DUMMY_PING_EXIT: u8 = 68;
 /// The **file-change** demo's script (`docs/tools.md`): a fizzbuzz with the
 /// classic bug — `i % 3` tested before `i % 15`, so 15 prints `Fizz` — written,
 /// then fixed, then run. It is the only offline demo of the `Write`/`Edit`
-/// cells, and the whole point is their *rendering*: `Created` shows the new
+/// cells, and the whole point is their *rendering*: `Wrote` shows the new
 /// file numbered, `Updated` shows only the touched hunk with its added rows
 /// tinted green and its removed one red.
 const DUMMY_FIZZBUZZ_PATH: &str = "fizzbuzz.py";
@@ -705,7 +707,7 @@ pub(in crate::stream) fn parallel_turn(cue: &Cue) -> Vec<StreamEvent> {
 }
 
 /// The **file-change** demo (`docs/tools.md`): write a buggy fizzbuzz, `edit`
-/// the bug out, then run it — so the numbered `Created` body and the tinted
+/// the bug out, then run it — so the numbered `Wrote` body and the tinted
 /// `Updated` hunk both show, which no other offline demo covers.
 pub(in crate::stream) fn files_turn(cue: &Cue) -> Vec<StreamEvent> {
     tool_turn(

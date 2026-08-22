@@ -4400,7 +4400,7 @@ tmux send-keys -t "$S55" -l "2"
 perm_done=""
 for _ in $(seq 1 250); do
 	cap="$(tmux capture-pane -t "$S55" -p)"
-	if printf '%s' "$cap" | grep -qF "Created hello.py" &&
+	if printf '%s' "$cap" | grep -qF "Wrote 8 lines to hello.py" &&
 		printf '%s' "$cap" | grep -qF "a draft I was typing"; then
 		perm_done="$cap"
 		break
@@ -5395,7 +5395,7 @@ printf '%s\n' "$stagperm_final"
 stagperm_footer=$(printf '%s\n' "$stagperm_final" | grep -nF 'dummy_model_name ·' | tail -1 | cut -d: -f1)
 stagperm_hist="$(tmux capture-pane -t "$S63" -p -S -300)"
 stagperm_dupes=$(printf '%s\n' "$stagperm_hist" | grep -cF '❯ staggered permission demo')
-stagperm_cell_dupes=$(printf '%s\n' "$stagperm_hist" | grep -cF 'Created big_module.py (60 lines)')
+stagperm_cell_dupes=$(printf '%s\n' "$stagperm_hist" | grep -cF 'Wrote 60 lines to big_module.py')
 tmux kill-session -t "$S63" 2>/dev/null
 echo "==== Phase 63: staggered prompts keep the open prompt flush at the bottom ===="
 if [ -z "$stagperm_prompt1" ]; then
@@ -5416,7 +5416,7 @@ if [ "${stagperm_rule2:-0}" != "44" ]; then
 fi
 # The resolved tall cell committed above the still-open tiny prompt (visible
 # at once, Phase 59's continuity), and the conversation stays whole after.
-if ! printf '%s' "$stagperm_prompt2" | grep -qF "Created big_module.py (60 lines)"; then
+if ! printf '%s' "$stagperm_prompt2" | grep -qF "Wrote 60 lines to big_module.py"; then
 	echo "FAIL: Phase 63 — the tall write's finished cell is hidden while the tiny prompt is up" >&2
 	status=1
 fi

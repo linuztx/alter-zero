@@ -838,17 +838,33 @@ fn tool_cell_body(tool: &ToolCall, width: u16, pulse: Option<Duration>) -> Vec<L
     }
 
     // Any other backend tool (a `read`/`write`/`edit` cell whose output didn't
-    // parse as the numbered/diff format, or an unknown tool): coloured header
-    // (wrapped when long) + a single collapsed peek line — white output content,
-    // dim placeholder — the rest behind the `… +N lines` hint.
+    // parse as the numbered/diff format — an image read's fact line, a
+    // placeholder, an error body — or an unknown tool): coloured header
+    // (wrapped when long) + a single collapsed peek line — white output
+    // content, dim placeholder — the rest behind the `… +N lines` hint. The
+    // peeked first line **word-wraps** to the width ([`wrap_output`], like the
+    // command peek) instead of clipping at the terminal edge; the
+    // [`TOOL_PEEK_MAX_ROWS`] ceiling keeps one pathological line from
+    // ballooning the cell, counting a line it cut mid-wrap as hidden.
     let mut lines = tool_header_lines(tool, width, Some(TOOL_HEADER_MAX_ROWS), pulse);
-    lines.push(match tool.status {
-        ToolStatus::Waiting => result_row(0, TOOL_WAITING.to_string()),
-        ToolStatus::Running => result_row(0, TOOL_RUNNING.to_string()),
-        _ if out_lines.is_empty() => result_row(0, TOOL_NO_OUTPUT.to_string()),
-        _ => output_row(0, truncate_cols(&out_lines[0], peek_width)),
-    });
-    let hidden = out_lines.len().saturating_sub(1);
+    let mut hidden = out_lines.len().saturating_sub(1);
+    match tool.status {
+        ToolStatus::Waiting => lines.push(result_row(0, TOOL_WAITING.to_string())),
+        ToolStatus::Running => lines.push(result_row(0, TOOL_RUNNING.to_string())),
+        _ if out_lines.is_empty() => lines.push(result_row(0, TOOL_NO_OUTPUT.to_string())),
+        _ => {
+            let wrap_width = u16::try_from(peek_width).unwrap_or(u16::MAX);
+            let wrapped = wrap_output(&out_lines[0], wrap_width);
+            let total = wrapped.len();
+            let take = total.min(TOOL_PEEK_MAX_ROWS);
+            for (i, row) in wrapped.into_iter().take(take).enumerate() {
+                lines.push(output_row(i, row));
+            }
+            if take < total {
+                hidden += 1; // the first line itself was cut mid-wrap
+            }
+        }
+    }
     if hidden > 0 {
         lines.push(more_hint_line(hidden));
     }

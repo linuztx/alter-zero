@@ -526,14 +526,7 @@ fn read_image(path: &str, bytes: &[u8]) -> ToolOutcome {
         "data:{mime};base64,{}",
         crate::clipboard::base64_encode(bytes)
     );
-    ToolOutcome::ok(tools::format_read_image(
-        path,
-        label,
-        width,
-        height,
-        bytes.len(),
-    ))
-    .with_image(url)
+    ToolOutcome::ok(tools::format_read_image(label, width, height, bytes.len())).with_image(url)
 }
 
 /// The `(MIME, display label)` for a sniffed format — `None` for anything a
@@ -549,7 +542,7 @@ fn vision_format(format: image::ImageFormat) -> Option<(&'static str, &'static s
 }
 
 /// `write`: create parent dirs and write the file, reporting a diff vs the old
-/// contents (or a `Created …` summary for a new file).
+/// contents (or a `Wrote …` summary for a new file).
 fn run_write(arguments: &str) -> ToolOutcome {
     let args: WriteArgs = match tools::parse_args(arguments) {
         Ok(a) => a,
@@ -601,31 +594,31 @@ fn run_edit(arguments: &str) -> ToolOutcome {
 
 /// The model-facing result of a `write`/`edit` — also exactly what the cell
 /// shows (the TUI restyles the rows; see `docs/tools.md`). A brand-new file is
-/// a `Created {path} ({N} lines)` head over the numbered contents
-/// ([`tools::render_numbered_content`]); a change to existing content is an
+/// a `Wrote {N} lines to {path}` head over the numbered contents
+/// ([`tools::write_report`]); a change to existing content is an
 /// `Updated {path} (+A -D)` head over the numbered diff hunks
-/// ([`tools::render_numbered_diff`]). The numbers match the `read` tool's, so
-/// the model can cite them in a follow-up `edit`.
+/// ([`tools::update_report`]). The numbers match the `read` tool's, so the
+/// model can cite them in a follow-up `edit`; the head's path is the compact
+/// cwd-relative display form ([`tools::display_path`] — `../` climbs for a
+/// target outside the cwd), while the cell header keeps the model's own
+/// argument verbatim.
 fn describe_change(path: &str, old: &str, new: &str, created: bool) -> String {
-    let diff = tools::diff_lines(old, new);
+    let shown = shown_path(path);
     if created {
-        let lines = new.lines().count();
-        let head = format!(
-            "Created {path} ({lines} line{})",
-            if lines == 1 { "" } else { "s" }
-        );
-        let body = tools::render_numbered_content(new);
-        if body.is_empty() {
-            return head;
-        }
-        return format!("{head}\n{body}");
+        tools::write_report(&shown, new)
+    } else {
+        tools::update_report(&shown, old, new)
     }
-    if diff.added == 0 && diff.removed == 0 {
-        return format!("No changes to {path}");
+}
+
+/// The display form of a tool path — [`tools::display_path`] against the
+/// process cwd (the same directory every relative tool path resolves in), the
+/// path unchanged when the cwd is unreadable.
+fn shown_path(path: &str) -> String {
+    match std::env::current_dir() {
+        Ok(cwd) => tools::display_path(path, &cwd),
+        Err(_) => path.to_string(),
     }
-    let summary = tools::diff_summary(diff.added, diff.removed);
-    let body = tools::render_numbered_diff(&diff);
-    format!("Updated {path} {summary}\n{body}")
 }
 
 /// Create the parent directories of `path`, if any (a bare filename has none).
@@ -810,6 +803,19 @@ mod tests {
         );
         assert!(out.output.contains("PNG"), "sniffed format: {}", out.output);
         assert!(out.output.contains("3x2"), "dimensions: {}", out.output);
+        // Concise, Claude-Code style: one fact line, the path left to the
+        // `● Read({path})` header and the follow-up `[image]` note.
+        assert_eq!(
+            out.output.lines().count(),
+            1,
+            "one concise line: {}",
+            out.output
+        );
+        assert!(
+            !out.output.contains(&path.display().to_string()),
+            "the path never repeats in the fact line: {}",
+            out.output
+        );
         let url = out.image.expect("the data: URL rides beside the text");
         assert!(url.starts_with("data:image/png;base64,"), "got {url}");
         assert!(
@@ -941,6 +947,16 @@ mod tests {
         assert!(out.output.contains("could not read"));
     }
 
+    /// The head's expected display path — the same cwd-relative form
+    /// `describe_change` derives, computed against the test process's cwd so
+    /// the assertion holds wherever the temp dir lives.
+    fn shown(path: &Path) -> String {
+        tools::display_path(
+            &path.display().to_string(),
+            &std::env::current_dir().unwrap(),
+        )
+    }
+
     #[test]
     fn write_creates_a_new_file_and_reports_it() {
         let path = temp_path("write-new.txt");
@@ -953,8 +969,20 @@ mod tests {
         std::fs::remove_file(&path).ok();
         assert!(out.ok);
         assert_eq!(written, "one\ntwo\n");
-        assert!(out.output.starts_with("Created"), "got {}", out.output);
-        assert!(out.output.contains("2 lines"));
+        // The Claude-Code head over the cwd-relative display path — the temp
+        // dir is outside the cwd, so the path shows as a `../` climb, never
+        // the whole absolute argument.
+        assert_eq!(
+            out.output.lines().next(),
+            Some(format!("Wrote 2 lines to {}", shown(&path)).as_str()),
+            "got {}",
+            out.output
+        );
+        assert!(
+            shown(&path).starts_with("../"),
+            "the temp file lives outside the cwd: {}",
+            shown(&path)
+        );
         // The body echoes the new file as numbered lines (the TUI's preview
         // and the model's reference for follow-up edits).
         assert!(out.output.contains("1 one"), "got {}", out.output);
@@ -971,7 +999,12 @@ mod tests {
         );
         std::fs::remove_file(&path).ok();
         assert!(out.ok);
-        assert!(out.output.starts_with("Updated"), "got {}", out.output);
+        assert_eq!(
+            out.output.lines().next(),
+            Some(format!("Updated {} (+1 -1)", shown(&path)).as_str()),
+            "got {}",
+            out.output
+        );
         // The diff body carries line numbers (codex's numbered hunks).
         assert!(out.output.contains("2 -old"), "got {}", out.output);
         assert!(out.output.contains("2 +new"));

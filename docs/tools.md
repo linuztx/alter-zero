@@ -39,9 +39,9 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 | tool | params | executes |
 | --- | --- | --- |
 | `bash` | `command` (req), `timeout` (opt, ms — default 120 000, cap 600 000; the pre-rename alias `timeout_ms` still parses) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
-| `read` | `path` (req), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
-| `write` | `path` (req), `content` (req) | create parent dirs, write the file; report `Created {path} ({N} lines)` over the numbered contents for a new file, or the numbered diff hunks vs the previous content |
-| `edit` | `path` (req), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; report `Updated {path} (+A -D)` over the numbered diff hunks |
+| `read` | `path` (req — absolute, like the other two), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
+| `write` | `path` (req — the schema asks for an **absolute** path), `content` (req) | create parent dirs, write the file; report `Wrote {N} lines to {path}` over the numbered contents for a new file, or the numbered diff hunks vs the previous content — the head's path shown cwd-relative (`tools::display_path`, `../` climbs outside the cwd) |
+| `edit` | `path` (req — absolute, like `write`'s), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; report `Updated {path} (+A -D)` over the numbered diff hunks, the path shown cwd-relative like `write`'s |
 
 `read`/`write`/`edit` are separate JSON tools rather than one `apply_patch`
 grammar: they work on any function-calling model, and `edit`'s exact
@@ -176,9 +176,13 @@ cores in `llm::tools`:
   numbered lines (`format_read`, pure), byte-caps the result; an image file
   takes the image branch below.
 - **`write`** — creates parent dirs, writes, returns `describe_change`: a brand-new
-  file is a `Created <path> (N lines)` head over the **numbered contents**
-  (`render_numbered_content` — `{n:>W} {text}` rows, the numbers matching `read`'s
-  so the model can cite them to `edit`); overwriting is reported like an edit.
+  file is a `Wrote {N} lines to <path>` head over the **numbered contents**
+  (`tools::write_report` — `{n:>W} {text}` rows, the numbers matching `read`'s
+  so the model can cite them to `edit`); overwriting is reported like an edit
+  (`tools::update_report`). The head's path is the compact cwd-relative
+  display form (`tools::display_path` — `src/main.rs` under the cwd, a
+  `../../README.md` climb outside it), while the `● Write({path})` header
+  keeps the model's own (absolute, per the schema) argument verbatim.
 - **`edit`** — the pure `apply_edit` engine does the exact replacement; the
   executor writes it back and reports `Updated <path> (+A -D)` over the
   **numbered diff hunks** (`render_numbered_diff` — only each change run plus
@@ -222,10 +226,13 @@ plots it just generated.
   the `data:` URL's MIME matches the content even when the extension lies, and
   anything that isn't really one of the four fails as a recoverable error the
   model reads. `offset`/`limit` are ignored for images.
-- **The tool result stays small text** — `Read image {path} ({format}, {W}x{H},
-  {size})` + "attached as the next user message" (`tools::format_read_image`).
-  That text is what the cell shows, what the session rollout records, and what
-  the token tally counts; the pixels never enter `output`.
+- **The tool result stays small text** — one concise
+  `Read image ({format}, {W}x{H}, {size})` fact line
+  (`tools::format_read_image`, e.g. `Read image (PNG, 512x512, 17 KB)`): the
+  path stays out, since the `● Read({path})` header shows the argument and the
+  follow-up `[image]` note names it for the model. That line is what the cell
+  shows, what the session rollout records, and what the token tally counts;
+  the pixels never enter `output`.
 - **The pixels ride `ToolOutcome::image`** (a base64 `data:` URL, encoded at
   the executor boundary) and `run_agent` attaches them as a follow-up
   **user-role parts message** — the `[image] …` note
@@ -401,7 +408,7 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
      … +244 lines (ctrl+o to expand)
 
 ● Write(index.html)
-  ⎿  Created index.html (254 lines)
+  ⎿  Wrote 254 lines to index.html
         1 <!DOCTYPE html>
         2 <html lang="en">
         …
@@ -420,12 +427,17 @@ sits **one column further in** (`ui::file_body_indent`), matching Claude Code:
 
 - The **white** summary head (`TOOL_OUTPUT_COLOR`, so it's as noticeable as the
   output — not dim) sits on the `⎿` corner row: `Read {N} lines`,
-  `Created {path} ({N} lines)`, or `Updated {path} (+A -D)` with the `(+A -D)`
+  `Wrote {N} lines to {path}`, or `Updated {path} (+A -D)` with the `(+A -D)`
   counts coloured green/red (codex's header counts — `file_summary_spans`). A
   `read` cell has no head in its output, so `ui::parse_file_cell` synthesizes
-  the `Read {N} lines` line.
+  the `Read {N} lines` line; the pre-rename `Created {path} ({N} lines)` head
+  old rollouts still carry parses the same unsigned way. A head longer than
+  the terminal **word-wraps** under the corner (`ui::summary_head_lines` over
+  `wrap_inline_hanging` — a path is one word, so an over-long one
+  hard-breaks), the count colouring riding the wrap, instead of clipping at
+  the edge.
 - Body rows re-style the output's own gutter text: the right-aligned **line
-  number** dim, the `+`/`-` **sign** green/red (a `read`/`created` body has no
+  number** dim, the `+`/`-` **sign** green/red (a `read`/`wrote` body has no
   sign column), and the content **syntax-highlighted** by the path's extension
   (`highlight::Highlighter`, the fenced-code palette — the extension comes from
   the cell's `args`, and the lexer state resets at each `⋮` gap like codex's

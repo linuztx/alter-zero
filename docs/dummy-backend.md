@@ -55,7 +55,7 @@ subtree inside it:
 |--------|-------|
 | `dummy/mod.rs` | `DummyAi` — the `ReplySource` impl, `turn_events`, and the playback pacing. |
 | `dummy/scenario.rs` | **The registry**: `Cue`, `Scenario`, `SCENARIOS`, `select`. |
-| `dummy/script.rs` | The canned replies, the `handoff!()` sentence they close on, and the streaming/output primitives (`chunks`, `dummy_response`, `reply_parts`, `image_ack`, `created_output`, `updated_output`). |
+| `dummy/script.rs` | The canned replies, the `handoff!()` sentence they close on, and the streaming/output primitives (`chunks`, `dummy_response`, `reply_parts`, `image_ack`; the file-cell bodies come straight from `llm::tools::write_report`/`update_report`). |
 | `dummy/turns.rs` | The **pure** scripted turns — one `Cue -> Vec<StreamEvent>` per scenario. |
 | `dummy/gated.rs` | The turns that *ask*, blocking on the permission gate. |
 
@@ -217,8 +217,8 @@ this costs nothing):
 | Call | Output | What that buys |
 |------|--------|----------------|
 | `Read` | `tools::format_read` | the `{n:>W} {text}` gutter `ui::file_cell_lines` parses — a numbered, syntax-highlighted (Catppuccin Mocha) cell under a `Read N lines` head, instead of a plain text peek |
-| `Write` | `Created {path} ({N} lines)` + `tools::render_numbered_content` | the numbered new-file body (`script::created_output`, shared with the gated permission demos) |
-| `Edit` | `Updated {path} (+A -D)` + `tools::render_numbered_diff` | only the touched hunk, `+` rows on the green tint and `-` rows on the red one (`script::updated_output`) |
+| `Write` | `tools::write_report` — `Wrote {N} lines to {path}` + the numbered contents | the numbered new-file body (the executor's own `describe_change` core, shared with the gated permission demos) |
+| `Edit` | `tools::update_report` — `Updated {path} (+A -D)` + the numbered diff hunks | only the touched hunk, `+` rows on the green tint and `-` rows on the red one |
 | `Bash` | `Exit code: N` + the body | the frame `ui::command_display_output` reads: dropped on success, rewritten to a red `Error: Exit code N` head on failure, so a red cell says *why* |
 
 ## The default turn is a story, not a sampler

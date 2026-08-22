@@ -319,8 +319,9 @@ fn the_file_change_demo_renders_a_capped_write_and_a_tinted_diff() {
     let write = rendered_cell("show me a diff", "Write");
     assert_eq!(plain(&write[0]), "● Write(fizzbuzz.py)");
     assert!(
-        plain(&write[1]).starts_with("  ⎿  Created fizzbuzz.py ("),
-        "the executor's created head: {:?}",
+        plain(&write[1]).starts_with("  ⎿  Wrote ")
+            && plain(&write[1]).ends_with(" lines to fizzbuzz.py"),
+        "the executor's written head: {:?}",
         plain(&write[1])
     );
     assert!(
@@ -390,8 +391,12 @@ fn a_diff_prompt_scripts_the_write_then_edit_demo() {
     );
     let (_, path, created) = &tools[0];
     assert!(
-        created.starts_with(&format!("Created {path} (")),
-        "the Write reports the executor's created head: {created}"
+        created.starts_with("Wrote ")
+            && created
+                .lines()
+                .next()
+                .is_some_and(|head| head.ends_with(&format!(" lines to {path}"))),
+        "the Write reports the executor's written head: {created}"
     );
     assert!(
         created

@@ -3,6 +3,7 @@
 //! added/removed rows on background tints. See `docs/tools.md`.
 
 use super::assistant::code_content_rows;
+use super::inline::wrap_inline_hanging;
 use super::theme::*;
 use super::tool::{more_hint_line, tool_output_lines};
 use super::wrap::{cols, truncate_cols};
@@ -50,12 +51,12 @@ pub(super) fn diff_line_color(line: &str) -> Option<Color> {
     }
 }
 
-/// One parsed row of a numbered `Created …`/`Updated …` body — the
+/// One parsed row of a numbered `Wrote …`/`Updated …` body — the
 /// `llm::tools` gutter format (`{n:>W} {text}` / `{n:>W} {sign}{text}`) a
 /// `write`/`edit` cell restyles ([`file_cell_lines`]).
 enum FileRow {
     /// A numbered content line: the raw right-aligned number `gutter`, the
-    /// diff `sign` (`None` in a `Created` body, which has no sign column),
+    /// diff `sign` (`None` in a `Wrote` body, which has no sign column),
     /// and the content `text`.
     Numbered {
         gutter: String,
@@ -69,9 +70,10 @@ enum FileRow {
 }
 
 /// Parse one body row of a numbered file cell; `signed` follows the head line
-/// (`Updated` bodies carry a `+`/`-`/space sign column, `Created` bodies
-/// don't). `None` means the row isn't in the format — the whole cell then
-/// keeps the legacy first-char diff colouring (old sessions, error bodies).
+/// (`Updated` bodies carry a `+`/`-`/space sign column, `Wrote`/`Created`
+/// bodies don't). `None` means the row isn't in the format — the whole cell
+/// then keeps the legacy first-char diff colouring (old sessions, error
+/// bodies).
 fn parse_file_row(line: &str, signed: bool) -> Option<FileRow> {
     let trimmed = line.trim_start_matches(' ');
     if trimmed.starts_with('…') {
@@ -117,13 +119,14 @@ fn parse_file_row(line: &str, signed: bool) -> Option<FileRow> {
 
 /// Parse a `read`/`write`/`edit` cell's output as a numbered file change: the
 /// summary head line for the `⎿` corner and the parsed body rows. A
-/// `write`/`edit` cell carries its head in the output (`Created …`/`Updated
-/// …`) over a signed (edit) or unsigned (created) body; a `read` cell has
-/// **no** head — its whole output is unsigned numbered content, so the
-/// `Read N lines` summary is synthesized here. `None` when the cell isn't a
-/// finished file tool or the output isn't in the `llm::tools` gutter format (a
-/// placeholder like `(file is empty)`, an old rollout, an error body) — the
-/// caller keeps the legacy rendering.
+/// `write`/`edit` cell carries its head in the output (`Wrote …`/`Updated …`,
+/// plus the legacy `Created …` old rollouts still hold) over a signed (diff)
+/// or unsigned (new-content) body; a `read` cell has **no** head — its whole
+/// output is unsigned numbered content, so the `Read N lines` summary is
+/// synthesized here. `None` when the cell isn't a finished file tool or the
+/// output isn't in the `llm::tools` gutter format (a placeholder like `(file
+/// is empty)`, an old rollout, an error body) — the caller keeps the legacy
+/// rendering.
 fn parse_file_cell(tool: &ToolCall) -> Option<(String, Vec<FileRow>)> {
     if tool.shell || tool.status == ToolStatus::Running {
         return None;
@@ -151,7 +154,10 @@ fn parse_file_cell(tool: &ToolCall) -> Option<(String, Vec<FileRow>)> {
             let (head, body) = lines.split_first()?;
             let signed = if head.starts_with("Updated ") {
                 true
-            } else if head.starts_with("Created ") {
+            } else if head.starts_with("Wrote ") || head.starts_with("Created ") {
+                // `Wrote {N} lines to {path}` is the live head
+                // (`llm::tools::write_report`); `Created {path} ({N} lines)`
+                // is the pre-rename spelling old rollouts still carry.
                 false
             } else {
                 return None;
@@ -174,7 +180,7 @@ fn file_cell_lang(args: &str) -> Option<&str> {
     (!stem.is_empty() && !ext.is_empty() && !ext.contains(' ')).then_some(ext)
 }
 
-/// The summary head of a file cell (`Created …`/`Updated …`/`Read N lines`) in
+/// The summary head of a file cell (`Wrote …`/`Updated …`/`Read N lines`) in
 /// the white output colour ([`TOOL_OUTPUT_COLOR`]) so it's as noticeable as the
 /// output, with its `(+A -D)` counts coloured green/red (codex's header counts);
 /// all-white when there are no counts.
@@ -201,6 +207,40 @@ fn file_summary_spans(head: &str) -> Vec<Span<'static>> {
         }
     }
     vec![Span::styled(head.to_string(), text)]
+}
+
+/// The `⎿` corner row(s) for a file cell's summary head — the
+/// [`file_summary_spans`] dress, **word-wrapped** to the width
+/// ([`wrap_inline_hanging`], the tool header's wrapper — a path is one word,
+/// so an over-long one hard-breaks) with continuation rows indented under the
+/// corner, instead of the clipped single row a long
+/// `Wrote {N} lines to {path}` head used to lose its tail to. The `(+A -D)`
+/// count colouring survives the wrap (the spans ride through as styled
+/// segments).
+fn summary_head_lines(head: &str, width: u16) -> Vec<Line<'static>> {
+    let dim = Style::new().fg(TOOL_DIM_COLOR);
+    let head_room = (width as usize)
+        .saturating_sub(cols(TOOL_RESULT_PREFIX))
+        .max(1);
+    let head_width = u16::try_from(head_room).unwrap_or(u16::MAX);
+    let segments: Vec<(String, Style)> = file_summary_spans(head)
+        .into_iter()
+        .map(|span| (span.content.into_owned(), span.style))
+        .collect();
+    wrap_inline_hanging(&segments, head_width, head_width)
+        .into_iter()
+        .enumerate()
+        .map(|(i, mut spans)| {
+            let prefix = if i == 0 {
+                TOOL_RESULT_PREFIX.to_string()
+            } else {
+                " ".repeat(cols(TOOL_RESULT_PREFIX))
+            };
+            let mut row = vec![Span::styled(prefix, dim)];
+            row.append(&mut spans);
+            Line::from(row)
+        })
+        .collect()
 }
 
 /// The left indent (display columns) of a numbered file cell's body — the
@@ -341,6 +381,7 @@ pub(super) fn numbered_body_lines(
 /// Build the styled `⎿` block for a `read`/`write`/`edit` cell whose output is
 /// the numbered `llm::tools` format — codex's file look in the existing gutter:
 /// the white summary head (its `(+A -D)` counts coloured) on the corner row,
+/// word-wrapped under it when long ([`summary_head_lines`]),
 /// then every body row via [`numbered_row_lines`], the `⋮` hunk gaps and `…`
 /// notes dim. `peek` caps the body at [`FILE_PEEK_LINES`] display rows (whole
 /// source rows only) and appends the `… +N lines (ctrl+o to expand)` hint.
@@ -356,10 +397,7 @@ pub(super) fn file_cell_lines(
     let dim = Style::new().fg(TOOL_DIM_COLOR);
     let indent = " ".repeat(file_body_indent());
     let note_width = (width as usize).saturating_sub(indent.len()).max(1);
-
-    let mut summary = vec![Span::styled(TOOL_RESULT_PREFIX.to_string(), dim)];
-    summary.extend(file_summary_spans(&head));
-    let mut out = vec![Line::from(summary)];
+    let mut out = summary_head_lines(&head, width);
 
     let budget = if peek { FILE_PEEK_LINES } else { usize::MAX };
     let mut used = 0usize;
