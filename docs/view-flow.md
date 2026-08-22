@@ -108,9 +108,18 @@ pathological page can't turn one navigation into an unbounded write.
   churn a purge rebuild every tick — and it is bounded by design
   (`BG_OUTPUT_ROWS`), so anchoring alone keeps its interactive tail visible
   on a squeezed terminal.
-- **Unchanged**: the ask modal keeps its own paging layout — its question
-  tabs are pages of their own, and its preview panels are side-by-side
-  geometry a line flow has no answer for (`docs/ask.md`).
+- **Flow + bottom anchor, per page**: the `AskUserQuestion` modal
+  (`docs/ask.md`). Its builder is a line builder like the rest — one flat
+  row list per *page* (a question tab, the Submit review), the side-by-side
+  preview panel just spans within those rows — and nothing in it ticks: the
+  chips, options and entry fields change only on a keystroke. So each page
+  flows exactly like a picker: the tail block (options, hints, closing
+  rule) closes the page and stays painted, the skipped top (the chip
+  strip, the question, the first options) flows, a tab move or an answer
+  re-signs the flow into the purge rebuild (the search-line rule), and a
+  tail-only ↑/↓ holds it. The retired top-drop clamp instead cut those top
+  rows into *no* buffer — on a small terminal the modal opened mid-option
+  with its question unreachable, the reported "it hides the texts".
 
 ## Why not…
 

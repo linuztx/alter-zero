@@ -97,15 +97,34 @@ park until the user decides.
 
 - **`ui::ask_view`** — the renderer, `permission_view`'s sibling: one builder
   (`ask_lines`) produces every row (rule → chip strip → question → options →
-  hints → rule) and `ask_height` reserves exactly that many
-  (`ui::region_is_modal` covers the prompt so the close purge-rebuilds like
-  the permission prompt's). The chip strip marks answered questions `☒`,
+  hints → rule) whole, and `ask_height` reserves those rows clamped to the
+  terminal (`ui::region_is_modal` covers the prompt so the close
+  purge-rebuilds like the permission prompt's). A page taller than the
+  terminal is a framed view like the rest (`docs/view-flow.md`): the paint
+  **bottom-anchors** — the options, the hints and the closing rule stay on
+  screen — and the skipped top (the chip strip, the question, the first
+  options) **flows into the terminal's real scrollback**, where the
+  terminal's own scrolling reads it. The retired top-drop clamp put those
+  rows in *no* buffer at all, which on a small terminal read as "the modal
+  hides the texts": the page opened mid-option with the question gone. A
+  keystroke that changes the page (a tab move, an answer, the entry field)
+  re-signs the flow and the boundary purge-rebuilds — the pickers'
+  search-line rule — while a plain ↑/↓ between rows in the painted tail
+  holds the flowed top. The chip strip marks answered questions `☒`,
   unanswered `☐`, the Submit tab `✔`, and lights the **current** chip on the
   cyan selection background. A question with option previews renders
   side-by-side: options left, the focused option's preview in a bordered
   panel right, the `Notes: …` line beneath it. The hardware cursor hides on
-  the option menu (`ui::cursor_visible`, the permission rule) and returns for
-  the Other/notes text fields (`ask_cursor`, sharing the builder's geometry).
+  the option menu (`ui::cursor_visible`, the permission rule) **while its
+  seat tracks the highlighted `❯` row at the option text's column** — the
+  permission prompt's seat, recorded by the builder with the rows so the two
+  can never drift, which is what a terminal's cursor animation (kitty's
+  trail and kin) lands on: the option being chosen, on every page (list,
+  preview, review), never the far end of the bottom rule — and the cursor
+  returns for the Other/notes text fields (`ask_cursor`, sharing the
+  builder's geometry; a seat whose row the bottom anchor flowed into
+  scrollback falls back to the region's far corner, the menus' marker-less
+  rule).
 
 - **The resolved cell** — `ui::tool` special-cases the ask tool: the
   first output line ("User answered Alter Zero's questions:") becomes the `●`

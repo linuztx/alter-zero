@@ -253,3 +253,91 @@ fn a_screen_tall_permission_prompt_flows_its_top() {
     });
     assert!(view_flow(&small, width, height, NO_CAP).is_none());
 }
+
+/// An ask modal whose one question carries enough described options to
+/// overflow every terminal height used here.
+fn tall_ask_app() -> App {
+    let mut app = App::new();
+    app.open_ask(crate::ask::AskRequest {
+        id: "ask_flow".to_string(),
+        questions: vec![crate::ask::AskQuestion {
+            question: "Which of these would you like to pick from this long list?".to_string(),
+            header: "Long list".to_string(),
+            options: (0..8)
+                .map(|i| crate::ask::AskOption {
+                    label: format!("Option number {i}"),
+                    description: "A description that explains this option".to_string(),
+                    preview: None,
+                })
+                .collect(),
+            multi_select: false,
+        }],
+    });
+    app
+}
+
+#[test]
+fn a_screen_tall_ask_modal_flows_its_top() {
+    // The ask modal is the permission prompt's sibling here too
+    // (docs/view-flow.md): a page taller than the terminal used to drop its
+    // top rows — the chip strip, the question, the first options — into no
+    // buffer at all (the reported "small terminal hides the texts"). Now the
+    // skipped top flows into real scrollback, where the terminal's own
+    // scrolling reads it, and the painted tail keeps the interactive rows.
+    let app = tall_ask_app();
+    let (width, height) = (60u16, 12u16);
+    let lines = crate::ui::ask_lines(&app, width);
+    assert!(lines.len() > usize::from(height), "the page overflows");
+    let flow = view_flow(&app, width, height, NO_CAP).expect("the page overflows");
+    let flowed: Vec<String> = flow.lines.iter().map(plain).collect();
+    let expected: Vec<String> = lines[..lines.len() - usize::from(height)]
+        .iter()
+        .map(plain)
+        .collect();
+    assert_eq!(flowed, expected, "the skipped top is what flows");
+    assert!(
+        flowed[0].starts_with('─'),
+        "the flow opens at the page's top rule: {flowed:?}"
+    );
+    assert!(
+        flowed.iter().any(|r| r.contains("Long list")),
+        "the chip strip rides the flow: {flowed:?}"
+    );
+    assert!(
+        flowed.iter().any(|r| r.contains("Which of these")),
+        "the question rides the flow: {flowed:?}"
+    );
+    assert_eq!(
+        Some(flow.signature),
+        view_flow_signature(&app, width, height, NO_CAP),
+        "the signature helper matches the flow it stands for"
+    );
+
+    // Stepping between two rows inside the painted tail holds the flowed
+    // top's signature — no purge rebuild for a tail-only ↑/↓ (the
+    // permission prompt's rule). ↑ wraps to Chat, ↑ again to the Other row;
+    // both sit in the tail, and the first ↑ took the `❯` out of the flow.
+    let mut app = tall_ask_app();
+    app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    let a = view_flow_signature(&app, width, height, NO_CAP).expect("overflows");
+    app.on_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+    let b = view_flow_signature(&app, width, height, NO_CAP).expect("still overflows");
+    assert_eq!(a, b, "a tail-only step keeps the flowed top");
+
+    // A modal that fits flows nothing — the region alone shows it whole.
+    let mut small = App::new();
+    small.open_ask(crate::ask::AskRequest {
+        id: "ask_small".to_string(),
+        questions: vec![crate::ask::AskQuestion {
+            question: "Coffee?".to_string(),
+            header: "Coffee".to_string(),
+            options: vec![crate::ask::AskOption {
+                label: "Yes".to_string(),
+                description: String::new(),
+                preview: None,
+            }],
+            multi_select: false,
+        }],
+    });
+    assert!(view_flow(&small, width, 40, NO_CAP).is_none());
+}

@@ -705,8 +705,9 @@ at the bottom: every framed body paints **bottom-anchored**
 `anchored_view_row` subtract the same skip) so the hint and closing rule
 stay on screen, and the skipped top **flows into the terminal's real
 scrollback** directly above the region (`ui::view_flow` — eligibility
-mirrors the render precedence, so a covering ask/permission modal
-suppresses it; the ↓ manager anchors but never flows, its details page
+mirrors the render precedence, so the painted view is the one that flows,
+a covering ask/permission modal's own page included; the ↓ manager anchors
+but never flows, its details page
 live-tails) where the terminal's own scrolling reads the whole page — and
 the four windowed pickers (`/model`, `/login`, `/settings`, `/skills`) are
 the same shape now: each render is one **line builder**

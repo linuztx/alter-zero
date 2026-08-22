@@ -80,7 +80,7 @@ fn all_text(lines: &[Line]) -> String {
 fn the_modal_frames_the_page_with_rules_chips_question_options_and_hints() {
     let mut app = App::new();
     open(&mut app, vec![coffee_question(), topics_question()]);
-    let lines = ask_lines(&app, 80, 40);
+    let lines = ask_lines(&app, 80);
     let text = all_text(&lines);
     // The frame: full-width rules top and bottom.
     assert!(plain(&lines[0]).starts_with("──"), "a top rule");
@@ -112,7 +112,7 @@ fn the_modal_frames_the_page_with_rules_chips_question_options_and_hints() {
 fn the_current_chip_lights_on_the_selection_background() {
     let mut app = App::new();
     open(&mut app, vec![coffee_question(), topics_question()]);
-    let lines = ask_lines(&app, 80, 40);
+    let lines = ask_lines(&app, 80);
     let chip_line = &lines[2];
     let current = chip_line
         .spans
@@ -138,7 +138,7 @@ fn an_answered_question_checks_its_chip() {
     open(&mut app, vec![coffee_question(), topics_question()]);
     // Answer the first question (advances to the second tab).
     app.on_key(key(KeyCode::Char('1')));
-    let lines = ask_lines(&app, 80, 40);
+    let lines = ask_lines(&app, 80);
     let text = all_text(&lines);
     assert!(text.contains("☒ Coffee style"), "answered → ☒:\n{text}");
     assert!(text.contains("☐ Demo topics"), "unanswered stays ☐");
@@ -151,12 +151,12 @@ fn a_single_select_answer_wears_the_check_and_multi_wears_checkboxes() {
     app.on_key(key(KeyCode::Char('1'))); // Black ✔, advance
     // Back to the first page to see the check.
     app.on_key(key(KeyCode::Left));
-    let text = all_text(&ask_lines(&app, 80, 40));
+    let text = all_text(&ask_lines(&app, 80));
     assert!(text.contains("1. Black ✔"), "got:\n{text}");
     // Forward to the multi page: checkboxes, one checked.
     app.on_key(key(KeyCode::Right));
     app.on_key(key(KeyCode::Char('1')));
-    let text = all_text(&ask_lines(&app, 80, 40));
+    let text = all_text(&ask_lines(&app, 80));
     assert!(text.contains("[✔] Preview panel"), "got:\n{text}");
     assert!(text.contains("[ ] Custom 'Other' input"), "got:\n{text}");
     // The multi page carries its unnumbered Submit row.
@@ -170,7 +170,7 @@ fn a_single_select_answer_wears_the_check_and_multi_wears_checkboxes() {
 fn a_preview_question_renders_the_side_panel_and_notes_line() {
     let mut app = App::new();
     open(&mut app, vec![preview_question()]);
-    let lines = ask_lines(&app, 90, 40);
+    let lines = ask_lines(&app, 90);
     let text = all_text(&lines);
     // The focused option's preview rides the bordered panel.
     assert!(text.contains("┌"), "the panel's border:\n{text}");
@@ -193,7 +193,7 @@ fn a_preview_question_renders_the_side_panel_and_notes_line() {
     assert!(text.contains("Chat about this"));
     // Focusing the second option swaps the panel content.
     app.on_key(key(KeyCode::Down));
-    let text = all_text(&ask_lines(&app, 90, 40));
+    let text = all_text(&ask_lines(&app, 90));
     assert!(text.contains("`Hello, ${n}!`"), "got:\n{text}");
 }
 
@@ -206,10 +206,10 @@ fn typed_notes_replace_the_placeholder() {
         app.on_key(key(KeyCode::Char(c)));
     }
     // While editing, the typed text shows at the notes line.
-    let text = all_text(&ask_lines(&app, 90, 40));
+    let text = all_text(&ask_lines(&app, 90));
     assert!(text.contains("Notes: keep it short"), "got:\n{text}");
     app.on_key(key(KeyCode::Esc));
-    let text = all_text(&ask_lines(&app, 90, 40));
+    let text = all_text(&ask_lines(&app, 90));
     assert!(
         text.contains("Notes: keep it short"),
         "the note stays after Esc:\n{text}"
@@ -223,7 +223,7 @@ fn a_partial_review_warns_and_lists_only_the_answered_questions() {
     app.on_key(key(KeyCode::Char('2'))); // Latte → advance
     app.on_key(key(KeyCode::Right)); // → Submit page
     assert!(app.ask().unwrap().on_submit_tab());
-    let lines = ask_lines(&app, 80, 40);
+    let lines = ask_lines(&app, 80);
     let text = all_text(&lines);
     assert!(text.contains("Review your answers"), "got:\n{text}");
     // The partial submission leads with the amber warning…
@@ -268,7 +268,7 @@ fn a_complete_review_shows_no_warning() {
     app.on_key(key(KeyCode::Char('2'))); // Latte → advance
     app.on_key(key(KeyCode::Char('1'))); // toggle Preview panel
     app.on_key(key(KeyCode::Right)); // → Submit page
-    let text = all_text(&ask_lines(&app, 80, 40));
+    let text = all_text(&ask_lines(&app, 80));
     assert!(
         !text.contains("⚠"),
         "every question answered — no warning:\n{text}"
@@ -288,7 +288,7 @@ fn a_huge_review_answer_previews_capped_with_an_ellipsis() {
     app.on_key(key(KeyCode::Enter)); // accept → advances to topics
     app.on_key(key(KeyCode::Right)); // → Submit page
     assert!(app.ask().unwrap().on_submit_tab());
-    let lines = ask_lines(&app, 80, 60);
+    let lines = ask_lines(&app, 80);
     let answer_rows = lines
         .iter()
         .map(plain)
@@ -308,29 +308,50 @@ fn a_review_with_nothing_answered_is_just_the_warning() {
     open(&mut app, vec![coffee_question(), topics_question()]);
     app.on_key(key(KeyCode::Right));
     app.on_key(key(KeyCode::Right)); // straight to Submit, nothing answered
-    let text = all_text(&ask_lines(&app, 80, 40));
+    let text = all_text(&ask_lines(&app, 80));
     assert!(text.contains("⚠ You have not answered all questions"));
     assert!(!text.contains("●"), "no review rows at all:\n{text}");
     assert!(text.contains("Ready to submit your answers?"));
 }
 
 #[test]
-fn the_modal_clamps_to_the_terminal_by_dropping_top_rows() {
+fn the_page_builds_whole_and_the_paint_bottom_anchors() {
+    // A short terminal used to cut the page by dropping its top rows into no
+    // buffer at all — the chip strip, the question and the first options were
+    // simply gone (the reported "small terminal hides the texts"). The page
+    // now builds whole: the region clamps to the terminal, the paint bottom-
+    // anchors so the interactive tail stays on screen, and the skipped top
+    // flows into real scrollback (`ui::view_flow`, `docs/view-flow.md`).
     let mut app = App::new();
     open(&mut app, vec![coffee_question(), topics_question()]);
-    let short = ask_lines(&app, 80, 8);
-    assert_eq!(short.len(), 8, "clamped to the terminal");
-    let text = all_text(&short);
-    // The tail (options + hints) survives; the chip strip scrolls off first.
-    assert!(text.contains("Chat about this"), "got:\n{text}");
-    assert_eq!(
-        ask_height(&app, 80, 8),
-        Some(8),
-        "the reserved height equals the built rows"
+    let full = ask_lines(&app, 80);
+    assert!(full.len() > 8, "the page overflows an 8-row terminal");
+    assert!(all_text(&full).contains("☐ Coffee style"), "nothing is cut");
+    // The region reserves the terminal when the page overflows, the page's
+    // own height when it fits.
+    assert_eq!(ask_height(&app, 80, 8), Some(8));
+    assert_eq!(ask_height(&app, 80, 60), Some(full.len() as u16));
+    // The paint shows exactly the page's last rows — the tail block (options,
+    // hints, closing rule) stays reachable.
+    let area = Rect::new(0, 0, 80, 8);
+    let mut buf = Buffer::empty(area);
+    render_ask(area, &mut buf, &app);
+    let painted: Vec<String> = (0..8)
+        .map(|y| row(&buf, y, 80).trim_end().to_string())
+        .collect();
+    let expected: Vec<String> = full[full.len() - 8..]
+        .iter()
+        .map(|l| plain(l).trim_end().to_string())
+        .collect();
+    assert_eq!(painted, expected, "the paint bottom-anchors the page");
+    assert!(
+        painted.iter().any(|r| r.contains("Chat about this")),
+        "the tail paints: {painted:?}"
     );
-    // …and the un-clamped height equals the natural row count.
-    let tall = ask_lines(&app, 80, 60);
-    assert_eq!(ask_height(&app, 80, 60), Some(tall.len() as u16));
+    assert!(
+        painted.last().unwrap().starts_with("──"),
+        "the closing rule stays on screen"
+    );
 }
 
 #[test]
@@ -341,7 +362,7 @@ fn editing_the_other_row_shows_the_entry_and_seats_the_cursor() {
     for c in "My an".chars() {
         app.on_key(key(KeyCode::Char(c)));
     }
-    let lines = ask_lines(&app, 80, 40);
+    let lines = ask_lines(&app, 80);
     let text = all_text(&lines);
     assert!(
         text.contains("❯ 4. My an"),
@@ -356,10 +377,18 @@ fn editing_the_other_row_shows_the_entry_and_seats_the_cursor() {
     assert_eq!(usize::from(y), entry_row);
     let expected_x = " ".len() + "❯ ".chars().count() + "4. ".len() + "My an".len();
     assert_eq!(usize::from(x), expected_x);
-    // Outside an entry there is no caret at all (the menu hides it).
+    // Outside an entry the caret hides — while its *seat* moves back to the
+    // highlighted `❯` row (the permission prompt's rule), so a terminal's
+    // cursor animation lands on the option and not the bottom rule.
     app.on_key(key(KeyCode::Esc));
-    assert!(super::super::ask_view::ask_cursor(&app, 80, 40).is_none());
     assert!(!cursor_visible(&app), "the option menu hides the cursor");
+    let (x, y) = super::super::ask_view::ask_cursor(&app, 80, 40).expect("a seat on the ❯ row");
+    let marker_row = ask_lines(&app, 80)
+        .iter()
+        .position(|l| plain(l).contains("❯ "))
+        .expect("the highlighted row");
+    assert_eq!(usize::from(y), marker_row);
+    assert_eq!(x, 3);
 }
 
 #[test]
@@ -378,7 +407,7 @@ fn a_shift_enter_entry_renders_multi_line_with_the_cursor_on_the_last_row() {
     for c in "line two".chars() {
         app.on_key(key(KeyCode::Char(c)));
     }
-    let lines = ask_lines(&app, 80, 40);
+    let lines = ask_lines(&app, 80);
     let text = all_text(&lines);
     assert!(text.contains("❯ 4. line one"), "got:\n{text}");
     let first = lines
@@ -407,7 +436,7 @@ fn a_pasted_placeholder_renders_in_the_entry_field() {
     open(&mut app, vec![coffee_question()]);
     app.on_key(key(KeyCode::Char('4')));
     app.paste_into_ask(&"x".repeat(2253));
-    let text = all_text(&ask_lines(&app, 80, 40));
+    let text = all_text(&ask_lines(&app, 80));
     assert!(
         text.contains("[Pasted Content 2253 chars]"),
         "the entry shows the compact placeholder:\n{text}"
@@ -426,7 +455,7 @@ fn a_multi_line_note_renders_wrapped_under_the_label() {
     for c in "bottom".chars() {
         app.on_key(key(KeyCode::Char(c)));
     }
-    let lines = ask_lines(&app, 90, 40);
+    let lines = ask_lines(&app, 90);
     let notes_at = lines
         .iter()
         .position(|l| plain(l).contains("Notes: top"))
@@ -440,6 +469,123 @@ fn a_multi_line_note_renders_wrapped_under_the_label() {
     );
     let (_, y) = super::super::ask_view::ask_cursor(&app, 90, 40).expect("a caret while editing");
     assert_eq!(usize::from(y), notes_at + 1);
+}
+
+/// The **painted** row the builder puts the `❯` selection marker on, and the
+/// hardware cursor's seat — the permission-view pair (`marker_row_and_cursor`'s
+/// sibling): the two must be the same row for every highlight. The paint
+/// bottom-anchors, so the marker's page row maps through the same skip.
+fn marker_row_and_cursor(app: &App, width: u16, term_height: u16) -> (u16, (u16, u16)) {
+    let lines = ask_lines(app, width);
+    let marker = lines
+        .iter()
+        .position(|l| plain(l).contains("❯ "))
+        .expect("the highlighted row");
+    let height = ask_height(app, width, term_height).unwrap();
+    let skip = lines.len().saturating_sub(usize::from(height));
+    let marker = marker
+        .checked_sub(skip)
+        .expect("the caller's highlight is inside the painted tail") as u16;
+    (marker, cursor_position(Rect::new(0, 0, width, height), app))
+}
+
+#[test]
+fn the_cursor_seat_follows_the_highlighted_row() {
+    // Hidden, but not homeless — the permission prompt's rule
+    // (`the_cursor_seat_follows_the_highlighted_option`): the seat tracks
+    // the row being chosen, so a terminal with a cursor animation lands on
+    // `❯ 1. Black` instead of the far end of the bottom rule.
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    let mut seats = Vec::new();
+    for step in 0..5 {
+        if step > 0 {
+            app.on_key(key(KeyCode::Down));
+        }
+        assert!(!cursor_visible(&app), "the option menu hides the cursor");
+        let (marker, (x, y)) = marker_row_and_cursor(&app, 80, 40);
+        assert_eq!(y, marker, "the cursor sits on the highlighted ❯ row");
+        // One inset column + the two-column `❯ ` — the permission prompt's
+        // column, so the two modals' seats agree.
+        assert_eq!(x, 3, "the column is the option text's first");
+        seats.push(y);
+    }
+    // The descriptions sit between the option rows, so ↓ steps *past* them —
+    // the seat rides the rendered row, not a fixed stride.
+    assert!(
+        seats.windows(2).all(|w| w[1] > w[0]),
+        "↓ walks the seat down the rows: {seats:?}"
+    );
+}
+
+#[test]
+fn the_cursor_seat_follows_the_review_page_rows() {
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question(), topics_question()]);
+    app.on_key(key(KeyCode::Right));
+    app.on_key(key(KeyCode::Right)); // to the Submit page
+    let lines = ask_lines(&app, 80);
+    let submit = lines
+        .iter()
+        .position(|l| plain(l).contains("❯ 1. Submit answers"))
+        .expect("the Submit row highlighted") as u16;
+    let area = Rect::new(0, 0, 80, ask_height(&app, 80, 40).unwrap());
+    let (x, y) = cursor_position(area, &app);
+    assert_eq!((x, y), (3, submit), "the seat lands on Submit answers");
+    app.on_key(key(KeyCode::Down));
+    let (_, (x, y)) = marker_row_and_cursor(&app, 80, 40);
+    assert_eq!((x, y), (3, submit + 1), "…and follows onto Cancel");
+}
+
+#[test]
+fn the_cursor_seat_follows_the_preview_page_rows() {
+    // The side-by-side layout zips the left column with the panel; the seat
+    // still lands on the highlighted left row, and on the full-width Chat
+    // row below the notes line when the walk reaches it.
+    let mut app = App::new();
+    open(&mut app, vec![preview_question()]);
+    let mut seats = Vec::new();
+    for step in 0..4 {
+        if step > 0 {
+            app.on_key(key(KeyCode::Down));
+        }
+        let (marker, (x, y)) = marker_row_and_cursor(&app, 90, 40);
+        assert_eq!(y, marker, "the cursor sits on the highlighted ❯ row");
+        assert_eq!(x, 3);
+        seats.push(y);
+    }
+    let lines = ask_lines(&app, 90);
+    assert!(
+        plain(&lines[usize::from(seats[3])]).contains("Chat about this"),
+        "the walk ends on the Chat row"
+    );
+}
+
+#[test]
+fn a_flowed_off_highlight_parks_the_seat_in_the_corner() {
+    // The bottom anchor paints the page's tail; a highlighted row that sits
+    // in the flowed top has no on-screen row, so the cursor falls back to
+    // the far corner (the menus' rule for a marker-less page).
+    let mut app = App::new();
+    open(&mut app, vec![coffee_question()]);
+    // At 8 rows only the tail (the last options + hints + rule) paints — the
+    // highlighted first option sits in the flowed top.
+    let lines = ask_lines(&app, 80);
+    let skip = lines.len() - 8;
+    let marker = lines
+        .iter()
+        .position(|l| plain(l).contains("❯ "))
+        .expect("the highlighted row");
+    assert!(marker < skip, "the highlighted row is in the flowed top");
+    let area = Rect::new(0, 0, 80, ask_height(&app, 80, 8).unwrap());
+    let (x, y) = cursor_position(area, &app);
+    assert_eq!((x, y), (79, 7), "the corner fallback");
+    // ↑ wraps the highlight to the last row (Chat about this), inside the
+    // painted tail — the seat comes back to it.
+    app.on_key(key(KeyCode::Up));
+    let (marker, (x, y)) = marker_row_and_cursor(&app, 80, 8);
+    assert_eq!(y, marker, "a visible highlight seats normally");
+    assert_eq!(x, 3);
 }
 
 #[test]

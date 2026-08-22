@@ -4,8 +4,11 @@
 //!
 //! The permission prompt's sibling ([`super::permission_view`]): one builder
 //! ([`ask_build`]) produces every row **and** the hardware cursor's seat, and
-//! [`ask_height`] reserves exactly the built rows, so the reserved height, the
-//! painted rows, and the cursor can never drift apart.
+//! [`ask_height`] reserves those rows clamped to the terminal, so the
+//! reserved height, the painted rows, and the cursor can never drift apart.
+//! A page taller than the terminal paints bottom-anchored and flows its
+//! skipped top into real scrollback like every framed view
+//! (`docs/view-flow.md`).
 
 use crate::app::{AskAnswerState, AskInput, AskPrompt, AskRow, ask_row_number, ask_rows};
 use crate::ask::{AskOption, AskQuestion};
@@ -183,11 +186,13 @@ fn option_label_spans(
     spans
 }
 
-/// What the modal builds: every row of the region, and — while an entry field
-/// is live — the cursor's `(row, col)` inside those rows.
+/// What the modal builds: every row of the region; while an entry field is
+/// live, the cursor's `(row, col)` inside those rows; and the highlighted
+/// `❯` row's index (`marker`), the hidden cursor's resting seat.
 struct AskBuild {
     lines: Vec<Line<'static>>,
     cursor: Option<(usize, usize)>,
+    marker: Option<usize>,
 }
 
 /// Build the whole modal at `width`: rule → chip strip → the current page →
@@ -197,28 +202,50 @@ fn ask_build(app: &App, width: u16) -> AskBuild {
         return AskBuild {
             lines: Vec::new(),
             cursor: None,
+            marker: None,
         };
     };
     let mut lines = vec![rule(width), Line::default()];
     lines.push(chip_strip(prompt, width));
     lines.push(Line::default());
     let mut cursor = None;
+    let mut marker = None;
     if prompt.on_submit_tab() {
-        build_review_page(prompt, width, &mut lines);
+        build_review_page(prompt, width, &mut lines, &mut marker);
     } else if let Some(question) = prompt.current_question() {
         lines.extend(text_rows(&question.question, Color::Reset, width));
         lines.push(Line::default());
         if question.has_previews() {
-            build_preview_page(app, prompt, question, width, &mut lines, &mut cursor);
+            build_preview_page(
+                app,
+                prompt,
+                question,
+                width,
+                &mut lines,
+                &mut cursor,
+                &mut marker,
+            );
         } else {
-            build_list_page(app, prompt, question, width, &mut lines, &mut cursor);
+            build_list_page(
+                app,
+                prompt,
+                question,
+                width,
+                &mut lines,
+                &mut cursor,
+                &mut marker,
+            );
         }
     }
     lines.push(Line::default());
     lines.push(hint_row(&hints(prompt)));
     lines.push(Line::default());
     lines.push(rule(width));
-    AskBuild { lines, cursor }
+    AskBuild {
+        lines,
+        cursor,
+        marker,
+    }
 }
 
 /// The hint pairs for the modal's current state. The entry fields name the
@@ -263,6 +290,7 @@ fn build_list_page(
     width: u16,
     lines: &mut Vec<Line<'static>>,
     cursor: &mut Option<(usize, usize)>,
+    marker: &mut Option<usize>,
 ) {
     let state = &prompt.answers[prompt.tab];
     let desc_indent = " ".repeat(
@@ -276,6 +304,11 @@ fn build_list_page(
     let room = (width as usize).saturating_sub(content_col()).max(1);
     for (at, row) in ask_rows(question).iter().enumerate() {
         let selected = prompt.row == at;
+        if selected {
+            // The highlighted row's first line — where the `❯` paints, and
+            // where the hidden cursor rests.
+            *marker = Some(lines.len());
+        }
         let number = ask_row_number(question, *row);
         match *row {
             AskRow::Option(i) => {
@@ -419,6 +452,7 @@ fn build_preview_page(
     width: u16,
     lines: &mut Vec<Line<'static>>,
     cursor: &mut Option<(usize, usize)>,
+    marker: &mut Option<usize>,
 ) {
     let state = &prompt.answers[prompt.tab];
     let rows = ask_rows(question);
@@ -481,8 +515,14 @@ fn build_preview_page(
     let entry_room = left_width.saturating_sub(content_col()).max(1);
     let mut left: Vec<Vec<Span<'static>>> = Vec::new();
     let mut pending_cursor: Option<(usize, usize)> = None;
+    let mut pending_marker: Option<usize> = None;
     for (at, row) in left_rows.iter().enumerate() {
         let selected = prompt.row == at;
+        if selected {
+            // The highlighted left row's first visual row — made absolute
+            // once the zip below fixes where the columns start.
+            pending_marker = Some(left.len());
+        }
         match *row {
             AskRow::Option(idx) => {
                 let picked = state.selected.contains(&idx);
@@ -525,6 +565,9 @@ fn build_preview_page(
     let zip_start = lines.len();
     if let Some((vrow, col)) = pending_cursor {
         *cursor = Some((zip_start + vrow, col));
+    }
+    if let Some(vrow) = pending_marker {
+        *marker = Some(zip_start + vrow);
     }
     let total = left.len().max(panel.len());
     for i in 0..total {
@@ -585,6 +628,9 @@ fn build_preview_page(
     lines.push(Line::default());
     if let Some(at) = rows.iter().position(|row| *row == AskRow::Chat) {
         let selected = prompt.row == at;
+        if selected {
+            *marker = Some(lines.len());
+        }
         let mut spans = row_prefix(selected, ask_row_number(question, AskRow::Chat));
         spans.push(Span::styled(
             ASK_CHAT_LABEL.to_string(),
@@ -656,7 +702,12 @@ fn panel_lines(preview: &str, width: usize) -> Vec<Vec<Span<'static>>> {
 /// green `→ answer` — an unanswered one is omitted, its ☐ chip and the
 /// warning already say so), the closing question, and the `Submit answers` /
 /// `Cancel` options.
-fn build_review_page(prompt: &AskPrompt, width: u16, lines: &mut Vec<Line<'static>>) {
+fn build_review_page(
+    prompt: &AskPrompt,
+    width: u16,
+    lines: &mut Vec<Line<'static>>,
+    marker: &mut Option<usize>,
+) {
     lines.extend(text_rows(ASK_REVIEW_TITLE, Color::Reset, width));
     lines.push(Line::default());
     // The warning leads the page whenever the submission would be partial —
@@ -742,6 +793,9 @@ fn build_review_page(prompt: &AskPrompt, width: u16, lines: &mut Vec<Line<'stati
     lines.push(Line::default());
     for (i, label) in [ASK_SUBMIT_LABEL, ASK_CANCEL_LABEL].iter().enumerate() {
         let selected = prompt.row == i;
+        if selected {
+            *marker = Some(lines.len());
+        }
         let mut spans = row_prefix(selected, Some(i + 1));
         spans.push(Span::styled(
             (*label).to_string(),
@@ -755,52 +809,59 @@ fn build_review_page(prompt: &AskPrompt, width: u16, lines: &mut Vec<Line<'stati
     }
 }
 
-/// Every row of the open ask modal at `width` on a `term_height`-row terminal
-/// — clamped to the terminal by dropping rows from the **top** (the chip
-/// strip and question scroll away first; the options and hints stay
-/// reachable). Empty when no modal is open.
+/// Every row of the open ask modal at `width` — the **whole** page, top rule
+/// to bottom rule; empty when no modal is open. The page is never cut here:
+/// the paint bottom-anchors it into the region ([`render_ask`]) so the
+/// interactive tail (options, hints, closing rule) stays on screen, and a
+/// page taller than the terminal **flows** its skipped top into the
+/// terminal's real scrollback like every framed view (`view_flow`,
+/// `docs/view-flow.md`) — the retired top-drop clamp put the chip strip, the
+/// question and the first options in no buffer at all on a short terminal.
 #[must_use]
-pub fn ask_lines(app: &App, width: u16, term_height: u16) -> Vec<Line<'static>> {
-    let mut build = ask_build(app, width).lines;
-    let max = usize::from(term_height.max(1));
-    if build.len() > max {
-        build.drain(..build.len() - max);
-    }
-    build
+pub fn ask_lines(app: &App, width: u16) -> Vec<Line<'static>> {
+    ask_build(app, width).lines
 }
 
 /// The inline live-region height when the ask modal is open, or `None` when
-/// it isn't (the caller falls back through the picker chain). Exactly the
-/// rows [`ask_lines`] builds, clamped to the terminal.
+/// it isn't (the caller falls back through the picker chain). The rows
+/// [`ask_lines`] builds, clamped to the terminal — the permission prompt's
+/// `permission_height` shape.
 #[must_use]
 pub fn ask_height(app: &App, width: u16, term_height: u16) -> Option<u16> {
     app.ask()?;
-    let rows = ask_lines(app, width, term_height).len() as u16;
+    let rows = ask_lines(app, width).len() as u16;
     Some(rows.min(term_height.max(1)))
 }
 
-/// The hardware cursor's `(x, y)` inside the modal's region while an entry
-/// field (the Other row, the notes line) is live — `None` otherwise (the
-/// option menu hides the cursor, the permission prompt's rule).
+/// The hardware cursor's `(x, y)` inside the modal's region: the live entry
+/// field's caret (the Other row, the notes line) when one is open, else the
+/// highlighted `❯` row at the option text's column — the permission prompt's
+/// seat, so a terminal's cursor animation lands on the row being chosen
+/// (`❯ 1. Black`) rather than the far end of the bottom rule, while
+/// [`cursor_visible`](super::cursor_visible) still hides it over the menu.
+/// `None` only with no open modal, or when the seat's row was clamped off the
+/// page (the caller's far-corner fallback, the menus' rule).
 #[must_use]
 pub(super) fn ask_cursor(app: &App, width: u16, term_height: u16) -> Option<(u16, u16)> {
     let build = ask_build(app, width);
-    let (row, col) = build.cursor?;
-    // The height clamp drops rows from the top; the cursor shifts with them.
-    let dropped = build
-        .lines
-        .len()
-        .saturating_sub(usize::from(term_height.max(1)));
-    let row = row.saturating_sub(dropped);
+    let marker_col = cols(ASK_INDENT) + cols(PERMISSION_MARKER);
+    let (row, col) = build.cursor.or(build.marker.map(|row| (row, marker_col)))?;
+    // The paint bottom-anchors the page (`docs/view-flow.md`), so the seat
+    // shifts by the same skipped top — and a seat inside the skip (a row
+    // that flowed into scrollback) has no on-screen row.
+    let dropped = super::view_flow::view_body_skip(build.lines.len(), term_height.max(1));
+    let row = row.checked_sub(dropped)?;
     Some((
         col.min(usize::from(width.saturating_sub(1))) as u16,
         row.min(usize::from(term_height.saturating_sub(1))) as u16,
     ))
 }
 
-/// Paint the open ask modal over the whole live region — pure;
-/// [`render_live`] calls this in place of the composer, and the region is
-/// sized to exactly these rows ([`ask_height`]).
+/// Paint the open ask modal over the whole live region — bottom-anchored, so
+/// a page taller than the region keeps its tail (the options, the hints, the
+/// closing rule) on screen while the skipped top flows into scrollback
+/// (`docs/view-flow.md`). Pure — [`render_live`] calls this in place of the
+/// composer, and the region is sized from the same builder ([`ask_height`]).
 pub fn render_ask(area: Rect, buf: &mut Buffer, app: &App) {
-    Paragraph::new(ask_lines(app, area.width, area.height)).render(area, buf);
+    super::view_flow::render_framed_tail(area, buf, ask_lines(app, area.width));
 }

@@ -702,10 +702,12 @@ fn menu_marker_seat(lines: &[ratatui::text::Line<'_>], area: Rect) -> (u16, u16)
 #[must_use]
 pub fn cursor_position(area: Rect, app: &App) -> (u16, u16) {
     // The ask modal seats the cursor in whichever entry field is live (the
-    // Other row, the notes line) — the builder computed the seat with the
-    // rows, so the two can never drift (`docs/ask.md`). With no field open
-    // the menu parks it at the region's far corner (the manager band's rule:
-    // it reads as chrome, and `cursor_visible` hides it anyway).
+    // Other row, the notes line), else on the highlighted `❯` row — the
+    // permission prompt's rule, so a terminal's cursor animation lands on
+    // the option being chosen while `cursor_visible` hides the cursor over
+    // the menu. The builder computed the seat with the rows, so the two can
+    // never drift (`docs/ask.md`); the far corner is only the fallback for
+    // a seat the height clamp dropped off the page.
     if app.ask().is_some() {
         if let Some((x, y)) = super::ask_view::ask_cursor(app, area.width, area.height) {
             return (area.x + x, area.y + y);

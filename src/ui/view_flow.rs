@@ -56,21 +56,26 @@ pub struct ViewFlow {
 /// The full page lines of the flow-eligible framed view currently **painted**
 /// — `None` when none is. Eligibility mirrors `render_live_with_preview`'s
 /// precedence exactly: a view flows only while it is the one on screen, so
-/// the ask modal (which paints *instead* of everything below it, with its
-/// own paging layout) suppresses the flow, and the boundary's signature
-/// check then cleans any flowed rows up. Every content-driven framed view
-/// flows — the permission prompt and the windowed pickers included: their
-/// pages are line builders like the menus' (`docs/view-flow.md`). The
-/// prompt's builder needs `term_height` for its keep-context decision (a
-/// ticking agent tree rides only a page that fits — never the flow); a
-/// picker's search line sits in the page top, and a keystroke re-signs the
-/// flow so the typed query re-flows with it. The one stay-out is the ↓
-/// background manager, whose details page live-tails a running shell —
-/// per-frame content would churn the flow's purge rebuild every tick, so it
+/// an open modal (which paints *instead* of everything below it) is the one
+/// that flows, and the boundary's signature check cleans the covered view's
+/// rows up. Every content-driven framed view flows — the two modals and the
+/// windowed pickers included: their pages are line builders like the menus'
+/// (`docs/view-flow.md`). The ask modal's page is static per state (its
+/// chips, options and entry fields change only on a keystroke, which
+/// re-signs the flow — the picker-search rule); the permission prompt's
+/// builder needs `term_height` for its keep-context decision (a ticking
+/// agent tree rides only a page that fits — never the flow); a picker's
+/// search line sits in the page top, and a keystroke re-signs the flow so
+/// the typed query re-flows with it. The one stay-out is the ↓ background
+/// manager, whose details page live-tails a running shell — per-frame
+/// content would churn the flow's purge rebuild every tick, so it
 /// bottom-anchors only.
 fn flow_view_lines(app: &App, width: u16, term_height: u16) -> Option<Vec<Line<'static>>> {
     if app.ask().is_some() {
-        return None;
+        // The `AskUserQuestion` modal (`docs/ask.md`): its top-drop clamp
+        // used to put the chip strip, the question and the first options in
+        // no buffer at all on a short terminal.
+        return Some(super::ask_view::ask_lines(app, width));
     }
     if app.permission().is_some() {
         return Some(super::permission_view::permission_lines(
