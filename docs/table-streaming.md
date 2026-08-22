@@ -59,10 +59,13 @@ user watches it form in the live region the whole time.**
   to the last preview) commits in one shot and the strip empties: visually the
   table "freezes" in place.
 
-The preview generalizes from "the last rendered row" (one row) to "the batch
-render's uncommitted tail" (n rows) only while a table is open; prose, code, and
-every other construct keep the old single-row preview. A running tool's cell
-already previews multi-row, so the strip machinery was ready for this.
+The preview generalized from "the last rendered row" (one row) to "the batch
+render's uncommitted tail" (n rows) here first, for the forming table — and
+that is now the rule for **every** construct, not a table special case: the
+strip shows exactly the rows `commit` is withholding, whatever withheld them
+(see *What generalised* below and *Scrollback and the strip share one
+frontier* in `docs/markdown.md`). A running tool's cell already previewed
+multi-row, so the strip machinery was ready for this.
 
 ## Fitting the columns (`allocate_column_widths`)
 

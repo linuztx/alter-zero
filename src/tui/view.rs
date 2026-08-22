@@ -148,11 +148,14 @@ impl Session<'_> {
         )
     }
 
-    /// The strip's streaming preview: the reply's last rendered line — or, while
-    /// a table is forming, the whole forming block (capped to
-    /// `ui::stream_preview_max_rows` so its frontier tail-follows on a small
-    /// screen) — computed cheaply by `ui::StreamRender::preview`; `None` when
-    /// idle or while a tool runs (the tool's own header previews instead).
+    /// The strip's streaming preview: **the rows scrollback does not hold
+    /// yet** — the uncommitted tail of the render, which is the reply's last
+    /// row for settled prose, every wrapped row of a withheld source line, the
+    /// whole forming table, or nothing at all when the frontier just committed
+    /// clean (capped to `ui::stream_preview_max_rows` so a tall tail
+    /// tail-follows on a small screen) — computed cheaply by
+    /// `ui::StreamRender::preview`; `None` when idle or while a tool runs (the
+    /// tool's own header previews instead).
     /// Called before every conversation-view draw so the status animation never
     /// pays to re-render the whole reply, and **injects the row count into
     /// `App`** (`App::set_stream_preview_rows`) so `ui::preview_rows` — and with

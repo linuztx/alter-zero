@@ -475,18 +475,45 @@ weaken it, when touching the renderer. Its adversarial sibling
 `ui::tests::stream_stress` fuzzes the same invariants over **generated**
 hostile fragment soup (unclosed markers, fence/table shards, CRLF joins,
 control characters and ANSI escapes, zero-width/BiDi codepoints, emoji/CJK,
-forming URLs) with a seeded PRNG, so combinations no hand-written corpus
-thought of are still machine-checked — the marker-at-end-of-line, forming-URL,
-headerless-table and fence-trailing-blank withholds were all fuzz finds — and
-carries the volume probes: a 250 KB code reply and a 130 KB single-line reply
-must stream in linear time (the `commit` amortizer + `advance`'s newline
-high-water + the `preview` memo in `StreamRender`), and one `preview` of a
-huge code line must stay inside a frame budget (the 4 KB highlight cap).
+forming URLs, setext underlines, escaped markers, angle autolinks,
+reference-style links, nested quotes, lone ZWJs, stacked combining marks,
+pipes inside code spans, mixed tab indentation) with a seeded PRNG, so
+combinations no hand-written corpus thought of are still machine-checked —
+the marker-at-end-of-line, forming-URL, headerless-table and
+fence-trailing-blank withholds were all fuzz finds.
+
+It also covers the paths the live-screen assertions cannot see. **The purge
+rebuild**: a resize, `/clear`, or history rewind re-renders scrollback from
+`committed_rows` while the strip repaints beside it, so
+`committed_rows ++ preview` must be the batch render too
+(`a_purge_rebuild_plus_the_strip_still_shows_the_whole_reply`); a mid-stream
+width change must still reconstruct the reply at the new width
+(`a_mid_stream_width_change_reconstructs_the_reply`); and a 0- or 1-column
+screen — a tiling WM mid-animation — must not panic a draw
+(`a_degenerate_terminal_width_is_survivable`).
+
+And it carries the volume bounds. A 250 KB code reply and a 130 KB
+single-line reply must stream in linear time (the `commit` amortizer +
+`advance`'s newline high-water + the `preview` memo in `StreamRender`), one
+`preview` of a huge code line must stay inside a frame budget (the 4 KB
+highlight cap), and the amortizer must never hide rows from the screen — the
+commits it defers stay visible in the strip, which is what makes deferring
+them safe (`the_commit_amortizer_never_hides_rows_from_the_screen`). One
+**known linear bound** is pinned rather than engineered away
+(`the_strip_redraw_stays_inside_a_frame_on_a_huge_prose_line`): a huge
+*prose* line has no equivalent of the syntect cap, so each frame that lands
+on a new chunk re-renders it through `parse_inline`/`wrap_inline` — measured
+~6 ms per frame at 130 KB against the ~32 ms cadence. It cannot be cached
+incrementally in general, because a later emphasis marker restyles text
+already wrapped (the very reason `commit` withholds such a line), so the test
+fixes a ceiling that catches a regression into a visible freeze.
+
 `tests/live_openrouter.rs`'s
-`live_streamed_reply_render_is_prefix_stable_at_real_chunk_boundaries` proves
-the same invariants over a real provider's chunk framing, and
-`scripts/live_smoke.sh` drives the built binary through a live torture reply,
-a mid-stream Esc, and mid-stream resizes in tmux.
+`live_streamed_reply_render_is_prefix_stable_at_real_chunk_boundaries` and
+`live_streaming_never_loses_or_repeats_a_row` prove the same invariants over
+real providers' chunk framing, and `scripts/live_smoke.sh` drives the built
+binary through a live torture reply, a mid-stream Esc, and mid-stream resizes
+in tmux.
 
 ### Scrollback and the strip share one frontier
 
