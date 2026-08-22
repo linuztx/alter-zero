@@ -724,7 +724,9 @@ impl AgentArgs {
 pub struct BashArgs {
     pub command: String,
     /// Milliseconds; the schema calls it `timeout`, and the `timeout_ms`
-    /// alias keeps calls recorded before the rename parseable.
+    /// alias keeps the pre-rename spelling parseable (a hook's
+    /// `updatedInput`, an older fixture — replayed rollouts carry only the
+    /// command summary, so they never send either spelling).
     #[serde(default, alias = "timeout_ms")]
     pub timeout: Option<u64>,
     /// Run the command as a background task (`docs/background.md`).
@@ -1007,10 +1009,10 @@ pub fn apply_edit(
 /// number right-aligned to the widest one shown, a single space, then the text
 /// — the **same** gutter format as the `write`/`edit` bodies
 /// ([`render_numbered_content`]/[`render_numbered_diff`]). So the model reads
-/// consistent numbering it can cite back to `edit`, and the TUI renders `read`
-/// and `write`/`edit` as one numbered, syntax-highlighted cell
-/// (`ui::file_cell_lines`). Returns a placeholder note when the range is empty
-/// (offset past EOF).
+/// consistent numbering for locating lines (`edit` itself matches exact
+/// strings, never line numbers), and the TUI renders `read` and `write`/`edit`
+/// as one numbered, syntax-highlighted cell (`ui::file_cell_lines`). Returns
+/// a placeholder note when the range is empty (offset past EOF).
 #[must_use]
 pub fn format_read(content: &str, offset: Option<usize>, limit: Option<usize>) -> String {
     let start = offset.unwrap_or(1).max(1); // 1-based
@@ -1497,6 +1499,7 @@ mod tests {
             "task ID",
             "interim",
             "notification",
+            "notified",
             "The user may also move",
         ] {
             assert!(!desc.contains(stale), "stale detail `{stale}` in: {desc}");
@@ -1514,17 +1517,19 @@ mod tests {
         specs.push(ask_spec());
         specs.push(skill_spec());
         specs.extend(task_specs());
+        // No "task ID" entry: the task tools legitimately take ids back
+        // (`taskget`/`taskupdate` require one), so that ban lives in the
+        // bash-specific test alone.
         let stale = [
-            "shown in the UI",
             "in the UI",
             "spinner",
             "tab chip",
             "side panel",
             "the list the user watches",
             "agent ID",
-            "task ID",
             "watch, stop, or message",
             "notification",
+            "notified",
         ];
         for spec in &specs {
             let text = spec["function"].to_string();
@@ -1609,8 +1614,9 @@ mod tests {
         assert_eq!(b.timeout_ms(), 5000);
         let c: BashArgs = parse_args(r#"{"command":"x","timeout":9999999}"#).unwrap();
         assert_eq!(c.timeout_ms(), BASH_MAX_TIMEOUT_MS, "clamped to the cap");
-        // Old rollouts recorded the parameter as `timeout_ms` — the serde
-        // alias keeps a replayed call parseable.
+        assert_eq!(BASH_MAX_TIMEOUT_MS, 600_000, "the schema's stated max");
+        // The pre-rename `timeout_ms` spelling still parses via the serde
+        // alias (a hook's `updatedInput`, an older fixture).
         let d: BashArgs = parse_args(r#"{"command":"x","timeout_ms":7000}"#).unwrap();
         assert_eq!(d.timeout_ms(), 7000);
     }

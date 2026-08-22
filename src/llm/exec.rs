@@ -738,7 +738,9 @@ mod tests {
 
     #[test]
     fn bash_times_out_a_slow_command() {
-        let out = exec("bash", r#"{"command":"sleep 5","timeout_ms":150}"#);
+        // The live schema spelling — the sibling tests below keep the
+        // `timeout_ms` alias covered.
+        let out = exec("bash", r#"{"command":"sleep 5","timeout":150}"#);
         assert!(!out.ok);
         assert!(out.output.contains("timed out"), "got {}", out.output);
     }
@@ -1028,17 +1030,23 @@ mod tests {
     // ===== background (docs/background.md) =====
 
     #[test]
-    fn background_launch_text_is_short_and_id_free() {
-        // No task id rides the text: nothing model-facing takes one back
-        // (kills go by PID, progress by the interim file), so naming it just
-        // asks the model to track a token with no use. The streaming path and
-        // the completion promise are the whole contract (docs/background.md).
+    fn background_launch_text_names_the_shell_by_its_interim_file_alone() {
+        // No task-id label rides the text: nothing model-facing takes one
+        // back (kills go by PID, progress by the interim file), so naming it
+        // just asks the model to track a token with no use. The id cannot be
+        // scrubbed outright — the interim file is named after it — so the
+        // pin is that it appears exactly once, as that basename: any
+        // reintroduced `ID: {id}` label makes it two.
         let task = crate::background::LaunchedTask {
             id: "bvyo7tkbe".to_string(),
             output_path: std::path::PathBuf::from("/tmp/alter-zero-0/s1/bvyo7tkbe.output"),
         };
         let text = background_launch_text(&task);
-        assert!(!text.contains("ID"), "no id token: {text}");
+        assert_eq!(
+            text.matches("bvyo7tkbe").count(),
+            1,
+            "the id appears only as the interim file's basename: {text}"
+        );
         assert!(
             text.contains("/tmp/alter-zero-0/s1/bvyo7tkbe.output"),
             "the interim path is the model's progress channel: {text}"
@@ -1112,8 +1120,8 @@ mod tests {
             "a claude-code-style id: {task_id}"
         );
         assert!(
-            !out.output.contains("ID") && out.output.contains(".output"),
-            "the model gets the interim file, never an id: {}",
+            out.output.matches(task_id.as_str()).count() == 1 && out.output.contains(".output"),
+            "the id appears only as the interim file's basename: {}",
             out.output
         );
         assert!(
@@ -1208,8 +1216,8 @@ mod tests {
             out.output
         );
         assert!(
-            !out.output.contains("ID") && out.output.contains(".output"),
-            "the interim file (and no id) rides the handoff text: {}",
+            out.output.matches(task_id.as_str()).count() == 1 && out.output.contains(".output"),
+            "the interim file (and no id label) rides the handoff text: {}",
             out.output
         );
         assert!(streamed.contains("early"), "the foreground tail ran first");

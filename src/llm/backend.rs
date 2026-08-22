@@ -1744,9 +1744,10 @@ mod tests {
         // The launch acknowledgement names the agent by its description
         // alone: nothing model-facing takes an agent id back (the completion
         // note quotes the same description), so an `agentId:` line was a
-        // token with no consumer (docs/agent-tool.md).
+        // token with no consumer — and the signature (`description` only)
+        // is what enforces id-freedom; the label pin below catches a
+        // hardcoded `agentId:` creeping back into the format string.
         let text = agent_launch_text("Scan the logs");
-        assert!(!text.contains("a7k2m9x4q"), "no id token: {text}");
         assert!(!text.contains("agentId"), "no id label: {text}");
         assert!(text.contains("\"Scan the logs\""), "got {text}");
         assert!(text.contains("Do not wait or poll"), "got {text}");

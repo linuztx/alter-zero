@@ -183,7 +183,7 @@ const DUMMY_ASK_ARGS: &str = r#"{"questions":[
     "header": "Demo topics",
     "options": [
       {"label": "Preview panel", "description": "Side-by-side layout for comparing code/mockups/configs"},
-      {"label": "Custom 'Other' input", "description": "Every question auto-includes an Other option for free-text answers"},
+      {"label": "Custom 'Other' input", "description": "Every question auto-includes a free-text Type something. row"},
       {"label": "4-option question", "description": "Questions can offer up to 4 choices each"}
     ],
     "multiSelect": true
