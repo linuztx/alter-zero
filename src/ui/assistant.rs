@@ -259,6 +259,14 @@ impl AssistantRenderer {
     /// closing fence render nothing (no gutter, and the language info-string is
     /// not shown).
     fn content_rows(&mut self, line: &str) -> Vec<Vec<Span<'static>>> {
+        // A CRLF reply's lines arrive ending in '\r' (the source is split on
+        // '\n' alone): the CR is part of the line ending, not content — drop
+        // it so fences, rules, and tables classify exactly as their LF twins
+        // (a `---\r` used to render as literal prose) and no code row carries
+        // a stray CR into scrollback or a /copy. A *mid*-line CR stays: it is
+        // content (prose collapses it as whitespace). Batch and streaming
+        // share this entry, so the two never disagree.
+        let line = line.strip_suffix('\r').unwrap_or(line);
         // Track blank-line boundaries for the `-` thematic-break gate below. This
         // mirrors the scanner's own `prev_blank` (used for indented code) but is
         // kept here because the rule decision lives in the prose branch, like
@@ -406,7 +414,11 @@ impl AssistantRenderer {
     fn prose_or_table(&mut self, line: &str, was_blank: bool) -> Vec<Vec<Span<'static>>> {
         match std::mem::replace(&mut self.table, TableState::None) {
             TableState::None => {
-                if markdown::is_table_row(line) {
+                // Header candidacy needs the leading pipe
+                // (`is_table_header_candidate`): the headerless GFM form
+                // would let a later `|` re-shape a prose line whose rows the
+                // streaming committer already froze into scrollback.
+                if markdown::is_table_header_candidate(line) {
                     self.table = TableState::PendingHeader(line.to_string());
                     Vec::new()
                 } else {

@@ -620,15 +620,23 @@ fn repaint_tail_repaints_committed_rows_of_a_still_open_line() {
 
 /// Whether `prefix` ends inside an OPEN GFM table — its last non-blank source
 /// line is still a table row/delimiter/header, so no non-table line has
-/// closed the block. Used by the differential test to skip the preview
-/// equality check exactly where the streaming preview intentionally shows the
-/// last content row rather than the batch's flushed bottom border.
+/// closed the block — and the block actually opened: the trailing run of
+/// table rows must START with a header candidate (a leading `|`,
+/// `markdown::is_table_header_candidate`), since a pipe-carrying prose line
+/// alone never opens a table any more (the streaming-stability grammar).
+/// Used by the differential test to skip the preview equality check exactly
+/// where the streaming preview intentionally shows the last content row
+/// rather than the batch's flushed bottom border.
 fn ends_in_open_table(prefix: &str) -> bool {
-    prefix
+    let lines: Vec<&str> = prefix
         .split('\n')
-        .rev()
-        .find(|l| !l.trim().is_empty())
-        .is_some_and(markdown::is_table_row)
+        .filter(|l| !l.trim().is_empty())
+        .collect();
+    let run_start = lines
+        .iter()
+        .rposition(|l| !markdown::is_table_row(l))
+        .map_or(0, |i| i + 1);
+    run_start < lines.len() && markdown::is_table_header_candidate(lines[run_start])
 }
 
 /// Drop trailing all-whitespace rows, so a comparison between the screen

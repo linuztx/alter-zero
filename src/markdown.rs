@@ -471,6 +471,23 @@ pub fn is_table_row(line: &str) -> bool {
     table_indent(line).is_some_and(has_unescaped_pipe)
 }
 
+/// Whether `line` could **open** a table block — a candidate header row: a
+/// table row that additionally carries the **leading pipe** (after the ≤3
+/// spaces of indent). GFM makes the leading pipe optional, but honouring the
+/// headerless form is incompatible with streaming to immutable scrollback:
+/// ANY growing prose line could turn into a table header the moment a later
+/// `|` streamed in (`` `span`a `` → `` `span`a | b ``), retroactively
+/// re-drawing rows already committed as a grid. A leading `|` decides
+/// candidacy at the line's **first** character instead, so ordinary prose
+/// commits progressively and can never be re-shaped — and it is the form
+/// models actually emit. Data rows *inside* a confirmed table keep the loose
+/// [`is_table_row`], including the hard-wrapped-tail re-join
+/// (docs/table-streaming.md).
+#[must_use]
+pub fn is_table_header_candidate(line: &str) -> bool {
+    table_indent(line).is_some_and(|t| t.starts_with('|'))
+}
+
 /// Split a table row into its **trimmed, unescaped** cell texts. Optional leading
 /// and trailing pipes are dropped; interior empty cells (`a || b`) are kept; a
 /// `\|` is an escaped literal pipe inside a cell, not a separator. Returns empty
@@ -622,6 +639,25 @@ pub fn parse_inline(text: &str) -> Vec<Inline> {
 /// intraword `_` (`foo_bar`), or a settled literal `[a]` is **not** open.
 #[must_use]
 pub fn has_open_inline(text: &str) -> bool {
+    // A marker at the very END of the growing line is *undecided*, not
+    // settled: an emphasis run's flanking — whether it opens at all — is
+    // determined by the character that hasn't streamed in yet ("~~" + "s"
+    // hides the tildes and strikes what follows; "~~" + " " keeps them
+    // literal); a `!` becomes an image opener if a `[` lands next; and a
+    // trailing backtick may be a closing run the next char EXTENDS
+    // (`` `x` `` + `` ` `` → `` `x`` `` — the exact-run match breaks and the
+    // settled-looking span reverts to literal). Either way the
+    // already-wrapped text would restyle, so the committer must withhold the
+    // line. A complete line settles these on its own (end-of-line means no
+    // follower, so the marker stays literal / the run is final), which is
+    // why the check lives here and not in [`parse_inline`].
+    if text
+        .chars()
+        .next_back()
+        .is_some_and(|c| matches!(c, '*' | '_' | '~' | '!' | '`'))
+    {
+        return true;
+    }
     let mut i = 0;
     while i < text.len() {
         if let Some((_, next)) = element_at(text, i) {
@@ -1180,6 +1216,22 @@ mod tests {
         assert!(has_open_inline("a [link"));
         assert!(has_open_inline("a [link](htt"));
         assert!(has_open_inline("start *em"));
+        // A trailing marker run is UNDECIDED, not settled: its flanking —
+        // whether it opens at all — is the next character's call ("a ~~" +
+        // "strike~~" hides the tildes; "a ~~ b" keeps them literal), so the
+        // still-growing line must be withheld while it ends on one. Same for
+        // a trailing `!`, which a following `[` turns into an image opener.
+        assert!(has_open_inline("a ~~"));
+        assert!(has_open_inline("a ~"));
+        assert!(has_open_inline("emoji🎮~~"));
+        assert!(has_open_inline("a **"));
+        assert!(has_open_inline("a *"));
+        assert!(has_open_inline("word_"));
+        assert!(has_open_inline("wow!"));
+        // A trailing backtick can be a closing run the next char extends
+        // (`` `x` `` + `` ` `` breaks the exact-run match → literal again).
+        assert!(has_open_inline("run `x`"));
+        assert!(has_open_inline("`tick *ital `"));
         // Settled lines (closed, or no real openers) are safe to stream per row.
         assert!(!has_open_inline("a **b** c"));
         assert!(!has_open_inline("plain prose here"));
@@ -1232,6 +1284,14 @@ mod tests {
         assert!(is_table_row("a | b"));
         assert!(!is_table_row("no pipes here"));
         assert!(!is_table_row(""));
+        // Header candidacy is stricter: the leading pipe is required, so a
+        // prose line can never retroactively become a table header while it
+        // streams (see is_table_header_candidate).
+        assert!(is_table_header_candidate("| a | b |"));
+        assert!(is_table_header_candidate("  | indented |"));
+        assert!(!is_table_header_candidate("a | b"));
+        assert!(!is_table_header_candidate("prose grows a pipe | later"));
+        assert!(!is_table_header_candidate("    | deep indent |"));
         assert!(
             !is_table_row(r"escaped \| only"),
             "a lone escaped pipe is prose"

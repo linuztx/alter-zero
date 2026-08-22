@@ -107,7 +107,17 @@ paint as a colour — it just writes no OSC.
   line's own render — `find_urls` never looks across lines — so a completed
   line's rows still never change. The strip's preview of a *partial* URL
   links the partial (it interns a few short-lived ids as it grows — bounded,
-  bytes-cheap); the committed row links the whole thing.
+  bytes-cheap); the committed row links the whole thing. Within the
+  **trailing, still-growing** line, detection is retroactive — `ht` is plain
+  prose until enough of `http://…` arrives to restyle the whole word, and a
+  URL whose body reaches the line's end keeps growing (trimmed tail
+  punctuation re-joins: `http://e.` → `http://e.com`) — so
+  `links::has_forming_url` reports both shapes and `StreamRender::commit`
+  withholds the line while one holds (the `markdown::has_open_inline`
+  pattern; a stress-fuzz find — a plain-styled `h` row committed at a narrow
+  width used to repaint blue+underlined). A URL already sealed by a stopper,
+  and a mid-word fragment the scheme boundary rule would never link, stay
+  settled and commit progressively.
 - **The three `mod.rs` facades are untouched**: `links` is a new top-level
   pure module (like `markdown`), reachable by `ui` and `term` without
   widening the `ui` surface `tests/api_surface.rs` locks.

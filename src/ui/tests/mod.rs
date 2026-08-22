@@ -34,6 +34,7 @@ mod settings_view;
 mod skills_view;
 mod status;
 mod stream_render;
+mod stream_stress;
 mod table;
 mod tasks;
 mod tool;

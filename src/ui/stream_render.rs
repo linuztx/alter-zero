@@ -42,7 +42,34 @@ pub struct StreamRender {
     consumed: usize,
     /// Rows already returned to scrollback — an index into `frozen ++ tail`.
     pub(super) committed: usize,
+    /// Bytes of the buffer already scanned for `'\n'` with none found past
+    /// `consumed` — so [`advance`](Self::advance) rescans only newly-arrived
+    /// bytes instead of the whole trailing line on every chunk (a 100 KB+
+    /// single-line reply made that rescan O(line) *per chunk*).
+    nl_scanned: usize,
+    /// The `(consumed, tail length)` the last full [`commit`](Self::commit)
+    /// evaluation ran at — the state behind the huge-single-line amortizer
+    /// (see [`commit`](Self::commit)).
+    last_eval: (usize, usize),
+    /// Memo of the last [`preview`](Self::preview): the [`PreviewKey`] it was
+    /// computed for and its rows. The strip redraws every animation frame,
+    /// most of which arrive with no new chunk — this makes those frames O(1)
+    /// instead of re-rendering the trailing line (for a huge line, O(line) at
+    /// ~30 fps starved the loop).
+    preview_memo: Option<(PreviewKey, Vec<Line<'static>>)>,
 }
+
+/// What pins a memoized preview: `(consumed, tail length, committed, width,
+/// max_rows)`. The buffer is append-only within a turn, so an unchanged
+/// `(consumed, tail length)` pins the same text; `committed` rides along
+/// because the open-table path renders exactly the uncommitted rows.
+type PreviewKey = (usize, usize, usize, u16, usize);
+
+/// The trailing-line length past which [`StreamRender::commit`] amortizes its
+/// per-chunk evaluation (see there) — generous enough that every humanly
+/// readable line evaluates on every chunk, small enough that a machine-dump
+/// line can't turn commits quadratic.
+const TAIL_EVAL_MIN: usize = 4096;
 
 impl Default for StreamRender {
     fn default() -> Self {
@@ -61,6 +88,9 @@ impl StreamRender {
             frozen: Vec::new(),
             consumed: 0,
             committed: 0,
+            nl_scanned: 0,
+            last_eval: (0, 0),
+            preview_memo: None,
         }
     }
 
@@ -80,17 +110,27 @@ impl StreamRender {
             self.frozen.clear();
             self.consumed = 0;
             self.committed = 0;
+            self.nl_scanned = 0;
+            self.last_eval = (0, 0);
+            self.preview_memo = None;
         }
         // The last '\n' at or after `consumed` terminates the last complete line;
         // everything up to it is now frozen. `consumed` always lands right after a
-        // '\n' (or 0), so the slice is on char boundaries.
-        if let Some(rel) = text[self.consumed..].rfind('\n') {
-            let end = self.consumed + rel;
+        // '\n' (or 0), so the slice is on char boundaries. Only the bytes past
+        // `nl_scanned` can hold a new one — everything before it was scanned on
+        // an earlier call and found newline-free — so the scan is O(new bytes),
+        // not O(trailing line), per call. The buffer is append-only within a
+        // turn (a boundary `reset` starts the next one), so the clamp is pure
+        // insurance against a shrunk misuse panicking the render.
+        let from = self.nl_scanned.max(self.consumed).min(text.len());
+        if let Some(rel) = text[from..].rfind('\n') {
+            let end = from + rel;
             for line in text[self.consumed..end].split('\n') {
                 self.frozen.extend(self.renderer.feed_line(line));
             }
             self.consumed = end + 1;
         }
+        self.nl_scanned = text.len();
     }
 
     /// The rows of the still-growing trailing partial line, rendered without
@@ -132,6 +172,26 @@ impl StreamRender {
     #[must_use]
     pub fn commit(&mut self, text: &str, width: u16) -> Vec<Line<'static>> {
         self.advance(text, width);
+        // A huge single source line (a minified dump — no newline ever
+        // arrives) makes every step below O(trailing line): the withhold
+        // predicates scan it and `tail_rows` re-renders it, per chunk — a
+        // 130 KB one-line reply cost ~40 s of event-loop time. Amortize:
+        // once the tail is past `TAIL_EVAL_MIN`, re-evaluate only when it has
+        // grown by an eighth since the last full evaluation (or a newline
+        // finally arrived — `consumed` moved). Geometric re-evaluation keeps
+        // the total work O(line); between evaluations nothing new commits,
+        // which only *delays* rows (the differential tests hold — committed
+        // rows are still a stable prefix), and the strip's preview keeps
+        // showing the frontier. `finish` never consults the gate, so the
+        // reply always completes exactly.
+        let tail_len = text.len() - self.consumed;
+        if tail_len > TAIL_EVAL_MIN
+            && self.consumed == self.last_eval.0
+            && tail_len < self.last_eval.1 + (self.last_eval.1 / 8).max(TAIL_EVAL_MIN / 4)
+        {
+            return Vec::new();
+        }
+        self.last_eval = (self.consumed, tail_len);
         // Withhold the whole trailing line when its rows aren't final yet:
         //  - **inside a fenced block**: a code line's colour isn't settled until the
         //    whole line is seen (a call's `(`, a `//` comment, a closing `*/`), and
@@ -151,8 +211,9 @@ impl StreamRender {
         //    whole only when it closes (its widths need every row), so nothing
         //    of it exists to commit — this commits only the settled pre-table
         //    rows, and the strip previews the forming block. A trailing
-        //    **table-row candidate** (`is_table_row`) is withheld the same way
-        //    before the renderer has consumed it (docs/table-streaming.md); and
+        //    **header candidate** (`is_table_header_candidate` — a leading
+        //    `|`) is withheld the same way before the renderer has consumed
+        //    it (docs/table-streaming.md); and
         //  - a trailing line with an **open inline marker** (`has_open_inline` —
         //    an unclosed `**`/`*`/`~~`/`` ` ``/`[`): its closer could still restyle
         //    an already-wrapped row, so the whole line is withheld until it settles
@@ -163,23 +224,30 @@ impl StreamRender {
         let tail_src = &text[self.consumed..];
         if self.renderer.in_code()
             || self.renderer.in_table()
-            || markdown::is_table_row(tail_src)
+            || markdown::is_table_header_candidate(tail_src)
             || markdown::is_partial_fence(tail_src)
             || markdown::is_partial_thematic_break(tail_src)
             || markdown::is_partial_heading(tail_src)
             || markdown::is_partial_list_marker(tail_src)
             || markdown::has_open_inline(tail_src)
+            // A URL still forming at the line's end (`…see ht`, `http://e.`):
+            // autolink detection flips on retroactively — the next chars
+            // restyle the whole word blue+underlined — so its wrapped rows
+            // must not reach scrollback as plain prose (docs/links.md).
+            || crate::links::has_forming_url(tail_src)
         {
             let stable = self.frozen.len();
-            // Inside a fence blank lines are content; otherwise still hold back a
-            // trailing blank run (a paragraph break before this in-progress line)
-            // — it commits once real content follows, or stays withheld to be
-            // trimmed by `finish` if the message ends here.
-            let stable = if self.renderer.in_code() {
-                stable
-            } else {
-                self.without_trailing_blanks(&[], stable)
-            };
+            // Hold back a trailing blank run — inside a fence too. A prose
+            // blank is a paragraph break before the in-progress line; a
+            // fence's blank lines ARE content, but whether the message keeps
+            // them depends on what hasn't streamed yet: followed by more code
+            // they commit (no longer trailing), while a closing fence with
+            // nothing after turns them into the message's trailing blanks,
+            // which the batch render trims (`assistant_lines`) — committing
+            // them early left blank rows in scrollback a repaint drops.
+            // `finish` settles the reply-ends-here case exactly (kept only
+            // when the fence is still open).
+            let stable = self.without_trailing_blanks(&[], stable);
             self.take_rows(&[], stable)
         } else {
             let tail = self.tail_rows(text);
@@ -331,11 +399,40 @@ impl StreamRender {
     #[must_use]
     pub fn preview(&mut self, text: &str, width: u16, max_rows: usize) -> Vec<Line<'static>> {
         self.advance(text, width);
-        // Feed the trailing line on a clone (not disturbing the resumable
-        // state) and keep the clone so its *post-tail* fence state decides
-        // trimming — the same state `finish`/`assistant_lines` see once the
-        // whole prefix is rendered (a trailing ``` opens a fence, so a blank
-        // before it is kept, not trimmed).
+        // The strip redraws every animation frame (~30/s), most with no new
+        // chunk: serve those from the memo instead of re-rendering the
+        // trailing line each time (O(line) per frame starved the loop on a
+        // huge single-line reply). The buffer is append-only within a turn, so
+        // an unchanged `(consumed, tail length)` pins the same text —
+        // `committed` rides along because the open-table path renders exactly
+        // the uncommitted rows; a resize or `reset` clears the memo with the
+        // rest of the cache.
+        let key = (
+            self.consumed,
+            text.len() - self.consumed,
+            self.committed,
+            width,
+            max_rows,
+        );
+        if let Some((memo_key, rows)) = &self.preview_memo
+            && *memo_key == key
+        {
+            return rows.clone();
+        }
+        let rows = self.preview_uncached(text, max_rows);
+        self.preview_memo = Some((key, rows.clone()));
+        rows
+    }
+
+    /// The un-memoized [`preview`](Self::preview) body — one full render of
+    /// the frontier for the current buffer (the caller's
+    /// [`advance`](Self::advance) has already run).
+    fn preview_uncached(&mut self, text: &str, max_rows: usize) -> Vec<Line<'static>> {
+        // Feed the trailing line on a clone (not disturbing the resumable state)
+        // and keep the clone so its *post-tail* fence state decides trimming —
+        // the same state `finish`/`assistant_lines` see once the whole prefix is
+        // rendered (a trailing `` ``` `` opens a fence, so a blank before it is
+        // kept, not trimmed).
         let mut clone = self.renderer.clone();
         // An empty trailing line (a chunk boundary that ended right after a
         // newline) is *not* fed: feeding it would close an open table on the

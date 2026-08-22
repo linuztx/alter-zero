@@ -56,6 +56,67 @@ pub fn find_urls(text: &str) -> Vec<Range<usize>> {
     out
 }
 
+/// Whether a URL could still be **forming** at the end of `text` — a
+/// still-growing streamed line whose next characters could restyle text
+/// already present, so the streaming committer must withhold it whole (the
+/// [`crate::markdown::has_open_inline`] situation, for autolinks —
+/// `docs/links.md`). Two shapes are unsettled:
+///
+/// - a detected scheme whose **body run reaches the end of the line** — more
+///   URL characters would grow the link (`http://e` → `http://ex`), re-join
+///   trimmed tail punctuation (`http://e.` → `http://e.com`), or turn a bare
+///   scheme into a link at its first body char; a URL already terminated by a
+///   stopper (whitespace, `<>"`` ` ``|`, a control) is settled — appended text
+///   can't reach back into it; and
+/// - a trailing fragment that a few more characters could complete into a
+///   scheme (`…see ht` → `…see http://x`), at a boundary [`find_urls`] would
+///   honour — mid-word fragments (`blah`) stay settled, matching the
+///   detector's own `xhttps://` rule.
+#[must_use]
+pub fn has_forming_url(text: &str) -> bool {
+    // Only the LAST scheme can have its body run reach the line's end: any
+    // earlier candidate is separated from the next by either a stopper (which
+    // seals it) or an unbroken url-char run (in which case the last one's
+    // tail is a subset of its own, and both verdicts agree). One scan finds
+    // it and one pass checks its tail — O(line), not O(line × URLs), which
+    // matters because the committer calls this per chunk on a URL-list line.
+    let mut last_body = None;
+    let mut from = 0;
+    while let Some((_, body)) = next_scheme(text, from) {
+        last_body = Some(body);
+        from = body;
+    }
+    // `all` over an empty tail is true: a bare scheme ending the line is
+    // exactly the "first body char flips it to a link" case.
+    if let Some(body) = last_body
+        && text[body..].chars().all(is_url_char)
+    {
+        return true;
+    }
+    scheme_prefix_at_end(text)
+}
+
+/// Whether `text` ends with a proper prefix of `http://`/`https://` opening at
+/// a boundary [`next_scheme`] would accept — the not-yet-a-scheme tail of
+/// [`has_forming_url`]. Byte-wise like the detector: the scheme is pure ASCII.
+fn scheme_prefix_at_end(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    for scheme in [&b"https://"[..], &b"http://"[..]] {
+        for plen in 1..scheme.len() {
+            if bytes.len() < plen {
+                break;
+            }
+            let start = bytes.len() - plen;
+            if bytes[start..].eq_ignore_ascii_case(&scheme[..plen])
+                && (start == 0 || !bytes[start - 1].is_ascii_alphanumeric())
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// The next `http(s)://` at or after byte `from` that opens at a
 /// non-alphanumeric boundary, as `(scheme_start, body_start)`. The whole scan
 /// is byte-wise — the scheme is pure ASCII, so a match position is always a
@@ -269,6 +330,45 @@ mod tests {
 
     fn urls(text: &str) -> Vec<&str> {
         find_urls(text).into_iter().map(|r| &text[r]).collect()
+    }
+
+    #[test]
+    fn a_forming_url_at_the_end_of_a_line_is_unsettled() {
+        // Every prefix of a line ending in a growing URL is unsettled — the
+        // next chars could restyle the word — from the first scheme byte on.
+        for tail in [
+            "h",
+            "ht",
+            "htt",
+            "http",
+            "http:",
+            "http:/",
+            "http://",
+            "HTTPS:/",
+            "http://e",
+            "http://e.",
+            "see http://example.com/path",
+            "(http://e",
+            "x http",
+        ] {
+            assert!(has_forming_url(tail), "{tail:?} could still grow a URL");
+        }
+    }
+
+    #[test]
+    fn a_terminated_or_impossible_url_is_settled() {
+        // A stopper after the URL seals it; a mid-word fragment can never
+        // become a scheme (the detector's own boundary rule).
+        for tail in [
+            "",
+            "plain words",
+            "blah", // ends in 'h' but mid-word — `xhttp://` is no link
+            "see http://example.com/x done", // terminated by the space
+            "http://e |", // a delimiter stopper sealed it
+            "words myhttp", // 'p' tail mid-word
+        ] {
+            assert!(!has_forming_url(tail), "{tail:?} is settled");
+        }
     }
 
     #[test]

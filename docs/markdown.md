@@ -389,8 +389,13 @@ in-progress code line is still withheld from scrollback until it completes
 (`AssistantRenderer::in_code`), because a grammar parses the whole line at once
 (scopes can change as later characters on the line arrive) — only completed
 lines commit; see the *streaming* note above. Guardrail: a single line over
-~100 KB (a minified bundle pasted into a fence) is left unhighlighted rather than
-handed to the regex engine.
+4 KB (a minified bundle pasted into a fence) is left unhighlighted rather than
+handed to the regex engine — the bound is a **frame budget**, not just a safety
+net: while such a line is the trailing one of a streaming reply, the strip
+preview re-highlights it on every frame that arrives with a new chunk, and a
+62 KB minified JSON line measured >150 ms per oniguruma pass. Editors cap
+tokenization the same way; past the cap the line renders in the plain code
+style, byte-identical text.
 
 ## Prefix-stable holdback (tables + inline emphasis)
 
@@ -404,20 +409,43 @@ already consults to keep an in-progress *code* line out of scrollback):
   `AssistantRenderer` buffers the whole block (`PendingHeader` → `Buffering`,
   emitting **no rows**); `in_table()` reports any open table and
   `StreamRender::commit` withholds the trailing line while it holds (plus a
-  trailing table-row *candidate*, `markdown::is_table_row(tail_src)`, before the
-  renderer has consumed it). Because the buffering states emit nothing, no table
-  row can commit before the block closes — at which point it renders whole, with
-  column widths fit to **every** row. The strip `preview` meanwhile shows the
-  entire forming table (the batch render's uncommitted tail — a multi-row
-  preview), so the table still streams visually. Batch (`assistant_lines`) and
-  streaming drive the one `AssistantRenderer`, so they render identically.
+  trailing **header candidate**, `markdown::is_table_header_candidate(tail_src)`,
+  before the renderer has consumed it). A block only *opens* on a header with a
+  **leading pipe**: GFM's optional-leading-pipe (headerless) form is
+  incompatible with streaming — any growing prose line could turn into a table
+  header the moment a later `|` streamed in (`` `span`a `` → `` `span`a | b ``
+  + a delimiter on the next line), retroactively re-drawing rows already frozen
+  into scrollback as a grid — so header candidacy is decided at the line's
+  first character, ordinary prose commits progressively, and the rare
+  headerless table renders as prose in batch and stream alike. Data rows
+  *inside* a confirmed table keep the loose `is_table_row` (the
+  hard-wrapped-tail re-join included). Because the buffering states emit
+  nothing, no table row can commit before the block closes — at which point it
+  renders whole, with column widths fit to **every** row. The strip `preview`
+  meanwhile shows the entire forming table (the batch render's uncommitted
+  tail — a multi-row preview), so the table still streams visually. Batch
+  (`assistant_lines`) and streaming drive the one `AssistantRenderer`, so they
+  render identically.
 - **Inline emphasis — line-newline gating.** Because emphasis is line-local, a
   *complete* line is always final; only the **trailing partial** line can restyle
   (an open `**` could still close). `markdown::has_open_inline` reports an
   unclosed emphasis/code/link delimiter on the trailing line, and
   `StreamRender::commit` withholds the whole line while it holds — so an in-flight
   `**bold` never reaches scrollback half-styled. When it settles (the closer
-  arrives, or the line ends leaving the marker literal), it commits.
+  arrives, or the line ends leaving the marker literal), it commits. A marker at
+  the very **end** of the growing line is *undecided*, not settled — its
+  flanking is the next character's call (`~~` + `s` hides the tildes and
+  strikes what follows, `~~` + space keeps them literal), a trailing `!` becomes
+  an image opener if a `[` lands next, and a trailing backtick may be a closing
+  run the next char **extends** (`` `x` `` + `` ` `` → `` `x`` `` breaks the
+  exact-run match and the settled-looking span reverts to literal) — so
+  `has_open_inline` also flags a line ending in `*`/`_`/`~`/`!`/`` ` ``.
+- **Bare URLs — the autolink withhold (`docs/links.md`).** URL detection flips
+  on retroactively (`ht` is prose, `http://e` is a link — the whole word
+  restyles blue+underlined), and a URL body reaching the line's end keeps
+  growing (its trimmed tail punctuation can re-join: `http://e.` →
+  `http://e.com`). `links::has_forming_url` reports both shapes and
+  `StreamRender::commit` withholds the trailing line while one holds.
 
 Two partial-marker withholds join the existing `is_partial_fence` /
 `is_partial_thematic_break` / `is_partial_heading` set: `has_open_inline` (above)
@@ -425,14 +453,40 @@ and `is_partial_list_marker` (a bare digit run like `10`, which a following
 `.`/`)` would flip into an ordered marker — recolouring the digits and, at a
 narrow width, collapsing their wrapped rows into one marker span).
 
+**CRLF replies render like their LF twins.** A model echoing Windows files (or
+a provider normalising to CRLF) streams `\r\n` line endings; the source is
+split on `\n` alone, so each line arrives ending in `\r`.
+`AssistantRenderer::content_rows` strips that one trailing CR — it is part of
+the line ending, not content — so fences, rules, and tables classify exactly
+as their LF twins (a `---\r` used to render as literal prose) and no code row
+carries a stray CR into scrollback or a `/copy`. A *mid*-line CR stays: it is
+content (prose collapses it as whitespace, and the paint layer drops
+zero-width glyphs). Batch and streaming share the one entry point, so the two
+never disagree.
+
 The differential test `ui::tests::stream_render_matches_batch_render_on_every_prefix`
 drives `StreamRender` over **every char-prefix** of a large corpus (tables,
 inline emphasis, nested lists, blockquotes, links, task lists, the marker-reveal
 flip) at widths 3–40 and asserts the committed rows are always a stable prefix of
 the batch render, the final flush reconstructs it exactly, and the preview is a
 **suffix** of the batch render — the whole uncommitted tail, so
-`committed + preview` spans the entire render. It is the guardrail for every
-construct here — extend it, never weaken it, when touching the renderer.
+`committed + preview` spans the entire render. It is the guardrail for every construct here — extend it, never
+weaken it, when touching the renderer. Its adversarial sibling
+`ui::tests::stream_stress` fuzzes the same invariants over **generated**
+hostile fragment soup (unclosed markers, fence/table shards, CRLF joins,
+control characters and ANSI escapes, zero-width/BiDi codepoints, emoji/CJK,
+forming URLs) with a seeded PRNG, so combinations no hand-written corpus
+thought of are still machine-checked — the marker-at-end-of-line, forming-URL,
+headerless-table and fence-trailing-blank withholds were all fuzz finds — and
+carries the volume probes: a 250 KB code reply and a 130 KB single-line reply
+must stream in linear time (the `commit` amortizer + `advance`'s newline
+high-water + the `preview` memo in `StreamRender`), and one `preview` of a
+huge code line must stay inside a frame budget (the 4 KB highlight cap).
+`tests/live_openrouter.rs`'s
+`live_streamed_reply_render_is_prefix_stable_at_real_chunk_boundaries` proves
+the same invariants over a real provider's chunk framing, and
+`scripts/live_smoke.sh` drives the built binary through a live torture reply,
+a mid-stream Esc, and mid-stream resizes in tmux.
 
 ### Scrollback and the strip share one frontier
 

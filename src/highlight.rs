@@ -85,7 +85,14 @@ const OPAQUE_ALPHA: u8 = 0xFF;
 /// A pathological single line (a minified bundle pasted into a fence) is left
 /// unhighlighted rather than handed to the regex engine — bounds worst-case CPU
 /// on one line without a whole-block guard (the block streams line-by-line).
-const MAX_LINE_BYTES: usize = 100_000;
+///
+/// The bound is a **frame budget**, not just a safety net: while such a line
+/// is the trailing one of a streaming reply, the strip preview re-highlights
+/// it on every frame that arrives with a new chunk, so one line must stay
+/// well under the 32 ms animation cadence (a 62 KB minified JSON line
+/// measured >150 ms per pass through oniguruma). Editors draw the same line —
+/// tokenization is capped at a few KB and the rest renders plain.
+const MAX_LINE_BYTES: usize = 4096;
 
 /// The plain-code colour: the theme's default foreground, used for unhighlighted
 /// text (an unknown/`text` language, or an indented code block with no info
@@ -320,6 +327,29 @@ mod tests {
             }
         }
         panic!("{needle:?} not found in {line:?} -> {segs:?}");
+    }
+
+    #[test]
+    fn a_pathological_line_renders_plain_within_the_frame_budget() {
+        // A machine-dump line (minified JSON) past MAX_LINE_BYTES must skip
+        // the regex engine entirely: byte-identical text back, plain style,
+        // and fast enough that the streaming preview can re-render it every
+        // frame (>150 ms per pass through oniguruma at 62 KB — the stress
+        // probe `preview_of_a_growing_code_line_is_bounded`).
+        let line: String = "{\"k\":123,\"deep\":[1,2,3]},".repeat(2500);
+        assert!(line.len() > MAX_LINE_BYTES);
+        let start = std::time::Instant::now();
+        let segs = highlight(&[&line], Some("json")).pop().unwrap();
+        let elapsed = start.elapsed();
+        assert_eq!(joined(&segs), line, "the text survives verbatim");
+        assert!(
+            segs.iter().all(|s| s.style == plain_style()),
+            "an over-long line renders plain, never partially highlighted"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "the capped path must stay inside a frame budget, took {elapsed:?}"
+        );
     }
 
     #[test]
