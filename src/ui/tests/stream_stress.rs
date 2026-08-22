@@ -5,10 +5,11 @@
 //!
 //! The differential harness mirrors `stream_render.rs`'s corpus test — the
 //! committed rows must extend a stable prefix of the batch render at every
-//! character prefix, and the preview must be a suffix of the batch render of
-//! that prefix — but over *generated* fragment soup, so combinations no
-//! hand-written corpus thought of are still machine-checked. See
-//! `docs/markdown.md` and CLAUDE.md invariant 2.
+//! character prefix, and scrollback plus the strip must together show the
+//! whole reply (`committed ++ preview == assistant_lines(prefix)`, the
+//! one-frontier contract) — but over *generated* fragment soup, so
+//! combinations no hand-written corpus thought of are still machine-checked.
+//! See `docs/markdown.md` and CLAUDE.md invariant 2.
 
 use super::*;
 

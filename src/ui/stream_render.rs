@@ -394,19 +394,26 @@ impl StreamRender {
     /// (a big table, a very long withheld code line) tail-follows its frontier.
     /// O(new complete lines since the last call + the trailing line + the open
     /// table): the uncommitted range is bounded by what `commit` withholds — a
-    /// paragraph break, one source line, or the open table — so redrawing it
-    /// every animation frame stays cheap.
+    /// paragraph break, one source line, the open table, or (on a line past
+    /// `TAIL_EVAL_MIN`) the rows its amortized evaluation has not caught up
+    /// to yet — so redrawing it every animation frame stays cheap. That last
+    /// case is also *why* the amortizer is safe: the rows it defers stay on
+    /// screen here instead of vanishing until the next evaluation
+    /// (`the_commit_amortizer_never_hides_rows_from_the_screen`). Repeat calls
+    /// with no new chunk — the common animation frame — are served from the
+    /// memo.
     #[must_use]
     pub fn preview(&mut self, text: &str, width: u16, max_rows: usize) -> Vec<Line<'static>> {
         self.advance(text, width);
         // The strip redraws every animation frame (~30/s), most with no new
         // chunk: serve those from the memo instead of re-rendering the
         // trailing line each time (O(line) per frame starved the loop on a
-        // huge single-line reply). The buffer is append-only within a turn, so
-        // an unchanged `(consumed, tail length)` pins the same text —
-        // `committed` rides along because the open-table path renders exactly
-        // the uncommitted rows; a resize or `reset` clears the memo with the
-        // rest of the cache.
+        // huge single-line reply — and rendering the whole uncommitted tail
+        // costs strictly more than the one row the old preview picked). The
+        // buffer is append-only within a turn, so an unchanged `(consumed,
+        // tail length)` pins the same text and `frozen`, and `committed`
+        // pins where the uncommitted range starts; a resize or `reset` clears
+        // the memo with the rest of the cache.
         let key = (
             self.consumed,
             text.len() - self.consumed,
