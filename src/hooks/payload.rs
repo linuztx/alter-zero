@@ -285,12 +285,12 @@ mod tests {
         let v = parse(&pre_tool_use_payload(
             &ctx(),
             "bash",
-            r#"{"command":"rm -rf /","timeout_ms":1000}"#,
+            r#"{"command":"rm -rf /","timeout":1000}"#,
             "call-9",
         ));
         assert_eq!(v["tool_name"], json!("bash"));
         assert_eq!(v["tool_input"]["command"], json!("rm -rf /"));
-        assert_eq!(v["tool_input"]["timeout_ms"], json!(1000));
+        assert_eq!(v["tool_input"]["timeout"], json!(1000));
         assert_eq!(v["tool_use_id"], json!("call-9"));
     }
 

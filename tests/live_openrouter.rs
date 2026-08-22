@@ -1125,12 +1125,20 @@ fn live_ctrl_b_handoff_tells_the_model_the_user_moved_it() {
 
     let mut backgrounded: Option<(String, String)> = None;
     let mut reply = String::new();
+    let mut pressed = false;
     while let Some(event) = rx.blocking_recv() {
         match event {
             // The user's Ctrl+B, as the loop performs it (Action::MoveToBackground):
-            // raise the latch once the command is running; the executor's poll
-            // loop consumes it and adopts the child mid-run.
-            StreamEvent::ToolStart { .. } => registry.request_background(),
+            // raise the latch once the command is RUNNING — on its first
+            // streamed output, the way a human reacts to the running cell.
+            // Raising on ToolStart instead races run_bash's entry-clear (a
+            // pre-start press belongs to nothing and is deliberately
+            // dropped), which on an idle many-core host loses often enough
+            // to fail the test with no real bug behind it.
+            StreamEvent::ToolOutput(_) if !pressed => {
+                pressed = true;
+                registry.request_background();
+            }
             StreamEvent::ToolBackgrounded { id, output } => backgrounded = Some((id, output)),
             StreamEvent::Chunk(c) => reply.push_str(&c),
             StreamEvent::Retrying { attempt, max } => println!("retrying {attempt}/{max}…"),

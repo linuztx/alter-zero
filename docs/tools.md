@@ -38,7 +38,7 @@ definitions + JSON schemas live in [`llm::tools`](../src/llm/tools.rs)
 
 | tool | params | executes |
 | --- | --- | --- |
-| `bash` | `command` (req), `timeout` (opt, ms — default 120 000, cap 600 000; the recorded-rollout alias `timeout_ms` still parses) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
+| `bash` | `command` (req), `timeout` (opt, ms — default 120 000, cap 600 000; the pre-rename alias `timeout_ms` still parses) | `sh -c command` with **no controlling terminal** (`crate::subprocess` — a `/dev/tty` password prompt fails fast), stdin `/dev/null`, stdout+stderr captured, byte-capped, killed on timeout/cancel |
 | `read` | `path` (req), `offset` (opt 1-based line), `limit` (opt, default 2000 lines) | read the file: text returns numbered lines (a dynamic-width gutter); an **image** (png/jpg/jpeg/gif/webp) is attached visually so the model can see it (`offset`/`limit` ignored — see "Image reads" below) |
 | `write` | `path` (req), `content` (req) | create parent dirs, write the file; report `Created {path} ({N} lines)` over the numbered contents for a new file, or the numbered diff hunks vs the previous content |
 | `edit` | `path` (req), `old_string` (req), `new_string` (req), `replace_all` (opt) | exact string replacement; error if `old_string` is absent, or non-unique without `replace_all`; report `Updated {path} (+A -D)` over the numbered diff hunks |

@@ -174,9 +174,8 @@ pub fn background_handoff_text(task: &crate::background::LaunchedTask) -> String
          will not arrive in this result.\n\
          {}\n\
          Do not run the command again, and do not wait for it by repeatedly \
-         reading the interim file — continue with the rest of the task (or \
-         end the turn) and the completion notification will bring the final \
-         output.",
+         reading the interim file — continue with the rest of the task, or \
+         end the turn.",
         background_launch_text(task),
     )
 }

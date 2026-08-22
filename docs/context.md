@@ -187,7 +187,7 @@ The body (`ui::context_lines`) is the raw context window:
 
 ```
 system prompt:                        (amber tag — the backend's prompt)
-  You are Alter Zero an autonomous AI agent running in terminal UI …
+  # System prompt · You are Alter Zero an autonomous agent harness … …
   ## Environment · Date … OS … CWD …                       (docs/environment.md)
 user:                                 (blue tag — CONTEXT_USER_COLOR, the one
                                        blue the running bullet left behind)

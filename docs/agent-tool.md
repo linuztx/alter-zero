@@ -38,7 +38,7 @@ backend only — a subagent never gets the `agent` tool, so agents can't nest:
 | `description` | required | a short (3-5 word) task label — the tree rows / footer list show it |
 | `prompt` | required | the full task for the agent to perform |
 | `subagent_type` | optional | `general-purpose` (default, all tools) or `explore` (read-only: `bash`+`read`) |
-| `run_in_background` | optional | **default `true`** — the call returns at once with the agent id; `false` blocks the turn until the agent finishes and returns its final response |
+| `run_in_background` | optional | **default `true`** — the call returns at once with the launch acknowledgement (the agent named by its description; no id — nothing model-facing takes one back); `false` blocks the turn until the agent finishes and returns its final response |
 
 (The reference schema's `model` / `isolation` params are deliberately not
 implemented — out of scope for this TUI.)

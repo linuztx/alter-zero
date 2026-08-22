@@ -26,7 +26,7 @@ fn bash(command: &str) -> alter_zero::llm::tools::ToolOutcome {
     let call = ToolCallRequest {
         id: "c".to_string(),
         name: "bash".to_string(),
-        arguments: serde_json::json!({ "command": command, "timeout_ms": 30_000 }).to_string(),
+        arguments: serde_json::json!({ "command": command, "timeout": 30_000 }).to_string(),
     };
     RealToolExecutor::new()
         .with_detach_helper(Some(helper()))
