@@ -591,6 +591,9 @@ fn a_purge_rebuild_plus_the_strip_still_shows_the_whole_reply() {
     // must be the batch render just as the live screen is: a mismatch here
     // means a resize mid-reply silently loses or doubles rows, which the
     // live-streaming assertions cannot see (they never call `committed_rows`).
+    //
+    // It bites: grafted onto the pre-frontier renderer (b98de61) it fails at
+    // case 0, the rebuilt screen short two blank rows the batch render keeps.
     let mut rng = Rng(0xABCD_0000_1234_9999);
     for case in 0..60 {
         let doc = hostile_doc(&mut rng);
