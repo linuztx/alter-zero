@@ -1240,33 +1240,17 @@ pub(super) const SHORTCUTS: &[(&str, &str)] = &[
     ("tab", " to queue next turn"),
     ("ctrl+v", " for image paste"),
     ("ctrl+d", " for llm context"),
-    ("shift+tab", " to cycle thinking"),
-    ("ctrl+a", " for permission mode"),
+    ("ctrl+t", " to cycle thinking"),
+    ("shift+tab", " for permission mode"),
+    ("$", " for skills"),
+    ("ctrl+w/u/k", " to kill text"),
 ];
-
-/// The `$` skill-mention entry (`docs/skill-mentions.md`) — rendered as a
-/// **third column** on the band's first row, beside its sibling composer
-/// sigils `/` and `!` (the user-requested layout), rather than as a
-/// [`SHORTCUTS`] pair slot:
-///
-/// ```text
-/// / for commands               ! for shell command          $ for skills
-/// ```
-///
-/// On a terminal too narrow for the third column it drops to its own last
-/// row instead — the band never clips what it teaches (`shortcuts_lines`).
-pub(super) const SHORTCUTS_SKILLS: (&str, &str) = ("$", " for skills");
-
-/// The display column where the first row's **third** entry starts — the
-/// second [`SHORTCUTS_COL`] stride, so the three sigil entries read as one
-/// aligned grid.
-pub(super) const SHORTCUTS_THIRD_COL: usize = SHORTCUTS_COL * 2;
 
 /// The display column where a row's second entry starts (the first entry is
 /// padded out to here) — [`MENU_DESC_COL`]'s tidy-column idea. Sized so the
-/// **widest** first-column variant keeps a readable gutter: the ctrl+a entry
-/// paired `shift+tab to cycle thinking` (27 columns) into the first column,
-/// which at the old 28 left a single space before it — one run-on line. The
+/// **widest** first-column variant keeps a readable gutter (the pairing once
+/// put a 27-column entry in the first column, which at the old 28 left a
+/// single space before its neighbour — one run-on line). The
 /// `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
 /// ≥ 2-column gutter across every context state; widen this with any new
 /// entry that needs it.

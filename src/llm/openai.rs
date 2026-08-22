@@ -164,7 +164,7 @@ impl OpenAiClient {
             }
         }
         // The thinking mode is applied *after* the extra_body merge so the
-        // user's Shift+Tab choice wins over a file-configured static (the
+        // user's Ctrl+T choice wins over a file-configured static (the
         // footer must never claim an effort a stale `disable_thinking: true`
         // silently vetoes).
         if let Some(mode) = self.cfg.thinking {

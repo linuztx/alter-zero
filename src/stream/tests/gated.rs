@@ -131,7 +131,7 @@ fn the_auto_demo_classifies_instead_of_asking_in_auto_mode() {
 #[test]
 fn the_auto_demo_still_asks_outside_auto_mode() {
     // The same prompt under `Manual` goes to the user — so smoke can
-    // start the demo, flip Ctrl+A, and watch the difference.
+    // start the demo, flip Shift+Tab, and watch the difference.
     let gate = crate::permission::PermissionGate::new();
     let dummy = DummyAi::with_startup_delay(Duration::ZERO).with_permissions(gate.clone());
     let (tx, mut rx) = unbounded_channel();

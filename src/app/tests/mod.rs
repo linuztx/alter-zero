@@ -8,7 +8,7 @@
 // of `crate::app` — private items included — through their own `use super::*`.
 pub(super) use super::*;
 
-// ===== Shift+Tab thinking mode (docs/reasoning.md) =====
+// ===== Ctrl+T thinking mode (docs/reasoning.md) =====
 
 use crate::llm::ReasoningEffort;
 

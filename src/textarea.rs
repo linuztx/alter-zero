@@ -4,9 +4,13 @@
 //! This is a focused port of the editing core of openai/codex's
 //! `bottom_pane/textarea.rs` — the same four load-bearing fields (`text`,
 //! `cursor`, a width-keyed `wrap_cache`, and a `preferred_col` for vertical
-//! motion) — deliberately *without* codex's vim mode, atomic `@mention`
-//! elements, emacs kill-buffer/yank, masking, highlights or keymap-config. See
-//! `docs/textarea.md`.
+//! motion) — plus the readline set on top: word-wise motion and the kill-key
+//! *targets* (`prev_word_boundary`/`prev_unix_word_boundary`/
+//! `next_word_boundary`/`cursor_line_start`/`cursor_kill_end` — the composer
+//! deletes the spans itself so a kill can stay placeholder-atomic,
+//! `App::kill_span`). Deliberately *without* codex's vim mode, atomic
+//! `@mention` elements, emacs kill-ring/yank, masking, highlights or
+//! keymap-config. See `docs/textarea.md`.
 //!
 //! Everything here is pure (no terminal I/O), so it is unit-tested directly: the
 //! cursor is a byte offset kept on a grapheme boundary, wrapping produces byte
@@ -227,6 +231,130 @@ impl TextArea {
         self.preferred_col = None;
     }
 
+    /// Move to the start of the previous **word** ([`prev_word_boundary`]) —
+    /// Alt+B / Ctrl+←.
+    ///
+    /// [`prev_word_boundary`]: TextArea::prev_word_boundary
+    pub fn move_word_left(&mut self) {
+        self.cursor = self.prev_word_boundary();
+        self.preferred_col = None;
+    }
+
+    /// Move to the end of the next **word** ([`next_word_boundary`]) —
+    /// Alt+F / Ctrl+→.
+    ///
+    /// [`next_word_boundary`]: TextArea::next_word_boundary
+    pub fn move_word_right(&mut self) {
+        self.cursor = self.next_word_boundary();
+        self.preferred_col = None;
+    }
+
+    // ===== word/line boundary queries (the kill targets) =====
+    //
+    // The kill keys (Ctrl+W/U/K, Alt+D, Alt+Backspace) delete *spans*, and the
+    // composer must widen a span over any pasted placeholder it would cut in
+    // half (`App::kill_span` — docs/paste.md) before deleting, so the targets
+    // are exposed as queries rather than performed here.
+
+    /// Where a word-wise left motion or backward word kill reaches from the
+    /// cursor: the start of the previous readline word — a run of
+    /// alphanumerics, so `foo/bar.txt` is three words. Whitespace and
+    /// punctuation before it are crossed. (Deliberately readline's alnum
+    /// words, not Unicode word segmentation, whose `.`-joins-letters rule
+    /// would make `bar.txt` a single stop — terminal muscle memory wins.)
+    #[must_use]
+    pub fn prev_word_boundary(&self) -> usize {
+        let mut pos = self.cursor;
+        while pos > 0 {
+            let prev = prev_grapheme(&self.text, pos);
+            if is_word_grapheme(&self.text[prev..pos]) {
+                break;
+            }
+            pos = prev;
+        }
+        while pos > 0 {
+            let prev = prev_grapheme(&self.text, pos);
+            if !is_word_grapheme(&self.text[prev..pos]) {
+                break;
+            }
+            pos = prev;
+        }
+        pos
+    }
+
+    /// Where a word-wise right motion or forward word kill reaches from the
+    /// cursor: the end of the current-or-next readline word (Emacs'
+    /// `forward-word` end), or the very end when only non-words remain.
+    #[must_use]
+    pub fn next_word_boundary(&self) -> usize {
+        let mut pos = self.cursor;
+        while pos < self.text.len() {
+            let next = next_grapheme(&self.text, pos);
+            if is_word_grapheme(&self.text[pos..next]) {
+                break;
+            }
+            pos = next;
+        }
+        while pos < self.text.len() {
+            let next = next_grapheme(&self.text, pos);
+            if !is_word_grapheme(&self.text[pos..next]) {
+                break;
+            }
+            pos = next;
+        }
+        pos
+    }
+
+    /// Where Ctrl+W's unix-word-rubout reaches from the cursor: back over
+    /// whitespace (a newline included), then back over the non-whitespace run —
+    /// the shell's coarser, whitespace-delimited word, so `bar.txt` goes whole
+    /// where [`prev_word_boundary`] stops at the dot.
+    ///
+    /// [`prev_word_boundary`]: TextArea::prev_word_boundary
+    #[must_use]
+    pub fn prev_unix_word_boundary(&self) -> usize {
+        let mut pos = self.cursor;
+        while pos > 0 {
+            let prev = prev_grapheme(&self.text, pos);
+            if self.text[prev..pos].chars().all(char::is_whitespace) {
+                pos = prev;
+            } else {
+                break;
+            }
+        }
+        while pos > 0 {
+            let prev = prev_grapheme(&self.text, pos);
+            if self.text[prev..pos].chars().all(char::is_whitespace) {
+                break;
+            }
+            pos = prev;
+        }
+        pos
+    }
+
+    /// The start of the cursor's logical line — Ctrl+U's kill target (what
+    /// [`move_home`] moves to).
+    ///
+    /// [`move_home`]: TextArea::move_home
+    #[must_use]
+    pub fn cursor_line_start(&self) -> usize {
+        self.line_start(self.cursor)
+    }
+
+    /// Ctrl+K's kill target: the end of the cursor's logical line — except
+    /// *at* that end, where the kill takes the `'\n'` itself (Emacs' `kill-line`
+    /// joins the lines rather than dying as a no-op). At the very end of the
+    /// text there is nothing to take.
+    #[must_use]
+    pub fn cursor_kill_end(&self) -> usize {
+        let end = self.line_end(self.cursor);
+        if self.cursor == end && end < self.text.len() {
+            end + 1 // the '\n' after the line
+        } else {
+            end
+        }
+    }
+
     // ===== vertical movement (across wrapped rows; logical-line fallback) =====
 
     /// Move up one **visual** row (using the wrap cache the render path filled),
@@ -391,6 +519,13 @@ impl TextArea {
 /// The index of the last row whose `start <= pos` (0 if none / empty).
 fn row_of(rows: &[Range<usize>], pos: usize) -> usize {
     rows.iter().rposition(|r| r.start <= pos).unwrap_or(0)
+}
+
+/// Is this grapheme part of a readline word (contains an alphanumeric) rather
+/// than whitespace/punctuation? The word class the Alt/Ctrl word motions and
+/// word kills jump between.
+fn is_word_grapheme(g: &str) -> bool {
+    g.chars().any(char::is_alphanumeric)
 }
 
 /// The grapheme boundary strictly before `pos` (or 0).
@@ -952,6 +1087,137 @@ mod tests {
         assert_eq!(ta.wrapped_rows(5), vec![0..5, 6..11, 11..11]);
         ta.set_text("hi");
         assert_eq!(ta.wrapped_rows(5), vec![0..2], "re-wrapped after the edit");
+    }
+
+    // ===== word motion (alt+b/f, ctrl+←/→ — docs/textarea.md) =====
+
+    #[test]
+    fn word_left_goes_to_the_start_of_the_previous_word() {
+        let mut ta = at("foo bar", 7);
+        ta.move_word_left();
+        assert_eq!(ta.cursor(), 4, "start of \"bar\"");
+        ta.move_word_left();
+        assert_eq!(ta.cursor(), 0, "start of \"foo\"");
+        ta.move_word_left(); // saturates at the start
+        assert_eq!(ta.cursor(), 0);
+    }
+
+    #[test]
+    fn word_left_from_inside_a_word_goes_to_its_start() {
+        let mut ta = at("hello", 3);
+        ta.move_word_left();
+        assert_eq!(ta.cursor(), 0);
+    }
+
+    #[test]
+    fn word_left_stops_at_punctuation_separated_words() {
+        // readline's alnum words: `foo/bar.txt` is three stops, not one.
+        let mut ta = at("foo/bar.txt", 11);
+        ta.move_word_left();
+        assert_eq!(ta.cursor(), 8, "start of \"txt\"");
+        ta.move_word_left();
+        assert_eq!(ta.cursor(), 4, "start of \"bar\"");
+        ta.move_word_left();
+        assert_eq!(ta.cursor(), 0);
+    }
+
+    #[test]
+    fn word_right_goes_to_the_end_of_the_next_word() {
+        let mut ta = at("foo bar", 0);
+        ta.move_word_right();
+        assert_eq!(ta.cursor(), 3, "end of \"foo\"");
+        ta.move_word_right();
+        assert_eq!(ta.cursor(), 7, "end of \"bar\"");
+        ta.move_word_right(); // saturates at the end
+        assert_eq!(ta.cursor(), 7);
+    }
+
+    #[test]
+    fn word_right_from_inside_a_word_goes_to_its_end() {
+        let mut ta = at("hello world", 2);
+        ta.move_word_right();
+        assert_eq!(ta.cursor(), 5);
+    }
+
+    #[test]
+    fn word_right_with_only_punctuation_ahead_goes_to_the_end() {
+        let mut ta = at("foo //", 3);
+        ta.move_word_right();
+        assert_eq!(ta.cursor(), 6, "no more words: land at the very end");
+    }
+
+    #[test]
+    fn word_motion_crosses_newlines() {
+        let mut ta = at("ab\ncd", 5);
+        ta.move_word_left();
+        assert_eq!(ta.cursor(), 3, "start of \"cd\"");
+        ta.move_word_left();
+        assert_eq!(ta.cursor(), 0);
+        ta.move_word_right();
+        assert_eq!(ta.cursor(), 2, "end of \"ab\"");
+    }
+
+    #[test]
+    fn word_motion_resets_the_preferred_column() {
+        let mut ta = at("aaaaa\nbb\nccccc", 3); // row 0, col 3
+        let _ = ta.wrapped_rows(5);
+        ta.move_down(); // onto "bb", clamped to col 2, preferred_col pinned at 3
+        ta.move_word_left(); // a horizontal move — the pin must clear
+        ta.move_down();
+        assert_eq!(ta.cursor_row_col(5), (2, 0), "aims for the current column");
+    }
+
+    // ===== word/line boundary queries (the kill targets — docs/textarea.md) =====
+
+    #[test]
+    fn prev_word_boundary_is_where_word_left_would_go() {
+        let ta = at("foo bar ", 8);
+        assert_eq!(ta.prev_word_boundary(), 4, "the trailing space and \"bar\"");
+    }
+
+    #[test]
+    fn next_word_boundary_is_where_word_right_would_go() {
+        let ta = at("foo bar", 3);
+        assert_eq!(ta.next_word_boundary(), 7, "\" bar\" — to the word's end");
+    }
+
+    #[test]
+    fn prev_unix_word_boundary_is_whitespace_delimited() {
+        // ctrl+w's unix-word-rubout: `bar.txt` goes as one word, where
+        // `prev_word_boundary` (alt+backspace) stops at the dot.
+        let ta = at("foo bar.txt ", 12);
+        assert_eq!(ta.prev_unix_word_boundary(), 4);
+        assert_eq!(ta.prev_word_boundary(), 8);
+    }
+
+    #[test]
+    fn prev_unix_word_boundary_crosses_a_newline_like_whitespace() {
+        let ta = at("ab\ncd", 3);
+        assert_eq!(ta.prev_unix_word_boundary(), 0, "the newline is whitespace");
+    }
+
+    #[test]
+    fn cursor_line_start_is_the_logical_line_start() {
+        let ta = at("ab\ncd", 4);
+        assert_eq!(ta.cursor_line_start(), 3);
+        let ta = at("hello", 3);
+        assert_eq!(ta.cursor_line_start(), 0);
+    }
+
+    #[test]
+    fn cursor_kill_end_is_the_logical_line_end() {
+        let ta = at("ab\ncd", 1);
+        assert_eq!(ta.cursor_kill_end(), 2, "up to the newline, not past it");
+    }
+
+    #[test]
+    fn cursor_kill_end_at_a_line_end_takes_the_newline() {
+        // Emacs' ctrl+k: at the end of a line the kill eats the '\n' (joining
+        // the lines) instead of being a dead no-op.
+        let ta = at("ab\ncd", 2);
+        assert_eq!(ta.cursor_kill_end(), 3);
+        let ta = at("ab\ncd", 5); // at the very end there is nothing to take
+        assert_eq!(ta.cursor_kill_end(), 5);
     }
 
     #[test]

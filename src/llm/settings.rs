@@ -20,7 +20,7 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     /// The saved model's reasoning capability + chosen mode, when it supports
-    /// thinking — restored at startup so the Shift+Tab cycle needs no refetch.
+    /// thinking — restored at startup so the Ctrl+T cycle needs no refetch.
     /// See `docs/reasoning.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<ThinkingSettings>,

@@ -408,7 +408,7 @@ pub struct App {
     /// `None` when the model doesn't support reasoning (or support is
     /// unknown, e.g. the dummy backend). Injected at the boundary
     /// ([`App::set_thinking`], the [`set_session_info`] pattern), cycled by
-    /// Shift+Tab, and shown beside the model name in the footer. See
+    /// Ctrl+T, and shown beside the model name in the footer. See
     /// `docs/reasoning.md`.
     ///
     /// [`set_session_info`]: App::set_session_info
@@ -654,12 +654,12 @@ impl App {
     /// Inject the active model's reasoning capability + mode (a `/model`
     /// switch, the startup seed, or the boundary's support probe) — `None`
     /// for a model with no reasoning, which also blanks the footer's mode and
-    /// makes Shift+Tab explain instead of cycle. See `docs/reasoning.md`.
+    /// makes Ctrl+T explain instead of cycle. See `docs/reasoning.md`.
     pub fn set_thinking(&mut self, thinking: Option<(ReasoningSupport, ThinkingMode)>) {
         self.thinking = thinking.map(|(support, mode)| ThinkingState { support, mode });
     }
 
-    /// Shift+Tab: advance the thinking mode through the model's cycle and
+    /// Ctrl+T: advance the thinking mode through the model's cycle and
     /// hand the loop the new mode ([`Action::SetThinking`]) — or, on a model
     /// with no reasoning, an explanatory transient toast.
     fn cycle_thinking(&mut self) -> Action {

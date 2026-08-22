@@ -245,9 +245,9 @@ buffer, so `App` has nothing to preview and nothing to record, and every pure
 renderer below simply never sees a reasoning item. There is no second code path
 to keep in step.
 
-Note it does **not** change what is *asked of* the model — the Shift+Tab
+Note it does **not** change what is *asked of* the model — the Ctrl+T
 thinking mode (`docs/reasoning.md`) still rides the request. `ALTER_ZERO_SHOW_THINKING=0`
-hides thinking; `Shift+Tab` to `off` stops it happening.
+hides thinking; `Ctrl+T` to `off` stops it happening.
 
 ## Testing
 

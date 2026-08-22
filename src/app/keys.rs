@@ -261,41 +261,16 @@ impl App {
             // exits. Quit below needs an *empty* composer with no target.
             KeyCode::Esc if !self.input.is_empty() => Action::None,
             KeyCode::Esc => Action::Quit,
-            // Palette navigation / selection (only while it's open).
-            KeyCode::Up if menu_open => {
-                self.move_command_selection(-1);
-                Action::None
+            // Shift+Tab cycles the permission mode (docs/permissions.md) —
+            // Claude Code's key for it, freeing Ctrl+A for the terminal's
+            // line-start. Legacy terminals report it as BackTab (`ESC[Z`), the
+            // kitty protocol can report Tab+SHIFT — both bind (the Shift+Enter
+            // pattern), and the Tab+SHIFT arm sits before every plain-Tab arm
+            // so a shifted Tab never queues or completes.
+            KeyCode::BackTab => self.toggle_permission_mode(),
+            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.toggle_permission_mode()
             }
-            KeyCode::Down if menu_open => {
-                self.move_command_selection(1);
-                Action::None
-            }
-            // File-picker navigation (only while it's open and has matches).
-            KeyCode::Up if file_open => {
-                self.move_file_selection(-1);
-                Action::None
-            }
-            KeyCode::Down if file_open => {
-                self.move_file_selection(1);
-                Action::None
-            }
-            // Skill-picker navigation (only while its band is showing).
-            KeyCode::Up if skill_open => {
-                self.move_skill_selection(-1);
-                Action::None
-            }
-            KeyCode::Down if skill_open => {
-                self.move_skill_selection(1);
-                Action::None
-            }
-            // Shift+Tab cycles the thinking mode (docs/reasoning.md). Legacy
-            // terminals report it as BackTab (`ESC[Z`), the kitty protocol can
-            // report Tab+SHIFT — both bind (the Shift+Enter pattern), and the
-            // Tab+SHIFT arm sits before every plain-Tab arm so a shifted Tab
-            // never queues or completes. Like /model, cycling never touches a
-            // running turn — the mode rides the *next* request.
-            KeyCode::BackTab => self.cycle_thinking(),
-            KeyCode::Tab if key.modifiers.contains(KeyModifiers::SHIFT) => self.cycle_thinking(),
             KeyCode::Tab if menu_open => self.run_selected_command(),
             // Tab/Enter accept the highlighted file when the picker is open and
             // a match is selected (codex's accept) — replacing the `@token` with
@@ -422,21 +397,26 @@ impl App {
                 self.shell_mode = false;
                 Action::None
             }
-            KeyCode::Backspace => {
-                let had_query = command_query(self.input.text()).is_some();
-                let had_token = self.in_at_token();
-                let had_mention = self.in_skill_mention();
-                // A Backspace on a large-paste placeholder removes the whole
-                // placeholder atomically (docs/paste.md); otherwise one grapheme.
-                if !self.delete_placeholder(/*backward*/ true) {
-                    self.input.delete_backward();
-                }
-                self.refresh_command_menu(had_query);
-                self.sync_shell_mode();
-                self.refresh_file_search(had_token);
-                self.refresh_skill_picker(had_mention);
-                Action::None
+            // Alt+Backspace (readline) / Ctrl+Backspace (the kitty spelling)
+            // kill the previous readline word; Alt+Delete / Ctrl+Delete the
+            // next — the plain arms below keep their one-grapheme meaning.
+            KeyCode::Backspace
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let span = self.input.prev_word_boundary()..self.input.cursor();
+                self.kill_and_refresh(span)
             }
+            KeyCode::Delete
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                let span = self.input.cursor()..self.input.next_word_boundary();
+                self.kill_and_refresh(span)
+            }
+            KeyCode::Backspace => self.backspace_and_refresh(),
             KeyCode::Delete => {
                 let had_query = command_query(self.input.text()).is_some();
                 let had_token = self.in_at_token();
@@ -448,6 +428,24 @@ impl App {
                 self.sync_shell_mode();
                 self.refresh_file_search(had_token);
                 self.refresh_skill_picker(had_mention);
+                Action::None
+            }
+            // Word motion on Ctrl/Alt-modified arrows (docs/textarea.md) —
+            // before the plain arms, which would otherwise swallow them.
+            KeyCode::Left
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.input.move_word_left();
+                Action::None
+            }
+            KeyCode::Right
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                self.input.move_word_right();
                 Action::None
             }
             KeyCode::Left => {
@@ -485,64 +483,99 @@ impl App {
                 }
                 Action::None
             }
-            // ↑/↓ first try shell-style history recall — only from an empty
-            // composer or an unedited recall (docs/input-history.md) — then
-            // fall back to cursor movement. The menu-open arms above still
-            // take precedence (codex's "popups win").
-            KeyCode::Up => {
-                if self.should_browse_history()
-                    && let Some(text) = self.input_history.up()
-                {
-                    self.recall_input(&text);
-                    return Action::None;
-                }
-                self.input.move_up();
-                Action::None
-            }
-            KeyCode::Down => {
-                if self.should_browse_history()
-                    && let Some(text) = self.input_history.down()
-                {
-                    self.recall_input(&text);
-                    return Action::None;
-                }
-                // ↓ from an empty composer steps onto the footer's shell
-                // indicator while one is running (`docs/background.md`) — it
-                // lights up and Enter opens the manager. History recall was
-                // tried first, so a mid-recall ↓ still steps the history.
-                if self.background_focusable() {
-                    self.background_focus = true;
-                    return Action::None;
-                }
-                // With no shell to land on, ↓ opens the agent roster's
-                // selection directly when agents are listed — on the `● main`
-                // row, or straight back onto the **last picked** agent when
-                // the user has been in the roster before (`docs/agent-tool.md`).
-                if self.agent_selectable() {
-                    self.agent_selection = Some(self.agent_selection_start());
-                    return Action::None;
-                }
-                self.input.move_down();
-                Action::None
+            // ↑/↓ (and their terminal twins Ctrl+P/Ctrl+N): the open band's
+            // selection first (codex's "popups win"), then shell-style history
+            // recall — only from an empty composer or an unedited recall
+            // (docs/input-history.md) — then cursor movement. Only the real ↓
+            // walks the footer (the shell indicator / agent roster) — Ctrl+N
+            // stays an editing key.
+            KeyCode::Up => self.nav_up(),
+            KeyCode::Down => self.nav_down(/*footer_walk*/ true),
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => self.nav_up(),
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.nav_down(/*footer_walk*/ false)
             }
             // Ctrl+B moves the running command (a model `bash` call or a `!`
             // shell turn) to the background — the loop raises the registry
-            // request the runner's poll loop consumes. A no-op when nothing
-            // backgroundable is running. See `docs/background.md`.
+            // request the runner's poll loop consumes. See `docs/background.md`.
+            // With nothing backgroundable running it is the terminal's
+            // cursor-left instead (readline's Ctrl+B) — the session meaning
+            // wins while it applies, the editing one the rest of the time.
             KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.can_move_to_background() {
                     Action::MoveToBackground
                 } else {
+                    self.input.move_left();
                     Action::None
                 }
             }
-            // Ctrl+A toggles the permission mode — manual (ask before edits
-            // and commands) ⇄ edit (file changes run unasked, commands still
-            // ask). The loop mirrors it onto the gate and persists it per
-            // project; the mode pinned at the footer's right edge shows
-            // where you are. See docs/permissions.md.
+            // The readline cursor keys (docs/textarea.md): Ctrl+A/Ctrl+E jump
+            // to the logical line's ends (Home/End), Ctrl+F steps right
+            // (Ctrl+B above steps left when idle). The permission-mode cycle
+            // that used to sit on Ctrl+A moved to Shift+Tab.
             KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.toggle_permission_mode()
+                self.input.move_home();
+                Action::None
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.move_end();
+                Action::None
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.move_right();
+                Action::None
+            }
+            // Word motion: Alt+B/Alt+F (readline) and Ctrl/Alt+←/→ (the
+            // editor spelling) — by readline words, `docs/textarea.md`.
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.input.move_word_left();
+                Action::None
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.input.move_word_right();
+                Action::None
+            }
+            // The kill keys (docs/textarea.md): Ctrl+W rubs out the previous
+            // whitespace-delimited word (the shell's), Alt+Backspace /
+            // Ctrl+Backspace and Alt+D / Ctrl+Delete kill by readline words,
+            // Ctrl+U/Ctrl+K kill to the logical line's start/end (Ctrl+K at
+            // the line end takes the newline — Emacs' join). All of them
+            // widen over a pasted placeholder rather than cutting it in half
+            // (`kill_span`), and re-derive the bands like Backspace.
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let span = self.input.prev_unix_word_boundary()..self.input.cursor();
+                self.kill_and_refresh(span)
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let span = self.input.cursor_line_start()..self.input.cursor();
+                self.kill_and_refresh(span)
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let span = self.input.cursor()..self.input.cursor_kill_end();
+                self.kill_and_refresh(span)
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
+                let span = self.input.cursor()..self.input.next_word_boundary();
+                self.kill_and_refresh(span)
+            }
+            // Ctrl+H is Backspace (the terminal's oldest alias) — with the
+            // kitty protocol the key arrives as Char('h')+CONTROL where a
+            // legacy terminal already sends 0x08. Shell-mode parity included:
+            // on an empty shell composer it exits the mode like Backspace.
+            KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.shell_mode && self.input.is_empty() {
+                    self.shell_mode = false;
+                    Action::None
+                } else {
+                    self.backspace_and_refresh()
+                }
+            }
+            // Ctrl+T cycles the thinking mode (docs/reasoning.md) — moved off
+            // Shift+Tab, which cycles the permission mode now. Like /model,
+            // cycling never touches a running turn — the mode rides the
+            // *next* request.
+            KeyCode::Char('t') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.cycle_thinking()
             }
             KeyCode::Home => {
                 self.input.move_home();
@@ -580,5 +613,106 @@ impl App {
             }
             _ => Action::None,
         }
+    }
+
+    /// ↑ / Ctrl+P: the open band's selection first (codex's "popups win"),
+    /// then shell-style history recall (docs/input-history.md), then the
+    /// textarea cursor.
+    fn nav_up(&mut self) -> Action {
+        if self.command_menu.is_some() {
+            self.move_command_selection(-1);
+            return Action::None;
+        }
+        if self.file_search.is_some() {
+            self.move_file_selection(-1);
+            return Action::None;
+        }
+        if self.skill_band_active() {
+            self.move_skill_selection(-1);
+            return Action::None;
+        }
+        if self.should_browse_history()
+            && let Some(text) = self.input_history.up()
+        {
+            self.recall_input(&text);
+            return Action::None;
+        }
+        self.input.move_up();
+        Action::None
+    }
+
+    /// ↓ / Ctrl+N — [`nav_up`](Self::nav_up)'s mirror. `footer_walk` is the
+    /// real ↓'s own affordance: from an idle composer it steps onto the
+    /// footer's shell indicator while one runs (`docs/background.md`), else
+    /// opens the agent roster's selection (`docs/agent-tool.md`) — on the
+    /// `● main` row, or straight back onto the **last picked** agent when the
+    /// user has been in the roster before. Ctrl+N skips the walk: it is an
+    /// editing key.
+    fn nav_down(&mut self, footer_walk: bool) -> Action {
+        if self.command_menu.is_some() {
+            self.move_command_selection(1);
+            return Action::None;
+        }
+        if self.file_search.is_some() {
+            self.move_file_selection(1);
+            return Action::None;
+        }
+        if self.skill_band_active() {
+            self.move_skill_selection(1);
+            return Action::None;
+        }
+        if self.should_browse_history()
+            && let Some(text) = self.input_history.down()
+        {
+            self.recall_input(&text);
+            return Action::None;
+        }
+        if footer_walk {
+            if self.background_focusable() {
+                self.background_focus = true;
+                return Action::None;
+            }
+            if self.agent_selectable() {
+                self.agent_selection = Some(self.agent_selection_start());
+                return Action::None;
+            }
+        }
+        self.input.move_down();
+        Action::None
+    }
+
+    /// Backspace (and its Ctrl+H alias): a large-paste placeholder goes whole
+    /// (docs/paste.md), otherwise one grapheme — then re-derive the bands and
+    /// the shell mode, exactly what every deleting key owes.
+    fn backspace_and_refresh(&mut self) -> Action {
+        let had_query = command_query(self.input.text()).is_some();
+        let had_token = self.in_at_token();
+        let had_mention = self.in_skill_mention();
+        if !self.delete_placeholder(/*backward*/ true) {
+            self.input.delete_backward();
+        }
+        self.refresh_command_menu(had_query);
+        self.sync_shell_mode();
+        self.refresh_file_search(had_token);
+        self.refresh_skill_picker(had_mention);
+        Action::None
+    }
+
+    /// A kill key's deletion: splice the byte `span` out placeholder-atomically
+    /// ([`kill_span`](Self::kill_span)), then re-derive the bands and the
+    /// shell mode like Backspace. An empty span is a quiet no-op.
+    fn kill_and_refresh(&mut self, span: std::ops::Range<usize>) -> Action {
+        if span.start >= span.end {
+            return Action::None;
+        }
+        let had_query = command_query(self.input.text()).is_some();
+        let had_token = self.in_at_token();
+        let had_mention = self.in_skill_mention();
+        self.kill_span(span);
+        self.refresh_command_menu(had_query);
+        self.sync_shell_mode();
+        self.refresh_file_search(had_token);
+        self.refresh_skill_picker(had_mention);
+        Action::None
     }
 }

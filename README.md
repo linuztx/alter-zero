@@ -236,7 +236,7 @@ An amended rejection is kept, not just delivered: the instructions show on the
 red cell and the model-facing denial rides the conversation, so Ctrl+D shows
 what the model was told and every later turn — and a `/resume` — still carries
 it.
-`/settings` → **Permission mode** (or **Ctrl+A**) picks the posture;
+`/settings` → **Permission mode** (or **Shift+Tab**) picks the posture;
 `ALTER_ZERO_PERMISSIONS=0` turns the gate off entirely.
 
 You can also wedge **your own commands** into the tool loop
@@ -298,7 +298,7 @@ survives a `/resume`. The token count is the provider's own
 `completion_tokens_details.reasoning_tokens` once the round's usage frame
 lands, a tokenizer estimate until then. `/settings` → **Hide thinking** (or
 `ALTER_ZERO_SHOW_THINKING=0`) hides it all — that hides *showing* the
-thinking; **Shift+Tab** to `off` is what stops the model doing it.
+thinking; **Ctrl+T** to `off` is what stops the model doing it.
 
 Everything the session can be tuned with lives behind **`/settings`**
 (`docs/settings.md`) — the knobs that used to be `ALTER_ZERO_*` environment
@@ -327,7 +327,7 @@ mid-session in the same inline frame `/model` uses:
 Type to search (the label *and* the description — `agents.md` finds **Project
 docs**), **Enter** or **Space** to cycle the highlighted value, **Esc** to
 close. There is no text field anywhere: every value cycles, so one key means
-one thing on every row. **Permission mode** is the same posture **Ctrl+A**
+one thing on every row. **Permission mode** is the same posture **Shift+Tab**
 cycles — one state, two doors. A knob this machine can't serve (checkpoints
 with no `git`, say) shows `false (unavailable)` and says so rather than
 offering a toggle that does nothing. **Max tool calls** defaults to `0` — no

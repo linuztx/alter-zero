@@ -121,7 +121,7 @@ every purge rebuild) in `docs/header.md`, and the **`/mascot` picker** that
 switches it (the `/settings` family's frame over the six-mascot catalog
 with a **live banner preview** rendered by the header's own builder, the
 choice persisted in `mascot.json` and the switch's purge rebuild redrawing
-the banner at once) in `docs/mascot.md`; the **Shift+Tab thinking-mode
+the banner at once) in `docs/mascot.md`; the **Ctrl+T thinking-mode
 cycle** (a reasoning-capable model's effort — detected per model from the
 provider's `/v1/models`, shown beside the model name in the footer, cycled
 with a `Thinking: {mode}` toast, riding the request as the unified `reasoning`
@@ -359,7 +359,7 @@ taller than the terminal bottom-anchors and flows its top into real
 scrollback like every framed view, `docs/view-flow.md`; the `… +N lines`
 tail survives only past the `PERMISSION_BODY_MAX_ROWS` per-tick-build safety
 ceiling), the question, and `❯ 1. Yes` / `2. Yes,
-allow all edits during this session (ctrl+a)` — for `bash`, `2. Yes, and don't
+allow all edits during this session (shift+tab)` — for `bash`, `2. Yes, and don't
 ask again for: {rule}` where the rule reads `python3 *` for a prefix scope
 (the star = any arguments; an exact-only scope shows the whole command, no
 star, and there is no letter shortcut any more) — / `3. No` over `Esc to cancel · Tab to amend`
@@ -473,7 +473,7 @@ falls back to the ordinary prompt (never an allow); `master` runs
 bypass-permissions) pinned flush at the
 footer's **right edge** (`{model} · {cwd}      manual` — its columns reserved
 off the left chain's budget, so the `…` truncation can never eat it) and
-**cycled** with **Ctrl+A** (manual → edit → auto → master → manual, one step
+**cycled** with **Shift+Tab** (manual → edit → auto → master → manual, one step
 per press — from the composer, or on an open prompt: a file prompt's option
 2 *is* the switch to `edit`, with a `Mode: edit …` toast; back to `manual`
 and file changes ask again; a step onto `master` sweeps the open/queued
@@ -487,7 +487,7 @@ the same way, the pure format in
 `permission::PermissionsFile`, the read-modify-write I/O + startup gate seed
 in `tui::config`/`tui::permission`), so "don't ask again" and the mode survive a restart in the
 same directory; gated by `ALTER_ZERO_PERMISSIONS` (disabled = no gate, no
-footer segment, Ctrl+A explains via toast)) in
+footer segment, Shift+Tab explains via toast)) in
 `docs/permissions.md`; and the **`AskUserQuestion` tool** (Claude-Code's
 mid-turn questions, `docs/ask.md`: the model asks 1–4 multiple-choice
 questions — `askuserquestion`, offered only when `LlmBackend::with_ask`
@@ -897,7 +897,7 @@ finds **Project docs**). The pure model is `settings::SessionSettings` +
 `SettingKey`; the rows are **derived, never stored** (`App::setting_rows`),
 so the value column can't drift from what the session is doing, and
 **Permission mode** is a second door onto `App::permission_mode` — cycling it
-returns the existing `Action::SetPermissionMode` so Ctrl+A's whole path (the
+returns the existing `Action::SetPermissionMode` so Shift+Tab's whole path (the
 gate, the covered-request sweep, the per-project persist) still runs. A knob
 the host can't serve is **unavailable** — `SettingAvailability`, injected at
 the boundary like the clock: it renders `false (unavailable)`, refuses to
@@ -927,7 +927,10 @@ and only the row the user actually cycled is saved).
 This is an **inline** TUI: finished messages *and tool calls* flow into the
 terminal's real scrollback; a live region (a rule-framed input box — a codex-style
 **`textarea`** whose cursor moves anywhere (←/→ by grapheme, ↑/↓ across *wrapped*
-rows, Home/End) with insert/delete at the cursor, growing as the input wraps;
+rows, Home/End — plus the readline set, `docs/textarea.md`: Ctrl+A/E/B/F/P/N,
+Alt+B/F and Ctrl/Alt+←/→ word motion, the placeholder-atomic kills
+Ctrl+W/U/K + Alt+D/Alt+Backspace, and Ctrl+H backspace) with insert/delete
+at the cursor, growing as the input wraps;
 from an **empty composer (or an unedited recall) ↑/↓ instead step through
 previously submitted inputs** shell-style (`App::input_history`, codex's
 `ChatComposerHistory` — ↓ past the newest clears; **persisted across sessions**
@@ -1058,9 +1061,9 @@ and its expiry is timed at the boundary (`Session::toast_deadline` +
 `docs/toast.md`; plus a one-row
 **session footer** on the region's last row —
 codex's footer status line, `{model} · {cwd}` dim and two-space inset
-(`dummy_model_name · ~/repo      manual` — the Ctrl+A **permission mode**
+(`dummy_model_name · ~/repo      manual` — the Shift+Tab **permission mode**
 pinned flush at the row's right edge, `docs/permissions.md`, hidden when
-permissions are off; a reasoning-capable model carries its Shift+Tab
+permissions are off; a reasoning-capable model carries its Ctrl+T
 thinking mode beside the name — `{model} {mode} · {cwd}`, `docs/reasoning.md`)
 — whenever no band is open (the palette/shortcuts
 band displaces it, and the Ctrl+R search line / `!` shell-mode hint take its

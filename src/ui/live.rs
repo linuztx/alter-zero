@@ -577,11 +577,10 @@ pub fn render_live_with_preview(
     // band_rows).
     if menu_rows(app, area.width) > 0 {
         Paragraph::new(command_menu_lines(app, band_area.width)).render(band_area, buf);
-    } else if shortcuts_rows(app, area.width) > 0 {
+    } else if shortcuts_rows(app) > 0 {
         Paragraph::new(shortcuts_lines(
             app.turn_active(),
             app.has_backtrack_target(),
-            band_area.width,
         ))
         .render(band_area, buf);
     } else if file_menu_rows(app) > 0 {

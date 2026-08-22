@@ -1467,14 +1467,16 @@ fn set_thinking_seeds_the_state() {
 }
 
 #[test]
-fn backtab_cycles_the_thinking_mode() {
+fn ctrl_t_cycles_the_thinking_mode() {
+    // Ctrl+T — the cycle moved off Shift+Tab, which cycles the permission
+    // mode now (docs/reasoning.md).
     let mut app = App::new();
     app.set_thinking(Some((
         trio_support(),
         ThinkingMode::Effort(ReasoningEffort::Medium),
     )));
     assert_eq!(
-        app.on_key(backtab()),
+        app.on_key(ctrl('t')),
         Action::SetThinking(ThinkingMode::Effort(ReasoningEffort::High)),
         "medium steps to high"
     );
@@ -1484,44 +1486,33 @@ fn backtab_cycles_the_thinking_mode() {
         "the state advanced too"
     );
     assert_eq!(
-        app.on_key(backtab()),
+        app.on_key(ctrl('t')),
         Action::SetThinking(ThinkingMode::Off),
         "high wraps to off"
     );
     assert_eq!(
-        app.on_key(backtab()),
+        app.on_key(ctrl('t')),
         Action::SetThinking(ThinkingMode::Effort(ReasoningEffort::Low)),
         "off steps to low"
     );
 }
 
 #[test]
-fn shift_tab_reported_as_tab_plus_shift_also_cycles() {
-    // Terminals differ: legacy sends BackTab (ESC[Z), the kitty protocol
-    // can report Tab+SHIFT — both must cycle (the shift-enter pattern).
-    let mut app = App::new();
-    app.set_thinking(Some((
-        trio_support(),
-        ThinkingMode::Effort(ReasoningEffort::Low),
-    )));
-    let shift_tab = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
-    assert_eq!(
-        app.on_key(shift_tab),
-        Action::SetThinking(ThinkingMode::Effort(ReasoningEffort::Medium))
-    );
-}
-
-#[test]
 fn backtab_keeps_the_draft_intact() {
+    // The mode cycle only reads the session state — a typed draft survives
+    // it untouched (both Shift+Tab spellings and Ctrl+T alike).
     let mut app = App::new();
+    app.set_permission_mode(Some(PermissionMode::Manual));
     app.set_thinking(Some((trio_support(), ThinkingMode::Off)));
     type_chars(&mut app, "keep me");
     app.on_key(backtab());
     assert_eq!(app.input.text(), "keep me");
+    app.on_key(ctrl('t'));
+    assert_eq!(app.input.text(), "keep me");
 }
 
 #[test]
-fn backtab_mid_turn_cycles_for_the_next_turn() {
+fn ctrl_t_mid_turn_cycles_for_the_next_turn() {
     // Like /model, the cycle never touches the running turn — the new mode
     // simply rides the next request.
     let mut app = App::new();
@@ -1531,7 +1522,7 @@ fn backtab_mid_turn_cycles_for_the_next_turn() {
     )));
     app.begin_stream();
     assert_eq!(
-        app.on_key(backtab()),
+        app.on_key(ctrl('t')),
         Action::SetThinking(ThinkingMode::Effort(ReasoningEffort::High))
     );
     assert!(app.turn_active(), "the turn keeps running underneath");

@@ -23,7 +23,7 @@ pub struct ModelEntry {
     /// the picker's `Model Name:` line.
     pub display_name: String,
     /// The model's reasoning ("thinking") capability, when the record
-    /// advertises one — drives the Shift+Tab mode cycle. `None` for a model
+    /// advertises one — drives the Ctrl+T mode cycle. `None` for a model
     /// with no reasoning. See `docs/reasoning.md`.
     pub reasoning: Option<ReasoningSupport>,
     /// Whether the model accepts **image input** (vision), when the record

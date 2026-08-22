@@ -1,5 +1,9 @@
 # ↑/↓ input history — shell-style recall of submitted messages
 
+> **Ctrl+P/Ctrl+N** are ↑/↓'s terminal twins (`docs/textarea.md`): same band
+> navigation, same recall gate, same cursor fallback — except Ctrl+N never
+> walks the footer (the shell indicator / agent roster stay ↓'s own).
+
 Date: 2026-06-11
 
 ## Goal

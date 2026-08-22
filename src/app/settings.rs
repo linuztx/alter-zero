@@ -126,7 +126,7 @@ impl App {
     ///
     /// Two knobs don't belong to the pure blob and route elsewhere:
     /// **Permission mode** returns the existing [`Action::SetPermissionMode`]
-    /// (one state, two doors — Ctrl+A's path mirrors the gate, sweeps the
+    /// (one state, two doors — Shift+Tab's path mirrors the gate, sweeps the
     /// covered requests and persists the project entry), and an *unavailable*
     /// setting explains itself with a toast rather than silently doing
     /// nothing. Everything else moves here and the boundary applies it

@@ -250,7 +250,7 @@ The reference's `context: fork` (run the skill in a subagent), `allowed-tools`
 overrides, hooks-in-frontmatter, and `!`-shell interpolation in the body are
 all **parsed-and-ignored**. Each is a permission or a control-flow decision
 wearing a markdown file's clothes, and this TUI already has explicit,
-user-visible seams for all of them (`/settings`, Ctrl+A, `docs/permissions.md`,
+user-visible seams for all of them (`/settings`, Shift+Tab, `docs/permissions.md`,
 `docs/agent-tool.md`). A skill here is *text*, and text cannot escalate.
 
 That is also why a skill invocation raises **no permission prompt**: nothing

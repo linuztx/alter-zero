@@ -378,7 +378,7 @@ const FILES_REPLY: &str = concat!(
      small script with a classic bug in it, fix the bug, then run it.\n\n",
     "There's the pair. A `Write` numbers the whole new file; an `Edit` shows only \
      the hunk it touched, added lines tinted green and removed ones red. With \
-     permissions on (**ctrl+a** cycles the mode) both would have asked you first — \
+     permissions on (**shift+tab** cycles the mode) both would have asked you first — \
      type *permission demo* to see that prompt.\n\n",
     handoff!()
 );

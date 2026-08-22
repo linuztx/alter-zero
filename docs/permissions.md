@@ -23,7 +23,7 @@ cross-thread handshake in [`crate::permission::PermissionGate`].
 ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
  Do you want to create hello.py?
  ❯ 1. Yes
-   2. Yes, allow all edits during this session (ctrl+a)
+   2. Yes, allow all edits during this session (shift+tab)
    3. No
 
  Esc to cancel · Tab to amend
@@ -199,9 +199,9 @@ Every prompt offers three, selected with ↑/↓ + Enter (the steps wrap — ↓
 **No** comes back to **Yes**) or by typing `1`/`2`/`3`:
 
 1. **Yes** — approve this call only.
-2. **Yes, allow all edits during this session (ctrl+a)** for `write`/`edit` —
+2. **Yes, allow all edits during this session (shift+tab)** for `write`/`edit` —
    this *is* the switch to [edit mode](#permission-modes-manual--edit), and
-   Ctrl+A (the mode toggle) selects it directly;
+   Shift+Tab (the mode toggle) selects it directly;
    **Yes, and don't ask again for: {rule}** for `bash` — the rule as it will
    be stored: `python3 *` for a prefix rule (the star saying "this program,
    any arguments", Claude Code's `Bash(prefix:*)`), or the whole command when
@@ -292,7 +292,7 @@ the only one that can't be wrong about what is safe. `read` is never gated.
 The session has a **permission posture**, `permission::PermissionMode`, pinned
 flush at the footer's **right edge** (`{model} · {cwd}      manual` — its own
 zone, reserved off the left chain's truncation budget so a long cwd's `…` cut
-can never eat it; `docs/footer.md`) and **cycled** with **Ctrl+A** from the
+can never eat it; `docs/footer.md`) and **cycled** with **Shift+Tab** from the
 composer, one step per press in increasing autonomy:
 
 - **manual** (the default) — every `write`/`edit` and every `bash` command
@@ -316,10 +316,10 @@ failure fall back to the prompt.
 
 Option 2 on a `write`/`edit` prompt **is** the switch to edit mode — the mode
 is exactly the old "allow all edits during this session" flag, made visible
-and reversible — so choosing it (or pressing Ctrl+A on the prompt) approves
+and reversible — so choosing it (or pressing Shift+Tab on the prompt) approves
 the pending change, flips the footer segment, and raises the confirming toast
-(`Mode: edit — file edits run without asking (ctrl+a to switch back)`).
-Ctrl+A on a **bash** prompt only steps the posture — a step onto a mode that
+(`Mode: edit — file edits run without asking (shift+tab to switch back)`).
+Shift+Tab on a **bash** prompt only steps the posture — a step onto a mode that
 covers the open request (master covers everything) resolves it through the
 ordinary sweep; otherwise the prompt stays open — and from the composer it
 works idle or mid-turn (the gate's rules are shared state; the very next
@@ -331,7 +331,7 @@ where the loop mirrors the mode onto the gate, **sweeps** queued requests the
 new mode now covers (parallel agents' file changes waiting behind the open
 prompt approve at once — the option-2 sweep above; a switch to master sweeps
 every queued prompt), persists it (below), and toasts. With permissions
-disabled there is no mode: the footer segment is hidden and Ctrl+A raises a
+disabled there is no mode: the footer segment is hidden and Shift+Tab raises a
 `Tool permissions are disabled` toast instead of silently doing nothing.
 
 ## Auto mode: the classifier
@@ -409,7 +409,7 @@ adapted from Claude Code's auto-mode denial, worded kind-neutrally since it
 answers commands and MCP calls alike — telling the model the call was not
 executed, other work may continue, a safer approach is fine, the denial's
 intent must not be bypassed, and an essential capability means stop and ask
-the user (who can approve it in manual mode, do it themselves, or Ctrl+A).
+the user (who can approve it in manual mode, do it themselves, or Shift+Tab).
 Both texts ride the recorded call like any rejection (`context_output`), so
 later turns replay exactly what the model was told.
 
@@ -453,7 +453,7 @@ label degrades to `manual` — a hand-edited file asks more, never less). The
 pure format/parse is `permission::PermissionsFile`/`ProjectPermissions` (the
 `Settings` pattern); `main.rs` owns the file I/O: the startup load seeds the
 gate (`seed_commands` + `set_mode`) before the first frame, and every rule
-change — an option-2 approval, a Ctrl+A toggle — **re-reads, updates this
+change — an option-2 approval, a Shift+Tab toggle — **re-reads, updates this
 project's entry, and rewrites** (read-modify-write, so instances in other
 directories never clobber each other; best-effort like `config.json`, a
 write failure never kills the TUI). Restart the app — or `--continue` /
@@ -578,7 +578,7 @@ cursor identically.
 gate attached, and every tool runs as it did before this feature. The
 `LlmBackend` only asks when a gate was installed, so an embedder (and the live
 integration tests) that builds a backend directly is unaffected. With no gate
-there is no mode either: the footer's right-edge segment disappears and Ctrl+A
+there is no mode either: the footer's right-edge segment disappears and Shift+Tab
 explains itself with a toast instead of pretending to toggle anything.
 
 ## Tests
@@ -587,7 +587,7 @@ explains itself with a toast instead of pretending to toggle anything.
   (the `{prefix} *` display, the exact command verbatim),
   `command_scope`'s segmentation/prefixing/degradation (subcommand tools,
   wrappers, env assignments, quote-aware redirects), the mode's
-  label/parse round trip and the four-step Ctrl+A cycle, the rules' allow +
+  label/parse round trip and the four-step Shift+Tab cycle, the rules' allow +
   remember (mode gating file changes both ways; auto covering files but
   never commands; master covering everything), the classifier vocabulary
   (the allowed note, the denied display/result texts, the offline
@@ -606,7 +606,7 @@ explains itself with a toast instead of pretending to toggle anything.
   `llm/agent.rs` — a noted approval emits `ToolStart → ToolNote → ToolEnd`
   and still runs the call.
 - `app/tests` — opening stashes and closing restores the draft, the key map
-  (↑/↓/1/2/3/Tab/Esc/ctrl+e — a bare `a` now does nothing; Ctrl+A takes the
+  (↑/↓/1/2/3/Tab/Esc/ctrl+e — a bare `a` now does nothing; Shift+Tab takes the
   remember option on a file prompt, toggles the mode on a bash prompt and
   from the composer both ways, and explains itself when permissions are
   disabled), the amend field, the queue — plus the whole

@@ -112,7 +112,7 @@ fn the_question_and_three_options_sit_under_the_body() {
     assert_eq!(lines[q + 1], " ❯ 1. Yes");
     assert_eq!(
         lines[q + 2],
-        "   2. Yes, allow all edits during this session (ctrl+a)"
+        "   2. Yes, allow all edits during this session (shift+tab)"
     );
     assert_eq!(lines[q + 3], "   3. No");
 }

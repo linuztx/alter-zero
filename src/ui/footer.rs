@@ -134,7 +134,7 @@ pub fn backtrack_hint_line() -> Line<'static> {
 /// like its ` · `) — cut with a trailing `…` when it overflows `width`
 /// (codex's `truncate_line_with_ellipsis_if_overflow`). A reasoning-capable
 /// model carries its thinking mode right beside the name (`{model} {mode}`,
-/// Shift+Tab cycles it — `docs/reasoning.md`). Empty when no session info has
+/// Ctrl+T cycles it — `docs/reasoning.md`). Empty when no session info has
 /// been injected.
 #[must_use]
 pub fn footer_line(app: &App, width: u16) -> Line<'static> {

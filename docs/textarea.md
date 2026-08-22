@@ -8,10 +8,11 @@ go back and fix a character in the middle of what you had typed.
 This document describes the replacement: a focused port of the editing core of
 openai/codex's `bottom_pane/textarea.rs` — a real cursor with insert/delete
 *anywhere* and codex's movement model — captured as a small `textarea` module
-(`src/textarea.rs`). The scope is deliberately **"minimal cursor"**: the editing
-model + navigation, and nothing else. Codex's vim mode, atomic `@mention`
-elements, emacs kill-buffer/yank, password masking, search highlights and
-configurable keymap system are **out of scope** (codex-specific; not ported).
+(`src/textarea.rs`), plus the **readline set** on top (word motion, the kill
+keys, the Ctrl-letter cursor keys — see *Terminal shortcuts* below). Codex's
+vim mode, atomic `@mention` elements, emacs kill-ring/yank, password masking,
+search highlights and configurable keymap system stay **out of scope**
+(codex-specific; not ported).
 
 ## The model
 
@@ -83,10 +84,11 @@ the empty trailing range above is the sentinel's *effect*, re-derived.
 
 | Key | Method | Behaviour |
 |-----|--------|-----------|
-| ←/→ | `move_left`/`move_right` | one **grapheme**; clears `preferred_col` |
-| ↑/↓ | `move_up`/`move_down` | across **wrapped visual rows**, keeping `preferred_col`; falls back to logical-line motion when the wrap cache is cold |
-| Home/End | `move_home`/`move_end` | start/end of the current **logical** line (between `'\n'`s) |
-| Backspace | `delete_backward` | delete the grapheme before the cursor |
+| ←/→ (Ctrl+B/Ctrl+F) | `move_left`/`move_right` | one **grapheme**; clears `preferred_col` (Ctrl+B only while nothing backgroundable runs — see below) |
+| ↑/↓ (Ctrl+P/Ctrl+N) | `move_up`/`move_down` | across **wrapped visual rows**, keeping `preferred_col`; falls back to logical-line motion when the wrap cache is cold |
+| Home/End (Ctrl+A/Ctrl+E) | `move_home`/`move_end` | start/end of the current **logical** line (between `'\n'`s) |
+| Alt+B/Alt+F, Ctrl/Alt+←/→ | `move_word_left`/`move_word_right` | by **readline words** (runs of alphanumerics — `foo/bar.txt` is three stops); left lands at a word's start, right at its end (Emacs' `forward-word`) |
+| Backspace (Ctrl+H) | `delete_backward` | delete the grapheme before the cursor |
 | Delete | `delete_forward` | delete the grapheme at the cursor |
 | char | `insert_char` | insert at the cursor |
 | Ctrl+J / Alt+Enter / Shift+Enter | `insert_newline` | insert `'\n'` at the cursor (see `docs/shift-enter.md`) |
@@ -99,6 +101,57 @@ width-agnostic: the pure state machine never has to know the terminal size.
 
 Up/Down are *visual* (wrapped) while Home/End are *logical* — this is codex's
 behaviour, kept for fidelity.
+
+## Terminal shortcuts (the readline set)
+
+The composer answers the shell's editing keys. Motion pairs the table above
+already shows: **Ctrl+A/Ctrl+E** (line start/end), **Ctrl+B/Ctrl+F** (one
+grapheme), **Ctrl+P/Ctrl+N** (row up/down), **Alt+B/Alt+F** and **Ctrl/Alt+←/→**
+(word-wise). The kill keys delete *spans*:
+
+| Key | Span | Notes |
+|-----|------|-------|
+| Ctrl+W | `prev_unix_word_boundary()..cursor` | the shell's unix-word-rubout: back over whitespace, then the whole non-whitespace run — `src/main.rs` goes as one word |
+| Alt+Backspace / Ctrl+Backspace | `prev_word_boundary()..cursor` | readline's backward-kill-word — stops at punctuation, so the same path is three kills |
+| Alt+D / Alt+Delete / Ctrl+Delete | `cursor..next_word_boundary()` | forward word kill |
+| Ctrl+U | `cursor_line_start()..cursor` | kill to the logical line's start |
+| Ctrl+K | `cursor..cursor_kill_end()` | kill to the logical line's end — *at* the end it takes the `'\n'` itself (Emacs' join), so it is never a dead key |
+
+Three deliberate wrinkles:
+
+- **The word class is readline's, not UAX#29's.** Unicode word segmentation
+  joins `bar.txt` into one word (its `.`-between-letters rule); terminal muscle
+  memory expects the dot to stop an Alt+B / Alt+Backspace. A "word" here is a
+  run of alphanumerics, walked by grapheme so emoji/CJK still move whole.
+- **The textarea exposes kill *targets*, not kill methods** (`prev_word_boundary`,
+  `prev_unix_word_boundary`, `next_word_boundary`, `cursor_line_start`,
+  `cursor_kill_end`): the composer must widen a span over any pasted
+  `[Pasted Content N chars]` / `[Image #N]` placeholder it intersects before
+  deleting (`App::kill_span` — a kill stays as atomic as Backspace on a
+  placeholder, the swallowed pairs dropped and a killed image's temp file
+  handed to the boundary; `docs/paste.md`, `docs/image-paste.md`). Every kill
+  then re-derives the palette/`@`/`$` bands and the shell mode exactly like
+  Backspace (`App::kill_and_refresh`).
+- **Session keys own their combos first.** Ctrl+B is *move to background* while
+  a backgroundable command or foreground agent group runs
+  (`App::can_move_to_background`, `docs/background.md`) and cursor-left the
+  rest of the time; ↓ keeps its footer walk (the shell indicator, the agent
+  roster) while Ctrl+N never walks — it is purely ↓'s editing half. Ctrl+P/N
+  do drive an open palette/`@`/`$` band's selection, like the arrows.
+
+The same set works in the permission prompt's Tab-amend field and the ask
+modal's free-text entries (`App::edit_amend` — Ctrl+P/N are plain cursor keys
+there, and Ctrl+B is always ←, since nothing backgroundable is actionable from
+inside a modal). The Ctrl+R search line is its own key world and unchanged.
+
+Two session-level keys moved to make room:
+
+- **Shift+Tab** cycles the permission mode (was Ctrl+A) — Claude Code's own
+  key for it, `docs/permissions.md`; inside a `write`/`edit` permission prompt
+  it still *is* option 2, and the option's label advertises `(shift+tab)`.
+- **Ctrl+T** cycles the thinking mode (was Shift+Tab), `docs/reasoning.md`.
+
+(Ctrl+L stays deliberately unbound.)
 
 ## Integration
 
@@ -118,8 +171,8 @@ behaviour, kept for fidelity.
 
 ## What is intentionally *not* here (YAGNI / out of scope)
 
-Vim mode, atomic `@mention` text elements, the emacs kill-buffer + `Ctrl+K`/​
-`Ctrl+U`/`Ctrl+Y`, word-wise navigation/deletion (`Alt/Ctrl+←/→`, `Ctrl+W`),
-password masking, render-only search highlights, and the runtime keymap-config
-system. Each is a codex feature with no analogue in this app; adding any later is
+Vim mode, atomic `@mention` text elements, the emacs **kill-ring + `Ctrl+Y`
+yank** (the kill keys delete; nothing is stashed for re-insertion), password
+masking, render-only search highlights, and the runtime keymap-config system.
+Each is a codex feature with no analogue in this app; adding any later is
 additive and does not change the model above.

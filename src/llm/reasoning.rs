@@ -1,8 +1,8 @@
-//! Reasoning ("thinking") modes — the pure core behind the Shift+Tab cycle.
+//! Reasoning ("thinking") modes — the pure core behind the Ctrl+T cycle.
 //!
 //! A reasoning-capable model advertises what it supports in the provider's
 //! `/v1/models` record ([`ReasoningSupport`], parsed in [`super::models`]);
-//! the user cycles the active [`ThinkingMode`] with Shift+Tab and the choice
+//! the user cycles the active [`ThinkingMode`] with Ctrl+T and the choice
 //! rides the request payload (`docs/reasoning.md`). Pure and unit-tested; no
 //! HTTP here.
 
@@ -57,7 +57,7 @@ impl ReasoningEffort {
     }
 }
 
-/// The active thinking mode of a reasoning-capable model — what Shift+Tab
+/// The active thinking mode of a reasoning-capable model — what Ctrl+T
 /// cycles and the footer shows beside the model name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ThinkingMode {
@@ -113,7 +113,7 @@ pub struct ReasoningSupport {
 }
 
 impl ReasoningSupport {
-    /// Every mode Shift+Tab cycles through, in order: `Off` (when the model
+    /// Every mode Ctrl+T cycles through, in order: `Off` (when the model
     /// allows disabling) then the effort ladder — or plain `On` when the model
     /// takes no effort parameter.
     #[must_use]

@@ -352,7 +352,7 @@ api_base = "https://one.example/v1/"
         // is also the Venice-family marker the payload builder keys the
         // per-mode `disable_thinking` toggle on (docs/reasoning.md) — so the
         // file must keep the table, but no longer pin `disable_thinking`
-        // statically (the Shift+Tab mode owns it now).
+        // statically (the Ctrl+T mode owns it now).
         let params = body
             .get("venice_parameters")
             .expect("venice_parameters present");

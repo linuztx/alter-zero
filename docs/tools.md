@@ -260,7 +260,7 @@ Attaching an image to a model that can't see is not a soft failure: OpenRouter
 **404s the whole request** ("No endpoints found that support image input"), so
 without a gate an image read (or a Ctrl+V paste) on e.g. `openai/gpt-oss-120b`
 kills the turn red. The gate reuses the `/v1/models` capability pattern the
-Shift+Tab thinking cycle established (`docs/reasoning.md`):
+Ctrl+T thinking cycle established (`docs/reasoning.md`):
 
 - **Detection** (`models::vision_support_of` → `ModelEntry::vision`,
   per-record like the reasoning sniff): OpenRouter's

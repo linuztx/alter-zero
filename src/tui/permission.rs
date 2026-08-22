@@ -99,7 +99,7 @@ impl PermissionStore {
         }
     }
 
-    /// Switch the session's mode (Ctrl+A) and persist it. The approve seam reads
+    /// Switch the session's mode (Shift+Tab) and persist it. The approve seam reads
     /// the gate's rules, so the very next `write`/`edit`/`bash` obeys the new
     /// posture.
     pub(crate) fn set_mode(&self, mode: PermissionMode) {
@@ -170,7 +170,7 @@ impl Session<'_> {
                 )
             } else {
                 self.app.set_permission_mode(Some(PermissionMode::Edit));
-                "Mode: edit — file edits run without asking (ctrl+a to switch back)".to_string()
+                "Mode: edit — file edits run without asking (shift+tab to switch back)".to_string()
             };
             self.toast(toast, ToastKind::Info);
         }
@@ -183,7 +183,7 @@ impl Session<'_> {
         self.frame.schedule_frame();
     }
 
-    /// Ctrl+A (from the composer, or on an open bash prompt): `App`'s mode already
+    /// Shift+Tab (from the composer, or on an open bash prompt): `App`'s mode already
     /// advanced — mirror it onto the gate's rules (the approve seam reads them, so
     /// the very next write/edit obeys the new posture), sweep the queued requests
     /// the looser mode now covers (parallel agents' file changes waiting behind a

@@ -103,7 +103,7 @@ pub enum Action {
     /// ([`App::set_session_info`]), and collapses the picker. See `docs/llm.md`.
     /// `reasoning` is the picked entry's parsed thinking capability (from the
     /// same `/v1/models` fetch that listed it), so a successful switch seeds
-    /// the Shift+Tab cycle without refetching — `None` for a model with no
+    /// the Ctrl+T cycle without refetching — `None` for a model with no
     /// reasoning. See `docs/reasoning.md`. `vision` is the entry's parsed
     /// image-input support, gating attachments on the rebuilt backend —
     /// `None` when the record didn't say. See `docs/tools.md`.
@@ -117,7 +117,7 @@ pub enum Action {
         /// when the record didn't report one. See `docs/compact.md`.
         context: Option<u64>,
     },
-    /// Shift+Tab cycled the thinking mode ([`App::thinking`] already advanced
+    /// Ctrl+T cycled the thinking mode ([`App::thinking`] already advanced
     /// to the carried mode). The loop rebinds the *next* turn's backend to it,
     /// persists the choice, and presents the `Thinking: {mode}` toast (arming
     /// its expiry — why this isn't a direct `show_toast`). See
@@ -264,7 +264,7 @@ pub enum Action {
     /// child off, and resolves the cell as
     /// [`ToolStatus::Backgrounded`]. See `docs/background.md`.
     MoveToBackground,
-    /// Ctrl+A toggled the permission mode (manual ⇄ edit) — from the
+    /// Shift+Tab toggled the permission mode (manual → edit → auto → master) — from the
     /// composer, or from an open `bash` prompt (whose own question the
     /// toggle doesn't answer). [`App::permission_mode`] already advanced; the
     /// loop mirrors the mode onto the gate's rules, persists this project's

@@ -300,6 +300,27 @@ pub fn placeholder_to_delete<T>(
     None
 }
 
+/// The byte span of **every** placeholder occurrence in `text`, in order —
+/// matched longest-first at each position, like [`expand_pastes`]. The kill
+/// keys use this to widen a deletion span over any placeholder it would
+/// otherwise cut in half (`App::kill_span` — a kill must stay as atomic as
+/// Backspace on a placeholder, `docs/paste.md`).
+#[must_use]
+pub fn placeholder_spans<T>(text: &str, pastes: &[(String, T)]) -> Vec<Range<usize>> {
+    let mut spans = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        if let Some((placeholder, _)) = longest_placeholder_at(text, i, pastes) {
+            spans.push(i..i + placeholder.len());
+            i += placeholder.len();
+        } else {
+            let ch = text[i..].chars().next().expect("i < text.len()");
+            i += ch.len_utf8();
+        }
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -728,6 +749,40 @@ mod tests {
         assert_eq!(
             placeholder_to_delete(text, text.len(), &imgs, true),
             Some(0..text.len())
+        );
+    }
+
+    #[test]
+    fn placeholder_spans_lists_every_occurrence_in_order() {
+        let pastes = vec![
+            ("[Pasted Content 9 chars]".to_string(), "x".to_string()),
+            ("[Image #1]".to_string(), "y".to_string()),
+        ];
+        let text = "a [Image #1] b [Pasted Content 9 chars]";
+        assert_eq!(
+            placeholder_spans(text, &pastes),
+            vec![2..12, 15..text.len()]
+        );
+    }
+
+    #[test]
+    fn placeholder_spans_matches_longest_first_like_expansion() {
+        // A base placeholder is a prefix of its `… #2` extension — the span
+        // must be the extension's, or a kill would split it (the
+        // `longest_placeholder_at` rule).
+        let pastes = vec![
+            ("[Pasted Content 9 chars]".to_string(), "x".to_string()),
+            ("[Pasted Content 9 chars #2]".to_string(), "y".to_string()),
+        ];
+        let text = "[Pasted Content 9 chars #2]";
+        assert_eq!(placeholder_spans(text, &pastes), vec![0..text.len()]);
+    }
+
+    #[test]
+    fn placeholder_spans_is_empty_with_no_pairs() {
+        assert_eq!(
+            placeholder_spans("plain text", &Vec::<(String, String)>::new()),
+            Vec::<Range<usize>>::new()
         );
     }
 }

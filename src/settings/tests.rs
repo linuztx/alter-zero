@@ -159,7 +159,7 @@ fn a_value_the_menu_does_not_offer_cycles_back_into_the_list() {
 
 #[test]
 fn the_permission_row_reads_the_mode_it_is_given_and_never_stores_one() {
-    // The posture lives on `App` (Ctrl+A owns it) — the menu is a second door
+    // The posture lives on `App` (Shift+Tab owns it) — the menu is a second door
     // onto that one state, so cycling here is a no-op and the caller routes
     // the change through Action::SetPermissionMode instead.
     let mut s = SessionSettings::default();

@@ -164,6 +164,99 @@ fn backspace_before_a_placeholder_deletes_only_the_preceding_char() {
     assert_eq!(app.pasted.len(), 1, "the placeholder and its paste survive");
 }
 
+// ===== the kill keys stay placeholder-atomic (docs/textarea.md) =====
+
+#[test]
+fn ctrl_w_swallows_a_placeholder_whole() {
+    // The placeholder text contains spaces, so a naive unix-word rubout from
+    // its end would kill only "chars]" and leave half a placeholder backed by
+    // a live pair. The kill widens over the occurrence instead.
+    let mut app = App::new();
+    let big = "z".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 1);
+    app.on_paste(&big);
+    assert_eq!(app.input.text(), "[Pasted Content 1001 chars]");
+    app.on_key(ctrl('w'));
+    assert_eq!(app.input.text(), "");
+    assert!(app.pasted.is_empty(), "the remembered paste is dropped too");
+}
+
+#[test]
+fn ctrl_u_swallows_every_placeholder_it_crosses() {
+    let mut app = App::new();
+    type_chars(&mut app, "see ");
+    let big = "z".repeat(crate::paste::LARGE_PASTE_CHAR_THRESHOLD + 1);
+    app.on_paste(&big);
+    type_chars(&mut app, " ok");
+    app.on_key(ctrl('u'));
+    assert_eq!(app.input.text(), "");
+    assert!(app.pasted.is_empty());
+}
+
+#[test]
+fn a_kill_over_an_image_placeholder_discards_the_attachment() {
+    // The killed image's pair goes with its placeholder, and the orphaned
+    // temp file is handed to the boundary for removal — exactly what an
+    // atomic Backspace does (docs/image-paste.md).
+    let mut app = App::new();
+    app.attach_image(PathBuf::from("/tmp/kill.png"));
+    assert_eq!(app.input.text(), "[Image #1]");
+    app.on_key(ctrl('u'));
+    assert_eq!(app.input.text(), "");
+    assert!(app.images.is_empty(), "the pair is dropped");
+    assert_eq!(
+        app.take_discarded_images(),
+        vec![PathBuf::from("/tmp/kill.png")],
+        "the temp file is queued for removal"
+    );
+}
+
+#[test]
+fn a_kill_leaves_placeholders_outside_its_span_backed() {
+    // Two images; a ctrl+w from the end reaches only the second — the first
+    // keeps its pair (and its temp file).
+    let mut app = App::new();
+    app.attach_image(PathBuf::from("/tmp/a.png"));
+    type_chars(&mut app, " and ");
+    app.attach_image(PathBuf::from("/tmp/b.png"));
+    assert_eq!(app.input.text(), "[Image #1] and [Image #2]");
+    app.on_key(ctrl('w'));
+    assert_eq!(app.input.text(), "[Image #1] and ");
+    assert_eq!(app.images.len(), 1, "only the killed pair went");
+    assert_eq!(
+        app.take_discarded_images(),
+        vec![PathBuf::from("/tmp/b.png")]
+    );
+}
+
+#[test]
+fn a_kill_over_duplicate_placeholders_drops_the_right_pairs() {
+    // A merged queue can leave two occurrences of the SAME placeholder text,
+    // each backed by its own pair (docs/image-paste.md). Killing the second
+    // occurrence must drop the second pair — and killing both must not trip
+    // over its own ordinal bookkeeping (pairs are removed highest ordinal
+    // first).
+    let mut app = App::new();
+    app.input = TextArea::from_text("[Image #1] x [Image #1]");
+    app.images = vec![
+        ("[Image #1]".to_string(), PathBuf::from("/tmp/first.png")),
+        ("[Image #1]".to_string(), PathBuf::from("/tmp/second.png")),
+    ];
+    app.on_key(ctrl('w')); // kills the trailing occurrence
+    assert_eq!(app.input.text(), "[Image #1] x ");
+    assert_eq!(
+        app.take_discarded_images(),
+        vec![PathBuf::from("/tmp/second.png")],
+        "the SECOND pair went, not the first"
+    );
+    app.on_key(ctrl('u')); // kills the rest, first occurrence included
+    assert_eq!(app.input.text(), "");
+    assert!(app.images.is_empty());
+    assert_eq!(
+        app.take_discarded_images(),
+        vec![PathBuf::from("/tmp/first.png")]
+    );
+}
+
 // ===== Ctrl+V image paste (docs/image-paste.md) =====
 
 #[test]

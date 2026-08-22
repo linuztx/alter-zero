@@ -1,4 +1,4 @@
-# Shift+Tab thinking modes (reasoning effort)
+# Ctrl+T thinking modes (reasoning effort)
 
 > This is about **what is asked of** the model. What comes *back* — the
 > chain-of-thought itself, streamed live and collapsed into a
@@ -6,7 +6,7 @@
 
 Reasoning-capable models ("thinking" models) accept a **reasoning effort** —
 how much chain-of-thought to spend before answering. This document covers how
-the TUI detects that capability per model, the **Shift+Tab** cycle that
+the TUI detects that capability per model, the **Ctrl+T** cycle that
 switches the mode, where the mode shows (the footer, beside the model name),
 how it rides the request, and how it persists.
 
@@ -16,11 +16,13 @@ how it rides the request, and how it persists.
   qwen3-5-35b-a3b medium · ~/alter-zero            (footer: {model} {mode} · {cwd})
 ```
 
-Pressing Shift+Tab cycles `off → low → medium → high → off …` (whatever the
+Pressing Ctrl+T cycles `off → low → medium → high → off …` (whatever the
 model offers), raises a transient `Thinking: high` toast (`docs/toast.md`),
 and the next request carries the new effort. On a model with no reasoning at
-all, Shift+Tab raises `{model} does not support thinking` instead — the key is
-never silently dead. The default for a reasoning model is **medium** (where
+all, Ctrl+T raises `{model} does not support thinking` instead — the key is
+never silently dead. (The cycle sat on Shift+Tab until the terminal-shortcut
+work, `docs/textarea.md` — Shift+Tab cycles the *permission* mode now,
+`docs/permissions.md`.) The default for a reasoning model is **medium** (where
 offered).
 
 ## Detection: what `/v1/models` says
@@ -45,7 +47,7 @@ either works unconfigured:
   empty) — it thinks at its own default, and the cycle is just `off ↔ on`.
 
 A model advertising neither shape has no thinking: no footer mode, and
-Shift+Tab explains.
+Ctrl+T explains.
 
 ## The mode, the cycle, and the wire
 
@@ -79,15 +81,14 @@ was force-disabled for every Agent Zero model).
 
 ## Key handling
 
-Legacy terminals report Shift+Tab as `BackTab` (`ESC[Z`); with the kitty
-keyboard protocol it can arrive as `Tab`+`SHIFT` — `App::on_key_conversation`
-binds **both** (the Shift+Enter pattern, `docs/shift-enter.md`), the shifted
-arm sitting before every plain-Tab arm so it never queues (`docs/queue.md`) or
-palette-completes. Cycling works **mid-turn** — like `/model`, it only rebinds
-the *next* turn's backend, never the streaming one. While the `/model` picker,
-`/login` flow, or Ctrl+R search own the keys, Shift+Tab is inert; the
-`/resume` picker keeps its own Tab/BackTab toolbar binding. The `?` shortcuts
-band lists `shift+tab to cycle thinking` (`docs/shortcuts.md`).
+Ctrl+T arrives as `Char('t')`+`CONTROL` in every terminal — no protocol split
+to bridge (Shift+Tab, the old binding, needed both `BackTab` and
+`Tab`+`SHIFT` bound; that pair now drives the permission-mode cycle,
+`docs/permissions.md`). Cycling works **mid-turn** — like `/model`, it only
+rebinds the *next* turn's backend, never the streaming one. While the
+`/model` picker, `/login` flow, or Ctrl+R search own the keys, Ctrl+T is
+inert; the `/resume` picker keeps its own Tab/BackTab toolbar binding. The
+`?` shortcuts band lists `ctrl+t to cycle thinking` (`docs/shortcuts.md`).
 
 The pure `App::cycle_thinking` advances `App::thinking`
 (`ThinkingState { support, mode }`) and returns `Action::SetThinking(mode)`;
@@ -128,8 +129,8 @@ blanks the footer mode.
 
 The mode/support/cycle logic, the models-record parse (both provider shapes),
 the payload mapping (including the Venice `disable_thinking` sync), the
-settings round-trip (including stale-blob degradation), the Shift+Tab
-grammar (BackTab and Tab+SHIFT, mid-turn, picker-inert, unsupported-toast),
+settings round-trip (including stale-blob degradation), the Ctrl+T
+grammar (mid-turn, picker-inert, unsupported-toast),
 and the footer rendering are all unit-tested in their modules. The boundary
 wiring (probe, persistence, backend rebinds) is exercised against the real
 providers — `tests/live_openrouter.rs`'s ignored live tests plus manual tmux

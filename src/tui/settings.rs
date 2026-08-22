@@ -217,7 +217,7 @@ impl Session<'_> {
             }
             // Read where they are used — nothing to rebuild.
             SettingKey::HideThinking | SettingKey::AutoCompact => {}
-            // Ctrl+A's path owns this one; the menu never routes it here.
+            // Shift+Tab's path owns this one; the menu never routes it here.
             SettingKey::PermissionMode => {}
         }
         // Persist as a read-modify-write over the blob the file itself holds,

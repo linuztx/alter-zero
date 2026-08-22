@@ -484,7 +484,7 @@ const DUMMY_AUTO_COMMANDS: &[(&str, &str, &str, bool)] = &[
 /// command runs with the [`CLASSIFIER_ALLOWED_NOTE`] riding a `ToolNote`, a
 /// denied one resolves red via `ToolRejected` with the classifier texts. In
 /// any other mode the call asks like the ordinary demos, so the same prompt
-/// exercises the Ctrl+A switch (smoke drives it in auto).
+/// exercises the Shift+Tab switch (smoke drives it in auto).
 ///
 /// [`PermissionMode::Auto`]: crate::permission::PermissionMode::Auto
 /// [`CLASSIFIER_ALLOWED_NOTE`]: crate::permission::CLASSIFIER_ALLOWED_NOTE

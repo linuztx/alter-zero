@@ -85,7 +85,7 @@ fn the_footer_pins_the_permission_mode_at_the_right_edge() {
     let mode_span = line.spans.last().expect("the mode span");
     assert_eq!(mode_span.content, "manual");
     assert_eq!(mode_span.style.fg, Some(FOOTER_COLOR));
-    // Every mode of the Ctrl+A cycle renders its label there — auto and
+    // Every mode of the Shift+Tab cycle renders its label there — auto and
     // master included (docs/permissions.md).
     for (mode, label) in [
         (crate::permission::PermissionMode::Edit, "edit"),

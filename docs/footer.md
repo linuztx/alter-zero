@@ -12,7 +12,7 @@ below the input box's bottom rule, giving ambient session context —
 
 — the backend's model name and the current working directory, joined with
 ` · `, and — pinned flush at the row's **right edge**, its own zone — the
-session's **permission mode** (`manual`/`edit`, the posture Ctrl+A toggles —
+session's **permission mode** (`manual`/`edit`, the posture Shift+Tab toggles —
 `docs/permissions.md`; hidden when permissions are disabled). See `CLAUDE.md`
 for where this sits in the runtime model.
 

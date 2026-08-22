@@ -402,7 +402,7 @@ pub(crate) fn load_settings(path: Option<&Path>) -> Settings {
 }
 
 /// Persist the chosen provider/model — plus the model's reasoning state, so
-/// the Shift+Tab cycle needs no refetch next run (`docs/reasoning.md`), and
+/// the Ctrl+T cycle needs no refetch next run (`docs/reasoning.md`), and
 /// its image-input support, so the attachment gate needs no re-probe
 /// (`docs/tools.md`) — to `config.json`, creating the config home first.
 /// Best-effort — a write failure is swallowed (like the session recorder) so
@@ -663,7 +663,7 @@ pub(crate) fn context_window_override() -> Option<u64> {
 /// so the agent has context awareness (`docs/environment.md`); the values are
 /// gathered here at the boundary (the `set_clock` pattern), the assembly is
 /// the pure `backend::augment_with_environment`. Resolved once at startup, so
-/// every backend the loop rebuilds (a `/model` switch, a Shift+Tab thinking
+/// every backend the loop rebuilds (a `/model` switch, a Ctrl+T thinking
 /// change, the capability probe) inherits it by clone.
 pub(crate) fn system_prompt(cwd: &Path) -> Option<String> {
     std::env::var("ALTER_ZERO_SYSTEM_PROMPT")

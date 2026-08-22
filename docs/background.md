@@ -2,7 +2,9 @@
 
 Claude-Code-style background command execution: the model can launch a `bash`
 command that keeps running while the conversation continues, the user can move
-a running command to the background with **Ctrl+B**, and a **↓ manager band**
+a running command to the background with **Ctrl+B** (with nothing
+backgroundable running, Ctrl+B is the terminal's cursor-left instead —
+`docs/textarea.md`), and a **↓ manager band**
 (reached from an empty composer — ↓ lights up the footer's shell indicator,
 Enter opens the band) lists the running shells, streams a selected shell's
 output live, and can stop one. When a background shell finishes, the

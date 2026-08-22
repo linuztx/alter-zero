@@ -20,7 +20,7 @@ const WAIT_POLL: Duration = Duration::from_millis(50);
 
 /// The session's permission posture — which tool calls ask before running.
 /// Pinned at the footer's right edge (`{model} · {cwd}      manual`), cycled
-/// with **Ctrl+A** in increasing autonomy (option 2 on a `write`/`edit`
+/// with **Shift+Tab** in increasing autonomy (option 2 on a `write`/`edit`
 /// prompt switches to `Edit` too), and persisted per project in
 /// `permissions.json`. See `docs/permissions.md`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -73,7 +73,7 @@ impl PermissionMode {
         }
     }
 
-    /// The next mode in Ctrl+A's cycle — manual → edit → auto → master →
+    /// The next mode in Shift+Tab's cycle — manual → edit → auto → master →
     /// manual, each step handing the session more autonomy.
     #[must_use]
     pub const fn cycled(self) -> Self {
@@ -241,7 +241,7 @@ pub const OPTION_COUNT: usize = 3;
 /// [`CommandScope::display`]'s `{prefix} *`, the star saying "this program,
 /// any arguments" (an exact-only scope shows the whole command, no star) —
 /// and is picked with `2` or ↑/↓ + Enter, like Claude Code. The file-change
-/// remember row carries its shortcut: **Ctrl+A**, the permission-mode toggle,
+/// remember row carries its shortcut: **Shift+Tab**, the permission-mode toggle,
 /// because choosing it *is* the switch to [`PermissionMode::Edit`].
 ///
 /// An MCP row names the tool the way the user knows it (`Deepwiki -
@@ -265,7 +265,7 @@ pub fn options(request: &PermissionRequest, project: Option<&str>) -> [String; O
                 None => format!("Yes, and don't ask again for {label} commands"),
             }
         }
-        _ => "Yes, allow all edits during this session (ctrl+a)".to_string(),
+        _ => "Yes, allow all edits during this session (shift+tab)".to_string(),
     };
     ["Yes".to_string(), remember, "No".to_string()]
 }
@@ -386,7 +386,7 @@ pub fn classifier_denial_result(reason: Option<&str>) -> String {
          narrower way, but do not attempt to bypass the intent behind this denial. If this \
          capability is essential to the user's request, STOP and explain what you were \
          trying to do and why — the user can approve it in manual mode, run the action \
-         themselves, or switch modes (ctrl+a)."
+         themselves, or switch modes (shift+tab)."
     )
 }
 
@@ -688,13 +688,13 @@ pub fn command_scope(command: &str) -> CommandScope {
 }
 
 /// The session's standing approvals: the [`PermissionMode`] plus the
-/// allow-listed command scopes. Grown by option 2 and the Ctrl+A toggle, and
+/// allow-listed command scopes. Grown by option 2 and the Shift+Tab toggle, and
 /// **persisted per project** (`permissions.json`, see [`PermissionsFile`]) so
 /// a new session in the same directory starts where this one left off.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PermissionRules {
     /// The permission posture: [`PermissionMode::Edit`] auto-approves every
-    /// file change (option 2 on a `write`/`edit` prompt, or Ctrl+A); back in
+    /// file change (option 2 on a `write`/`edit` prompt, or Shift+Tab); back in
     /// [`PermissionMode::Manual`] every file change asks again. Commands ask
     /// in both modes until allow-listed below.
     pub mode: PermissionMode,
@@ -932,7 +932,7 @@ impl PermissionGate {
         self.lock().rules.mode
     }
 
-    /// Set the permission mode — the Ctrl+A toggle, or the startup seed from
+    /// Set the permission mode — the Shift+Tab toggle, or the startup seed from
     /// the project's `permissions.json` entry. Takes effect for the very next
     /// `approve` consult: a `write` raised after a switch to
     /// [`PermissionMode::Edit`] never asks.
@@ -1041,13 +1041,13 @@ mod tests {
 
     #[test]
     fn the_second_option_names_what_it_remembers() {
-        // The edit option carries its shortcut — Ctrl+A, the mode toggle —
+        // The edit option carries its shortcut — Shift+Tab, the mode toggle —
         // and choosing it IS the switch to edit mode (docs/permissions.md).
         let edits = options(&request(PermissionKind::Write, "hello.py"), None);
         assert_eq!(edits[0], "Yes");
         assert_eq!(
             edits[1],
-            "Yes, allow all edits during this session (ctrl+a)"
+            "Yes, allow all edits during this session (shift+tab)"
         );
         assert_eq!(edits[2], "No");
         // The command prompt names the rule it would store — the last
@@ -1298,7 +1298,7 @@ mod tests {
         for mode in all {
             assert_eq!(PermissionMode::parse(mode.label()), Some(mode));
         }
-        // Ctrl+A steps through the modes in increasing autonomy and wraps.
+        // Shift+Tab steps through the modes in increasing autonomy and wraps.
         assert_eq!(PermissionMode::Manual.cycled(), PermissionMode::Edit);
         assert_eq!(PermissionMode::Edit.cycled(), PermissionMode::Auto);
         assert_eq!(PermissionMode::Auto.cycled(), PermissionMode::Master);

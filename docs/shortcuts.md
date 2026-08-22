@@ -68,31 +68,30 @@ bindings, codex's phrasing and two-column layout, keys cyan and labels dim
 (`SHORTCUTS_*` consts):
 
 ```
-/ for commands               ! for shell command          $ for skills
+/ for commands               ! for shell command
 ↑ for input history          ctrl+r to search history
 shift+enter for newline      ctrl+o for tool output
 esc to quit                  ctrl+c to quit
 alt+↑ to edit queue          tab to queue next turn
 ctrl+v for image paste       ctrl+d for llm context
-shift+tab to cycle thinking  ctrl+a for permission mode
+ctrl+t to cycle thinking     shift+tab for permission mode
+$ for skills                 ctrl+w/u/k to kill text
 ```
 
 (The `SHORTCUTS` const in `ui/theme.rs` is the single source of truth — entries laid
 out two per row in declaration order, so the band is
-`SHORTCUTS.len().div_ceil(2)` rows tall; currently 14 entries → 7 rows. The
-`$` skill-mention sigil (`docs/skill-mentions.md`) is the one exception —
-`SHORTCUTS_SKILLS`, rendered as a **third column** on the first row at
-`SHORTCUTS_THIRD_COL` (2 × `SHORTCUTS_COL`) so the three composer sigils
-read as one aligned grid; on a terminal too narrow to hold it whole it
-drops to its own last row instead — the band never clips what it teaches,
-and `shortcuts_rows` counts the extra row so the reserved and painted
-heights agree.)
+`SHORTCUTS.len().div_ceil(2)` rows tall; currently 16 entries → 8 rows. The
+`$` skill-mention sigil (`docs/skill-mentions.md`) is an ordinary entry in
+that grid — the last row's first column, beside the kill keys. It rode the
+first row as a third column for a while; the special case is retired, so
+the band is one two-column grid at every width and `shortcuts_rows` is
+plain `div_ceil`.)
 
 The second column starts at `SHORTCUTS_COL` (30), sized so the **widest**
-first-column variant keeps a readable gutter: the ctrl+a entry paired
-`shift+tab to cycle thinking` (27 columns) into the first column, which at
-the old column of 28 left a single space before it — the two entries read as
-one run-on line (the esc context swaps reach 24 the same way). The
+first-column variant keeps a readable gutter (an earlier pairing put a
+27-column entry in the first column, which at the old column of 28 left a
+single space before its neighbour — the two entries read as one run-on line;
+the esc context swaps reach 24 the same way). The
 `the_shortcuts_columns_keep_a_readable_gutter_in_every_state` test pins a
 ≥ 2-column gutter and the shared column across every `(turn_active,
 can_backtrack)` state; an entry added later that grows past it must widen

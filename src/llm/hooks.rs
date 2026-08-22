@@ -295,7 +295,7 @@ pub type SessionSources = Arc<std::sync::Mutex<Vec<String>>>;
 /// survive the rebuild).
 #[derive(Debug, Clone, Default)]
 pub struct HookHandles {
-    /// The permission gate, read per payload so a Ctrl+A cycle reaches the
+    /// The permission gate, read per payload so a Shift+Tab cycle reaches the
     /// very next call. `None` (gate off, an embedder) keeps the context's
     /// own value.
     pub gate: Option<crate::permission::PermissionGate>,
@@ -1274,7 +1274,7 @@ mod tests {
     #[test]
     fn payloads_report_the_live_permission_mode_and_transcript_path() {
         // The regression: the sink used to freeze `permission_mode: None`
-        // ("disabled") at build time, so a Ctrl+A cycle never reached a
+        // ("disabled") at build time, so a Shift+Tab cycle never reached a
         // payload — and `transcript_path` stayed null forever because the
         // rollout file is created after the sink. Both now resolve at
         // dispatch time from live handles.
@@ -1317,7 +1317,7 @@ mod tests {
         assert_eq!(
             value["permission_mode"],
             serde_json::json!("master"),
-            "a Ctrl+A cycle reaches the next payload"
+            "a Shift+Tab cycle reaches the next payload"
         );
         assert_eq!(
             value["transcript_path"],

@@ -4,18 +4,26 @@ use super::*;
 
 #[test]
 fn backtab_with_the_model_picker_open_is_inert() {
-    // The picker owns every key while open — BackTab must not cycle the
-    // mode out from under it.
+    // The picker owns every key while open — Shift+Tab must not cycle the
+    // permission mode out from under it, nor Ctrl+T the thinking mode
+    // (docs/permissions.md, docs/reasoning.md).
     let mut app = model_app(&sample_models());
+    app.set_permission_mode(Some(PermissionMode::Manual));
     app.set_thinking(Some((
         trio_support(),
         ThinkingMode::Effort(ReasoningEffort::Medium),
     )));
     assert_eq!(app.on_key(backtab()), Action::None);
     assert_eq!(
+        app.permission_mode(),
+        Some(PermissionMode::Manual),
+        "mode unchanged"
+    );
+    assert_eq!(app.on_key(ctrl('t')), Action::None);
+    assert_eq!(
         app.thinking.as_ref().unwrap().mode,
         ThinkingMode::Effort(ReasoningEffort::Medium),
-        "unchanged"
+        "thinking unchanged"
     );
 }
 

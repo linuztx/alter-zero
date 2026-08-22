@@ -439,7 +439,8 @@ fn down_drives_the_palette_not_the_cursor_when_it_is_open() {
 
 #[test]
 fn ctrl_modified_characters_are_not_typed_into_the_input() {
-    // Ctrl+<char> (other than the global Ctrl+C/Ctrl+O) is not text.
+    // A Ctrl+<char> combo is never text — even one bound to an editing
+    // action (Ctrl+A moves to the line start now; it must not insert 'a').
     let mut app = App::new();
     app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
     assert_eq!(
@@ -1401,15 +1402,233 @@ fn manager_details_keys_close_and_stop() {
 }
 
 #[test]
-fn backtab_without_support_raises_an_info_toast() {
-    // A model with no reasoning (or the dummy backend): Shift+Tab explains
+fn ctrl_t_without_support_raises_an_info_toast() {
+    // A model with no reasoning (or the dummy backend): Ctrl+T explains
     // instead of dying silently. The *loop* presents the toast (arming its
     // expiry), so this is an Action, not a direct show_toast.
     let mut app = App::new();
     app.set_session_info("dummy_model_name", "~/repo");
     assert_eq!(
-        app.on_key(backtab()),
+        app.on_key(ctrl('t')),
         Action::Toast("dummy_model_name does not support thinking".into())
     );
     assert!(app.thinking.is_none());
+}
+
+// ===== terminal editing shortcuts (docs/textarea.md) =====
+
+#[test]
+fn ctrl_a_and_ctrl_e_jump_to_the_line_ends() {
+    // Ctrl+A is line-start now — the permission-mode cycle moved to
+    // Shift+Tab (docs/permissions.md).
+    let mut app = App::new();
+    type_chars(&mut app, "hello");
+    assert_eq!(app.on_key(ctrl('a')), Action::None);
+    assert_eq!(app.input.cursor(), 0, "ctrl+a = home");
+    assert_eq!(app.on_key(ctrl('e')), Action::None);
+    assert_eq!(app.input.cursor(), 5, "ctrl+e = end");
+}
+
+#[test]
+fn shift_tab_cycles_the_permission_mode() {
+    let mut app = App::new();
+    app.set_permission_mode(Some(PermissionMode::Manual));
+    assert_eq!(
+        app.on_key(backtab()),
+        Action::SetPermissionMode(PermissionMode::Edit)
+    );
+    // The kitty protocol reports Shift+Tab as Tab+SHIFT (docs/shift-enter.md).
+    assert_eq!(
+        app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT)),
+        Action::SetPermissionMode(PermissionMode::Auto)
+    );
+}
+
+#[test]
+fn shift_tab_with_permissions_disabled_explains() {
+    let mut app = App::new();
+    assert_eq!(
+        app.on_key(backtab()),
+        Action::Toast("Tool permissions are disabled".into())
+    );
+}
+
+#[test]
+fn ctrl_b_is_cursor_left_when_nothing_is_running() {
+    let mut app = App::new();
+    type_chars(&mut app, "hi");
+    assert_eq!(app.on_key(ctrl('b')), Action::None);
+    assert_eq!(app.input.cursor(), 1, "idle ctrl+b = ←");
+    assert_eq!(app.on_key(ctrl('f')), Action::None);
+    assert_eq!(app.input.cursor(), 2, "ctrl+f = →");
+}
+
+#[test]
+fn ctrl_b_still_backgrounds_a_running_command_over_a_draft() {
+    // With a backgroundable command running the session meaning wins even
+    // mid-draft — the cursor never steals the key from the background move.
+    let mut app = App::new();
+    type_chars(&mut app, "draft");
+    app.begin_stream();
+    app.start_tool("Bash", "ping x.com");
+    assert_eq!(app.on_key(ctrl('b')), Action::MoveToBackground);
+    assert_eq!(app.input.cursor(), 5, "the cursor stayed put");
+}
+
+#[test]
+fn word_motion_binds_alt_b_f_and_ctrl_arrows() {
+    let mut app = App::new();
+    type_chars(&mut app, "foo bar");
+    app.on_key(alt(KeyCode::Char('b')));
+    assert_eq!(app.input.cursor(), 4, "alt+b: start of \"bar\"");
+    app.on_key(KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL));
+    assert_eq!(app.input.cursor(), 0, "ctrl+←: start of \"foo\"");
+    app.on_key(alt(KeyCode::Char('f')));
+    assert_eq!(app.input.cursor(), 3, "alt+f: end of \"foo\"");
+    app.on_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+    assert_eq!(app.input.cursor(), 7, "ctrl+→: end of \"bar\"");
+}
+
+#[test]
+fn ctrl_w_kills_the_previous_unix_word() {
+    let mut app = App::new();
+    type_chars(&mut app, "run src/main.rs ");
+    app.on_key(ctrl('w'));
+    assert_eq!(app.input.text(), "run ", "the whole path went as one word");
+    assert_eq!(app.input.cursor(), 4);
+}
+
+#[test]
+fn alt_backspace_kills_the_previous_word_stopping_at_punctuation() {
+    let mut app = App::new();
+    type_chars(&mut app, "src/main.rs");
+    app.on_key(alt(KeyCode::Backspace));
+    assert_eq!(app.input.text(), "src/main.");
+    // Ctrl+Backspace (kitty protocol) is its alias.
+    app.on_key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::CONTROL));
+    assert_eq!(app.input.text(), "src/");
+}
+
+#[test]
+fn alt_d_kills_the_next_word() {
+    let mut app = App::new();
+    type_chars(&mut app, "foo bar");
+    app.input.move_home();
+    app.on_key(alt(KeyCode::Char('d')));
+    assert_eq!(app.input.text(), " bar", "to the end of \"foo\"");
+    assert_eq!(app.input.cursor(), 0);
+    // Ctrl+Delete is its alias.
+    app.on_key(KeyEvent::new(KeyCode::Delete, KeyModifiers::CONTROL));
+    assert_eq!(app.input.text(), "", "\" bar\" went too");
+}
+
+#[test]
+fn ctrl_u_kills_to_the_line_start_and_ctrl_k_to_the_end() {
+    let mut app = App::new();
+    type_chars(&mut app, "hello world");
+    for _ in 0..6 {
+        app.input.move_left();
+    }
+    app.on_key(ctrl('u'));
+    assert_eq!(app.input.text(), " world");
+    assert_eq!(app.input.cursor(), 0);
+    app.on_key(ctrl('k'));
+    assert_eq!(app.input.text(), "", "ctrl+k took the rest of the line");
+}
+
+#[test]
+fn ctrl_k_at_a_line_end_joins_the_lines() {
+    let mut app = App::new();
+    type_chars(&mut app, "ab");
+    app.on_key(ctrl('j')); // newline
+    type_chars(&mut app, "cd");
+    app.input.move_up(); // cold cache: logical-line motion → end of "ab"
+    assert_eq!(app.input.cursor(), 2);
+    app.on_key(ctrl('k'));
+    assert_eq!(app.input.text(), "abcd", "the '\\n' itself was killed");
+}
+
+#[test]
+fn a_kill_re_derives_the_command_palette() {
+    // Killing the draft back to empty must close the palette like Backspace
+    // does — a stale band over an empty composer taught the old bug class.
+    let mut app = App::new();
+    type_chars(&mut app, "/he");
+    assert!(app.command_menu.is_some());
+    app.on_key(ctrl('w'));
+    assert_eq!(app.input.text(), "");
+    assert!(app.command_menu.is_none(), "the palette re-derived");
+}
+
+#[test]
+fn a_kill_exits_shell_mode_with_the_text() {
+    // `!` lives in shell_mode, not the text — an emptied composer stays in
+    // the mode (Backspace parity: only Backspace/Esc on empty exit it).
+    let mut app = App::new();
+    type_chars(&mut app, "!ping x");
+    assert!(app.shell_mode);
+    app.on_key(ctrl('u'));
+    assert_eq!(app.input.text(), "");
+    assert!(
+        app.shell_mode,
+        "the mode itself survives, like Backspace-to-empty"
+    );
+}
+
+#[test]
+fn ctrl_h_is_backspace() {
+    let mut app = App::new();
+    type_chars(&mut app, "ab");
+    app.on_key(ctrl('h'));
+    assert_eq!(app.input.text(), "a");
+}
+
+#[test]
+fn ctrl_p_and_ctrl_n_step_the_input_history() {
+    let mut app = App::new();
+    submit(&mut app, "one");
+    submit(&mut app, "two");
+    app.on_key(ctrl('p'));
+    assert_eq!(app.input.text(), "two");
+    app.on_key(ctrl('p'));
+    assert_eq!(app.input.text(), "one");
+    app.on_key(ctrl('n'));
+    assert_eq!(app.input.text(), "two");
+}
+
+#[test]
+fn ctrl_p_and_ctrl_n_move_the_cursor_in_an_edited_draft() {
+    let mut app = App::new();
+    type_chars(&mut app, "ab");
+    app.on_key(ctrl('j'));
+    type_chars(&mut app, "cd");
+    app.on_key(ctrl('p'));
+    assert_eq!(app.input.cursor(), 2, "cursor-up like ↑");
+    app.on_key(ctrl('n'));
+    assert_eq!(app.input.cursor(), 5, "cursor-down like ↓");
+}
+
+#[test]
+fn ctrl_p_and_ctrl_n_navigate_the_palette() {
+    let mut app = App::new();
+    type_chars(&mut app, "/");
+    let start = app.command_menu.as_ref().expect("palette open").selected;
+    app.on_key(ctrl('n'));
+    assert_eq!(
+        app.command_menu.as_ref().map(|m| m.selected),
+        Some(start + 1)
+    );
+    app.on_key(ctrl('p'));
+    assert_eq!(app.command_menu.as_ref().map(|m| m.selected), Some(start));
+}
+
+#[test]
+fn ctrl_n_never_lights_the_background_indicator() {
+    // ↓'s footer walk (the shell indicator, the agent roster) is the arrow
+    // key's own affordance — ctrl+n stays an editing key.
+    let mut app = App::new();
+    app.bg_started("bash_1", "sleep 99", None, true, None);
+    assert!(app.background_focusable());
+    assert_eq!(app.on_key(ctrl('n')), Action::None);
+    assert!(!app.background_focus, "no indicator walk on ctrl+n");
 }

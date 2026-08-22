@@ -214,7 +214,7 @@ impl<'t> Session<'t> {
         // The rollout path is created lazily on the first recorded item, so
         // the payloads' `transcript_path` rides a shared cell the recorder
         // publishes into (below) and the sink reads at dispatch time. The
-        // rest of the live handles ride beside it: the gate (a Ctrl+A cycle
+        // rest of the live handles ride beside it: the gate (a Shift+Tab cycle
         // reaches the very next payload), the SessionStart source queue —
         // seeded with `startup`, drained codex-style at the first turn's top
         // so nothing blocks the first paint — and the synthetic-turn mark.
@@ -410,7 +410,7 @@ impl<'t> Session<'t> {
         // docs/footer.md — together with the system prompts and the gauge.
         self.sync_backend_info();
         // The thinking state `config.json` recorded for this exact selection, so
-        // the Shift+Tab cycle starts where it left off (docs/reasoning.md).
+        // the Ctrl+T cycle starts where it left off (docs/reasoning.md).
         let thinking = self.models.take_thinking_seed();
         self.app.set_thinking(thinking);
         // The footer's right-edge permission segment (docs/permissions.md):

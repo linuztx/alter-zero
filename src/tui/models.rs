@@ -5,7 +5,7 @@
 //! (`docs/reasoning.md`), its image support and context window
 //! (`docs/tools.md`, `docs/compact.md`) — plus the `Box<dyn ReplySource>` all
 //! of that resolves to. It exists because those knobs move **together**:
-//! `/model`, `/login`, Shift+Tab and the startup capability probe each rebuild
+//! `/model`, `/login`, Ctrl+T and the startup capability probe each rebuild
 //! the backend from the same set, and a rebuild that forgot part of it used to
 //! silently drop the `agent` tool and stop asking permission for the rest of
 //! the session.
@@ -44,7 +44,7 @@ use super::workers::{ModelFetch, spawn_model_fetch};
 use super::{Session, config};
 
 /// A model's capabilities as the loop tracks them: its reasoning support (and
-/// the mode the Shift+Tab cycle starts at), whether it can see images, and how
+/// the mode the Ctrl+T cycle starts at), whether it can see images, and how
 /// big its context window is. `None` anywhere means "unknown" — the startup
 /// probe finds out, and until it does the loop stays optimistic.
 type Thinking = (ReasoningSupport, ThinkingMode);
@@ -93,7 +93,7 @@ pub(crate) struct ModelSession {
     active_context: Option<u64>,
     /// The thinking mode the live backend was built with, so a rebuild the
     /// user didn't ask for (a `/settings` knob) carries it forward instead of
-    /// silently dropping the Shift+Tab choice (`docs/reasoning.md`).
+    /// silently dropping the Ctrl+T choice (`docs/reasoning.md`).
     active_thinking: Option<ThinkingMode>,
     /// The backend itself — the dummy unless a real provider/model/key resolved.
     backend: Box<dyn ReplySource>,
@@ -225,7 +225,7 @@ impl ModelSession {
         // pairing — like saved_model it applies only when that exact selection
         // resolved. Outer None = support unknown (the probe below finds out);
         // Some(None) = known non-reasoner; Some(Some(state)) = seed the
-        // Shift+Tab cycle. See docs/reasoning.md.
+        // Ctrl+T cycle. See docs/reasoning.md.
         let selection_is_saved =
             active_provider == saved.provider && env_model.is_some() && env_model == saved.model;
         let saved_thinking: Option<Option<Thinking>> = saved
@@ -449,7 +449,7 @@ impl ModelSession {
     /// the background registry, the subagent registry (enabling the `agent`
     /// tool) and the permission gate. Every (re)build in the session goes
     /// through here: the initial pick and each rebind (a `/model` switch, a
-    /// Shift+Tab thinking change, the capability probe) alike.
+    /// Ctrl+T thinking change, the capability probe) alike.
     fn rebuild(&mut self, cfg: ModelConfig) {
         // Recorded here because this is the one place a backend is actually
         // built — `set_tools`, a `/model` switch and a skill toggle all land
@@ -718,7 +718,7 @@ impl ModelSession {
         true
     }
 
-    /// Rebind the *next* turn's backend so a Shift+Tab thinking mode rides its
+    /// Rebind the *next* turn's backend so a Ctrl+T thinking mode rides its
     /// request (the running turn streams on its own thread, untouched — the
     /// `/model` pattern). A model with no usable config is left alone.
     pub(crate) fn rebind_thinking(&mut self, mode: ThinkingMode) {
@@ -961,7 +961,7 @@ pub(crate) struct HookSetup {
     /// The `/settings` **Hooks** row. `false` attaches nothing, so toggling it
     /// off mid-session genuinely stops running them.
     pub(crate) enabled: bool,
-    /// The live handles — the gate (a Ctrl+A cycle reaches the very next
+    /// The live handles — the gate (a Ctrl+T cycle reaches the very next
     /// payload), the rollout path the recorder publishes, the queued
     /// SessionStart sources, and the synthetic-turn mark — shared into every
     /// sink built, surviving each rebuild (`docs/hooks.md`).
@@ -1002,7 +1002,7 @@ impl HookSetup {
 /// the background-shell registry, the subagent registry (enabling the `agent`
 /// tool), and the permission gate. Every backend (re)build in the session goes
 /// through this: the initial pick and each rebind (a `/model` switch, a
-/// Shift+Tab thinking change, the startup probe) alike — a rebuild that
+/// Ctrl+T thinking change, the startup probe) alike — a rebuild that
 /// attached only part of the set silently lost the `agent` tool and stopped
 /// asking permission for the rest of the session (the bug this helper fixes).
 #[allow(clippy::too_many_arguments)] // a flat list of the knobs a build needs
@@ -1068,7 +1068,7 @@ fn session_backend(
     backend
 }
 
-// ===== the loop's `/model`, `/login`, Shift+Tab and probe arms =====
+// ===== the loop's `/model`, `/login`, Ctrl+T and probe arms =====
 
 impl Session<'_> {
     /// Push the active backend's identity into `App`: the footer's model name,
@@ -1169,7 +1169,7 @@ impl Session<'_> {
         context: Option<u64>,
     ) {
         self.models.cancel_model_fetch();
-        // The picked entry's reasoning support seeds the Shift+Tab cycle at its
+        // The picked entry's reasoning support seeds the Ctrl+T cycle at its
         // default mode (medium where offered) — docs/reasoning.md.
         let thinking = reasoning.map(|support| {
             let mode = support.default_mode();
@@ -1191,7 +1191,7 @@ impl Session<'_> {
         }
     }
 
-    /// Shift+Tab advanced the thinking mode (the pure state already moved —
+    /// Ctrl+T advanced the thinking mode (the pure state already moved —
     /// `docs/reasoning.md`). Rebind the *next* turn's backend so the mode rides
     /// its request (the running turn streams on its own thread, untouched — the
     /// `/model` pattern), persist the choice beside the model selection, and

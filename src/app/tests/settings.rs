@@ -144,10 +144,10 @@ fn enter_and_space_both_cycle_the_highlighted_setting() {
 }
 
 #[test]
-fn the_permission_row_routes_through_the_ctrl_a_path() {
-    // One state, two doors: cycling here must produce the same action Ctrl+A
-    // does, so the gate, the persisted project entry and the queued-request
-    // sweep all still happen.
+fn the_permission_row_routes_through_the_shift_tab_path() {
+    // One state, two doors: cycling here must produce the same action
+    // Shift+Tab does, so the gate, the persisted project entry and the
+    // queued-request sweep all still happen.
     let mut app = settings_app();
     type_query(&mut app, "permission");
     assert_eq!(
@@ -261,13 +261,15 @@ fn ctrl_c_closes_the_menu_and_never_quits() {
 
 #[test]
 fn the_menu_owns_every_key_while_open() {
-    // Ctrl+O, Ctrl+D and Shift+Tab all do something drastic in the composer;
-    // none of them may fire out from under an open menu (the `/model` rule).
+    // Ctrl+O, Ctrl+D, Shift+Tab and Ctrl+T all do something drastic in the
+    // composer; none of them may fire out from under an open menu (the
+    // `/model` rule).
     let mut app = settings_app();
     for k in [
         KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
         KeyEvent::new(KeyCode::BackTab, KeyModifiers::NONE),
+        KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
     ] {
         assert_eq!(app.on_key(k), Action::None, "{k:?} leaked out of the menu");
         assert_eq!(app.view, View::Conversation);

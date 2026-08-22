@@ -145,14 +145,14 @@ fn a_bare_a_no_longer_answers_the_prompt() {
 }
 
 #[test]
-fn ctrl_a_on_a_file_prompt_is_the_remember_option() {
-    // Option 2 on a write/edit prompt IS the switch to edit mode, and Ctrl+A
-    // is the mode toggle — inside a file prompt it selects that option (the
-    // label advertises it: `… during this session (ctrl+a)`).
+fn shift_tab_on_a_file_prompt_is_the_remember_option() {
+    // Option 2 on a write/edit prompt IS the switch to edit mode, and
+    // Shift+Tab is the mode toggle — inside a file prompt it selects that
+    // option (the label advertises it: `… during this session (shift+tab)`).
     let mut app = App::new();
     app.set_permission_mode(Some(PermissionMode::Manual));
     app.open_permission(write_request("p1"));
-    let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    let action = app.on_key(backtab());
     assert_eq!(
         action,
         Action::ResolvePermission {
@@ -164,24 +164,31 @@ fn ctrl_a_on_a_file_prompt_is_the_remember_option() {
 }
 
 #[test]
-fn ctrl_a_on_a_bash_prompt_toggles_the_mode_and_keeps_asking() {
-    // The mode never covers commands, so the prompt stays open — Ctrl+A just
-    // flips the posture (the loop mirrors it onto the gate and sweeps any
-    // queued file requests the new mode covers).
+fn shift_tab_on_a_bash_prompt_toggles_the_mode_and_keeps_asking() {
+    // The mode never covers commands, so the prompt stays open — Shift+Tab
+    // just flips the posture (the loop mirrors it onto the gate and sweeps
+    // any queued file requests the new mode covers). Both spellings bind:
+    // legacy BackTab and the kitty protocol's Tab+SHIFT.
     let mut app = App::new();
     app.set_permission_mode(Some(PermissionMode::Manual));
     app.open_permission(bash_request("p1"));
-    let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+    let action = app.on_key(backtab());
     assert_eq!(action, Action::SetPermissionMode(PermissionMode::Edit));
     assert_eq!(app.permission_mode(), Some(PermissionMode::Edit));
     assert!(app.permission().is_some(), "the command still asks");
+    let action = app.on_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT));
+    assert_eq!(action, Action::SetPermissionMode(PermissionMode::Auto));
+    assert!(
+        app.permission().is_some(),
+        "still asking — Tab+SHIFT never amends"
+    );
 }
 
 #[test]
-fn ctrl_a_cycles_the_permission_mode_from_the_composer() {
+fn shift_tab_cycles_the_permission_mode_from_the_composer() {
     // manual → edit → auto → master → manual, one step per press — the loop
     // persists each and shows the toast; the footer's right-edge mode tracks
-    // the field.
+    // the field. (Ctrl+A, the old binding, is the textarea's line-start now.)
     let mut app = App::new();
     app.set_permission_mode(Some(PermissionMode::Manual));
     for expected in [
@@ -190,21 +197,21 @@ fn ctrl_a_cycles_the_permission_mode_from_the_composer() {
         PermissionMode::Master,
         PermissionMode::Manual,
     ] {
-        let action = app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        let action = app.on_key(backtab());
         assert_eq!(action, Action::SetPermissionMode(expected));
         assert_eq!(app.permission_mode(), Some(expected));
     }
 }
 
 #[test]
-fn ctrl_a_with_permissions_disabled_explains_instead() {
+fn shift_tab_with_permissions_disabled_explains_instead() {
     // ALTER_ZERO_PERMISSIONS=0 → no gate, nothing ever asks, no mode to
     // toggle. A silent no-op would read as a broken key; the toast says why
     // (the cycle_thinking pattern for a non-reasoning model).
     let mut app = App::new();
     assert_eq!(app.permission_mode(), None);
     assert_eq!(
-        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL)),
+        app.on_key(backtab()),
         Action::Toast("Tool permissions are disabled".to_string())
     );
 }
@@ -273,6 +280,28 @@ fn tab_opens_an_empty_amend_field_that_rejects_with_the_typed_feedback() {
         }
     );
     assert_eq!(app.input.text(), "the draft", "the draft still came back");
+}
+
+#[test]
+fn the_amend_field_takes_the_terminal_editing_shortcuts() {
+    // edit_amend carries the readline set too (shared with the ask modal's
+    // entries — docs/textarea.md): Ctrl+A/E jump the line, Alt+B steps a
+    // word, Ctrl+W/U kill placeholder-atomically.
+    let mut app = App::new();
+    app.open_permission(write_request("p1"));
+    app.on_key(key(KeyCode::Tab));
+    type_text(&mut app, "use foo bar");
+    app.on_key(ctrl('a'));
+    assert_eq!(app.input.cursor(), 0, "ctrl+a = line start");
+    app.on_key(ctrl('e'));
+    assert_eq!(app.input.cursor(), 11, "ctrl+e = line end");
+    app.on_key(alt(KeyCode::Char('b')));
+    assert_eq!(app.input.cursor(), 8, "alt+b = start of \"bar\"");
+    app.on_key(ctrl('e'));
+    app.on_key(ctrl('w'));
+    assert_eq!(app.input.text(), "use foo ", "ctrl+w killed \"bar\"");
+    app.on_key(ctrl('u'));
+    assert_eq!(app.input.text(), "", "ctrl+u killed to the line start");
 }
 
 #[test]

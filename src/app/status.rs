@@ -102,7 +102,7 @@ pub struct TurnSummary {
 }
 
 /// The active model's reasoning state: what the `/v1/models` record said it
-/// supports and the mode the user has cycled to (Shift+Tab). Lives on
+/// supports and the mode the user has cycled to (Ctrl+T). Lives on
 /// [`App::thinking`]; the footer shows `mode.label()` beside the model name
 /// and the boundary threads the mode into each request. See
 /// `docs/reasoning.md`.

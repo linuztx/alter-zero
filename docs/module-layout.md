@@ -113,7 +113,7 @@ opening the viewport, running the loop — and everything else lives here:
 | `permission.rs` | `PermissionStore` — the gate, its file, this project's key — and the prompt's answers (`docs/permissions.md`). |
 | `view.rs` | Drawing: the draw tick, the overlays, the repaints, `live_region_height`, the injected clocks. |
 | `commit.rs` | Scrollback commits — the one place invariant 4 is enforced — and the toast. |
-| `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, `/login`, Shift+Tab and probe arms (`docs/llm.md`). |
+| `models.rs` | `ModelSession`: the backend and every knob that selects it, plus the `/model`, `/login`, Ctrl+T and probe arms (`docs/llm.md`). |
 | `config.rs` | Reading the environment: providers, keys, settings, permission rules, paths. |
 | `bootstrap.rs` | `Session::bootstrap` / `shutdown` / `after_iteration` — assembly, teardown, loop-bottom work. |
 | `startup.rs` | The `--continue`/`--resume` argument resolution (`docs/cli.md`). |

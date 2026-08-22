@@ -42,18 +42,18 @@ impl App {
         self.permission_mode
     }
 
-    /// Inject or update the permission mode (the startup seed, a Ctrl+A
+    /// Inject or update the permission mode (the startup seed, a Shift+Tab
     /// toggle's echo, an option-2 "allow all edits" — the boundary keeps this
     /// field and the gate's rules in step).
     pub const fn set_permission_mode(&mut self, mode: Option<PermissionMode>) {
         self.permission_mode = mode;
     }
 
-    /// Ctrl+A — step the mode cycle (manual → edit → auto → master) and hand
-    /// the loop the new mode ([`Action::SetPermissionMode`]: mirror it onto
-    /// the gate, persist it for this project, sweep newly covered requests,
-    /// toast). With permissions disabled there is no mode to cycle — the
-    /// toast says so (the `cycle_thinking` pattern).
+    /// Shift+Tab — step the mode cycle (manual → edit → auto → master) and
+    /// hand the loop the new mode ([`Action::SetPermissionMode`]: mirror it
+    /// onto the gate, persist it for this project, sweep newly covered
+    /// requests, toast). With permissions disabled there is no mode to cycle —
+    /// the toast says so (the `cycle_thinking` pattern).
     pub(super) fn toggle_permission_mode(&mut self) -> Action {
         match self.permission_mode {
             Some(mode) => {
@@ -213,9 +213,9 @@ impl App {
     /// Keys while a permission prompt is open — it owns all of them.
     ///
     /// Options: ↑/↓ move (wrapping at the ends), Enter takes the highlighted
-    /// one, and `1`/`2`/`3` take one directly. **Ctrl+A** — the permission-mode toggle
-    /// — selects the remember row on a `write`/`edit` prompt (choosing it *is*
-    /// the switch to edit mode), and on a `bash` prompt just flips the mode,
+    /// one, and `1`/`2`/`3` take one directly. **Shift+Tab** — the permission-mode
+    /// toggle — selects the remember row on a `write`/`edit` prompt (choosing it
+    /// *is* the switch to edit mode), and on a `bash` prompt just flips the mode,
     /// the prompt staying open (the mode never covers commands). Esc aborts
     /// the turn, Tab opens the amend field, and Ctrl+E asks a `bash` prompt
     /// for an explanation.
@@ -237,19 +237,6 @@ impl App {
         {
             return self.resolve_permission(PermissionDecision::Explain);
         }
-        // Ctrl+A — the mode toggle, reachable inside the prompt too. On a
-        // file prompt it IS option 2 (allow all edits = edit mode); on a
-        // command or MCP prompt it only flips the posture — the call still
-        // asks (their option 2 is a named rule, not the mode), and the
-        // loop's sweep releases any queued file requests the new mode covers.
-        if ctrl && key.code == KeyCode::Char('a') {
-            if self.permission.as_ref().is_some_and(|p| {
-                matches!(p.request.kind, PermissionKind::Write | PermissionKind::Edit)
-            }) {
-                return self.resolve_permission(PermissionDecision::ApproveAlways);
-            }
-            return self.toggle_permission_mode();
-        }
         // Ctrl+C is Esc here: the prompt owns the key, so it neither clears a
         // draft (there is none — it is stashed) nor quits mid-decision.
         if ctrl && key.code == KeyCode::Char('c') {
@@ -257,6 +244,23 @@ impl App {
         }
         if ctrl {
             return Action::None;
+        }
+        // Shift+Tab — the mode toggle, reachable inside the prompt too (both
+        // spellings: legacy BackTab, kitty Tab+SHIFT — before the plain-Tab
+        // amend arm). On a file prompt it IS option 2 (allow all edits = edit
+        // mode); on a command or MCP prompt it only flips the posture — the
+        // call still asks (their option 2 is a named rule, not the mode), and
+        // the loop's sweep releases any queued file requests the new mode
+        // covers.
+        if key.code == KeyCode::BackTab
+            || (key.code == KeyCode::Tab && key.modifiers.contains(KeyModifiers::SHIFT))
+        {
+            if self.permission.as_ref().is_some_and(|p| {
+                matches!(p.request.kind, PermissionKind::Write | PermissionKind::Edit)
+            }) {
+                return self.resolve_permission(PermissionDecision::ApproveAlways);
+            }
+            return self.toggle_permission_mode();
         }
         match key.code {
             KeyCode::Up => {
@@ -328,7 +332,10 @@ impl App {
 
     /// The amend field's editing keys — the composer's set minus everything
     /// that only makes sense for a *message* (the palette, the `@` picker, the
-    /// ↑/↓ history recall, shell mode): free-text feedback, nothing more.
+    /// ↑/↓ history recall, shell mode): free-text feedback, nothing more. The
+    /// terminal editing shortcuts ride along (`docs/textarea.md`) — Ctrl+P/N
+    /// are plain cursor keys here (no history to browse), and Ctrl+B is
+    /// always ← (nothing backgroundable is actionable from inside a modal).
     /// Shared with the ask modal's Other/notes entries (`docs/ask.md`).
     pub(super) fn edit_amend(&mut self, key: KeyEvent) {
         let ctrl_or_alt = key
@@ -341,7 +348,66 @@ impl App {
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.input.insert_newline();
             }
+            // The readline cursor keys (docs/textarea.md).
+            KeyCode::Char('a') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.move_home();
+            }
+            KeyCode::Char('e') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.move_end();
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.move_left();
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.move_right();
+            }
+            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.move_up();
+            }
+            KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.input.move_down();
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.input.move_word_left();
+            }
+            KeyCode::Char('f') if key.modifiers.contains(KeyModifiers::ALT) => {
+                self.input.move_word_right();
+            }
+            // The kill keys, placeholder-atomic like the composer's
+            // (`App::kill_span` — the entries take pastes too).
+            KeyCode::Char('w') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let span = self.input.prev_unix_word_boundary()..self.input.cursor();
+                self.kill_span(span);
+            }
+            KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let span = self.input.cursor_line_start()..self.input.cursor();
+                self.kill_span(span);
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let span = self.input.cursor()..self.input.cursor_kill_end();
+                self.kill_span(span);
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::ALT) => {
+                let span = self.input.cursor()..self.input.next_word_boundary();
+                self.kill_span(span);
+            }
+            // Ctrl+H is Backspace, as in the composer.
+            KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !self.delete_placeholder(/*backward*/ true) {
+                    self.input.delete_backward();
+                }
+            }
             KeyCode::Char(c) if !ctrl_or_alt => self.input.insert_char(c),
+            // Alt/Ctrl+Backspace and Alt/Ctrl+Delete kill by words (before
+            // the unmodified arms below).
+            KeyCode::Backspace if ctrl_or_alt => {
+                let span = self.input.prev_word_boundary()..self.input.cursor();
+                self.kill_span(span);
+            }
+            KeyCode::Delete if ctrl_or_alt => {
+                let span = self.input.cursor()..self.input.next_word_boundary();
+                self.kill_span(span);
+            }
             // A Backspace/Delete on a `[Pasted Content N chars]` placeholder
             // removes it whole, like the composer (`docs/paste.md`) — the ask
             // modal's entry fields take pastes, and one keystroke must not
@@ -356,6 +422,9 @@ impl App {
                     self.input.delete_forward();
                 }
             }
+            // Word motion on Ctrl/Alt-modified arrows (before the plain arms).
+            KeyCode::Left if ctrl_or_alt => self.input.move_word_left(),
+            KeyCode::Right if ctrl_or_alt => self.input.move_word_right(),
             KeyCode::Left => self.input.move_left(),
             KeyCode::Right => self.input.move_right(),
             KeyCode::Up => self.input.move_up(),

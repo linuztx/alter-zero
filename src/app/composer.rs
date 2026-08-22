@@ -29,6 +29,27 @@ fn occurrence_ordinal(text: &str, span: &Range<usize>) -> usize {
     text[..span.start].matches(placeholder).count()
 }
 
+/// The `(placeholder, ordinal)` of every placeholder occurrence lying fully
+/// inside `span`, **highest ordinal first** — so removing the pairs in order
+/// can never shift a later removal's ordinal (the occurrences before the span
+/// are what an ordinal counts, and those never move).
+fn swallowed_placeholders<T>(
+    text: &str,
+    span: &Range<usize>,
+    pairs: &[(String, T)],
+) -> Vec<(String, usize)> {
+    let mut hits: Vec<(String, usize)> = crate::paste::placeholder_spans(text, pairs)
+        .into_iter()
+        .filter(|ph| ph.start >= span.start && ph.end <= span.end)
+        .map(|ph| {
+            let ordinal = occurrence_ordinal(text, &ph);
+            (text[ph].to_string(), ordinal)
+        })
+        .collect();
+    hits.reverse();
+    hits
+}
+
 /// Remove and return the value of the pair backing the `ordinal`-th occurrence
 /// of `placeholder`; `None` when no pair sits at that ordinal (the occurrence
 /// was an unbacked marker recalled as plain text).
@@ -186,6 +207,51 @@ impl App {
         let removed = self.input.text()[span.clone()].to_string();
         self.input.replace_range(span, "");
         removed
+    }
+
+    /// A kill key's deletion (Ctrl+W/U/K, Alt+D, Alt+Backspace — and the same
+    /// keys in the amend/ask entries): splice the byte `span` out of the
+    /// composer, first **widening** it over any pasted/image placeholder it
+    /// intersects — a kill must stay as atomic as Backspace on a placeholder
+    /// (`docs/paste.md`), never leaving half a `[Pasted Content N chars]`
+    /// behind backed by a live pair — and dropping the swallowed occurrences'
+    /// pairs like [`delete_placeholder`] does (a killed image's temp file goes
+    /// to `discarded_images` for the boundary to remove). The cursor lands at
+    /// the span's start.
+    pub(super) fn kill_span(&mut self, span: Range<usize>) {
+        let span = self.widen_over_placeholders(span);
+        if span.start >= span.end {
+            return;
+        }
+        let text = self.input.text();
+        let killed_pastes = swallowed_placeholders(text, &span, &self.pasted);
+        let killed_images = swallowed_placeholders(text, &span, &self.images);
+        self.input.replace_range(span, "");
+        for (placeholder, ordinal) in killed_pastes {
+            remove_nth_pair(&mut self.pasted, &placeholder, ordinal);
+        }
+        for (placeholder, ordinal) in killed_images {
+            if let Some(path) = remove_nth_pair(&mut self.images, &placeholder, ordinal) {
+                self.discarded_images.push(path);
+            }
+        }
+    }
+
+    /// Grow `span` to fully cover every placeholder occurrence it intersects.
+    /// Placeholder spans are disjoint, so one ordered pass suffices: covering
+    /// one can never reach back over an earlier, already-checked span.
+    fn widen_over_placeholders(&self, mut span: Range<usize>) -> Range<usize> {
+        let text = self.input.text();
+        let mut spans = crate::paste::placeholder_spans(text, &self.pasted);
+        spans.extend(crate::paste::placeholder_spans(text, &self.images));
+        spans.sort_by_key(|r| r.start);
+        for ph in spans {
+            if ph.start < span.end && ph.end > span.start {
+                span.start = span.start.min(ph.start);
+                span.end = span.end.max(ph.end);
+            }
+        }
+        span
     }
 
     /// Attach a Ctrl+V-pasted image: insert an `[Image #N]` placeholder at the

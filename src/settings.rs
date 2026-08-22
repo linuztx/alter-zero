@@ -48,7 +48,7 @@ pub enum SettingKey {
     ErrorRetry,
     /// Offer `bash`/`read`/`write`/`edit`/`agent` to the model (`docs/tools.md`).
     Tools,
-    /// The session's permission posture — Ctrl+A's cycle (`docs/permissions.md`).
+    /// The session's permission posture — Shift+Tab's cycle (`docs/permissions.md`).
     PermissionMode,
     /// Per-turn working-directory snapshots (`docs/checkpoint.md`).
     Checkpoints,
@@ -112,7 +112,7 @@ impl SettingKey {
             }
             Self::Tools => "Offer the bash, read, write, edit and agent tools to the model",
             Self::PermissionMode => {
-                "Which tool calls ask before running — the same posture ctrl+a cycles"
+                "Which tool calls ask before running — the same posture shift+tab cycles"
             }
             Self::Checkpoints => {
                 "Snapshot the working directory each turn so a rewind restores the code"
